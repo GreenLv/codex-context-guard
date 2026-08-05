@@ -36,6 +36,12 @@ This document records the local, pre-publication evidence for the standalone
 - Native Windows 0.4.6 fresh-runtime validation. Until it exists, Windows may
   be described only by automated CI evidence after that CI passes.
 - Linux claims beyond automated CI and isolated lifecycle validation.
+- Remote Git marketplace packaging behavior. Codex CLI 0.146.0 copied the
+  entire fresh local repository root, including local `.git` and ignored Finder
+  metadata, into the isolated plugin cache because this repository intentionally
+  uses `source.path: "./"`. The staged public tree remains clean and contains no
+  private history, but the remote marketplace snapshot must be re-audited before
+  release and this behavior must not be generalized to older/private histories.
 - Universal plugin-directory submission and CSDN publication.
 
 ## Publication gate

@@ -47,4 +47,7 @@ Before a public tag:
 3. the isolated installed lifecycle smoke passes against the standalone cache;
 4. macOS source/cache parity and fresh no-bypass runtime smoke pass;
 5. Windows/Linux claims are limited to their actual evidence;
-6. public CI passes before the final release is described as green.
+6. remote Git marketplace packaging is checked for repository metadata because
+   the local root-level marketplace copies the whole fresh repository into the
+   isolated cache under Codex CLI 0.146.0;
+7. public CI passes before the final release is described as green.
