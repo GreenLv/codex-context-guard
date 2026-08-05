@@ -18,9 +18,9 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | 80 pass, 1 Windows-only skip (81 total); corrected public CI pending | isolated standalone cache verified | standalone manual trusted `/compact` still pending | local candidate verified except standalone fresh trusted runtime |
-| Windows | 0.4.8 rerun required after lock-race fix | synthetic test required | native 0.4.8 run pending | no native parity claim; final CI evidence pending |
-| Linux | required in CI | synthetic test required | not claimed | CI and isolated lifecycle only |
+| macOS | 80 pass, 1 Windows-only skip (81 total); public CI passed twice | isolated standalone cache verified | standalone manual trusted `/compact` still pending | verified except standalone fresh trusted runtime |
+| Windows | public CI passed twice on Python 3.10/3.12/3.13 | CI regression path verified | native 0.4.8 run pending | CI validated; no native parity claim |
+| Linux | public CI passed twice on Python 3.10/3.12/3.13 | remote-clone isolated lifecycle verified | not claimed | CI and isolated lifecycle only |
 
 Do not change a pending cell to verified without preserving the command, result,
 plugin version, Codex version, and source/cache parity evidence in the release
@@ -48,6 +48,7 @@ Before a public tag:
 4. macOS source/cache parity and fresh no-bypass runtime smoke pass;
 5. Windows/Linux claims are limited to their actual evidence;
 6. remote Git marketplace packaging is checked for repository metadata because
-   the local root-level marketplace copies the whole fresh repository into the
-   isolated cache under Codex CLI 0.146.0;
+   the root-level marketplace copies the whole fresh repository into the
+   isolated cache under Codex CLI 0.146.0; the audited 0.4.8 snapshot contains
+   only the six-commit public history and one GitHub noreply author;
 7. public CI passes before the final release is described as green.

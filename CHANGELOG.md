@@ -32,11 +32,13 @@ lineage.
   standalone public identity now passes 80 local tests plus one Windows-only
   skip (81 total),
   plugin validation, privacy audit, source/cache parity, idempotent install, and
-  isolated installed lifecycle smoke; manual trusted `/compact` remains pending.
-- Windows: automated CI is required for this repository. Native 0.4.8 fresh
-  runtime verification remains pending and must not be inferred from CI.
-- Linux: automated CI and isolated lifecycle validation only; no desktop Hook
+  isolated installed lifecycle smoke. The 9-job public CI matrix passed twice
+  on the same 0.4.8 commit; manual standalone trusted `/compact` remains pending.
+- Windows: public CI passes on Python 3.10, 3.12, and 3.13, including two runs
+  of the lock regression. Native 0.4.8 runtime verification remains pending and
+  must not be inferred from CI.
+- Linux: public CI and isolated lifecycle validation only; no desktop Hook
   trust claim.
 
-The candidate is not a published GitHub release until human acceptance and a
-green public CI run.
+The candidate is not a published GitHub release until the remaining standalone
+Hook trust/runtime gate passes and the release tag is created.

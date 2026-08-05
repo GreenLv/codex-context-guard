@@ -1,6 +1,6 @@
 # Local Release-Candidate Acceptance
 
-This document records the local, pre-publication evidence for the standalone
+This document records the local and remote pre-release evidence for the standalone
 `0.4.8` candidate. The repository is public, but this document is not evidence
 that the final 0.4.8 CI or GitHub Release exists.
 
@@ -31,6 +31,16 @@ that the final 0.4.8 CI or GitHub Release exists.
 - Isolated installed lifecycle smoke covering schema 3, plan mirror, delegated
   authority, bounded agent result, unknown-evidence exclusion, binary omission,
   compaction recovery, and private completion gating.
+- Public CI run `31042727226` passed the full 9-job Ubuntu/macOS/Windows and
+  Python 3.10/3.12/3.13 matrix twice on commit `aea493d`, including two
+  successful Windows Python 3.13 lock-regression executions.
+- A fresh clone from the public GitHub URL passed repository validation,
+  privacy audit, first install, same-version strict no-op, source/cache parity,
+  and installed lifecycle smoke.
+- The remote-clone plugin cache contains the repository `.git` directory due
+  to the required root-level marketplace layout. It contains only six fresh
+  public commits, one GitHub noreply author, and no Finder/Python cache files or
+  private history.
 
 ## Automated content approval
 
@@ -47,25 +57,20 @@ green, establish native Windows parity, or create a release tag.
 
 ## Candidate and recovery point
 
-- Validated 0.4.7 implementation candidate: `547e81d`.
-- Pre-0.4.7 local baseline and rollback point: `7dc13b5`.
-- The standalone repository has no remote configured at this gate.
+- Validated 0.4.8 implementation candidate: `aea493d`.
+- Pre-0.4.8 public rollback point: `bfc2884`.
+- Public repository: `https://github.com/GreenLv/codex-context-guard`, default
+  branch `main`, public visibility, GitHub noreply commit author.
 
 ## Intentionally pending
 
-- Final tag and Release creation after the corrected public CI is green.
+- Final tag and Release creation after the standalone trusted runtime gate.
 - A fresh interactive Codex task that reviews/trusts the standalone Hook
   identity and performs a real manual `/compact` without trust bypass.
 - Corrected public CI, release tag, and release notes.
 - Native Windows 0.4.8 fresh-runtime validation. Until it exists, Windows may
   be described only by automated CI evidence after that CI passes.
 - Linux claims beyond automated CI and isolated lifecycle validation.
-- Remote Git marketplace packaging behavior. Codex CLI 0.146.0 copied the
-  entire fresh local repository root, including local `.git` and ignored Finder
-  metadata, into the isolated plugin cache because this repository intentionally
-  uses `source.path: "./"`. The staged public tree remains clean and contains no
-  private history, but the remote marketplace snapshot must be re-audited before
-  release and this behavior must not be generalized to older/private histories.
 - Universal plugin-directory submission and external promotional publication.
 
 ## Publication gate
