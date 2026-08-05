@@ -44,6 +44,12 @@ This approval covers the local source candidate only. It does not authorize a
 GitHub write, make remote CI green, establish native Windows parity, or create
 a release tag.
 
+## Candidate and recovery point
+
+- Validated 0.4.7 implementation candidate: `547e81d`.
+- Pre-0.4.7 local baseline and rollback point: `7dc13b5`.
+- The standalone repository has no remote configured at this gate.
+
 ## Intentionally pending
 
 - Explicit authorization for the external publication actions.
