@@ -2,9 +2,9 @@
 
 All notable public releases are documented here.
 
-## 0.4.6 - unreleased candidate
+## 0.4.7 - unreleased candidate
 
-Initial open-source candidate based on the validated Context Guard 0.4.6
+Initial open-source candidate based on the validated Context Guard 0.4.7
 lineage.
 
 ### Included
@@ -18,15 +18,19 @@ lineage.
   redacted handoff export, and explicit bounded successor packs.
 - Safe local installer that rejects same-version drift and preserves older
   versioned Hook caches during upgrades.
+- User-decision-gate precedence so replies that explicitly await approval,
+  authorization, confirmation, or input do not trigger repeated Stop Hook
+  continuations merely because they also report a completed local milestone.
 
 ### Validation status
 
 - macOS source lineage: Hook regressions, safe-install regressions, installed
   lifecycle, and fresh no-bypass runtime smoke were previously verified. The
-  standalone public identity now passes 78 local tests (one Windows-only skip),
+  standalone public identity now passes 78 local tests plus one Windows-only
+  skip (79 total),
   plugin validation, privacy audit, source/cache parity, idempotent install, and
   isolated installed lifecycle smoke; manual trusted `/compact` remains pending.
-- Windows: automated CI is required for this repository. Native 0.4.6 fresh
+- Windows: automated CI is required for this repository. Native 0.4.7 fresh
   runtime verification remains pending and must not be inferred from CI.
 - Linux: automated CI and isolated lifecycle validation only; no desktop Hook
   trust claim.

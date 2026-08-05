@@ -77,6 +77,12 @@ COMPLETION_RE = re.compile(
 NON_COMPLETION_RE = re.compile(
     r"\b(not\s+(?:(?:yet|fully|safely)\s+)*(?:done|complete[dn]?|finished|implemented)|"
     r"unfinished|incomplete|remaining|still\s+need|could(?:n't| not)\s+complete|"
+    r"(?:await(?:ing)?|wait(?:ing)?\s+for)\s+"
+    r"(?:(?:your|user(?:'s)?)\s+)?(?:approval|authorization|confirmation|"
+    r"decision|choice|input|response|acceptance)|"
+    r"(?:can(?:not|'t)|unable\s+to)\s+(?:safely\s+)?(?:continue|proceed|act)|"
+    r"(?:need|require)\s+(?:your|user(?:'s)?)\s+(?:explicit\s+)?"
+    r"(?:approval|authorization|confirmation|decision|choice|input|response|acceptance)|"
     r"(?:can(?:not|'t)|should(?:not|n't)|unable\s+to)\s+"
     r"(?:claim|declare|report|say).{0,40}\b(?:done|complete[dn]?|finished))\b|"
     r"(未(?:全部|完全|整体)?完成|尚未(?:全部|完全|整体)?(?:完成|结束)|"
@@ -84,6 +90,13 @@ NON_COMPLETION_RE = re.compile(
     r"(?:不能|无法|不可|不应|尚不能).{0,24}(?:宣告|声明|声称).{0,16}完成|"
     r"(?:原始|整个|整体|当前)?任务.{0,16}(?:仍|尚|还)(?:待|需)|"
     r"(?:尚未|还未).{0,20}(?:导入|下载|写入|执行|开始)|"
+    r"(?:等待|待)(?:你|您|用户)?(?:的)?(?:明确)?"
+    r"(?:验收|确认|授权|决定|选择|回复|输入)|"
+    r"(?:你|您|用户).{0,8}(?:需要|请).{0,8}"
+    r"(?:验收|确认|授权|决定|选择|回复|输入)|"
+    r"(?:必须|需要)(?:先)?(?:得到|获得|收到|等待).{0,16}"
+    r"(?:验收|确认|授权|决定|选择|回复|输入)|"
+    r"(?:无法|不能|不可|尚不能)(?:安全)?(?:继续|推进|执行|操作)|"
     r"仍待处理|仍需继续|还需要|被阻塞|阻塞[：:])",
     re.IGNORECASE,
 )

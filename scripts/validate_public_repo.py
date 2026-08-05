@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.4.6"
+VERSION = "0.4.7"
 REPOSITORY = "https://github.com/GreenLv/codex-context-guard"
 HOOK_EVENTS = {
     "UserPromptSubmit",
@@ -34,7 +34,6 @@ REQUIRED_FILES = {
     "docs/PRIVACY.md",
     "docs/COMPATIBILITY.md",
     "docs/LOCAL_ACCEPTANCE.md",
-    "docs/BLOG.zh-CN.md",
     "hooks/hooks.json",
     "scripts/context_guard.py",
     "scripts/manage_plugin.py",
@@ -43,6 +42,9 @@ REQUIRED_FILES = {
     "skills/context-guard/agents/openai.yaml",
     "skills/context-guard/references/successor-pack.md",
 }
+FORBIDDEN_FILES = {
+    "docs/BLOG.zh-CN.md",
+}
 
 
 def validate(root: Path) -> list[str]:
@@ -50,6 +52,11 @@ def validate(root: Path) -> list[str]:
     for relative in sorted(REQUIRED_FILES):
         if not (root / relative).is_file():
             errors.append(f"missing required file: {relative}")
+    for relative in sorted(FORBIDDEN_FILES):
+        if (root / relative).exists():
+            errors.append(
+                f"publishing material must stay outside the public tree: {relative}"
+            )
 
     try:
         manifest = json.loads(

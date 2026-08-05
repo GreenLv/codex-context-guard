@@ -3,7 +3,7 @@
 ## Supported version
 
 Security and correctness fixes are applied to the latest released version. The
-initial public release candidate is `0.4.6`.
+initial public release candidate is `0.4.7`.
 
 ## Reporting a vulnerability
 

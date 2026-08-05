@@ -640,6 +640,37 @@ class ContextGuardTests(unittest.TestCase):
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
+    def test_user_decision_gated_reports_do_not_trigger_continuations(self) -> None:
+        self.prompt(
+            "实现并发布开源项目。必须先让用户验收，得到明确授权后才能公开。"
+        )
+        messages = (
+            (
+                "这些技术检查我已经完成。你主要需要确认这个项目是否可以公开。"
+                "如果四项都接受，请回复“验收通过，可以公开”。"
+            ),
+            (
+                "当前无法继续安全执行，因为下一步会创建公开 GitHub 仓库，"
+                "必须先得到你的明确授权。请回复“验收通过，可以公开”。"
+            ),
+            (
+                "当前仍在等待你的验收决定，没有新的可执行事项。"
+                "请回复“验收通过，可以公开”。"
+            ),
+            "Local validation is complete; waiting for your approval before publication.",
+            "The candidate is ready, but I cannot proceed without user authorization.",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertFalse(cg.claims_completion(message))
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload("Stop", last_assistant_message=message)
+                    ),
+                    {},
+                )
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+
     def test_synthetic_forgotten_boundary_cannot_complete(self) -> None:
         self.prompt(
             "\n".join(
