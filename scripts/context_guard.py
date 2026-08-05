@@ -502,15 +502,21 @@ def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[None]:
             os.write(descriptor, f"{os.getpid()} {time.time()}".encode("ascii"))
         except (FileExistsError, PermissionError) as exc:
             # Windows can report an existing, still-open O_EXCL lock as
-            # ERROR_ACCESS_DENIED instead of ERROR_FILE_EXISTS.
-            if isinstance(exc, PermissionError) and not lock_path.exists():
+            # ERROR_ACCESS_DENIED instead of ERROR_FILE_EXISTS. The holder may
+            # delete the lock before this thread can observe it, so absence is
+            # not enough to reject the Windows contention case.
+            if (
+                isinstance(exc, PermissionError)
+                and os.name != "nt"
+                and not lock_path.exists()
+            ):
                 raise
             try:
                 if time.time() - lock_path.stat().st_mtime > 30:
                     lock_path.unlink()
                     continue
             except FileNotFoundError:
-                continue
+                pass
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for {lock_path}")
             time.sleep(0.025)

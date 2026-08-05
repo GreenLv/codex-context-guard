@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin: `0.4.7`
+- Context Guard plugin: `0.4.8`
 - Private state schema: `3`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -18,8 +18,8 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | 78 pass, 1 Windows-only skip (79 total); public CI pending | isolated standalone cache verified | standalone manual trusted `/compact` still pending | local candidate verified except standalone fresh trusted runtime |
-| Windows | required in CI | synthetic test required | native 0.4.7 run pending | CI-validated only after CI passes; no native parity claim yet |
+| macOS | 80 pass, 1 Windows-only skip (81 total); corrected public CI pending | isolated standalone cache verified | standalone manual trusted `/compact` still pending | local candidate verified except standalone fresh trusted runtime |
+| Windows | 0.4.8 rerun required after lock-race fix | synthetic test required | native 0.4.8 run pending | no native parity claim; final CI evidence pending |
 | Linux | required in CI | synthetic test required | not claimed | CI and isolated lifecycle only |
 
 Do not change a pending cell to verified without preserving the command, result,

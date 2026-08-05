@@ -956,6 +956,46 @@ class ContextGuardTests(unittest.TestCase):
         self.assertGreaterEqual(open_calls, 2)
         self.assertFalse(lock_path.exists())
 
+    def test_session_lock_retries_windows_access_denied_after_holder_exits(self) -> None:
+        session_dir = self.root / "private" / "sessions" / "lock-race-session"
+        session_dir.mkdir(parents=True)
+        lock_path = session_dir / ".lock"
+        real_open = os.open
+        open_calls = 0
+
+        def transient_open(path: str, flags: int, mode: int) -> int:
+            nonlocal open_calls
+            open_calls += 1
+            if open_calls == 1:
+                raise PermissionError(13, "simulated vanished Windows holder", path)
+            return real_open(path, flags, mode)
+
+        with (
+            mock.patch.object(cg.os, "name", "nt"),
+            mock.patch.object(cg.os, "open", side_effect=transient_open),
+            cg.session_lock(session_dir),
+        ):
+            self.assertTrue(lock_path.exists())
+
+        self.assertGreaterEqual(open_calls, 2)
+        self.assertFalse(lock_path.exists())
+
+    def test_session_lock_rejects_unrelated_posix_permission_error(self) -> None:
+        session_dir = self.root / "private" / "sessions" / "lock-error-session"
+        session_dir.mkdir(parents=True)
+
+        with (
+            mock.patch.object(cg.os, "name", "posix"),
+            mock.patch.object(
+                cg.os,
+                "open",
+                side_effect=PermissionError(13, "simulated permission failure"),
+            ),
+            self.assertRaises(PermissionError),
+        ):
+            with cg.session_lock(session_dir):
+                self.fail("unrelated POSIX permission errors must not be retried")
+
     def test_v1_state_migrates_without_trusting_legacy_evidence(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"

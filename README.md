@@ -12,8 +12,9 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.4.7` is a local open-source candidate. It has not been
-> published or submitted to the universal plugin directory.
+> Release status: `0.4.8` is a public release candidate. The repository is
+> public; the version is not released or submitted to the universal plugin
+> directory until the final tag gate passes.
 
 ## Why it exists
 
@@ -45,6 +46,8 @@ Context Guard therefore separates four things:
 - Treats explicit waiting for user approval, authorization, confirmation, or a
   decision as an incomplete state, even when the reply also reports a finished
   local milestone.
+- Serializes concurrent session updates with a bounded cross-platform file
+  lock, including the Windows access-denied/holder-exit race observed in CI.
 - Replaces binary/data-URL payloads with bounded type, length, and hash
   metadata.
 - Verifies private-state integrity and reconstructs only from hash-verified
