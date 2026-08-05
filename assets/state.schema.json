@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GreenLv/codex-context-guard/blob/main/assets/state.schema.json",
+  "title": "Context Guard private session state",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "session",
+    "mode",
+    "prompts",
+    "requirements",
+    "acceptance_items",
+    "supersedes",
+    "evidence",
+    "evidence_sequence",
+    "work_state",
+    "agents",
+    "open_items",
+    "compactions",
+    "completion_attempt",
+    "completion_checkpoint",
+    "continuation_attempts",
+    "integrity",
+    "content_hash"
+  ],
+  "properties": {
+    "schema_version": {"const": 3},
+    "session": {
+      "type": "object",
+      "required": ["id", "cwd", "created_at", "updated_at", "ended_at"]
+    },
+    "mode": {
+      "type": "object",
+      "required": [
+        "active",
+        "manual_off",
+        "complexity_score",
+        "activation_reasons"
+      ]
+    },
+    "prompts": {
+      "type": "array",
+      "description": "Metadata only. Immutable full text lives in private prompts/Pxxxx.json files."
+    },
+    "requirements": {"type": "array"},
+    "acceptance_items": {"type": "array"},
+    "supersedes": {"type": "array"},
+    "evidence": {"type": "array"},
+    "evidence_sequence": {"type": "integer", "minimum": 0},
+    "work_state": {
+      "type": "object",
+      "required": ["plan_snapshot"],
+      "properties": {
+        "plan_snapshot": {"type": ["object", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "agents": {"type": "array"},
+    "open_items": {"type": "array"},
+    "compactions": {"type": "array"},
+    "completion_attempt": {"type": ["object", "null"]},
+    "completion_checkpoint": {"type": ["object", "null"]},
+    "continuation_attempts": {"type": "integer", "minimum": 0, "maximum": 2},
+    "integrity": {
+      "type": "object",
+      "required": ["status", "issue", "recovered_at", "backup_file"],
+      "properties": {
+        "status": {
+          "enum": ["ok", "recovered_from_prompts", "failed"]
+        },
+        "issue": {"type": ["string", "null"]},
+        "recovered_at": {"type": ["string", "null"]},
+        "backup_file": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

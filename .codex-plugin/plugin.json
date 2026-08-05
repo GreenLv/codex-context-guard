@@ -1,0 +1,25 @@
+{
+  "name": "context-guard",
+  "version": "0.4.6",
+  "description": "Preserve task requirements, bounded plan state, evidence, and delegated-agent results across compaction.",
+  "author": {
+    "name": "Gerui Lv",
+    "url": "https://github.com/GreenLv"
+  },
+  "homepage": "https://github.com/GreenLv/codex-context-guard",
+  "repository": "https://github.com/GreenLv/codex-context-guard",
+  "license": "Apache-2.0",
+  "keywords": ["context", "compaction", "recovery", "long-running"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Context Guard",
+    "shortDescription": "Preserve long-task context across Codex compaction.",
+    "longDescription": "Journals authoritative task requirements locally, mirrors bounded native-plan state, records provenance-aware delegated-agent results, verifies and reconstructs private state, restores bounded context after compaction, checks completion evidence, and exports explicit successor packs.",
+    "developerName": "Gerui Lv",
+    "category": "Productivity",
+    "capabilities": ["Lifecycle hooks", "Local task state", "Compaction recovery", "Bounded plan mirror", "Delegated-agent provenance", "Bounded successor packs"],
+    "websiteURL": "https://github.com/GreenLv/codex-context-guard",
+    "privacyPolicyURL": "https://github.com/GreenLv/codex-context-guard/blob/main/docs/PRIVACY.md",
+    "defaultPrompt": "Use $context-guard to protect this long-running task from context loss."
+  }
+}

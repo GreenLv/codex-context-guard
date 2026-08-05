@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+.codex/context-guard/
+CONTEXT_GUARD_DATA_DIR/
