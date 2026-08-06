@@ -17,6 +17,42 @@ control Codex-native orchestration.
 | Worktrees | isolated file changes and Git state | bounded artifact/command evidence | synchronize or merge worktrees |
 | Hooks | lifecycle event execution and trust | local state and completion policy | claim Hooks are a complete security boundary |
 
+## End-to-end lifecycle
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Codex as Codex native runtime
+    participant Hooks as Context Guard Hooks
+    participant Ledger as Private ledger (PLUGIN_DATA)
+
+    User->>Codex: Requirements, constraints, and revisions
+    Codex->>Hooks: UserPromptSubmit
+    Hooks->>Ledger: Journal prompt and update stable requirement IDs
+
+    Codex->>Hooks: PostToolUse
+    Hooks->>Ledger: Record bounded outcome and provenance
+
+    Codex->>Hooks: PreCompact
+    Hooks->>Ledger: Verify integrity and write recovery snapshot
+    Codex->>Codex: Native context compaction
+    Codex->>Hooks: SessionStart (compact or resume)
+    Hooks-->>Codex: Bounded recovery packet as additional context
+
+    Codex->>Hooks: Stop after a completion claim
+    Hooks->>Ledger: Check open items and successful evidence
+    alt Open item, missing evidence, or untrusted state
+        Hooks-->>Codex: Continue task or report the blocker
+    else All guarded items have valid evidence
+        Hooks-->>Codex: Allow normal completion
+    end
+```
+
+The arrows describe lifecycle observation and bounded context injection. Codex,
+not Context Guard, performs compaction, controls the task lifecycle, and runs
+tools or subagents. The private ledger never becomes a second transcript or
+editable plan.
+
 ## Four-layer model
 
 ### L1: immutable task contract

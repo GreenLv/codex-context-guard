@@ -44,24 +44,69 @@ Context Guard 因此把四件事分开记录：
 
 ## 架构
 
-```text
-Codex 原生运行时
-  transcript / compaction / Plan / Goal / subagents / worktrees / memories
-                              |
-                              v
-Context Guard 正确性旁路
-  不可变提示账本 -> 需求与修订
-  有界工具证据   -> 完成门禁
-  原生计划镜像   -> 恢复索引
-  委托来源记录   -> 有界协作状态
-                              |
-                 PreCompact / SessionStart
-                              v
-                         有界恢复包
+```mermaid
+flowchart TB
+  A["Codex 生命周期事件<br/>提示 · 工具 · 计划 · subagents"]
+  H["Context Guard<br/>八类生命周期 Hook"]
+  S["PLUGIN_DATA 中的私有正确性状态<br/>需求与修订 · 有界证据<br/>计划镜像 · 委托来源"]
+  C["Codex 上下文压缩或恢复"]
+  R["有界恢复包"]
+  G{"是否准备宣告完成？"}
+  N["继续执行 Codex 任务"]
+  F["允许正常完成"]
+
+  A --> H --> S
+  C -->|"SessionStart: compact / resume"| R
+  S -->|"经过校验的 PreCompact 快照"| R
+  R -->|"以有界附加上下文恢复"| N
+  S --> G
+  G -->|"仍有未完成项或缺少证据"| N
+  G -->|"所有受保护事项均有证据"| F
+
+  classDef native fill:#f6f8fa,stroke:#57606a,color:#24292f;
+  classDef private fill:#ddf4ff,stroke:#0969da,color:#24292f;
+  classDef decision fill:#fff8c5,stroke:#9a6700,color:#24292f;
+  class A,C,N,F native;
+  class H,S,R private;
+  class G decision;
 ```
 
 完整职责边界见[架构说明](docs/ARCHITECTURE.md)和
 [隐私说明](docs/PRIVACY.md)。
+
+## 实际效果示例
+
+下面是首个公开版本真实手工 `/compact` 验收的脱敏案例，不包含私有 transcript、
+会话标识或插件状态。
+
+### 压缩前的任务契约
+
+```text
+R1. 始终保留精确标记 ALPHA-049。
+R2. 始终保留精确标记 BETA-READONLY。
+R3. 不得修改任何文件。
+R4. 只有在真实 /compact 后的下一轮同时报告两个精确标记，任务才可完成。
+```
+
+用户随后执行 `/compact`。`PreCompact` 触发时，Context Guard 校验私有状态并写入
+有界恢复快照；`SessionStart: compact` 触发时，它把仍然有效的需求和完成规则作为
+附加上下文恢复。
+
+### 压缩后的第一轮回复
+
+```text
+精确标记：ALPHA-049、BETA-READONLY。
+未修改任何文件。
+```
+
+| 阶段 | 仅依赖摘要时可能出现的风险（示意，并非对照实验） | Context Guard 的实测结果 |
+| --- | --- | --- |
+| `/compact` 前 | 精确限制与长 transcript 中的其他细节竞争。 | 私有账本为需求分配稳定 ID。 |
+| `/compact` 后 | 宽泛摘要可能还记得“执行检查”，却漏掉某个标记或禁止事项。 | 有界恢复包重新注入两个标记和禁止写文件要求。 |
+| 准备完成时 | 局部 `PASS` 可能被误认为整体任务已经完成。 | 只有受保护事项都绑定了成功证据，完成门禁才会放行。 |
+
+这个案例证明的是“需求能够被恢复”和“完成决策受证据约束”，并不证明任意证据在
+语义上都足以满足需求，也不是对所有摘要方案的受控基准测试。
 
 ## 环境要求
 

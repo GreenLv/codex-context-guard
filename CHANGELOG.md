@@ -2,6 +2,18 @@
 
 All notable public releases are documented here.
 
+## Unreleased
+
+### Documentation
+
+- Replaced the README ASCII architecture sketch with rendered and visually
+  checked Mermaid flowcharts in English and Simplified Chinese.
+- Added a bilingual, sanitized real `/compact` acceptance case that shows exact
+  requirement recovery and evidence-gated completion without exposing private
+  task state.
+- Added an end-to-end Mermaid lifecycle sequence to the architecture document
+  and a regression that keeps the bilingual diagrams and example aligned.
+
 ## 0.4.9 - 2026-08-06
 
 First public release, based on the validated Context Guard 0.4.8 runtime

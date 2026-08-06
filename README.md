@@ -55,24 +55,73 @@ Context Guard therefore separates four things:
 
 ## Architecture
 
-```text
-Codex native runtime
-  transcript / compaction / Plan / Goal / subagents / worktrees / memories
-                              |
-                              v
-Context Guard correctness sidecar
-  immutable prompt ledger -> requirements and revisions
-  bounded evidence        -> completion gate
-  native-plan mirror      -> recovery index
-  delegated provenance    -> bounded coordination state
-                              |
-                 PreCompact / SessionStart
-                              v
-                    bounded recovery packet
+```mermaid
+flowchart TB
+  A["Codex lifecycle events<br/>prompts · tools · plan · subagents"]
+  H["Context Guard<br/>eight lifecycle Hooks"]
+  S["Private correctness state in PLUGIN_DATA<br/>requirements & revisions · bounded evidence<br/>plan mirror · delegated provenance"]
+  C["Codex compaction or resume"]
+  R["Bounded recovery packet"]
+  G{"Completion claim?"}
+  N["Continue the Codex task"]
+  F["Allow normal completion"]
+
+  A --> H --> S
+  C -->|"SessionStart: compact / resume"| R
+  S -->|"validated PreCompact snapshot"| R
+  R -->|"bounded additional context"| N
+  S --> G
+  G -->|"open item or missing evidence"| N
+  G -->|"all guarded items have evidence"| F
+
+  classDef native fill:#f6f8fa,stroke:#57606a,color:#24292f;
+  classDef private fill:#ddf4ff,stroke:#0969da,color:#24292f;
+  classDef decision fill:#fff8c5,stroke:#9a6700,color:#24292f;
+  class A,C,N,F native;
+  class H,S,R private;
+  class G decision;
 ```
 
 See [Architecture](docs/ARCHITECTURE.md) and
 [Privacy](docs/PRIVACY.md) for the full boundary.
+
+## What it looks like in practice
+
+The following sanitized case is based on the real manual `/compact` acceptance
+used for the first public release. It contains no private transcript, session
+identifier, or plugin state.
+
+### Task contract before compaction
+
+```text
+R1. Preserve the exact marker ALPHA-049.
+R2. Preserve the exact marker BETA-READONLY.
+R3. Do not modify any file.
+R4. Complete only after a real /compact and a subsequent reply that reports
+    both exact markers.
+```
+
+The user then runs `/compact`. On `PreCompact`, Context Guard validates its
+private state and writes a bounded recovery snapshot. On
+`SessionStart: compact`, it restores the active requirements and completion
+rule as additional context.
+
+### First reply after compaction
+
+```text
+Exact markers: ALPHA-049, BETA-READONLY.
+No files were modified.
+```
+
+| Stage | Summary-only failure mode (illustrative, not a benchmark) | Observed with Context Guard |
+| --- | --- | --- |
+| Before `/compact` | Exact constraints compete with the rest of a long transcript. | Requirements receive stable IDs in the private ledger. |
+| After `/compact` | A broad summary may retain “run the check” but omit a marker or prohibition. | The bounded packet restores both markers and the no-write constraint. |
+| Completion | A local pass phrase may be mistaken for whole-task completion. | Completion remains gated until the guarded items have captured successful evidence. |
+
+This demonstrates requirement retention and an evidence-bound completion
+decision. It does **not** prove that arbitrary evidence is semantically
+sufficient or provide a controlled comparison against every summary strategy.
 
 ## Requirements
 

@@ -41,6 +41,23 @@ class PublicContractTests(unittest.TestCase):
             self.assertTrue(any("macOS user-specific path" in item for item in issues))
             self.assertTrue(any("generated/private" in item for item in issues))
 
+    def test_readmes_keep_bilingual_diagram_and_example_parity(self) -> None:
+        english = (ROOT / "README.md").read_text(encoding="utf-8")
+        chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+
+        self.assertIn("```mermaid\nflowchart TB", english)
+        self.assertIn("```mermaid\nflowchart TB", chinese)
+        self.assertIn("## What it looks like in practice", english)
+        self.assertIn("## 实际效果示例", chinese)
+        for marker in ("ALPHA-049", "BETA-READONLY"):
+            self.assertIn(marker, english)
+            self.assertIn(marker, chinese)
+
+        architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("```mermaid\nsequenceDiagram", architecture)
+
 
 if __name__ == "__main__":
     unittest.main()
