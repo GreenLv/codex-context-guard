@@ -39,10 +39,13 @@ Guard `0.4.9`.
 
 - Native Windows 25H2 (build 26200) validation on 2026-08-06 used Python
   3.12.10, Codex CLI 0.146.0, and Ruff 0.16.1.
-- The current 83-test suite completed with 82 passes and one skip because the
-  current Windows account could not create the symlink required by the
-  successor-pack rejection test. The Windows-only PowerShell Hook execution
-  test and both Windows access-denied lock regressions passed.
+- The current 83-test suite passed in full under a one-shot elevated Python
+  process. With a standard user token, 82 tests passed and only the
+  successor-pack symlink rejection test skipped because Windows requires
+  Developer Mode or `SeCreateSymbolicLinkPrivilege`; that exact test also
+  passed separately under elevation. Developer Mode and the registry were not
+  changed. The Windows-only PowerShell Hook execution test and both Windows
+  access-denied lock regressions passed.
 - Repository contract validation, public-tree privacy audit, and Ruff passed.
 - A disposable explicit `--codex-home` registered the repository marketplace,
   installed `context-guard@codex-context-guard` 0.4.9, confirmed source/cache

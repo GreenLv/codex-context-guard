@@ -17,10 +17,12 @@ All notable public releases are documented here.
 
 ### Validation
 
-- Native Windows 25H2 (build 26200) with Python 3.12.10 passed 82 of the
-  current 83 tests; the only skip was the symlink rejection test because the
-  current account could not create symlinks. The Windows-only PowerShell Hook
-  execution and both Windows lock regressions passed.
+- Native Windows 25H2 (build 26200) with Python 3.12.10 passed all 83 current
+  tests under a one-shot elevated test process. A standard user token passed 82
+  and skipped only the symlink rejection test; that test also passed separately
+  under elevation. Developer Mode and the registry were not changed. The
+  Windows-only PowerShell Hook execution and both Windows lock regressions
+  passed.
 - Repository validation, public-tree audit, and Ruff 0.16.1 passed. A
   disposable `--codex-home` installed plugin 0.4.9 under Codex CLI 0.146.0,
   passed a second strict no-op check and the installed lifecycle smoke, and was
