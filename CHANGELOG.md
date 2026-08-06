@@ -27,10 +27,10 @@ All notable public releases are documented here.
   then removed.
 - A fresh Windows task completed the normal persistent Hook trust flow without
   the trust-bypass flag. `UserPromptSubmit` ran, and a real manual `/compact`
-  completed `PreCompact` plus recovery-packet injection through `SessionStart`.
-  The Codex backend then rejected the remote compact request through the local
-  proxy (`UnknownIssuer` / disconnected stream), so post-compact marker recall
-  and full native trusted-runtime parity remain unverified.
+  completed `PreCompact`, backend compaction, and recovery-packet injection
+  through `SessionStart`. After the Windows GlobalSign root was supplied to
+  the isolated CLI through `CODEX_CA_CERTIFICATE`, post-compact blind recall
+  recovered both exact markers with no project file changes.
 
 ## 0.4.9 - 2026-08-06
 

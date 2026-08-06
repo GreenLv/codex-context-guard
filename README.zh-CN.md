@@ -254,8 +254,9 @@ CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。�
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
 当前 Windows 原生补充验证覆盖自动化测试、隔离安装生命周期，以及新 Hook 任务的正常
-持久信任流程。真实手工 `/compact` 已运行 `PreCompact`，并经 `SessionStart` 注入恢复包；
-但后端压缩请求随后被本机代理证书链阻断，因此不声称已验证压缩后的恢复复述。准确边界见
+持久信任流程。通过 `CODEX_CA_CERTIFICATE` 向隔离 CLI 提供 Windows 信任根证书后，
+真实手工 `/compact` 已完成后端压缩、运行 `PreCompact`、经 `SessionStart` 注入恢复包，
+并在不重复提供标记值的压缩后提示中准确恢复两个标记。完整证据见
 [本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 明确不做

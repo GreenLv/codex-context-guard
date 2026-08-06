@@ -290,10 +290,11 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 
 The current native Windows follow-up covers the automated suite, an isolated
 installed lifecycle, and the normal persistent trust flow for a fresh Hook
-task. A real manual `/compact` ran `PreCompact` and injected the recovery packet
-through `SessionStart`, but the backend compact request was then blocked by the
-local proxy certificate chain. Post-compact recall is therefore not claimed;
-see [Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the exact boundary.
+task. With the Windows trust root supplied to the isolated CLI through
+`CODEX_CA_CERTIFICATE`, a real manual `/compact` completed backend compaction,
+ran `PreCompact`, injected the recovery packet through `SessionStart`, and
+recovered both exact markers in a blind post-compact prompt. See
+[Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the full evidence.
 
 ## Explicit non-goals
 

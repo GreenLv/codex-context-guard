@@ -54,9 +54,15 @@ Guard `0.4.9`.
   `UserPromptSubmit` completed against the isolated plugin data directory.
 - A real manual `/compact` completed the trusted `PreCompact` Hook, then
   `SessionStart` injected a schema-3 recovery packet with valid integrity and
-  both test markers. The backend remote compact request itself failed through
-  the machine's local proxy with `UnknownIssuer` / a disconnected response
-  stream, including after proxy variables were supplied explicitly.
+  both test markers. The first backend attempt exposed an incomplete CLI CA
+  chain as `UnknownIssuer`; exporting the existing Windows GlobalSign root to
+  a disposable PEM bundle and setting the documented `CODEX_CA_CERTIFICATE`
+  variable resolved HTTPS and WebSocket trust without changing the system
+  certificate store.
+- The retried manual `/compact` displayed `Context compacted`. A following
+  prompt omitted both marker values and recovered them exactly from the
+  `SessionStart` packet. State remained schema 3 with `integrity=ok`, one
+  manual compaction, zero continuation attempts, and no project file changes.
 - The disposable Codex home, plugin data, Ruff environment, and tool caches
   were removed after validation. The working tree remained unchanged before
   this documentation correction.
@@ -82,11 +88,6 @@ zero-dependency runtime. Platform wording remains bounded by
 
 ## Intentionally not claimed
 
-- Successful backend completion of the Windows manual `/compact` and
-  post-compact marker recall. Fresh-task trust, `UserPromptSubmit`,
-  `PreCompact`, and `SessionStart` recovery injection are verified, but the
-  local proxy certificate failure prevents a full parity claim with the macOS
-  acceptance run.
 - Linux desktop Hook trust; Linux evidence is CI and isolated lifecycle only.
 - Universal plugin-directory submission.
 - Publication of the separately maintained CSDN promotional draft.
