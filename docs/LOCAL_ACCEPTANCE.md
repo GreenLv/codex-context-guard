@@ -13,7 +13,7 @@ Guard `0.4.9`.
 - Promotional drafts are intentionally maintained outside this repository.
 - Nine-job Ubuntu/macOS/Windows and Python 3.10/3.12/3.13 CI matrix.
 
-## Passed locally on macOS
+## Passed locally on macOS for the v0.4.9 release
 
 - Repository contract validation, public-tree privacy audit, manifest checks,
   Ruff, and generated-artifact scan.
@@ -35,6 +35,36 @@ Guard `0.4.9`.
   confirmed no file changes, retained schema 3 with `integrity=ok`, and ended
   with zero continuation attempts.
 
+## Passed locally on Windows after the v0.4.9 tag
+
+- Native Windows 25H2 (build 26200) validation on 2026-08-06 used Python
+  3.12.10, Codex CLI 0.146.0, and Ruff 0.16.1.
+- The current 83-test suite completed with 82 passes and one skip because the
+  current Windows account could not create the symlink required by the
+  successor-pack rejection test. The Windows-only PowerShell Hook execution
+  test and both Windows access-denied lock regressions passed.
+- Repository contract validation, public-tree privacy audit, and Ruff passed.
+- A disposable explicit `--codex-home` registered the repository marketplace,
+  installed `context-guard@codex-context-guard` 0.4.9, confirmed source/cache
+  parity through a second strict no-op run, and passed the installed lifecycle
+  smoke.
+- A second disposable Codex home started a fresh interactive task and displayed
+  the eight-Hook review prompt. The normal **Trust all and continue** choice
+  persisted across resume without using `--dangerously-bypass-hook-trust`, and
+  `UserPromptSubmit` completed against the isolated plugin data directory.
+- A real manual `/compact` completed the trusted `PreCompact` Hook, then
+  `SessionStart` injected a schema-3 recovery packet with valid integrity and
+  both test markers. The backend remote compact request itself failed through
+  the machine's local proxy with `UnknownIssuer` / a disconnected response
+  stream, including after proxy variables were supplied explicitly.
+- The disposable Codex home, plugin data, Ruff environment, and tool caches
+  were removed after validation. The working tree remained unchanged before
+  this documentation correction.
+
+The suite grew from 82 to 83 tests after the v0.4.9 tag when the bilingual
+README diagram/example parity regression was added. The macOS count above is
+the preserved release-time result, not an inferred rerun of the current suite.
+
 ## Automated content approval
 
 Core behavior claims map to Hook regressions or installed lifecycle evidence;
@@ -52,7 +82,11 @@ zero-dependency runtime. Platform wording remains bounded by
 
 ## Intentionally not claimed
 
-- Native Windows 0.4.9 fresh-runtime parity; Windows is CI validated only.
+- Successful backend completion of the Windows manual `/compact` and
+  post-compact marker recall. Fresh-task trust, `UserPromptSubmit`,
+  `PreCompact`, and `SessionStart` recovery injection are verified, but the
+  local proxy certificate failure prevents a full parity claim with the macOS
+  acceptance run.
 - Linux desktop Hook trust; Linux evidence is CI and isolated lifecycle only.
 - Universal plugin-directory submission.
 - Publication of the separately maintained CSDN promotional draft.

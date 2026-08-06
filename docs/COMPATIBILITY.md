@@ -18,9 +18,13 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | 81 pass, 1 Windows-only skip (82 total) | isolated standalone cache verified | all eight Hooks trusted; real manual `/compact` recovered exact markers | native runtime verified |
-| Windows | 0.4.9 CI on Python 3.10/3.12/3.13 | CI regression path verified | native 0.4.9 run pending | CI validated; no native parity claim |
+| macOS | v0.4.9 release run: 81 pass, 1 Windows-only skip (82 total) | isolated standalone cache verified | all eight Hooks trusted; real manual `/compact` recovered exact markers | native trusted runtime verified for the release suite |
+| Windows | current native Python 3.12.10 run: 82 pass, 1 symlink-permission skip (83 total); v0.4.9 CI on Python 3.10/3.12/3.13 | native isolated standalone cache verified with Codex CLI 0.146.0 | normal persistent trust and `UserPromptSubmit` verified; manual `/compact` completed `PreCompact` and `SessionStart` recovery injection, but backend compact failed through the local proxy certificate chain | native Hook startup and pre-compact recovery verified; post-compact recall and full trusted-runtime parity not claimed |
 | Linux | 0.4.9 CI on Python 3.10/3.12/3.13 | isolated lifecycle verified | not claimed | CI and isolated lifecycle only |
+
+The current suite gained one bilingual README parity regression after the
+v0.4.9 tag. The macOS row preserves the release-time 82-test result; it does
+not imply that the current 83-test suite has been rerun on macOS.
 
 Do not change a pending cell to verified without preserving the command, result,
 plugin version, Codex version, and source/cache parity evidence in the release

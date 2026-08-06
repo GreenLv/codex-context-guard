@@ -288,6 +288,13 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
 
+The current native Windows follow-up covers the automated suite, an isolated
+installed lifecycle, and the normal persistent trust flow for a fresh Hook
+task. A real manual `/compact` ran `PreCompact` and injected the recovery packet
+through `SessionStart`, but the backend compact request was then blocked by the
+local proxy certificate chain. Post-compact recall is therefore not claimed;
+see [Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the exact boundary.
+
 ## Explicit non-goals
 
 Context Guard is not:

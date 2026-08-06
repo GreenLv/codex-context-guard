@@ -250,8 +250,13 @@ python3 -m unittest discover -s tests -p "test_*.py"
 ruff check .
 ```
 
-CI 计划覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
+CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
+
+当前 Windows 原生补充验证覆盖自动化测试、隔离安装生命周期，以及新 Hook 任务的正常
+持久信任流程。真实手工 `/compact` 已运行 `PreCompact`，并经 `SessionStart` 注入恢复包；
+但后端压缩请求随后被本机代理证书链阻断，因此不声称已验证压缩后的恢复复述。准确边界见
+[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 明确不做
 

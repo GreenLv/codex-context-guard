@@ -12,6 +12,25 @@ All notable public releases are documented here.
   a later correction, `/compact` recovery, and evidence-gated completion.
 - Added an end-to-end Mermaid lifecycle sequence to the architecture document
   and a regression that keeps the bilingual diagrams and example aligned.
+- Reconciled the post-tag 83-test suite and native Windows verification status
+  across the acceptance, compatibility, and bilingual README documentation.
+
+### Validation
+
+- Native Windows 25H2 (build 26200) with Python 3.12.10 passed 82 of the
+  current 83 tests; the only skip was the symlink rejection test because the
+  current account could not create symlinks. The Windows-only PowerShell Hook
+  execution and both Windows lock regressions passed.
+- Repository validation, public-tree audit, and Ruff 0.16.1 passed. A
+  disposable `--codex-home` installed plugin 0.4.9 under Codex CLI 0.146.0,
+  passed a second strict no-op check and the installed lifecycle smoke, and was
+  then removed.
+- A fresh Windows task completed the normal persistent Hook trust flow without
+  the trust-bypass flag. `UserPromptSubmit` ran, and a real manual `/compact`
+  completed `PreCompact` plus recovery-packet injection through `SessionStart`.
+  The Codex backend then rejected the remote compact request through the local
+  proxy (`UnknownIssuer` / disconnected stream), so post-compact marker recall
+  and full native trusted-runtime parity remain unverified.
 
 ## 0.4.9 - 2026-08-06
 
@@ -32,8 +51,8 @@ lineage.
   a fresh Codex CLI 0.146.0 task then completed a real manual `/compact`,
   recovered both exact acceptance markers, made no file changes, retained
   schema 3 with valid integrity, and required no Stop-Hook continuation.
-- Windows: the final 0.4.9 CI matrix validates Python 3.10, 3.12, and 3.13;
-  native fresh-runtime verification remains pending.
+- Windows: at release, the final 0.4.9 CI matrix validated Python 3.10, 3.12,
+  and 3.13; native fresh-runtime verification remained pending.
 - Linux: CI and isolated installed-lifecycle evidence only; desktop Hook trust
   is not claimed.
 
