@@ -47,11 +47,13 @@ class PublicContractTests(unittest.TestCase):
 
         self.assertIn("```mermaid\nflowchart TB", english)
         self.assertIn("```mermaid\nflowchart TB", chinese)
-        self.assertIn("## What it looks like in practice", english)
-        self.assertIn("## 实际效果示例", chinese)
-        for marker in ("ALPHA-049", "BETA-READONLY"):
-            self.assertIn(marker, english)
-            self.assertIn(marker, chinese)
+        self.assertIn(
+            "## Everyday example: refactor code without breaking callers", english
+        )
+        self.assertIn("## 日常示例：重构代码，但不能破坏现有调用方", chinese)
+        for term in ("submit_order(payload)", "normalize_phone()"):
+            self.assertIn(term, english)
+            self.assertIn(term, chinese)
 
         architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(
             encoding="utf-8"

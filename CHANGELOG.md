@@ -8,9 +8,8 @@ All notable public releases are documented here.
 
 - Replaced the README ASCII architecture sketch with rendered and visually
   checked Mermaid flowcharts in English and Simplified Chinese.
-- Added a bilingual, sanitized real `/compact` acceptance case that shows exact
-  requirement recovery and evidence-gated completion without exposing private
-  task state.
+- Added a bilingual everyday refactoring case that follows initial constraints,
+  a later correction, `/compact` recovery, and evidence-gated completion.
 - Added an end-to-end Mermaid lifecycle sequence to the architecture document
   and a regression that keeps the bilingual diagrams and example aligned.
 

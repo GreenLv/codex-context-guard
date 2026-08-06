@@ -57,71 +57,103 @@ Context Guard therefore separates four things:
 
 ```mermaid
 flowchart TB
-  A["Codex lifecycle events<br/>prompts · tools · plan · subagents"]
-  H["Context Guard<br/>eight lifecycle Hooks"]
-  S["Private correctness state in PLUGIN_DATA<br/>requirements & revisions · bounded evidence<br/>plan mirror · delegated provenance"]
-  C["Codex compaction or resume"]
-  R["Bounded recovery packet"]
-  G{"Completion claim?"}
-  N["Continue the Codex task"]
-  F["Allow normal completion"]
+  A["1 · You define the task contract<br/>goal · must-keep behavior · do-not-change scope · acceptance checks"]
+  B["2 · Context Guard keeps a private checklist<br/>and records later revisions"]
+  C["3 · Codex does the work<br/>files · tools · tests · subagents"]
+  D["4 · After /compact or resume<br/>the active checklist is restored"]
+  E{"5 · Does every checklist item<br/>have successful evidence?"}
+  F["No · return to step 3<br/>continue work or report the blocker"]
+  G["6 · Yes<br/>allow normal completion"]
 
-  A --> H --> S
-  C -->|"SessionStart: compact / resume"| R
-  S -->|"validated PreCompact snapshot"| R
-  R -->|"bounded additional context"| N
-  S --> G
-  G -->|"open item or missing evidence"| N
-  G -->|"all guarded items have evidence"| F
+  A --> B --> C
+  C -->|"context is compacted or the task resumes"| D
+  D --> E
+  E -->|"No"| F
+  E -->|"Yes"| G
 
   classDef native fill:#f6f8fa,stroke:#57606a,color:#24292f;
   classDef private fill:#ddf4ff,stroke:#0969da,color:#24292f;
   classDef decision fill:#fff8c5,stroke:#9a6700,color:#24292f;
-  class A,C,N,F native;
-  class H,S,R private;
-  class G decision;
+  class A,C,D,F,G native;
+  class B private;
+  class E decision;
 ```
+
+Codex still owns the work, compaction, Plan/Goal state, and subagents. Context
+Guard carries only the bounded correctness checklist across the context
+boundary and checks it before a completion claim is accepted.
 
 See [Architecture](docs/ARCHITECTURE.md) and
 [Privacy](docs/PRIVACY.md) for the full boundary.
 
-## What it looks like in practice
+## Everyday example: refactor code without breaking callers
 
-The following sanitized case is based on the real manual `/compact` acceptance
-used for the first public release. It contains no private transcript, session
-identifier, or plugin state.
+Imagine a repository exposes `submit_order(payload)` to several existing
+callers. You ask Codex to clean up an increasingly hard-to-maintain checkout
+module.
 
-### Task contract before compaction
-
-```text
-R1. Preserve the exact marker ALPHA-049.
-R2. Preserve the exact marker BETA-READONLY.
-R3. Do not modify any file.
-R4. Complete only after a real /compact and a subsequent reply that reports
-    both exact markers.
-```
-
-The user then runs `/compact`. On `PreCompact`, Context Guard validates its
-private state and writes a bounded recovery snapshot. On
-`SessionStart: compact`, it restores the active requirements and completion
-rule as additional context.
-
-### First reply after compaction
+### 1. Initial request
 
 ```text
-Exact markers: ALPHA-049, BETA-READONLY.
-No files were modified.
+Refactor checkout validation out of checkout.py into validators.py.
+
+Requirements:
+- Keep the public submit_order(payload) signature and behavior unchanged.
+- Do not add or edit database migrations.
+- Add regression tests for invalid coupons and duplicate orders.
+- Finish only when the existing and new tests pass.
 ```
 
-| Stage | Summary-only failure mode (illustrative, not a benchmark) | Observed with Context Guard |
+Context Guard turns those requirements into a private checklist. Codex remains
+free to inspect files, make a plan, edit code, run tools, or delegate bounded
+subtasks normally.
+
+### 2. A later correction
+
+```text
+One more constraint: keep normalize_phone() as a compatibility wrapper because
+an older integration still imports it directly.
+```
+
+The correction is appended to the checklist; it does not silently rewrite the
+original request.
+
+### 3. The task becomes long and `/compact` runs
+
+After many file reads, edits, test failures, and fixes, the conversation is
+compacted. A normal summary might remember “move validation and make tests
+pass” while dropping the compatibility wrapper or migration prohibition.
+Context Guard restores the active checklist instead:
+
+```text
+Still required after compaction:
+- submit_order(payload) remains compatible with existing callers.
+- Database migrations remain untouched.
+- normalize_phone() remains as a compatibility wrapper.
+- Invalid-coupon and duplicate-order regressions exist.
+- Existing and new tests must pass before completion.
+```
+
+### 4. “The refactor is done” is checked against evidence
+
+Before Codex can finish, each open item still needs captured successful
+evidence:
+
+| Checklist item | Example evidence | If evidence is missing |
 | --- | --- | --- |
-| Before `/compact` | Exact constraints compete with the rest of a long transcript. | Requirements receive stable IDs in the private ledger. |
-| After `/compact` | A broad summary may retain “run the check” but omit a marker or prohibition. | The bounded packet restores both markers and the no-write constraint. |
-| Completion | A local pass phrase may be mistaken for whole-task completion. | Completion remains gated until the guarded items have captured successful evidence. |
+| Public API unchanged | signature/contract inspection and compatibility tests | continue working |
+| No migration changes | a successful diff check over the migration directory | continue working |
+| Wrapper preserved | implementation inspection plus its regression test | continue working |
+| Required behavior covered | invalid-coupon and duplicate-order tests exist | continue working |
+| Refactor passes | existing and new test suites exit successfully | allow completion |
 
-This demonstrates requirement retention and an evidence-bound completion
-decision. It does **not** prove that arbitrary evidence is semantically
-sufficient or provide a controlled comparison against every summary strategy.
+The final reply can then say what changed and cite the checks that passed,
+without relying on the post-compaction summary to remember every constraint.
+
+This is a representative refactoring case, not a benchmark or a claim of
+semantic proof. Context Guard ensures that requirements remain visible and
+that completion is evidence-bound; humans and tests still decide whether the
+implementation is actually correct.
 
 ## Requirements
 
