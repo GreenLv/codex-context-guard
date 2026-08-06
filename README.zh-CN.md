@@ -10,8 +10,7 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.4.8` 当前是公开发布候选版本；仓库已经公开，但在最终标签门禁通过
-> 前尚未发布版本，也未提交到通用插件目录。
+> 发布状态：`0.4.9` 是首个公开发行版；通用插件目录投稿仍是独立的可选后续工作。
 
 ## 为什么需要它？
 
@@ -73,7 +72,7 @@ Context Guard 正确性旁路
 
 ## 从本地克隆安装
 
-公开仓库发布后，下列 GitHub 地址才会正式可用。本地候选版安装流程为：
+从公开 GitHub 仓库安装：
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

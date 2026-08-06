@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -179,6 +181,40 @@ class SafePluginInstallTests(unittest.TestCase):
             self.ensure(apply=False)
 
         self.assertEqual(self.run_calls, [])
+
+    def test_main_routes_codex_subprocesses_to_explicit_home(self) -> None:
+        self.write_source("0.1.2")
+        observed: list[str | None] = []
+
+        def observe_marketplace(_codex: str, _repo: Path, _apply: bool) -> bool:
+            observed.append(os.environ.get("CODEX_HOME"))
+            return False
+
+        def observe_plugin(
+            _codex: str, _repo: Path, codex_home: Path, _apply: bool
+        ) -> bool:
+            observed.append(os.environ.get("CODEX_HOME"))
+            self.assertEqual(codex_home, self.codex_home.resolve())
+            return False
+
+        argv = [
+            "manage_plugin.py",
+            "--repo-root",
+            str(self.repo_root),
+            "--codex-home",
+            str(self.codex_home),
+        ]
+        with (
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(manager, "codex_version", return_value=(0, 146, 0)),
+            mock.patch.object(
+                manager, "ensure_marketplace", side_effect=observe_marketplace
+            ),
+            mock.patch.object(manager, "ensure_plugin", side_effect=observe_plugin),
+        ):
+            self.assertEqual(manager.main(), 0)
+
+        self.assertEqual(observed, [str(self.codex_home.resolve())] * 2)
 
 
 if __name__ == "__main__":

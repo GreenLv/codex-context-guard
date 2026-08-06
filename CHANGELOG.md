@@ -2,7 +2,31 @@
 
 All notable public releases are documented here.
 
-## 0.4.8 - unreleased candidate
+## 0.4.9 - 2026-08-06
+
+First public release, based on the validated Context Guard 0.4.8 runtime
+lineage.
+
+### Fixed
+
+- The installer now routes every Codex subprocess through the explicit
+  `--codex-home` value. Previously, validation could inspect an isolated home
+  while marketplace/plugin commands silently used the caller's default home.
+- Added a regression that observes the subprocess environment and prevents
+  recurrence of that isolation failure.
+
+### Validation status
+
+- macOS: all eight standalone Hooks were individually reviewed and trusted;
+  a fresh Codex CLI 0.146.0 task then completed a real manual `/compact`,
+  recovered both exact acceptance markers, made no file changes, retained
+  schema 3 with valid integrity, and required no Stop-Hook continuation.
+- Windows: the final 0.4.9 CI matrix validates Python 3.10, 3.12, and 3.13;
+  native fresh-runtime verification remains pending.
+- Linux: CI and isolated installed-lifecycle evidence only; desktop Hook trust
+  is not claimed.
+
+## 0.4.8 - superseded release candidate
 
 Initial open-source candidate based on the validated Context Guard 0.4.8
 lineage.
@@ -40,5 +64,5 @@ lineage.
 - Linux: public CI and isolated lifecycle validation only; no desktop Hook
   trust claim.
 
-The candidate is not a published GitHub release until the remaining standalone
-Hook trust/runtime gate passes and the release tag is created.
+This candidate was not tagged; 0.4.9 supersedes it with the installer isolation
+fix and completed standalone trusted-runtime gate.

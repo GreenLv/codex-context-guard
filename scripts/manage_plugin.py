@@ -357,6 +357,10 @@ def main() -> int:
     args = parser.parse_args()
     repo_root = args.repo_root.expanduser().resolve()
     codex_home = args.codex_home.expanduser().resolve()
+    # Every Codex subprocess must use the same home that this script validates.
+    # Otherwise --codex-home can inspect an isolated cache while plugin commands
+    # silently mutate the caller's default ~/.codex installation.
+    os.environ["CODEX_HOME"] = str(codex_home)
     try:
         version = codex_version(args.codex)
         if version < MINIMUM_CODEX:

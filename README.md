@@ -12,9 +12,8 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.4.8` is a public release candidate. The repository is
-> public; the version is not released or submitted to the universal plugin
-> directory until the final tag gate passes.
+> Release status: `0.4.9` is the first public release. Universal plugin-directory
+> submission remains a separate, optional follow-up.
 
 ## Why it exists
 
@@ -84,8 +83,7 @@ See [Architecture](docs/ARCHITECTURE.md) and
 
 ## Install from a local clone
 
-The public GitHub URL becomes usable after the repository is published. For a
-local candidate:
+Install from the public GitHub repository:
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

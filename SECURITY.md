@@ -2,8 +2,8 @@
 
 ## Supported version
 
-Security and correctness fixes are applied to the latest released version. The
-initial public release candidate is `0.4.8`.
+Security and correctness fixes are applied to the latest released version,
+currently `0.4.9`.
 
 ## Reporting a vulnerability
 
