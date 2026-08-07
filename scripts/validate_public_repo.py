@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.4.9"
+VERSION = "0.4.10"
 REPOSITORY = "https://github.com/GreenLv/codex-context-guard"
 HOOK_EVENTS = {
     "UserPromptSubmit",
@@ -23,12 +23,17 @@ REQUIRED_FILES = {
     ".codex-plugin/plugin.json",
     ".agents/plugins/marketplace.json",
     ".github/workflows/ci.yml",
+    ".github/workflows/hol-plugin-scanner.yml",
+    ".github/dependabot.yml",
+    ".codexignore",
     "LICENSE",
     "README.md",
     "README.zh-CN.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
+    "requirements-lock.txt",
+    "assets/icon.svg",
     "assets/state.schema.json",
     "docs/ARCHITECTURE.md",
     "docs/PRIVACY.md",
@@ -72,6 +77,8 @@ def validate(root: Path) -> list[str]:
             errors.append("plugin license must be Apache-2.0")
         if manifest.get("skills") != "./skills/":
             errors.append("plugin skills path must be ./skills/")
+        if manifest.get("interface", {}).get("composerIcon") != "./assets/icon.svg":
+            errors.append("plugin composer icon must be ./assets/icon.svg")
         if "hooks" in manifest:
             errors.append("manifest must rely on default hooks/hooks.json discovery")
     except (OSError, json.JSONDecodeError) as exc:
@@ -128,12 +135,38 @@ def validate(root: Path) -> list[str]:
         errors.append(f"invalid state schema: {exc}")
 
     try:
+        icon = root / "assets" / "icon.svg"
+        icon_text = icon.read_text(encoding="utf-8")
+        if icon.stat().st_size >= 50 * 1024:
+            errors.append("plugin icon must remain below 50 KB")
+        if "<svg" not in icon_text or 'viewBox="0 0 512 512"' not in icon_text:
+            errors.append("plugin icon must be a 512x512 SVG")
+        if "<text" in icon_text.casefold():
+            errors.append("plugin icon must not contain text")
+    except OSError as exc:
+        errors.append(f"invalid plugin icon: {exc}")
+
+    try:
+        project = (root / "pyproject.toml").read_text(encoding="utf-8")
+        if f'version = "{VERSION}"' not in project:
+            errors.append(f"pyproject version must be {VERSION}")
+        if "dependencies = []" not in project:
+            errors.append("Hook runtime project dependencies must remain empty")
+        lock = (root / "requirements-lock.txt").read_text(encoding="utf-8")
+        if "ruff==0.16.1" not in lock or "plugin-scanner==2.0.1015" not in lock:
+            errors.append("validation-tool lock must pin Ruff and HOL scanner")
+    except OSError as exc:
+        errors.append(f"invalid project metadata or validation lock: {exc}")
+
+    try:
         english = (root / "README.md").read_text(encoding="utf-8")
         chinese = (root / "README.zh-CN.md").read_text(encoding="utf-8")
         if "README.zh-CN.md" not in english:
             errors.append("English README must link to Chinese README")
         if "README.md" not in chinese:
             errors.append("Chinese README must link to English README")
+        if VERSION not in english or VERSION not in chinese:
+            errors.append(f"both README files must identify version {VERSION}")
     except OSError as exc:
         errors.append(f"could not read README files: {exc}")
     return errors

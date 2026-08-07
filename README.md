@@ -1,5 +1,10 @@
 # Context Guard
 
+[![CI](https://github.com/GreenLv/codex-context-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/GreenLv/codex-context-guard/actions/workflows/ci.yml)
+[![HOL Plugin Scanner](https://github.com/GreenLv/codex-context-guard/actions/workflows/hol-plugin-scanner.yml/badge.svg)](https://github.com/GreenLv/codex-context-guard/actions/workflows/hol-plugin-scanner.yml)
+[![Release](https://img.shields.io/github/v/release/GreenLv/codex-context-guard)](https://github.com/GreenLv/codex-context-guard/releases)
+[![License](https://img.shields.io/github/license/GreenLv/codex-context-guard)](LICENSE)
+
 [简体中文](README.zh-CN.md)
 
 Context Guard is a local correctness sidecar for long-running Codex tasks. It
@@ -12,8 +17,19 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.4.9` is the first public release. Universal plugin-directory
-> submission remains a separate, optional follow-up.
+> Release status: `0.4.10` adds the completed native Windows validation record
+> and prepares immutable, scanner-gated community distribution.
+
+### 30-second sanitized compact/recovery demo
+
+```text
+1. Activate Context Guard for a synthetic task with two requirements.
+2. Continue normal work, then run /compact.
+3. The resumed task receives the same bounded requirement checklist.
+4. Completion remains blocked until successful evidence covers both items.
+```
+
+The demo contains no real prompts, local paths, task state, or plugin data.
 
 ## Why it exists
 
@@ -283,6 +299,9 @@ python3 scripts/audit_public_tree.py .
 python3 -m unittest discover -s tests -p "test_*.py"
 ruff check .
 ```
+
+Repository validation tools are pinned in `requirements-lock.txt`. The Hook
+runtime remains standard-library-only and has no third-party dependencies.
 
 The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 3.13. Platform claims remain evidence-bounded; see
