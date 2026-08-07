@@ -1,6 +1,6 @@
 {
   "name": "context-guard",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "Preserve task requirements, bounded plan state, evidence, and delegated-agent results across compaction.",
   "author": {
     "name": "Gerui Lv",
@@ -14,6 +14,7 @@
   "interface": {
     "displayName": "Context Guard",
     "shortDescription": "Preserve long-task context across Codex compaction.",
+    "composerIcon": "./assets/icon.svg",
     "longDescription": "Journals authoritative task requirements locally, mirrors bounded native-plan state, records provenance-aware delegated-agent results, verifies and reconstructs private state, restores bounded context after compaction, checks completion evidence, and exports explicit successor packs.",
     "developerName": "Gerui Lv",
     "category": "Productivity",

@@ -1,5 +1,10 @@
 # Context Guard
 
+[![CI](https://github.com/GreenLv/codex-context-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/GreenLv/codex-context-guard/actions/workflows/ci.yml)
+[![HOL Plugin Scanner](https://github.com/GreenLv/codex-context-guard/actions/workflows/hol-plugin-scanner.yml/badge.svg)](https://github.com/GreenLv/codex-context-guard/actions/workflows/hol-plugin-scanner.yml)
+[![Release](https://img.shields.io/github/v/release/GreenLv/codex-context-guard)](https://github.com/GreenLv/codex-context-guard/releases)
+[![License](https://img.shields.io/github/license/GreenLv/codex-context-guard)](LICENSE)
+
 [English](README.md)
 
 Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness sidecar）。它把
@@ -10,7 +15,19 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.4.9` 是首个公开发行版；通用插件目录投稿仍是独立的可选后续工作。
+> 发布状态：`0.4.10` 纳入完整的 Windows 原生验证记录，并为固定 SHA、扫描门禁的
+> 社区分发做好准备。
+
+### 30 秒脱敏 compact/recovery 演示
+
+```text
+1. 为一个只有两项要求的合成任务启用 Context Guard。
+2. 正常执行工作，然后运行 /compact。
+3. 恢复后的任务收到同一份有界要求清单。
+4. 两项要求都有成功证据前，任务仍不能宣称完成。
+```
+
+该演示不包含任何真实提示、路径、任务状态或插件数据。
 
 ## 为什么需要它？
 

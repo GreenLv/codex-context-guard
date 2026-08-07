@@ -4,6 +4,21 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+No changes yet. Plugin bundle, Hook, manifest, or script changes after the
+0.4.10 release require a new version.
+
+## 0.4.10 - 2026-08-07
+
+### Distribution readiness
+
+- Added a text-free shield-and-checkpoint SVG icon and exposed it through
+  `interface.composerIcon`.
+- Added immutable-SHA GitHub Actions references, a pinned validation-tool lock,
+  and the mandatory HOL scanner gate with SARIF upload, score 80 minimum, and
+  high-severity failure threshold.
+- Added CI, scanner, release, and license badges plus a short sanitized
+  compact/recovery demonstration.
+
 ### Documentation
 
 - Replaced the README ASCII architecture sketch with rendered and visually
