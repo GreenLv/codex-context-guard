@@ -5,7 +5,21 @@ All notable public releases are documented here.
 ## Unreleased
 
 No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.4.12 release require a new version.
+0.4.13 release require a new version.
+
+## 0.4.13 - 2026-08-08
+
+### Fixed
+
+- Recognize status-only replies about submitted external reviews, platform
+  selection, explicit policy holds, and intentionally unchanged repositories
+  as valid non-completion boundaries, even when a local status sentence uses a
+  completion word.
+- Apply the same whole-message non-completion classifier in both completion
+  detection and Stop handling, including staged-checkpoint cleanup.
+- Add bilingual positive and adversarial regressions from the observed task:
+  external waits and explicit pauses end once, while assistant-owned submit,
+  publish, promote, and repository-update follow-ups still trigger the gate.
 
 ## 0.4.12 - 2026-08-08
 

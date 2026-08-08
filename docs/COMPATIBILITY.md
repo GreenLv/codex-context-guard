@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin: `0.4.12`
+- Context Guard plugin: `0.4.13`
 - Private state schema: `3`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -18,13 +18,13 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | v0.4.9 release run: 81 pass, 1 Windows-only skip (82 total) | isolated standalone cache verified | all eight Hooks trusted; real manual `/compact` recovered exact markers | native trusted runtime verified for the release suite |
-| Windows | current native Python 3.12.10 run: 83 pass under a one-shot elevated test process; standard token: 82 pass, 1 symlink-permission skip; v0.4.9 CI on Python 3.10/3.12/3.13 | native isolated standalone cache verified with Codex CLI 0.146.0 | normal persistent trust verified; real manual `/compact` completed backend compaction and recovered both exact markers after `PreCompact` and `SessionStart` | native trusted runtime verified; no Developer Mode or registry change; the isolated CLI used `CODEX_CA_CERTIFICATE` for the Windows trust root |
+| macOS | v0.4.13: 75 Hook tests pass, 1 Windows-only skip; standalone total 87 pass, 1 skip | private and isolated standalone 0.4.13 caches verified with Codex CLI 0.146.0 | trusted fresh task returned the external-review/policy-hold status once with zero continuations; earlier real manual `/compact` evidence remains valid for the unchanged recovery path | native 0.4.13 status-boundary and lifecycle behavior verified; Ruff remains a remote-CI gate because it was unavailable locally |
+| Windows | v0.4.12: 73 Hook tests pass, 1 capability-aware skip; standalone total 85 pass, 1 skip | native private and standalone 0.4.12 caches verified with Codex CLI 0.146.0 | normal persistent trust and fresh user-handoff runtime verified at 0.4.12 | 0.4.13 remains pending native Windows verification; no macOS result is promoted to Windows parity |
 | Linux | 0.4.9 CI on Python 3.10/3.12/3.13 | isolated lifecycle verified | not claimed | CI and isolated lifecycle only |
 
-The current suite gained one bilingual README parity regression after the
-v0.4.9 tag. The macOS row preserves the release-time 82-test result; it does
-not imply that the current 83-test suite has been rerun on macOS.
+The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The
+table above separates current version-specific evidence from that release
+record and does not infer cross-platform parity.
 
 Do not change a pending cell to verified without preserving the command, result,
 plugin version, Codex version, and source/cache parity evidence in the release

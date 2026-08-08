@@ -113,6 +113,14 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
+Stop classification uses the whole reply rather than an isolated success word.
+Explicit unfinished reports, bounded user-action handoffs, externally pending
+reviews, and policy holds outrank local milestone language. The hold vocabulary
+is deliberately narrow: a reply that merely lists agent-owned submission,
+publication, promotion, or repository follow-ups still enters the completion
+gate. Positive and adversarial bilingual regressions preserve both sides of
+this boundary.
+
 ## Hook lifecycle
 
 | Event | Purpose | Visible context |

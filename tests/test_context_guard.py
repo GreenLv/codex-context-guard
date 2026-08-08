@@ -721,6 +721,61 @@ class ContextGuardTests(unittest.TestCase):
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
+    def test_external_review_and_policy_hold_reports_do_not_trigger(self) -> None:
+        self.prompt(
+            "$context-guard\n完成发布计划，但遵守用户暂停推广和等待外部审核的决定。"
+        )
+        messages = (
+            (
+                "已处理并恢复当前状态：OpenAI Case 12876647 已记录为正式结论，"
+                "暂不走官方 Hook 插件投稿，不提交 skills-only 降级版。两个 "
+                "Showcase、HOL PR #351、Awesome Codex CLI PR #185 均保持"
+                "‘已提交、等待审核’。推广仍按你的要求暂停。没有重复发布，"
+                "也没有修改两个项目仓库。"
+            ),
+            (
+                "本轮状态同步已完成：申请已提交，仍待第三方审核；发布继续暂停，"
+                "没有新的仓库修改。"
+            ),
+            (
+                "Status synchronization is complete. The PR remains pending "
+                "external review; promotion is on hold and no repository changes "
+                "were made."
+            ),
+            (
+                "Local verification passed. The submission is awaiting platform "
+                "selection, and publishing is currently paused."
+            ),
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertTrue(cg.reports_non_completion(message))
+                self.assertFalse(cg.claims_completion(message))
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload("Stop", last_assistant_message=message)
+                    ),
+                    {},
+                )
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+
+    def test_status_wording_does_not_hide_assistant_owned_followups(self) -> None:
+        messages = (
+            "状态已更新并验证通过。接下来我会提交 PR、更新博客并继续推广。",
+            "PR 已提交。接下来我会检查审核日志、发布版本并修改仓库。",
+            "Status is verified. Next I will publish and update the repository.",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                self.prompt("$context-guard\n完成仍由代理负责的发布和仓库更新。")
+                self.assertFalse(cg.reports_non_completion(message))
+                self.assertTrue(cg.claims_completion(message))
+                result = cg.dispatch(
+                    self.payload("Stop", last_assistant_message=message)
+                )
+                self.assertEqual(result["decision"], "block")
+                self.assertEqual(self.state()["continuation_attempts"], 1)
+
     def test_actionable_remaining_work_still_triggers_continuation(self) -> None:
         self.prompt(
             "$context-guard\n完成完整推广计划。必须提交目录、更新博客并发布社区帖子。"

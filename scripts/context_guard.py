@@ -116,6 +116,45 @@ NON_COMPLETION_RE = re.compile(
     r"仍待处理|仍需继续|还需要|(?:被|因).{0,32}(?:阻塞|卡住)|阻塞[：:])",
     re.IGNORECASE,
 )
+# A status-only reply can legitimately end a turn while work is externally
+# pending or explicitly paused by policy. Keep this separate from user-action
+# handoffs so both categories stay narrow and independently regression-tested.
+EXPLICIT_HOLD_RE = re.compile(
+    r"\b(?:"
+    r"(?:submitted|filed|listed|applied).{0,32}"
+    r"(?:pending|awaiting|waiting\s+for).{0,24}"
+    r"(?:review|approval|response|decision|selection|listing|inclusion|result)|"
+    r"(?:pr|pull\s+request|submission|listing).{0,24}"
+    r"(?:remain(?:s|ed)?|is|are)?\s*(?:pending|awaiting|on\s+hold)|"
+    r"(?:pending|awaiting|waiting\s+for)\s+"
+    r"(?:(?:external|third[- ]party|platform|maintainer|reviewer)\s+)?"
+    r"(?:review|approval|response|decision|selection|listing|inclusion|result)|"
+    r"(?:remain(?:s|ed)?|still|currently|continue(?:s|d)?\s+to\s+be).{0,48}"
+    r"(?:paused|on\s+hold|deferred|pending|awaiting)|"
+    r"(?:not|no\s+longer)\s+"
+    r"(?:proceeding|submitting|publishing|promoting|modifying)|"
+    r"(?:no|without)\s+(?:new\s+)?"
+    r"(?:publication|submission|repository\s+changes?|code\s+changes?|"
+    r"writes?|mutations?|promotion|external\s+actions?)"
+    r")\b|"
+    r"(?:"
+    r"(?:已提交|已申请|已投稿|已登记).{0,32}(?:等待|待)"
+    r"(?:(?:外部|第三方|平台|维护者|审核方|对方)(?:的)?)?"
+    r"(?:审核|审查|批准|回复|答复|决定|结果|选择|收录)|"
+    r"(?:仍|继续|保持|目前|当前).{0,24}(?:等待|待)"
+    r"(?:(?:外部|第三方|平台|维护者|审核方|对方)(?:的)?)?"
+    r"(?:审核|审查|批准|回复|答复|决定|结果|选择|收录)|"
+    r"(?:等待|待)(?:(?:外部|第三方|平台|维护者|审核方|对方)(?:的)?)"
+    r"(?:审核|审查|批准|回复|答复|决定|结果|选择|收录)|"
+    r"(?:仍|继续|目前|当前|暂时|暂不|按.{0,12}要求).{0,32}"
+    r"(?:暂停|搁置|不(?:再)?(?:执行|提交|发布|推广|修改|写入|处理|推进|投稿))|"
+    r"(?:没有|未)(?:进行|发生|执行|重复)?(?:任何|新的|新)?.{0,12}"
+    r"(?:发布|投稿|提交|推广|写入|变更|外部操作)|"
+    r"(?:没有|未)(?:进行|发生|执行|重复)?(?:任何|新的|新)?.{0,12}"
+    r"(?:修改.{0,8}(?:仓库|代码|项目)|(?:仓库|代码|项目).{0,8}修改)"
+    r")",
+    re.IGNORECASE,
+)
 INTERNAL_CONTINUATION_PREFIX = "[Context Guard continuation]"
 EVIDENCE_ID_RE = re.compile(r"^E\d{4,}$")
 STAGE_REQUEST_MARKER = "CONTEXT_GUARD_STAGE_REQUEST"
@@ -758,8 +797,12 @@ def latest_transcript_turn_id(
     return None
 
 
+def reports_non_completion(text: str) -> bool:
+    return bool(NON_COMPLETION_RE.search(text) or EXPLICIT_HOLD_RE.search(text))
+
+
 def claims_completion(text: str) -> bool:
-    if NON_COMPLETION_RE.search(text):
+    if reports_non_completion(text):
         return False
     return bool(COMPLETION_RE.search(text))
 
@@ -2315,7 +2358,7 @@ def handle_stop(
             ),
         }
     text = assistant_text(payload)
-    if NON_COMPLETION_RE.search(text):
+    if reports_non_completion(text):
         attempt = state.get("completion_attempt")
         if isinstance(attempt, dict) and attempt.get("staged_checkpoint") is not None:
             attempt["staged_checkpoint"] = None
