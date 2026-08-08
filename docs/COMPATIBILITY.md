@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin: `0.4.9`
+- Context Guard plugin: `0.4.12`
 - Private state schema: `3`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`

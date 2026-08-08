@@ -17,8 +17,9 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.4.10` adds the completed native Windows validation record
-> and prepares immutable, scanner-gated community distribution.
+> Release status: `0.4.12` fixes repeated Stop-Hook feedback after an explicit
+> handoff to the user for login, configuration, approval, or another bounded
+> account-side action.
 
 ### 30-second sanitized compact/recovery demo
 

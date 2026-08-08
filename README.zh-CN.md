@@ -15,8 +15,8 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.4.10` 纳入完整的 Windows 原生验证记录，并为固定 SHA、扫描门禁的
-> 社区分发做好准备。
+> 发布状态：`0.4.12` 修复了代理已明确交接登录、配置、审批等有限账号侧操作后，
+> Stop Hook 仍重复反馈的问题。
 
 ### 30 秒脱敏 compact/recovery 演示
 

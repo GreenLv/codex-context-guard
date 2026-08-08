@@ -2,8 +2,8 @@
 
 ## Supported version
 
-Security and correctness fixes are applied to the latest released version,
-currently `0.4.9`.
+Security and correctness fixes are applied to the current supported source line,
+currently `0.4.12`.
 
 ## Reporting a vulnerability
 

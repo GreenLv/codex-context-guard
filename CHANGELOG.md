@@ -5,7 +5,23 @@ All notable public releases are documented here.
 ## Unreleased
 
 No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.4.10 release require a new version.
+0.4.12 release require a new version.
+
+## 0.4.12 - 2026-08-08
+
+Version 0.4.11 was an unpublished local candidate. Its number remains consumed
+so an already installed versioned Hook cache is never overwritten in place.
+
+### Fixed
+
+- Recognize explicit user-action handoffs such as account login, publisher
+  configuration, deployment approval, and reply-after-action instructions as
+  valid non-completion boundaries, even when the same reply reports completed
+  local milestones.
+- Retain the completion gate when a reply merely lists actionable remaining
+  work without actually handing control to the user.
+- Require an explicit user subject or a reply-to-agent instruction for the new
+  handoff phrases, so assistant-owned follow-up work still triggers the gate.
 
 ## 0.4.10 - 2026-08-07
 

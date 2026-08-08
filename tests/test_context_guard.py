@@ -671,6 +671,88 @@ class ContextGuardTests(unittest.TestCase):
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
+    def test_explicit_user_action_handoffs_do_not_trigger_continuations(self) -> None:
+        self.prompt(
+            "$context-guard\n完成跨平台发布计划。必须先让用户处理账号登录、配置和审批。"
+        )
+        messages = (
+            (
+                "两仓库的发布准备已完成，但尚未发布正式版本。"
+                "目前被 GitHub 登录失效阻塞。请先运行 gh auth login，"
+                "完成后回复“已登录”。"
+            ),
+            (
+                "Context Guard 已正式发布。只有账号登录、2FA 和 Pending "
+                "Publisher 确认必须由你操作。"
+            ),
+            (
+                "TestPyPI 上传与安装测试已通过。请添加正式 Publisher，"
+                "配置后告诉我“PyPI publisher 配好了”。"
+            ),
+            (
+                "构建与包检查已通过。现在正式 PyPI 发布正等待你批准。"
+                "批准后回复“已批准”。"
+            ),
+            (
+                "正式 PyPI 已全部完成。下一步需要你这样做：在 Chrome 打开"
+                " Marketplace 提交页，登录后回复我。"
+            ),
+            (
+                "Local checks are complete, but I need you to log in to GitHub "
+                "and reply when ready."
+            ),
+            (
+                "Build and package verification passed; waiting for the user to "
+                "approve the production deployment."
+            ),
+            (
+                "TestPyPI is verified. Please configure the PyPI publisher, then "
+                "respond."
+            ),
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                self.assertFalse(cg.claims_completion(message))
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload("Stop", last_assistant_message=message)
+                    ),
+                    {},
+                )
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+
+    def test_actionable_remaining_work_still_triggers_continuation(self) -> None:
+        self.prompt(
+            "$context-guard\n完成完整推广计划。必须提交目录、更新博客并发布社区帖子。"
+        )
+        message = (
+            "Marketplace 这一项已完成并验证通过。整体推广计划仍有 HOL 审核、"
+            "Showcase、博客及社区发帖等后续项。"
+        )
+        self.assertTrue(cg.claims_completion(message))
+        result = cg.dispatch(
+            self.payload("Stop", last_assistant_message=message)
+        )
+        self.assertEqual(result["decision"], "block")
+        self.assertEqual(self.state()["continuation_attempts"], 1)
+
+    def test_assistant_owned_followups_still_trigger_continuation(self) -> None:
+        messages = (
+            "全部检查已通过。接下来需要打开页面并继续配置。",
+            "配置完成后通知用户，然后继续处理发布。测试已通过。",
+            "All tests passed. Next I need to open the page and continue configuration.",
+            "All tests passed. After configuration, I will notify the user and continue.",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                self.prompt("$context-guard\n继续完成仍由代理负责的发布工作。")
+                self.assertTrue(cg.claims_completion(message))
+                result = cg.dispatch(
+                    self.payload("Stop", last_assistant_message=message)
+                )
+                self.assertEqual(result["decision"], "block")
+                self.assertEqual(self.state()["continuation_attempts"], 1)
+
     def test_synthetic_forgotten_boundary_cannot_complete(self) -> None:
         self.prompt(
             "\n".join(
