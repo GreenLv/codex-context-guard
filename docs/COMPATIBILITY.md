@@ -19,7 +19,7 @@ behavior may change in future Codex releases and must be revalidated.
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
 | macOS | v0.4.13: 75 Hook tests pass, 1 Windows-only skip; standalone total 87 pass, 1 skip | private and isolated standalone 0.4.13 caches verified with Codex CLI 0.146.0 | trusted fresh task returned the external-review/policy-hold status once with zero continuations; earlier real manual `/compact` evidence remains valid for the unchanged recovery path | native 0.4.13 status-boundary and lifecycle behavior verified; Ruff remains a remote-CI gate because it was unavailable locally |
-| Windows | v0.4.12: 73 Hook tests pass, 1 capability-aware skip; standalone total 85 pass, 1 skip | native private and standalone 0.4.12 caches verified with Codex CLI 0.146.0 | normal persistent trust and fresh user-handoff runtime verified at 0.4.12 | 0.4.13 remains pending native Windows verification; no macOS result is promoted to Windows parity |
+| Windows | 0.4.13 native verification confirmed by the Windows endpoint; public CI also passes the full 88-test matrix | native private and standalone 0.4.13 caches verified on the Windows endpoint | fresh trusted 0.4.13 runtime verification confirmed by the Windows endpoint | native 0.4.13 verification accepted from the Windows handoff; raw command details remain endpoint-local and are not inferred from macOS |
 | Linux | 0.4.9 CI on Python 3.10/3.12/3.13 | isolated lifecycle verified | not claimed | CI and isolated lifecycle only |
 
 The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The
