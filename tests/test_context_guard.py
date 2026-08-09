@@ -386,6 +386,17 @@ class ContextGuardTests(unittest.TestCase):
         self.assertTrue(state["mode"]["manual_off"])
         self.assertEqual(len(state["prompts"]), 2)
 
+    def test_diagnose_control_is_hash_only_and_does_not_add_requirement(self) -> None:
+        self.prompt("$context-guard")
+        before = len(self.state()["requirements"])
+
+        result = self.prompt("context-guard diagnose")
+
+        context = result["hookSpecificOutput"]["additionalContext"]
+        self.assertIn(cg.CLASSIFIER_VERSION, context)
+        self.assertIn("no Stop decisions", context)
+        self.assertEqual(len(self.state()["requirements"]), before)
+
     def test_stop_is_bounded_and_fails_closed_after_two_retries(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
@@ -599,7 +610,7 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertTrue(cg.claims_completion(message))
 
-    def test_explicit_incomplete_report_does_not_loop(self) -> None:
+    def test_explicit_incomplete_report_gates_only_actionable_work(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -616,11 +627,16 @@ class ContextGuardTests(unittest.TestCase):
                 last_assistant_message="Core code is implemented; remaining tests still need work.",
             )
         )
-        self.assertEqual(implemented_but_remaining, {})
+        self.assertEqual(implemented_but_remaining["decision"], "block")
+        self.assertEqual(
+            self.state()["decision_log"][-1]["outcome"],
+            "gate_authorized_remaining_work",
+        )
 
     def test_partial_milestone_reports_do_not_trigger_continuations(self) -> None:
         self.prompt(
-            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+            "实现完整论文处理系统。必须导入论文并完成 PDF 阶段，"
+            "必须执行测试并提供验收证据。"
         )
         messages = (
             "已推进到首个写入确认门；尚未导入论文。14 项回归测试全量通过。",
@@ -629,15 +645,23 @@ class ContextGuardTests(unittest.TestCase):
             "Formal metadata 审计通过；整体任务仍待 PDF 阶段。15 项回归均通过。",
             "已处理 BLADE；原始任务尚未全部完成，剩余 PDF 等待批次确认。",
         )
+        gated = {messages[0], messages[3]}
         for message in messages:
             with self.subTest(message=message):
-                self.assertFalse(cg.claims_completion(message))
-                self.assertEqual(
-                    cg.dispatch(
-                        self.payload("Stop", last_assistant_message=message)
-                    ),
-                    {},
+                result = cg.dispatch(
+                    self.payload("Stop", last_assistant_message=message)
                 )
+                if message in gated:
+                    self.assertTrue(cg.claims_completion(message))
+                    self.assertEqual(result["decision"], "block")
+                    state = self.state()
+                    state["continuation_attempts"] = 0
+                    cg.save_state(
+                        self.root / "private" / "sessions" / "session-a", state
+                    )
+                else:
+                    self.assertFalse(cg.claims_completion(message))
+                    self.assertEqual(result, {})
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
     def test_user_decision_gated_reports_do_not_trigger_continuations(self) -> None:
@@ -885,6 +909,100 @@ class ContextGuardTests(unittest.TestCase):
                 self.assertEqual(result["decision"], "block")
                 self.assertEqual(self.state()["continuation_attempts"], 1)
 
+    def test_structured_boundary_classifier_covers_regression_session_cases(self) -> None:
+        cases = (
+            (
+                "只审查并本地提交，不要创建远端仓库、推送或运行 CI。",
+                "本地审查已完成并验证通过；远端创建、推送与 CI 留待下一轮。",
+                "allow_out_of_scope_deferred",
+            ),
+            (
+                "只审查并本地提交。",
+                "本地提交已完成；推送和 CI 将在后续单独处理。",
+                "allow_out_of_scope_deferred",
+            ),
+            (
+                "Review and commit locally.",
+                "Local commit is complete; push and CI are deferred to a later turn.",
+                "allow_out_of_scope_deferred",
+            ),
+            (
+                "暂不推送，也不跑 CI。",
+                "本地验证已完成；推送和 CI 将在后续单独处理。",
+                "allow_out_of_scope_deferred",
+            ),
+            (
+                "No push or CI.",
+                "Local validation is complete; push and CI are deferred to a later turn.",
+                "allow_out_of_scope_deferred",
+            ),
+            (
+                "提交 PR 并处理后续审查意见。",
+                "PR 已提交；下一阶段仍需处理审查意见。",
+                "gate_authorized_remaining_work",
+            ),
+            (
+                "完成发布并等待外部审核。",
+                "PR仍待外部审核；与此同时我接下来会修改仓库并发布博客。验证已通过。",
+                "gate_authorized_remaining_work",
+            ),
+        )
+        for prompt, reply, expected in cases:
+            with self.subTest(prompt=prompt):
+                decision = cg.classify_stop_decision(reply, prompt)
+                self.assertEqual(decision["outcome"], expected)
+        mixed = cg.classify_stop_decision(cases[-1][1], cases[-1][0])
+        self.assertIn("mixed_external_and_assistant_work", mixed["reason_codes"])
+
+    def test_boundary_classifier_is_scope_metamorphic_and_handles_double_negation(self) -> None:
+        reply = "本地验证已完成；推送和 CI 将在后续单独处理。"
+        cases = (
+            ("只做本地检查。", "allow_out_of_scope_deferred"),
+            ("暂不推送，也不跑 CI。", "allow_out_of_scope_deferred"),
+            ("继续执行完整发布计划，推送并运行 CI。", "gate_authorized_remaining_work"),
+            ("不要跳过推送，继续执行完整发布计划。", "gate_authorized_remaining_work"),
+        )
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    cg.classify_stop_decision(reply, prompt)["outcome"], expected
+                )
+
+    def test_decision_log_is_bounded_hash_only_and_diagnosable(self) -> None:
+        secret_prompt = "$context-guard\n完成复杂任务，token=private-prompt-value。"
+        secret_reply = "验证已通过，private-reply-value；下一阶段仍需运行测试。"
+        self.prompt(secret_prompt)
+        for _ in range(cg.DECISION_LOG_LIMIT + 5):
+            cg.dispatch(self.payload("Stop", last_assistant_message=secret_reply))
+            state = self.state()
+            state["continuation_attempts"] = 0
+            cg.save_state(
+                self.root / "private" / "sessions" / "session-a", state
+            )
+        state = self.state()
+        self.assertEqual(len(state["decision_log"]), cg.DECISION_LOG_LIMIT)
+        serialized = json.dumps(state["decision_log"], ensure_ascii=False)
+        self.assertNotIn("private-prompt-value", serialized)
+        self.assertNotIn("private-reply-value", serialized)
+        latest = state["decision_log"][-1]
+        self.assertEqual(latest["prompt_sha256"], cg.sha256_text(secret_prompt))
+        self.assertEqual(latest["reply_sha256"], cg.sha256_text(secret_reply))
+        self.assertEqual(latest["classifier_version"], cg.CLASSIFIER_VERSION)
+        self.assertIn("classifier=", cg.status_context(state))
+
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "diagnose", "--limit", "2"],
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        diagnosed = json.loads(result.stdout)
+        self.assertEqual(len(diagnosed["decisions"]), 2)
+        self.assertNotIn("private-reply-value", result.stdout)
+
     def test_tampered_full_prompt_record_fails_closed(self) -> None:
         prompt = (
             "$context-guard\nReview the local checkpoint only. "
@@ -905,8 +1023,12 @@ class ContextGuardTests(unittest.TestCase):
 
         self.assertEqual(cg.latest_requirement_text(session_dir, self.state()), "")
         result = cg.dispatch(self.payload("Stop", last_assistant_message=message))
-        self.assertEqual(result["decision"], "block")
-        self.assertEqual(self.state()["continuation_attempts"], 1)
+        self.assertFalse(result["continue"])
+        self.assertIn("prompt boundary", result["stopReason"])
+        self.assertEqual(
+            self.state()["decision_log"][-1]["outcome"],
+            "fail_closed_integrity",
+        )
 
     def test_assistant_owned_followups_still_trigger_continuation(self) -> None:
         messages = (
@@ -1268,10 +1390,11 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
         self.assertEqual(migrated["agents"], [])
+        self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
         self.assertEqual(migrated["requirements"][0]["evidence"], [])
         self.assertEqual(migrated["integrity"]["status"], "ok")
@@ -1293,12 +1416,31 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证从 0.2.1 状态迁移后的任务。")
 
         migrated = self.state()
-        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(len(migrated["evidence"]), 1)
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
         self.assertEqual(migrated["agents"], [])
+        self.assertEqual(migrated["decision_log"], [])
+
+    def test_v3_state_migrates_to_hash_only_decision_schema(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        legacy = self.state()
+        legacy["schema_version"] = 3
+        legacy.pop("decision_log")
+        legacy["content_hash"] = cg.state_content_hash(legacy)
+        cg.atomic_write_json(session_dir / "state.json", legacy)
+
+        self.prompt("继续验证从 0.4.x 状态迁移后的任务。")
+
+        migrated = self.state()
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
+        self.assertEqual(migrated["decision_log"], [])
+        self.assertEqual(migrated["integrity"]["status"], "ok")
 
     def test_tampered_state_recovers_from_immutable_prompts(self) -> None:
         original = "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"

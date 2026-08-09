@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.4.16"
+VERSION = "0.5.0"
 REPOSITORY = "https://github.com/GreenLv/codex-context-guard"
 HOOK_EVENTS = {
     "UserPromptSubmit",
@@ -39,6 +39,7 @@ REQUIRED_FILES = {
     "docs/PRIVACY.md",
     "docs/COMPATIBILITY.md",
     "docs/LOCAL_ACCEPTANCE.md",
+    "docs/VERSIONING.md",
     "hooks/hooks.json",
     "scripts/context_guard.py",
     "scripts/manage_plugin.py",
@@ -127,8 +128,10 @@ def validate(root: Path) -> list[str]:
         schema = json.loads(
             (root / "assets" / "state.schema.json").read_text(encoding="utf-8")
         )
-        if schema.get("properties", {}).get("schema_version", {}).get("const") != 3:
-            errors.append("private state schema must remain version 3")
+        if schema.get("properties", {}).get("schema_version", {}).get("const") != 4:
+            errors.append("private state schema must be version 4")
+        if "decision_log" not in schema.get("required", []):
+            errors.append("private state schema must require the bounded decision log")
         if REPOSITORY not in str(schema.get("$id", "")):
             errors.append("state schema ID must use the public repository")
     except (OSError, json.JSONDecodeError) as exc:

@@ -1,7 +1,36 @@
 # Local Release Acceptance
 
-This document records local and remote release evidence for standalone Context
-Guard `0.4.9`.
+This document records local and remote acceptance evidence for standalone
+Context Guard. The current source line is `0.5.0`; historical `0.4.9` release
+evidence remains below.
+
+## 0.5.0 local acceptance on macOS (2026-08-09)
+
+- State schema 4, Stop classifier 1.0.0, bounded decision diagnostics, and the
+  durable cache-archive lifecycle are present in the exact public/private
+  shared core.
+- Private source passes 84 Hook regressions (83 pass and one Windows-only
+  skip); the Context Guard combined suite passes 101 tests with the same skip.
+- The standalone public tree passes repository validation, privacy audit,
+  sibling-core parity, Ruff 0.16.1, and 100 tests (99 pass and one skip).
+- The private 0.5.0 installation archived and verified live versions 0.4.12,
+  0.4.13, 0.4.15, 0.4.16, and 0.5.0. The installed Hook suite, eight-Hook
+  self-test, schema-4 lifecycle smoke, and read-only archive audit pass.
+- A disposable standalone Codex home installed public 0.5.0, created its
+  trusted archive, passed a strict no-op rerun, and completed the schema-4
+  installed lifecycle smoke.
+- A fresh read-only task loaded private-identity 0.5.0 without Hook trust
+  bypass, emitted an authoritative successful check, staged and consumed R001
+  and A001, ended with `integrity=ok`, zero open items, zero continuations, and
+  no project file writes. Fresh public-identity trust was not repeated.
+- The macOS sync doctor reports zero sync failures and one aggregate warning;
+  the underlying non-interactive Codex doctor warning is `TERM=dumb`.
+- Native Windows 0.5.0 installation/runtime remains pending. Remote public CI
+  and HOL status are also pending until this commit is pushed; neither can be
+  substituted for native endpoint acceptance.
+- No `v0.5.0` tag or GitHub Release is part of this acceptance run.
+
+## Historical 0.4.9 release acceptance
 
 ## Release contents
 

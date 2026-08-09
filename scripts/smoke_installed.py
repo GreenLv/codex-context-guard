@@ -365,7 +365,7 @@ def main() -> int:
         module.validate_state_integrity(state)
         serialized = json.dumps(state, ensure_ascii=False)
         assertions = {
-            "schema3": state.get("schema_version") == 3,
+            "schema4": state.get("schema_version") == 4,
             "one_root_requirement": len(state.get("requirements", [])) == 1,
             "delegated_prompt": any(
                 item.get("authority") == "delegated"
@@ -401,7 +401,7 @@ def main() -> int:
 
     print(
         "SMOKE_PASS context-guard installed lifecycle: "
-        "schema3, plan mirror, delegated authority, bounded agent result, "
+        "schema4, plan mirror, delegated authority, bounded agent result, "
         "unknown-text exclusion, binary omission, compaction recovery, "
         "and private completion gate"
     )

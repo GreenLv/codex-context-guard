@@ -17,9 +17,9 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.4.16` makes phase-boundary reports scope-aware. A bounded
-> review, test, or local-commit turn may stop after explicitly deferring a later
-> phase, while a broad continue, push, publish, or deployment request remains gated.
+> Release status: `0.5.0` introduces state schema 4, Stop classifier 1.0.0,
+> bounded hash-only decision diagnostics, and durable historical Hook cache
+> archives. It preserves the eight-Hook and private-checkpoint interfaces.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -62,12 +62,14 @@ Context Guard therefore separates four things:
 - Treats explicit waiting for user approval, authorization, confirmation, or a
   decision as an incomplete state, even when the reply also reports a finished
   local milestone.
-- Treats submitted-and-pending external reviews, explicit policy holds, and
-  no-new-mutation status reports as incomplete turn boundaries, while keeping
-  agent-owned publication or repository follow-ups behind the completion gate.
-- Compares a deferred-phase status with the current user prompt: bounded local
-  review/test/commit requests may end cleanly, but explicit continue, whole-task,
-  push, publish, deploy, promote, remote-creation, and CI requests still gate.
+- Classifies remaining actions by category, owner, and current-turn
+  authorization. User handoffs, external waits, and denied/out-of-scope later
+  phases may end a turn; any authorized assistant-owned remainder still gates.
+- Emits stable decision outcomes and reason codes. Mixed external waiting plus
+  assistant-owned publication or repository work gates rather than being hidden
+  by the external status.
+- Stores at most 32 recent Stop decisions as timestamps, turn IDs, classifier
+  versions, hashes, reason codes, and action facts. It stores no raw reply text.
 - Serializes concurrent session updates with a bounded cross-platform file
   lock, including the Windows access-denied/holder-exit race observed in CI.
 - Replaces binary/data-URL payloads with bounded type, length, and hash
@@ -202,10 +204,12 @@ py -3.10 scripts\manage_plugin.py --apply
 ```
 
 The helper registers this non-default repository marketplace, installs
-`context-guard@codex-context-guard`, verifies source/cache parity, and preserves
-older versioned caches during upgrades. It refuses to refresh changed source
-under the same version because an active task may still execute the old
-absolute Hook cache path.
+`context-guard@codex-context-guard`, verifies source/cache parity, and archives
+every version under `CODEX_HOME/plugins/cache-archive/codex-context-guard/context-guard/`
+with a trusted SHA-256 index. Read-only runs audit the archive; `--apply` repairs
+a missing or changed live cache only from the trusted archive. Archive damage
+fails closed, archives are never auto-pruned, and same-version source drift is
+still rejected.
 
 Installing a plugin does not automatically trust its Hooks. Start a fresh
 Codex CLI task, open `/hooks`, inspect the eight definitions, and trust them
@@ -228,6 +232,7 @@ Then run:
 
 ```text
 context-guard status
+context-guard diagnose
 ```
 
 For a recovery smoke test, start a non-trivial task, use `/compact`, and confirm
@@ -248,8 +253,10 @@ python3 scripts/smoke_installed.py
   gating.
 - `context-guard off` disables recovery and completion gating while preserving
   prompt journaling.
-- `context-guard status` reports protected-state counts without exposing raw
-  prompts.
+- `context-guard status` reports protected-state counts, classifier version,
+  and the latest decision without exposing raw prompts.
+- `context-guard diagnose` reports bounded recent decision classes, reason
+  codes, hashes, action owners, and authorization without raw prompts/replies.
 - `context-guard export <path>` writes a redacted handoff inside the current
   project. The default is `.codex/context-guard/CONTEXT_HANDOFF.md`.
 - `context-guard rollover <directory>` validates an explicitly prepared
@@ -284,8 +291,9 @@ git pull --ff-only
 python3 scripts/manage_plugin.py --apply
 ```
 
-Plugin source changes require a version bump. The helper preserves prior
-versioned caches so already-running tasks can finish on the code they loaded.
+Plugin source changes require a version bump. The helper retains trusted
+archives and live historical caches so already-running tasks can finish on the
+code they loaded. See [Versioning](docs/VERSIONING.md).
 
 To uninstall the public plugin and marketplace:
 

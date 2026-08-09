@@ -10,6 +10,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -29,6 +31,7 @@ class SafePluginInstallTests(unittest.TestCase):
         self.codex_home = self.root / "codex"
         self.source_root = self.repo_root
         self.cache_root = manager.plugin_cache_root(self.codex_home)
+        self.archive_root = manager.cache_archive_root(self.codex_home)
         self.state: dict[str, object] = {"version": None, "enabled": True}
         self.run_calls: list[tuple[str, ...]] = []
 
@@ -51,6 +54,9 @@ class SafePluginInstallTests(unittest.TestCase):
         target = self.cache_root / version
         shutil.copytree(self.source_root, target)
         return target
+
+    def archive_live(self) -> list[str]:
+        return manager.archive_live_versions(self.cache_root, self.archive_root)
 
     def plugin_entry(self, _codex: str) -> dict | None:
         version = self.state["version"]
@@ -82,6 +88,7 @@ class SafePluginInstallTests(unittest.TestCase):
     def test_same_version_with_matching_cache_is_strict_no_op(self) -> None:
         self.write_source("0.1.2")
         self.cache_source_as("0.1.2")
+        self.archive_live()
         self.state["version"] = "0.1.2"
 
         installed = self.ensure()
@@ -115,6 +122,7 @@ class SafePluginInstallTests(unittest.TestCase):
     def test_same_version_source_drift_requires_version_bump(self) -> None:
         self.write_source("0.1.2", body="old hook\n")
         self.cache_source_as("0.1.2")
+        self.archive_live()
         self.state["version"] = "0.1.2"
         self.write_source("0.1.2", body="changed without bump\n")
 
@@ -122,6 +130,80 @@ class SafePluginInstallTests(unittest.TestCase):
             self.ensure()
 
         self.assertEqual(self.run_calls, [])
+
+    def test_same_version_missing_live_cache_repairs_from_trusted_archive(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        shutil.rmtree(live)
+        self.state["version"] = "0.1.2"
+
+        installed = self.ensure(apply=True)
+
+        self.assertFalse(installed)
+        self.assertEqual(self.run_calls, [])
+        self.assertEqual(
+            (live / "scripts" / "context_guard.py").read_text(encoding="utf-8"),
+            "source hook\n",
+        )
+
+    def test_corrupt_archive_fails_closed_without_repairing_live_cache(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        archived_script = (
+            self.archive_root / "0.1.2" / "scripts" / "context_guard.py"
+        )
+        archived_script.write_text("tampered archive\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "trusted hash manifest"):
+            self.ensure(apply=True)
+
+        self.assertEqual(
+            (live / "scripts" / "context_guard.py").read_text(encoding="utf-8"),
+            "source hook\n",
+        )
+
+    def test_archive_audit_repairs_delayed_historical_cache_deletion(self) -> None:
+        self.write_source("0.1.2")
+        historical = self.cache_source_as("0.1.2")
+        self.archive_live()
+        shutil.rmtree(historical)
+
+        repaired = manager.audit_cache_archive(
+            self.cache_root, self.archive_root, repair=True
+        )
+
+        self.assertEqual(repaired, ["0.1.2"])
+        self.assertTrue((historical / "scripts" / "context_guard.py").is_file())
+
+    def test_cache_install_lock_serializes_concurrent_installers(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        second_entered = threading.Event()
+
+        def first() -> None:
+            with manager.cache_install_lock(self.cache_root):
+                entered.set()
+                release.wait(timeout=2)
+
+        def second() -> None:
+            entered.wait(timeout=2)
+            with manager.cache_install_lock(self.cache_root):
+                second_entered.set()
+
+        first_thread = threading.Thread(target=first)
+        second_thread = threading.Thread(target=second)
+        first_thread.start()
+        second_thread.start()
+        self.assertTrue(entered.wait(timeout=2))
+        time.sleep(0.05)
+        self.assertFalse(second_entered.is_set())
+        release.set()
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+        self.assertTrue(second_entered.is_set())
 
     def test_upgrade_restores_old_version_after_codex_deletes_cache_root(self) -> None:
         self.write_source("0.1.2", body="old hook\n")
@@ -198,7 +280,7 @@ class SafePluginInstallTests(unittest.TestCase):
             return False
 
         argv = [
-            "manage_plugin.py",
+            "manage-context-guard-plugin.py",
             "--repo-root",
             str(self.repo_root),
             "--codex-home",

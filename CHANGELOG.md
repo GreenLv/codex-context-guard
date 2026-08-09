@@ -5,7 +5,38 @@ All notable public releases are documented here.
 ## Unreleased
 
 No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.4.16 release require a new version.
+0.5.0 source line require a new version.
+
+## 0.5.0 - 2026-08-09
+
+### Added
+
+- State schema 4 with a bounded 32-entry, hash-only `decision_log`; schema 1,
+  2, and 3 migrate with an empty diagnostic history.
+- Stop classifier 1.0 with stable allow/gate/consume/fail-closed outcomes,
+  reason codes, action category, owner, and current-turn authorization.
+- `context-guard diagnose` plus classifier/latest-decision fields in `status`.
+- Persistent version archives under `CODEX_HOME/plugins/cache-archive/` with
+  an atomic SHA-256 index, explicit trusted repair, and no automatic pruning.
+- A documented version policy and sibling-product shared-core parity gate.
+
+### Fixed
+
+- Treat deferred remote work as safe only when it is denied or outside the
+  current bounded scope; explicit broad authority and double-negated commands
+  remain gated.
+- Prevent an external-review sentence from hiding assistant-owned repository,
+  publication, CI, or review-followup work in another clause.
+- Repair live historical caches after install-time or delayed deletion only
+  when an intact trusted archive exists; archive corruption fails closed.
+
+### Validation scope
+
+- Adds the seven observed/adversarial phase-boundary cases, bilingual
+  metamorphic scope tests, schema migration/privacy/rebuild tests, and cache
+  archive creation/deletion/corruption/no-op/concurrency tests.
+- Native Windows 0.5.0 acceptance remains pending and is not inferred from CI.
+- No `v0.5.0` tag or GitHub Release is created by this source update.
 
 ## 0.4.16 - 2026-08-09
 

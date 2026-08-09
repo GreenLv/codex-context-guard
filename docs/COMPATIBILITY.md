@@ -5,8 +5,9 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin: `0.4.16`
-- Private state schema: `3`
+- Context Guard plugin: `0.5.0`
+- Private state schema: `4`
+- Stop classifier: `1.0.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
@@ -18,9 +19,9 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | v0.4.16: 78 Hook tests pass, 1 Windows-only skip; standalone total 90 pass, 1 skip; public CI passes Python 3.10/3.12/3.13 plus Ruff | private and isolated standalone 0.4.16 caches verified with Codex CLI 0.146.0 | a trusted fresh task returned the bounded local-commit / deferred-push status once with zero continuations | native 0.4.16 scoped-phase and lifecycle behavior verified |
-| Windows | public 0.4.16 CI passes 91 tests, validation, audit, Ruff, and compilation on Python 3.10/3.12/3.13; 0.4.13 remains the latest native endpoint verification | native private and standalone 0.4.16 caches not yet verified on the Windows endpoint | fresh trusted 0.4.16 endpoint runtime pending | CI runner coverage is accepted as automated source evidence only; do not infer native endpoint parity from it |
-| Linux | public 0.4.16 CI passes Python 3.10/3.12/3.13, including 91 tests, validation, audit, Ruff, and compilation | isolated lifecycle covered in CI | not claimed | CI and isolated lifecycle only |
+| macOS | private 84 Hook tests (83 pass, 1 Windows-only skip), private combined 101 tests, and public standalone 100 tests (99 pass, 1 skip), repository/audit/parity/Ruff gates pass | private persistent 0.5.0 cache/archive and isolated public 0.5.0 install/no-op/archive/lifecycle verified with Codex CLI 0.146.0 | fresh private-identity task loaded the 0.5.0 skill/Hook without trust bypass, consumed schema-4 checkpoint, and ended with zero continuations and no project writes | native private 0.5.0 runtime plus isolated public lifecycle verified; fresh public-identity Hook trust was not repeated |
+| Windows | 0.5.0 public CI pending; 0.4.13 remains the latest native endpoint verification | native 0.5.0 cache/archive lifecycle pending | fresh trusted 0.5.0 endpoint runtime pending | CI evidence will not establish native endpoint parity |
+| Linux | 0.5.0 public CI pending | isolated lifecycle pending CI | not claimed | CI and isolated lifecycle only |
 
 The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The
 table above separates current version-specific evidence from that release
@@ -39,8 +40,8 @@ The plugin defines exactly eight events: `UserPromptSubmit`, `PostToolUse`,
 Plugin installation does not automatically trust Hook commands. Users must
 inspect and trust the current definition, then start a fresh task. An old active
 task may retain an absolute path into an older versioned cache; the provided
-installer therefore preserves older caches during upgrades and rejects
-same-version source drift.
+installer therefore retains live historical caches, archives them under the
+versioned `cache-archive` contract, and rejects same-version source drift.
 
 ## Release gates
 

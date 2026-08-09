@@ -15,9 +15,8 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.4.16` 会结合本轮用户授权理解阶段边界。只要求审查、测试或本地
-> commit 的回合，在明确把后续阶段留待以后时可以正常结束；若用户要求继续、推送、
-> 发布或部署，同样的阶段措辞仍受完成门禁约束。
+> 发布状态：`0.5.0` 引入 state schema 4、Stop classifier 1.0.0、有界 hash-only
+> 决策诊断和持久历史 Hook 缓存归档，同时保留八 Hook 与私有 checkpoint 接口。
 
 ### 30 秒脱敏 compact/recovery 演示
 
@@ -53,11 +52,12 @@ Context Guard 因此把四件事分开记录：
 - 将无结构或含糊的工具输出记为 unknown，阻止其满足完成门禁。
 - 即使回复同时报告了局部工作完成，只要仍明确等待用户验收、授权、确认或决定，
   就继续将整个任务视为未完成状态。
-- 将“已提交并等待外部审核”、显式政策暂停和“没有新发布/仓库写入”等状态汇报
-  识别为未完成的回合边界，同时继续拦截仍由代理负责的发布或仓库修改。
-- 将“下一阶段仍需”的回复与当前用户提示一起判断：有界的本地审查、测试或 commit
-  可以结束回合；明确的继续、完整任务、推送、发布、部署、推广、远端创建或 CI
-  请求仍会进入完成门禁。
+- 按动作类别、所有者和本轮授权判断剩余工作。用户接管、外部等待以及被拒绝或
+  超出范围的后续阶段可以结束回合；任何仍获授权且由代理执行的事项继续进入门禁。
+- 输出稳定的决策结果类和 reason codes；“等待外部审核”不能掩盖同一回复中仍由
+  代理执行的发布或仓库修改。
+- 最多保存 32 条 Stop 决策的时间、turn ID、classifier 版本、哈希、reason codes
+  和动作事实，不保存原始回复正文。
 - 使用有界跨平台文件锁串行化同一会话的并发更新，并覆盖公开 CI 发现的 Windows
   access-denied/持有者退出竞态。
 - 将二进制和 data URL 替换为类型、长度与哈希元数据。
@@ -206,6 +206,7 @@ $context-guard
 
 ```text
 context-guard status
+context-guard diagnose
 ```
 
 如需验证恢复链，应创建一个非简单任务，执行 `/compact`，并检查紧接着的 continuation
@@ -221,7 +222,9 @@ python3 scripts/smoke_installed.py
 
 - `$context-guard` 或 `context-guard on`：启用完整恢复与完成门禁。
 - `context-guard off`：关闭恢复和完成门禁，但继续记录提示。
-- `context-guard status`：显示保护状态和数量，不暴露原始提示。
+- `context-guard status`：显示保护状态、classifier 版本和最近决策，不暴露原始提示。
+- `context-guard diagnose`：显示有界的决策类别、reason codes、哈希、动作所有者和
+  授权状态，不暴露原始提示或回复。
 - `context-guard export <path>`：在当前项目中生成脱敏 handoff；默认路径为
   `.codex/context-guard/CONTEXT_HANDOFF.md`。
 - `context-guard rollover <directory>`：验证用户显式准备的 successor 输入，写入
@@ -251,8 +254,9 @@ git pull --ff-only
 python3 scripts/manage_plugin.py --apply
 ```
 
-插件源码变化必须更新版本号。安装器会保留旧版本缓存，让已经运行的任务继续使用
-其最初加载的代码。
+插件源码变化必须更新版本号。安装器通过可信 SHA-256 索引持久归档所有历史版本，
+只在 `--apply` 时从可信归档修复缺失或变化的 live cache，且从不自动清理归档。
+版本策略见 [Versioning](docs/VERSIONING.md)。
 
 卸载公开插件和 marketplace：
 

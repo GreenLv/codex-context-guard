@@ -21,7 +21,9 @@ PLUGIN_NAME = "context-guard"
 PLUGIN_ID = "context-guard@codex-context-guard"
 MINIMUM_CODEX = (0, 146, 0)
 IGNORED_TREE_NAMES = {".DS_Store", "Thumbs.db", "__pycache__"}
-PLUGIN_TREE_ROOTS = {".codex-plugin", "assets", "hooks", "scripts", "skills"}
+PLUGIN_TREE_ROOTS: set[str] | None = {".codex-plugin", "assets", "hooks", "scripts", "skills"}
+ARCHIVE_INDEX_NAME = "archive-index.json"
+ARCHIVE_SCHEMA_VERSION = 1
 
 
 def run(codex: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -133,19 +135,33 @@ def plugin_cache_root(codex_home: Path) -> Path:
     )
 
 
+def cache_archive_root(codex_home: Path) -> Path:
+    return (
+        codex_home.expanduser().resolve()
+        / "plugins"
+        / "cache-archive"
+        / MARKETPLACE
+        / PLUGIN_NAME
+    )
+
+
 def tree_manifest(root: Path) -> dict[str, str]:
     if not root.is_dir():
         return {}
     manifest: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
-        if not relative.parts or relative.parts[0] not in PLUGIN_TREE_ROOTS:
+        if PLUGIN_TREE_ROOTS is not None and (
+            not relative.parts or relative.parts[0] not in PLUGIN_TREE_ROOTS
+        ):
             continue
         if any(
             part in IGNORED_TREE_NAMES or part.endswith((".pyc", ".pyo"))
             for part in relative.parts
         ):
             continue
+        if path.is_symlink():
+            raise RuntimeError(f"unsafe symlink in plugin tree: {path}")
         if path.is_file():
             manifest[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return manifest
@@ -242,31 +258,202 @@ def cache_install_lock(cache_root: Path) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-@contextmanager
-def preserve_cached_versions(cache_root: Path) -> Iterator[list[str]]:
-    cached_versions = (
+def _atomic_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False, prefix=f".{path.name}."
+    )
+    temporary = Path(handle.name)
+    try:
+        with handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _archive_index(archive_root: Path) -> dict[str, dict[str, str]]:
+    index_path = archive_root / ARCHIVE_INDEX_NAME
+    if not index_path.exists():
+        existing = (
+            [path.name for path in archive_root.iterdir() if path.is_dir()]
+            if archive_root.is_dir()
+            else []
+        )
+        if existing:
+            raise RuntimeError(
+                "cache archive has version directories but no trusted index: "
+                + ", ".join(sorted(existing))
+            )
+        return {}
+    try:
+        value = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cache archive index is unreadable: {index_path}") from exc
+    versions = value.get("versions") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != ARCHIVE_SCHEMA_VERSION
+        or not isinstance(versions, dict)
+    ):
+        raise RuntimeError("cache archive index has an unsupported schema")
+    for version, manifest in versions.items():
+        if not isinstance(version, str) or not isinstance(manifest, dict) or not manifest:
+            raise RuntimeError("cache archive index contains an invalid version manifest")
+        if any(
+            not isinstance(name, str)
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for name, digest in manifest.items()
+        ):
+            raise RuntimeError(
+                f"cache archive index contains invalid hashes for {version}"
+            )
+    return versions
+
+
+def _write_archive_index(
+    archive_root: Path, versions: dict[str, dict[str, str]]
+) -> None:
+    _atomic_json(
+        archive_root / ARCHIVE_INDEX_NAME,
+        {
+            "schema_version": ARCHIVE_SCHEMA_VERSION,
+            "versions": dict(sorted(versions.items())),
+        },
+    )
+
+
+def _replace_tree_atomically(source_root: Path, target_root: Path) -> None:
+    target_root.parent.mkdir(parents=True, exist_ok=True)
+    temporary_parent = Path(
+        tempfile.mkdtemp(prefix=f".{target_root.name}.staged-", dir=target_root.parent)
+    )
+    staged = temporary_parent / "tree"
+    backup = target_root.with_name(f".{target_root.name}.replaced-{os.getpid()}")
+    moved_existing = False
+    try:
+        shutil.copytree(source_root, staged)
+        if target_root.exists():
+            if backup.exists():
+                shutil.rmtree(backup)
+            os.replace(target_root, backup)
+            moved_existing = True
+        os.replace(staged, target_root)
+        if moved_existing:
+            shutil.rmtree(backup)
+    except BaseException:
+        if moved_existing and not target_root.exists() and backup.exists():
+            os.replace(backup, target_root)
+        raise
+    finally:
+        shutil.rmtree(temporary_parent, ignore_errors=True)
+        if backup.exists() and target_root.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+
+
+def archive_live_versions(cache_root: Path, archive_root: Path) -> list[str]:
+    versions = _archive_index(archive_root)
+    archived: list[str] = []
+    live_versions = (
         sorted(path for path in cache_root.iterdir() if path.is_dir())
         if cache_root.is_dir()
         else []
     )
-    with tempfile.TemporaryDirectory(prefix=f"{PLUGIN_NAME}-cache-backup-") as temp:
-        backup_root = Path(temp)
-        for cached in cached_versions:
-            shutil.copytree(cached, backup_root / cached.name)
-        try:
-            yield [path.name for path in cached_versions]
-        finally:
-            for backup in sorted(backup_root.iterdir()):
-                target = cache_root / backup.name
-                restore_tree(backup, target)
-                restored_difference = tree_difference(
-                    backup, target, allow_cache_extras=True
+    for live in live_versions:
+        if live.is_symlink():
+            raise RuntimeError(f"unsafe live cache symlink: {live}")
+        live_manifest = tree_manifest(live)
+        if not live_manifest:
+            raise RuntimeError(f"live cache {live.name} is empty or unreadable")
+        archived_root = archive_root / live.name
+        expected = versions.get(live.name)
+        if expected is not None:
+            if not archived_root.is_dir() or tree_manifest(archived_root) != expected:
+                raise RuntimeError(
+                    f"trusted cache archive {live.name} is missing or corrupt"
                 )
-                if restored_difference:
-                    raise RuntimeError(
-                        f"failed to restore cached {PLUGIN_NAME} {backup.name}: "
-                        + ", ".join(restored_difference[:5])
-                    )
+            if live_manifest != expected:
+                raise RuntimeError(
+                    f"live cache {live.name} differs from its trusted archive"
+                )
+            continue
+        if archived_root.exists():
+            raise RuntimeError(
+                f"cache archive {live.name} exists without a trusted index entry"
+            )
+        _replace_tree_atomically(live, archived_root)
+        versions[live.name] = live_manifest
+        _write_archive_index(archive_root, versions)
+        archived.append(live.name)
+    return archived
+
+
+def audit_cache_archive(
+    cache_root: Path,
+    archive_root: Path,
+    *,
+    repair: bool,
+    allow_unarchived: set[str] | None = None,
+) -> list[str]:
+    allowed = allow_unarchived or set()
+    versions = _archive_index(archive_root)
+    archive_dirs = (
+        {path.name for path in archive_root.iterdir() if path.is_dir()}
+        if archive_root.is_dir()
+        else set()
+    )
+    unexpected = sorted(archive_dirs.difference(versions))
+    if unexpected:
+        raise RuntimeError(
+            "cache archive contains unindexed version directories: "
+            + ", ".join(unexpected)
+        )
+    repaired: list[str] = []
+    issues: list[str] = []
+    for version, expected in sorted(versions.items()):
+        archived = archive_root / version
+        if not archived.is_dir():
+            issues.append(f"archive {version} is missing")
+            continue
+        try:
+            archive_manifest = tree_manifest(archived)
+        except RuntimeError as exc:
+            issues.append(str(exc))
+            continue
+        if archive_manifest != expected:
+            issues.append(f"archive {version} failed its trusted hash manifest")
+            continue
+        live = cache_root / version
+        live_manifest = tree_manifest(live) if live.is_dir() else {}
+        if live_manifest == expected:
+            continue
+        if repair:
+            _replace_tree_atomically(archived, live)
+            if tree_manifest(live) != expected:
+                issues.append(f"live cache {version} could not be repaired")
+            else:
+                repaired.append(version)
+        else:
+            issues.append(
+                f"live cache {version} is missing or differs from its trusted archive"
+            )
+    live_dirs = (
+        {path.name for path in cache_root.iterdir() if path.is_dir()}
+        if cache_root.is_dir()
+        else set()
+    )
+    unarchived = sorted(live_dirs.difference(versions).difference(allowed))
+    if unarchived:
+        issues.append(
+            "live cache version(s) have no trusted archive: " + ", ".join(unarchived)
+        )
+    if issues:
+        raise RuntimeError("cache archive audit failed: " + "; ".join(issues))
+    return repaired
 
 
 def ensure_plugin(
@@ -275,16 +462,25 @@ def ensure_plugin(
     source_root = source_plugin_root(repo_root)
     desired_version = source_plugin_version(source_root)
     cache_root = plugin_cache_root(codex_home)
+    archive_root = cache_archive_root(codex_home)
     entry = plugin_entry(codex)
     was_installed = entry is not None
 
     if entry is not None and entry.get("version") == desired_version:
+        repaired = audit_cache_archive(
+            cache_root, archive_root, repair=apply
+        )
         require_cache_parity(
             source_root,
             cache_root / desired_version,
             desired_version,
             same_version=True,
         )
+        if repaired:
+            print(
+                "[OK] repaired live Context Guard cache version(s): "
+                + ", ".join(repaired)
+            )
         if not entry.get("enabled"):
             raise RuntimeError(
                 f"plugin {PLUGIN_ID!r} is installed but disabled; apply the shared config"
@@ -306,6 +502,7 @@ def ensure_plugin(
     with cache_install_lock(cache_root):
         entry = plugin_entry(codex)
         if entry is not None and entry.get("version") == desired_version:
+            audit_cache_archive(cache_root, archive_root, repair=True)
             require_cache_parity(
                 source_root,
                 cache_root / desired_version,
@@ -313,12 +510,34 @@ def ensure_plugin(
                 same_version=True,
             )
         else:
-            with preserve_cached_versions(cache_root) as preserved:
+            archived = archive_live_versions(cache_root, archive_root)
+            repaired = audit_cache_archive(
+                cache_root, archive_root, repair=True
+            )
+            try:
                 run(codex, "plugin", "add", PLUGIN_ID, "--json")
-            if preserved:
+            except BaseException:
+                audit_cache_archive(cache_root, archive_root, repair=True)
+                raise
+            repaired.extend(
+                audit_cache_archive(
+                    cache_root,
+                    archive_root,
+                    repair=True,
+                    allow_unarchived={desired_version},
+                )
+            )
+            archived.extend(archive_live_versions(cache_root, archive_root))
+            audit_cache_archive(cache_root, archive_root, repair=False)
+            if archived:
                 print(
-                    "[OK] preserved prior Context Guard cache version(s): "
-                    + ", ".join(preserved)
+                    "[OK] archived Context Guard cache version(s): "
+                    + ", ".join(dict.fromkeys(archived))
+                )
+            if repaired:
+                print(
+                    "[OK] repaired live Context Guard cache version(s): "
+                    + ", ".join(dict.fromkeys(repaired))
                 )
         entry = plugin_entry(codex)
 

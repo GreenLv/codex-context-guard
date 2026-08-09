@@ -113,23 +113,21 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
-Stop classification uses the whole reply rather than an isolated success word.
-Explicit unfinished reports, bounded user-action handoffs, externally pending
-reviews, and policy holds outrank local milestone language. The hold vocabulary
-is deliberately narrow: a reply that merely lists agent-owned submission,
-publication, promotion, or repository follow-ups still enters the completion
-gate. Positive and adversarial bilingual regressions preserve both sides of
-this boundary.
+Classifier 1.0 turns the whole Stop reply into a stable decision result instead
+of relying on a single regex precedence match. It extracts remaining action
+categories, ownership (`assistant`, `user`, or `external`), and current-turn
+authorization (`authorized`, `denied`, or `out_of_scope`). User handoffs,
+external waits, and denied/out-of-scope deferred phases may end a turn. Any
+authorized assistant-owned remainder gates, including a mixed reply that also
+mentions external review.
 
-Deferred phases also use current-turn scope. A prompt limited to review, audit,
-test, verification, local commit, or reporting may end after the reply clearly
-leaves a later phase unresolved. The exemption is disabled when the current
-prompt asks to continue, finish the whole or remaining task, push, publish,
-deploy, promote, create a remote, or run CI. This prevents both a false
-continuation at an authority boundary and a vague phase label from hiding work
-the agent was explicitly told to continue. Classification reads the full
-hash-verified prompt record; the bounded requirement summary remains a recovery
-display and cannot truncate the authorization decision.
+The outcome taxonomy is `allow_neutral`, `allow_user_handoff`,
+`allow_external_wait`, `allow_out_of_scope_deferred`,
+`gate_completion_claim`, `gate_authorized_remaining_work`,
+`consume_checkpoint`, and `fail_closed_integrity`. Prompt negation,
+double-negation, bounded local scope, broad execution authority, and bilingual
+deferred wording have metamorphic tests. Classification reads the full
+hash-verified prompt record; an ambiguous prompt boundary fails closed.
 
 ## Hook lifecycle
 
@@ -146,7 +144,7 @@ display and cannot truncate the authorization decision.
 
 ## Private state
 
-Schema 3 contains:
+Schema 4 contains:
 
 - session identity and lifecycle timestamps;
 - prompt metadata and immutable prompt records;
@@ -156,12 +154,26 @@ Schema 3 contains:
 - bounded agent records;
 - compaction history;
 - turn-bound completion attempt and private checkpoint;
+- at most 32 hash-only Stop decision records with classifier version, outcome,
+  reason codes, prompt/reply SHA-256, and action ownership/authorization;
 - integrity status and a canonical content hash.
 
 Writes are atomic. Session operations use a cross-platform lock. State is
 validated before use; corrupted state is preserved for diagnosis and rebuilt
 only from hash-verified prompt records. Reconstructed requirements return to
-pending because prior evidence cannot be silently re-trusted.
+pending because prior evidence cannot be silently re-trusted. Schema 1, 2, and
+3 migrate to schema 4 with an empty decision log.
+
+## Historical Hook cache lifecycle
+
+The installer archives immutable version trees under
+`CODEX_HOME/plugins/cache-archive/codex-context-guard/context-guard/<version>`
+and stores their SHA-256 manifests in an atomic trusted index. It archives live
+versions before invoking Codex, restores deleted historical live caches after
+installation, and archives the newly installed version after parity succeeds.
+Read-only runs audit only; `--apply` repairs a live cache only from a valid
+archive. Missing or corrupt archive evidence fails closed, and no archive is
+auto-pruned.
 
 ## Exports and successor packs
 
@@ -172,7 +184,7 @@ creates, activates, retires, or grants authority to a task.
 
 ## Maintenance boundary
 
-The active maintenance scope is reproducible correctness/security regressions,
-Codex Hook/API compatibility, tests, and documentation. Semantic evidence
-matching, a shared multi-agent workspace, and telemetry require separate
-evidence and approval; they are not implicit roadmap commitments.
+The 0.5.x maintenance scope is compatible schema-4, classifier, diagnostics,
+cache-lifecycle, correctness/security, Codex Hook/API, test, and documentation
+work. Semantic evidence matching and a shared multi-agent workspace require
+separate evidence and approval; they are not implicit roadmap commitments.

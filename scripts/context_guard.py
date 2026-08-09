@@ -22,7 +22,9 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+CLASSIFIER_VERSION = "1.0.0"
+DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
 EVIDENCE_LIMIT = 200
 AGENT_RECORD_LIMIT = 64
@@ -57,6 +59,7 @@ STATE_REQUIRED_KEYS = {
     "completion_attempt",
     "completion_checkpoint",
     "continuation_attempts",
+    "decision_log",
     "integrity",
     "content_hash",
 }
@@ -195,6 +198,78 @@ DEFERRED_PHASE_RE = re.compile(
     r"(?:下一|后续)(?:个)?(?:阶段|步).{0,16}"
     r"(?:仍|还|尚)?(?:需|需要|待)",
     re.IGNORECASE | re.DOTALL,
+)
+REMAINING_WORK_RE = re.compile(
+    r"\b(?:next|later|subsequent|future)\s+(?:phase|step|turn)|"
+    r"\b(?:remain(?:s|ing)?|still)\s+(?:need|require|pending)|"
+    r"\b(?:defer(?:red)?|leave|left)\s+.{0,32}(?:later|next|future)|"
+    r"\bnext\s+i\s+will\b|\bi\s+will\s+(?:next|then)\b|"
+    r"(?:下一|后续)(?:个)?(?:阶段|步|轮)|(?:仍|还|尚)(?:需|需要|待)|"
+    r"(?:留待|推迟到|延后到)(?:下一|后续)|"
+    r"\bthen\s+continue\b|(?:然后|随后)继续|"
+    r"(?:接下来|随后|与此同时).{0,16}(?:我会|我将|会|需要|仍需)|"
+    r"后续.{0,12}(?:处理|执行|完成)",
+    re.IGNORECASE | re.DOTALL,
+)
+USER_HANDOFF_RE = re.compile(
+    r"\b(?:await(?:ing)?|wait(?:ing)?)\s+for\s+"
+    r"(?:(?:your|user(?:'s)?)\s+)?(?:approval|authorization|confirmation|"
+    r"decision|choice|input|response|acceptance)|"
+    r"\b(?:need|require)\s+(?:you|the\s+user)\s+to\s+"
+    r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|open|configure|"
+    r"reply|respond)|\bplease\s+(?:act|approve|authorize|confirm|decide|choose|"
+    r"log\s*in|open|configure|reply|respond)|"
+    r"\bwait(?:ing)?\s+for\s+(?:(?:you|the\s+user)\s+)?to\s+"
+    r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|configure|reply|respond)|"
+    r"\b(?:cannot|can't|unable\s+to)\s+(?:safely\s+)?(?:continue|proceed)\s+"
+    r"without\s+(?:your|user(?:'s)?)\s+(?:approval|authorization|confirmation|input)|"
+    r"(?:等待|待)(?:你|您|用户)?(?:的)?(?:明确)?"
+    r"(?:验收|确认|授权|批准|审批|决定|选择|操作|回复|输入)|"
+    r"(?:请|需要|必须|须)(?:先)?(?:由)?(?:你|您|用户)(?:本人)?(?:先)?"
+    r".{0,48}(?:验收|确认|授权|批准|审批|决定|选择|操作|登录|打开|配置|回复|输入)|"
+    r"(?:你|您|用户).{0,12}(?:需要|请).{0,16}"
+    r"(?:验收|确认|授权|批准|审批|决定|选择|操作|登录|打开|配置|回复|输入)|"
+    r"(?:等待|待).{0,16}(?:你|您|用户).{0,12}(?:批准|确认|授权|回复|操作)|"
+    r"(?:请|需要你|下一步需要你).{0,48}(?:回复|告诉|通知|登录|打开|配置|批准|确认)|"
+    r"(?:完成|配置|批准|确认).{0,16}(?:后|之后).{0,16}(?:回复|告诉我|通知我)|"
+    r"(?:等待|待).{0,16}(?:批次)?确认",
+    re.IGNORECASE | re.DOTALL,
+)
+EXTERNAL_WAIT_RE = re.compile(
+    r"\b(?:pending|awaiting|waiting\s+for)\s+"
+    r"(?:(?:external|third[- ]party|platform|maintainer|reviewer)\s+)?"
+    r"(?:review|approval|response|decision|selection|listing|inclusion|result)|"
+    r"\b(?:pr|pull\s+request|submission|listing).{0,24}"
+    r"(?:remain(?:s|ed)?|is|are)?\s*(?:pending|awaiting|on\s+hold)|"
+    r"(?:等待|待)(?:(?:外部|第三方|平台|维护者|审核方|对方)(?:的)?)?"
+    r"(?:审核|审查|批准|回复|答复|决定|结果|选择|收录)|"
+    r"(?:PR|申请|投稿|提交).{0,20}(?:仍|继续|保持|目前|当前)?(?:等待|待)"
+    r"(?:审核|审查|批准|回复|答复|决定|结果|选择|收录)",
+    re.IGNORECASE | re.DOTALL,
+)
+POLICY_HOLD_RE = re.compile(
+    r"\b(?:paused|on\s+hold|not\s+proceeding|do\s+not\s+proceed|"
+    r"no\s+(?:new\s+)?(?:publication|submission|repository\s+changes?|"
+    r"writes?|mutations?|promotion|external\s+actions?))\b|"
+    r"(?:暂停|搁置|暂不|不再|没有|未).{0,28}"
+    r"(?:发布|投稿|推广|写入|变更|外部操作|修改.{0,8}(?:仓库|代码|项目))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Categories are intentionally stable diagnostic identifiers. They describe the
+# action, not the surrounding natural-language clause, so decision_log never
+# needs to retain raw prompt or reply text.
+ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("local_review", re.compile(r"\b(?:review|audit|inspect|check)\b|(?:审查|审核|检查|评估)", re.I)),
+    ("local_edit", re.compile(r"\b(?:edit|modify|implement|update\s+(?:the\s+)?(?:code|repository))\b|(?:实现|修改|更新)(?:.{0,10}(?:代码|仓库|项目))?", re.I)),
+    ("local_commit", re.compile(r"\bcommit(?:ted|ting)?\b|(?:本地提交|提交(?:改动|变更|代码))", re.I)),
+    ("remote_create", re.compile(r"\bcreat(?:e|ing).{0,18}(?:remote|repo(?:sitory)?)\b|创建.{0,12}(?:远端|仓库)", re.I)),
+    ("remote_push", re.compile(r"\bpush(?:ed|ing)?\b|推送", re.I)),
+    ("remote_publish", re.compile(r"\b(?:publish|deploy|promot|release|blog|community\s+post)\w*\b|(?:发布|部署|推广|博客|社区发帖|正式版本)", re.I)),
+    ("remote_ci", re.compile(r"\b(?:run(?:ning)?\s+)?ci\b|(?:运行|跑).{0,8}CI", re.I)),
+    ("review_followup", re.compile(r"\b(?:address|handle|process|check).{0,24}(?:review\s+(?:comment|feedback)|review\s+log)\b|(?:处理|检查).{0,16}(?:审查意见|审核意见|审核日志)", re.I)),
+    ("test_verify", re.compile(r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)", re.I)),
+    ("artifact_work", re.compile(r"\b(?:import|download|configure|configuration)\w*\b|(?:导入|下载|配置|打开页面|处理PDF|PDF\s*阶段)", re.I)),
 )
 INTERNAL_CONTINUATION_PREFIX = "[Context Guard continuation]"
 EVIDENCE_ID_RE = re.compile(r"^E\d{4,}$")
@@ -524,7 +599,7 @@ def prompt_record_hash(record: dict[str, Any]) -> str:
 
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, SCHEMA_VERSION}:
+    if version not in {1, 2, 3, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -542,6 +617,8 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         }
     elif version == 2:
         required = STATE_REQUIRED_KEYS - {"integrity", "work_state", "agents"}
+    elif version == 3:
+        required = STATE_REQUIRED_KEYS - {"decision_log"}
     else:
         required = STATE_REQUIRED_KEYS
     missing = sorted(required - set(state))
@@ -566,6 +643,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         "agents",
         "open_items",
         "compactions",
+        "decision_log",
     ):
         if key in state and not isinstance(state.get(key), list):
             raise StateIntegrityError(f"private state field {key} must be a list")
@@ -664,6 +742,7 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "completion_attempt": None,
         "completion_checkpoint": None,
         "continuation_attempts": 0,
+        "decision_log": [],
         "integrity": {
             "status": "ok",
             "issue": None,
@@ -698,11 +777,13 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
         state["completion_attempt"] = None
-    elif version not in {2, SCHEMA_VERSION}:
+    elif version not in {2, 3, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
         state["agents"] = []
+    if version in {1, 2, 3}:
+        state["decision_log"] = []
         state["schema_version"] = SCHEMA_VERSION
     if not isinstance(state.get("integrity"), dict):
         state["integrity"] = {
@@ -718,6 +799,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
     state.setdefault("continuation_attempts", 0)
+    state.setdefault("decision_log", [])
     return state
 
 
@@ -838,22 +920,227 @@ def latest_transcript_turn_id(
     return None
 
 
-def reports_non_completion(text: str, prompt_text: str = "") -> bool:
-    if NON_COMPLETION_RE.search(text) or EXPLICIT_HOLD_RE.search(text):
-        return True
-    actionable_prompt = NEGATED_BROAD_EXECUTION_RE.sub("", prompt_text)
-    return bool(
-        prompt_text
-        and BOUNDED_TURN_PROMPT_RE.search(prompt_text)
-        and not BROAD_EXECUTION_PROMPT_RE.search(actionable_prompt)
-        and DEFERRED_PHASE_RE.search(text)
+def _protected_prompt_clauses(text: str) -> list[str]:
+    protected = re.sub(
+        r"\b(?:do\s+not|don't|must\s+not|should\s+not)\s+skip\s+",
+        "",
+        text,
+        flags=re.IGNORECASE,
     )
+    protected = re.sub(r"(?:不要|不得|不能)\s*(?:跳过|遗漏)", "", protected)
+    protected = re.sub(r"(?:不能|不可)\s*不\s*", "", protected)
+    return [
+        clause.strip()
+        for clause in re.split(r"[\n。！？!?；;，,]+", protected)
+        if clause.strip()
+    ]
+
+
+def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
+    authorized: set[str] = set()
+    denied: set[str] = set()
+    positive_clauses: list[str] = []
+    negation = re.compile(
+        r"\b(?:do\s+not|don't|must\s+not|should\s+not|no|without)\b|"
+        r"(?:不要|不得|无需|不需要|暂不|不再|别|切勿|勿|不跑|不执行)",
+        re.IGNORECASE,
+    )
+    for clause in _protected_prompt_clauses(prompt_text):
+        negative = bool(negation.search(clause))
+        if not negative:
+            positive_clauses.append(clause)
+        for category, pattern in ACTION_PATTERNS:
+            if pattern.search(clause):
+                (denied if negative else authorized).add(category)
+    positive_text = "\n".join(positive_clauses)
+    broad = bool(
+        BROAD_EXECUTION_PROMPT_RE.search(positive_text)
+        or re.search(
+            r"\bimplement\s+(?:(?:the|this)\s+)?(?:proposed\s+)?plan\b|"
+            r"(?:实施|实现|执行|完成).{0,12}(?:既定|上述|这个|该|完整|发布)?计划",
+            positive_text,
+            re.IGNORECASE,
+        )
+    )
+    bounded = bool(BOUNDED_TURN_PROMPT_RE.search(prompt_text)) and not broad
+    return {
+        "authorized": authorized,
+        "denied": denied,
+        "broad": broad,
+        "bounded": bounded,
+    }
+
+
+def _reply_clauses(text: str) -> list[str]:
+    return [
+        clause.strip()
+        for clause in re.split(r"[\n。！？!?；;.]+", text)
+        if clause.strip()
+    ]
+
+
+def _action_authorization(category: str, scope: dict[str, Any]) -> str:
+    if category in scope["denied"]:
+        return "denied"
+    if category in scope["authorized"] or scope["broad"]:
+        return "authorized"
+    if scope["bounded"]:
+        return "out_of_scope"
+    # Ambiguous task scopes fail toward continuation, not silent completion.
+    return "authorized"
+
+
+def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
+    scope = prompt_action_scope(prompt_text)
+    actions: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    explicit_assistant_facts: set[tuple[str, str, str]] = set()
+    for clause in _reply_clauses(text):
+        if USER_HANDOFF_RE.search(clause):
+            fact = ("user_action", "user", "user_only")
+            if fact not in seen:
+                actions.append(
+                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
+                )
+                seen.add(fact)
+            continue
+        if EXTERNAL_WAIT_RE.search(clause):
+            fact = ("external_wait", "external", "external_dependency")
+            if fact not in seen:
+                actions.append(
+                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
+                )
+                seen.add(fact)
+            # A single clause can still contain an explicit assistant future
+            # after an external status, so do not return early here.
+        remaining_marker = bool(REMAINING_WORK_RE.search(clause))
+        remaining = bool(
+            remaining_marker
+            or NON_COMPLETION_RE.search(clause)
+            or re.search(r"\b(?:next|then)\s+i\s+(?:will|need\s+to)\b", clause, re.I)
+        )
+        if not remaining:
+            continue
+        matched = False
+        for category, pattern in ACTION_PATTERNS:
+            if not pattern.search(clause):
+                continue
+            # Review words inside a pure external-wait clause belong to the
+            # reviewer unless the assistant explicitly claims a future action.
+            if (
+                EXTERNAL_WAIT_RE.search(clause)
+                and not re.search(r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|我需|需要我)", clause, re.I)
+            ):
+                continue
+            authorization = _action_authorization(category, scope)
+            fact = (category, "assistant", authorization)
+            if fact not in seen:
+                actions.append(
+                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
+                )
+                seen.add(fact)
+            if re.search(
+                r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|需要我|接下来我)",
+                clause,
+                re.IGNORECASE,
+            ):
+                explicit_assistant_facts.add(fact)
+            matched = True
+        if not matched and remaining_marker and not EXTERNAL_WAIT_RE.search(clause):
+            authorization = _action_authorization("generic_work", scope)
+            fact = ("generic_work", "assistant", authorization)
+            if fact not in seen:
+                actions.append(
+                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
+                )
+                seen.add(fact)
+            if re.search(
+                r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|需要我|接下来我)",
+                clause,
+                re.IGNORECASE,
+            ):
+                explicit_assistant_facts.add(fact)
+    if any(item["owner"] == "user" for item in actions):
+        actions = [
+            item
+            for item in actions
+            if item["owner"] != "assistant"
+            or (
+                item["category"],
+                item["owner"],
+                item["authorization"],
+            )
+            in explicit_assistant_facts
+        ]
+    return actions
+
+
+def classify_stop_decision(
+    text: str, prompt_text: str = "", *, prompt_integrity: bool = True
+) -> dict[str, Any]:
+    if not prompt_integrity:
+        outcome = "fail_closed_integrity"
+        reasons = ["prompt_integrity_unavailable"]
+        actions: list[dict[str, str]] = []
+    else:
+        actions = remaining_action_facts(text, prompt_text)
+        assistant_actions = [
+            item for item in actions if item["owner"] == "assistant"
+        ]
+        authorized = [
+            item
+            for item in assistant_actions
+            if item["authorization"] == "authorized"
+        ]
+        if authorized:
+            outcome = "gate_authorized_remaining_work"
+            reasons = ["assistant_actionable_work_remains"]
+            if any(item["owner"] == "external" for item in actions):
+                reasons.append("mixed_external_and_assistant_work")
+        elif assistant_actions:
+            outcome = "allow_out_of_scope_deferred"
+            reasons = ["remaining_work_denied_or_out_of_scope"]
+        elif any(item["owner"] == "user" for item in actions):
+            outcome = "allow_user_handoff"
+            reasons = ["remaining_action_owned_by_user"]
+        elif any(item["owner"] == "external" for item in actions):
+            outcome = "allow_external_wait"
+            reasons = ["remaining_action_is_external_dependency"]
+        elif POLICY_HOLD_RE.search(text) or EXPLICIT_HOLD_RE.search(text):
+            outcome = "allow_external_wait"
+            reasons = ["explicit_policy_or_external_hold"]
+        elif NON_COMPLETION_RE.search(text):
+            outcome = "allow_neutral"
+            reasons = ["explicit_non_completion_without_actionable_detail"]
+        elif COMPLETION_RE.search(text):
+            outcome = "gate_completion_claim"
+            reasons = ["completion_language_detected"]
+        else:
+            outcome = "allow_neutral"
+            reasons = ["no_completion_or_remaining_work_claim"]
+    return {
+        "classifier_version": CLASSIFIER_VERSION,
+        "outcome": outcome,
+        "reason_codes": reasons,
+        "prompt_sha256": sha256_text(prompt_text),
+        "reply_sha256": sha256_text(text),
+        "actions": actions,
+    }
+
+
+def reports_non_completion(text: str, prompt_text: str = "") -> bool:
+    return classify_stop_decision(text, prompt_text)["outcome"] in {
+        "allow_user_handoff",
+        "allow_external_wait",
+        "allow_out_of_scope_deferred",
+    }
 
 
 def claims_completion(text: str, prompt_text: str = "") -> bool:
-    if reports_non_completion(text, prompt_text):
-        return False
-    return bool(COMPLETION_RE.search(text))
+    return classify_stop_decision(text, prompt_text)["outcome"] in {
+        "gate_completion_claim",
+        "gate_authorized_remaining_work",
+    }
 
 
 def latest_requirement_text(session_dir: Path, state: dict[str, Any]) -> str:
@@ -953,7 +1240,7 @@ def is_control_prompt(text: str) -> bool:
     return bool(
         stripped.startswith(INTERNAL_CONTINUATION_PREFIX)
         or re.fullmatch(
-            r"\$?context-guard(?:\s+(?:on|off|status|export|rollover)(?:\s+.+)?)?",
+            r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover)(?:\s+.+)?)?",
             stripped,
             re.I,
         )
@@ -963,7 +1250,7 @@ def is_control_prompt(text: str) -> bool:
 def control_action(text: str) -> tuple[str | None, str | None]:
     stripped = text.strip()
     match = re.fullmatch(
-        r"\$?context-guard(?:\s+(on|off|status|export|rollover)(?:\s+(.+))?)?",
+        r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover)(?:\s+(.+))?)?",
         stripped,
         re.I,
     )
@@ -1323,12 +1610,51 @@ def trim_evidence(state: dict[str, Any]) -> None:
     ]
 
 
+def append_decision_log(
+    state: dict[str, Any], decision: dict[str, Any], turn_id: str
+) -> None:
+    record = {
+        "created_at": utc_now(),
+        "turn_id": bounded(turn_id or "unknown-turn", 160),
+        "classifier_version": decision.get("classifier_version", CLASSIFIER_VERSION),
+        "outcome": decision.get("outcome", "fail_closed_integrity"),
+        "reason_codes": [
+            bounded(value, 120)
+            for value in decision.get("reason_codes", [])[:8]
+            if isinstance(value, str)
+        ],
+        "prompt_sha256": decision.get("prompt_sha256", sha256_text("")),
+        "reply_sha256": decision.get("reply_sha256", sha256_text("")),
+        "actions": [
+            {
+                "category": bounded(item.get("category", "unknown"), 80),
+                "owner": bounded(item.get("owner", "unknown"), 40),
+                "authorization": bounded(
+                    item.get("authorization", "unknown"), 40
+                ),
+            }
+            for item in decision.get("actions", [])[:16]
+            if isinstance(item, dict)
+        ],
+    }
+    state.setdefault("decision_log", []).append(record)
+    state["decision_log"] = state["decision_log"][-DECISION_LOG_LIMIT:]
+
+
 def status_context(state: dict[str, Any]) -> str:
     integrity = state.get("integrity", {})
+    decisions = state.get("decision_log", [])
+    last_decision = (
+        decisions[-1].get("outcome", "none")
+        if decisions and isinstance(decisions[-1], dict)
+        else "none"
+    )
     return (
         "Context Guard status: "
         f"active={state['mode']['active']}, "
         f"integrity={integrity.get('status', 'unknown')}, "
+        f"classifier={CLASSIFIER_VERSION}, "
+        f"last_decision={last_decision}, "
         f"requirements={len(state['requirements'])}, "
         f"acceptance={len(state['acceptance_items'])}, "
         f"open={len(open_item_ids(state))}, "
@@ -1338,6 +1664,25 @@ def status_context(state: dict[str, Any]) -> str:
     )
 
 
+def diagnose_context(state: dict[str, Any], limit: int = 5) -> str:
+    decisions = [
+        item
+        for item in state.get("decision_log", [])[-max(1, min(limit, 10)) :]
+        if isinstance(item, dict)
+    ]
+    if not decisions:
+        return f"Context Guard classifier {CLASSIFIER_VERSION}: no Stop decisions recorded."
+    summaries = []
+    for item in decisions:
+        reasons = ",".join(str(value) for value in item.get("reason_codes", [])[:4])
+        summaries.append(
+            f"{item.get('outcome', 'unknown')}[{bounded(reasons, 240)}]"
+        )
+    return (
+        f"Context Guard classifier {CLASSIFIER_VERSION} recent decisions: "
+        + "; ".join(summaries)
+        + ". Raw prompts and replies are not included."
+    )
 def trim_agent_records(state: dict[str, Any]) -> None:
     agents = [item for item in state.get("agents", []) if isinstance(item, dict)]
     active = [item for item in agents if item.get("status") == "running"]
@@ -1470,6 +1815,17 @@ def recovery_packet(session_dir: Path, state: dict[str, Any]) -> str:
         sections.append("\n".join(lines))
     open_ids = open_item_ids(state)
     sections.append("## Unfinished items\n- " + (", ".join(open_ids) if open_ids else "None"))
+    decisions = state.get("decision_log", [])
+    if (
+        decisions
+        and isinstance(decisions[-1], dict)
+        and decisions[-1].get("outcome") == "fail_closed_integrity"
+    ):
+        reason_codes = decisions[-1].get("reason_codes", [])
+        sections.append(
+            "## Latest fail-closed decision\n- "
+            + bounded(", ".join(str(item) for item in reason_codes), 320)
+        )
     plan_snapshot = state.get("work_state", {}).get("plan_snapshot")
     if isinstance(plan_snapshot, dict) and plan_snapshot.get("steps"):
         lines = [
@@ -1856,6 +2212,8 @@ def handle_user_prompt(
         context = "Context Guard full protection disabled; immutable prompt journaling remains active."
     elif action == "status":
         context = status_context(state)
+    elif action == "diagnose":
+        context = diagnose_context(state)
     elif action == "export":
         export_requested = True
     elif action == "rollover":
@@ -2448,20 +2806,43 @@ def handle_stop(
         }
     text = assistant_text(payload)
     prompt_text = latest_requirement_text(session_dir, state)
-    if reports_non_completion(text, prompt_text):
-        attempt = state.get("completion_attempt")
-        if isinstance(attempt, dict) and attempt.get("staged_checkpoint") is not None:
-            attempt["staged_checkpoint"] = None
-            attempt["staged_at"] = None
-            save_state(session_dir, state)
-        return {}
-    legacy_checkpoint = CHECKPOINT_RE.search(text) is not None
-    leaked_private_metadata = PRIVATE_METADATA_RE.search(text) is not None
     attempt = state.get("completion_attempt")
     turn_id = str(
         payload.get("turn_id")
         or (attempt.get("turn_id") if isinstance(attempt, dict) else "")
     )
+    prompt_integrity = bool(prompt_text) or not state.get("requirements")
+    stop_decision = classify_stop_decision(
+        text, prompt_text, prompt_integrity=prompt_integrity
+    )
+    if stop_decision["outcome"] == "fail_closed_integrity":
+        append_decision_log(state, stop_decision, turn_id)
+        save_state(session_dir, state)
+        return {
+            "continue": False,
+            "stopReason": (
+                "Context Guard stopped completion because the authoritative "
+                "prompt boundary could not be verified."
+            ),
+            "systemMessage": (
+                "Context Guard prompt integrity is ambiguous. Review the immutable "
+                "prompt ledger before retrying."
+            ),
+        }
+    if stop_decision["outcome"] in {
+        "allow_user_handoff",
+        "allow_external_wait",
+        "allow_out_of_scope_deferred",
+    }:
+        attempt = state.get("completion_attempt")
+        if isinstance(attempt, dict) and attempt.get("staged_checkpoint") is not None:
+            attempt["staged_checkpoint"] = None
+            attempt["staged_at"] = None
+        append_decision_log(state, stop_decision, turn_id)
+        save_state(session_dir, state)
+        return {}
+    legacy_checkpoint = CHECKPOINT_RE.search(text) is not None
+    leaked_private_metadata = PRIVATE_METADATA_RE.search(text) is not None
     turn_matches = (
         isinstance(attempt, dict)
         and str(attempt.get("turn_id")) == turn_id
@@ -2471,13 +2852,18 @@ def handle_stop(
         if turn_matches and isinstance(attempt, dict)
         else None
     )
-    completion_claim = claims_completion(text, prompt_text)
+    completion_claim = stop_decision["outcome"] in {
+        "gate_completion_claim",
+        "gate_authorized_remaining_work",
+    }
     if (
         checkpoint is None
         and not completion_claim
         and not legacy_checkpoint
         and not leaked_private_metadata
     ):
+        append_decision_log(state, stop_decision, turn_id)
+        save_state(session_dir, state)
         return {}
     tracked_items = any(
         item.get("status") != "superseded"
@@ -2490,6 +2876,10 @@ def handle_stop(
         and not state["open_items"]
         and not legacy_checkpoint
     ):
+        stop_decision["outcome"] = "allow_neutral"
+        stop_decision["reason_codes"] = ["no_tracked_completion_contract"]
+        append_decision_log(state, stop_decision, turn_id)
+        save_state(session_dir, state)
         return {}
     issues: list[str] = []
     if legacy_checkpoint:
@@ -2510,6 +2900,9 @@ def handle_stop(
     if not issues:
         apply_checkpoint(state, checkpoint, turn_id)
         state["continuation_attempts"] = 0
+        stop_decision["outcome"] = "consume_checkpoint"
+        stop_decision["reason_codes"] = ["validated_turn_bound_checkpoint"]
+        append_decision_log(state, stop_decision, turn_id)
         save_state(session_dir, state)
         return {}
     concise = "; ".join(issues[:12])
@@ -2521,6 +2914,10 @@ def handle_stop(
         + "."
     )
     if state["continuation_attempts"] >= 2:
+        stop_decision["reason_codes"] = list(stop_decision["reason_codes"]) + [
+            "completion_contract_failed_twice"
+        ]
+        append_decision_log(state, stop_decision, turn_id)
         save_state(session_dir, state)
         return {
             "continue": False,
@@ -2531,6 +2928,10 @@ def handle_stop(
             )
         }
     state["continuation_attempts"] += 1
+    stop_decision["reason_codes"] = list(stop_decision["reason_codes"]) + [
+        "missing_or_invalid_checkpoint"
+    ]
+    append_decision_log(state, stop_decision, turn_id)
     save_state(session_dir, state)
     return {
         "decision": "block",
@@ -3292,6 +3693,40 @@ def command_status() -> int:
     return 0
 
 
+def command_diagnose(args: argparse.Namespace) -> int:
+    latest = find_latest_state(data_root())
+    if latest is None:
+        print(
+            json.dumps(
+                {
+                    "classifier_version": CLASSIFIER_VERSION,
+                    "decisions": [],
+                },
+                ensure_ascii=True,
+                indent=2,
+            )
+        )
+        return 0
+    _, state = latest
+    limit = max(1, min(int(args.limit), 20))
+    decisions = [
+        item
+        for item in state.get("decision_log", [])[-limit:]
+        if isinstance(item, dict)
+    ]
+    print(
+        json.dumps(
+            {
+                "classifier_version": CLASSIFIER_VERSION,
+                "decisions": decisions,
+            },
+            ensure_ascii=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def command_checkpoint_status(args: argparse.Namespace) -> int:
     try:
         snapshot = checkpoint_status(
@@ -3358,6 +3793,10 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("hook", help="Read one Codex hook payload from stdin")
     subparsers.add_parser("status", help="Show the latest private session summary")
+    diagnose = subparsers.add_parser(
+        "diagnose", help="Show bounded, hash-only recent Stop decisions"
+    )
+    diagnose.add_argument("--limit", type=int, default=5)
     subparsers.add_parser("cleanup", help="Delete ended sessions older than 30 days")
     subparsers.add_parser("self-test", help="Validate the runtime and hook bundle")
     for name, help_text in (
@@ -3383,6 +3822,8 @@ def main() -> int:
         return command_hook()
     if args.command == "status":
         return command_status()
+    if args.command == "diagnose":
+        return command_diagnose(args)
     if args.command == "cleanup":
         print(f"Removed {cleanup_old_sessions(data_root())} expired session(s).")
         return 0

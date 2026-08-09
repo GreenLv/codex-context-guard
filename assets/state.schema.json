@@ -20,11 +20,12 @@
     "completion_attempt",
     "completion_checkpoint",
     "continuation_attempts",
+    "decision_log",
     "integrity",
     "content_hash"
   ],
   "properties": {
-    "schema_version": {"const": 3},
+    "schema_version": {"const": 4},
     "session": {
       "type": "object",
       "required": ["id", "cwd", "created_at", "updated_at", "ended_at"]
@@ -61,6 +62,59 @@
     "completion_attempt": {"type": ["object", "null"]},
     "completion_checkpoint": {"type": ["object", "null"]},
     "continuation_attempts": {"type": "integer", "minimum": 0, "maximum": 2},
+    "decision_log": {
+      "type": "array",
+      "maxItems": 32,
+      "description": "Bounded, hash-only Stop decisions. Raw prompt and reply text are forbidden.",
+      "items": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "turn_id",
+          "classifier_version",
+          "outcome",
+          "reason_codes",
+          "prompt_sha256",
+          "reply_sha256",
+          "actions"
+        ],
+        "properties": {
+          "created_at": {"type": "string"},
+          "turn_id": {"type": "string"},
+          "classifier_version": {"type": "string"},
+          "outcome": {
+            "enum": [
+              "allow_neutral",
+              "allow_user_handoff",
+              "allow_external_wait",
+              "allow_out_of_scope_deferred",
+              "gate_completion_claim",
+              "gate_authorized_remaining_work",
+              "consume_checkpoint",
+              "fail_closed_integrity"
+            ]
+          },
+          "reason_codes": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+          "prompt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "reply_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "actions": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "required": ["category", "owner", "authorization"],
+              "properties": {
+                "category": {"type": "string"},
+                "owner": {"enum": ["assistant", "user", "external"]},
+                "authorization": {"enum": ["authorized", "denied", "out_of_scope", "user_only", "external_dependency"]}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "integrity": {
       "type": "object",
       "required": ["status", "issue", "recovered_at", "backup_file"],

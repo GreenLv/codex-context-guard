@@ -28,6 +28,8 @@ The private store may contain:
 - the latest bounded native-plan mirror;
 - bounded delegated-agent metadata and final result summaries;
 - recovery snapshots and private completion checkpoints.
+- at most 32 recent Stop decisions containing timestamps, turn IDs, classifier
+  versions, outcome/reason codes, prompt/reply SHA-256, and action facts.
 
 The plugin intentionally does not store chain-of-thought or copy complete root
 or delegated-agent transcripts.
@@ -39,6 +41,9 @@ or delegated-agent transcripts.
   SHA-256 metadata.
 - Delegated-agent results are bounded summaries rather than transcripts.
 - Recovery prioritizes active requirements and failures over historical detail.
+- Decision diagnostics never retain raw reply text, chain-of-thought, local
+  paths, credentials, or tokens. Recovery includes only the latest short
+  fail-closed reason when relevant, not the decision history.
 - Ended sessions become eligible for cleanup after 30 days.
 
 ## Redaction
@@ -65,6 +70,8 @@ outside the Hook runtime and remain explicit user actions.
 - `context-guard off` stops recovery and completion gating but keeps prompt
   journaling for the active task.
 - `context-guard status` exposes counts and integrity state, not raw prompts.
+- `context-guard diagnose` exposes bounded decision metadata and hashes, not
+  raw prompts or replies.
 - `context-guard export` and `rollover` are explicit-only writes.
 - Uninstalling plugin code does not automatically delete private runtime data.
 
@@ -72,6 +79,11 @@ To remove private data, first end or abandon dependent tasks, locate the
 Codex-managed data directory for the installed plugin, review its contents, and
 remove only that exact directory. Do not recursively delete a broad Codex home
 or plugin cache root.
+
+Plugin code archives live under `CODEX_HOME/plugins/cache-archive/`, separate
+from private session data. They contain versioned public plugin files and a
+SHA-256 index, not prompts, replies, transcripts, or task state. Archives are
+never auto-pruned because already-open tasks may retain their absolute Hook path.
 
 ## Threat model and limits
 

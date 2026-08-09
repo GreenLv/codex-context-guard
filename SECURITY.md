@@ -3,7 +3,7 @@
 ## Supported version
 
 Security and correctness fixes are applied to the current supported source line,
-currently `0.4.16`.
+currently `0.5.x`.
 
 ## Reporting a vulnerability
 
@@ -22,3 +22,9 @@ Context Guard is a local correctness sidecar, not a security sandbox. It cannot
 make an untrusted Hook safe, prove semantic correctness, or replace operating
 system access controls. Users must review and trust the exact Hook definition
 before enabling it.
+
+Historical cache repair trusts only the archive SHA-256 index. A missing,
+unindexed, symlinked, or hash-mismatched archive fails closed; `--apply` never
+uses a corrupt archive as repair input and archives are not automatically
+deleted. `context-guard diagnose` exposes bounded hashes, reason codes, action
+owners, and authorization states, not raw prompts or replies.

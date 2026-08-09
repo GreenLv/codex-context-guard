@@ -72,6 +72,9 @@ turn invalidates any unstaged or unused completion attempt from the prior turn.
 - `$context-guard` or `context-guard on`: activate full protection.
 - `context-guard off`: stop recovery and completion gating; prompt journaling continues.
 - `context-guard status`: show protected state without exposing raw prompts.
+- `context-guard diagnose`: show the bounded recent Stop decision classes,
+  reason codes, hashes, action ownership, and authorization without raw prompts
+  or replies.
 - `context-guard export <path>`: write a redacted handoff document inside the current project.
 - With no export path, use `.codex/context-guard/CONTEXT_HANDOFF.md`.
 - `context-guard rollover <directory>`: after the user explicitly requests a
