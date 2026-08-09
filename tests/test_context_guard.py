@@ -791,6 +791,123 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result["decision"], "block")
         self.assertEqual(self.state()["continuation_attempts"], 1)
 
+    def test_bounded_turn_can_defer_a_later_phase_without_continuation(self) -> None:
+        cases = (
+            (
+                "$context-guard\nreview一下两个仓库的改动，没问题就提交",
+                (
+                    "两个仓库已审查并分别完成本地提交，未推送。验证均通过。"
+                    "下一阶段仍需创建 PRIVATE 远程仓库、推送并运行 CI。"
+                ),
+            ),
+            (
+                "$context-guard\nReview both repositories and commit them if clean.",
+                (
+                    "Both repositories are reviewed, verified, and committed locally. "
+                    "The next phase still requires creating the private remote, "
+                    "pushing, and running CI."
+                ),
+            ),
+            (
+                "$context-guard\n只审查并本地提交，不要推送或运行 CI。",
+                (
+                    "两个仓库已审查并分别完成本地提交，未推送。验证均通过。"
+                    "下一阶段仍需创建 PRIVATE 远程仓库、推送并运行 CI。"
+                ),
+            ),
+            (
+                "$context-guard\nReview and commit locally; do not push or run CI.",
+                (
+                    "Both repositories are reviewed, verified, and committed locally. "
+                    "The next phase still requires creating the private remote, "
+                    "pushing, and running CI."
+                ),
+            ),
+        )
+        for prompt, message in cases:
+            with self.subTest(prompt=prompt):
+                self.prompt(prompt)
+                self.assertTrue(cg.reports_non_completion(message, prompt))
+                self.assertFalse(cg.claims_completion(message, prompt))
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload("Stop", last_assistant_message=message)
+                    ),
+                    {},
+                )
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+
+    def test_broad_execution_prompt_keeps_later_phase_gated(self) -> None:
+        cases = (
+            (
+                "$context-guard\n继续执行完整发布计划，创建远端、推送并等待 CI。",
+                (
+                    "两个仓库已审查并分别完成本地提交，未推送。"
+                    "验证均通过。下一阶段仍需创建 PRIVATE 远程仓库、"
+                    "推送并运行 CI。"
+                ),
+            ),
+            (
+                "$context-guard\nContinue the whole release plan, push, and run CI.",
+                (
+                    "Both repositories are reviewed, verified, and committed locally. "
+                    "The next phase still requires creating the private remote, "
+                    "pushing, and running CI."
+                ),
+            ),
+            (
+                "$context-guard\nReview the local checkpoint only. "
+                + ("bounded scope detail " * 70)
+                + "\nThen push and run CI.",
+                (
+                    "Both repositories are reviewed, verified, and committed locally. "
+                    "The next phase still requires creating the private remote, "
+                    "pushing, and running CI."
+                ),
+            ),
+            (
+                "$context-guard\n不要跳过推送，继续执行完整发布计划。",
+                (
+                    "两个仓库已审查并分别完成本地提交，未推送。"
+                    "验证均通过。下一阶段仍需创建 PRIVATE 远程仓库、"
+                    "推送并运行 CI。"
+                ),
+            ),
+        )
+        for prompt, message in cases:
+            with self.subTest(prompt=prompt):
+                self.prompt(prompt)
+                self.assertFalse(cg.reports_non_completion(message, prompt))
+                self.assertTrue(cg.claims_completion(message, prompt))
+                result = cg.dispatch(
+                    self.payload("Stop", last_assistant_message=message)
+                )
+                self.assertEqual(result["decision"], "block")
+                self.assertEqual(self.state()["continuation_attempts"], 1)
+
+    def test_tampered_full_prompt_record_fails_closed(self) -> None:
+        prompt = (
+            "$context-guard\nReview the local checkpoint only. "
+            + ("bounded scope detail " * 70)
+            + "\nThen push and run CI."
+        )
+        message = (
+            "Both repositories are reviewed, verified, and committed locally. "
+            "The next phase still requires creating the private remote, "
+            "pushing, and running CI."
+        )
+        self.prompt(prompt)
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        record_path = session_dir / "prompts" / "P0001.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["text"] = "$context-guard\nReview the local checkpoint only."
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+
+        self.assertEqual(cg.latest_requirement_text(session_dir, self.state()), "")
+        result = cg.dispatch(self.payload("Stop", last_assistant_message=message))
+        self.assertEqual(result["decision"], "block")
+        self.assertEqual(self.state()["continuation_attempts"], 1)
+
     def test_assistant_owned_followups_still_trigger_continuation(self) -> None:
         messages = (
             "全部检查已通过。接下来需要打开页面并继续配置。",

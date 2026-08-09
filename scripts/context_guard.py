@@ -155,6 +155,47 @@ EXPLICIT_HOLD_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# A bounded user turn can legitimately complete a local review, test, or commit
+# while explicitly leaving a more expansive phase for later authorization. The
+# assistant wording alone is ambiguous: the same "next phase remains" sentence
+# must still be gated after a broad "continue/finish/push" instruction. Keep the
+# prompt and reply classifiers separate so the Stop decision is scope-aware.
+BOUNDED_TURN_PROMPT_RE = re.compile(
+    r"\b(?:review|audit|inspect|check|test|verify|commit|stage|report|explain)\b|"
+    r"(?:审查|审核|检查|评估|测试|验证|本地提交|提交(?:改动|变更|代码)?|汇报|解释)",
+    re.IGNORECASE,
+)
+EN_BROAD_EXECUTION_ACTION = (
+    r"(?:continue|proceed|"
+    r"(?:finish|complete|execute)\s+(?:(?:the|this)\s+)?"
+    r"(?:entire|whole|remaining)|push|publish|deploy|promote|"
+    r"create.{0,16}(?:repo(?:sitory)?|remote)|run.{0,8}ci)"
+)
+ZH_BROAD_EXECUTION_ACTION = (
+    r"(?:继续|收尾|(?:完成|执行)(?:整个|整体|完整|全部|剩余)|"
+    r"推送|发布|部署|推广|创建.{0,12}(?:远端|仓库)|"
+    r"(?:运行|跑).{0,8}CI)"
+)
+BROAD_EXECUTION_PROMPT_RE = re.compile(
+    rf"\b{EN_BROAD_EXECUTION_ACTION}\b|{ZH_BROAD_EXECUTION_ACTION}",
+    re.IGNORECASE | re.DOTALL,
+)
+NEGATED_BROAD_EXECUTION_RE = re.compile(
+    rf"\b(?:do\s+not|don't|must\s+not|should\s+not|without)\s+"
+    rf"{EN_BROAD_EXECUTION_ACTION}"
+    rf"(?:\s*(?:,|or|and)\s*{EN_BROAD_EXECUTION_ACTION})*\b|"
+    rf"(?:不要|不得|无需|不需要|不再|别|切勿|勿)"
+    rf"{ZH_BROAD_EXECUTION_ACTION}"
+    rf"(?:(?:、|，|,|或|和|及|与)*{ZH_BROAD_EXECUTION_ACTION})*",
+    re.IGNORECASE | re.DOTALL,
+)
+DEFERRED_PHASE_RE = re.compile(
+    r"\b(?:next|later|subsequent)\s+(?:phase|step).{0,32}"
+    r"(?:still\s+)?(?:need|require|remain|pending)|"
+    r"(?:下一|后续)(?:个)?(?:阶段|步).{0,16}"
+    r"(?:仍|还|尚)?(?:需|需要|待)",
+    re.IGNORECASE | re.DOTALL,
+)
 INTERNAL_CONTINUATION_PREFIX = "[Context Guard continuation]"
 EVIDENCE_ID_RE = re.compile(r"^E\d{4,}$")
 STAGE_REQUEST_MARKER = "CONTEXT_GUARD_STAGE_REQUEST"
@@ -797,14 +838,62 @@ def latest_transcript_turn_id(
     return None
 
 
-def reports_non_completion(text: str) -> bool:
-    return bool(NON_COMPLETION_RE.search(text) or EXPLICIT_HOLD_RE.search(text))
+def reports_non_completion(text: str, prompt_text: str = "") -> bool:
+    if NON_COMPLETION_RE.search(text) or EXPLICIT_HOLD_RE.search(text):
+        return True
+    actionable_prompt = NEGATED_BROAD_EXECUTION_RE.sub("", prompt_text)
+    return bool(
+        prompt_text
+        and BOUNDED_TURN_PROMPT_RE.search(prompt_text)
+        and not BROAD_EXECUTION_PROMPT_RE.search(actionable_prompt)
+        and DEFERRED_PHASE_RE.search(text)
+    )
 
 
-def claims_completion(text: str) -> bool:
-    if reports_non_completion(text):
+def claims_completion(text: str, prompt_text: str = "") -> bool:
+    if reports_non_completion(text, prompt_text):
         return False
     return bool(COMPLETION_RE.search(text))
+
+
+def latest_requirement_text(session_dir: Path, state: dict[str, Any]) -> str:
+    for item in reversed(state.get("requirements", [])):
+        if not isinstance(item, dict):
+            continue
+        prompt_id = item.get("prompt_id")
+        metadata = next(
+            (
+                prompt
+                for prompt in state.get("prompts", [])
+                if isinstance(prompt, dict) and prompt.get("id") == prompt_id
+            ),
+            None,
+        )
+        if isinstance(metadata, dict):
+            expected_file = f"prompts/{prompt_id}.json"
+            if metadata.get("file") != expected_file:
+                return ""
+            record_path = session_dir / expected_file
+            if record_path.is_symlink() or not record_path.is_file():
+                return ""
+            record = read_json(record_path, {})
+            text = record.get("text") if isinstance(record, dict) else None
+            digest = sha256_text(text) if isinstance(text, str) else None
+            if (
+                isinstance(text, str)
+                and text.strip()
+                and record.get("id") == prompt_id
+                and record.get("sha256") == digest
+                and metadata.get("sha256") == digest
+                and record.get("record_sha256") == prompt_record_hash(record)
+                and metadata.get("record_sha256") == record.get("record_sha256")
+            ):
+                return text
+            return ""
+        text = item.get("text")
+        if isinstance(text, str) and text.strip():
+            return text
+    return ""
 
 
 def score_complexity(text: str) -> tuple[int, list[str]]:
@@ -2358,7 +2447,8 @@ def handle_stop(
             ),
         }
     text = assistant_text(payload)
-    if reports_non_completion(text):
+    prompt_text = latest_requirement_text(session_dir, state)
+    if reports_non_completion(text, prompt_text):
         attempt = state.get("completion_attempt")
         if isinstance(attempt, dict) and attempt.get("staged_checkpoint") is not None:
             attempt["staged_checkpoint"] = None
@@ -2381,7 +2471,7 @@ def handle_stop(
         if turn_matches and isinstance(attempt, dict)
         else None
     )
-    completion_claim = claims_completion(text)
+    completion_claim = claims_completion(text, prompt_text)
     if (
         checkpoint is None
         and not completion_claim

@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin: `0.4.13`
+- Context Guard plugin: `0.4.16`
 - Private state schema: `3`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -18,8 +18,8 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | v0.4.13: 75 Hook tests pass, 1 Windows-only skip; standalone total 87 pass, 1 skip | private and isolated standalone 0.4.13 caches verified with Codex CLI 0.146.0 | trusted fresh task returned the external-review/policy-hold status once with zero continuations; earlier real manual `/compact` evidence remains valid for the unchanged recovery path | native 0.4.13 status-boundary and lifecycle behavior verified; Ruff remains a remote-CI gate because it was unavailable locally |
-| Windows | 0.4.13 native verification confirmed by the Windows endpoint; public CI also passes the full 88-test matrix | native private and standalone 0.4.13 caches verified on the Windows endpoint | fresh trusted 0.4.13 runtime verification confirmed by the Windows endpoint | native 0.4.13 verification accepted from the Windows handoff; raw command details remain endpoint-local and are not inferred from macOS |
+| macOS | v0.4.16: 78 Hook tests pass, 1 Windows-only skip; standalone total 90 pass, 1 skip | private and isolated standalone 0.4.16 caches verified with Codex CLI 0.146.0 | a trusted fresh task returned the bounded local-commit / deferred-push status once with zero continuations | native 0.4.16 scoped-phase and lifecycle behavior verified; Ruff remains a remote-CI gate because it was unavailable locally |
+| Windows | 0.4.13 remains the latest native endpoint verification; the 0.4.16 source is covered only by local macOS tests until pushed CI runs | native private and standalone 0.4.16 caches not yet verified on Windows | fresh trusted 0.4.16 runtime pending | do not infer native 0.4.16 parity from macOS; retain the prior 0.4.13 Windows evidence separately |
 | Linux | 0.4.9 CI on Python 3.10/3.12/3.13 | isolated lifecycle verified | not claimed | CI and isolated lifecycle only |
 
 The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The

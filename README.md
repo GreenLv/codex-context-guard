@@ -17,9 +17,9 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.4.13` prevents status-only replies from being mistaken for
-> whole-task completion when work is pending external review, explicitly paused,
-> or intentionally unchanged. Assistant-owned follow-up work still remains gated.
+> Release status: `0.4.16` makes phase-boundary reports scope-aware. A bounded
+> review, test, or local-commit turn may stop after explicitly deferring a later
+> phase, while a broad continue, push, publish, or deployment request remains gated.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -65,6 +65,9 @@ Context Guard therefore separates four things:
 - Treats submitted-and-pending external reviews, explicit policy holds, and
   no-new-mutation status reports as incomplete turn boundaries, while keeping
   agent-owned publication or repository follow-ups behind the completion gate.
+- Compares a deferred-phase status with the current user prompt: bounded local
+  review/test/commit requests may end cleanly, but explicit continue, whole-task,
+  push, publish, deploy, promote, remote-creation, and CI requests still gate.
 - Serializes concurrent session updates with a bounded cross-platform file
   lock, including the Windows access-denied/holder-exit race observed in CI.
 - Replaces binary/data-URL payloads with bounded type, length, and hash

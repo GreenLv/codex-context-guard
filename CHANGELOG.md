@@ -5,7 +5,34 @@ All notable public releases are documented here.
 ## Unreleased
 
 No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.4.13 release require a new version.
+0.4.16 release require a new version.
+
+## 0.4.16 - 2026-08-09
+
+Versions 0.4.14 and 0.4.15 were unpublished local candidates. Their numbers
+remain consumed because full-prompt integrity and negated-action handling were
+hardened after those caches had already been installed; an installed versioned
+Hook cache is never overwritten in place.
+
+### Fixed
+
+- Interpret deferred-phase status reports together with the current user prompt
+  instead of relying only on completion words in the assistant reply.
+- Let bounded review, audit, test, verification, local-commit, and reporting
+  turns end after they explicitly leave a later phase unresolved.
+- Preserve the completion gate when the current prompt explicitly asks to
+  continue, finish the whole or remaining task, push, publish, deploy, promote,
+  create a remote, or run CI.
+- Read the full immutable current-prompt record for this decision instead of
+  the bounded recovery summary, so broad authorization after a long prefix is
+  not accidentally hidden.
+- Treat explicit boundaries such as "do not push or run CI" as denied authority,
+  while keeping "do not skip pushing" and affirmative execution requests gated.
+- Fail closed if the full prompt record, its path, or either stored digest no
+  longer matches the private ledger.
+- Add bilingual positive and adversarial regressions based on the observed
+  local-commit / later-push boundary, including a prompt longer than the
+  recovery-summary limit.
 
 ## 0.4.13 - 2026-08-08
 

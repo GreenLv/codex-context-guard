@@ -121,6 +121,16 @@ publication, promotion, or repository follow-ups still enters the completion
 gate. Positive and adversarial bilingual regressions preserve both sides of
 this boundary.
 
+Deferred phases also use current-turn scope. A prompt limited to review, audit,
+test, verification, local commit, or reporting may end after the reply clearly
+leaves a later phase unresolved. The exemption is disabled when the current
+prompt asks to continue, finish the whole or remaining task, push, publish,
+deploy, promote, create a remote, or run CI. This prevents both a false
+continuation at an authority boundary and a vague phase label from hiding work
+the agent was explicitly told to continue. Classification reads the full
+hash-verified prompt record; the bounded requirement summary remains a recovery
+display and cannot truncate the authorization decision.
+
 ## Hook lifecycle
 
 | Event | Purpose | Visible context |
