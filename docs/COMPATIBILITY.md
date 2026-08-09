@@ -19,9 +19,9 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | private 84 Hook tests (83 pass, 1 Windows-only skip), private combined 101 tests, and public standalone 100 tests (99 pass, 1 skip), repository/audit/parity/Ruff gates pass | private persistent 0.5.0 cache/archive and isolated public 0.5.0 install/no-op/archive/lifecycle verified with Codex CLI 0.146.0 | fresh private-identity task loaded the 0.5.0 skill/Hook without trust bypass, consumed schema-4 checkpoint, and ended with zero continuations and no project writes | native private 0.5.0 runtime plus isolated public lifecycle verified; fresh public-identity Hook trust was not repeated |
-| Windows | 0.5.0 public CI pending; 0.4.13 remains the latest native endpoint verification | native 0.5.0 cache/archive lifecycle pending | fresh trusted 0.5.0 endpoint runtime pending | CI evidence will not establish native endpoint parity |
-| Linux | 0.5.0 public CI pending | isolated lifecycle pending CI | not claimed | CI and isolated lifecycle only |
+| macOS | private 84 Hook tests (83 pass, 1 Windows-only skip), private combined 101 tests, and public standalone 100 tests (99 pass, 1 skip), repository/audit/parity/Ruff gates pass; public 0.5.0 CI passes | private persistent 0.5.0 cache/archive and isolated public 0.5.0 install/no-op/archive/lifecycle verified with Codex CLI 0.146.0 | fresh private-identity task loaded the 0.5.0 skill/Hook without trust bypass, consumed schema-4 checkpoint, and ended with zero continuations and no project writes | native private 0.5.0 runtime plus isolated public lifecycle verified; fresh public-identity Hook trust was not repeated |
+| Windows | public commit `d252b0e` passes 100 tests, validation, bounded public-tree audit, Ruff, and compilation on Python 3.10/3.12/3.13; 0.4.13 remains the latest native endpoint verification | native 0.5.0 cache/archive lifecycle pending | fresh trusted 0.5.0 endpoint runtime pending | CI evidence does not establish native endpoint parity |
+| Linux | public commit `d252b0e` passes 100 tests, validation, bounded public-tree audit, Ruff, and compilation on Python 3.10/3.12/3.13 | isolated lifecycle covered by CI | not claimed | CI and isolated lifecycle only |
 
 The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The
 table above separates current version-specific evidence from that release

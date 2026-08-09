@@ -25,9 +25,10 @@ evidence remains below.
   no project file writes. Fresh public-identity trust was not repeated.
 - The macOS sync doctor reports zero sync failures and one aggregate warning;
   the underlying non-interactive Codex doctor warning is `TERM=dumb`.
-- Native Windows 0.5.0 installation/runtime remains pending. Remote public CI
-  and HOL status are also pending until this commit is pushed; neither can be
-  substituted for native endpoint acceptance.
+- Public source commit `d252b0e` passes the nine-job Ubuntu/macOS/Windows
+  Python 3.10/3.12/3.13 CI matrix (run `31314327607`) and the mandatory HOL
+  scan (run `31314327528`). Native Windows 0.5.0 installation/runtime remains
+  pending; CI runner evidence cannot substitute for native endpoint acceptance.
 - No `v0.5.0` tag or GitHub Release is part of this acceptance run.
 
 ## Historical 0.4.9 release acceptance
