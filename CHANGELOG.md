@@ -34,6 +34,13 @@ Hook cache is never overwritten in place.
   local-commit / later-push boundary, including a prompt longer than the
   recovery-summary limit.
 
+### Validation
+
+- Pass the nine-job Ubuntu, macOS, and Windows matrix on Python 3.10, 3.12, and
+  3.13, including repository validation, public-tree audit, 91 tests, Ruff, and
+  bytecode compilation.
+- Pass the mandatory HOL Plugin Scanner workflow.
+
 ## 0.4.13 - 2026-08-08
 
 ### Fixed

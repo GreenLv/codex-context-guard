@@ -18,9 +18,9 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | v0.4.16: 78 Hook tests pass, 1 Windows-only skip; standalone total 90 pass, 1 skip | private and isolated standalone 0.4.16 caches verified with Codex CLI 0.146.0 | a trusted fresh task returned the bounded local-commit / deferred-push status once with zero continuations | native 0.4.16 scoped-phase and lifecycle behavior verified; Ruff remains a remote-CI gate because it was unavailable locally |
-| Windows | 0.4.13 remains the latest native endpoint verification; the 0.4.16 source is covered only by local macOS tests until pushed CI runs | native private and standalone 0.4.16 caches not yet verified on Windows | fresh trusted 0.4.16 runtime pending | do not infer native 0.4.16 parity from macOS; retain the prior 0.4.13 Windows evidence separately |
-| Linux | 0.4.9 CI on Python 3.10/3.12/3.13 | isolated lifecycle verified | not claimed | CI and isolated lifecycle only |
+| macOS | v0.4.16: 78 Hook tests pass, 1 Windows-only skip; standalone total 90 pass, 1 skip; public CI passes Python 3.10/3.12/3.13 plus Ruff | private and isolated standalone 0.4.16 caches verified with Codex CLI 0.146.0 | a trusted fresh task returned the bounded local-commit / deferred-push status once with zero continuations | native 0.4.16 scoped-phase and lifecycle behavior verified |
+| Windows | public 0.4.16 CI passes 91 tests, validation, audit, Ruff, and compilation on Python 3.10/3.12/3.13; 0.4.13 remains the latest native endpoint verification | native private and standalone 0.4.16 caches not yet verified on the Windows endpoint | fresh trusted 0.4.16 endpoint runtime pending | CI runner coverage is accepted as automated source evidence only; do not infer native endpoint parity from it |
+| Linux | public 0.4.16 CI passes Python 3.10/3.12/3.13, including 91 tests, validation, audit, Ruff, and compilation | isolated lifecycle covered in CI | not claimed | CI and isolated lifecycle only |
 
 The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The
 table above separates current version-specific evidence from that release
