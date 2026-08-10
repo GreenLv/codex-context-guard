@@ -17,9 +17,11 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.5.0` introduces state schema 4, Stop classifier 1.0.0,
-> bounded hash-only decision diagnostics, and durable historical Hook cache
-> archives. It preserves the eight-Hook and private-checkpoint interfaces.
+> Release status: `0.5.1` keeps state schema 4 and updates Stop classifier
+> 1.0.1 with mixed user-handoff ownership fixes, derived open-item
+> normalization, and verified same-version archive adoption. Native Windows
+> 0.5.0 acceptance is recorded; native Windows 0.5.1 acceptance remains
+> pending. The eight-Hook and private-checkpoint interfaces are unchanged.
 
 ### 30-second sanitized compact/recovery demo
 

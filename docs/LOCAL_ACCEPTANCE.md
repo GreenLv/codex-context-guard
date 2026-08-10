@@ -1,8 +1,56 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source line is `0.5.0`; historical `0.4.9` release
-evidence remains below.
+Context Guard. The current source line is `0.5.1`; historical `0.5.0` and
+`0.4.9` evidence remains below.
+
+## 0.5.1 local acceptance on macOS (2026-08-10)
+
+- State schema remains 4 and the stable Stop outcome/action interface is
+  unchanged. Classifier 1.0.1 separates user-dependent assistant futures from
+  independent or parallel assistant work, while persisted `open_items` is
+  normalized from current requirement and acceptance status.
+- Private source passes 87 Hook regressions (86 pass and one Windows-only
+  skip), 16 safe-install regressions, three public-export regressions, and five
+  sibling parity/share-boundary regressions: 111 tests in total with one skip.
+- The standalone public tree passes repository validation, privacy audit,
+  complete four-class share-boundary coverage, shared-core parity, Ruff 0.16.1,
+  source compilation, and 108 tests (107 pass and one skip).
+- The private 0.5.1 installation preserved all historical live and archived
+  caches, added an indexed immutable 0.5.1 archive, passed strict no-op audit,
+  source/cache parity, the installed 87-test Hook suite, the eight-Hook
+  self-test, and the installed schema-4 lifecycle smoke.
+- A disposable standalone Codex home installed public 0.5.1, created and
+  audited its trusted archive, passed a strict no-op rerun, and completed the
+  installed lifecycle smoke.
+- A fresh read-only private-identity task loaded the installed 0.5.1 skill and
+  Hook without trust bypass. Its conditional login/unlock handoff produced
+  classifier 1.0.1 outcome `allow_user_handoff`, `integrity=ok`, zero
+  continuations, no checkpoint, derived open items for the pending contract,
+  and no project writes.
+- Native Windows 0.5.1 acceptance remains pending; neither macOS nor CI may
+  substitute for the same-version first-adoption and fresh-runtime checks on
+  Windows.
+- No `v0.5.1` tag or GitHub Release is part of this acceptance run.
+
+## 0.5.0 native acceptance on Windows (2026-08-10)
+
+- Native Windows used Python 3.12.10 and Codex CLI 0.146.0. Source and installed
+  caches each ran all 84 Hook regressions with one capability-aware symbolic-
+  link skip; 11 safe-install regressions, three public-export regressions,
+  three sibling parity regressions, the eight-Hook self-test, and the installed
+  lifecycle smoke passed.
+- The first archive preflight correctly failed closed because an already-current
+  byte-identical 0.5.0 live cache had no trusted archive index and older live
+  caches were absent. Seventeen historical trees were reconstructed only from
+  matching released Git commits; together with the live 0.5.0 tree, 18 trusted
+  versions passed SHA-256 archive audit.
+- The public sibling was fast-forwarded to the accepted 0.5.0 source, and native
+  private/public shared-core parity passed. A fresh no-bypass task loaded the
+  installed 0.5.0 Hook, consumed a schema-4 checkpoint with `integrity=ok`, and
+  ended with zero continuations and no project writes.
+- This evidence closes the Windows 0.5.0 pending claim only. It does not prove
+  the new 0.5.1 classifier or first-adoption manager behavior on Windows.
 
 ## 0.5.0 local acceptance on macOS (2026-08-09)
 
@@ -27,8 +75,9 @@ evidence remains below.
   the underlying non-interactive Codex doctor warning is `TERM=dumb`.
 - Public source commit `d252b0e` passes the nine-job Ubuntu/macOS/Windows
   Python 3.10/3.12/3.13 CI matrix (run `31314327607`) and the mandatory HOL
-  scan (run `31314327528`). Native Windows 0.5.0 installation/runtime remains
-  pending; CI runner evidence cannot substitute for native endpoint acceptance.
+  scan (run `31314327528`). Native Windows 0.5.0 installation/runtime was still
+  pending during this macOS run and was accepted later in the section above;
+  CI runner evidence was not used as a substitute.
 - No `v0.5.0` tag or GitHub Release is part of this acceptance run.
 
 ## Historical 0.4.9 release acceptance

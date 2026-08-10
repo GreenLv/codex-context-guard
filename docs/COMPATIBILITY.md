@@ -5,9 +5,9 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin: `0.5.0`
+- Context Guard plugin: `0.5.1`
 - Private state schema: `4`
-- Stop classifier: `1.0.0`
+- Stop classifier: `1.0.1`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
@@ -19,13 +19,14 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Automated tests | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | private 84 Hook tests (83 pass, 1 Windows-only skip), private combined 101 tests, and public standalone 100 tests (99 pass, 1 skip), repository/audit/parity/Ruff gates pass; public 0.5.0 CI passes | private persistent 0.5.0 cache/archive and isolated public 0.5.0 install/no-op/archive/lifecycle verified with Codex CLI 0.146.0 | fresh private-identity task loaded the 0.5.0 skill/Hook without trust bypass, consumed schema-4 checkpoint, and ended with zero continuations and no project writes | native private 0.5.0 runtime plus isolated public lifecycle verified; fresh public-identity Hook trust was not repeated |
-| Windows | public commit `d252b0e` passes 100 tests, validation, bounded public-tree audit, Ruff, and compilation on Python 3.10/3.12/3.13; 0.4.13 remains the latest native endpoint verification | native 0.5.0 cache/archive lifecycle pending | fresh trusted 0.5.0 endpoint runtime pending | CI evidence does not establish native endpoint parity |
-| Linux | public commit `d252b0e` passes 100 tests, validation, bounded public-tree audit, Ruff, and compilation on Python 3.10/3.12/3.13 | isolated lifecycle covered by CI | not claimed | CI and isolated lifecycle only |
+| macOS | private 87 Hook tests (86 pass, 1 Windows-only skip), private combined 111 tests, and public standalone 108 tests (107 pass, 1 skip), repository validation, public-tree audit, complete share-boundary/parity, Ruff 0.16.1, and source compilation pass | private persistent 0.5.1 cache/archive and isolated public 0.5.1 install/no-op/archive/lifecycle verified with Codex CLI 0.146.0 | fresh private-identity task loaded classifier 1.0.1 without trust bypass and ended a user-dependent handoff with zero continuations and no project writes | native private 0.5.1 runtime plus isolated public lifecycle verified; fresh public-identity Hook trust was not repeated |
+| Windows | native 0.5.0 source and installed-cache Hook suites each ran 84 tests with one capability-aware symbolic-link skip; manager, export, parity, doctor, and lifecycle checks passed | native 0.5.0 cache/archive lifecycle verified after reconstructing only released historical trees and indexing 18 trusted versions; 0.5.1 pending | fresh trusted 0.5.0 endpoint runtime passed schema-4 completion with zero continuations; 0.5.1 pending | native 0.5.0 accepted; 0.5.1 requires a new native run |
+| Linux | 0.5.1 local source validation is portable; per-commit public CI remains the automated Linux evidence gate | isolated lifecycle is exercised by the public validation workflow | not claimed | CI and isolated lifecycle only; no native desktop claim |
 
-The historical v0.4.9 release evidence remains in `LOCAL_ACCEPTANCE.md`. The
-table above separates current version-specific evidence from that release
-record and does not infer cross-platform parity.
+The historical v0.4.9 release evidence and the later native Windows 0.5.0
+acceptance remain in `LOCAL_ACCEPTANCE.md`. The table separates current
+version-specific evidence from those records and does not infer 0.5.1 Windows
+parity from 0.5.0, macOS, or CI.
 
 Do not change a pending cell to verified without preserving the command, result,
 plugin version, Codex version, and source/cache parity evidence in the release

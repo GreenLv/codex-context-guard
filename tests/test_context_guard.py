@@ -468,6 +468,7 @@ class ContextGuardTests(unittest.TestCase):
             final["completion_checkpoint"]["turn_id"], self.current_turn
         )
         self.assertIsNone(final["completion_attempt"])
+        self.assertEqual(final["open_items"], [])
 
     def test_completion_without_tracked_items_needs_no_checkpoint(self) -> None:
         self.prompt("context-guard on")
@@ -744,6 +745,72 @@ class ContextGuardTests(unittest.TestCase):
                     {},
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
+
+    def test_user_handoff_and_assistant_future_are_owner_separated(self) -> None:
+        broad_prompt = "完成完整认证计划，继续测试、提交并推送。"
+        allowed = (
+            (
+                "Mac 当前锁定。请先手动解锁 Mac 和登录钥匙串，然后回复“已解锁”。",
+                "allow_user_handoff",
+            ),
+            (
+                "Git 和 CLI 已验证。请确认是否重新登录 GitHub Desktop。",
+                "allow_user_handoff",
+            ),
+            (
+                "请先解锁钥匙串，完成后我会继续提交并推送。",
+                "allow_user_handoff",
+            ),
+            (
+                "Please unlock the keychain; once you confirm, I will continue tests and push.",
+                "allow_user_handoff",
+            ),
+        )
+        for reply, expected in allowed:
+            with self.subTest(reply=reply):
+                decision = cg.classify_stop_decision(reply, broad_prompt)
+                self.assertEqual(decision["outcome"], expected)
+                self.assertTrue(
+                    any(action["owner"] == "user" for action in decision["actions"])
+                )
+
+        gated = (
+            "请先解锁钥匙串；我会在等待期间继续修改仓库并推送。",
+            "请先登录 GitHub Desktop，同时我会继续运行测试。",
+            "请先确认 GitHub Desktop 登录。我会继续提交并推送。",
+            "Please sign in to GitHub Desktop; meanwhile I will continue tests and push.",
+        )
+        for reply in gated:
+            with self.subTest(reply=reply):
+                decision = cg.classify_stop_decision(reply, broad_prompt)
+                self.assertEqual(
+                    decision["outcome"], "gate_authorized_remaining_work"
+                )
+                self.assertTrue(
+                    any(
+                        action["owner"] == "assistant"
+                        and action["authorization"] == "authorized"
+                        for action in decision["actions"]
+                    )
+                )
+
+    def test_mixed_handoff_respects_bounded_action_authority(self) -> None:
+        reply = "请先解锁钥匙串；我会在等待期间继续修改仓库并推送。"
+        cases = (
+            (
+                "只审查登录问题，不要修改仓库或推送。",
+                "allow_out_of_scope_deferred",
+            ),
+            (
+                "继续完成全部认证修复，修改仓库并推送。",
+                "gate_authorized_remaining_work",
+            ),
+        )
+        for prompt, expected in cases:
+            with self.subTest(prompt=prompt):
+                self.assertEqual(
+                    cg.classify_stop_decision(reply, prompt)["outcome"], expected
+                )
 
     def test_external_review_and_policy_hold_reports_do_not_trigger(self) -> None:
         self.prompt(
@@ -1432,6 +1499,7 @@ class ContextGuardTests(unittest.TestCase):
         legacy = self.state()
         legacy["schema_version"] = 3
         legacy.pop("decision_log")
+        legacy["open_items"] = []
         legacy["content_hash"] = cg.state_content_hash(legacy)
         cg.atomic_write_json(session_dir / "state.json", legacy)
 
@@ -1441,6 +1509,29 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(migrated["integrity"]["status"], "ok")
+        self.assertEqual(migrated["open_items"], cg.open_item_ids(migrated))
+
+    def test_schema4_load_and_save_normalize_stale_open_items(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        stale = self.state()
+        stale["open_items"] = []
+        stale["content_hash"] = cg.state_content_hash(stale)
+        cg.atomic_write_json(session_dir / "state.json", stale)
+
+        loaded = cg.load_state(
+            session_dir,
+            self.payload("SessionStart", source="resume"),
+        )
+
+        self.assertEqual(loaded["integrity"]["status"], "ok")
+        self.assertEqual(loaded["open_items"], cg.open_item_ids(loaded))
+        self.assertTrue(loaded["open_items"])
+        cg.save_state(session_dir, loaded)
+        persisted = self.state()
+        self.assertEqual(persisted["open_items"], cg.open_item_ids(persisted))
 
     def test_tampered_state_recovers_from_immutable_prompts(self) -> None:
         original = "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"

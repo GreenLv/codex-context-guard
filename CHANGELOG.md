@@ -5,7 +5,38 @@ All notable public releases are documented here.
 ## Unreleased
 
 No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.5.0 source line require a new version.
+0.5.1 source line require a new version.
+
+## 0.5.1 - 2026-08-10
+
+### Fixed
+
+- Stop classifier 1.0.1 separates explicit user handoffs from independent
+  assistant futures in the same reply. Work conditioned on a user's login,
+  unlock, confirmation, or reply may end safely, while work promised in
+  parallel or without that dependency remains gated by current-turn authority.
+- Persisted `open_items` is recomputed from requirement and acceptance status
+  during load and save, normalizing trusted schema-3 and schema-4 states whose
+  older derived value was stale.
+- A same-version current plugin may establish its first trusted archive without
+  reinstalling or overwriting the cache, but only under the install lock after
+  exact source/cache parity and archive integrity are proved. Other untrusted
+  live versions, unindexed archive directories, corruption, and drift continue
+  to fail closed.
+
+### Validation scope
+
+- Adds sanitized bilingual user-handoff/assistant-future matrices, bounded and
+  broad authority metamorphic cases, stale derived-state migration tests, and
+  first-adoption archive regressions.
+- macOS local acceptance covers 111 private tests with one platform skip, 108
+  public tests with one platform skip, repository/privacy/boundary/parity/Ruff/
+  compilation gates, private and isolated-public installed lifecycles, and a
+  fresh no-bypass classifier 1.0.1 handoff task.
+- Native Windows 0.5.0 acceptance is recorded separately in local acceptance
+  evidence. Native Windows 0.5.1 acceptance remains pending and is not inferred
+  from CI or macOS.
+- No `v0.5.1` tag or GitHub Release is created by this source update.
 
 ## 0.5.0 - 2026-08-09
 
@@ -13,7 +44,7 @@ No changes yet. Plugin bundle, Hook, manifest, or script changes after the
 
 - State schema 4 with a bounded 32-entry, hash-only `decision_log`; schema 1,
   2, and 3 migrate with an empty diagnostic history.
-- Stop classifier 1.0 with stable allow/gate/consume/fail-closed outcomes,
+- Stop classifier 1.0.0 with stable allow/gate/consume/fail-closed outcomes,
   reason codes, action category, owner, and current-turn authorization.
 - `context-guard diagnose` plus classifier/latest-decision fields in `status`.
 - Persistent version archives under `CODEX_HOME/plugins/cache-archive/` with
@@ -35,7 +66,7 @@ No changes yet. Plugin bundle, Hook, manifest, or script changes after the
 - Adds the seven observed/adversarial phase-boundary cases, bilingual
   metamorphic scope tests, schema migration/privacy/rebuild tests, and cache
   archive creation/deletion/corruption/no-op/concurrency tests.
-- Native Windows 0.5.0 acceptance remains pending and is not inferred from CI.
+- Native Windows 0.5.0 acceptance was recorded later and is not inferred from CI.
 - No `v0.5.0` tag or GitHub Release is created by this source update.
 
 ## 0.4.16 - 2026-08-09

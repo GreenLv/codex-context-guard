@@ -113,7 +113,7 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
-Classifier 1.0 turns the whole Stop reply into a stable decision result instead
+Classifier 1.0.1 turns the whole Stop reply into a stable decision result instead
 of relying on a single regex precedence match. It extracts remaining action
 categories, ownership (`assistant`, `user`, or `external`), and current-turn
 authorization (`authorized`, `denied`, or `out_of_scope`). User handoffs,

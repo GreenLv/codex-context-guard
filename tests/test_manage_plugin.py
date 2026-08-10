@@ -98,7 +98,9 @@ class SafePluginInstallTests(unittest.TestCase):
 
     def test_cache_manifest_ignores_repository_only_files(self) -> None:
         self.write_source("0.1.2")
-        (self.repo_root / "README.md").write_text("repository docs\n", encoding="utf-8")
+        (self.repo_root / "README.md").write_text(
+            "repository docs\n", encoding="utf-8"
+        )
         git_config = self.repo_root / ".git" / "config"
         git_config.parent.mkdir(parents=True)
         git_config.write_text("private repository metadata\n", encoding="utf-8")
@@ -109,6 +111,88 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertIn("scripts/context_guard.py", manifest)
         self.assertNotIn("README.md", manifest)
         self.assertNotIn(".git/config", manifest)
+
+    def test_same_version_first_adoption_archives_verified_current_cache(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.state["version"] = "0.1.2"
+
+        first = self.ensure()
+        second = self.ensure()
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(self.run_calls, [])
+        index = json.loads(
+            (self.archive_root / manager.ARCHIVE_INDEX_NAME).read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(index["versions"]["0.1.2"], manager.tree_manifest(live))
+        self.assertEqual(
+            manager.tree_manifest(self.archive_root / "0.1.2"),
+            manager.tree_manifest(live),
+        )
+
+    def test_same_version_dry_run_does_not_bootstrap_archive(self) -> None:
+        self.write_source("0.1.2")
+        self.cache_source_as("0.1.2")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "no trusted archive"):
+            self.ensure(apply=False)
+
+        self.assertFalse((self.archive_root / manager.ARCHIVE_INDEX_NAME).exists())
+        self.assertEqual(self.run_calls, [])
+
+    def test_same_version_bootstrap_preserves_trusted_history(self) -> None:
+        self.write_source("0.1.1", body="old hook\n")
+        old_live = self.cache_source_as("0.1.1")
+        self.archive_live()
+        self.write_source("0.1.2", body="current hook\n")
+        current_live = self.cache_source_as("0.1.2")
+        self.state["version"] = "0.1.2"
+
+        installed = self.ensure()
+
+        self.assertFalse(installed)
+        self.assertEqual(self.run_calls, [])
+        self.assertEqual(
+            manager.tree_manifest(self.archive_root / "0.1.1"),
+            manager.tree_manifest(old_live),
+        )
+        self.assertEqual(
+            manager.tree_manifest(self.archive_root / "0.1.2"),
+            manager.tree_manifest(current_live),
+        )
+
+    def test_same_version_bootstrap_rejects_other_untrusted_live_cache(self) -> None:
+        self.write_source("0.1.2")
+        self.cache_source_as("0.1.2")
+        untrusted = self.cache_root / "0.1.1" / "scripts" / "context_guard.py"
+        untrusted.parent.mkdir(parents=True)
+        untrusted.write_text("untrusted historical hook\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "0.1.1"):
+            self.ensure()
+
+        self.assertFalse((self.archive_root / manager.ARCHIVE_INDEX_NAME).exists())
+        self.assertEqual(self.run_calls, [])
+
+    def test_same_version_bootstrap_rejects_unindexed_archive_directory(self) -> None:
+        self.write_source("0.1.2")
+        self.cache_source_as("0.1.2")
+        unindexed = self.archive_root / "0.1.2" / "scripts" / "context_guard.py"
+        unindexed.parent.mkdir(parents=True)
+        unindexed.write_text("unindexed hook\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "no trusted index"):
+            self.ensure()
+
+        self.assertFalse((self.archive_root / manager.ARCHIVE_INDEX_NAME).exists())
+        self.assertEqual(self.run_calls, [])
 
     def test_same_version_missing_cache_refuses_destructive_refresh(self) -> None:
         self.write_source("0.1.2")

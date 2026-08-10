@@ -15,8 +15,10 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.5.0` 引入 state schema 4、Stop classifier 1.0.0、有界 hash-only
-> 决策诊断和持久历史 Hook 缓存归档，同时保留八 Hook 与私有 checkpoint 接口。
+> 发布状态：`0.5.1` 保持 state schema 4，并将 Stop classifier 更新为
+> 1.0.1，修复混合用户交接的动作归属、派生 open-item 一致性和经验证的
+> 同版本归档首次采用。Windows 原生 0.5.0 验收已有记录，0.5.1 原生验收
+> 仍待完成；八 Hook 与私有 checkpoint 接口保持不变。
 
 ### 30 秒脱敏 compact/recovery 演示
 

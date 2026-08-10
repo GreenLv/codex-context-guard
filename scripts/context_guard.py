@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA_VERSION = 4
-CLASSIFIER_VERSION = "1.0.0"
+CLASSIFIER_VERSION = "1.0.1"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
 EVIDENCE_LIMIT = 200
@@ -85,7 +85,7 @@ NON_COMPLETION_RE = re.compile(
     r"decision|choice|input|response|acceptance)|"
     r"(?:blocked\s+(?:by|on)|waiting\s+for\s+(?:you|the\s+user)\s+to)\s+.{0,48}|"
     r"(?:need|require)\s+(?:you|the\s+user)\s+to\s+"
-    r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|open|configure|"
+    r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|sign\s*in|unlock|open|configure|"
     r"reply|respond)|"
     r"please\s+(?:act|approve|authorize|confirm|decide|choose|log\s*in|open|"
     r"configure|reply|respond)|"
@@ -218,21 +218,40 @@ USER_HANDOFF_RE = re.compile(
     r"\b(?:need|require)\s+(?:you|the\s+user)\s+to\s+"
     r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|open|configure|"
     r"reply|respond)|\bplease\s+(?:act|approve|authorize|confirm|decide|choose|"
-    r"log\s*in|open|configure|reply|respond)|"
+    r"log\s*in|sign\s*in|unlock|open|configure|reply|respond)|"
     r"\bwait(?:ing)?\s+for\s+(?:(?:you|the\s+user)\s+)?to\s+"
-    r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|configure|reply|respond)|"
+    r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|sign\s*in|unlock|configure|reply|respond)|"
     r"\b(?:cannot|can't|unable\s+to)\s+(?:safely\s+)?(?:continue|proceed)\s+"
     r"without\s+(?:your|user(?:'s)?)\s+(?:approval|authorization|confirmation|input)|"
     r"(?:等待|待)(?:你|您|用户)?(?:的)?(?:明确)?"
     r"(?:验收|确认|授权|批准|审批|决定|选择|操作|回复|输入)|"
     r"(?:请|需要|必须|须)(?:先)?(?:由)?(?:你|您|用户)(?:本人)?(?:先)?"
-    r".{0,48}(?:验收|确认|授权|批准|审批|决定|选择|操作|登录|打开|配置|回复|输入)|"
+    r".{0,48}(?:验收|确认|授权|批准|审批|决定|选择|操作|登录|重新登录|解锁|打开|配置|回复|输入)|"
     r"(?:你|您|用户).{0,12}(?:需要|请).{0,16}"
-    r"(?:验收|确认|授权|批准|审批|决定|选择|操作|登录|打开|配置|回复|输入)|"
+    r"(?:验收|确认|授权|批准|审批|决定|选择|操作|登录|重新登录|解锁|打开|配置|回复|输入)|"
     r"(?:等待|待).{0,16}(?:你|您|用户).{0,12}(?:批准|确认|授权|回复|操作)|"
-    r"(?:请|需要你|下一步需要你).{0,48}(?:回复|告诉|通知|登录|打开|配置|批准|确认)|"
+    r"(?:请|需要你|下一步需要你).{0,48}(?:回复|告诉|通知|登录|重新登录|解锁|打开|配置|批准|确认)|"
     r"(?:完成|配置|批准|确认).{0,16}(?:后|之后).{0,16}(?:回复|告诉我|通知我)|"
     r"(?:等待|待).{0,16}(?:批次)?确认",
+    re.IGNORECASE | re.DOTALL,
+)
+EXPLICIT_ASSISTANT_FUTURE_RE = re.compile(
+    r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|我需|需要我|接下来我)",
+    re.IGNORECASE,
+)
+USER_DEPENDENT_ASSISTANT_RE = re.compile(
+    r"\b(?:after|once|when)\s+(?:you|the\s+user)\b|"
+    r"\b(?:after|once|when)\s+(?:your|the\s+user(?:'s)?)\s+"
+    r"(?:approval|authorization|confirmation|login|sign[- ]?in|reply|response)|"
+    r"(?:等|待)(?:你|您|用户).{0,32}(?:后|之后)|"
+    r"(?:你|您|用户).{0,24}(?:完成|确认|批准|授权|登录|重新登录|解锁|回复).{0,12}(?:后|之后)|"
+    r"(?:完成|确认|批准|授权|登录|重新登录|解锁|回复).{0,12}(?:后|之后).{0,20}"
+    r"(?:我会|我将|我需|需要我)",
+    re.IGNORECASE | re.DOTALL,
+)
+PARALLEL_ASSISTANT_RE = re.compile(
+    r"\b(?:meanwhile|in\s+the\s+meantime|while\s+(?:you|the\s+user|we)?\s*wait)\b|"
+    r"(?:与此同时|同时|等待期间|在等待.{0,16}期间)",
     re.IGNORECASE | re.DOTALL,
 )
 EXTERNAL_WAIT_RE = re.compile(
@@ -856,10 +875,12 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
     for key in ("cwd", "model", "permission_mode", "transcript_path"):
         if payload.get(key) is not None:
             session[key] = payload[key]
+    state["open_items"] = open_item_ids(state)
     return state
 
 
 def save_state(session_dir: Path, state: dict[str, Any]) -> None:
+    state["open_items"] = open_item_ids(state)
     state["session"]["updated_at"] = utc_now()
     state["content_hash"] = state_content_hash(state)
     atomic_write_json(session_dir / "state.json", state)
@@ -996,14 +1017,14 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
     seen: set[tuple[str, str, str]] = set()
     explicit_assistant_facts: set[tuple[str, str, str]] = set()
     for clause in _reply_clauses(text):
-        if USER_HANDOFF_RE.search(clause):
+        user_handoff = bool(USER_HANDOFF_RE.search(clause))
+        if user_handoff:
             fact = ("user_action", "user", "user_only")
             if fact not in seen:
                 actions.append(
                     {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
                 )
                 seen.add(fact)
-            continue
         if EXTERNAL_WAIT_RE.search(clause):
             fact = ("external_wait", "external", "external_dependency")
             if fact not in seen:
@@ -1013,23 +1034,48 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
                 seen.add(fact)
             # A single clause can still contain an explicit assistant future
             # after an external status, so do not return early here.
+        assistant_match = EXPLICIT_ASSISTANT_FUTURE_RE.search(clause)
+        assistant_future = assistant_match is not None
+        assistant_clause = (
+            clause[assistant_match.start() :] if assistant_match is not None else clause
+        )
+        user_dependent_future = bool(
+            assistant_future
+            and USER_DEPENDENT_ASSISTANT_RE.search(clause)
+            and not PARALLEL_ASSISTANT_RE.search(clause)
+        )
+        if user_dependent_future and not user_handoff:
+            fact = ("user_action", "user", "user_only")
+            if fact not in seen:
+                actions.append(
+                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
+                )
+                seen.add(fact)
+            user_handoff = True
+        # A pure user handoff owns every action in the clause. An explicit
+        # assistant future becomes actionable only when it is independent of
+        # the requested user action; a conditional "after you ... I will ..."
+        # remains blocked on the user and may end safely.
+        if user_handoff and (not assistant_future or user_dependent_future):
+            continue
         remaining_marker = bool(REMAINING_WORK_RE.search(clause))
         remaining = bool(
             remaining_marker
             or NON_COMPLETION_RE.search(clause)
             or re.search(r"\b(?:next|then)\s+i\s+(?:will|need\s+to)\b", clause, re.I)
+            or assistant_future
         )
         if not remaining:
             continue
         matched = False
         for category, pattern in ACTION_PATTERNS:
-            if not pattern.search(clause):
+            if not pattern.search(assistant_clause):
                 continue
             # Review words inside a pure external-wait clause belong to the
             # reviewer unless the assistant explicitly claims a future action.
             if (
                 EXTERNAL_WAIT_RE.search(clause)
-                and not re.search(r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|我需|需要我)", clause, re.I)
+                and not assistant_future
             ):
                 continue
             authorization = _action_authorization(category, scope)
@@ -1039,11 +1085,7 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
                     {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
                 )
                 seen.add(fact)
-            if re.search(
-                r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|需要我|接下来我)",
-                clause,
-                re.IGNORECASE,
-            ):
+            if assistant_future:
                 explicit_assistant_facts.add(fact)
             matched = True
         if not matched and remaining_marker and not EXTERNAL_WAIT_RE.search(clause):
@@ -1054,11 +1096,7 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
                     {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
                 )
                 seen.add(fact)
-            if re.search(
-                r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|需要我|接下来我)",
-                clause,
-                re.IGNORECASE,
-            ):
+            if assistant_future:
                 explicit_assistant_facts.add(fact)
     if any(item["owner"] == "user" for item in actions):
         actions = [

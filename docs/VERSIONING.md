@@ -8,6 +8,9 @@ not as a measure of code volume.
   interface, or cache-lifecycle guarantee.
 - `0.5.0` establishes schema 4, classifier 1.0.0, bounded hash-only Stop
   diagnostics, and durable historical Hook cache archives with audited repair.
+- `0.5.1` keeps schema 4 and the existing decision interface while applying
+  classifier 1.0.1 ownership fixes, derived-state normalization, and a
+  fail-closed same-version archive-adoption path.
 - `0.5.x` contains compatible fixes inside those contracts. Installed cache
   bytes are immutable: a runtime byte change requires a new patch version.
 - Requirement-to-evidence semantic relevance is not a 0.5.0 capability. It is

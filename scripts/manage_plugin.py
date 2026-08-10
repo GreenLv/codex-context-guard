@@ -392,6 +392,52 @@ def archive_live_versions(cache_root: Path, archive_root: Path) -> list[str]:
     return archived
 
 
+def archive_verified_current_version(
+    source_root: Path,
+    cache_root: Path,
+    archive_root: Path,
+    version: str,
+) -> tuple[bool, list[str]]:
+    """Trust only a source-identical current cache during first adoption."""
+    live = cache_root / version
+    versions = _archive_index(archive_root)
+    if version in versions:
+        repaired = audit_cache_archive(
+            cache_root,
+            archive_root,
+            repair=True,
+        )
+        require_cache_parity(source_root, live, version, same_version=True)
+        return False, repaired
+
+    if live.is_symlink():
+        raise RuntimeError(f"installed {PLUGIN_ID} {version} cache is unsafe")
+    require_cache_parity(source_root, live, version, same_version=True)
+    live_manifest = tree_manifest(live)
+    if not live_manifest:
+        raise RuntimeError(f"live cache {version} is empty or unreadable")
+
+    repaired = audit_cache_archive(
+        cache_root,
+        archive_root,
+        repair=True,
+        allow_unarchived={version},
+    )
+    archived_root = archive_root / version
+    if archived_root.exists():
+        raise RuntimeError(
+            f"cache archive {version} exists without a trusted index entry"
+        )
+    _replace_tree_atomically(live, archived_root)
+    if tree_manifest(archived_root) != live_manifest:
+        raise RuntimeError(f"cache archive {version} could not be verified")
+    versions[version] = live_manifest
+    _write_archive_index(archive_root, versions)
+    audit_cache_archive(cache_root, archive_root, repair=False)
+    require_cache_parity(source_root, live, version, same_version=True)
+    return True, repaired
+
+
 def audit_cache_archive(
     cache_root: Path,
     archive_root: Path,
@@ -466,7 +512,11 @@ def ensure_plugin(
     entry = plugin_entry(codex)
     was_installed = entry is not None
 
-    if entry is not None and entry.get("version") == desired_version:
+    if (
+        entry is not None
+        and entry.get("version") == desired_version
+        and not apply
+    ):
         repaired = audit_cache_archive(
             cache_root, archive_root, repair=apply
         )
@@ -491,6 +541,37 @@ def ensure_plugin(
         )
         return False
 
+    if entry is not None and entry.get("version") == desired_version:
+        with cache_install_lock(cache_root):
+            entry = plugin_entry(codex)
+            if entry is not None and entry.get("version") == desired_version:
+                archived_current, repaired = archive_verified_current_version(
+                    source_root,
+                    cache_root,
+                    archive_root,
+                    desired_version,
+                )
+                if archived_current:
+                    print(
+                        "[OK] archived verified current Context Guard cache: "
+                        + desired_version
+                    )
+                if repaired:
+                    print(
+                        "[OK] repaired live Context Guard cache version(s): "
+                        + ", ".join(repaired)
+                    )
+                if not entry.get("enabled"):
+                    raise RuntimeError(
+                        f"plugin {PLUGIN_ID!r} is installed but disabled; "
+                        "apply the shared config"
+                    )
+                print(
+                    f"[OK] plugin {PLUGIN_ID} {desired_version} is current; "
+                    "skipped cache refresh"
+                )
+                return False
+
     if not apply:
         if entry is None:
             raise RuntimeError(f"plugin {PLUGIN_ID!r} is not installed")
@@ -502,13 +583,22 @@ def ensure_plugin(
     with cache_install_lock(cache_root):
         entry = plugin_entry(codex)
         if entry is not None and entry.get("version") == desired_version:
-            audit_cache_archive(cache_root, archive_root, repair=True)
-            require_cache_parity(
+            archived_current, repaired = archive_verified_current_version(
                 source_root,
-                cache_root / desired_version,
+                cache_root,
+                archive_root,
                 desired_version,
-                same_version=True,
             )
+            if archived_current:
+                print(
+                    "[OK] archived verified current Context Guard cache: "
+                    + desired_version
+                )
+            if repaired:
+                print(
+                    "[OK] repaired live Context Guard cache version(s): "
+                    + ", ".join(repaired)
+                )
         else:
             archived = archive_live_versions(cache_root, archive_root)
             repaired = audit_cache_archive(
