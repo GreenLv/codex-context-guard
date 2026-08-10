@@ -2493,6 +2493,7 @@ class ContextGuardTests(unittest.TestCase):
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         base = [sys.executable, str(MODULE_PATH), "stage-disposition"]
+        mismatched_control_value = self.id()
         cases = (
             (
                 "wrong-turn",
@@ -2501,7 +2502,7 @@ class ContextGuardTests(unittest.TestCase):
             ),
             (
                 "wrong-token",
-                self.private_command_common(token="wrong-token"),
+                self.private_command_common(token=mismatched_control_value),
                 ["--disposition", "user_wait"],
             ),
             (
