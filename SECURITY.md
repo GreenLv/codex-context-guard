@@ -3,7 +3,7 @@
 ## Supported version
 
 Security and correctness fixes are applied to the current supported source line,
-currently `0.5.x`.
+currently `0.6.x`.
 
 ## Reporting a vulnerability
 
@@ -23,8 +23,14 @@ make an untrusted Hook safe, prove semantic correctness, or replace operating
 system access controls. Users must review and trust the exact Hook definition
 before enabling it.
 
+Schema-5 turn dispositions are private, turn-bound control declarations. They
+do not grant authority, prove that a dependency is real, or prove that evidence
+is semantically relevant. A yielded turn keeps every unverified requirement
+pending; only a valid private checkpoint can complete the guarded contract.
+
 Historical cache repair trusts only the archive SHA-256 index. A missing,
 unindexed, symlinked, or hash-mismatched archive fails closed; `--apply` never
 uses a corrupt archive as repair input and archives are not automatically
-deleted. `context-guard diagnose` exposes bounded hashes, reason codes, action
-owners, and authorization states, not raw prompts or replies.
+deleted. `context-guard diagnose` exposes bounded hashes, protocol/control
+sources, declared dispositions, reason codes, and observed diagnostic outcomes,
+not raw prompts or replies.

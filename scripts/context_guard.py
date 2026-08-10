@@ -22,8 +22,9 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 4
-CLASSIFIER_VERSION = "1.0.1"
+SCHEMA_VERSION = 5
+STOP_PROTOCOL_VERSION = "1.0.0"
+CLASSIFIER_VERSION = "2.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
 EVIDENCE_LIMIT = 200
@@ -76,6 +77,34 @@ COMPLETION_RE = re.compile(
     r"已部署|已更新|已提交|已推送|已验证|修好了|搞定了|可以使用了|"
     r"(?:测试|校验|验证|检查|回归|技能).{0,12}(?:已)?(?:全部|全量|均)?通过)",
     re.IGNORECASE,
+)
+WHOLE_COMPLETION_RE = re.compile(
+    r"^\s*(?:done|complete[dn]?|finished|resolved|fixed)\s*[.!。！]?\s*$|"
+    r"\b(?:(?:the|this|entire|whole|overall|full)\s+)?"
+    r"(?:task|request|plan|project|work)\s+(?:is\s+|has\s+been\s+)?"
+    r"(?:fully\s+|safely\s+)?(?:done|complete[dn]?|finished|resolved|fixed)\b|"
+    r"\b(?:everything|all\s+(?:requested\s+)?(?:work|requirements?|items?))"
+    r"\s+(?:is\s+|has\s+been\s+)?(?:done|complete[dn]?|finished|resolved|fixed)\b|"
+    r"(?:整个|整体|全部|所有|本次|当前)(?:任务|工作|需求|计划|项目)"
+    r".{0,16}(?:已|已经|均已|全部)?(?:完成|结束|解决|修复)|"
+    r"(?:任务|工作|需求|计划|项目).{0,12}(?:已|已经|均已|全部|整体)"
+    r"(?:完成|结束|解决|修复)|"
+    r"^\s*(?:已完成|全部完成|任务完成|搞定了)\s*[。！!]?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+USER_PERSISTENCE_RE = re.compile(
+    r"\b(?:(?:do\s+not|don't|never)\s+(?:stop|pause|yield|end)\s+"
+    r"(?:working|on\s+(?:this|the)\s+(?:task|work)|while\s+.{0,24}remains?|"
+    r"until\s+.{0,64}(?:done|complete[dn]?|finish(?:ed|es)?))|"
+    r"(?:keep\s+(?:going|working)|continue\s+(?:working\s+)?)"
+    r".{0,40}(?:until|through\s+to).{0,40}(?:done|complete[dn]?|finished))\b|"
+    r"(?:不要|不得|别|切勿|不能).{0,12}(?:停止|停下|停|暂停|中止|结束)"
+    r".{0,32}(?:直到|直至).{0,32}(?:完成|结束)|"
+    r"(?:持续|继续|一直).{0,24}(?:执行|推进|工作)"
+    r".{0,32}(?:直到|直至).{0,32}(?:完成|结束)|"
+    r"(?:不要|不得|别|切勿).{0,24}(?:工作|任务|事项)"
+    r".{0,24}(?:仍|还|尚).{0,8}(?:可执行|未完成).{0,16}(?:停止|结束)",
+    re.IGNORECASE | re.DOTALL,
 )
 NON_COMPLETION_RE = re.compile(
     r"\b(not\s+(?:(?:yet|fully|safely)\s+)*(?:done|complete[dn]?|finished|implemented)|"
@@ -199,6 +228,13 @@ DEFERRED_PHASE_RE = re.compile(
     r"(?:仍|还|尚)?(?:需|需要|待)",
     re.IGNORECASE | re.DOTALL,
 )
+DEFERRED_ACTION_CLAUSE_RE = re.compile(
+    r"\b(?:defer(?:red)?|paused|on\s+hold|out\s+of\s+scope|"
+    r"outside\s+.{0,20}\bscope|denied)\b|"
+    r"(?:留待|推迟|延后|暂停|搁置|超出.{0,12}范围|"
+    r"不在.{0,12}范围|被拒绝)",
+    re.IGNORECASE | re.DOTALL,
+)
 REMAINING_WORK_RE = re.compile(
     r"\b(?:next|later|subsequent|future)\s+(?:phase|step|turn)|"
     r"\b(?:remain(?:s|ing)?|still)\s+(?:need|require|pending)|"
@@ -223,6 +259,8 @@ USER_HANDOFF_RE = re.compile(
     r"(?:act|approve|authorize|confirm|decide|choose|log\s*in|sign\s*in|unlock|configure|reply|respond)|"
     r"\b(?:cannot|can't|unable\s+to)\s+(?:safely\s+)?(?:continue|proceed)\s+"
     r"without\s+(?:your|user(?:'s)?)\s+(?:approval|authorization|confirmation|input)|"
+    r"\b(?:when|once|after)\s+(?:that(?:'s|\s+is)?\s+)?done.{0,24}"
+    r"(?:tell\s+me|let\s+me\s+know|reply|respond)|"
     r"(?:等待|待)(?:你|您|用户)?(?:的)?(?:明确)?"
     r"(?:验收|确认|授权|批准|审批|决定|选择|操作|回复|输入)|"
     r"(?:请|需要|必须|须)(?:先)?(?:由)?(?:你|您|用户)(?:本人)?(?:先)?"
@@ -236,7 +274,11 @@ USER_HANDOFF_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 EXPLICIT_ASSISTANT_FUTURE_RE = re.compile(
-    r"\bI\s+(?:will|need\s+to)\b|(?:我会|我将|我需|需要我|接下来我)",
+    r"\bI\s+(?:will|need\s+to)\b|"
+    r"\b(?:next|then|afterwards?)\s+I(?:'ll|\s+will)\b|"
+    r"(?:我会|我将|我需|需要我|接下来我)|"
+    r"(?:接下来|随后|然后|之后|下一步)(?:我)?(?:会|将)?"
+    r".{0,8}(?:继续|修改|实现|更新|推送|发布|部署|运行|测试|验证|处理|执行|配置)",
     re.IGNORECASE,
 )
 USER_DEPENDENT_ASSISTANT_RE = re.compile(
@@ -246,7 +288,11 @@ USER_DEPENDENT_ASSISTANT_RE = re.compile(
     r"(?:等|待)(?:你|您|用户).{0,32}(?:后|之后)|"
     r"(?:你|您|用户).{0,24}(?:完成|确认|批准|授权|登录|重新登录|解锁|回复).{0,12}(?:后|之后)|"
     r"(?:完成|确认|批准|授权|登录|重新登录|解锁|回复).{0,12}(?:后|之后).{0,20}"
-    r"(?:我会|我将|我需|需要我)",
+    r"(?:我会|我将|我需|需要我)|"
+    r"\b(?:when|once|after)\s+(?:that(?:'s|\s+is)?\s+)?done.{0,48}"
+    r"(?:then|afterwards?)?\s*I(?:'ll|\s+will)\b|"
+    r"\b(?:tell\s+me|let\s+me\s+know|reply|respond).{0,40}"
+    r"(?:then|afterwards?)\s*I(?:'ll|\s+will)\b",
     re.IGNORECASE | re.DOTALL,
 )
 PARALLEL_ASSISTANT_RE = re.compile(
@@ -293,8 +339,17 @@ ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 INTERNAL_CONTINUATION_PREFIX = "[Context Guard continuation]"
 EVIDENCE_ID_RE = re.compile(r"^E\d{4,}$")
 STAGE_REQUEST_MARKER = "CONTEXT_GUARD_STAGE_REQUEST"
+DISPOSITION_REQUEST_MARKER = "CONTEXT_GUARD_DISPOSITION_REQUEST"
+DISPOSITION_REASONS = {
+    "continue": "assistant_work_remains",
+    "user_wait": "user_action_required",
+    "external_wait": "external_dependency",
+    "deferred": "denied_or_out_of_scope",
+}
 PRIVATE_METADATA_RE = re.compile(
     r"context-guard-checkpoint|checkpoint-status|stage-checkpoint|"
+    r"stage-disposition|CONTEXT_GUARD_STAGE_REQUEST|"
+    r"CONTEXT_GUARD_DISPOSITION_REQUEST|"
     r"CONTEXT_GUARD_DATA_DIR|CLAUDE_PLUGIN_DATA",
     re.IGNORECASE,
 )
@@ -373,6 +428,10 @@ SECRET_PATTERNS = (
         re.compile(
             r"(?i)(--token\s+)(?:\"[^\"]+\"|'[^']+'|[^\s,;]+)"
         ),
+        r"\1[REDACTED]",
+    ),
+    (
+        re.compile(r"(?i)(--token=)(?:\"[^\"]+\"|'[^']+'|[^\s,;]+)"),
         r"\1[REDACTED]",
     ),
 )
@@ -618,7 +677,7 @@ def prompt_record_hash(record: dict[str, Any]) -> str:
 
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, 3, SCHEMA_VERSION}:
+    if version not in {1, 2, 3, 4, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -795,14 +854,40 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["status"] = "pending"
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
-        state["completion_attempt"] = None
-    elif version not in {2, 3, SCHEMA_VERSION}:
+    elif version not in {2, 3, 4, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
         state["agents"] = []
     if version in {1, 2, 3}:
         state["decision_log"] = []
+    elif version == 4:
+        migrated_decisions: list[dict[str, Any]] = []
+        for raw_item in state.get("decision_log", []):
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            outcome = str(item.get("outcome") or "fail_closed_integrity")
+            item.setdefault("protocol_version", None)
+            item.setdefault(
+                "decision_source",
+                "checkpoint"
+                if outcome == "consume_checkpoint"
+                else (
+                    "integrity"
+                    if outcome == "fail_closed_integrity"
+                    else "legacy_classifier"
+                ),
+            )
+            item.setdefault("declared_disposition", None)
+            item.setdefault("observed_outcome", outcome)
+            migrated_decisions.append(item)
+        state["decision_log"] = migrated_decisions[-DECISION_LOG_LIMIT:]
+    if version in {1, 2, 3, 4}:
+        # Turn tokens and partially staged controls are intentionally ephemeral.
+        # Preserve the durable ledger/history while requiring a fresh protocol
+        # token after a schema upgrade.
+        state["completion_attempt"] = None
         state["schema_version"] = SCHEMA_VERSION
     if not isinstance(state.get("integrity"), dict):
         state["integrity"] = {
@@ -817,6 +902,11 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
         work_state.setdefault("plan_snapshot", None)
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
+    attempt = state.get("completion_attempt")
+    if isinstance(attempt, dict):
+        attempt.setdefault("protocol_version", STOP_PROTOCOL_VERSION)
+        attempt.setdefault("staged_control", None)
+        attempt.setdefault("staged_at", None)
     state.setdefault("continuation_attempts", 0)
     state.setdefault("decision_log", [])
     return state
@@ -950,6 +1040,12 @@ def _protected_prompt_clauses(text: str) -> list[str]:
     )
     protected = re.sub(r"(?:不要|不得|不能)\s*(?:跳过|遗漏)", "", protected)
     protected = re.sub(r"(?:不能|不可)\s*不\s*", "", protected)
+    protected = re.sub(
+        r"\b(?:do\s+not|don't|never)\s+(?:stop|pause|yield|end)\b",
+        "",
+        protected,
+        flags=re.IGNORECASE,
+    )
     return [
         clause.strip()
         for clause in re.split(r"[\n。！？!?；;，,]+", protected)
@@ -992,12 +1088,45 @@ def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
     }
 
 
-def _reply_clauses(text: str) -> list[str]:
+def _prompt_clauses(text: str) -> list[str]:
     return [
         clause.strip()
         for clause in re.split(r"[\n。！？!?；;.]+", text)
         if clause.strip()
     ]
+
+
+def _reply_clauses(text: str) -> list[str]:
+    sentinel = "\u241f"
+
+    def protect_acronym(match: re.Match[str]) -> str:
+        return match.group(0).replace(".", sentinel)
+
+    protected = re.sub(
+        r"\b(?:[A-Za-z]\.){2,}[A-Za-z]?", protect_acronym, text
+    )
+    protected = re.sub(r"(?<=\d)\.(?=\d)", sentinel, protected)
+    raw_clauses = [
+        clause.replace(sentinel, ".").strip()
+        for clause in re.split(r"[\n。！？!?；;.]|(?:—{1,2})", protected)
+        if clause.replace(sentinel, ".").strip()
+    ]
+    clauses: list[str] = []
+    for clause in raw_clauses:
+        if (
+            clauses
+            and USER_HANDOFF_RE.search(clauses[-1])
+            and EXPLICIT_ASSISTANT_FUTURE_RE.search(clause)
+            and re.search(
+                r"\b(?:then|afterwards?|next)\b|(?:随后|然后|之后|接下来)",
+                clause,
+                re.IGNORECASE,
+            )
+        ):
+            clauses[-1] += "; " + clause
+        else:
+            clauses.append(clause)
+    return clauses
 
 
 def _action_authorization(category: str, scope: dict[str, Any]) -> str:
@@ -1009,6 +1138,42 @@ def _action_authorization(category: str, scope: dict[str, Any]) -> str:
         return "out_of_scope"
     # Ambiguous task scopes fail toward continuation, not silent completion.
     return "authorized"
+
+
+def deferred_action_bindings(
+    reply_text: str, scope: dict[str, Any]
+) -> list[str]:
+    """Return specific reply actions that the prompt denies or leaves out of scope."""
+    bound: list[str] = []
+    for clause in _reply_clauses(reply_text):
+        if not DEFERRED_ACTION_CLAUSE_RE.search(clause):
+            continue
+        candidates = [clause]
+        if COMPLETION_RE.search(clause):
+            candidates = [
+                item.strip()
+                for item in re.split(
+                    r"\s*(?:,|，|\b(?:and|but|while|whereas)\b|但|但是|而|然而|同时)\s*",
+                    clause,
+                    flags=re.IGNORECASE,
+                )
+                if item.strip()
+            ]
+        for candidate in candidates:
+            if (
+                not DEFERRED_ACTION_CLAUSE_RE.search(candidate)
+                or COMPLETION_RE.search(candidate)
+            ):
+                continue
+            for category, pattern in ACTION_PATTERNS:
+                if not pattern.search(candidate):
+                    continue
+                if _action_authorization(category, scope) in {
+                    "denied",
+                    "out_of_scope",
+                }:
+                    bound.append(category)
+    return list(dict.fromkeys(bound))
 
 
 def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
@@ -1175,10 +1340,25 @@ def reports_non_completion(text: str, prompt_text: str = "") -> bool:
 
 
 def claims_completion(text: str, prompt_text: str = "") -> bool:
-    return classify_stop_decision(text, prompt_text)["outcome"] in {
-        "gate_completion_claim",
-        "gate_authorized_remaining_work",
-    }
+    del prompt_text
+    return claims_whole_completion(text)
+
+
+def claims_whole_completion(text: str) -> bool:
+    """Return true only for an affirmative whole-task completion declaration."""
+    for match in WHOLE_COMPLETION_RE.finditer(text):
+        nearby = text[max(0, match.start() - 32) : match.end()]
+        if re.search(
+            r"\b(?:not|never|cannot|can't|unable\s+to|must\s+not|"
+            r"should\s+not)\b.{0,28}$|"
+            r"(?:未|尚未|还未|没有|并非|不是|不能|无法|不可|不应)"
+            r".{0,28}(?:完成|结束|解决|修复)$",
+            nearby,
+            re.IGNORECASE | re.DOTALL,
+        ):
+            continue
+        return True
+    return False
 
 
 def latest_requirement_text(session_dir: Path, state: dict[str, Any]) -> str:
@@ -1654,6 +1834,12 @@ def append_decision_log(
     record = {
         "created_at": utc_now(),
         "turn_id": bounded(turn_id or "unknown-turn", 160),
+        "protocol_version": decision.get("protocol_version"),
+        "decision_source": decision.get("decision_source", "nlp_diagnostic"),
+        "declared_disposition": decision.get("declared_disposition"),
+        "observed_outcome": decision.get(
+            "observed_outcome", decision.get("outcome", "allow_neutral")
+        ),
         "classifier_version": decision.get("classifier_version", CLASSIFIER_VERSION),
         "outcome": decision.get("outcome", "fail_closed_integrity"),
         "reason_codes": [
@@ -1691,6 +1877,7 @@ def status_context(state: dict[str, Any]) -> str:
         "Context Guard status: "
         f"active={state['mode']['active']}, "
         f"integrity={integrity.get('status', 'unknown')}, "
+        f"stop_protocol={STOP_PROTOCOL_VERSION}, "
         f"classifier={CLASSIFIER_VERSION}, "
         f"last_decision={last_decision}, "
         f"requirements={len(state['requirements'])}, "
@@ -1714,10 +1901,13 @@ def diagnose_context(state: dict[str, Any], limit: int = 5) -> str:
     for item in decisions:
         reasons = ",".join(str(value) for value in item.get("reason_codes", [])[:4])
         summaries.append(
-            f"{item.get('outcome', 'unknown')}[{bounded(reasons, 240)}]"
+            f"{item.get('outcome', 'unknown')}"
+            f"<{item.get('decision_source', 'unknown')}>"
+            f"[{bounded(reasons, 240)}]"
         )
     return (
-        f"Context Guard classifier {CLASSIFIER_VERSION} recent decisions: "
+        f"Context Guard Stop protocol {STOP_PROTOCOL_VERSION}, classifier "
+        f"{CLASSIFIER_VERSION} recent decisions: "
         + "; ".join(summaries)
         + ". Raw prompts and replies are not included."
     )
@@ -1973,11 +2163,12 @@ def begin_completion_attempt(
     turn_id = str(payload.get("turn_id") or fallback_turn_id)
     token = secrets.token_urlsafe(24)
     state["completion_attempt"] = {
+        "protocol_version": STOP_PROTOCOL_VERSION,
         "turn_id": turn_id,
         "token_sha256": sha256_text(token),
         "created_at": utc_now(),
+        "staged_control": None,
         "staged_at": None,
-        "staged_checkpoint": None,
     }
     return turn_id, token
 
@@ -2001,6 +2192,9 @@ def completion_command_context(
     stage_command = shell_join(
         [sys.executable, script, "stage-checkpoint", *common]
     )
+    disposition_command = shell_join(
+        [sys.executable, script, "stage-disposition", *common]
+    )
     requirement_ids = [
         item["id"]
         for item in state["requirements"]
@@ -2021,6 +2215,11 @@ def completion_command_context(
         "`--requirement ID=E####[,E####]` flag for each pending requirement and "
         "one `--acceptance ID=E####[,E####]` flag for each pending acceptance item:\n"
         f"{stage_command}\n"
+        "For an incomplete terminal response, stage exactly one typed disposition "
+        "instead: append `--disposition continue`, `user_wait`, `external_wait`, "
+        "or `deferred` to this exact command base (the reason is derived):\n"
+        f"{disposition_command}\n"
+        "A different already-staged control can be replaced only with `--replace`. "
         "Only successful evidence IDs printed by checkpoint-status are valid. "
         "Previously passed items are carried forward automatically. "
         f"Tracked requirements: {','.join(requirement_ids) or 'none'}; "
@@ -2034,11 +2233,15 @@ def completion_attempt_for(
     attempt = state.get("completion_attempt")
     if not isinstance(attempt, dict):
         raise RuntimeError("no active private completion attempt")
+    if attempt.get("protocol_version") != STOP_PROTOCOL_VERSION:
+        raise RuntimeError("completion attempt uses an unsupported Stop protocol")
     if str(attempt.get("turn_id")) != str(turn_id):
         raise RuntimeError("completion attempt belongs to a different turn")
     expected = str(attempt.get("token_sha256") or "")
     if not expected or not hmac.compare_digest(expected, sha256_text(token)):
         raise RuntimeError("invalid private completion token")
+    if "staged_control" not in attempt:
+        raise RuntimeError("completion attempt has no staged-control slot")
     return attempt
 
 
@@ -2165,11 +2368,12 @@ def validate_checkpoint_request(
     token: str,
     requirement_values: list[str],
     acceptance_values: list[str],
+    replace: bool = False,
 ) -> str:
     session_dir = root / "sessions" / safe_session_id(session_id)
     state = load_state(session_dir, {"session_id": session_id})
     require_usable_state(state)
-    completion_attempt_for(state, turn_id, token)
+    attempt = completion_attempt_for(state, turn_id, token)
     requirements = parse_evidence_assignments(
         requirement_values, "requirement"
     )
@@ -2180,7 +2384,106 @@ def validate_checkpoint_request(
     issues = checkpoint_issues(state, checkpoint)
     if issues:
         raise ValueError("; ".join(issues))
-    return sha256_text(canonical_json(checkpoint))
+    control = checkpoint_control(checkpoint)
+    validate_control_transition(attempt, control, replace=replace)
+    return control_request_sha256(session_id, turn_id, control, replace=replace)
+
+
+def checkpoint_control(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "checkpoint", "checkpoint": checkpoint}
+
+
+def disposition_control(disposition: str) -> dict[str, str]:
+    reason = DISPOSITION_REASONS.get(disposition)
+    if reason is None:
+        raise ValueError(
+            "disposition must be continue, user_wait, external_wait, or deferred"
+        )
+    return {
+        "kind": "disposition",
+        "disposition": disposition,
+        "reason": reason,
+    }
+
+
+def validate_staged_control(control: Any) -> dict[str, Any]:
+    if not isinstance(control, dict):
+        raise ValueError("staged control must be an object")
+    if control.get("kind") == "checkpoint":
+        if set(control) != {"kind", "checkpoint"} or not isinstance(
+            control.get("checkpoint"), dict
+        ):
+            raise ValueError("invalid staged checkpoint control")
+        return control
+    if control.get("kind") == "disposition":
+        if set(control) != {"kind", "disposition", "reason"}:
+            raise ValueError("invalid staged disposition control")
+        expected = DISPOSITION_REASONS.get(str(control.get("disposition") or ""))
+        if expected is None or control.get("reason") != expected:
+            raise ValueError("invalid staged disposition reason")
+        return control
+    raise ValueError("staged control has an unknown kind")
+
+
+def control_request_sha256(
+    session_id: str,
+    turn_id: str,
+    control: dict[str, Any],
+    *,
+    replace: bool,
+) -> str:
+    request = {
+        "protocol_version": STOP_PROTOCOL_VERSION,
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "control": control,
+        "replace": bool(replace),
+    }
+    return sha256_text(canonical_json(request))
+
+
+def validate_control_transition(
+    attempt: dict[str, Any], control: dict[str, Any], *, replace: bool
+) -> bool:
+    validate_staged_control(control)
+    existing = attempt.get("staged_control")
+    if existing is None:
+        return False
+    validate_staged_control(existing)
+    if hmac.compare_digest(canonical_json(existing), canonical_json(control)):
+        return True
+    if not replace:
+        raise ValueError(
+            "a different private control is already staged; use --replace"
+        )
+    return False
+
+
+def stage_control(
+    attempt: dict[str, Any], control: dict[str, Any], *, replace: bool
+) -> bool:
+    idempotent = validate_control_transition(attempt, control, replace=replace)
+    if not idempotent:
+        attempt["staged_control"] = control
+        attempt["staged_at"] = utc_now()
+    return idempotent
+
+
+def validate_disposition_request(
+    root: Path,
+    session_id: str,
+    turn_id: str,
+    token: str,
+    disposition: str,
+    replace: bool = False,
+) -> str:
+    session_dir = root / "sessions" / safe_session_id(session_id)
+    state = load_state(session_dir, {"session_id": session_id})
+    require_usable_state(state)
+    attempt = completion_attempt_for(state, turn_id, token)
+    control = disposition_control(disposition)
+    validate_control_transition(attempt, control, replace=replace)
+    return control_request_sha256(session_id, turn_id, control, replace=replace)
 
 
 def stage_private_checkpoint(
@@ -2190,6 +2493,7 @@ def stage_private_checkpoint(
     token: str,
     requirement_values: list[str],
     acceptance_values: list[str],
+    replace: bool = False,
 ) -> dict[str, Any]:
     session_dir = root / "sessions" / safe_session_id(session_id)
     with session_lock(session_dir):
@@ -2206,11 +2510,43 @@ def stage_private_checkpoint(
         issues = checkpoint_issues(state, checkpoint)
         if issues:
             raise ValueError("; ".join(issues))
-        attempt["staged_checkpoint"] = checkpoint
-        attempt["staged_at"] = utc_now()
+        control = checkpoint_control(checkpoint)
+        idempotent = stage_control(attempt, control, replace=replace)
         receipt = {
             "turn_id": turn_id,
             "checkpoint_sha256": sha256_text(canonical_json(checkpoint)),
+            "request_sha256": control_request_sha256(
+                session_id, turn_id, control, replace=replace
+            ),
+            "idempotent": idempotent,
+        }
+        save_state(session_dir, state)
+        return receipt
+
+
+def stage_private_disposition(
+    root: Path,
+    session_id: str,
+    turn_id: str,
+    token: str,
+    disposition: str,
+    replace: bool = False,
+) -> dict[str, Any]:
+    session_dir = root / "sessions" / safe_session_id(session_id)
+    with session_lock(session_dir):
+        state = load_state(session_dir, {"session_id": session_id})
+        require_usable_state(state)
+        attempt = completion_attempt_for(state, turn_id, token)
+        control = disposition_control(disposition)
+        idempotent = stage_control(attempt, control, replace=replace)
+        receipt = {
+            "turn_id": turn_id,
+            "disposition": disposition,
+            "reason": control["reason"],
+            "request_sha256": control_request_sha256(
+                session_id, turn_id, control, replace=replace
+            ),
+            "idempotent": idempotent,
         }
         save_state(session_dir, state)
         return receipt
@@ -2359,8 +2695,17 @@ def normalized_exit_code(value: Any) -> int | None:
     return None
 
 
+def has_hard_tool_failure(diagnostic: str) -> bool:
+    """Failures outrank success, except an explicitly labeled warning line."""
+    return any(
+        not re.match(r"\s*warning:", match.group(0), re.IGNORECASE)
+        for match in FAILED_TOOL_RESPONSE_RE.finditer(diagnostic)
+    )
+
+
 def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
     response = payload.get("tool_response")
+    diagnostic = "\n".join(response_text_values(response))
     if isinstance(response, dict):
         if (
             response.get("is_error") is True
@@ -2373,6 +2718,8 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
         exit_code = normalized_exit_code(raw_exit_code)
         if raw_exit_code is not None and exit_code is None:
             return "failed", "invalid_exit_code"
+        if has_hard_tool_failure(diagnostic):
+            return "failed", "failure_marker"
         if exit_code is not None:
             return (
                 ("success", "structured_exit_code")
@@ -2385,7 +2732,8 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
             or response.get("success") is True
         ):
             return "success", "structured_status"
-    diagnostic = "\n".join(response_text_values(response))
+    if has_hard_tool_failure(diagnostic):
+        return "failed", "failure_marker"
     if AUTHORITATIVE_SUCCESS_TOOL_RESPONSE_RE.search(diagnostic):
         return "success", "authoritative_success_marker"
     if FAILED_TOOL_RESPONSE_RE.search(diagnostic):
@@ -2449,43 +2797,197 @@ def capture_plan_snapshot(
     state.setdefault("work_state", {})["plan_snapshot"] = snapshot
 
 
-def parse_stage_request_from_tool(
-    state: dict[str, Any], payload: dict[str, Any]
-) -> tuple[str, str, list[str], list[str]] | None:
-    if STAGE_REQUEST_MARKER not in tool_response_text(payload):
-        return None
+def private_control_command_intent(payload: dict[str, Any]) -> bool:
+    """Recognize a trusted private-control prefix before strict validation."""
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
-        raise ValueError("private stage request must come from a shell command")
+        return False
+    control_commands = (
+        "checkpoint-status",
+        "stage-checkpoint",
+        "stage-disposition",
+    )
+    candidate = command.lstrip()
+    script_path = str(Path(__file__).resolve())
+    for control_command in control_commands:
+        prefix = shell_join([sys.executable, script_path, control_command])
+        if candidate == prefix or candidate.startswith(prefix + " "):
+            return True
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return bool(
+            re.search(
+                r"(?<![A-Za-z0-9_-])(?:checkpoint-status|stage-checkpoint|"
+                r"stage-disposition)(?![A-Za-z0-9_-])",
+                command,
+            )
+        )
+    tokens = [
+        token[1:-1]
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
+        else token
+        for token in tokens
+    ]
+    plain_search = bool(
+        tokens
+        and Path(tokens[0]).name.lower() in {"rg", "grep"}
+        and not re.search(r"[;&|`]", command)
+        and "$(" not in command
+        and "\n" not in command
+        and "\r" not in command
+    )
+    if plain_search:
+        return False
+    if any(token in control_commands for token in tokens):
+        return True
+    expected_executable = Path(sys.executable).resolve()
+    expected_script = Path(__file__).resolve()
+    for index in range(max(0, len(tokens) - 2)):
+        if tokens[index + 2] not in control_commands:
+            continue
+        executable = Path(tokens[index]).expanduser()
+        script = Path(tokens[index + 1]).expanduser()
+        try:
+            if (
+                executable.is_absolute()
+                and executable.resolve() == expected_executable
+                and script.is_absolute()
+                and script.resolve() == expected_script
+            ):
+                return True
+        except (OSError, RuntimeError):
+            continue
+    return bool(
+        re.search(
+            r"(?<![A-Za-z0-9_-])(?:checkpoint-status|stage-checkpoint|"
+            r"stage-disposition)(?![A-Za-z0-9_-])",
+            command,
+        )
+    )
+
+
+def is_exact_checkpoint_status_command(
+    state: dict[str, Any], payload: dict[str, Any]
+) -> bool:
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str) or "checkpoint-status" not in command:
+        return False
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return False
+    tokens = [
+        token[1:-1]
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
+        else token
+        for token in tokens
+    ]
+    if len(tokens) < 3 or tokens[2] != "checkpoint-status":
+        return False
+    executable = Path(tokens[0]).expanduser()
+    script = Path(tokens[1]).expanduser()
+    if (
+        not executable.is_absolute()
+        or executable.resolve() != Path(sys.executable).resolve()
+        or not script.is_absolute()
+        or script.resolve() != Path(__file__).resolve()
+    ):
+        return False
+    values = {name: [] for name in ("--data-dir", "--session-id", "--turn-id", "--token")}
+    position = 3
+    while position < len(tokens):
+        raw_option = tokens[position]
+        if raw_option.startswith("--") and "=" in raw_option:
+            option, value = raw_option.split("=", 1)
+            position += 1
+        else:
+            if raw_option not in values or position + 1 >= len(tokens):
+                return False
+            option = raw_option
+            value = tokens[position + 1]
+            position += 2
+        if option not in values or not value:
+            return False
+        values[option].append(value)
+    if any(len(value) != 1 for value in values.values()):
+        return False
+    if Path(values["--data-dir"][0]).expanduser().resolve() != data_root().resolve():
+        return False
+    session_id = values["--session-id"][0]
+    turn_id = values["--turn-id"][0]
+    if (
+        session_id != str(state["session"]["id"])
+        or turn_id != str(payload.get("turn_id") or "")
+    ):
+        return False
+    completion_attempt_for(state, turn_id, values["--token"][0])
+    return True
+
+
+def parse_stage_request_from_tool(
+    state: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str):
+        return None
     try:
         tokens = shlex.split(command, posix=os.name != "nt")
     except ValueError as exc:
+        if "stage-checkpoint" not in command and "stage-disposition" not in command:
+            return None
         raise ValueError(f"invalid private stage command: {exc}") from exc
-    indices = [
-        index
-        for index, token in enumerate(tokens)
-        if token == "stage-checkpoint"
-        and index >= 1
-        and Path(tokens[index - 1].strip("'\"")).name == "context_guard.py"
+    tokens = [
+        token[1:-1]
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
+        else token
+        for token in tokens
     ]
-    if not indices:
+    private_commands = {"stage-checkpoint", "stage-disposition"}
+    present_commands = [token for token in tokens if token in private_commands]
+    if not present_commands:
         return None
-    if len(indices) != 1:
+    if len(present_commands) != 1 or len(tokens) < 3:
         raise ValueError("private stage request command is ambiguous")
-    index = indices[0]
-    option_values: dict[str, list[str]] = {
+    private_command = present_commands[0]
+    if tokens[2] != private_command:
+        raise ValueError("private stage request must be one exact command")
+    executable = Path(tokens[0]).expanduser()
+    script = Path(tokens[1]).expanduser()
+    if (
+        not executable.is_absolute()
+        or executable.resolve() != Path(sys.executable).resolve()
+    ):
+        raise ValueError("private stage request uses a different Python runtime")
+    if not script.is_absolute() or script.resolve() != Path(__file__).resolve():
+        raise ValueError("private stage request uses a different runtime script")
+
+    common_options = {
         "--data-dir": [],
         "--session-id": [],
         "--turn-id": [],
         "--token": [],
-        "--requirement": [],
-        "--acceptance": [],
     }
-    remainder = tokens[index + 1 :]
+    command_options: dict[str, list[str]] = (
+        {"--requirement": [], "--acceptance": []}
+        if private_command == "stage-checkpoint"
+        else {"--disposition": []}
+    )
+    option_values = {**common_options, **command_options}
+    replace = False
+    remainder = tokens[3:]
     position = 0
     while position < len(remainder):
         raw_option = remainder[position]
+        if raw_option == "--replace":
+            if replace:
+                raise ValueError("private stage request repeats --replace")
+            replace = True
+            position += 1
+            continue
         if raw_option.startswith("--") and "=" in raw_option:
             option, value = raw_option.split("=", 1)
             position += 1
@@ -2507,6 +3009,10 @@ def parse_stage_request_from_tool(
     for option in ("--data-dir", "--session-id", "--turn-id", "--token"):
         if len(option_values[option]) != 1:
             raise ValueError(f"private stage request requires exactly one {option}")
+    if private_command == "stage-disposition" and len(
+        option_values["--disposition"]
+    ) != 1:
+        raise ValueError("private stage request requires exactly one --disposition")
     expected_root = data_root().expanduser().resolve()
     requested_root = Path(option_values["--data-dir"][0]).expanduser().resolve()
     if requested_root != expected_root:
@@ -2517,12 +3023,56 @@ def parse_stage_request_from_tool(
     turn_id = option_values["--turn-id"][0]
     if turn_id != str(payload.get("turn_id") or ""):
         raise ValueError("private stage request targets a different turn")
-    return (
-        turn_id,
-        option_values["--token"][0],
-        option_values["--requirement"],
-        option_values["--acceptance"],
+    token = option_values["--token"][0]
+    attempt = completion_attempt_for(state, turn_id, token)
+    if private_command == "stage-checkpoint":
+        requirements = parse_evidence_assignments(
+            option_values["--requirement"], "requirement"
+        )
+        acceptance = parse_evidence_assignments(
+            option_values["--acceptance"], "acceptance"
+        )
+        checkpoint = private_checkpoint(state, requirements, acceptance)
+        issues = checkpoint_issues(state, checkpoint)
+        if issues:
+            raise ValueError("; ".join(issues))
+        control = checkpoint_control(checkpoint)
+        expected_marker = STAGE_REQUEST_MARKER
+    else:
+        control = disposition_control(option_values["--disposition"][0])
+        expected_marker = DISPOSITION_REQUEST_MARKER
+    validate_control_transition(attempt, control, replace=replace)
+    expected_sha256 = control_request_sha256(
+        session_id, turn_id, control, replace=replace
     )
+
+    response_values = response_text_values(payload.get("tool_response"))
+    all_response_text = "\n".join(response_values)
+    marker_names = (STAGE_REQUEST_MARKER, DISPOSITION_REQUEST_MARKER)
+    found: list[tuple[str, str]] = []
+    for value in response_values:
+        for line in value.splitlines():
+            match = re.fullmatch(
+                rf"\s*({'|'.join(map(re.escape, marker_names))}) "
+                r"([0-9a-f]{64})\s*",
+                line,
+            )
+            if match is not None:
+                found.append((match.group(1), match.group(2)))
+    if len(found) != 1:
+        raise ValueError("private stage request requires one exact hash marker")
+    marker_name, marker_sha256 = found[0]
+    if any(name in all_response_text for name in marker_names) and (
+        marker_name != expected_marker
+        or not hmac.compare_digest(marker_sha256, expected_sha256)
+    ):
+        raise ValueError("private stage request marker does not match the command")
+    return {
+        "turn_id": turn_id,
+        "token": token,
+        "control": control,
+        "replace": replace,
+    }
 
 
 def handle_post_tool(
@@ -2532,6 +3082,51 @@ def handle_post_tool(
         require_usable_state(state)
         tool_name = str(payload.get("tool_name") or "unknown-tool")
         outcome, outcome_basis = tool_outcome_details(payload)
+        control_intent = private_control_command_intent(payload)
+        try:
+            stage_request = parse_stage_request_from_tool(state, payload)
+            if stage_request is not None:
+                if outcome != "success":
+                    raise ValueError(
+                        "private stage request tool result was not successful"
+                    )
+                attempt = completion_attempt_for(
+                    state, stage_request["turn_id"], stage_request["token"]
+                )
+                idempotent = stage_control(
+                    attempt,
+                    stage_request["control"],
+                    replace=stage_request["replace"],
+                )
+                save_state(session_dir, state)
+                suffix = " (idempotent)" if idempotent else ""
+                return hook_output(
+                    "PostToolUse",
+                    "Context Guard privately staged the turn-bound control"
+                    f"{suffix}. Send a normal user-facing response without "
+                    "private control metadata.",
+                )
+            if is_exact_checkpoint_status_command(state, payload):
+                save_state(session_dir, state)
+                return {}
+            if control_intent:
+                save_state(session_dir, state)
+                return {
+                    "decision": "block",
+                    "reason": (
+                        f"{INTERNAL_CONTINUATION_PREFIX} Malformed private "
+                        "control command rejected; it was not recorded as evidence."
+                    ),
+                }
+        except (OSError, RuntimeError, ValueError) as exc:
+            save_state(session_dir, state)
+            return {
+                "decision": "block",
+                "reason": (
+                    f"{INTERNAL_CONTINUATION_PREFIX} Private control staging "
+                    f"failed: {bounded(exc, 800)}"
+                ),
+            }
         tool_input = bounded_evidence(payload.get("tool_input"), 700)
         tool_response = bounded_evidence(payload.get("tool_response"), 900)
         evidence_origin, evidence_actor_id = tool_actor(state, payload)
@@ -2552,39 +3147,6 @@ def handle_post_tool(
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
         trim_evidence(state)
-        try:
-            stage_request = parse_stage_request_from_tool(state, payload)
-            if stage_request is not None:
-                turn_id, token, requirement_values, acceptance_values = stage_request
-                attempt = completion_attempt_for(state, turn_id, token)
-                requirements = parse_evidence_assignments(
-                    requirement_values, "requirement"
-                )
-                acceptance = parse_evidence_assignments(
-                    acceptance_values, "acceptance"
-                )
-                checkpoint = private_checkpoint(state, requirements, acceptance)
-                issues = checkpoint_issues(state, checkpoint)
-                if issues:
-                    raise ValueError("; ".join(issues))
-                attempt["staged_checkpoint"] = checkpoint
-                attempt["staged_at"] = utc_now()
-                save_state(session_dir, state)
-                return hook_output(
-                    "PostToolUse",
-                    "Context Guard privately staged the turn-bound completion "
-                    "checkpoint. Send a normal user-facing response without "
-                    "checkpoint metadata.",
-                )
-        except (OSError, RuntimeError, ValueError) as exc:
-            save_state(session_dir, state)
-            return {
-                "decision": "block",
-                "reason": (
-                    f"{INTERNAL_CONTINUATION_PREFIX} Private checkpoint staging "
-                    f"failed: {bounded(exc, 800)}"
-                ),
-            }
         save_state(session_dir, state)
     return {}
 
@@ -2843,18 +3405,28 @@ def handle_stop(
             ),
         }
     text = assistant_text(payload)
-    prompt_text = latest_requirement_text(session_dir, state)
+    authoritative_prompt = latest_requirement_text(session_dir, state)
     attempt = state.get("completion_attempt")
     turn_id = str(
         payload.get("turn_id")
         or (attempt.get("turn_id") if isinstance(attempt, dict) else "")
     )
-    prompt_integrity = bool(prompt_text) or not state.get("requirements")
-    stop_decision = classify_stop_decision(
-        text, prompt_text, prompt_integrity=prompt_integrity
+    prompt_integrity = bool(authoritative_prompt) or not state.get("requirements")
+    observed = classify_stop_decision(
+        text, authoritative_prompt, prompt_integrity=prompt_integrity
     )
-    if stop_decision["outcome"] == "fail_closed_integrity":
-        append_decision_log(state, stop_decision, turn_id)
+    decision = dict(observed)
+    decision.update(
+        {
+            "protocol_version": STOP_PROTOCOL_VERSION,
+            "decision_source": "nlp_diagnostic",
+            "declared_disposition": None,
+            "observed_outcome": observed["outcome"],
+        }
+    )
+    if observed["outcome"] == "fail_closed_integrity":
+        decision["decision_source"] = "integrity"
+        append_decision_log(state, decision, turn_id)
         save_state(session_dir, state)
         return {
             "continue": False,
@@ -2867,58 +3439,28 @@ def handle_stop(
                 "prompt ledger before retrying."
             ),
         }
-    if stop_decision["outcome"] in {
-        "allow_user_handoff",
-        "allow_external_wait",
-        "allow_out_of_scope_deferred",
-    }:
-        attempt = state.get("completion_attempt")
-        if isinstance(attempt, dict) and attempt.get("staged_checkpoint") is not None:
-            attempt["staged_checkpoint"] = None
-            attempt["staged_at"] = None
-        append_decision_log(state, stop_decision, turn_id)
-        save_state(session_dir, state)
-        return {}
+
     legacy_checkpoint = CHECKPOINT_RE.search(text) is not None
     leaked_private_metadata = PRIVATE_METADATA_RE.search(text) is not None
     turn_matches = (
         isinstance(attempt, dict)
         and str(attempt.get("turn_id")) == turn_id
     )
-    checkpoint = (
-        attempt.get("staged_checkpoint")
+    staged_control = (
+        attempt.get("staged_control")
         if turn_matches and isinstance(attempt, dict)
         else None
     )
-    completion_claim = stop_decision["outcome"] in {
-        "gate_completion_claim",
-        "gate_authorized_remaining_work",
-    }
-    if (
-        checkpoint is None
-        and not completion_claim
-        and not legacy_checkpoint
-        and not leaked_private_metadata
-    ):
-        append_decision_log(state, stop_decision, turn_id)
-        save_state(session_dir, state)
-        return {}
+    whole_completion = claims_whole_completion(text)
+    explicit_persistence = bool(
+        authoritative_prompt
+        and USER_PERSISTENCE_RE.search(authoritative_prompt)
+    )
     tracked_items = any(
         item.get("status") != "superseded"
         for item in state["requirements"] + state["acceptance_items"]
     )
-    if (
-        checkpoint is None
-        and completion_claim
-        and not tracked_items
-        and not state["open_items"]
-        and not legacy_checkpoint
-    ):
-        stop_decision["outcome"] = "allow_neutral"
-        stop_decision["reason_codes"] = ["no_tracked_completion_contract"]
-        append_decision_log(state, stop_decision, turn_id)
-        save_state(session_dir, state)
-        return {}
+
     issues: list[str] = []
     if legacy_checkpoint:
         issues.append(
@@ -2926,24 +3468,164 @@ def handle_stop(
         )
     elif leaked_private_metadata:
         issues.append("user-facing reply contains private checkpoint metadata")
-    if checkpoint is None:
-        if not turn_matches:
-            issues.append("missing turn-bound private completion attempt")
+    if issues:
+        decision.update(
+            {
+                "outcome": "fail_closed_integrity",
+                "reason_codes": ["private_metadata_leak"],
+                "decision_source": "integrity",
+            }
+        )
+
+    checkpoint: dict[str, Any] | None = None
+    declared_disposition: str | None = None
+    if staged_control is not None:
+        try:
+            control = validate_staged_control(staged_control)
+            if control["kind"] == "checkpoint":
+                checkpoint = control["checkpoint"]
+            else:
+                declared_disposition = str(control["disposition"])
+        except ValueError:
+            issues.append("invalid staged private checkpoint or disposition")
+            decision.update(
+                {
+                    "outcome": "fail_closed_integrity",
+                    "reason_codes": ["invalid_staged_control"],
+                    "decision_source": "integrity",
+                }
+            )
+
+    # A valid checkpoint is the only protocol declaration of completion. It
+    # satisfies an explicit persistence request and outranks reply diagnostics.
+    if checkpoint is not None and not issues:
+        checkpoint_problems = checkpoint_issues(state, checkpoint)
+        if checkpoint_problems:
+            issues.extend(checkpoint_problems)
         else:
-            issues.append("missing staged private checkpoint")
-    elif not isinstance(checkpoint, dict):
-        issues.append("invalid staged private checkpoint")
-    else:
-        issues.extend(checkpoint_issues(state, checkpoint))
-    if not issues:
-        apply_checkpoint(state, checkpoint, turn_id)
+            apply_checkpoint(state, checkpoint, turn_id)
+            state["continuation_attempts"] = 0
+            decision.update(
+                {
+                    "outcome": "consume_checkpoint",
+                    "reason_codes": ["validated_turn_bound_checkpoint"],
+                    "decision_source": "protocol_checkpoint",
+                    "declared_disposition": "complete",
+                }
+            )
+            append_decision_log(state, decision, turn_id)
+            save_state(session_dir, state)
+            return {}
+
+    if whole_completion and not tracked_items and not state["open_items"] and not issues:
+        state["completion_attempt"] = None
         state["continuation_attempts"] = 0
-        stop_decision["outcome"] = "consume_checkpoint"
-        stop_decision["reason_codes"] = ["validated_turn_bound_checkpoint"]
-        append_decision_log(state, stop_decision, turn_id)
+        decision.update(
+            {
+                "outcome": "allow_neutral",
+                "reason_codes": ["no_tracked_completion_contract"],
+                "decision_source": "nlp_hard_gate",
+            }
+        )
+        append_decision_log(state, decision, turn_id)
         save_state(session_dir, state)
         return {}
-    concise = "; ".join(issues[:12])
+
+    prompt_scope = prompt_action_scope(authoritative_prompt)
+    deferred_bindings = deferred_action_bindings(text, prompt_scope)
+    persistence_allows_deferred = bool(
+        explicit_persistence
+        and declared_disposition == "deferred"
+        and deferred_bindings
+    )
+    if not issues and whole_completion and checkpoint is None:
+        issues.append("whole-task completion requires a staged private checkpoint")
+        decision.update(
+            {
+                "outcome": "gate_completion_claim",
+                "reason_codes": ["whole_completion_without_checkpoint"],
+                "decision_source": "nlp_hard_gate",
+                "declared_disposition": declared_disposition,
+            }
+        )
+    elif not issues and declared_disposition == "continue":
+        issues.append("typed disposition reports assistant work remains")
+        decision.update(
+            {
+                "outcome": "gate_authorized_remaining_work",
+                "reason_codes": ["protocol_continue"],
+                "decision_source": "protocol_disposition",
+                "declared_disposition": declared_disposition,
+            }
+        )
+    elif (
+        not issues
+        and explicit_persistence
+        and not persistence_allows_deferred
+        and declared_disposition not in {
+        "user_wait",
+        "external_wait",
+        }
+    ):
+        issues.append("authoritative user prompt requires persistence")
+        decision.update(
+            {
+                "outcome": "gate_authorized_remaining_work",
+                "reason_codes": ["explicit_user_persistence"],
+                "decision_source": "nlp_hard_gate",
+                "declared_disposition": declared_disposition,
+            }
+        )
+
+    if not issues and declared_disposition is not None:
+        disposition_outcomes = {
+            "user_wait": "allow_user_handoff",
+            "external_wait": "allow_external_wait",
+            "deferred": "allow_out_of_scope_deferred",
+        }
+        outcome = disposition_outcomes.get(declared_disposition)
+        if outcome is not None:
+            state["completion_attempt"] = None
+            state["continuation_attempts"] = 0
+            decision.update(
+                {
+                    "outcome": outcome,
+                    "reason_codes": [
+                        f"protocol_{declared_disposition}",
+                        DISPOSITION_REASONS[declared_disposition],
+                    ]
+                    + (
+                        ["authoritative_prompt_bounds_deferred_action"]
+                        + [
+                            f"deferred_{category}"
+                            for category in deferred_bindings[:4]
+                        ]
+                        if persistence_allows_deferred
+                        else []
+                    ),
+                    "decision_source": "protocol_disposition",
+                    "declared_disposition": declared_disposition,
+                }
+            )
+            append_decision_log(state, decision, turn_id)
+            save_state(session_dir, state)
+            return {}
+
+    if not issues:
+        state["completion_attempt"] = None
+        state["continuation_attempts"] = 0
+        decision.update(
+            {
+                "outcome": "allow_neutral",
+                "reason_codes": ["protocol_default_yield"],
+                "decision_source": "nlp_diagnostic",
+            }
+        )
+        append_decision_log(state, decision, turn_id)
+        save_state(session_dir, state)
+        return {}
+
+    concise = "; ".join(dict.fromkeys(issues[:12]))
     expected_ids = (
         "Expected IDs: requirements="
         + (",".join(item["id"] for item in state["requirements"]) or "none")
@@ -2952,10 +3634,10 @@ def handle_stop(
         + "."
     )
     if state["continuation_attempts"] >= 2:
-        stop_decision["reason_codes"] = list(stop_decision["reason_codes"]) + [
+        decision["reason_codes"] = list(decision["reason_codes"]) + [
             "completion_contract_failed_twice"
         ]
-        append_decision_log(state, stop_decision, turn_id)
+        append_decision_log(state, decision, turn_id)
         save_state(session_dir, state)
         return {
             "continue": False,
@@ -2966,18 +3648,27 @@ def handle_stop(
             )
         }
     state["continuation_attempts"] += 1
-    stop_decision["reason_codes"] = list(stop_decision["reason_codes"]) + [
-        "missing_or_invalid_checkpoint"
+    decision["reason_codes"] = list(decision["reason_codes"]) + [
+        "protocol_control_rejected"
     ]
-    append_decision_log(state, stop_decision, turn_id)
+    append_decision_log(state, decision, turn_id)
     save_state(session_dir, state)
+    if decision["outcome"] == "gate_authorized_remaining_work" and not whole_completion:
+        correction = (
+            "Continue the authorized work, or stage an exact user_wait/external_wait "
+            "disposition only when that boundary is actually reached."
+        )
+    else:
+        correction = (
+            "Resolve or explicitly report these items. If claiming completion, use "
+            "the private checkpoint commands injected for the continuation turn; do "
+            "not put checkpoint metadata in the user-facing reply."
+        )
     return {
         "decision": "block",
         "reason": (
             f"{INTERNAL_CONTINUATION_PREFIX} The task is not yet safely complete. "
-            "Resolve or explicitly report these items. If claiming completion, use "
-            "the private checkpoint commands injected for the continuation turn; do "
-            "not put checkpoint metadata in the user-facing reply. "
+            f"{correction} "
             f"{concise}. {expected_ids}"
         ),
     }
@@ -3737,6 +4428,7 @@ def command_diagnose(args: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
+                    "protocol_version": STOP_PROTOCOL_VERSION,
                     "classifier_version": CLASSIFIER_VERSION,
                     "decisions": [],
                 },
@@ -3755,6 +4447,7 @@ def command_diagnose(args: argparse.Namespace) -> int:
     print(
         json.dumps(
             {
+                "protocol_version": STOP_PROTOCOL_VERSION,
                 "classifier_version": CLASSIFIER_VERSION,
                 "decisions": decisions,
             },
@@ -3789,13 +4482,29 @@ def command_stage_checkpoint(args: argparse.Namespace) -> int:
             args.token,
             args.requirement,
             args.acceptance,
+            args.replace,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
         return 1
-    print(
-        f"{STAGE_REQUEST_MARKER} {checkpoint_sha256[:12]}"
-    )
+    print(f"{STAGE_REQUEST_MARKER} {checkpoint_sha256}")
+    return 0
+
+
+def command_stage_disposition(args: argparse.Namespace) -> int:
+    try:
+        request_sha256 = validate_disposition_request(
+            args.data_dir.expanduser().resolve(),
+            args.session_id,
+            args.turn_id,
+            args.token,
+            args.disposition,
+            args.replace,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
+        return 1
+    print(f"{DISPOSITION_REQUEST_MARKER} {request_sha256}")
     return 0
 
 
@@ -3816,8 +4525,8 @@ def command_self_test() -> int:
     if expected != actual:
         print(f"FAIL hook events: expected {sorted(expected)}, got {sorted(actual)}")
         return 1
-    if sys.version_info < (3, 9):
-        print(f"FAIL Python 3.9+ required, got {sys.version.split()[0]}")
+    if sys.version_info < (3, 10):
+        print(f"FAIL Python 3.10+ required, got {sys.version.split()[0]}")
         return 1
     print(
         f"PASS context-guard self-test: Python {sys.version.split()[0]}, "
@@ -3846,6 +4555,10 @@ def main() -> int:
             "stage-checkpoint",
             "Stage a validated private checkpoint before the final response",
         ),
+        (
+            "stage-disposition",
+            "Stage a typed incomplete-turn disposition before the final response",
+        ),
     ):
         command = subparsers.add_parser(name, help=help_text)
         command.add_argument("--data-dir", type=Path, required=True)
@@ -3855,6 +4568,14 @@ def main() -> int:
         if name == "stage-checkpoint":
             command.add_argument("--requirement", action="append", default=[])
             command.add_argument("--acceptance", action="append", default=[])
+            command.add_argument("--replace", action="store_true")
+        elif name == "stage-disposition":
+            command.add_argument(
+                "--disposition",
+                required=True,
+                choices=tuple(DISPOSITION_REASONS),
+            )
+            command.add_argument("--replace", action="store_true")
     args = parser.parse_args()
     if args.command == "hook":
         return command_hook()
@@ -3869,6 +4590,8 @@ def main() -> int:
         return command_checkpoint_status(args)
     if args.command == "stage-checkpoint":
         return command_stage_checkpoint(args)
+    if args.command == "stage-disposition":
+        return command_stage_disposition(args)
     return command_self_test()
 
 

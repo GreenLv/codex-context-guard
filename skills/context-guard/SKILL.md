@@ -20,7 +20,18 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
    paths, or requirement maps in the user-facing response.
 8. For progress, blocked, status, control, or clarification replies, do not stage
    a completion checkpoint.
-9. Before claiming full completion for an active guarded task:
+9. Before ending an incomplete guarded turn, use the exact injected
+   `stage-disposition` command only when one of these typed boundaries is true:
+   - `continue`: authorized assistant work should continue now;
+   - `user_wait`: the next required action belongs to the user;
+   - `external_wait`: progress depends on an external actor or system;
+   - `deferred`: the remaining action is explicitly denied or outside the
+     current bounded scope.
+   The command performs a read-only precheck; the `PostToolUse` Hook writes the
+   authenticated, turn-bound control. A different staged control requires the
+   explicit `--replace` flag. If no disposition is staged, Stop yields safely
+   and every unverified item remains pending.
+10. Before claiming full completion for an active guarded task:
    - Run the exact `checkpoint-status` command injected for the current turn.
    - Select only successful `E####` evidence printed by that command. Plain-text
      tool output without a structured success status or an exact authoritative
@@ -35,8 +46,12 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
      The command performs a read-only precheck; the `PostToolUse` Hook commits
      the request to private plugin data outside the workspace sandbox.
    - If staging fails, continue working or report the task as incomplete.
-10. After private staging succeeds, send a normal concise final response with no
-checkpoint footer. The Stop Hook validates the private turn-bound record.
+11. Never stage both a completion checkpoint and an incomplete-turn disposition.
+    `complete` is not a `stage-disposition` value; it is derived only from a
+    validated private checkpoint.
+12. After private staging succeeds, send a normal concise final response with no
+    checkpoint or disposition footer. The Stop Hook validates the private
+    turn-bound record.
 
 Previously passed items carry their authenticated evidence forward. A new user
 turn invalidates any unstaged or unused completion attempt from the prior turn.
@@ -72,9 +87,9 @@ turn invalidates any unstaged or unused completion attempt from the prior turn.
 - `$context-guard` or `context-guard on`: activate full protection.
 - `context-guard off`: stop recovery and completion gating; prompt journaling continues.
 - `context-guard status`: show protected state without exposing raw prompts.
-- `context-guard diagnose`: show the bounded recent Stop decision classes,
-  reason codes, hashes, action ownership, and authorization without raw prompts
-  or replies.
+- `context-guard diagnose`: show bounded protocol/control sources, declared
+  dispositions, diagnostic outcomes, reason codes, and hashes without raw
+  prompts or replies.
 - `context-guard export <path>`: write a redacted handoff document inside the current project.
 - With no export path, use `.codex/context-guard/CONTEXT_HANDOFF.md`.
 - `context-guard rollover <directory>`: after the user explicitly requests a

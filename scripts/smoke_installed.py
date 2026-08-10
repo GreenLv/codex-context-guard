@@ -150,7 +150,8 @@ def main() -> int:
                 ),
             ),
         )
-        if "Context Guard is active" not in context_text(root_prompt):
+        root_context = context_text(root_prompt)
+        if "Context Guard is active" not in root_context:
             raise RuntimeError("complex root prompt did not activate protection")
 
         hook(
@@ -267,10 +268,82 @@ def main() -> int:
                 ),
             ),
         )
+        root_token = option_from_command_context(root_context, "--token")
+        root_common = [
+            "--data-dir",
+            str(private),
+            "--session-id",
+            session_id,
+            "--turn-id",
+            "turn-root",
+            f"--token={root_token}",
+        ]
+        disposition_arguments = [
+            sys.executable,
+            str(runtime),
+            "stage-disposition",
+            *root_common,
+            "--disposition",
+            "user_wait",
+        ]
+        staged_disposition = run(disposition_arguments, environment=environment)
+        hook(
+            runtime,
+            environment,
+            payload(
+                "PostToolUse",
+                "turn-root",
+                tool_name="Bash",
+                tool_input={"command": shlex.join(disposition_arguments)},
+                tool_response={
+                    "exit_code": 0,
+                    "output": staged_disposition.stdout,
+                },
+            ),
+        )
+        yielded = hook(
+            runtime,
+            environment,
+            payload(
+                "Stop",
+                "turn-root",
+                last_assistant_message=(
+                    "Please complete the required account step and then reply."
+                ),
+            ),
+        )
+        if yielded:
+            raise RuntimeError(
+                f"Stop did not accept the staged user_wait disposition: {yielded}"
+            )
+        waiting_state = json.loads(
+            (
+                private / "sessions" / session_id / "state.json"
+            ).read_text(encoding="utf-8")
+        )
+        waiting_attempt = waiting_state.get("completion_attempt")
+        if isinstance(waiting_attempt, dict) and waiting_attempt.get("staged_control"):
+            raise RuntimeError("Stop did not consume the user_wait disposition")
+        if not waiting_state.get("open_items"):
+            raise RuntimeError("user_wait disposition incorrectly completed the task")
+
+        resumed_turn = hook(
+            runtime,
+            environment,
+            payload(
+                "UserPromptSubmit",
+                "turn-resume",
+                prompt=(
+                    "用户动作已经完成；继续 lifecycle smoke，并恢复后完成证据验收。"
+                ),
+            ),
+        )
+        if "stage-disposition" not in context_text(resumed_turn):
+            raise RuntimeError("new turn did not receive the disposition protocol")
         compact = hook(
             runtime,
             environment,
-            payload("PreCompact", "turn-root", trigger="manual"),
+            payload("PreCompact", "turn-resume", trigger="manual"),
         )
         if compact.get("continue") is not True:
             raise RuntimeError("PreCompact did not continue after saving recovery")
@@ -284,6 +357,7 @@ def main() -> int:
             "Latest Codex plan mirror",
             "Bounded subagent coordination state",
             "checkpoint-status",
+            "stage-disposition",
         ):
             if expected not in restored_context:
                 raise RuntimeError(f"recovery context is missing {expected!r}")
@@ -344,7 +418,7 @@ def main() -> int:
                 "turn-after-compact",
                 tool_name="Bash",
                 tool_input={"command": shlex.join(stage_arguments)},
-                tool_response=staged.stdout,
+                tool_response={"exit_code": 0, "output": staged.stdout},
             ),
         )
         stopped = hook(
@@ -365,8 +439,8 @@ def main() -> int:
         module.validate_state_integrity(state)
         serialized = json.dumps(state, ensure_ascii=False)
         assertions = {
-            "schema4": state.get("schema_version") == 4,
-            "one_root_requirement": len(state.get("requirements", [])) == 1,
+            "schema5": state.get("schema_version") == 5,
+            "root_and_resume_requirements": len(state.get("requirements", [])) == 2,
             "delegated_prompt": any(
                 item.get("authority") == "delegated"
                 for item in state.get("prompts", [])
@@ -388,6 +462,9 @@ def main() -> int:
             "binary_removed": "base64,AAAA" not in serialized,
             "checkpoint_complete": state.get("completion_checkpoint", {}).get("status")
             == "complete",
+            "checkpoint_control_consumed": state.get("completion_attempt") is None,
+            "disposition_consumed": "user_wait"
+            in json.dumps(state.get("decision_log", []), ensure_ascii=False),
             "no_open_items": not state.get("open_items"),
             "all_items_pass": all(
                 item.get("status") == "pass"
@@ -401,9 +478,9 @@ def main() -> int:
 
     print(
         "SMOKE_PASS context-guard installed lifecycle: "
-        "schema4, plan mirror, delegated authority, bounded agent result, "
-        "unknown-text exclusion, binary omission, compaction recovery, "
-        "and private completion gate"
+        "schema5, private disposition consumption, plan mirror, delegated "
+        "authority, bounded agent result, unknown-text exclusion, binary "
+        "omission, compaction recovery, and private completion gate"
     )
     return 0
 

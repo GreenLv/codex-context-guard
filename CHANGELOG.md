@@ -4,8 +4,49 @@ All notable public releases are documented here.
 
 ## Unreleased
 
-No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.5.1 source line require a new version.
+### Added
+
+- Context Guard 0.6.0 is a protocol-first turn-control minor. State schema 5
+  adds one turn-bound `completion_attempt.staged_control` slot for either a
+  verified completion checkpoint or one non-completion disposition:
+  `continue`, `user_wait`, `external_wait`, or `deferred`.
+- The private `stage-disposition` command preflights a typed disposition. The
+  existing `PostToolUse` Hook remains the only authoritative writer after it
+  verifies the exact command, data directory, session, turn, private token,
+  marker, and successful exit status.
+- Stop protocol 1.0.0 and classifier 2.0.0 diagnostics record the decision
+  source, declared disposition, observed outcome, bounded reason/action enums,
+  and prompt/reply hashes without retaining raw reply text.
+
+### Changed
+
+- Stop now applies a fixed control priority: integrity and private-metadata
+  checks; a verified checkpoint; an uncheckpointed whole-task completion
+  claim; staged `continue`; explicit user persistence; typed wait/deferred;
+  then safe default yield. `complete` is derived only from a verified
+  checkpoint and is not a disposition.
+- `continue` requests bounded continuation. `user_wait`, `external_wait`, and
+  `deferred` yield without changing pending requirements. With no staged
+  control, an incomplete response also yields safely unless an explicit
+  whole-task completion claim or user persistence requires continuation; a
+  genuine user/external wait may still yield under persistence, and `deferred`
+  may do so only when the hash-verified prompt denies or excludes the specific
+  action identified as deferred.
+- Natural-language action classification is diagnostic and anomaly-oriented;
+  it no longer drives ordinary continuation from inferred action ownership.
+- Schema 1-4 migration preserves the durable ledger but invalidates any
+  in-flight completion token or staged control so a fresh turn must authorize
+  the schema-5 protocol.
+- The exact eight Hook events and their Codex payload shapes are unchanged.
+  Requirement-to-evidence semantic relevance is not implemented in 0.6.0; it
+  remains benchmark-first research for a possible 0.7.0 capability.
+
+### Validation status
+
+- This is an unreleased candidate contract. macOS candidate, installed, fresh
+  trust, compact-recovery, and native Windows evidence must be recorded against
+  frozen private/public commits before any release claim. CI is source-level
+  automation and is not installed-runtime or native-platform acceptance.
 
 ## 0.5.1 - 2026-08-10
 

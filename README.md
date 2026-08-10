@@ -17,12 +17,12 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.5.1` keeps state schema 4 and updates Stop classifier
-> 1.0.1 with mixed user-handoff ownership fixes, derived open-item
-> normalization, and verified same-version archive adoption. Native Windows
-> 0.5.1 acceptance is complete, including first-adoption, archive, installed
-> lifecycle, and fresh trusted-Hook checks. The eight-Hook and
-> private-checkpoint interfaces are unchanged.
+> Source status: the `0.6.0` candidate introduces state schema 5, Stop protocol
+> 1.0.0, and diagnostic classifier 2.0.0. Completion and turn continuation are
+> separate: only a verified checkpoint completes the contract, while a private
+> turn-bound disposition controls `continue`, `user_wait`, `external_wait`, or
+> `deferred`. The eight-Hook wire is unchanged. Native Windows 0.6.0 acceptance,
+> the tag, and the GitHub Release remain pending.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -62,17 +62,17 @@ Context Guard therefore separates four things:
   transcripts or hidden reasoning.
 - Treats unstructured or ambiguous tool output as unknown and prevents it from
   satisfying completion gates.
-- Treats explicit waiting for user approval, authorization, confirmation, or a
-  decision as an incomplete state, even when the reply also reports a finished
-  local milestone.
-- Classifies remaining actions by category, owner, and current-turn
-  authorization. User handoffs, external waits, and denied/out-of-scope later
-  phases may end a turn; any authorized assistant-owned remainder still gates.
-- Emits stable decision outcomes and reason codes. Mixed external waiting plus
-  assistant-owned publication or repository work gates rather than being hidden
-  by the external status.
-- Stores at most 32 recent Stop decisions as timestamps, turn IDs, classifier
-  versions, hashes, reason codes, and action facts. It stores no raw reply text.
+- Keeps exactly one private turn-bound staged control: a completion checkpoint,
+  or `continue`, `user_wait`, `external_wait`, or `deferred`.
+- Yields safely with requirements still pending when no disposition is staged.
+  A verified checkpoint, a staged `continue`, a narrow whole-task completion
+  claim, and explicit user persistence have a fixed Stop priority.
+- Uses natural-language action ownership only as a diagnostic signal. It cannot
+  turn an ordinary assistant future, user handoff, external wait, or deferred
+  phase into a hard continuation by itself.
+- Stores at most 32 recent Stop decisions as timestamps, turn IDs, protocol and
+  control sources, declared dispositions, diagnostic outcomes, hashes, and
+  reason codes. It stores no raw reply text.
 - Serializes concurrent session updates with a bounded cross-platform file
   lock, including the Windows access-denied/holder-exit race observed in CI.
 - Replaces binary/data-URL payloads with bounded type, length, and hash
@@ -256,10 +256,11 @@ python3 scripts/smoke_installed.py
   gating.
 - `context-guard off` disables recovery and completion gating while preserving
   prompt journaling.
-- `context-guard status` reports protected-state counts, classifier version,
-  and the latest decision without exposing raw prompts.
-- `context-guard diagnose` reports bounded recent decision classes, reason
-  codes, hashes, action owners, and authorization without raw prompts/replies.
+- `context-guard status` reports protected-state counts, Stop protocol and
+  classifier versions, and the latest decision without exposing raw prompts.
+- `context-guard diagnose` reports bounded protocol/control sources, declared
+  dispositions, diagnostic outcomes, reason codes, and hashes without raw
+  prompts or replies.
 - `context-guard export <path>` writes a redacted handoff inside the current
   project. The default is `.codex/context-guard/CONTEXT_HANDOFF.md`.
 - `context-guard rollover <directory>` validates an explicitly prepared
@@ -325,13 +326,10 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
 
-The current native Windows follow-up covers the automated suite, an isolated
-installed lifecycle, and the normal persistent trust flow for a fresh Hook
-task. With the Windows trust root supplied to the isolated CLI through
-`CODEX_CA_CERTIFICATE`, a real manual `/compact` completed backend compaction,
-ran `PreCompact`, injected the recovery packet through `SessionStart`, and
-recovered both exact markers in a blind post-compact prompt. See
-[Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the full evidence.
+Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.0
+candidate requires a new source/installed/archive/doctor/fresh-trust/
+disposition/compact run against the frozen commit; CI is not a substitute. See
+[Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the evidence boundary.
 
 ## Explicit non-goals
 
@@ -343,9 +341,10 @@ Context Guard is not:
 - a second Plan/Goal controller, agent scheduler, mailbox, or shared workspace;
 - a replacement for human review, tests, or acceptance.
 
-Semantic evidence matching, shared multi-agent workspaces, and telemetry are
-not committed roadmap items. They require a reproducible failure or a separate,
-approved benchmark-first plan.
+Requirement-to-evidence semantic relevance is deferred to a possible 0.7.0 and
+requires an approved benchmark with false-acceptance, false-rejection, and
+abstention thresholds. Shared multi-agent workspaces and telemetry remain
+separate research decisions.
 
 ## Contributing and security
 

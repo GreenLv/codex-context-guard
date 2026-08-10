@@ -27,9 +27,13 @@ The private store may contain:
 - bounded tool input/output summaries and outcome metadata;
 - the latest bounded native-plan mirror;
 - bounded delegated-agent metadata and final result summaries;
-- recovery snapshots and private completion checkpoints.
-- at most 32 recent Stop decisions containing timestamps, turn IDs, classifier
-  versions, outcome/reason codes, prompt/reply SHA-256, and action facts.
+- recovery snapshots and private completion checkpoints;
+- a turn-bound protocol attempt containing a token hash and at most one staged
+  checkpoint or typed disposition (`continue`, `user_wait`, `external_wait`, or
+  `deferred`); and
+- at most 32 recent Stop decisions containing timestamps, turn IDs,
+  protocol/classifier versions, decision-source/disposition/outcome enums,
+  bounded reason/action enums, and prompt/reply SHA-256.
 
 The plugin intentionally does not store chain-of-thought or copy complete root
 or delegated-agent transcripts.
@@ -41,9 +45,14 @@ or delegated-agent transcripts.
   SHA-256 metadata.
 - Delegated-agent results are bounded summaries rather than transcripts.
 - Recovery prioritizes active requirements and failures over historical detail.
-- Decision diagnostics never retain raw reply text, chain-of-thought, local
-  paths, credentials, or tokens. Recovery includes only the latest short
-  fail-closed reason when relevant, not the decision history.
+- Disposition requests accept only a fixed disposition enum and derive a fixed
+  reason enum; there is no free-form disposition reason field.
+- Protocol and decision diagnostics retain hashes and bounded enums, never raw
+  reply text, chain-of-thought, local paths, credentials, or plaintext private
+  tokens. Recovery includes only the latest short fail-closed reason when
+  relevant, not the decision history.
+- Schema migration invalidates in-flight private tokens and staged controls
+  instead of carrying turn authorization across protocol versions.
 - Ended sessions become eligible for cleanup after 30 days.
 
 ## Redaction
@@ -72,6 +81,9 @@ outside the Hook runtime and remain explicit user actions.
 - `context-guard status` exposes counts and integrity state, not raw prompts.
 - `context-guard diagnose` exposes bounded decision metadata and hashes, not
   raw prompts or replies.
+- `stage-checkpoint` and `stage-disposition` preflight private turn-bound
+  requests; their tokens, commands, markers, and stored controls must never be
+  copied into a user-facing reply.
 - `context-guard export` and `rollover` are explicit-only writes.
 - Uninstalling plugin code does not automatically delete private runtime data.
 

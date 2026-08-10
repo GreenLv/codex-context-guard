@@ -30,6 +30,8 @@ jobs:
         run: python scripts/audit_public_tree.py .
       - name: Run regression tests
         run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Run eight-Hook source self-test
+        run: python scripts/context_guard.py self-test
       - name: Lint
         run: ruff check .
       - name: Compile Python sources
