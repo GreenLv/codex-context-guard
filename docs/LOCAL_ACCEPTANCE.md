@@ -28,10 +28,29 @@ Context Guard. The current source line is `0.5.1`; historical `0.5.0` and
   classifier 1.0.1 outcome `allow_user_handoff`, `integrity=ok`, zero
   continuations, no checkpoint, derived open items for the pending contract,
   and no project writes.
-- Native Windows 0.5.1 acceptance remains pending; neither macOS nor CI may
-  substitute for the same-version first-adoption and fresh-runtime checks on
-  Windows.
-- No `v0.5.1` tag or GitHub Release is part of this acceptance run.
+- Native Windows 0.5.1 acceptance was completed separately in the section below;
+  it is not inferred from macOS or CI.
+
+## 0.5.1 native acceptance on Windows (2026-08-10)
+
+- Native Windows used Python 3.12.10 and Codex CLI 0.146.0. Private source and
+  installed-cache copies each ran all 87 Hook regressions with one capability-
+  aware symbolic-link skip; all 16 manager, three public-export, five parity/
+  share-boundary, and 108 public regressions with one skip passed alongside
+  repository validation, privacy audit, Ruff, and unified validation.
+- A disposable standalone home installed public 0.5.1, deliberately removed
+  only its disposable archive, then proved the locked same-version first-
+  adoption path. The following read-only run was a strict no-op and preserved
+  exact source/cache parity without an in-place refresh.
+- The installed runtime retained 19 indexed live and trusted archive versions
+  through 0.5.1, including both 0.5.0 and 0.5.1. Archive audit, installed
+  lifecycle, the eight-Hook self-test, source/cache parity, and doctor all
+  passed.
+- A fresh no-bypass task reviewed and trusted the installed 0.5.1 Hooks through
+  the normal flow, made no project-file change, and returned the requested
+  conditional user handoff once. Schema 4 retained `integrity=ok`; classifier
+  1.0.1 returned `allow_user_handoff`, preserved the pending derived open items,
+  and produced zero continuations and no completion checkpoint.
 
 ## 0.5.0 native acceptance on Windows (2026-08-10)
 

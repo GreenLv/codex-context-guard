@@ -20,8 +20,9 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > Release status: `0.5.1` keeps state schema 4 and updates Stop classifier
 > 1.0.1 with mixed user-handoff ownership fixes, derived open-item
 > normalization, and verified same-version archive adoption. Native Windows
-> 0.5.0 acceptance is recorded; native Windows 0.5.1 acceptance remains
-> pending. The eight-Hook and private-checkpoint interfaces are unchanged.
+> 0.5.1 acceptance is complete, including first-adoption, archive, installed
+> lifecycle, and fresh trusted-Hook checks. The eight-Hook and
+> private-checkpoint interfaces are unchanged.
 
 ### 30-second sanitized compact/recovery demo
 

@@ -17,8 +17,8 @@ worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context
 
 > 发布状态：`0.5.1` 保持 state schema 4，并将 Stop classifier 更新为
 > 1.0.1，修复混合用户交接的动作归属、派生 open-item 一致性和经验证的
-> 同版本归档首次采用。Windows 原生 0.5.0 验收已有记录，0.5.1 原生验收
-> 仍待完成；八 Hook 与私有 checkpoint 接口保持不变。
+> 同版本归档首次采用。Windows 原生 0.5.1 验收已经完成，覆盖首次采用、归档、
+> 已安装生命周期和全新可信 Hook；八 Hook 与私有 checkpoint 接口保持不变。
 
 ### 30 秒脱敏 compact/recovery 演示
 
