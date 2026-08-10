@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 REPOSITORY = "https://github.com/GreenLv/codex-context-guard"
 HOOK_EVENTS = {
     "UserPromptSubmit",
