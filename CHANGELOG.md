@@ -33,10 +33,10 @@ No changes yet. Plugin bundle, Hook, manifest, or script changes after the
   public tests with one platform skip, repository/privacy/boundary/parity/Ruff/
   compilation gates, private and isolated-public installed lifecycles, and a
   fresh no-bypass classifier 1.0.1 handoff task.
-- Native Windows 0.5.0 acceptance is recorded separately in local acceptance
-  evidence. Native Windows 0.5.1 acceptance remains pending and is not inferred
-  from CI or macOS.
-- No `v0.5.1` tag or GitHub Release is created by this source update.
+- Native Windows 0.5.1 acceptance independently covers the source and installed
+  suites, manager/export/share-boundary gates, repository/privacy/Ruff checks,
+  isolated first-adoption, 19-version archive audit, installed lifecycle,
+  eight-Hook self-test, doctor, and a fresh no-bypass classifier 1.0.1 handoff.
 
 ## 0.5.0 - 2026-08-09
 
