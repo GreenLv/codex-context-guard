@@ -4488,6 +4488,7 @@ def command_stage_checkpoint(args: argparse.Namespace) -> int:
         console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
         return 1
     print(f"{STAGE_REQUEST_MARKER} {checkpoint_sha256}")
+    print("Script completed")
     return 0
 
 
@@ -4505,6 +4506,7 @@ def command_stage_disposition(args: argparse.Namespace) -> int:
         console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
         return 1
     print(f"{DISPOSITION_REQUEST_MARKER} {request_sha256}")
+    print("Script completed")
     return 0
 
 

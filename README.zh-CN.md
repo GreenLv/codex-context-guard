@@ -15,11 +15,12 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 源码状态：`0.6.0` 候选引入 state schema 5、Stop protocol 1.0.0 和
-> diagnostic classifier 2.0.0。完成事实与本轮是否继续已经分离：只有已验证
-> checkpoint 可以完成任务契约；私有、turn-bound disposition 只控制
-> `continue`、`user_wait`、`external_wait` 或 `deferred`。八 Hook wire 不变。
-> Windows 原生 0.6.0 验收、tag 和 GitHub Release 仍为 pending。
+> 源码状态：`0.6.1` 是未发布候选。`0.6.0` 候选引入了 state schema 5、
+> Stop protocol 1.0.0 和 diagnostic classifier 2.0.0，但在正常信任 Hook 的
+> fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag
+> 或 Release；其已安装 cache 不可变，版本号已经消耗。`0.6.1` 只修改成功的
+> 私有 stage receipt，schema、protocol、classifier 和八 Hook wire 均不变。
+> 0.6.1 原生验收与发布门仍为 pending。
 
 ### 30 秒脱敏 compact/recovery 演示
 
@@ -55,6 +56,10 @@ Context Guard 因此把四件事分开记录：
 - 将无结构或含糊的工具输出记为 unknown，阻止其满足完成门禁。
 - 每轮最多保留一个私有、turn-bound staged control：完成 checkpoint，或
   `continue`、`user_wait`、`external_wait`、`deferred` 之一。
+- 私有 stage request 只有在精确 hash marker 与成功工具 outcome 同时成立时才会被
+  接受；raw stdout 路径由成功 CLI 最终输出独立 `Script completed` receipt。
+  bare marker 仍会被拒绝，structured failure、非零状态或硬失败文本优先。
+  控制命令不会成为关闭 requirement 的成功 evidence。
 - 未 stage disposition 时安全让出，本轮结束但需求继续 pending。已验证 checkpoint、
   staged `continue`、窄范围整体完成声明和用户显式 persistence 按固定 Stop 优先级处理。
 - 自然语言动作归属只作为诊断信号；普通的 assistant future、用户交接、外部等待或
@@ -284,9 +289,10 @@ ruff check .
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-Windows 原生 0.5.1 验收只作为历史证据。0.6.0 候选必须针对冻结 commit 重新完成
-source/installed/archive/doctor/fresh-trust/disposition/compact 验收；CI 不能替代。
-证据边界见[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
+Windows 原生 0.5.1 验收只作为历史证据。0.6.1 候选必须针对冻结 commit 重新完成
+source/installed/archive/doctor/fresh-trust/raw-receipt/disposition/compact 验收；
+CI 不能替代。未发布的 0.6.0 候选已经在真实 Code Mode fresh gate 失败，不得创建
+tag 或原地修补。证据边界见[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 明确不做
 
@@ -298,9 +304,9 @@ Context Guard 不是：
 - 第二套 Plan/Goal 控制器、Agent 调度器、mailbox 或共享工作区；
 - 人工审查、测试或验收的替代品。
 
-需求—证据语义相关性顺延到可能的 0.7.0，并要求先批准含 false-acceptance、
-false-rejection 和 abstention 阈值的 benchmark。共享多 Agent 工作区与 telemetry
-仍是独立研究决策。
+需求—证据语义相关性不属于 0.6.x 能力，顺延到可能的 0.7.0，并要求先批准含
+false-acceptance、false-rejection 和 abstention 阈值的 benchmark。共享多 Agent
+工作区与 telemetry 仍是独立研究决策。
 
 ## 贡献与安全
 

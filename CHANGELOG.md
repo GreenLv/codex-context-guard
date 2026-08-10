@@ -6,17 +6,31 @@ All notable public releases are documented here.
 
 ### Added
 
-- Context Guard 0.6.0 is a protocol-first turn-control minor. State schema 5
-  adds one turn-bound `completion_attempt.staged_control` slot for either a
+- The 0.6.x candidate line is a protocol-first turn-control minor. State schema
+  5 adds one turn-bound `completion_attempt.staged_control` slot for either a
   verified completion checkpoint or one non-completion disposition:
-  `continue`, `user_wait`, `external_wait`, or `deferred`.
+  `continue`, `user_wait`, `external_wait`, or `deferred`. This contract was
+  first implemented in the unreleased 0.6.0 candidate and is carried forward
+  unchanged by the 0.6.1 candidate.
 - The private `stage-disposition` command preflights a typed disposition. The
   existing `PostToolUse` Hook remains the only authoritative writer after it
   verifies the exact command, data directory, session, turn, private token,
-  marker, and successful exit status.
+  marker, and successful tool outcome. Structured status is used when present;
+  the 0.6.1 raw-stdout path uses the final private success receipt.
 - Stop protocol 1.0.0 and classifier 2.0.0 diagnostics record the decision
   source, declared disposition, observed outcome, bounded reason/action enums,
   and prompt/reply hashes without retaining raw reply text.
+
+### Fixed
+
+- The 0.6.1 candidate adds a final standalone `Script completed` receipt after
+  each successful private `stage-checkpoint` or `stage-disposition` precheck.
+  This lets a real Code Mode `PostToolUse` raw-stdout response establish the
+  same successful outcome as a structured success response.
+- A bare private marker remains insufficient. Structured failure, an explicit
+  nonzero exit status, or a hard failure marker takes priority over the success
+  receipt, and private control commands remain excluded from requirement-
+  closing evidence.
 
 ### Changed
 
@@ -38,15 +52,21 @@ All notable public releases are documented here.
   in-flight completion token or staged control so a fresh turn must authorize
   the schema-5 protocol.
 - The exact eight Hook events and their Codex payload shapes are unchanged.
-  Requirement-to-evidence semantic relevance is not implemented in 0.6.0; it
+  Requirement-to-evidence semantic relevance is not implemented in 0.6.x; it
   remains benchmark-first research for a possible 0.7.0 capability.
 
 ### Validation status
 
-- This is an unreleased candidate contract. macOS candidate, installed, fresh
-  trust, compact-recovery, and native Windows evidence must be recorded against
-  frozen private/public commits before any release claim. CI is source-level
-  automation and is not installed-runtime or native-platform acceptance.
+- Version 0.6.0 was never tagged or released. A normally trusted fresh Codex
+  Code Mode run delivered the private marker as raw stdout without a structured
+  exit status; the generic outcome remained unknown and two valid disposition
+  staging attempts failed closed. Because 0.6.0 had already been installed, its
+  cache bytes are immutable and its version number is consumed.
+- Version 0.6.1 remains an unreleased candidate. Native macOS installed/fresh-
+  trust/compact evidence, native Windows source/installed/fresh evidence, final
+  CI, and HOL must be recorded against frozen commits before any release claim.
+  CI is source-level automation and is not installed-runtime or native-platform
+  acceptance. No 0.6.0 tag may be created.
 
 ## 0.5.1 - 2026-08-10
 

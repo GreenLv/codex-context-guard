@@ -17,12 +17,14 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Source status: the `0.6.0` candidate introduces state schema 5, Stop protocol
-> 1.0.0, and diagnostic classifier 2.0.0. Completion and turn continuation are
-> separate: only a verified checkpoint completes the contract, while a private
-> turn-bound disposition controls `continue`, `user_wait`, `external_wait`, or
-> `deferred`. The eight-Hook wire is unchanged. Native Windows 0.6.0 acceptance,
-> the tag, and the GitHub Release remain pending.
+> Source status: `0.6.1` is an unreleased candidate. The `0.6.0` candidate
+> introduced state schema 5, Stop protocol 1.0.0, and diagnostic classifier
+> 2.0.0, but a normally trusted fresh Codex Code Mode run exposed a raw-stdout
+> staging failure, so `0.6.0` was not tagged or released. Its installed cache is
+> immutable and its version number is consumed. `0.6.1` changes only the
+> successful private-stage receipt; schema, protocol, classifier, and the exact
+> eight-Hook wire remain unchanged. Native 0.6.1 acceptance and release gates
+> remain pending.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -64,6 +66,11 @@ Context Guard therefore separates four things:
   satisfying completion gates.
 - Keeps exactly one private turn-bound staged control: a completion checkpoint,
   or `continue`, `user_wait`, `external_wait`, or `deferred`.
+- Accepts a private stage request only after the exact hash marker is paired
+  with a successful tool outcome. For raw stdout, the successful CLI emits a
+  final standalone `Script completed` receipt. A bare marker remains rejected,
+  and structured failure, nonzero status, or hard failure text takes priority.
+  Control commands never become requirement-closing evidence.
 - Yields safely with requirements still pending when no disposition is staged.
   A verified checkpoint, a staged `continue`, a narrow whole-task completion
   claim, and explicit user persistence have a fixed Stop priority.
@@ -326,9 +333,11 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
 
-Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.0
+Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.1
 candidate requires a new source/installed/archive/doctor/fresh-trust/
-disposition/compact run against the frozen commit; CI is not a substitute. See
+raw-receipt/disposition/compact run against the frozen commit; CI is not a
+substitute. The unreleased 0.6.0 candidate failed its real Code Mode fresh gate
+and must not be tagged or patched in place. See
 [Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the evidence boundary.
 
 ## Explicit non-goals
@@ -341,10 +350,10 @@ Context Guard is not:
 - a second Plan/Goal controller, agent scheduler, mailbox, or shared workspace;
 - a replacement for human review, tests, or acceptance.
 
-Requirement-to-evidence semantic relevance is deferred to a possible 0.7.0 and
-requires an approved benchmark with false-acceptance, false-rejection, and
-abstention thresholds. Shared multi-agent workspaces and telemetry remain
-separate research decisions.
+Requirement-to-evidence semantic relevance is not a 0.6.x capability. It is
+deferred to a possible 0.7.0 and requires an approved benchmark with
+false-acceptance, false-rejection, and abstention thresholds. Shared
+multi-agent workspaces and telemetry remain separate research decisions.
 
 ## Contributing and security
 

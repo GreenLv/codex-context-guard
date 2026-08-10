@@ -295,10 +295,7 @@ def main() -> int:
                 "turn-root",
                 tool_name="Bash",
                 tool_input={"command": shlex.join(disposition_arguments)},
-                tool_response={
-                    "exit_code": 0,
-                    "output": staged_disposition.stdout,
-                },
+                tool_response=staged_disposition.stdout,
             ),
         )
         yielded = hook(
@@ -418,7 +415,7 @@ def main() -> int:
                 "turn-after-compact",
                 tool_name="Bash",
                 tool_input={"command": shlex.join(stage_arguments)},
-                tool_response={"exit_code": 0, "output": staged.stdout},
+                tool_response=staged.stdout,
             ),
         )
         stopped = hook(

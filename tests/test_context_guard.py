@@ -2403,6 +2403,217 @@ class ContextGuardTests(unittest.TestCase):
             "checkpoint",
         )
 
+    def test_private_stage_cli_real_wire_receipts_are_stageable(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        state = self.state()
+        checkpoint_arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-checkpoint",
+            *self.private_command_common(),
+        ]
+        for item in state["requirements"]:
+            if item["status"] not in {"pass", "superseded"}:
+                checkpoint_arguments.extend(
+                    ["--requirement", f"{item['id']}={evidence_id}"]
+                )
+        for item in state["acceptance_items"]:
+            if item["status"] not in {"pass", "superseded"}:
+                checkpoint_arguments.extend(
+                    ["--acceptance", f"{item['id']}={evidence_id}"]
+                )
+
+        checkpoint = subprocess.run(
+            checkpoint_arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
+        checkpoint_lines = checkpoint.stdout.splitlines()
+        self.assertEqual(len(checkpoint_lines), 2)
+        checkpoint_marker, checkpoint_sha256 = checkpoint_lines[0].split(" ", 1)
+        self.assertEqual(checkpoint_marker, cg.STAGE_REQUEST_MARKER)
+        self.assertEqual(len(checkpoint_sha256), 64)
+        int(checkpoint_sha256, 16)
+        self.assertEqual(checkpoint_lines[-1], "Script completed")
+        self.assertEqual(checkpoint.stderr, "")
+        before_checkpoint = self.state()
+        checkpoint_result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(checkpoint_arguments)},
+                tool_response=checkpoint.stdout,
+            )
+        )
+        self.assertIn("privately staged", json.dumps(checkpoint_result))
+        after_checkpoint = self.state()
+        self.assertEqual(
+            after_checkpoint["completion_attempt"]["staged_control"]["kind"],
+            "checkpoint",
+        )
+        self.assertEqual(
+            after_checkpoint["evidence_sequence"],
+            before_checkpoint["evidence_sequence"],
+        )
+        self.assertEqual(
+            len(after_checkpoint["evidence"]),
+            len(before_checkpoint["evidence"]),
+        )
+
+        self.prompt("继续检查当前协议状态，并等待用户操作。")
+        disposition_arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        disposition = subprocess.run(
+            disposition_arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(disposition.returncode, 0, disposition.stderr)
+        disposition_lines = disposition.stdout.splitlines()
+        self.assertEqual(len(disposition_lines), 2)
+        disposition_marker, disposition_sha256 = disposition_lines[0].split(
+            " ", 1
+        )
+        self.assertEqual(disposition_marker, cg.DISPOSITION_REQUEST_MARKER)
+        self.assertEqual(len(disposition_sha256), 64)
+        int(disposition_sha256, 16)
+        self.assertEqual(disposition_lines[-1], "Script completed")
+        self.assertEqual(disposition.stderr, "")
+        before_disposition = self.state()
+        disposition_result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(disposition_arguments)},
+                tool_response=disposition.stdout,
+            )
+        )
+        self.assertIn("privately staged", json.dumps(disposition_result))
+        after_disposition = self.state()
+        self.assertEqual(
+            after_disposition["completion_attempt"]["staged_control"]["kind"],
+            "disposition",
+        )
+        self.assertEqual(
+            after_disposition["evidence_sequence"],
+            before_disposition["evidence_sequence"],
+        )
+        self.assertEqual(
+            len(after_disposition["evidence"]),
+            len(before_disposition["evidence"]),
+        )
+
+    def test_private_stage_raw_marker_without_success_line_is_rejected(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        precheck = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(precheck.returncode, 0, precheck.stderr)
+        marker_only = precheck.stdout.splitlines()[0] + "\n"
+        before = self.state()
+        result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(arguments)},
+                tool_response=marker_only,
+            )
+        )
+        self.assertEqual(result["decision"], "block")
+        after = self.state()
+        self.assertIsNone(after["completion_attempt"]["staged_control"])
+        self.assertEqual(after["evidence_sequence"], before["evidence_sequence"])
+        self.assertEqual(len(after["evidence"]), len(before["evidence"]))
+
+    def test_private_stage_failure_signals_override_success_receipt(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        precheck = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(precheck.returncode, 0, precheck.stderr)
+        receipt = precheck.stdout
+        cases = (
+            ("exit-1", {"exit_code": 1, "output": receipt}),
+            ("is-error", {"isError": True, "output": receipt}),
+            ("success-false", {"success": False, "output": receipt}),
+            (
+                "traceback",
+                receipt
+                + "Traceback (most recent call last):\n"
+                + "RuntimeError: broken\n",
+            ),
+            ("script-failed", receipt + "Script failed\n"),
+            ("fatal", receipt + "fatal: broken\n"),
+        )
+        for label, response in cases:
+            with self.subTest(label=label):
+                before = self.state()
+                result = cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        tool_name="Bash",
+                        tool_input={"command": cg.shell_join(arguments)},
+                        tool_response=response,
+                    )
+                )
+                self.assertEqual(result["decision"], "block")
+                after = self.state()
+                self.assertIsNone(
+                    after["completion_attempt"]["staged_control"]
+                )
+                self.assertEqual(
+                    after["evidence_sequence"], before["evidence_sequence"]
+                )
+                self.assertEqual(len(after["evidence"]), len(before["evidence"]))
+
     def test_private_checkpoint_token_may_start_with_dash(self) -> None:
         self.turn_index += 1
         self.current_turn = f"turn-{self.turn_index}"
@@ -2537,6 +2748,8 @@ class ContextGuardTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(cg.DISPOSITION_REQUEST_MARKER, result.stdout)
+                self.assertNotIn("Script completed", result.stdout)
                 self.assertIsNone(
                     self.state()["completion_attempt"]["staged_control"]
                 )

@@ -126,9 +126,14 @@ intentional change requires `--replace`.
 The private `stage-checkpoint` and `stage-disposition` CLI commands are
 prechecks, not state-writing authorities. `PostToolUse` is the authoritative
 staging path: it verifies the exact command, expected data directory, session,
-turn, token hash, output marker, and successful exit status before storing the
-single control. A request observed only in assistant text, tool input, or an
-unsuccessful/unmatched tool result cannot stage anything.
+turn, token hash, and output marker before storing the single control. A
+structured tool response must report success. When Code Mode provides only raw
+stdout, the successful precheck emits the expected marker followed by a final
+standalone `Script completed` receipt. The marker alone is not success;
+structured failure, an explicit nonzero exit status, or hard failure text takes
+priority over the receipt. A request observed only in assistant text, tool
+input, or an unsuccessful/unmatched tool result cannot stage anything, and no
+control command is recorded as requirement-closing evidence.
 
 Stop protocol 1.0.0 applies this fixed priority:
 
@@ -214,11 +219,18 @@ creates, activates, retires, or grants authority to a task.
 
 ## Maintenance boundary
 
-Version 0.6.0 is limited to the schema-5 private turn-control protocol,
+The 0.6.x line is limited to the schema-5 private turn-control protocol,
 diagnostics, compatible cache lifecycle, correctness/security, tests, and
 documentation. It does not add a Hook event, matcher, or Codex Hook payload
 field; the existing eight-event `hooks.json` wire contract remains compatible.
-Requirement-to-evidence semantic relevance is not implemented by 0.6.0. It
+The unreleased 0.6.0 candidate established this boundary but failed a real Code
+Mode raw-stdout fresh gate because its marker-only response was correctly
+classified as unknown. Version 0.6.1 changes only the successful private-stage
+receipt; state schema 5, Stop protocol 1.0.0, classifier 2.0.0, dispositions,
+Stop priority, and all eight Hooks remain unchanged. The installed 0.6.0 cache
+is immutable and must not be patched in place or tagged.
+
+Requirement-to-evidence semantic relevance is not implemented by 0.6.x. It
 remains benchmark-first research and is deferred to a possible 0.7.0 capability
 only after positive, negative, adversarial, multilingual, false-acceptance,
 false-rejection, and abstention thresholds are approved. A shared multi-agent

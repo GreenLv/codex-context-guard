@@ -8,10 +8,11 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 SCHEMA_VERSION = 5
 STOP_PROTOCOL_VERSION = "1.0.0"
 CLASSIFIER_VERSION = "2.0.0"
+PRIVATE_SUCCESS_RECEIPT = "Script completed"
 DISPOSITION_REASONS = {
     "continue": "assistant_work_remains",
     "user_wait": "user_action_required",
@@ -76,6 +77,38 @@ def assigned_literal(tree: ast.Module, name: str) -> object:
         if isinstance(target, ast.Name) and target.id == name and value is not None:
             return ast.literal_eval(value)
     raise ValueError(f"missing literal assignment: {name}")
+
+
+def function_ends_with_success_receipt(
+    tree: ast.Module, name: str, receipt: str
+) -> bool:
+    function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        ),
+        None,
+    )
+    if function is None or len(function.body) < 2:
+        return False
+    receipt_statement, return_statement = function.body[-2:]
+    if not isinstance(receipt_statement, ast.Expr) or not isinstance(
+        receipt_statement.value, ast.Call
+    ):
+        return False
+    call = receipt_statement.value
+    if not isinstance(call.func, ast.Name) or call.func.id != "print":
+        return False
+    if len(call.args) != 1 or not isinstance(call.args[0], ast.Constant):
+        return False
+    if call.args[0].value != receipt:
+        return False
+    return (
+        isinstance(return_statement, ast.Return)
+        and isinstance(return_statement.value, ast.Constant)
+        and return_statement.value.value == 0
+    )
 
 
 def enum_sets(value: object) -> list[set[str]]:
@@ -232,6 +265,17 @@ def validate(root: Path) -> list[str]:
             errors.append("runtime must expose the private stage-disposition CLI")
         if "staged_control" not in runtime_text:
             errors.append("runtime must implement the single staged-control slot")
+        for function_name in (
+            "command_stage_checkpoint",
+            "command_stage_disposition",
+        ):
+            if not function_ends_with_success_receipt(
+                runtime_tree, function_name, PRIVATE_SUCCESS_RECEIPT
+            ):
+                errors.append(
+                    f"{function_name} must end successful execution with the "
+                    f"{PRIVATE_SUCCESS_RECEIPT!r} receipt before returning zero"
+                )
     except (OSError, SyntaxError) as exc:
         errors.append(f"invalid Context Guard runtime protocol: {exc}")
 

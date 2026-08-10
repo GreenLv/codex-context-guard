@@ -1,27 +1,33 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source line is an unreleased `0.6.0` candidate;
+Context Guard. The current source line is an unreleased `0.6.1` candidate;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.0 candidate acceptance (pending)
+## 0.6.1 candidate acceptance (pending)
 
-No 0.6.0 acceptance result, test count, frozen acceptance SHA, tag, or GitHub
-Release is claimed here. The public candidate branch began at version-only
-commit `4d932b9`; the private candidate branch began at version-only commit
-`39f8069`. Neither commit contains the complete runtime candidate or may be used
-as a frozen acceptance SHA.
+No 0.6.1 acceptance result, final test count, frozen acceptance SHA, tag, or
+GitHub Release is claimed here. The public 0.6.1 branch began at version-only
+commit `180c94c0e86503a09792af5fc04c16df21ca920f`; the private branch began at
+version-only commit `28428743bfebde901b9d7be8e3392bfd5ea824bc`. Neither
+commit contains the complete 0.6.1 runtime candidate or may be used as a frozen
+acceptance SHA.
 
 The candidate contract is:
 
-- plugin `0.6.0`, private state schema 5, Stop protocol 1.0.0, and diagnostic
+- plugin `0.6.1`, private state schema 5, Stop protocol 1.0.0, and diagnostic
   classifier 2.0.0;
 - one exclusive, idempotent, replaceable turn-bound `staged_control`, containing
   either a verified checkpoint or `continue`, `user_wait`, `external_wait`, or
   `deferred`; `complete` is checkpoint-derived and is not a disposition;
 - `stage-disposition` performs a private precheck and `PostToolUse` performs the
   authoritative write after command/session/turn/token/data-directory/marker/
-  exit-code verification;
+  outcome verification. A structured tool failure or nonzero status takes
+  priority. For raw stdout, the successful CLI emits the exact hash marker and
+  then a final standalone `Script completed` receipt; a bare marker remains
+  rejected;
+- private status, checkpoint, and disposition commands cannot create successful
+  requirement-closing evidence;
 - default safe yield keeps unresolved requirements pending; only a valid
   checkpoint, an uncheckpointed high-confidence whole-task completion claim,
   explicit user persistence, or staged `continue` changes the normal Stop path,
@@ -37,20 +43,43 @@ and public 40-character commit SHAs and attach command/result evidence for:
    complete share-boundary coverage, shared-core parity, Ruff, and compilation;
 2. positive, negative, adversarial, bilingual, anti-forgery, migration,
    disposition/checkpoint-priority, mutual-exclusion/idempotency/replacement,
-   default-yield, two-continuation-cap, and compact-recovery regressions;
-3. an isolated public 0.6.0 install, strict no-op rerun, installed lifecycle,
-   and source/cache parity without changing any 0.5.x live cache or archive;
+   raw-receipt, bare-marker rejection, failure-first, default-yield,
+   two-continuation-cap, and compact-recovery regressions;
+3. an isolated public 0.5.1 to 0.6.0 to 0.6.1 upgrade, strict 0.6.1 no-op
+   rerun, installed lifecycle, and source/cache parity without changing any
+   historical live cache or archive;
 4. native macOS source, installed, archive, doctor, normal fresh Hook trust,
-   typed-disposition, and real manual compact/resume evidence;
+   real Code Mode raw-receipt disposition/checkpoint, and real manual compact/
+   resume evidence;
 5. the same native Windows evidence against those frozen commits, including
    installed and archive disposition after the run; and
 6. final-commit public CI and HOL results, recorded as source automation rather
    than installed-runtime or native-platform acceptance.
 
-Requirement-to-evidence semantic relevance is not a 0.6.0 acceptance item. It
+Requirement-to-evidence semantic relevance is not a 0.6.x acceptance item. It
 remains benchmark-first research for a possible 0.7.0 only after positive,
 negative, adversarial, multilingual, false-acceptance, false-rejection, and
 abstention thresholds are approved.
+
+## 0.6.0 unreleased failed candidate
+
+Version 0.6.0 established the schema-5 protocol candidate at private commit
+`288398b70533f69c1a2e1ca96b81cbf3a8fe4fdd` and public commit
+`bb0f8622ce829aa3b33875df26c8bbc2ec1ad8e9`. It was never tagged or released.
+
+During native macOS evaluation with normally trusted Hooks and Codex CLI
+0.146.0 Code Mode, the successful inner private command reached `PostToolUse`
+as raw stdout containing only its hash marker, without a structured exit code.
+The generic outcome classifier correctly treated the bare marker as unknown, so
+two valid disposition requests, including `user_wait`, were rejected instead of
+staged. The default safe-yield behavior retained pending requirements, but the
+fresh-runtime protocol gate failed.
+
+Because 0.6.0 had already been installed, its live cache and archive are
+immutable and its version number is consumed. They must not be overwritten,
+deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
+created. Native Windows source, installed, fresh-trust, disposition, and compact
+acceptance for 0.6.0 was not completed and is not inferred from CI or 0.5.1.
 
 ## 0.5.1 local acceptance on macOS (2026-08-10)
 
@@ -243,6 +272,9 @@ zero-dependency runtime. Platform wording remains bounded by
 
 ## Publication gate
 
-A release tag may be created only after the final commit passes all local
-gates, remote packaging review, and the full CI matrix. Compatibility wording
-must remain bounded by observed evidence.
+No candidate validation authorizes a tag or GitHub Release. Version 0.6.0 is
+ineligible for either. A 0.6.1 tag may be considered only after the final commit
+passes all local gates, native macOS and Windows fresh-runtime acceptance,
+remote packaging review, and the full CI/HOL matrix, and only after separate
+explicit authorization. Compatibility wording must remain bounded by observed
+evidence.

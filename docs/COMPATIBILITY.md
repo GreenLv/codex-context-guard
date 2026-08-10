@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin candidate: `0.6.0` (unreleased)
+- Context Guard plugin candidate: `0.6.1` (unreleased)
 - Private state schema: `5`
 - Stop protocol: `1.0.0`
 - Diagnostic classifier: `2.0.0`
@@ -16,19 +16,36 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.6.0 candidate status
+## 0.6.1 candidate status
 
 | Platform | Source automation | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | candidate validation must be recorded against the frozen public/private commits | pending | pending, including typed dispositions and real compact/resume recovery | unreleased source candidate only; no installed or native acceptance claim yet |
-| Windows | public CI may exercise the source tree after the candidate is frozen | pending native source/install/archive/doctor run | pending normal Hook trust, disposition matrix, and real compact/resume run | native 0.6.0 evidence is pending; accepted 0.5.1 evidence cannot be carried forward |
+| macOS | candidate validation must be recorded against the frozen public/private commits | pending against an immutable 0.6.1 cache | pending, including raw-receipt dispositions and real compact/resume recovery | unreleased source candidate only; the failed 0.6.0 fresh run is not 0.6.1 acceptance |
+| Windows | public CI may exercise the source tree after the candidate is frozen | pending native source/install/archive/doctor run | pending normal Hook trust, raw-receipt disposition/checkpoint matrix, and real compact/resume run | native 0.6.1 evidence is pending; accepted 0.5.1 evidence cannot be carried forward |
 | Linux | per-commit public CI is the automated source gate | not yet validated by CI or a native Linux run | not claimed | source CI only; installed lifecycle and native desktop behavior are not claimed |
 
 CI runners validate source behavior and packaging contracts. They do not prove
 an installed cache, persisted Hook trust, real `/compact`, or native endpoint
-behavior on macOS, Windows, or Linux. The 0.6.0 rows may be upgraded only after
+behavior on macOS, Windows, or Linux. The 0.6.1 rows may be upgraded only after
 the exact frozen private/public commits, commands, versions, and results are
 recorded in `LOCAL_ACCEPTANCE.md`.
+
+## Consumed 0.6.0 candidate
+
+Version 0.6.0 was installed for native macOS evaluation but was never tagged or
+released. In a normally trusted fresh Codex CLI 0.146.0 Code Mode task,
+`PostToolUse` received the successful private command's marker as raw stdout
+without a structured exit status. A bare marker is intentionally not a generic
+success signal, so the outcome remained unknown and two valid
+`stage-disposition` attempts failed closed instead of staging. The default-yield
+path kept unresolved requirements pending; the defect did not authorize
+completion.
+
+That failed the real fresh-runtime release gate. The installed 0.6.0 live cache
+and archive remain immutable recovery artifacts: they must not be overwritten,
+deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
+created. Version 0.6.1 adds the final success receipt and requires a new native
+acceptance run.
 
 ## Accepted 0.5.1 baseline
 
@@ -41,7 +58,7 @@ recorded in `LOCAL_ACCEPTANCE.md`.
 The historical v0.4.9 and native Windows 0.5.0 evidence also remain in
 `LOCAL_ACCEPTANCE.md`. The accepted 0.5.1 Windows claim is based on a separate
 same-version native run rather than an inference from 0.5.0, macOS, or CI; it
-does not validate 0.6.0.
+does not validate the 0.6.x candidate line.
 
 Do not change a pending cell to verified without preserving the command, result,
 plugin version, Codex version, and source/cache parity evidence in the release
@@ -54,29 +71,33 @@ The plugin defines exactly eight events: `UserPromptSubmit`, `PostToolUse`,
 `SessionEnd`.
 
 Plugin installation does not automatically trust Hook commands. Users must
-inspect and trust the current definition, then start a fresh task. Version 0.6.0
-adds a private CLI/state protocol but no Hook event, matcher, or Codex Hook
+inspect and trust the current definition, then start a fresh task. The 0.6.x
+line adds a private CLI/state protocol but no Hook event, matcher, or Codex Hook
 payload field. An old active task may retain an absolute path into an older
 versioned cache; the provided installer therefore retains live historical
 caches, archives them under the versioned `cache-archive` contract, and rejects
-same-version source drift. A 0.6.0 install must not overwrite a 0.5.x live cache
-or archive.
+same-version source drift. A 0.6.1 install must preserve every 0.5.x and 0.6.0
+live cache and archive. Open tasks that still reference an absolute 0.6.0 path
+continue on those immutable bytes; only a fresh task may load 0.6.1.
 
 ## Release gates
 
-Before a public tag:
+Version 0.6.0 is ineligible for a public tag. Before any 0.6.1 tag:
 
 1. all repository contract and public-tree audits pass;
 2. schema-5 protocol regressions pass for all four dispositions, default yield,
    checkpoint priority, control replacement, anti-forgery boundaries, the
    two-continuation cap, migration, and compact recovery;
 3. shared-core parity binds the exact frozen private and public commits;
-4. the isolated installed lifecycle smoke passes against a new 0.6.0 cache
-   while all 0.5.x live/archive trees remain intact;
+4. the isolated installed lifecycle smoke passes against a new 0.6.1 cache
+   while all 0.5.x and 0.6.0 live/archive trees remain intact, including a
+   second strict no-op run;
 5. macOS and native Windows source, installed, fresh-trust, disposition, doctor,
-   archive, and real compact/resume evidence are recorded separately; CI is not
-   substituted for either native run;
+   archive, raw-receipt checkpoint, and real compact/resume evidence are
+   recorded separately; bare-marker and failure-first negative cases remain
+   rejected, and CI is not substituted for either native run;
 6. remote Git marketplace packaging is checked because the root-level
    marketplace copies the fresh repository metadata into its isolated cache;
 7. public CI and HOL pass on the final frozen public commit; and
-8. tag and GitHub Release creation receive separate explicit authorization.
+8. tag and GitHub Release creation receive separate explicit authorization;
+   neither is authorized by candidate validation alone.
