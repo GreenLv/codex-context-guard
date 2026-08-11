@@ -27,6 +27,9 @@ Schema-5 turn dispositions are private, turn-bound control declarations. They
 do not grant authority, prove that a dependency is real, or prove that evidence
 is semantically relevant. A yielded turn keeps every unverified requirement
 pending; only a valid private checkpoint can complete the guarded contract.
+Under Stop protocol 1.1.0, legacy `continue` is advisory and cannot force
+another turn. Only a hash-verified explicit-persistence instruction or an
+uncheckpointed whole-task completion claim can activate a correction turn.
 
 Historical cache repair trusts only the archive SHA-256 index. A missing,
 unindexed, symlinked, or hash-mismatched archive fails closed; `--apply` never

@@ -73,7 +73,7 @@
             "staged_at"
           ],
           "properties": {
-            "protocol_version": {"const": "1.0.0"},
+            "protocol_version": {"const": "1.1.0"},
             "turn_id": {"type": "string"},
             "token_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "created_at": {"type": "string"},

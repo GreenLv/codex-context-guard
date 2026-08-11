@@ -22,11 +22,13 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
    a completion checkpoint.
 9. Before ending an incomplete guarded turn, use the exact injected
    `stage-disposition` command only when one of these typed boundaries is true:
-   - `continue`: authorized assistant work should continue now;
    - `user_wait`: the next required action belongs to the user;
    - `external_wait`: progress depends on an external actor or system;
    - `deferred`: the remaining action is explicitly denied or outside the
      current bounded scope.
+   Continue authorized assistant work by calling tools before ending the turn.
+   The legacy `continue` disposition remains wire-compatible but is advisory
+   only: it cannot force a Stop continuation or override a terminal reply.
    The command performs a read-only precheck; the `PostToolUse` Hook writes the
    authenticated, turn-bound control. A different staged control requires the
    explicit `--replace` flag. If no disposition is staged, Stop yields safely

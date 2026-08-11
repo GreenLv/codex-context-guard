@@ -6,8 +6,9 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current Context Guard release: `0.6.1`
+- Current source candidate: `0.6.2` (unreleased)
 - Private state schema: `5`
-- Stop protocol: `1.0.0`
+- Stop protocol: `1.1.0` in the candidate; `1.0.0` in the release
 - Diagnostic classifier: `2.0.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -15,6 +16,20 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.6.2 candidate status
+
+The candidate changes only the schema-5 terminal-control policy and private
+control-intent parsing. Legacy `continue` remains accepted but cannot force a
+retry; explicit prompt-bound persistence and uncheckpointed whole-task
+completion remain the only correction-turn gates. Protocol-1.0.0 in-flight
+controls are discarded on load while the durable ledger is preserved.
+
+The source suites, deterministic 10,000-transition safety lattice, quoted-shell
+regressions, complete sibling parity, isolated installation, and native macOS
+and Windows fresh-Hook runs must pass on frozen commits before 0.6.2 can replace
+0.6.1. Until then all 0.6.2 native and release claims are pending, and CI does
+not substitute for either native platform.
 
 ## 0.6.1 release status
 
@@ -94,7 +109,7 @@ Version 0.6.0 is ineligible for a public tag. Before any 0.6.1 tag:
 3. shared-core parity binds the exact frozen private and public commits;
 4. the isolated installed lifecycle smoke passes against a new 0.6.1 cache
    while all 0.5.x and 0.6.0 live/archive trees remain intact, including a
-   second strict no-op run;
+    second strict no-op run;
 5. the accepted macOS source/install/archive, private/public trust,
    `user_wait`, checkpoint, and manual compact/recovery evidence is preserved;
    the complete native Windows source, installed, fresh-trust, disposition,

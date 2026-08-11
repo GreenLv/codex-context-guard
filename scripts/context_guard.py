@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA_VERSION = 5
-STOP_PROTOCOL_VERSION = "1.0.0"
+STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
@@ -904,9 +904,15 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     state.setdefault("completion_attempt", None)
     attempt = state.get("completion_attempt")
     if isinstance(attempt, dict):
-        attempt.setdefault("protocol_version", STOP_PROTOCOL_VERSION)
-        attempt.setdefault("staged_control", None)
-        attempt.setdefault("staged_at", None)
+        if attempt.get("protocol_version") not in {None, STOP_PROTOCOL_VERSION}:
+            # A turn-bound control from an older protocol cannot be interpreted
+            # under new Stop semantics. Preserve the durable ledger and require
+            # the next UserPromptSubmit event to establish a fresh attempt.
+            state["completion_attempt"] = None
+        else:
+            attempt.setdefault("protocol_version", STOP_PROTOCOL_VERSION)
+            attempt.setdefault("staged_control", None)
+            attempt.setdefault("staged_at", None)
     state.setdefault("continuation_attempts", 0)
     state.setdefault("decision_log", [])
     return state
@@ -2215,9 +2221,11 @@ def completion_command_context(
         "`--requirement ID=E####[,E####]` flag for each pending requirement and "
         "one `--acceptance ID=E####[,E####]` flag for each pending acceptance item:\n"
         f"{stage_command}\n"
-        "For an incomplete terminal response, stage exactly one typed disposition "
-        "instead: append `--disposition continue`, `user_wait`, `external_wait`, "
-        "or `deferred` to this exact command base (the reason is derived):\n"
+        "For an incomplete terminal response, stage exactly one typed boundary "
+        "instead: append `--disposition user_wait`, `external_wait`, or `deferred` "
+        "to this exact command base (the reason is derived). Continue authorized "
+        "assistant work by calling tools before ending the turn; the legacy "
+        "`continue` value is advisory only and cannot force a Stop continuation:\n"
         f"{disposition_command}\n"
         "A different already-staged control can be replaced only with `--replace`. "
         "Only successful evidence IDs printed by checkpoint-status are valid. "
@@ -2797,8 +2805,57 @@ def capture_plan_snapshot(
     state.setdefault("work_state", {})["plan_snapshot"] = snapshot
 
 
+def shell_control_operator_present(command: str) -> bool:
+    """Return whether a shell operator occurs outside a quoted literal."""
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        character = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if quote == "'":
+            if character == "'":
+                quote = None
+            index += 1
+            continue
+        if character == "\\":
+            escaped = True
+            index += 1
+            continue
+        if quote == '"':
+            if character == '"':
+                quote = None
+            elif character == "`":
+                return True
+            elif character == "$" and command[index : index + 2] == "$(":
+                return True
+            index += 1
+            continue
+        if character in {"'", '"'}:
+            quote = character
+        elif character in {";", "&", "|", "`", "\n", "\r"}:
+            return True
+        elif character == "$" and command[index : index + 2] == "$(":
+            return True
+        index += 1
+    return False
+
+
+def tool_is_shell_execution(tool_name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
+    return (
+        normalized in {"bash", "shell", "exec_command"}
+        or normalized.endswith("_exec_command")
+    )
+
+
 def private_control_command_intent(payload: dict[str, Any]) -> bool:
     """Recognize a trusted private-control prefix before strict validation."""
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return False
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
@@ -2833,10 +2890,7 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
     plain_search = bool(
         tokens
         and Path(tokens[0]).name.lower() in {"rg", "grep"}
-        and not re.search(r"[;&|`]", command)
-        and "$(" not in command
-        and "\n" not in command
-        and "\r" not in command
+        and not shell_control_operator_present(command)
     )
     if plain_search:
         return False
@@ -2871,6 +2925,8 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
 def is_exact_checkpoint_status_command(
     state: dict[str, Any], payload: dict[str, Any]
 ) -> bool:
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return False
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or "checkpoint-status" not in command:
@@ -2930,6 +2986,8 @@ def is_exact_checkpoint_status_command(
 def parse_stage_request_from_tool(
     state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any] | None:
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return None
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
@@ -3385,6 +3443,31 @@ def apply_checkpoint(
     state["completion_attempt"] = None
 
 
+def terminal_stop_policy(
+    *,
+    whole_completion: bool,
+    explicit_persistence: bool,
+    persistence_allows_deferred: bool,
+    declared_disposition: str | None,
+) -> str:
+    """Return a one-way-safe terminal action for a verified Stop request."""
+    if whole_completion:
+        return "gate_completion_claim"
+    if (
+        explicit_persistence
+        and not persistence_allows_deferred
+        and declared_disposition not in {"user_wait", "external_wait"}
+    ):
+        return "gate_explicit_persistence"
+    return {
+        "user_wait": "yield_user_wait",
+        "external_wait": "yield_external_wait",
+        "deferred": "yield_deferred",
+        "continue": "yield_continue_advisory",
+        None: "yield_default",
+    }[declared_disposition]
+
+
 def handle_stop(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -3538,7 +3621,17 @@ def handle_stop(
         and declared_disposition == "deferred"
         and deferred_bindings
     )
-    if not issues and whole_completion and checkpoint is None:
+    policy = (
+        None
+        if issues
+        else terminal_stop_policy(
+            whole_completion=whole_completion,
+            explicit_persistence=explicit_persistence,
+            persistence_allows_deferred=persistence_allows_deferred,
+            declared_disposition=declared_disposition,
+        )
+    )
+    if policy == "gate_completion_claim":
         issues.append("whole-task completion requires a staged private checkpoint")
         decision.update(
             {
@@ -3548,25 +3641,7 @@ def handle_stop(
                 "declared_disposition": declared_disposition,
             }
         )
-    elif not issues and declared_disposition == "continue":
-        issues.append("typed disposition reports assistant work remains")
-        decision.update(
-            {
-                "outcome": "gate_authorized_remaining_work",
-                "reason_codes": ["protocol_continue"],
-                "decision_source": "protocol_disposition",
-                "declared_disposition": declared_disposition,
-            }
-        )
-    elif (
-        not issues
-        and explicit_persistence
-        and not persistence_allows_deferred
-        and declared_disposition not in {
-        "user_wait",
-        "external_wait",
-        }
-    ):
+    elif policy == "gate_explicit_persistence":
         issues.append("authoritative user prompt requires persistence")
         decision.update(
             {
@@ -3603,6 +3678,30 @@ def handle_stop(
                         if persistence_allows_deferred
                         else []
                     ),
+                    "decision_source": "protocol_disposition",
+                    "declared_disposition": declared_disposition,
+                }
+            )
+            append_decision_log(state, decision, turn_id)
+            save_state(session_dir, state)
+            return {}
+
+        if policy == "yield_continue_advisory":
+            # A terminal reply and a staged continue declaration can disagree:
+            # the declaration is prepared before the final reply exists. Never
+            # turn that within-turn mismatch into an expensive forced retry.
+            # Explicit prompt-bound persistence was handled above; otherwise a
+            # continue declaration is advisory and unresolved items stay open.
+            state["completion_attempt"] = None
+            state["continuation_attempts"] = 0
+            decision.update(
+                {
+                    "outcome": "allow_neutral",
+                    "reason_codes": [
+                        "protocol_continue_advisory",
+                        DISPOSITION_REASONS[declared_disposition],
+                        "safe_yield_pending_preserved",
+                    ],
                     "decision_source": "protocol_disposition",
                     "declared_disposition": declared_disposition,
                 }

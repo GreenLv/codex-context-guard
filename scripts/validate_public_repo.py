@@ -8,9 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 SCHEMA_VERSION = 5
-STOP_PROTOCOL_VERSION = "1.0.0"
+STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
 DISPOSITION_REASONS = {
@@ -213,6 +213,10 @@ def validate(root: Path) -> list[str]:
                 errors.append(
                     f"schema-5 completion attempt must define {field}"
                 )
+        if STOP_PROTOCOL_VERSION not in serialized_attempt:
+            errors.append(
+                "schema-5 completion attempt must bind the current Stop protocol"
+            )
         enums = enum_sets(schema)
         dispositions = set(DISPOSITION_REASONS)
         if dispositions not in enums:
@@ -266,6 +270,14 @@ def validate(root: Path) -> list[str]:
             errors.append("runtime must expose the private stage-disposition CLI")
         if "staged_control" not in runtime_text:
             errors.append("runtime must implement the single staged-control slot")
+        for fragment in (
+            "terminal_stop_policy",
+            "protocol_continue_advisory",
+            "tool_is_shell_execution",
+            "shell_control_operator_present",
+        ):
+            if fragment not in runtime_text:
+                errors.append(f"runtime one-way safety contract is missing: {fragment}")
         for function_name in (
             "command_stage_checkpoint",
             "command_stage_disposition",

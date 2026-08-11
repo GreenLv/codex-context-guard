@@ -15,7 +15,10 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.6.1` 是当前正式版本。`0.6.0` 候选引入了 state schema 5、
+> 发布状态：`0.6.1` 是当前正式版本；`0.6.2` 是尚未发布的单向安全候选。
+> Stop protocol 1.1.0 将兼容保留的 `continue` 降为仅诊断提示，在终态控制
+> 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.0`
+> 候选引入了 state schema 5、
 > Stop protocol 1.0.0 和 diagnostic classifier 2.0.0，但在正常信任 Hook 的
 > fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag
 > 或 Release；其已安装 cache 不可变，版本号已经消耗。`0.6.1` 只修改成功的
@@ -64,7 +67,8 @@ Context Guard 因此把四件事分开记录：
   bare marker 仍会被拒绝，structured failure、非零状态或硬失败文本优先。
   控制命令不会成为关闭 requirement 的成功 evidence。
 - 未 stage disposition 时安全让出，本轮结束但需求继续 pending。已验证 checkpoint、
-  staged `continue`、窄范围整体完成声明和用户显式 persistence 按固定 Stop 优先级处理。
+  窄范围整体完成声明和用户显式 persistence 仍按固定 Stop 优先级处理。兼容保留的
+  `continue` 仅作为提示，不能强制开启新一轮。
 - 自然语言动作归属只作为诊断信号；普通的 assistant future、用户交接、外部等待或
   延期描述本身不能再直接触发强制续轮。
 - 最多保存 32 条 Stop 决策的时间、turn ID、protocol/control source、声明的

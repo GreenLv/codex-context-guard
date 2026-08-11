@@ -4,6 +4,31 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Version 0.6.2 keeps state schema 5 and classifier 2.0.0 while advancing the
+  Stop protocol to 1.1.0. The legacy `continue` disposition remains accepted
+  for wire compatibility but is advisory only; it can no longer force another
+  turn after an assistant has already produced a terminal reply.
+- Terminal control is now one-way safe: absent a verified whole-task completion
+  claim or a hash-verified explicit persistence instruction, every disposition
+  mismatch degrades to a safe yield with pending work preserved.
+- Private-control intent detection is limited to recognized shell-execution
+  tools and detects operators only outside quoted literals. Documentation
+  patches and pure `rg`/`grep` searches can mention control subcommands and
+  regex alternation without being misclassified as an attempted control write.
+- Loading a schema-5 state with an in-flight protocol-1.0.0 control invalidates
+  only that ephemeral attempt; prompts, requirements, acceptance items,
+  evidence, and historical decisions remain intact.
+
+### Validation
+
+- The regression suite replays the terminal mismatch class, checks explicit
+  persistence separately, covers quoted-search and non-shell-tool boundaries,
+  and deterministically exercises 10,000 staged-control transitions and policy
+  states. Native macOS and Windows fresh-runtime acceptance remain release
+  gates for the frozen candidate.
+
 ## 0.6.1 - 2026-08-11
 
 ### Added
