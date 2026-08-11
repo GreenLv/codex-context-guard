@@ -52,6 +52,7 @@ REQUIRED_FILES = {
     "docs/LOCAL_ACCEPTANCE.md",
     "docs/VERSIONING.md",
     "hooks/hooks.json",
+    "scripts/audit_commit_identity.py",
     "scripts/context_guard.py",
     "scripts/manage_plugin.py",
     "scripts/smoke_installed.py",
@@ -278,6 +279,22 @@ def validate(root: Path) -> list[str]:
                 )
     except (OSError, SyntaxError) as exc:
         errors.append(f"invalid Context Guard runtime protocol: {exc}")
+
+    try:
+        workflow = (root / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        required_identity_gate = (
+            "fetch-depth: 0",
+            "CONTEXT_GUARD_IDENTITY_BASE:",
+            "CONTEXT_GUARD_IDENTITY_HEAD:",
+            "python scripts/audit_commit_identity.py .",
+        )
+        for fragment in required_identity_gate:
+            if fragment not in workflow:
+                errors.append(f"CI commit-identity gate is missing: {fragment}")
+    except OSError as exc:
+        errors.append(f"invalid CI workflow: {exc}")
 
     try:
         icon = root / "assets" / "icon.svg"

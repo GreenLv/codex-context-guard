@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,6 +27,9 @@ def load(name: str, path: Path):
 
 audit = load("audit_public_tree", ROOT / "scripts" / "audit_public_tree.py")
 contract = load("validate_public_repo", ROOT / "scripts" / "validate_public_repo.py")
+identity = load(
+    "audit_commit_identity", ROOT / "scripts" / "audit_commit_identity.py"
+)
 
 
 class PublicContractTests(unittest.TestCase):
@@ -59,6 +68,130 @@ class PublicContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("```mermaid\nsequenceDiagram", architecture)
+
+
+class CommitIdentityTests(unittest.TestCase):
+    def git(self, root: Path, *arguments: str, env: dict[str, str] | None = None) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        return result.stdout.strip()
+
+    def commit(
+        self,
+        root: Path,
+        filename: str,
+        author_email: str,
+        committer_email: str,
+    ) -> str:
+        (root / filename).write_text(filename, encoding="utf-8")
+        self.git(root, "add", filename)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GIT_AUTHOR_NAME": "Example Author",
+                "GIT_AUTHOR_EMAIL": author_email,
+                "GIT_COMMITTER_NAME": "Example Committer",
+                "GIT_COMMITTER_EMAIL": committer_email,
+            }
+        )
+        self.git(root, "commit", "-m", filename, env=environment)
+        return self.git(root, "rev-parse", "HEAD")
+
+    def repository(self, root: Path) -> None:
+        self.git(root, "init", "-q")
+
+    def test_accepts_github_user_bot_and_service_noreply_forms(self) -> None:
+        accepted = (
+            "123456+example-user@users.noreply.github.com",
+            "example-user@users.noreply.github.com",
+            "123456+example-bot[bot]@users.noreply.github.com",
+            "noreply@github.com",
+        )
+        for email in accepted:
+            with self.subTest(email=email):
+                self.assertIsNotNone(identity.NOREPLY_EMAIL_RE.fullmatch(email))
+
+    def test_rejects_non_github_noreply_domains(self) -> None:
+        rejected = (
+            "example@example.com",
+            "noreply@example.com",
+            "example@users.noreply.github.test",
+        )
+        for email in rejected:
+            with self.subTest(email=email):
+                self.assertIsNone(identity.NOREPLY_EMAIL_RE.fullmatch(email))
+
+    def test_range_excludes_the_base_commit_and_checks_both_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.repository(root)
+            base = self.commit(
+                root,
+                "base.txt",
+                "old-author@example.com",
+                "old-committer@example.com",
+            )
+            accepted = "example-user@users.noreply.github.com"
+            author_bad = self.commit(
+                root, "author.txt", "author@example.com", accepted
+            )
+            committer_bad = self.commit(
+                root, "committer.txt", accepted, "committer@example.com"
+            )
+
+            commits = identity.candidate_commits(root, base, committer_bad)
+            self.assertEqual(commits, [author_bad, committer_bad])
+            self.assertEqual(
+                identity.violations(root, commits),
+                [(author_bad, ("author",)), (committer_bad, ("committer",))],
+            )
+
+    def test_zero_base_checks_only_the_resolved_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.repository(root)
+            self.commit(
+                root,
+                "historical.txt",
+                "historical@example.com",
+                "historical@example.com",
+            )
+            accepted = "123456+example-user@users.noreply.github.com"
+            head = self.commit(root, "head.txt", accepted, accepted)
+
+            commits = identity.candidate_commits(root, "0" * 40, head)
+            self.assertEqual(commits, [head])
+            self.assertEqual(identity.violations(root, commits), [])
+
+    def test_cli_redacts_invalid_email_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.repository(root)
+            invalid = "private-person@example.com"
+            head = self.commit(root, "candidate.txt", invalid, invalid)
+            stderr = io.StringIO()
+            argv = [
+                "audit_commit_identity.py",
+                str(root),
+                "--head",
+                head,
+            ]
+            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(
+                stderr
+            ):
+                result = identity.main()
+
+            output = stderr.getvalue()
+            self.assertEqual(result, 1)
+            self.assertNotIn(invalid, output)
+            self.assertIn(head[:12], output)
+            self.assertIn("invalid author, committer identity", output)
+            self.assertIn("Identity values are redacted", output)
 
 
 if __name__ == "__main__":

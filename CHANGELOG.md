@@ -20,6 +20,10 @@ All notable public releases are documented here.
 - Stop protocol 1.0.0 and classifier 2.0.0 diagnostics record the decision
   source, declared disposition, observed outcome, bounded reason/action enums,
   and prompt/reply hashes without retaining raw reply text.
+- Public candidate validation now audits every PR or push commit's author and
+  committer for a GitHub noreply identity. Rejected values stay redacted so a
+  misconfigured Windows clone cannot leak a personal email into CI logs while
+  failing the release gate.
 
 ### Fixed
 
