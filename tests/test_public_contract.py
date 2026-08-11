@@ -68,6 +68,24 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("about 1%–2%", english)
         self.assertIn("## 实测 token 开销", chinese)
         self.assertIn("约 1%–2%", chinese)
+        self.assertIn(
+            "> Release status: `0.6.1` is the current release.", english
+        )
+        self.assertIn("> 发布状态：`0.6.1` 是当前正式版本。", chinese)
+
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("## 0.6.1 - 2026-08-11", changelog)
+        self.assertIn("Current Context Guard release: `0.6.1`", compatibility)
+        for stale in (
+            "`0.6.1` is an unreleased candidate",
+            "`0.6.1` 是未发布候选",
+            "final CI/HOL/PR gates remain pending",
+            "最终 CI、HOL、PR 门仍为 pending",
+        ):
+            self.assertNotIn(stale, english + chinese + changelog + compatibility)
 
         architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(
             encoding="utf-8"
