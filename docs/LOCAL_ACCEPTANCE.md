@@ -4,9 +4,9 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release line is `0.6.1`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.2 candidate acceptance (pending)
+## 0.6.3 candidate acceptance (pending)
 
-Version 0.6.2 keeps schema 5, advances the Stop protocol to 1.1.0, retains
+Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains
 classifier 2.0.0 and the exact eight-Hook wire, and makes the legacy
 `continue` disposition advisory. The candidate must prove that a terminal
 control mismatch can only yield with pending work preserved; it cannot request
@@ -20,10 +20,12 @@ quoted-search and non-shell negative cases, schema-5 protocol-attempt
 invalidation, four-class sibling parity, public privacy/identity validation,
 Ruff 0.16.1, compilation, and isolated first-install/no-op/lifecycle checks.
 
-Native macOS and Windows private/public fresh trusted Hook runs, including the
+Version 0.6.2 was consumed by a real candidate installation before the final
+cache-lifecycle manager bytes were frozen; it remains immutable, untagged, and
+unreleased. Native macOS and Windows private/public fresh trusted Hook runs, including the
 terminal-mismatch safe yield, explicit-persistence correction, checkpoint, and
 manual schema-5 compact recovery, remain pending until recorded against exact
-frozen commits. No 0.6.2 merge, tag, or Release is authorized by this candidate
+frozen commits. No 0.6.3 merge, tag, or Release is authorized by this candidate
 section.
 
 ## 0.6.1 native acceptance on macOS (2026-08-11)

@@ -1,6 +1,6 @@
 {
   "name": "context-guard",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Preserve task requirements, bounded plan state, evidence, and delegated-agent results across compaction.",
   "author": {
     "name": "Gerui Lv",

@@ -6,7 +6,7 @@ All notable public releases are documented here.
 
 ### Changed
 
-- Version 0.6.2 keeps state schema 5 and classifier 2.0.0 while advancing the
+- Version 0.6.3 keeps state schema 5 and classifier 2.0.0 while advancing the
   Stop protocol to 1.1.0. The legacy `continue` disposition remains accepted
   for wire compatibility but is advisory only; it can no longer force another
   turn after an assistant has already produced a terminal reply.
@@ -20,6 +20,11 @@ All notable public releases are documented here.
 - Loading a schema-5 state with an in-flight protocol-1.0.0 control invalidates
   only that ephemeral attempt; prompts, requirements, acceptance items,
   evidence, and historical decisions remain intact.
+- Cache upgrades now repair every indexed live version from its trusted archive
+  before adopting any unindexed live version. Legacy archive `.git` metadata is
+  removed only after the indexed product manifest matches and remains unchanged;
+  read-only audit still fails closed. Version 0.6.2 was consumed by a real
+  installation before these manager fixes and remains untagged and unreleased.
 
 ### Validation
 

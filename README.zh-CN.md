@@ -15,9 +15,12 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.6.1` 是当前正式版本；`0.6.2` 是尚未发布的单向安全候选。
+> 发布状态：`0.6.1` 是当前正式版本；`0.6.3` 是尚未发布的单向安全候选。
 > Stop protocol 1.1.0 将兼容保留的 `continue` 降为仅诊断提示，在终态控制
-> 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.0`
+> 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.3`
+> 还会在归档旧 live cache 前先按可信索引修复漂移，并且仅当受信产品 manifest
+> 前后不变时移除历史仓库元数据。已经安装过的 `0.6.2` 包保持不可变；该版本从未
+> 打 tag 或发布，但在这些 manager 生命周期修复前已经被消耗。`0.6.0`
 > 候选引入了 state schema 5、
 > Stop protocol 1.0.0 和 diagnostic classifier 2.0.0，但在正常信任 Hook 的
 > fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag

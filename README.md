@@ -17,10 +17,14 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.6.1` is the current release. `0.6.2` is an unreleased
+> Release status: `0.6.1` is the current release. `0.6.3` is an unreleased
 > one-way-safety candidate: Stop protocol 1.1.0 makes legacy `continue`
 > advisory, preserves pending work on terminal mismatch, and uses quote-aware
-> shell intent parsing. The `0.6.0` candidate
+> shell intent parsing. `0.6.3` also makes cache upgrades repair indexed live
+> drift before archive adoption and removes legacy repository metadata only
+> when the trusted product manifest is unchanged. The installed `0.6.2`
+> package is immutable and was never tagged or released; its version was
+> consumed before those manager lifecycle fixes. The `0.6.0` candidate
 > introduced state schema 5, Stop protocol 1.0.0, and diagnostic classifier
 > 2.0.0, but a normally trusted fresh Codex Code Mode run exposed a raw-stdout
 > staging failure, so `0.6.0` was not tagged or released. Its installed cache is

@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current Context Guard release: `0.6.1`
-- Current source candidate: `0.6.2` (unreleased)
+- Current source candidate: `0.6.3` (unreleased)
 - Private state schema: `5`
 - Stop protocol: `1.1.0` in the candidate; `1.0.0` in the release
 - Diagnostic classifier: `2.0.0`
@@ -17,19 +17,25 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.6.2 candidate status
+## 0.6.3 candidate status
 
-The candidate changes only the schema-5 terminal-control policy and private
-control-intent parsing. Legacy `continue` remains accepted but cannot force a
-retry; explicit prompt-bound persistence and uncheckpointed whole-task
-completion remain the only correction-turn gates. Protocol-1.0.0 in-flight
-controls are discarded on load while the durable ledger is preserved.
+The candidate carries the 0.6.2 schema-5 terminal-control policy and private
+control-intent parsing without changing their runtime bytes. Legacy `continue`
+remains accepted but cannot force a retry; explicit prompt-bound persistence
+and uncheckpointed whole-task completion remain the only correction-turn
+gates. Protocol-1.0.0 in-flight controls are discarded on load while the
+durable ledger is preserved. The 0.6.3 package adds fail-closed cache lifecycle
+repairs for indexed live drift and legacy non-product Git metadata.
 
 The source suites, deterministic 10,000-transition safety lattice, quoted-shell
 regressions, complete sibling parity, isolated installation, and native macOS
-and Windows fresh-Hook runs must pass on frozen commits before 0.6.2 can replace
-0.6.1. Until then all 0.6.2 native and release claims are pending, and CI does
+and Windows fresh-Hook runs must pass on frozen commits before 0.6.3 can replace
+0.6.1. Until then all 0.6.3 native and release claims are pending, and CI does
 not substitute for either native platform.
+
+Version 0.6.2 was installed during candidate acceptance before the final
+manager lifecycle bytes were frozen. Its cache remains immutable; it was never
+tagged or released and is superseded by 0.6.3.
 
 ## 0.6.1 release status
 
