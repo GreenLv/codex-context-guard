@@ -1,8 +1,151 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source line is `0.5.1`; historical `0.5.0` and
-`0.4.9` evidence remains below.
+Context Guard. The current source line is an unreleased `0.6.1` candidate;
+accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
+
+## 0.6.1 candidate acceptance (macOS, 2026-08-11)
+
+The frozen runtime code inputs are private commit
+`4ddac0d402d0efb520db41fe9cd84152adc560b4` and public commit
+`42a2e57b80a9f36704ba8baf58db9c036615c3d2`. Later documentation-only
+successors do not replace those runtime inputs.
+
+Native macOS candidate acceptance passed the scoped local and fresh-runtime
+gates:
+
+- the private runtime passed 107 Hook regressions with one Windows-only skip,
+  16 manager regressions, three public-export regressions, five parity
+  regressions, the unified skill validator, and the complete four-class share
+  boundary;
+- the public product passed repository validation, tracked-tree privacy audit,
+  complete boundary/parity validation, Ruff 0.16.1, in-memory compilation, and
+  128 tests with one Windows-only skip;
+- private 0.6.1 source/live/archive bytes match, the installed private Hook
+  suite, eight-Hook self-test, and schema-5 lifecycle smoke pass, and every
+  Context Guard doctor subcheck passes. The current whole private-repository
+  doctor separately reports one unrelated installed-skill drift and one known
+  noninteractive warning;
+- an isolated private 0.5.1 to 0.6.0 to 0.6.1 chain and an isolated public
+  0.6.1 first install both preserved trusted archives, passed lifecycle smoke,
+  and ended in a strict same-version no-op; and
+- normally trusted private and public identities, run without a trust bypass,
+  each passed `user_wait`, a completion checkpoint, and real manual schema-5
+  `/compact` recovery. Base/profile trust remained isolated at eight private
+  versus eight public Hook keys.
+
+The public compact record ended with a manual compaction while retaining its
+pending requirement and acceptance items. Native Windows acceptance is recorded
+separately below. Neither platform claim includes final PR CI/HOL, a tag, or a
+GitHub Release.
+
+## 0.6.1 native acceptance on Windows (2026-08-11)
+
+Windows acceptance used Python 3.12.10 and Codex CLI 0.146.0 against frozen
+private runtime commit `4ddac0d402d0efb520db41fe9cd84152adc560b4`, frozen
+public runtime commit `42a2e57b80a9f36704ba8baf58db9c036615c3d2`, and the
+docs-only public predecessor `c4a85027e01119e22d2a2c96eb08a4304e256cbc`. The
+docs-only predecessor changed no runtime input.
+
+Source validation passed in both repositories. The private Hook suite ran 107
+tests with one capability-aware successor-pack symlink skip under a normal
+Windows token; manager 16, public-export 3 with one capability skip, parity 5,
+and four-class share-boundary 20 with one capability skip also passed. The
+public repository passed its repository validator, privacy audit, Ruff 0.16.1,
+in-memory compile, and 128 tests, of which 127 passed and one successor-pack
+symlink case was skipped for the same OS-token capability boundary.
+
+A disposable trusted-archive sequence exercised 0.5.1 -> frozen 0.6.0 -> 0.6.1
+with matching SHA-256 live/archive/index evidence, installed lifecycle checks,
+and a final strict no-op. The default private 0.6.1 installation preserved the
+existing versioned history, did not fabricate a real 0.6.0 installation, and
+passed source/live/archive parity, self-test, lifecycle, and no-op checks.
+Direct doctor results were `17 ok / 1 idle / 2 notes / 0 warn / 0 fail` for the
+private installation and `17 ok / 1 idle / 1 note / 0 warn / 0 fail` for the
+isolated public installation.
+
+Fresh private and public identities each ran the exact eight-Hook wire with
+normal trust and no bypass. Both paths passed a raw-receipt `user_wait`, a
+completion checkpoint, and manual schema-5 `/compact` recovery with
+`integrity.status = ok`, zero recorded continuation, and no project writes.
+Because the device-code beta setting was unavailable in the web UI, the public
+identity used the standard browser OAuth flow; that isolated identity was then
+logged out and its temporary home removed while the default login and
+configuration remained intact.
+
+The successor-pack symlink skip and a constrained-profile warning are recorded
+as capability evidence, not functional failures. This section does not claim
+final CI/HOL/PR, a tag, or a Release.
+
+The public 0.6.1 branch began at version-only commit
+`180c94c0e86503a09792af5fc04c16df21ca920f`; the private branch began at
+version-only commit `28428743bfebde901b9d7be8e3392bfd5ea824bc`. Neither
+commit contains the complete 0.6.1 runtime candidate or may be used as a frozen
+acceptance SHA.
+
+The candidate contract is:
+
+- plugin `0.6.1`, private state schema 5, Stop protocol 1.0.0, and diagnostic
+  classifier 2.0.0;
+- one exclusive, idempotent, replaceable turn-bound `staged_control`, containing
+  either a verified checkpoint or `continue`, `user_wait`, `external_wait`, or
+  `deferred`; `complete` is checkpoint-derived and is not a disposition;
+- `stage-disposition` performs a private precheck and `PostToolUse` performs the
+  authoritative write after command/session/turn/token/data-directory/marker/
+  outcome verification. A structured tool failure or nonzero status takes
+  priority. For raw stdout, the successful CLI emits the exact hash marker and
+  then a final standalone `Script completed` receipt; a bare marker remains
+  rejected;
+- private status, checkpoint, and disposition commands cannot create successful
+  requirement-closing evidence;
+- default safe yield keeps unresolved requirements pending; only a valid
+  checkpoint, an uncheckpointed high-confidence whole-task completion claim,
+  explicit user persistence, or staged `continue` changes the normal Stop path,
+  while a genuine user/external wait may still yield under persistence;
+- classifier action ownership is diagnostic rather than the primary
+  continuation authority; and
+- the exact eight Hook events and their Codex payload shapes remain unchanged.
+
+Before full release acceptance can be recorded, preserve the frozen runtime
+inputs and accepted native evidence while completing the following gates:
+
+1. preservation of the accepted local suites, migrations, stale-control
+   invalidation, mutually exclusive and replaceable controls, all
+   disposition/Stop priorities, classifier blind spots, forged/failed control
+   commands, control-evidence isolation, and the bounded continuation cap;
+2. preservation of the accepted isolated upgrade/no-op, installed lifecycle,
+   source/cache/archive, normal-trust, raw-receipt, checkpoint, and compact
+   evidence without changing frozen runtime bytes;
+3. preservation of the recorded native Windows source, installed, archive, and
+   fresh-session evidence, including the explicit disposition of the
+   normal-token successor-pack symlink capability; and
+4. final-commit public CI and HOL results, recorded as source automation rather
+   than installed-runtime or native-platform acceptance.
+
+Requirement-to-evidence semantic relevance is not a 0.6.x acceptance item. It
+remains benchmark-first research for a possible 0.7.0 only after positive,
+negative, adversarial, multilingual, false-acceptance, false-rejection, and
+abstention thresholds are approved.
+
+## 0.6.0 unreleased failed candidate
+
+Version 0.6.0 established the schema-5 protocol candidate at private commit
+`288398b70533f69c1a2e1ca96b81cbf3a8fe4fdd` and public commit
+`bb0f8622ce829aa3b33875df26c8bbc2ec1ad8e9`. It was never tagged or released.
+
+During native macOS evaluation with normally trusted Hooks and Codex CLI
+0.146.0 Code Mode, the successful inner private command reached `PostToolUse`
+as raw stdout containing only its hash marker, without a structured exit code.
+The generic outcome classifier correctly treated the bare marker as unknown, so
+two valid disposition requests, including `user_wait`, were rejected instead of
+staged. The default safe-yield behavior retained pending requirements, but the
+fresh-runtime protocol gate failed.
+
+Because 0.6.0 had already been installed, its live cache and archive are
+immutable and its version number is consumed. They must not be overwritten,
+deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
+created. Native Windows source, installed, fresh-trust, disposition, and compact
+acceptance for 0.6.0 was not completed and is not inferred from CI or 0.5.1.
 
 ## 0.5.1 local acceptance on macOS (2026-08-10)
 
@@ -195,6 +338,10 @@ zero-dependency runtime. Platform wording remains bounded by
 
 ## Publication gate
 
-A release tag may be created only after the final commit passes all local
-gates, remote packaging review, and the full CI matrix. Compatibility wording
+No candidate validation authorizes a tag or GitHub Release. Version 0.6.0 is
+consumed, unreleased, untagged, and ineligible for either. A 0.6.1 tag may be
+considered only after the final commit preserves the accepted macOS and Windows
+runtime evidence, passes all remaining local gates, completes remote packaging
+review and the full CI/HOL/PR gates, and receives separate explicit
+authorization. Compatibility wording
 must remain bounded by observed evidence.

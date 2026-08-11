@@ -31,7 +31,7 @@ sequenceDiagram
     Hooks->>Ledger: Journal prompt and update stable requirement IDs
 
     Codex->>Hooks: PostToolUse
-    Hooks->>Ledger: Record bounded outcome and provenance
+    Hooks->>Ledger: Record evidence or authorize a verified private stage request
 
     Codex->>Hooks: PreCompact
     Hooks->>Ledger: Verify integrity and write recovery snapshot
@@ -39,12 +39,14 @@ sequenceDiagram
     Codex->>Hooks: SessionStart (compact or resume)
     Hooks-->>Codex: Bounded recovery packet as additional context
 
-    Codex->>Hooks: Stop after a completion claim
-    Hooks->>Ledger: Check open items and successful evidence
-    alt Open item, missing evidence, or untrusted state
-        Hooks-->>Codex: Continue task or report the blocker
-    else All guarded items have valid evidence
-        Hooks-->>Codex: Allow normal completion
+    Codex->>Hooks: Stop at the turn boundary
+    Hooks->>Ledger: Resolve integrity, checkpoint, completion, continue, persistence, wait, then default yield
+    alt Verified checkpoint
+        Hooks-->>Codex: Derive complete and allow normal completion
+    else Bounded continuation trigger
+        Hooks-->>Codex: Continue at most twice or report the blocker
+    else Wait, deferred, or default yield
+        Hooks-->>Codex: Yield with pending requirements preserved
     end
 ```
 
@@ -113,20 +115,48 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
-Classifier 1.0.1 turns the whole Stop reply into a stable decision result instead
-of relying on a single regex precedence match. It extracts remaining action
-categories, ownership (`assistant`, `user`, or `external`), and current-turn
-authorization (`authorized`, `denied`, or `out_of_scope`). User handoffs,
-external waits, and denied/out-of-scope deferred phases may end a turn. Any
-authorized assistant-owned remainder gates, including a mixed reply that also
-mentions external review.
+Schema 5 gives each active completion attempt one `staged_control` slot. It is
+either a verified checkpoint or one typed non-completion disposition:
+`continue`, `user_wait`, `external_wait`, or `deferred`. `complete` is not a
+disposition; it can be derived only when Stop validates and consumes a
+checkpoint covering every non-superseded requirement and acceptance item.
+Staging the same control is idempotent, a different control conflicts, and an
+intentional change requires `--replace`.
 
-The outcome taxonomy is `allow_neutral`, `allow_user_handoff`,
-`allow_external_wait`, `allow_out_of_scope_deferred`,
-`gate_completion_claim`, `gate_authorized_remaining_work`,
-`consume_checkpoint`, and `fail_closed_integrity`. Prompt negation,
-double-negation, bounded local scope, broad execution authority, and bilingual
-deferred wording have metamorphic tests. Classification reads the full
+The private `stage-checkpoint` and `stage-disposition` CLI commands are
+prechecks, not state-writing authorities. `PostToolUse` is the authoritative
+staging path: it verifies the exact command, expected data directory, session,
+turn, token hash, and output marker before storing the single control. A
+structured tool response must report success. When Code Mode provides only raw
+stdout, the successful precheck emits the expected marker followed by a final
+standalone `Script completed` receipt. The marker alone is not success;
+structured failure, an explicit nonzero exit status, or hard failure text takes
+priority over the receipt. A request observed only in assistant text, tool
+input, or an unsuccessful/unmatched tool result cannot stage anything, and no
+control command is recorded as requirement-closing evidence.
+
+Stop protocol 1.0.0 applies this fixed priority:
+
+1. private-state or prompt-boundary integrity failure, leaked private
+   checkpoint/disposition metadata, and malformed staged control fail closed;
+2. a hash-verified staged checkpoint is validated first; a valid checkpoint is
+   consumed as `complete`, while an invalid checkpoint blocks;
+3. a high-confidence whole-task completion claim without a valid checkpoint
+   blocks even if a wait or deferred disposition was staged;
+4. staged `continue` requests bounded continuation;
+5. explicit user persistence blocks a terminal yield unless the next priority
+   establishes a genuine unavailable boundary;
+6. `user_wait` and `external_wait` yield with requirements still pending;
+   `deferred` also yields when persistence is absent, or when the hash-verified
+   prompt denies or excludes the specific action identified as deferred; and
+7. with no staged control and no earlier trigger, Stop yields safely and leaves
+   every unresolved requirement pending.
+
+Continuation is capped at two correction turns. Classifier 2.0.0 records the
+observed natural-language outcome, action facts, and anomalies for diagnosis;
+inferred action ownership no longer drives ordinary continuation. Only the
+narrow high-confidence whole-task-completion and explicit-persistence checks
+participate in the fixed priority above. Classification reads the full
 hash-verified prompt record; an ambiguous prompt boundary fails closed.
 
 ## Hook lifecycle
@@ -134,17 +164,17 @@ hash-verified prompt record; an ambiguous prompt boundary fails closed.
 | Event | Purpose | Visible context |
 | --- | --- | --- |
 | `UserPromptSubmit` | journal prompt, classify authority, update requirements and revisions | activation/status and bounded completion instructions |
-| `PostToolUse` | record bounded evidence and observe successful `update_plan` | none |
+| `PostToolUse` | record bounded evidence, observe successful `update_plan`, and authoritatively stage a verified private control request | none |
 | `PreCompact` | validate state and write recovery snapshot | continue/fail-closed result |
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
 | `SubagentStop` | record bounded result envelope | warnings only when needed |
-| `Stop` | detect completion claims and enforce private evidence gate | continuation only when required |
+| `Stop` | apply the fixed integrity/checkpoint/completion/continue/persistence/wait/default-yield priority | continuation only when required |
 | `SessionEnd` | mark session ended, write final recovery, run retention cleanup | none |
 
 ## Private state
 
-Schema 4 contains:
+Schema 5 contains:
 
 - session identity and lifecycle timestamps;
 - prompt metadata and immutable prompt records;
@@ -153,16 +183,21 @@ Schema 4 contains:
 - `work_state.plan_snapshot`;
 - bounded agent records;
 - compaction history;
-- turn-bound completion attempt and private checkpoint;
-- at most 32 hash-only Stop decision records with classifier version, outcome,
-  reason codes, prompt/reply SHA-256, and action ownership/authorization;
+- one turn-bound completion attempt with protocol version, token hash, staging
+  timestamp, and a single checkpoint-or-disposition `staged_control`;
+- a checkpoint-derived completion record;
+- at most 32 hash-only Stop decision records with protocol/classifier versions,
+  decision source, disposition and outcome enums, bounded reason/action enums,
+  prompt/reply SHA-256, and no raw reply text;
 - integrity status and a canonical content hash.
 
 Writes are atomic. Session operations use a cross-platform lock. State is
 validated before use; corrupted state is preserved for diagnosis and rebuilt
 only from hash-verified prompt records. Reconstructed requirements return to
-pending because prior evidence cannot be silently re-trusted. Schema 1, 2, and
-3 migrate to schema 4 with an empty decision log.
+pending because prior evidence cannot be silently re-trusted. Schema 1, 2, 3,
+and 4 migrate to schema 5 while preserving the durable ledger. Migration
+deliberately discards any in-flight completion attempt, token, or staged control
+so a stale turn cannot authorize the new protocol.
 
 ## Historical Hook cache lifecycle
 
@@ -184,7 +219,19 @@ creates, activates, retires, or grants authority to a task.
 
 ## Maintenance boundary
 
-The 0.5.x maintenance scope is compatible schema-4, classifier, diagnostics,
-cache-lifecycle, correctness/security, Codex Hook/API, test, and documentation
-work. Semantic evidence matching and a shared multi-agent workspace require
-separate evidence and approval; they are not implicit roadmap commitments.
+The 0.6.x line is limited to the schema-5 private turn-control protocol,
+diagnostics, compatible cache lifecycle, correctness/security, tests, and
+documentation. It does not add a Hook event, matcher, or Codex Hook payload
+field; the existing eight-event `hooks.json` wire contract remains compatible.
+The unreleased 0.6.0 candidate established this boundary but failed a real Code
+Mode raw-stdout fresh gate because its marker-only response was correctly
+classified as unknown. Version 0.6.1 changes only the successful private-stage
+receipt; state schema 5, Stop protocol 1.0.0, classifier 2.0.0, dispositions,
+Stop priority, and all eight Hooks remain unchanged. The installed 0.6.0 cache
+is immutable and must not be patched in place or tagged.
+
+Requirement-to-evidence semantic relevance is not implemented by 0.6.x. It
+remains benchmark-first research and is deferred to a possible 0.7.0 capability
+only after positive, negative, adversarial, multilingual, false-acceptance,
+false-rejection, and abstention thresholds are approved. A shared multi-agent
+workspace also requires separate evidence and approval.

@@ -15,10 +15,15 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.5.1` 保持 state schema 4，并将 Stop classifier 更新为
-> 1.0.1，修复混合用户交接的动作归属、派生 open-item 一致性和经验证的
-> 同版本归档首次采用。Windows 原生 0.5.1 验收已经完成，覆盖首次采用、归档、
-> 已安装生命周期和全新可信 Hook；八 Hook 与私有 checkpoint 接口保持不变。
+> 源码状态：`0.6.1` 是未发布候选。`0.6.0` 候选引入了 state schema 5、
+> Stop protocol 1.0.0 和 diagnostic classifier 2.0.0，但在正常信任 Hook 的
+> fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag
+> 或 Release；其已安装 cache 不可变，版本号已经消耗。`0.6.1` 只修改成功的
+> 私有 stage receipt，schema、protocol、classifier 和八 Hook wire 均不变。
+> macOS 与 Windows 候选均已通过限定的 source/install/archive 门；
+> private/public identity 均在正常 Hook 信任、无 trust bypass 下通过
+> `user_wait`、completion checkpoint 和手动 schema-5 `/compact` 恢复。
+> 最终 CI、HOL、PR 门仍为 pending；`0.6.1` 仍未发布。
 
 ### 30 秒脱敏 compact/recovery 演示
 
@@ -52,14 +57,18 @@ Context Guard 因此把四件事分开记录：
 - 将最近一次成功的原生 `update_plan` 调用镜像为只读恢复索引。
 - 保存有来源的有界委托契约和 Agent 结果，不保存 transcript 或隐藏推理。
 - 将无结构或含糊的工具输出记为 unknown，阻止其满足完成门禁。
-- 即使回复同时报告了局部工作完成，只要仍明确等待用户验收、授权、确认或决定，
-  就继续将整个任务视为未完成状态。
-- 按动作类别、所有者和本轮授权判断剩余工作。用户接管、外部等待以及被拒绝或
-  超出范围的后续阶段可以结束回合；任何仍获授权且由代理执行的事项继续进入门禁。
-- 输出稳定的决策结果类和 reason codes；“等待外部审核”不能掩盖同一回复中仍由
-  代理执行的发布或仓库修改。
-- 最多保存 32 条 Stop 决策的时间、turn ID、classifier 版本、哈希、reason codes
-  和动作事实，不保存原始回复正文。
+- 每轮最多保留一个私有、turn-bound staged control：完成 checkpoint，或
+  `continue`、`user_wait`、`external_wait`、`deferred` 之一。
+- 私有 stage request 只有在精确 hash marker 与成功工具 outcome 同时成立时才会被
+  接受；raw stdout 路径由成功 CLI 最终输出独立 `Script completed` receipt。
+  bare marker 仍会被拒绝，structured failure、非零状态或硬失败文本优先。
+  控制命令不会成为关闭 requirement 的成功 evidence。
+- 未 stage disposition 时安全让出，本轮结束但需求继续 pending。已验证 checkpoint、
+  staged `continue`、窄范围整体完成声明和用户显式 persistence 按固定 Stop 优先级处理。
+- 自然语言动作归属只作为诊断信号；普通的 assistant future、用户交接、外部等待或
+  延期描述本身不能再直接触发强制续轮。
+- 最多保存 32 条 Stop 决策的时间、turn ID、protocol/control source、声明的
+  disposition、诊断 outcome、哈希与 reason codes，不保存原始回复正文。
 - 使用有界跨平台文件锁串行化同一会话的并发更新，并覆盖公开 CI 发现的 Windows
   access-denied/持有者退出竞态。
 - 将二进制和 data URL 替换为类型、长度与哈希元数据。
@@ -224,9 +233,10 @@ python3 scripts/smoke_installed.py
 
 - `$context-guard` 或 `context-guard on`：启用完整恢复与完成门禁。
 - `context-guard off`：关闭恢复和完成门禁，但继续记录提示。
-- `context-guard status`：显示保护状态、classifier 版本和最近决策，不暴露原始提示。
-- `context-guard diagnose`：显示有界的决策类别、reason codes、哈希、动作所有者和
-  授权状态，不暴露原始提示或回复。
+- `context-guard status`：显示保护状态、Stop protocol/classifier 版本和最近决策，
+  不暴露原始提示。
+- `context-guard diagnose`：显示有界的 protocol/control source、声明的 disposition、
+  诊断 outcome、reason codes 与哈希，不暴露原始提示或回复。
 - `context-guard export <path>`：在当前项目中生成脱敏 handoff；默认路径为
   `.codex/context-guard/CONTEXT_HANDOFF.md`。
 - `context-guard rollover <directory>`：验证用户显式准备的 successor 输入，写入
@@ -282,11 +292,12 @@ ruff check .
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-当前 Windows 原生补充验证覆盖自动化测试、隔离安装生命周期，以及新 Hook 任务的正常
-持久信任流程。通过 `CODEX_CA_CERTIFICATE` 向隔离 CLI 提供 Windows 信任根证书后，
-真实手工 `/compact` 已完成后端压缩、运行 `PreCompact`、经 `SessionStart` 注入恢复包，
-并在不重复提供标记值的压缩后提示中准确恢复两个标记。完整证据见
-[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
+Windows 原生 0.5.1 验收只作为历史证据。0.6.1 候选已通过限定的 macOS 与 Windows
+source/install/archive 门，且 private/public identity 均在正常 Hook 信任、无 trust
+bypass 运行中通过 `user_wait`、completion checkpoint 和手动 schema-5 `/compact`
+恢复。最终 CI、HOL、PR 门仍为 pending；CI 不能替代原生运行。
+未发布且版本号已消耗的 0.6.0 候选已经在真实 Code Mode fresh gate 失败，不得创建
+tag 或原地修补。证据边界见[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 明确不做
 
@@ -298,8 +309,9 @@ Context Guard 不是：
 - 第二套 Plan/Goal 控制器、Agent 调度器、mailbox 或共享工作区；
 - 人工审查、测试或验收的替代品。
 
-语义证据匹配、共享多 Agent 工作区和 telemetry 不是已承诺 roadmap。只有出现可复现
-失败，或另行批准 benchmark-first 计划时，才会重新评估。
+需求—证据语义相关性不属于 0.6.x 能力，顺延到可能的 0.7.0，并要求先批准含
+false-acceptance、false-rejection 和 abstention 阈值的 benchmark。共享多 Agent
+工作区与 telemetry 仍是独立研究决策。
 
 ## 贡献与安全
 

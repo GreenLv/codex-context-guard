@@ -4,8 +4,75 @@ All notable public releases are documented here.
 
 ## Unreleased
 
-No changes yet. Plugin bundle, Hook, manifest, or script changes after the
-0.5.1 source line require a new version.
+### Added
+
+- The 0.6.x candidate line is a protocol-first turn-control minor. State schema
+  5 adds one turn-bound `completion_attempt.staged_control` slot for either a
+  verified completion checkpoint or one non-completion disposition:
+  `continue`, `user_wait`, `external_wait`, or `deferred`. This contract was
+  first implemented in the unreleased 0.6.0 candidate and is carried forward
+  unchanged by the 0.6.1 candidate.
+- The private `stage-disposition` command preflights a typed disposition. The
+  existing `PostToolUse` Hook remains the only authoritative writer after it
+  verifies the exact command, data directory, session, turn, private token,
+  marker, and successful tool outcome. Structured status is used when present;
+  the 0.6.1 raw-stdout path uses the final private success receipt.
+- Stop protocol 1.0.0 and classifier 2.0.0 diagnostics record the decision
+  source, declared disposition, observed outcome, bounded reason/action enums,
+  and prompt/reply hashes without retaining raw reply text.
+- Public candidate validation now audits every PR or push commit's author and
+  committer for a GitHub noreply identity. Rejected values stay redacted so a
+  misconfigured Windows clone cannot leak a personal email into CI logs while
+  failing the release gate.
+
+### Fixed
+
+- The 0.6.1 candidate adds a final standalone `Script completed` receipt after
+  each successful private `stage-checkpoint` or `stage-disposition` precheck.
+  This lets a real Code Mode `PostToolUse` raw-stdout response establish the
+  same successful outcome as a structured success response.
+- A bare private marker remains insufficient. Structured failure, an explicit
+  nonzero exit status, or a hard failure marker takes priority over the success
+  receipt, and private control commands remain excluded from requirement-
+  closing evidence.
+
+### Changed
+
+- Stop now applies a fixed control priority: integrity and private-metadata
+  checks; a verified checkpoint; an uncheckpointed whole-task completion
+  claim; staged `continue`; explicit user persistence; typed wait/deferred;
+  then safe default yield. `complete` is derived only from a verified
+  checkpoint and is not a disposition.
+- `continue` requests bounded continuation. `user_wait`, `external_wait`, and
+  `deferred` yield without changing pending requirements. With no staged
+  control, an incomplete response also yields safely unless an explicit
+  whole-task completion claim or user persistence requires continuation; a
+  genuine user/external wait may still yield under persistence, and `deferred`
+  may do so only when the hash-verified prompt denies or excludes the specific
+  action identified as deferred.
+- Natural-language action classification is diagnostic and anomaly-oriented;
+  it no longer drives ordinary continuation from inferred action ownership.
+- Schema 1-4 migration preserves the durable ledger but invalidates any
+  in-flight completion token or staged control so a fresh turn must authorize
+  the schema-5 protocol.
+- The exact eight Hook events and their Codex payload shapes are unchanged.
+  Requirement-to-evidence semantic relevance is not implemented in 0.6.x; it
+  remains benchmark-first research for a possible 0.7.0 capability.
+
+### Validation status
+
+- Version 0.6.0 was never tagged or released. A normally trusted fresh Codex
+  Code Mode run delivered the private marker as raw stdout without a structured
+  exit status; the generic outcome remained unknown and two valid disposition
+  staging attempts failed closed. Because 0.6.0 had already been installed, its
+  cache bytes are immutable and its version number is consumed.
+- Version 0.6.1 remains an unreleased candidate. Native macOS and Windows
+  source, source/live/archive parity, installed lifecycle, and Context Guard
+  doctor subchecks pass. Normally trusted private and public identities,
+  without a bypass, also pass `user_wait`, completion checkpoint, and manual
+  schema-5 `/compact` recovery. Final CI, HOL, and PR gates remain pending. CI
+  is source-level automation and is not installed-runtime or native-platform
+  acceptance. No 0.6.0 tag may be created.
 
 ## 0.5.1 - 2026-08-10
 

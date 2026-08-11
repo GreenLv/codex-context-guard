@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "context_guard.py"
@@ -24,6 +25,13 @@ SPEC.loader.exec_module(cg)
 
 
 class ContextGuardTests(unittest.TestCase):
+    DISPOSITION_REASONS: ClassVar[dict[str, str]] = {
+        "continue": "assistant_work_remains",
+        "user_wait": "user_action_required",
+        "external_wait": "external_dependency",
+        "deferred": "denied_or_out_of_scope",
+    }
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -143,6 +151,117 @@ class ContextGuardTests(unittest.TestCase):
             acceptance,
         )
 
+    def private_command_common(
+        self,
+        *,
+        session: str = "session-a",
+        turn_id: str | None = None,
+        token: str = "test-token",
+        data_dir: Path | None = None,
+    ) -> list[str]:
+        return [
+            "--data-dir",
+            str(data_dir or self.root / "private"),
+            "--session-id",
+            session,
+            "--turn-id",
+            turn_id or self.current_turn,
+            f"--token={token}",
+        ]
+
+    def run_private_stage(
+        self,
+        arguments: list[str],
+        *,
+        session: str = "session-a",
+        turn_id: str | None = None,
+        tool_response: object | None = None,
+        command: str | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
+        staged = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        if staged.returncode != 0:
+            return staged, {}
+        response = (
+            tool_response
+            if tool_response is not None
+            else {"exit_code": 0, "output": staged.stdout}
+        )
+        hook_result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                session=session,
+                turn_id=turn_id or self.current_turn,
+                tool_name="Bash",
+                tool_input={"command": command or cg.shell_join(arguments)},
+                tool_response=response,
+            )
+        )
+        return staged, hook_result
+
+    def stage_disposition(
+        self,
+        disposition: str,
+        *,
+        session: str = "session-a",
+        turn_id: str | None = None,
+        token: str = "test-token",
+        replace: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(
+                session=session,
+                turn_id=turn_id,
+                token=token,
+            ),
+            "--disposition",
+            disposition,
+        ]
+        if replace:
+            arguments.append("--replace")
+        return self.run_private_stage(
+            arguments,
+            session=session,
+            turn_id=turn_id,
+        )
+
+    def stage_checkpoint_cli(
+        self,
+        evidence_id: str,
+        *,
+        session: str = "session-a",
+        replace: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
+        state = self.state(session)
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-checkpoint",
+            *self.private_command_common(session=session),
+        ]
+        for item in state["requirements"]:
+            if item["status"] not in {"pass", "superseded"}:
+                arguments.extend(
+                    ["--requirement", f"{item['id']}={evidence_id}"]
+                )
+        for item in state["acceptance_items"]:
+            if item["status"] not in {"pass", "superseded"}:
+                arguments.extend(
+                    ["--acceptance", f"{item['id']}={evidence_id}"]
+                )
+        if replace:
+            arguments.append("--replace")
+        return self.run_private_stage(arguments, session=session)
+
     def write_successor_input(
         self,
         *,
@@ -216,7 +335,25 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("A001", activation)
         self.assertIn("checkpoint-status", activation)
         self.assertIn("stage-checkpoint", activation)
+        self.assertIn("stage-disposition", activation)
         self.assertNotIn("<!--", activation)
+        attempt = state["completion_attempt"]
+        self.assertEqual(
+            set(attempt),
+            {
+                "protocol_version",
+                "turn_id",
+                "token_sha256",
+                "created_at",
+                "staged_at",
+                "staged_control",
+            },
+        )
+        self.assertEqual(attempt["turn_id"], self.current_turn)
+        self.assertEqual(attempt["token_sha256"], cg.sha256_text("test-token"))
+        self.assertTrue(attempt["created_at"])
+        self.assertIsNone(attempt["staged_at"])
+        self.assertIsNone(attempt["staged_control"])
         metadata = state["prompts"][0]
         self.assertEqual(
             metadata["sha256"], hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -290,6 +427,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("R001", packet)
         self.assertIn("checkpoint-status", packet)
         self.assertIn("stage-checkpoint", packet)
+        self.assertIn("stage-disposition", packet)
         self.assertNotIn("<!--", packet)
         self.assertLessEqual(len(packet), cg.RECOVERY_CHAR_LIMIT)
 
@@ -439,6 +577,348 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(next_attempt["decision"], "block")
         self.assertEqual(self.state()["continuation_attempts"], 1)
 
+    def test_protocol_default_yield_preserves_pending_but_completion_claim_gates(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        for message in (
+            "核心代码已写完；剩余测试稍后继续。",
+            "The local commit passed; I will continue the remaining work later.",
+            "当前仍有代理可执行事项，但本轮先报告进度。",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload("Stop", last_assistant_message=message)
+                    ),
+                    {},
+                )
+                state = self.state()
+                self.assertEqual(state["continuation_attempts"], 0)
+                self.assertTrue(state["open_items"])
+                self.assertIsNone(state["completion_checkpoint"])
+
+        completed = cg.dispatch(
+            self.payload(
+                "Stop",
+                last_assistant_message="The entire requested task is complete.",
+            )
+        )
+        self.assertEqual(completed["decision"], "block")
+        self.assertEqual(self.state()["continuation_attempts"], 1)
+
+    def test_protocol_dispositions_drive_stop_without_marking_waits_complete(
+        self,
+    ) -> None:
+        cases = (
+            ("user_wait", "请完成账号选择后告诉我。", False),
+            ("external_wait", "The PR is awaiting external review.", False),
+            ("deferred", "Push and CI are outside this turn's scope.", False),
+            ("continue", "I still have work to perform.", True),
+        )
+        for disposition, message, should_continue in cases:
+            with self.subTest(disposition=disposition):
+                session = f"session-{disposition}"
+                self.prompt(
+                    "$context-guard\n完成复杂任务并保留所有未完成需求。",
+                    session=session,
+                )
+                staged, hook_result = self.stage_disposition(
+                    disposition,
+                    session=session,
+                )
+                self.assertEqual(staged.returncode, 0, staged.stderr)
+                self.assertIn("privately staged", json.dumps(hook_result))
+                result = cg.dispatch(
+                    self.payload(
+                        "Stop",
+                        session=session,
+                        last_assistant_message=message,
+                    )
+                )
+                if should_continue:
+                    self.assertEqual(result["decision"], "block")
+                    self.assertEqual(
+                        self.state(session)["continuation_attempts"], 1
+                    )
+                else:
+                    self.assertEqual(result, {})
+                    state = self.state(session)
+                    self.assertTrue(state["open_items"])
+                    self.assertIsNone(state["completion_checkpoint"])
+                    attempt = state.get("completion_attempt")
+                    self.assertTrue(
+                        attempt is None or attempt.get("staged_control") is None
+                    )
+
+    def test_private_disposition_api_derives_fixed_reason(self) -> None:
+        for disposition, reason in self.DISPOSITION_REASONS.items():
+            with self.subTest(disposition=disposition):
+                session = f"session-api-{disposition}"
+                self.prompt(
+                    "$context-guard\n保留未完成需求并验证私有 disposition API。",
+                    session=session,
+                )
+                cg.stage_private_disposition(
+                    self.root / "private",
+                    session,
+                    self.current_turn,
+                    "test-token",
+                    disposition,
+                    replace=False,
+                )
+                self.assertEqual(
+                    self.state(session)["completion_attempt"]["staged_control"],
+                    {
+                        "kind": "disposition",
+                        "disposition": disposition,
+                        "reason": reason,
+                    },
+                )
+
+    def test_explicit_persistence_gates_default_yield_and_conflicting_deferral(
+        self,
+    ) -> None:
+        for session, prompt in (
+            (
+                "session-persist-en",
+                "$context-guard\nDo not stop until the entire task is complete.",
+            ),
+            (
+                "session-persist-zh",
+                "$context-guard\n不要停，持续执行直到整个任务完成。",
+            ),
+        ):
+            with self.subTest(prompt=prompt):
+                self.prompt(prompt, session=session)
+                result = cg.dispatch(
+                    self.payload(
+                        "Stop",
+                        session=session,
+                        last_assistant_message="Progress is recorded; work remains.",
+                    )
+                )
+                self.assertEqual(result["decision"], "block")
+
+        session = "session-persist-deferred"
+        self.prompt(
+            "$context-guard\nDo not stop until implementation, push, and CI finish.",
+            session=session,
+        )
+        staged, _ = self.stage_disposition("deferred", session=session)
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        result = cg.dispatch(
+            self.payload(
+                "Stop",
+                session=session,
+                last_assistant_message="Push and CI are deferred.",
+            )
+        )
+        self.assertEqual(result["decision"], "block")
+
+        session = "session-persist-user-wait"
+        self.prompt(
+            "$context-guard\nDo not stop until completion, but ask me for required login steps.",
+            session=session,
+        )
+        staged, _ = self.stage_disposition("user_wait", session=session)
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        self.assertEqual(
+            cg.dispatch(
+                self.payload(
+                    "Stop",
+                    session=session,
+                    last_assistant_message="Please finish the required login step.",
+                )
+            ),
+            {},
+        )
+
+    def test_persistence_deferred_is_bound_to_the_denied_action(self) -> None:
+        prompt = (
+            "$context-guard\nDo not stop until the local implementation is complete. "
+            "Do not publish."
+        )
+        cases = (
+            (
+                "denied-publish-action",
+                "Publishing is deferred to a later phase.",
+                True,
+            ),
+            (
+                "authorized-implementation-action",
+                "I will implement the remaining local change later.",
+                False,
+            ),
+            (
+                "unidentified-deferred-action",
+                "Implementation is deferred.",
+                False,
+            ),
+            (
+                "completed-denied-action-does-not-cover-other-deferral",
+                "Publishing is complete; implementation is deferred.",
+                False,
+            ),
+        )
+        for label, reply, should_yield in cases:
+            with self.subTest(label=label):
+                session = f"session-persist-bound-{label}"
+                self.prompt(prompt, session=session)
+                staged, _ = self.stage_disposition("deferred", session=session)
+                self.assertEqual(staged.returncode, 0, staged.stderr)
+                result = cg.dispatch(
+                    self.payload(
+                        "Stop",
+                        session=session,
+                        last_assistant_message=reply,
+                    )
+                )
+                if should_yield:
+                    self.assertEqual(result, {})
+                    self.assertEqual(
+                        self.state(session)["decision_log"][-1]["outcome"],
+                        "allow_out_of_scope_deferred",
+                    )
+                else:
+                    self.assertEqual(result["decision"], "block")
+                    self.assertEqual(
+                        self.state(session)["continuation_attempts"], 1
+                    )
+
+    def test_service_stop_negation_is_not_agent_persistence(self) -> None:
+        cases = (
+            (
+                "$context-guard\nDo not stop the server while checking logs.",
+                "Log inspection is still in progress; this turn reports current status.",
+            ),
+            (
+                "$context-guard\n检查日志时不要停止服务。",
+                "日志检查尚未结束；本轮先报告当前状态。",
+            ),
+        )
+        for index, (prompt, reply) in enumerate(cases):
+            with self.subTest(prompt=prompt):
+                session = f"session-service-negation-{index}"
+                self.prompt(prompt, session=session)
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload(
+                            "Stop",
+                            session=session,
+                            last_assistant_message=reply,
+                        )
+                    ),
+                    {},
+                )
+                self.assertEqual(
+                    self.state(session)["continuation_attempts"], 0
+                )
+                self.assertTrue(self.state(session)["open_items"])
+
+    def test_staged_control_is_exclusive_idempotent_and_replaceable(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+
+        first, _ = self.stage_disposition("user_wait")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        first_attempt = self.state()["completion_attempt"]
+        first_control = first_attempt["staged_control"]
+        first_staged_at = first_attempt["staged_at"]
+        self.assertIsNotNone(first_staged_at)
+        self.assertEqual(
+            first_control,
+            {
+                "kind": "disposition",
+                "disposition": "user_wait",
+                "reason": "user_action_required",
+            },
+        )
+
+        repeated, _ = self.stage_disposition("user_wait")
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"],
+            first_control,
+        )
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_at"],
+            first_staged_at,
+        )
+
+        conflict, _ = self.stage_disposition("external_wait")
+        self.assertNotEqual(conflict.returncode, 0)
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"],
+            first_control,
+        )
+
+        replaced, _ = self.stage_disposition("external_wait", replace=True)
+        self.assertEqual(replaced.returncode, 0, replaced.stderr)
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"],
+            {
+                "kind": "disposition",
+                "disposition": "external_wait",
+                "reason": "external_dependency",
+            },
+        )
+        self.assertNotEqual(
+            self.state()["completion_attempt"]["staged_at"],
+            first_staged_at,
+        )
+
+        checkpoint_conflict, _ = self.stage_checkpoint_cli(evidence_id)
+        self.assertNotEqual(checkpoint_conflict.returncode, 0)
+        checkpoint, _ = self.stage_checkpoint_cli(evidence_id, replace=True)
+        self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"]["kind"],
+            "checkpoint",
+        )
+        checkpoint_attempt = self.state()["completion_attempt"]
+        checkpoint_control = checkpoint_attempt["staged_control"]
+        checkpoint_staged_at = checkpoint_attempt["staged_at"]
+        repeated_checkpoint, _ = self.stage_checkpoint_cli(evidence_id)
+        self.assertEqual(
+            repeated_checkpoint.returncode,
+            0,
+            repeated_checkpoint.stderr,
+        )
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"],
+            checkpoint_control,
+        )
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_at"],
+            checkpoint_staged_at,
+        )
+
+        disposition_conflict, _ = self.stage_disposition("user_wait")
+        self.assertNotEqual(disposition_conflict.returncode, 0)
+        disposition, _ = self.stage_disposition("user_wait", replace=True)
+        self.assertEqual(disposition.returncode, 0, disposition.stderr)
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"]["kind"],
+            "disposition",
+        )
+
+    def test_staged_wait_cannot_hide_uncheckpointed_whole_completion(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        staged, _ = self.stage_disposition("user_wait")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        result = cg.dispatch(
+            self.payload("Stop", last_assistant_message="整个任务已经全部完成。")
+        )
+        self.assertEqual(result["decision"], "block")
+        self.assertIsNone(self.state()["completion_checkpoint"])
+
     def test_private_checkpoint_passes_without_reply_metadata(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
@@ -536,7 +1016,7 @@ class ContextGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown evidence"):
             self.stage_all("E9999")
         self.assertIsNone(
-            self.state()["completion_attempt"]["staged_checkpoint"]
+            self.state()["completion_attempt"]["staged_control"]
         )
 
     def test_private_checkpoint_is_bound_to_turn_and_token(self) -> None:
@@ -567,13 +1047,16 @@ class ContextGuardTests(unittest.TestCase):
         evidence_id = self.record_tool()
         session_dir = self.root / "private" / "sessions" / "session-a"
         state = self.state()
-        state["completion_attempt"]["staged_checkpoint"] = {
-            "status": "complete",
-            "requirements": {
-                "R001": {"status": "pass", "evidence": [evidence_id]}
+        state["completion_attempt"]["staged_control"] = {
+            "kind": "checkpoint",
+            "checkpoint": {
+                "status": "complete",
+                "requirements": {
+                    "R001": {"status": "pass", "evidence": [evidence_id]}
+                },
+                "acceptance": {},
+                "open_items": [],
             },
-            "acceptance": {},
-            "open_items": [],
         }
         cg.save_state(session_dir, state)
         result = cg.dispatch(
@@ -590,28 +1073,39 @@ class ContextGuardTests(unittest.TestCase):
         )
         session_dir = self.root / "private" / "sessions" / "session-a"
         state = self.state()
-        state["completion_attempt"]["staged_checkpoint"] = "corrupt"
+        state["completion_attempt"]["staged_control"] = {
+            "kind": "checkpoint",
+            "checkpoint": "corrupt",
+        }
         cg.save_state(session_dir, state)
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="任务已经完成。")
         )
         self.assertEqual(result["decision"], "block")
-        self.assertIn("invalid staged private checkpoint", result["reason"])
+        self.assertIn("invalid staged private", result["reason"])
         self.assertIsNone(self.state()["completion_checkpoint"])
 
-    def test_common_completion_phrases_are_detected(self) -> None:
+    def test_only_high_confidence_whole_task_completion_phrases_are_detected(
+        self,
+    ) -> None:
         for message in (
+            "整个任务已全部完成，所有要求与验收项均已满足。",
+            "All requested work is complete and every requirement is satisfied.",
+            "The entire task is finished with all acceptance criteria met.",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(cg.claims_whole_completion(message))
+        for local_milestone in (
             "已修复并推送。",
             "处理好了，可以交付。",
             "29 项回归测试全量通过。",
-            "修好了，可以使用了。",
             "Fixed, verified, and pushed.",
             "All regression tests passed.",
         ):
-            with self.subTest(message=message):
-                self.assertTrue(cg.claims_completion(message))
+            with self.subTest(local_milestone=local_milestone):
+                self.assertFalse(cg.claims_whole_completion(local_milestone))
 
-    def test_explicit_incomplete_report_gates_only_actionable_work(self) -> None:
+    def test_explicit_incomplete_report_defaults_to_safe_yield(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -628,11 +1122,9 @@ class ContextGuardTests(unittest.TestCase):
                 last_assistant_message="Core code is implemented; remaining tests still need work.",
             )
         )
-        self.assertEqual(implemented_but_remaining["decision"], "block")
-        self.assertEqual(
-            self.state()["decision_log"][-1]["outcome"],
-            "gate_authorized_remaining_work",
-        )
+        self.assertEqual(implemented_but_remaining, {})
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+        self.assertTrue(self.state()["open_items"])
 
     def test_partial_milestone_reports_do_not_trigger_continuations(self) -> None:
         self.prompt(
@@ -646,23 +1138,13 @@ class ContextGuardTests(unittest.TestCase):
             "Formal metadata 审计通过；整体任务仍待 PDF 阶段。15 项回归均通过。",
             "已处理 BLADE；原始任务尚未全部完成，剩余 PDF 等待批次确认。",
         )
-        gated = {messages[0], messages[3]}
         for message in messages:
             with self.subTest(message=message):
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
                 )
-                if message in gated:
-                    self.assertTrue(cg.claims_completion(message))
-                    self.assertEqual(result["decision"], "block")
-                    state = self.state()
-                    state["continuation_attempts"] = 0
-                    cg.save_state(
-                        self.root / "private" / "sessions" / "session-a", state
-                    )
-                else:
-                    self.assertFalse(cg.claims_completion(message))
-                    self.assertEqual(result, {})
+                self.assertFalse(cg.claims_whole_completion(message))
+                self.assertEqual(result, {})
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
     def test_user_decision_gated_reports_do_not_trigger_continuations(self) -> None:
@@ -794,6 +1276,55 @@ class ContextGuardTests(unittest.TestCase):
                     )
                 )
 
+    def test_classifier_diagnostics_cover_cross_sentence_and_abbreviation_blind_spots(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "继续完成 H.O.L. 所有权验证。",
+                "请点击账号。完成后告诉我；随后我会继续 H.O.L. 所有权验证。",
+                "allow_user_handoff",
+            ),
+            (
+                "Continue the H.O.L. ownership check after sign-in.",
+                (
+                    "Please choose the account. When that's done, tell me; afterwards "
+                    "I'll continue the H.O.L. ownership check."
+                ),
+                "allow_user_handoff",
+            ),
+            (
+                "完成目录发布，但等待外部审核。",
+                (
+                    "PR #351 remains under external review; H.O.L., CI, and promotion "
+                    "are paused—no repository work is running."
+                ),
+                "allow_external_wait",
+            ),
+            (
+                "只审查并本地提交；不要推送或运行 CI/CD。",
+                "本地提交已完成——push、CI/CD 与 v0.7.0 发布留待后续阶段。",
+                "allow_out_of_scope_deferred",
+            ),
+        )
+        punctuation_variants = {
+            ";": ("；", "。", "—"),
+            "；": (";", "。", "—"),
+            "——": (";", "；", "。"),
+            "H.O.L.": ("HOL", "H.O.L", "H-O-L"),
+            "CI/CD": ("CI", "C.I.", "CI + CD"),
+        }
+        for prompt, reply, expected in cases:
+            variants = {reply}
+            for needle, replacements in punctuation_variants.items():
+                if needle not in reply:
+                    continue
+                variants.update(reply.replace(needle, value) for value in replacements)
+            for variant in sorted(variants):
+                with self.subTest(expected=expected, reply=variant):
+                    decision = cg.classify_stop_decision(variant, prompt)
+                    self.assertEqual(decision["outcome"], expected)
+
     def test_mixed_handoff_respects_bounded_action_authority(self) -> None:
         reply = "请先解锁钥匙串；我会在等待期间继续修改仓库并推送。"
         cases = (
@@ -850,7 +1381,7 @@ class ContextGuardTests(unittest.TestCase):
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
-    def test_status_wording_does_not_hide_assistant_owned_followups(self) -> None:
+    def test_status_wording_keeps_assistant_followups_diagnostic_only(self) -> None:
         messages = (
             "状态已更新并验证通过。接下来我会提交 PR、更新博客并继续推广。",
             "PR 已提交。接下来我会检查审核日志、发布版本并修改仓库。",
@@ -858,29 +1389,41 @@ class ContextGuardTests(unittest.TestCase):
         )
         for message in messages:
             with self.subTest(message=message):
-                self.prompt("$context-guard\n完成仍由代理负责的发布和仓库更新。")
+                prompt = "$context-guard\n完成仍由代理负责的发布和仓库更新。"
+                self.prompt(prompt)
                 self.assertFalse(cg.reports_non_completion(message))
-                self.assertTrue(cg.claims_completion(message))
+                self.assertTrue(
+                    cg.classify_stop_decision(message, prompt)["outcome"].startswith(
+                        "gate_"
+                    )
+                )
+                self.assertFalse(cg.claims_completion(message))
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
                 )
-                self.assertEqual(result["decision"], "block")
-                self.assertEqual(self.state()["continuation_attempts"], 1)
+                self.assertEqual(result, {})
+                self.assertEqual(self.state()["continuation_attempts"], 0)
+                self.assertTrue(self.state()["open_items"])
 
-    def test_actionable_remaining_work_still_triggers_continuation(self) -> None:
-        self.prompt(
-            "$context-guard\n完成完整推广计划。必须提交目录、更新博客并发布社区帖子。"
-        )
+    def test_actionable_remaining_work_without_disposition_safely_yields(self) -> None:
+        prompt = "$context-guard\n完成完整推广计划。必须提交目录、更新博客并发布社区帖子。"
+        self.prompt(prompt)
         message = (
             "Marketplace 这一项已完成并验证通过。整体推广计划仍有 HOL 审核、"
             "Showcase、博客及社区发帖等后续项。"
         )
-        self.assertTrue(cg.claims_completion(message))
+        self.assertTrue(
+            cg.classify_stop_decision(message, prompt)["outcome"].startswith(
+                "gate_"
+            )
+        )
+        self.assertFalse(cg.claims_completion(message))
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message=message)
         )
-        self.assertEqual(result["decision"], "block")
-        self.assertEqual(self.state()["continuation_attempts"], 1)
+        self.assertEqual(result, {})
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+        self.assertTrue(self.state()["open_items"])
 
     def test_bounded_turn_can_defer_a_later_phase_without_continuation(self) -> None:
         cases = (
@@ -928,7 +1471,9 @@ class ContextGuardTests(unittest.TestCase):
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
-    def test_broad_execution_prompt_keeps_later_phase_gated(self) -> None:
+    def test_broad_execution_prompt_without_persistence_defaults_to_safe_yield(
+        self,
+    ) -> None:
         cases = (
             (
                 "$context-guard\n继续执行完整发布计划，创建远端、推送并等待 CI。",
@@ -969,12 +1514,17 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.prompt(prompt)
                 self.assertFalse(cg.reports_non_completion(message, prompt))
-                self.assertTrue(cg.claims_completion(message, prompt))
+                self.assertEqual(
+                    cg.classify_stop_decision(message, prompt)["outcome"],
+                    "gate_authorized_remaining_work",
+                )
+                self.assertFalse(cg.claims_completion(message, prompt))
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
                 )
-                self.assertEqual(result["decision"], "block")
-                self.assertEqual(self.state()["continuation_attempts"], 1)
+                self.assertEqual(result, {})
+                self.assertEqual(self.state()["continuation_attempts"], 0)
+                self.assertTrue(self.state()["open_items"])
 
     def test_structured_boundary_classifier_covers_regression_session_cases(self) -> None:
         cases = (
@@ -1097,7 +1647,9 @@ class ContextGuardTests(unittest.TestCase):
             "fail_closed_integrity",
         )
 
-    def test_assistant_owned_followups_still_trigger_continuation(self) -> None:
+    def test_assistant_owned_followups_remain_diagnostic_without_disposition(
+        self,
+    ) -> None:
         messages = (
             "全部检查已通过。接下来需要打开页面并继续配置。",
             "配置完成后通知用户，然后继续处理发布。测试已通过。",
@@ -1106,13 +1658,20 @@ class ContextGuardTests(unittest.TestCase):
         )
         for message in messages:
             with self.subTest(message=message):
-                self.prompt("$context-guard\n继续完成仍由代理负责的发布工作。")
-                self.assertTrue(cg.claims_completion(message))
+                prompt = "$context-guard\n继续完成仍由代理负责的发布工作。"
+                self.prompt(prompt)
+                self.assertTrue(
+                    cg.classify_stop_decision(message, prompt)["outcome"].startswith(
+                        "gate_"
+                    )
+                )
+                self.assertFalse(cg.claims_completion(message))
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
                 )
-                self.assertEqual(result["decision"], "block")
-                self.assertEqual(self.state()["continuation_attempts"], 1)
+                self.assertEqual(result, {})
+                self.assertEqual(self.state()["continuation_attempts"], 0)
+                self.assertTrue(self.state()["open_items"])
 
     def test_synthetic_forgotten_boundary_cannot_complete(self) -> None:
         self.prompt(
@@ -1457,6 +2016,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
+        self.assertEqual(cg.SCHEMA_VERSION, 5)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
@@ -1477,6 +2037,13 @@ class ContextGuardTests(unittest.TestCase):
         legacy.pop("work_state")
         legacy.pop("agents")
         legacy.pop("integrity")
+        legacy["completion_attempt"] = {
+            "turn_id": "legacy-turn",
+            "token_sha256": cg.sha256_text("legacy-token"),
+            "created_at": cg.utc_now(),
+            "staged_at": cg.utc_now(),
+            "staged_checkpoint": {"status": "complete"},
+        }
         legacy["content_hash"] = cg.state_content_hash(legacy)
         cg.atomic_write_json(session_dir / "state.json", legacy)
 
@@ -1490,6 +2057,16 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
         self.assertEqual(migrated["agents"], [])
         self.assertEqual(migrated["decision_log"], [])
+        self.assertEqual(
+            migrated["completion_attempt"]["turn_id"], self.current_turn
+        )
+        self.assertEqual(
+            migrated["completion_attempt"]["token_sha256"],
+            cg.sha256_text("test-token"),
+        )
+        self.assertIsNone(
+            migrated["completion_attempt"].get("staged_control")
+        )
 
     def test_v3_state_migrates_to_hash_only_decision_schema(self) -> None:
         self.prompt(
@@ -1500,6 +2077,13 @@ class ContextGuardTests(unittest.TestCase):
         legacy["schema_version"] = 3
         legacy.pop("decision_log")
         legacy["open_items"] = []
+        legacy["completion_attempt"] = {
+            "turn_id": "legacy-turn",
+            "token_sha256": cg.sha256_text("legacy-token"),
+            "created_at": cg.utc_now(),
+            "staged_at": cg.utc_now(),
+            "staged_checkpoint": {"status": "complete"},
+        }
         legacy["content_hash"] = cg.state_content_hash(legacy)
         cg.atomic_write_json(session_dir / "state.json", legacy)
 
@@ -1510,8 +2094,64 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertEqual(migrated["open_items"], cg.open_item_ids(migrated))
+        self.assertEqual(
+            migrated["completion_attempt"]["turn_id"], self.current_turn
+        )
+        self.assertEqual(
+            migrated["completion_attempt"]["token_sha256"],
+            cg.sha256_text("test-token"),
+        )
+        self.assertIsNone(
+            migrated["completion_attempt"].get("staged_control")
+        )
 
-    def test_schema4_load_and_save_normalize_stale_open_items(self) -> None:
+    def test_v4_state_integrity_migrates_to_schema5_and_invalidates_control(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        legacy = self.state()
+        legacy["schema_version"] = 4
+        legacy["completion_attempt"] = {
+            "turn_id": "legacy-turn",
+            "token_sha256": cg.sha256_text("legacy-token"),
+            "created_at": cg.utc_now(),
+            "staged_at": cg.utc_now(),
+            "staged_checkpoint": {"status": "complete"},
+        }
+        legacy["content_hash"] = cg.state_content_hash(legacy)
+        cg.atomic_write_json(session_dir / "state.json", legacy)
+
+        migrated = cg.load_state(
+            session_dir,
+            self.payload("SessionStart", source="resume"),
+        )
+
+        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["integrity"]["status"], "ok")
+        self.assertIsNone(migrated["completion_attempt"])
+        self.assertEqual(migrated["requirements"][0]["status"], "pending")
+        self.assertFalse(list(session_dir.glob("state.corrupt.*.json")))
+        with self.assertRaisesRegex(RuntimeError, "completion attempt"):
+            cg.checkpoint_status(
+                self.root / "private",
+                "session-a",
+                "legacy-turn",
+                "legacy-token",
+            )
+
+        self.prompt("继续迁移后的任务，并建立新的 turn-bound control。")
+        current = self.state()
+        self.assertEqual(current["completion_attempt"]["turn_id"], self.current_turn)
+        self.assertEqual(
+            current["completion_attempt"]["token_sha256"],
+            cg.sha256_text("test-token"),
+        )
+        self.assertIsNone(current["completion_attempt"]["staged_control"])
+
+    def test_current_schema_load_and_save_normalize_stale_open_items(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -1754,13 +2394,225 @@ class ContextGuardTests(unittest.TestCase):
                 "PostToolUse",
                 tool_name="Bash",
                 tool_input={"command": cg.shell_join(stage_arguments)},
-                tool_response=staged.stdout,
+                tool_response={"exit_code": 0, "output": staged.stdout},
             )
         )
         self.assertIn("privately staged", json.dumps(hook_result))
-        self.assertIsNotNone(
-            self.state()["completion_attempt"]["staged_checkpoint"]
+        self.assertEqual(
+            self.state()["completion_attempt"]["staged_control"]["kind"],
+            "checkpoint",
         )
+
+    def test_private_stage_cli_real_wire_receipts_are_stageable(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        state = self.state()
+        checkpoint_arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-checkpoint",
+            *self.private_command_common(),
+        ]
+        for item in state["requirements"]:
+            if item["status"] not in {"pass", "superseded"}:
+                checkpoint_arguments.extend(
+                    ["--requirement", f"{item['id']}={evidence_id}"]
+                )
+        for item in state["acceptance_items"]:
+            if item["status"] not in {"pass", "superseded"}:
+                checkpoint_arguments.extend(
+                    ["--acceptance", f"{item['id']}={evidence_id}"]
+                )
+
+        checkpoint = subprocess.run(
+            checkpoint_arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
+        checkpoint_lines = checkpoint.stdout.splitlines()
+        self.assertEqual(len(checkpoint_lines), 2)
+        checkpoint_marker, checkpoint_sha256 = checkpoint_lines[0].split(" ", 1)
+        self.assertEqual(checkpoint_marker, cg.STAGE_REQUEST_MARKER)
+        self.assertEqual(len(checkpoint_sha256), 64)
+        int(checkpoint_sha256, 16)
+        self.assertEqual(checkpoint_lines[-1], "Script completed")
+        self.assertEqual(checkpoint.stderr, "")
+        before_checkpoint = self.state()
+        checkpoint_result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(checkpoint_arguments)},
+                tool_response=checkpoint.stdout,
+            )
+        )
+        self.assertIn("privately staged", json.dumps(checkpoint_result))
+        after_checkpoint = self.state()
+        self.assertEqual(
+            after_checkpoint["completion_attempt"]["staged_control"]["kind"],
+            "checkpoint",
+        )
+        self.assertEqual(
+            after_checkpoint["evidence_sequence"],
+            before_checkpoint["evidence_sequence"],
+        )
+        self.assertEqual(
+            len(after_checkpoint["evidence"]),
+            len(before_checkpoint["evidence"]),
+        )
+
+        self.prompt("继续检查当前协议状态，并等待用户操作。")
+        disposition_arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        disposition = subprocess.run(
+            disposition_arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(disposition.returncode, 0, disposition.stderr)
+        disposition_lines = disposition.stdout.splitlines()
+        self.assertEqual(len(disposition_lines), 2)
+        disposition_marker, disposition_sha256 = disposition_lines[0].split(
+            " ", 1
+        )
+        self.assertEqual(disposition_marker, cg.DISPOSITION_REQUEST_MARKER)
+        self.assertEqual(len(disposition_sha256), 64)
+        int(disposition_sha256, 16)
+        self.assertEqual(disposition_lines[-1], "Script completed")
+        self.assertEqual(disposition.stderr, "")
+        before_disposition = self.state()
+        disposition_result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(disposition_arguments)},
+                tool_response=disposition.stdout,
+            )
+        )
+        self.assertIn("privately staged", json.dumps(disposition_result))
+        after_disposition = self.state()
+        self.assertEqual(
+            after_disposition["completion_attempt"]["staged_control"]["kind"],
+            "disposition",
+        )
+        self.assertEqual(
+            after_disposition["evidence_sequence"],
+            before_disposition["evidence_sequence"],
+        )
+        self.assertEqual(
+            len(after_disposition["evidence"]),
+            len(before_disposition["evidence"]),
+        )
+
+    def test_private_stage_raw_marker_without_success_line_is_rejected(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        precheck = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(precheck.returncode, 0, precheck.stderr)
+        marker_only = precheck.stdout.splitlines()[0] + "\n"
+        before = self.state()
+        result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(arguments)},
+                tool_response=marker_only,
+            )
+        )
+        self.assertEqual(result["decision"], "block")
+        after = self.state()
+        self.assertIsNone(after["completion_attempt"]["staged_control"])
+        self.assertEqual(after["evidence_sequence"], before["evidence_sequence"])
+        self.assertEqual(len(after["evidence"]), len(before["evidence"]))
+
+    def test_private_stage_failure_signals_override_success_receipt(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        precheck = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(precheck.returncode, 0, precheck.stderr)
+        receipt = precheck.stdout
+        cases = (
+            ("exit-1", {"exit_code": 1, "output": receipt}),
+            ("is-error", {"isError": True, "output": receipt}),
+            ("success-false", {"success": False, "output": receipt}),
+            (
+                "traceback",
+                receipt
+                + "Traceback (most recent call last):\n"
+                + "RuntimeError: broken\n",
+            ),
+            ("script-failed", receipt + "Script failed\n"),
+            ("fatal", receipt + "fatal: broken\n"),
+        )
+        for label, response in cases:
+            with self.subTest(label=label):
+                before = self.state()
+                result = cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        tool_name="Bash",
+                        tool_input={"command": cg.shell_join(arguments)},
+                        tool_response=response,
+                    )
+                )
+                self.assertEqual(result["decision"], "block")
+                after = self.state()
+                self.assertIsNone(
+                    after["completion_attempt"]["staged_control"]
+                )
+                self.assertEqual(
+                    after["evidence_sequence"], before["evidence_sequence"]
+                )
+                self.assertEqual(len(after["evidence"]), len(before["evidence"]))
 
     def test_private_checkpoint_token_may_start_with_dash(self) -> None:
         self.turn_index += 1
@@ -1823,7 +2675,7 @@ class ContextGuardTests(unittest.TestCase):
                 "PostToolUse",
                 tool_name="Bash",
                 tool_input={"command": cg.shell_join(stage_arguments)},
-                tool_response=staged.stdout,
+                tool_response={"exit_code": 0, "output": staged.stdout},
             )
         )
         self.assertIn("privately staged", json.dumps(hook_result))
@@ -1842,8 +2694,320 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(result, {})
         self.assertIsNone(
-            self.state()["completion_attempt"]["staged_checkpoint"]
+            self.state()["completion_attempt"]["staged_control"]
         )
+
+    def test_stage_disposition_rejects_wrong_private_boundaries_and_complete(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        base = [sys.executable, str(MODULE_PATH), "stage-disposition"]
+        mismatched_control_value = self.id()
+        cases = (
+            (
+                "wrong-turn",
+                self.private_command_common(turn_id="turn-other"),
+                ["--disposition", "user_wait"],
+            ),
+            (
+                "wrong-token",
+                self.private_command_common(token=mismatched_control_value),
+                ["--disposition", "user_wait"],
+            ),
+            (
+                "wrong-session",
+                self.private_command_common(session="session-other"),
+                ["--disposition", "user_wait"],
+            ),
+            (
+                "wrong-data-dir",
+                self.private_command_common(data_dir=self.root / "other-private"),
+                ["--disposition", "user_wait"],
+            ),
+            (
+                "complete-is-not-a-disposition",
+                self.private_command_common(),
+                ["--disposition", "complete"],
+            ),
+            (
+                "reason-option-is-forbidden",
+                self.private_command_common(),
+                ["--disposition", "user_wait", "--reason", "external_dependency"],
+            ),
+        )
+        for label, common, tail in cases:
+            with self.subTest(label=label):
+                result = subprocess.run(
+                    [*base, *common, *tail],
+                    text=True,
+                    capture_output=True,
+                    env=os.environ.copy(),
+                    timeout=15,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(cg.DISPOSITION_REQUEST_MARKER, result.stdout)
+                self.assertNotIn("Script completed", result.stdout)
+                self.assertIsNone(
+                    self.state()["completion_attempt"]["staged_control"]
+                )
+
+    def test_post_tool_stage_rejects_forged_marker_failed_command_and_shell_tail(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-disposition",
+            *self.private_command_common(),
+            "--disposition",
+            "user_wait",
+        ]
+        precheck = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(precheck.returncode, 0, precheck.stderr)
+
+        cases = (
+            (
+                "failed-command",
+                cg.shell_join(arguments),
+                {"exit_code": 1, "output": precheck.stdout},
+            ),
+            (
+                "extra-shell-segment",
+                cg.shell_join(arguments) + "; echo injected",
+                {"exit_code": 0, "output": precheck.stdout},
+            ),
+            (
+                "wrong-script-path",
+                cg.shell_join(
+                    [
+                        sys.executable,
+                        str(self.root / "context_guard.py"),
+                        *arguments[2:],
+                    ]
+                ),
+                {"exit_code": 0, "output": precheck.stdout},
+            ),
+            (
+                "marker-only-unrelated-command",
+                "rg CONTEXT_GUARD_STAGE_REQUEST source.py",
+                {"exit_code": 0, "output": precheck.stdout},
+            ),
+            (
+                "string-failure-after-authoritative-success-marker",
+                cg.shell_join(arguments),
+                (
+                    precheck.stdout
+                    + "Script completed\n"
+                    + "Traceback (most recent call last):\n"
+                    + "RuntimeError: broken\n"
+                ),
+            ),
+        )
+        for label, command, response in cases:
+            with self.subTest(label=label):
+                result = cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        tool_name="Bash",
+                        tool_input={"command": command},
+                        tool_response=response,
+                    )
+                )
+                self.assertNotIn("privately staged", json.dumps(result))
+                self.assertIsNone(
+                    self.state()["completion_attempt"]["staged_control"]
+                )
+
+    def test_private_control_shell_tails_never_create_success_evidence(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        state = self.state()
+        checkpoint_arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "stage-checkpoint",
+            *self.private_command_common(),
+        ]
+        for item in state["requirements"]:
+            if item["status"] not in {"pass", "superseded"}:
+                checkpoint_arguments.extend(
+                    ["--requirement", f"{item['id']}={evidence_id}"]
+                )
+        for item in state["acceptance_items"]:
+            if item["status"] not in {"pass", "superseded"}:
+                checkpoint_arguments.extend(
+                    ["--acceptance", f"{item['id']}={evidence_id}"]
+                )
+        commands = (
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "checkpoint-status",
+                *self.private_command_common(),
+            ],
+            checkpoint_arguments,
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "stage-disposition",
+                *self.private_command_common(),
+                "--disposition",
+                "user_wait",
+            ],
+        )
+        for arguments in commands:
+            with self.subTest(private_command=arguments[2]):
+                before = self.state()
+                evidence_count = len(before["evidence"])
+                evidence_sequence = before["evidence_sequence"]
+                result = cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        tool_name="Bash",
+                        tool_input={
+                            "command": cg.shell_join(arguments) + "; echo injected"
+                        },
+                        tool_response={"exit_code": 0, "output": "injected"},
+                    )
+                )
+                self.assertNotIn("privately staged", json.dumps(result))
+                current = self.state()
+                self.assertEqual(len(current["evidence"]), evidence_count)
+                self.assertEqual(current["evidence_sequence"], evidence_sequence)
+
+    def test_checkpoint_status_wrapped_shell_segments_never_create_evidence(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "checkpoint-status",
+            *self.private_command_common(),
+        ]
+        exact_command = cg.shell_join(arguments)
+        commands = (
+            "echo injected; " + exact_command,
+            "echo injected && " + exact_command,
+            "echo injected | " + exact_command,
+            exact_command + " | echo injected",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                before = self.state()
+                evidence_count = len(before["evidence"])
+                evidence_sequence = before["evidence_sequence"]
+                result = cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        tool_name="Bash",
+                        tool_input={"command": command},
+                        tool_response={"exit_code": 0, "output": "injected"},
+                    )
+                )
+                self.assertNotIn("privately staged", json.dumps(result))
+                current = self.state()
+                self.assertEqual(len(current["evidence"]), evidence_count)
+                self.assertEqual(current["evidence_sequence"], evidence_sequence)
+
+    def test_private_control_commands_are_not_evidence_and_tokens_are_redacted(
+        self,
+    ) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        before = self.state()
+        evidence_count = len(before["evidence"])
+        evidence_sequence = before["evidence_sequence"]
+
+        staged, _ = self.stage_disposition("user_wait")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        after_disposition = self.state()
+        self.assertEqual(len(after_disposition["evidence"]), evidence_count)
+        self.assertEqual(after_disposition["evidence_sequence"], evidence_sequence)
+
+        checkpoint, _ = self.stage_checkpoint_cli(evidence_id, replace=True)
+        self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
+        after_checkpoint = self.state()
+        self.assertEqual(len(after_checkpoint["evidence"]), evidence_count)
+        self.assertEqual(after_checkpoint["evidence_sequence"], evidence_sequence)
+        self.assertNotIn("test-token", json.dumps(after_checkpoint))
+
+        for command in (
+            "verify --token secret-space",
+            "verify --token=secret-equals",
+        ):
+            cg.dispatch(
+                self.payload(
+                    "PostToolUse",
+                    tool_name="Bash",
+                    tool_input={"command": command},
+                    tool_response={"exit_code": 0, "output": "PASS"},
+                )
+            )
+        state = self.state()
+        serialized = json.dumps(state, ensure_ascii=False)
+        self.assertNotIn("secret-space", serialized)
+        self.assertNotIn("secret-equals", serialized)
+
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        exported = cg.export_handoff(
+            session_dir,
+            state,
+            str(self.project / "handoff.md"),
+        )
+        handoff = exported.read_text(encoding="utf-8")
+        self.assertNotIn("secret-space", handoff)
+        self.assertNotIn("secret-equals", handoff)
+
+    def test_staged_continue_respects_two_continuation_limit(self) -> None:
+        self.prompt(
+            "$context-guard\n继续执行完整任务，不要在工作仍可执行时停止。"
+        )
+        for expected_attempt in (1, 2):
+            staged, _ = self.stage_disposition("continue")
+            self.assertEqual(staged.returncode, 0, staged.stderr)
+            result = cg.dispatch(
+                self.payload(
+                    "Stop",
+                    last_assistant_message="There is still work to perform.",
+                )
+            )
+            self.assertEqual(result["decision"], "block")
+            self.assertEqual(
+                self.state()["continuation_attempts"], expected_attempt
+            )
+            self.prompt(result["reason"])
+
+        staged, _ = self.stage_disposition("continue")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        terminal = cg.dispatch(
+            self.payload(
+                "Stop",
+                last_assistant_message="There is still work to perform.",
+            )
+        )
+        self.assertFalse(terminal["continue"])
+        self.assertIn("two", terminal["stopReason"])
+        self.assertTrue(self.state()["open_items"])
 
     def test_realistic_string_tool_failures_are_not_success_evidence(self) -> None:
         for response in (
@@ -1910,6 +3074,7 @@ class ContextGuardTests(unittest.TestCase):
         for response in (
             "PASS\nTraceback (most recent call last):\nRuntimeError: broken",
             "Script completed with errors\nPASS",
+            "Script completed\nTraceback (most recent call last):\nRuntimeError: broken",
         ):
             with self.subTest(response=response):
                 self.assertEqual(
@@ -2169,11 +3334,25 @@ class ContextGuardTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertNotIn("<!-- context-guard-checkpoint", skill_text)
         self.assertIn("stage-checkpoint", skill_text)
+        self.assertIn("stage-disposition", skill_text)
         windows_command = cg.shell_join(
             ["python", r"C:\Plugin Root\context_guard.py", "--token", "abc"],
             windows=True,
         )
         self.assertIn('"C:\\Plugin Root\\context_guard.py"', windows_command)
+
+    def test_self_test_requires_python_310_or_newer(self) -> None:
+        with (
+            mock.patch.object(cg.sys, "version_info", (3, 9, 18)),
+            mock.patch("builtins.print") as printed,
+        ):
+            self.assertEqual(cg.command_self_test(), 1)
+        self.assertTrue(
+            any(
+                "Python 3.10+ required" in str(call.args[0])
+                for call in printed.call_args_list
+            )
+        )
 
     def test_hook_command_repairs_unpaired_unicode_surrogate(self) -> None:
         environment = os.environ.copy()

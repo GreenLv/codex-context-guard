@@ -3,11 +3,22 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import sys
 from pathlib import Path
 
-VERSION = "0.5.1"
+VERSION = "0.6.1"
+SCHEMA_VERSION = 5
+STOP_PROTOCOL_VERSION = "1.0.0"
+CLASSIFIER_VERSION = "2.0.0"
+PRIVATE_SUCCESS_RECEIPT = "Script completed"
+DISPOSITION_REASONS = {
+    "continue": "assistant_work_remains",
+    "user_wait": "user_action_required",
+    "external_wait": "external_dependency",
+    "deferred": "denied_or_out_of_scope",
+}
 REPOSITORY = "https://github.com/GreenLv/codex-context-guard"
 HOOK_EVENTS = {
     "UserPromptSubmit",
@@ -41,6 +52,7 @@ REQUIRED_FILES = {
     "docs/LOCAL_ACCEPTANCE.md",
     "docs/VERSIONING.md",
     "hooks/hooks.json",
+    "scripts/audit_commit_identity.py",
     "scripts/context_guard.py",
     "scripts/manage_plugin.py",
     "scripts/smoke_installed.py",
@@ -51,6 +63,67 @@ REQUIRED_FILES = {
 FORBIDDEN_FILES = {
     "docs/BLOG.zh-CN.md",
 }
+
+
+def assigned_literal(tree: ast.Module, name: str) -> object:
+    for node in tree.body:
+        target: ast.expr | None = None
+        value: ast.expr | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            value = node.value
+        if isinstance(target, ast.Name) and target.id == name and value is not None:
+            return ast.literal_eval(value)
+    raise ValueError(f"missing literal assignment: {name}")
+
+
+def function_ends_with_success_receipt(
+    tree: ast.Module, name: str, receipt: str
+) -> bool:
+    function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        ),
+        None,
+    )
+    if function is None or len(function.body) < 2:
+        return False
+    receipt_statement, return_statement = function.body[-2:]
+    if not isinstance(receipt_statement, ast.Expr) or not isinstance(
+        receipt_statement.value, ast.Call
+    ):
+        return False
+    call = receipt_statement.value
+    if not isinstance(call.func, ast.Name) or call.func.id != "print":
+        return False
+    if len(call.args) != 1 or not isinstance(call.args[0], ast.Constant):
+        return False
+    if call.args[0].value != receipt:
+        return False
+    return (
+        isinstance(return_statement, ast.Return)
+        and isinstance(return_statement.value, ast.Constant)
+        and return_statement.value.value == 0
+    )
+
+
+def enum_sets(value: object) -> list[set[str]]:
+    found: list[set[str]] = []
+    if isinstance(value, dict):
+        enum = value.get("enum")
+        if isinstance(enum, list) and all(isinstance(item, str) for item in enum):
+            found.append(set(enum))
+        for child in value.values():
+            found.extend(enum_sets(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(enum_sets(child))
+    return found
 
 
 def validate(root: Path) -> list[str]:
@@ -128,14 +201,100 @@ def validate(root: Path) -> list[str]:
         schema = json.loads(
             (root / "assets" / "state.schema.json").read_text(encoding="utf-8")
         )
-        if schema.get("properties", {}).get("schema_version", {}).get("const") != 4:
-            errors.append("private state schema must be version 4")
+        properties = schema.get("properties", {})
+        if properties.get("schema_version", {}).get("const") != SCHEMA_VERSION:
+            errors.append(f"private state schema must be version {SCHEMA_VERSION}")
         if "decision_log" not in schema.get("required", []):
             errors.append("private state schema must require the bounded decision log")
+        completion_attempt = properties.get("completion_attempt", {})
+        serialized_attempt = json.dumps(completion_attempt, sort_keys=True)
+        for field in ("protocol_version", "staged_control"):
+            if field not in serialized_attempt:
+                errors.append(
+                    f"schema-5 completion attempt must define {field}"
+                )
+        enums = enum_sets(schema)
+        dispositions = set(DISPOSITION_REASONS)
+        if dispositions not in enums:
+            errors.append(
+                "state schema must define the exact four non-completion dispositions"
+            )
+        if set(DISPOSITION_REASONS.values()) not in enums:
+            errors.append("state schema must define the fixed disposition reasons")
+        decision_items = properties.get("decision_log", {}).get("items", {})
+        decision_required = set(decision_items.get("required", []))
+        protocol_fields = {
+            "protocol_version",
+            "decision_source",
+            "declared_disposition",
+            "observed_outcome",
+        }
+        missing_decision_fields = protocol_fields.difference(decision_required)
+        if missing_decision_fields:
+            errors.append(
+                "decision log must require protocol fields: "
+                + ", ".join(sorted(missing_decision_fields))
+            )
+        decision_properties = set(decision_items.get("properties", {}))
+        if {"prompt_text", "reply_text"}.intersection(decision_properties):
+            errors.append("decision log must not define raw prompt or reply text")
         if REPOSITORY not in str(schema.get("$id", "")):
             errors.append("state schema ID must use the public repository")
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"invalid state schema: {exc}")
+
+    try:
+        runtime_text = (root / "scripts" / "context_guard.py").read_text(
+            encoding="utf-8"
+        )
+        runtime_tree = ast.parse(runtime_text)
+        expected_literals = {
+            "SCHEMA_VERSION": SCHEMA_VERSION,
+            "STOP_PROTOCOL_VERSION": STOP_PROTOCOL_VERSION,
+            "CLASSIFIER_VERSION": CLASSIFIER_VERSION,
+            "DISPOSITION_REASONS": DISPOSITION_REASONS,
+        }
+        for name, expected in expected_literals.items():
+            try:
+                actual = assigned_literal(runtime_tree, name)
+            except (TypeError, ValueError) as exc:
+                errors.append(f"runtime protocol constant {name} is invalid: {exc}")
+                continue
+            if actual != expected:
+                errors.append(f"runtime {name} must be {expected!r}")
+        if "stage-disposition" not in runtime_text:
+            errors.append("runtime must expose the private stage-disposition CLI")
+        if "staged_control" not in runtime_text:
+            errors.append("runtime must implement the single staged-control slot")
+        for function_name in (
+            "command_stage_checkpoint",
+            "command_stage_disposition",
+        ):
+            if not function_ends_with_success_receipt(
+                runtime_tree, function_name, PRIVATE_SUCCESS_RECEIPT
+            ):
+                errors.append(
+                    f"{function_name} must end successful execution with the "
+                    f"{PRIVATE_SUCCESS_RECEIPT!r} receipt before returning zero"
+                )
+    except (OSError, SyntaxError) as exc:
+        errors.append(f"invalid Context Guard runtime protocol: {exc}")
+
+    try:
+        workflow = (root / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        required_identity_gate = (
+            "fetch-depth: 0",
+            "CONTEXT_GUARD_IDENTITY_BASE:",
+            "CONTEXT_GUARD_IDENTITY_HEAD:",
+            "python scripts/audit_commit_identity.py .",
+        )
+        for fragment in required_identity_gate:
+            if fragment not in workflow:
+                errors.append(f"CI commit-identity gate is missing: {fragment}")
+    except OSError as exc:
+        errors.append(f"invalid CI workflow: {exc}")
 
     try:
         icon = root / "assets" / "icon.svg"

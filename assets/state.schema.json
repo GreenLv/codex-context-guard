@@ -25,7 +25,7 @@
     "content_hash"
   ],
   "properties": {
-    "schema_version": {"const": 4},
+    "schema_version": {"const": 5},
     "session": {
       "type": "object",
       "required": ["id", "cwd", "created_at", "updated_at", "ended_at"]
@@ -59,7 +59,63 @@
     "agents": {"type": "array"},
     "open_items": {"type": "array"},
     "compactions": {"type": "array"},
-    "completion_attempt": {"type": ["object", "null"]},
+    "completion_attempt": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": [
+            "protocol_version",
+            "turn_id",
+            "token_sha256",
+            "created_at",
+            "staged_control",
+            "staged_at"
+          ],
+          "properties": {
+            "protocol_version": {"const": "1.0.0"},
+            "turn_id": {"type": "string"},
+            "token_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "created_at": {"type": "string"},
+            "staged_at": {"type": ["string", "null"]},
+            "staged_control": {
+              "oneOf": [
+                {"type": "null"},
+                {
+                  "type": "object",
+                  "required": ["kind", "checkpoint"],
+                  "properties": {
+                    "kind": {"const": "checkpoint"},
+                    "checkpoint": {"type": "object"}
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "required": ["kind", "disposition", "reason"],
+                  "properties": {
+                    "kind": {"const": "disposition"},
+                    "disposition": {
+                      "enum": ["continue", "user_wait", "external_wait", "deferred"]
+                    },
+                    "reason": {
+                      "enum": [
+                        "assistant_work_remains",
+                        "user_action_required",
+                        "external_dependency",
+                        "denied_or_out_of_scope"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "completion_checkpoint": {"type": ["object", "null"]},
     "continuation_attempts": {"type": "integer", "minimum": 0, "maximum": 2},
     "decision_log": {
@@ -71,6 +127,10 @@
         "required": [
           "created_at",
           "turn_id",
+          "protocol_version",
+          "decision_source",
+          "declared_disposition",
+          "observed_outcome",
           "classifier_version",
           "outcome",
           "reason_codes",
@@ -81,6 +141,33 @@
         "properties": {
           "created_at": {"type": "string"},
           "turn_id": {"type": "string"},
+          "protocol_version": {"type": ["string", "null"]},
+          "decision_source": {
+            "enum": [
+              "protocol_checkpoint",
+              "protocol_disposition",
+              "nlp_hard_gate",
+              "nlp_diagnostic",
+              "legacy_classifier",
+              "checkpoint",
+              "integrity"
+            ]
+          },
+          "declared_disposition": {
+            "enum": [null, "complete", "continue", "user_wait", "external_wait", "deferred"]
+          },
+          "observed_outcome": {
+            "enum": [
+              "allow_neutral",
+              "allow_user_handoff",
+              "allow_external_wait",
+              "allow_out_of_scope_deferred",
+              "gate_completion_claim",
+              "gate_authorized_remaining_work",
+              "consume_checkpoint",
+              "fail_closed_integrity"
+            ]
+          },
           "classifier_version": {"type": "string"},
           "outcome": {
             "enum": [
