@@ -281,6 +281,20 @@ python3 scripts/smoke_installed.py
 Read [Successor Pack Input](skills/context-guard/references/successor-pack.md)
 before using `rollover`.
 
+## Observed token overhead
+
+Context Guard adds prompt and recovery context to protected tasks. In a small,
+anonymized sample of five completed, tool-heavy desktop tasks using 0.6.1,
+direct Hook/recovery context represented about **1.4%** of total tokens; including
+plugin-triggered status checks brought the weighted observation to about
+**1.5%**. Individual observations were roughly **0.2%–2.1%**, so **about 1%–2%**
+is a useful order-of-magnitude estimate for similar long-running work, not a
+guaranteed rate.
+
+The share varies with compaction frequency, ledger size, explicit skill loading,
+and tool-call density. Token share is also not the same as cost share because
+cached input pricing cannot be attributed precisely from local session logs.
+
 ## Private data and retention
 
 Plugin runtime data is written under Codex-managed `PLUGIN_DATA`. The direct

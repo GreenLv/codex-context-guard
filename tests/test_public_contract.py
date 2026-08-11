@@ -64,6 +64,11 @@ class PublicContractTests(unittest.TestCase):
             self.assertIn(term, english)
             self.assertIn(term, chinese)
 
+        self.assertIn("## Observed token overhead", english)
+        self.assertIn("about 1%–2%", english)
+        self.assertIn("## 实测 token 开销", chinese)
+        self.assertIn("约 1%–2%", chinese)
+
         architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(
             encoding="utf-8"
         )
