@@ -112,6 +112,28 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertNotIn("README.md", manifest)
         self.assertNotIn(".git/config", manifest)
 
+    def test_fresh_install_removes_worktree_git_pointer_before_archive(self) -> None:
+        self.write_source("0.1.2")
+        (self.source_root / ".git").write_text(
+            "gitdir: /private/source/worktrees/candidate\n",
+            encoding="utf-8",
+        )
+
+        self.assertTrue(self.ensure())
+
+        self.assertFalse((self.cache_root / "0.1.2" / ".git").exists())
+        self.assertFalse((self.archive_root / "0.1.2" / ".git").exists())
+
+    def test_read_only_audit_rejects_embedded_git_metadata(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        (live / ".git").write_text("unexpected\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "embedded Git metadata"):
+            self.ensure(apply=False)
+
     def test_same_version_first_adoption_archives_verified_current_cache(self) -> None:
         self.write_source("0.1.2")
         live = self.cache_source_as("0.1.2")

@@ -39,6 +39,14 @@ class PublicContractTests(unittest.TestCase):
     def test_public_tree_has_no_private_material(self) -> None:
         self.assertEqual(audit.findings(ROOT), [])
 
+    def test_plugin_package_excludes_clone_and_worktree_git_metadata(self) -> None:
+        patterns = {
+            line.strip()
+            for line in (ROOT / ".codexignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertTrue({".git", ".git/"}.issubset(patterns))
+
     def test_audit_detects_private_material_and_generated_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

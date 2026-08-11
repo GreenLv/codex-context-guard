@@ -137,6 +137,20 @@ def validate(root: Path) -> list[str]:
                 f"publishing material must stay outside the public tree: {relative}"
             )
 
+    codexignore_path = root / ".codexignore"
+    if codexignore_path.is_file():
+        ignored = {
+            line.strip()
+            for line in codexignore_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        for required_pattern in {".git", ".git/"}:
+            if required_pattern not in ignored:
+                errors.append(
+                    ".codexignore must exclude Git metadata as both a worktree "
+                    f"file and clone directory: {required_pattern}"
+                )
+
     try:
         manifest = json.loads(
             (root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
