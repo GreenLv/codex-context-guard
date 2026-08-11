@@ -30,11 +30,11 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > staging failure, so `0.6.0` was not tagged or released. Its installed cache is
 > immutable and its version number is consumed. `0.6.1` changes only the
 > successful private-stage receipt; schema, protocol, classifier, and the exact
-> eight-Hook wire remain unchanged. Native macOS acceptance
-> covers the scoped source/install/archive gates and normally trusted private
-> and public identities without a bypass, including `user_wait`, a completion
-> checkpoint, and manual schema-5 `/compact` recovery. The same bounded native
-> Windows acceptance is also complete. Release automation is verified
+> eight-Hook wire remain unchanged. The 0.6.3 candidate passes scoped native
+> macOS source/install/archive gates and normally trusted private and public
+> identities without a bypass, including `user_wait`, a completion checkpoint,
+> and manual schema-5 `/compact` recovery. Native Windows 0.6.3 acceptance is
+> still required before merge or release. Release automation is verified
 > separately on the exact public commit and tag; CI does not replace either
 > native run.
 

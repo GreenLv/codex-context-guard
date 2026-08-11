@@ -28,10 +28,13 @@ durable ledger is preserved. The 0.6.3 package adds fail-closed cache lifecycle
 repairs for indexed live drift and legacy non-product Git metadata.
 
 The source suites, deterministic 10,000-transition safety lattice, quoted-shell
-regressions, complete sibling parity, isolated installation, and native macOS
-and Windows fresh-Hook runs must pass on frozen commits before 0.6.3 can replace
-0.6.1. Until then all 0.6.3 native and release claims are pending, and CI does
-not substitute for either native platform.
+regressions, complete sibling parity, isolated installation, and scoped native
+macOS fresh-Hook runs pass against the frozen package commits. Normally trusted
+private/public macOS identities, without bypass, each pass `user_wait`,
+completion checkpoint consumption, and manual schema-5 `/compact` recovery;
+installed and isolated source/live/archive lifecycles also pass. Native Windows
+0.6.3 remains mandatory before 0.6.3 can replace 0.6.1, and CI does not
+substitute for that native platform gate.
 
 Version 0.6.2 was installed during candidate acceptance before the final
 manager lifecycle bytes were frozen. Its cache remains immutable; it was never

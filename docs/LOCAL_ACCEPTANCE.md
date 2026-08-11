@@ -4,7 +4,7 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release line is `0.6.1`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.3 candidate acceptance (pending)
+## 0.6.3 candidate acceptance (macOS accepted; Windows pending)
 
 Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains
 classifier 2.0.0 and the exact eight-Hook wire, and makes the legacy
@@ -22,11 +22,31 @@ Ruff 0.16.1, compilation, and isolated first-install/no-op/lifecycle checks.
 
 Version 0.6.2 was consumed by a real candidate installation before the final
 cache-lifecycle manager bytes were frozen; it remains immutable, untagged, and
-unreleased. Native macOS and Windows private/public fresh trusted Hook runs, including the
-terminal-mismatch safe yield, explicit-persistence correction, checkpoint, and
-manual schema-5 compact recovery, remain pending until recorded against exact
-frozen commits. No 0.6.3 merge, tag, or Release is authorized by this candidate
-section.
+unreleased. Frozen 0.6.3 package inputs are private
+`7809c42f65516e14a1f31c59c3ade8d0e2792bff` and public
+`d3df09b0ba92797ca03a26a856b6669c3f52b54c`.
+
+Scoped native macOS acceptance passes against those immutable package trees:
+
+- private validation passes 113 Hook tests with one platform skip, 21 manager
+  tests, the unified validator, export/parity/boundary gates, installed
+  eight-Hook self-test, and lifecycle smoke;
+- public validation passes repository, tracked-tree privacy, four-class parity,
+  commit-identity, Ruff 0.16.1, compilation, installed self-test/lifecycle, and
+  145 tests with one platform skip;
+- default and isolated private/public installs preserve trusted
+  source/live/archive bytes, consumed 0.6.2 caches, upgrade and fresh-install
+  paths, and strict second no-ops; and
+- normally trusted private and public identities, without bypass, each pass
+  real `user_wait`, completion checkpoint consumption, and manual schema-5
+  `/compact` recovery. Both compacted states retain pending requirements with
+  `integrity=ok`, `trigger=manual`, zero continuation attempts, and a native
+  `compacted` rollout event.
+
+Public PR #8 at the public package head passes the nine-job Ubuntu/macOS/Windows
+Python 3.10/3.12/3.13 CI matrix, HOL Plugin Scanner, and plugin-scanner. Native
+Windows 0.6.3 acceptance remains mandatory and is not inferred from CI. No
+0.6.3 merge, tag, or Release is authorized by this candidate section.
 
 ## 0.6.1 native acceptance on macOS (2026-08-11)
 

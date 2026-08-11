@@ -31,8 +31,11 @@ All notable public releases are documented here.
 - The regression suite replays the terminal mismatch class, checks explicit
   persistence separately, covers quoted-search and non-shell-tool boundaries,
   and deterministically exercises 10,000 staged-control transitions and policy
-  states. Native macOS and Windows fresh-runtime acceptance remain release
-  gates for the frozen candidate.
+  states. Scoped native macOS private/public installed and fresh-runtime
+  acceptance passes, including normally trusted `user_wait`, completion
+  checkpoint, and manual schema-5 `/compact` recovery. Public PR #8 at package
+  head `d3df09b0ba92797ca03a26a856b6669c3f52b54c` passes the nine-job CI matrix,
+  HOL Scanner, and plugin-scanner. Native Windows 0.6.3 remains a release gate.
 
 ## 0.6.1 - 2026-08-11
 

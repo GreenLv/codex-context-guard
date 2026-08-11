@@ -26,10 +26,11 @@ worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context
 > fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag
 > 或 Release；其已安装 cache 不可变，版本号已经消耗。`0.6.1` 只修改成功的
 > 私有 stage receipt，schema、protocol、classifier 和八 Hook wire 均不变。
-> macOS 与 Windows 均已通过限定的 source/install/archive 门；
-> private/public identity 均在正常 Hook 信任、无 trust bypass 下通过
-> `user_wait`、completion checkpoint 和手动 schema-5 `/compact` 恢复。
-> 精确公开提交和 tag 的自动化门禁单独验证；CI 不替代任何一次原生验收。
+> 0.6.3 候选已通过限定的 macOS source/install/archive 门；private/public
+> identity 均在正常 Hook 信任、无 trust bypass 下通过 `user_wait`、completion
+> checkpoint 和手动 schema-5 `/compact` 恢复。Windows 0.6.3 原生验收仍是
+> 合并与发布的硬门。精确公开提交和 tag 的自动化门禁单独验证；CI 不替代
+> 任何一次原生验收。
 
 ### 30 秒脱敏 compact/recovery 演示
 
