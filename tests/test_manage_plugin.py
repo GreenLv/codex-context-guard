@@ -134,6 +134,22 @@ class SafePluginInstallTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "embedded Git metadata"):
             self.ensure(apply=False)
 
+    def test_apply_repairs_trusted_live_embedded_git_from_archive(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        (live / ".git").write_text("unexpected\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        installed = self.ensure(apply=True)
+
+        self.assertFalse(installed)
+        self.assertFalse((live / ".git").exists())
+        self.assertEqual(
+            manager.tree_manifest(live),
+            manager.tree_manifest(self.archive_root / "0.1.2"),
+        )
+
     def test_same_version_first_adoption_archives_verified_current_cache(self) -> None:
         self.write_source("0.1.2")
         live = self.cache_source_as("0.1.2")

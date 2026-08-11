@@ -159,9 +159,9 @@ def sanitize_untrusted_current_cache(
     if candidate is None:
         return False
     if version in versions:
-        raise RuntimeError(
-            f"trusted Context Guard cache {version} contains embedded Git metadata"
-        )
+        # A trusted archive, not an in-place deletion, is the repair authority.
+        # audit_cache_archive() will restore this live tree atomically.
+        return False
     if candidate.is_dir() and not candidate.is_symlink():
         shutil.rmtree(candidate)
     else:
@@ -504,22 +504,30 @@ def audit_cache_archive(
         except RuntimeError as exc:
             issues.append(str(exc))
             continue
+        if embedded_git_metadata(archived) is not None:
+            issues.append(f"archive {version} contains embedded Git metadata")
+            continue
         if archive_manifest != expected:
             issues.append(f"archive {version} failed its trusted hash manifest")
             continue
         live = cache_root / version
         live_manifest = tree_manifest(live) if live.is_dir() else {}
-        if live_manifest == expected:
+        live_git_metadata = embedded_git_metadata(live)
+        if live_manifest == expected and live_git_metadata is None:
             continue
         if repair:
             _replace_tree_atomically(archived, live)
-            if tree_manifest(live) != expected:
+            if (
+                tree_manifest(live) != expected
+                or embedded_git_metadata(live) is not None
+            ):
                 issues.append(f"live cache {version} could not be repaired")
             else:
                 repaired.append(version)
         else:
             issues.append(
-                f"live cache {version} is missing or differs from its trusted archive"
+                f"live cache {version} is missing, differs from its trusted archive, "
+                "or contains embedded Git metadata"
             )
     live_dirs = (
         {path.name for path in cache_root.iterdir() if path.is_dir()}
