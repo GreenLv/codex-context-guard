@@ -1,17 +1,17 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source line is an unreleased `0.6.1` candidate;
+Context Guard. The current release line is `0.6.1`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.1 candidate acceptance (macOS, 2026-08-11)
+## 0.6.1 native acceptance on macOS (2026-08-11)
 
 The frozen runtime code inputs are private commit
 `4ddac0d402d0efb520db41fe9cd84152adc560b4` and public commit
 `42a2e57b80a9f36704ba8baf58db9c036615c3d2`. Later documentation-only
 successors do not replace those runtime inputs.
 
-Native macOS candidate acceptance passed the scoped local and fresh-runtime
+Native macOS acceptance passed the scoped local and fresh-runtime
 gates:
 
 - the private runtime passed 107 Hook regressions with one Windows-only skip,
@@ -36,8 +36,8 @@ gates:
 
 The public compact record ended with a manual compaction while retaining its
 pending requirement and acceptance items. Native Windows acceptance is recorded
-separately below. Neither platform claim includes final PR CI/HOL, a tag, or a
-GitHub Release.
+separately below. PR/main/tag automation is verified independently on the exact
+release commit and does not replace either native claim.
 
 ## 0.6.1 native acceptance on Windows (2026-08-11)
 
@@ -74,8 +74,8 @@ logged out and its temporary home removed while the default login and
 configuration remained intact.
 
 The successor-pack symlink skip and a constrained-profile warning are recorded
-as capability evidence, not functional failures. This section does not claim
-final CI/HOL/PR, a tag, or a Release.
+as capability evidence, not functional failures. PR/main/tag automation remains
+a separate release gate rather than native Windows evidence.
 
 The public 0.6.1 branch began at version-only commit
 `180c94c0e86503a09792af5fc04c16df21ca920f`; the private branch began at
@@ -83,7 +83,7 @@ version-only commit `28428743bfebde901b9d7be8e3392bfd5ea824bc`. Neither
 commit contains the complete 0.6.1 runtime candidate or may be used as a frozen
 acceptance SHA.
 
-The candidate contract is:
+The 0.6.1 release contract is:
 
 - plugin `0.6.1`, private state schema 5, Stop protocol 1.0.0, and diagnostic
   classifier 2.0.0;
@@ -106,8 +106,8 @@ The candidate contract is:
   continuation authority; and
 - the exact eight Hook events and their Codex payload shapes remain unchanged.
 
-Before full release acceptance can be recorded, preserve the frozen runtime
-inputs and accepted native evidence while completing the following gates:
+The 0.6.1 release preserves the frozen runtime inputs and accepted native
+evidence through the following gates:
 
 1. preservation of the accepted local suites, migrations, stale-control
    invalidation, mutually exclusive and replaceable controls, all
@@ -119,8 +119,8 @@ inputs and accepted native evidence while completing the following gates:
 3. preservation of the recorded native Windows source, installed, archive, and
    fresh-session evidence, including the explicit disposition of the
    normal-token successor-pack symlink capability; and
-4. final-commit public CI and HOL results, recorded as source automation rather
-   than installed-runtime or native-platform acceptance.
+4. final-commit public PR/main CI and HOL plus tag CI, recorded as source
+   automation rather than installed-runtime or native-platform acceptance.
 
 Requirement-to-evidence semantic relevance is not a 0.6.x acceptance item. It
 remains benchmark-first research for a possible 0.7.0 only after positive,
@@ -338,10 +338,9 @@ zero-dependency runtime. Platform wording remains bounded by
 
 ## Publication gate
 
-No candidate validation authorizes a tag or GitHub Release. Version 0.6.0 is
-consumed, unreleased, untagged, and ineligible for either. A 0.6.1 tag may be
-considered only after the final commit preserves the accepted macOS and Windows
-runtime evidence, passes all remaining local gates, completes remote packaging
-review and the full CI/HOL/PR gates, and receives separate explicit
-authorization. Compatibility wording
-must remain bounded by observed evidence.
+Version 0.6.0 is consumed, unreleased, untagged, and ineligible for a tag or
+GitHub Release. The 0.6.1 tag and Release received explicit authorization on
+2026-08-11. Only the exact final commit that preserves the accepted macOS and
+Windows runtime evidence, passes all local and remote packaging gates, passes
+PR/main CI and HOL, and then passes tag CI may be published. Compatibility
+wording must remain bounded by observed evidence.

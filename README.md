@@ -17,18 +17,19 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Source status: `0.6.1` is an unreleased candidate. The `0.6.0` candidate
+> Release status: `0.6.1` is the current release. The `0.6.0` candidate
 > introduced state schema 5, Stop protocol 1.0.0, and diagnostic classifier
 > 2.0.0, but a normally trusted fresh Codex Code Mode run exposed a raw-stdout
 > staging failure, so `0.6.0` was not tagged or released. Its installed cache is
 > immutable and its version number is consumed. `0.6.1` changes only the
 > successful private-stage receipt; schema, protocol, classifier, and the exact
-> eight-Hook wire remain unchanged. Native macOS candidate acceptance now
+> eight-Hook wire remain unchanged. Native macOS acceptance
 > covers the scoped source/install/archive gates and normally trusted private
 > and public identities without a bypass, including `user_wait`, a completion
 > checkpoint, and manual schema-5 `/compact` recovery. The same bounded native
-> Windows acceptance is also complete. Final CI, HOL, and PR gates remain
-> pending; `0.6.1` remains unreleased.
+> Windows acceptance is also complete. Release automation is verified
+> separately on the exact public commit and tag; CI does not replace either
+> native run.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -352,10 +353,11 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 [Compatibility](docs/COMPATIBILITY.md).
 
 Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.1
-candidate has passed the scoped native macOS and Windows source/install/archive
+release has passed the scoped native macOS and Windows source/install/archive
 gates and normally trusted, no-bypass private/public runs for `user_wait`,
-completion checkpoint, and manual schema-5 `/compact` recovery. Final CI, HOL,
-and PR gates remain pending; CI is not a native-runtime substitute.
+completion checkpoint, and manual schema-5 `/compact` recovery. The exact
+release commit is gated by PR/main CI, HOL, and tag CI; CI is not a
+native-runtime substitute.
 The unreleased, consumed 0.6.0 candidate failed its real Code Mode fresh gate
 and must not be tagged or patched in place. See
 [Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the evidence boundary.

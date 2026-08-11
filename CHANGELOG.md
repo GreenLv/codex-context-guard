@@ -4,14 +4,16 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+## 0.6.1 - 2026-08-11
+
 ### Added
 
-- The 0.6.x candidate line is a protocol-first turn-control minor. State schema
+- The 0.6.x line is a protocol-first turn-control minor. State schema
   5 adds one turn-bound `completion_attempt.staged_control` slot for either a
   verified completion checkpoint or one non-completion disposition:
   `continue`, `user_wait`, `external_wait`, or `deferred`. This contract was
   first implemented in the unreleased 0.6.0 candidate and is carried forward
-  unchanged by the 0.6.1 candidate.
+  unchanged by the 0.6.1 release.
 - The private `stage-disposition` command preflights a typed disposition. The
   existing `PostToolUse` Hook remains the only authoritative writer after it
   verifies the exact command, data directory, session, turn, private token,
@@ -20,14 +22,14 @@ All notable public releases are documented here.
 - Stop protocol 1.0.0 and classifier 2.0.0 diagnostics record the decision
   source, declared disposition, observed outcome, bounded reason/action enums,
   and prompt/reply hashes without retaining raw reply text.
-- Public candidate validation now audits every PR or push commit's author and
+- Public release validation now audits every PR or push commit's author and
   committer for a GitHub noreply identity. Rejected values stay redacted so a
   misconfigured Windows clone cannot leak a personal email into CI logs while
   failing the release gate.
 
 ### Fixed
 
-- The 0.6.1 candidate adds a final standalone `Script completed` receipt after
+- The 0.6.1 release adds a final standalone `Script completed` receipt after
   each successful private `stage-checkpoint` or `stage-disposition` precheck.
   This lets a real Code Mode `PostToolUse` raw-stdout response establish the
   same successful outcome as a structured success response.
@@ -69,14 +71,14 @@ All notable public releases are documented here.
   exit status; the generic outcome remained unknown and two valid disposition
   staging attempts failed closed. Because 0.6.0 had already been installed, its
   cache bytes are immutable and its version number is consumed.
-- Version 0.6.1 remains unreleased. Native macOS and Windows
-  source, source/live/archive parity, installed lifecycle, and Context Guard
-  doctor subchecks pass. Normally trusted private and public identities,
+- Version 0.6.1 passed native macOS and Windows acceptance. Source/live/archive
+  parity, installed lifecycle, and Context Guard doctor subchecks pass.
+  Normally trusted private and public identities,
   without a bypass, also pass `user_wait`, completion checkpoint, and manual
-  schema-5 `/compact` recovery. The final candidate CI, HOL, and PR gates passed
-  and the candidate was merged to `main`; no 0.6.1 tag or GitHub Release has
-  been created. CI is source-level automation and is not installed-runtime or
-  native-platform acceptance. No 0.6.0 tag may be created.
+  schema-5 `/compact` recovery. Publication is gated on the exact release
+  commit passing PR/main CI and HOL plus tag CI. These checks are source-level
+  automation, not installed-runtime or native-platform acceptance. No 0.6.0
+  tag may be created.
 
 ## 0.5.1 - 2026-08-10
 

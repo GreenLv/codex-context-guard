@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Context Guard plugin candidate: `0.6.1` (unreleased)
+- Current Context Guard release: `0.6.1`
 - Private state schema: `5`
 - Stop protocol: `1.0.0`
 - Diagnostic classifier: `2.0.0`
@@ -16,18 +16,18 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.6.1 candidate status
+## 0.6.1 release status
 
 | Platform | Source automation | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | local validation passed against frozen private/public runtime inputs | private source/live/archive and installed lifecycle pass; isolated public first-install/archive/no-op/lifecycle and all Context Guard doctor subchecks pass | normally trusted private and public identities, without bypass, pass `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery | scoped native macOS candidate acceptance; final CI/HOL/PR gates remain pending |
-| Windows | private Hook runtime 107 tests pass with one capability-aware successor-pack symlink skip; manager 16, public-export 3 with one capability skip, parity 5, and four-class share-boundary 20 with one capability skip pass; public validation, privacy audit, Ruff 0.16.1, in-memory compile, and 128 tests pass with one capability-aware symlink skip | frozen private/public runtime inputs match; private source/live/archive, lifecycle, self-test, and strict no-op pass; an isolated 0.5.1 -> 0.6.0 -> 0.6.1 archive/index/lifecycle chain and direct private/public doctor subchecks pass | normally trusted private/public identities with the exact eight-Hook wire each passed raw-receipt `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery; isolated standard-browser OAuth was logged out and cleaned up; no project writes or continuation occurred | scoped native Windows candidate acceptance with one OS-token capability skip; final CI/HOL/PR gates remain pending |
+| macOS | local validation passed against frozen private/public runtime inputs | private source/live/archive and installed lifecycle pass; isolated public first-install/archive/no-op/lifecycle and all Context Guard doctor subchecks pass | normally trusted private and public identities, without bypass, pass `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery | scoped native macOS acceptance; release-source and tag automation are tracked separately |
+| Windows | private Hook runtime 107 tests pass with one capability-aware successor-pack symlink skip; manager 16, public-export 3 with one capability skip, parity 5, and four-class share-boundary 20 with one capability skip pass; public validation, privacy audit, Ruff 0.16.1, in-memory compile, and 128 tests pass with one capability-aware symlink skip | frozen private/public runtime inputs match; private source/live/archive, lifecycle, self-test, and strict no-op pass; an isolated 0.5.1 -> 0.6.0 -> 0.6.1 archive/index/lifecycle chain and direct private/public doctor subchecks pass | normally trusted private/public identities with the exact eight-Hook wire each passed raw-receipt `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery; isolated standard-browser OAuth was logged out and cleaned up; no project writes or continuation occurred | scoped native Windows acceptance with one OS-token capability skip; release-source and tag automation are tracked separately |
 | Linux | per-commit public CI is the automated source gate | not yet validated by CI or a native Linux run | not claimed | source CI only; installed lifecycle and native desktop behavior are not claimed |
 
 CI runners validate source behavior and packaging contracts. They do not prove
 an installed cache, persisted Hook trust, real `/compact`, or native endpoint
 behavior on macOS, Windows, or Linux. The macOS and Windows rows record bounded
-candidate evidence, not final release acceptance. Capability-aware skips remain
+native release evidence. Capability-aware skips remain
 visible rather than being silently upgraded into platform support claims.
 Remaining cells may be upgraded only after the exact frozen private/public
 commits, commands, versions, and results are recorded in `LOCAL_ACCEPTANCE.md`.
@@ -47,8 +47,8 @@ That failed the real fresh-runtime release gate. The installed 0.6.0 live cache
 and archive remain immutable recovery artifacts: they must not be overwritten,
 deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
 created. Version 0.6.1 adds the final success receipt. The bounded macOS and
-Windows runtime paths above are now accepted; the remaining release gates still
-require new evidence.
+Windows runtime paths above underpin the 0.6.1 release; source and tag
+automation remain separate evidence.
 
 ## Accepted 0.5.1 baseline
 
@@ -61,7 +61,7 @@ require new evidence.
 The historical v0.4.9 and native Windows 0.5.0 evidence also remain in
 `LOCAL_ACCEPTANCE.md`. The accepted 0.5.1 Windows claim is based on a separate
 same-version native run rather than an inference from 0.5.0, macOS, or CI; it
-does not validate the 0.6.x candidate line.
+does not validate the 0.6.1 release line.
 
 Do not change a pending cell to verified without preserving the command, result,
 plugin version, Codex version, and source/cache parity evidence in the release
@@ -106,4 +106,5 @@ Version 0.6.0 is ineligible for a public tag. Before any 0.6.1 tag:
    marketplace copies the fresh repository metadata into its isolated cache;
 7. public CI and HOL pass on the final frozen public commit; and
 8. tag and GitHub Release creation receive separate explicit authorization;
-   neither is authorized by candidate validation alone.
+   that authorization was granted on 2026-08-11 for the exact accepted 0.6.1
+   release commit after all preceding gates pass.
