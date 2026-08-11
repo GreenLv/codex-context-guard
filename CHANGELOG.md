@@ -62,11 +62,13 @@ All notable public releases are documented here.
   exit status; the generic outcome remained unknown and two valid disposition
   staging attempts failed closed. Because 0.6.0 had already been installed, its
   cache bytes are immutable and its version number is consumed.
-- Version 0.6.1 remains an unreleased candidate. Native macOS installed/fresh-
-  trust/compact evidence, native Windows source/installed/fresh evidence, final
-  CI, and HOL must be recorded against frozen commits before any release claim.
-  CI is source-level automation and is not installed-runtime or native-platform
-  acceptance. No 0.6.0 tag may be created.
+- Version 0.6.1 remains an unreleased candidate. Native macOS source,
+  source/live/archive parity, installed lifecycle, and Context Guard doctor
+  subchecks pass. Normally trusted private and public identities, without a
+  bypass, also pass `user_wait`, completion checkpoint, and manual schema-5
+  `/compact` recovery. Native Windows acceptance and final CI, HOL, and PR
+  gates remain pending. CI is source-level automation and is not
+  installed-runtime or native-platform acceptance. No 0.6.0 tag may be created.
 
 ## 0.5.1 - 2026-08-10
 

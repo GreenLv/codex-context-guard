@@ -20,15 +20,16 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Source automation | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | candidate validation must be recorded against the frozen public/private commits | pending against an immutable 0.6.1 cache | pending, including raw-receipt dispositions and real compact/resume recovery | unreleased source candidate only; the failed 0.6.0 fresh run is not 0.6.1 acceptance |
+| macOS | local validation passed against frozen private/public runtime inputs | private source/live/archive and installed lifecycle pass; isolated public first-install/archive/no-op/lifecycle and all Context Guard doctor subchecks pass | normally trusted private and public identities, without bypass, pass `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery | scoped native macOS candidate acceptance; final CI/HOL/PR and native Windows gates remain pending |
 | Windows | public CI may exercise the source tree after the candidate is frozen | pending native source/install/archive/doctor run | pending normal Hook trust, raw-receipt disposition/checkpoint matrix, and real compact/resume run | native 0.6.1 evidence is pending; accepted 0.5.1 evidence cannot be carried forward |
 | Linux | per-commit public CI is the automated source gate | not yet validated by CI or a native Linux run | not claimed | source CI only; installed lifecycle and native desktop behavior are not claimed |
 
 CI runners validate source behavior and packaging contracts. They do not prove
 an installed cache, persisted Hook trust, real `/compact`, or native endpoint
-behavior on macOS, Windows, or Linux. The 0.6.1 rows may be upgraded only after
-the exact frozen private/public commits, commands, versions, and results are
-recorded in `LOCAL_ACCEPTANCE.md`.
+behavior on macOS, Windows, or Linux. The macOS row records bounded candidate
+evidence, not final release acceptance. Remaining cells may be upgraded only
+after the exact frozen private/public commits, commands, versions, and results
+are recorded in `LOCAL_ACCEPTANCE.md`.
 
 ## Consumed 0.6.0 candidate
 
@@ -44,8 +45,9 @@ completion.
 That failed the real fresh-runtime release gate. The installed 0.6.0 live cache
 and archive remain immutable recovery artifacts: they must not be overwritten,
 deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
-created. Version 0.6.1 adds the final success receipt and requires a new native
-acceptance run.
+created. Version 0.6.1 adds the final success receipt. The bounded macOS runtime
+paths above are now accepted; native Windows and the remaining release gates
+still require new evidence.
 
 ## Accepted 0.5.1 baseline
 
@@ -92,10 +94,13 @@ Version 0.6.0 is ineligible for a public tag. Before any 0.6.1 tag:
 4. the isolated installed lifecycle smoke passes against a new 0.6.1 cache
    while all 0.5.x and 0.6.0 live/archive trees remain intact, including a
    second strict no-op run;
-5. macOS and native Windows source, installed, fresh-trust, disposition, doctor,
-   archive, raw-receipt checkpoint, and real compact/resume evidence are
-   recorded separately; bare-marker and failure-first negative cases remain
-   rejected, and CI is not substituted for either native run;
+5. the accepted macOS source/install/archive, private/public trust,
+   `user_wait`, checkpoint, and manual compact/recovery evidence is preserved;
+   the complete native Windows source, installed, fresh-trust, disposition,
+   doctor, archive, raw-receipt checkpoint, and real compact/resume evidence is
+   recorded separately;
+   bare-marker and failure-first negative cases remain rejected, and CI is not
+   substituted for either native run;
 6. remote Git marketplace packaging is checked because the root-level
    marketplace copies the fresh repository metadata into its isolated cache;
 7. public CI and HOL pass on the final frozen public commit; and

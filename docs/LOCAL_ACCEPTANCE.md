@@ -4,11 +4,42 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current source line is an unreleased `0.6.1` candidate;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.1 candidate acceptance (pending)
+## 0.6.1 candidate acceptance (macOS, 2026-08-11)
 
-No 0.6.1 acceptance result, final test count, frozen acceptance SHA, tag, or
-GitHub Release is claimed here. The public 0.6.1 branch began at version-only
-commit `180c94c0e86503a09792af5fc04c16df21ca920f`; the private branch began at
+The frozen runtime code inputs are private commit
+`4ddac0d402d0efb520db41fe9cd84152adc560b4` and public commit
+`42a2e57b80a9f36704ba8baf58db9c036615c3d2`. Later documentation-only
+successors do not replace those runtime inputs.
+
+Native macOS candidate acceptance passed the scoped local and fresh-runtime
+gates:
+
+- the private runtime passed 107 Hook regressions with one Windows-only skip,
+  16 manager regressions, three public-export regressions, five parity
+  regressions, the unified skill validator, and the complete four-class share
+  boundary;
+- the public product passed repository validation, tracked-tree privacy audit,
+  complete boundary/parity validation, Ruff 0.16.1, in-memory compilation, and
+  128 tests with one Windows-only skip;
+- private 0.6.1 source/live/archive bytes match, the installed private Hook
+  suite, eight-Hook self-test, and schema-5 lifecycle smoke pass, and every
+  Context Guard doctor subcheck passes. The current whole private-repository
+  doctor separately reports one unrelated installed-skill drift and one known
+  noninteractive warning;
+- an isolated private 0.5.1 to 0.6.0 to 0.6.1 chain and an isolated public
+  0.6.1 first install both preserved trusted archives, passed lifecycle smoke,
+  and ended in a strict same-version no-op; and
+- normally trusted private and public identities, run without a trust bypass,
+  each passed `user_wait`, a completion checkpoint, and real manual schema-5
+  `/compact` recovery. Base/profile trust remained isolated at eight private
+  versus eight public Hook keys.
+
+The public compact record ended with a manual compaction while retaining its
+pending requirement and acceptance items. This evidence does not claim native
+Windows acceptance, final PR CI/HOL, a tag, or a GitHub Release.
+
+The public 0.6.1 branch began at version-only commit
+`180c94c0e86503a09792af5fc04c16df21ca920f`; the private branch began at
 version-only commit `28428743bfebde901b9d7be8e3392bfd5ea824bc`. Neither
 commit contains the complete 0.6.1 runtime candidate or may be used as a frozen
 acceptance SHA.
@@ -36,24 +67,19 @@ The candidate contract is:
   continuation authority; and
 - the exact eight Hook events and their Codex payload shapes remain unchanged.
 
-Before this section can record acceptance, preserve the exact frozen private
-and public 40-character commit SHAs and attach command/result evidence for:
+Before full release acceptance can be recorded, preserve the frozen runtime
+inputs and attach the remaining command/result evidence for:
 
-1. private and public source suites, repository validation, privacy audit,
-   complete share-boundary coverage, shared-core parity, Ruff, and compilation;
-2. positive, negative, adversarial, bilingual, anti-forgery, migration,
-   disposition/checkpoint-priority, mutual-exclusion/idempotency/replacement,
-   raw-receipt, bare-marker rejection, failure-first, default-yield,
-   two-continuation-cap, and compact-recovery regressions;
-3. an isolated public 0.5.1 to 0.6.0 to 0.6.1 upgrade, strict 0.6.1 no-op
-   rerun, installed lifecycle, and source/cache parity without changing any
-   historical live cache or archive;
-4. native macOS source, installed, archive, doctor, normal fresh Hook trust,
-   real Code Mode raw-receipt disposition/checkpoint, and real manual compact/
-   resume evidence;
-5. the same native Windows evidence against those frozen commits, including
+1. preservation of the accepted local suites, migrations, stale-control
+   invalidation, mutually exclusive and replaceable controls, all
+   disposition/Stop priorities, classifier blind spots, forged/failed control
+   commands, control-evidence isolation, and the bounded continuation cap;
+2. preservation of the accepted isolated upgrade/no-op, installed lifecycle,
+   source/cache/archive, normal-trust, raw-receipt, checkpoint, and compact
+   evidence without changing frozen runtime bytes;
+3. the same native Windows evidence against those frozen commits, including
    installed and archive disposition after the run; and
-6. final-commit public CI and HOL results, recorded as source automation rather
+4. final-commit public CI and HOL results, recorded as source automation rather
    than installed-runtime or native-platform acceptance.
 
 Requirement-to-evidence semantic relevance is not a 0.6.x acceptance item. It
@@ -273,8 +299,9 @@ zero-dependency runtime. Platform wording remains bounded by
 ## Publication gate
 
 No candidate validation authorizes a tag or GitHub Release. Version 0.6.0 is
-ineligible for either. A 0.6.1 tag may be considered only after the final commit
-passes all local gates, native macOS and Windows fresh-runtime acceptance,
-remote packaging review, and the full CI/HOL matrix, and only after separate
-explicit authorization. Compatibility wording must remain bounded by observed
-evidence.
+consumed, unreleased, untagged, and ineligible for either. A 0.6.1 tag may be
+considered only after the final commit preserves the accepted macOS runtime
+evidence, passes all remaining local and macOS gates, completes native Windows
+fresh-runtime acceptance, remote packaging review, and the full CI/HOL/PR
+gates, and receives separate explicit authorization. Compatibility wording
+must remain bounded by observed evidence.

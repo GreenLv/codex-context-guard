@@ -23,8 +23,12 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > staging failure, so `0.6.0` was not tagged or released. Its installed cache is
 > immutable and its version number is consumed. `0.6.1` changes only the
 > successful private-stage receipt; schema, protocol, classifier, and the exact
-> eight-Hook wire remain unchanged. Native 0.6.1 acceptance and release gates
-> remain pending.
+> eight-Hook wire remain unchanged. Native macOS candidate acceptance now
+> covers the scoped source/install/archive gates and normally trusted private
+> and public identities without a bypass, including `user_wait`, a completion
+> checkpoint, and manual schema-5 `/compact` recovery. Native Windows
+> acceptance and final CI, HOL, and PR gates remain pending; `0.6.1` remains
+> unreleased.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -334,9 +338,11 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 [Compatibility](docs/COMPATIBILITY.md).
 
 Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.1
-candidate requires a new source/installed/archive/doctor/fresh-trust/
-raw-receipt/disposition/compact run against the frozen commit; CI is not a
-substitute. The unreleased 0.6.0 candidate failed its real Code Mode fresh gate
+candidate has passed the scoped macOS source/install/archive gates and normally
+trusted, no-bypass private/public runs for `user_wait`, completion checkpoint,
+and manual schema-5 `/compact` recovery. Native Windows acceptance and final
+CI, HOL, and PR gates remain pending; CI is not a native-runtime substitute.
+The unreleased, consumed 0.6.0 candidate failed its real Code Mode fresh gate
 and must not be tagged or patched in place. See
 [Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the evidence boundary.
 
