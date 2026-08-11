@@ -58,6 +58,9 @@ All notable public releases are documented here.
 - The exact eight Hook events and their Codex payload shapes are unchanged.
   Requirement-to-evidence semantic relevance is not implemented in 0.6.x; it
   remains benchmark-first research for a possible 0.7.0 capability.
+- The bilingual README now reports an anonymized, observational token-overhead
+  range so adopters can estimate the order of magnitude without exposing task,
+  account, path, or absolute-usage metadata.
 
 ### Validation status
 
@@ -66,13 +69,14 @@ All notable public releases are documented here.
   exit status; the generic outcome remained unknown and two valid disposition
   staging attempts failed closed. Because 0.6.0 had already been installed, its
   cache bytes are immutable and its version number is consumed.
-- Version 0.6.1 remains an unreleased candidate. Native macOS and Windows
+- Version 0.6.1 remains unreleased. Native macOS and Windows
   source, source/live/archive parity, installed lifecycle, and Context Guard
   doctor subchecks pass. Normally trusted private and public identities,
   without a bypass, also pass `user_wait`, completion checkpoint, and manual
-  schema-5 `/compact` recovery. Final CI, HOL, and PR gates remain pending. CI
-  is source-level automation and is not installed-runtime or native-platform
-  acceptance. No 0.6.0 tag may be created.
+  schema-5 `/compact` recovery. The final candidate CI, HOL, and PR gates passed
+  and the candidate was merged to `main`; no 0.6.1 tag or GitHub Release has
+  been created. CI is source-level automation and is not installed-runtime or
+  native-platform acceptance. No 0.6.0 tag may be created.
 
 ## 0.5.1 - 2026-08-10
 

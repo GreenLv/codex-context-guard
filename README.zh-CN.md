@@ -245,6 +245,17 @@ python3 scripts/smoke_installed.py
 使用 `rollover` 前请阅读
 [Successor Pack 输入说明](skills/context-guard/references/successor-pack.md)。
 
+## 实测 token 开销
+
+Context Guard 会向受保护任务注入提示和恢复上下文。在一组经过匿名化的 5 个已完成、
+工具调用较多的 0.6.1 桌面任务中，Hook/恢复上下文约占总 token 的 **1.4%**；把插件
+触发的状态核对也计入后，加权观测值约为 **1.5%**。单任务观测范围约为
+**0.2%–2.1%**，因此对相似的长任务，可以把 **约 1%–2%** 作为量级参考，而不是
+固定保证值。
+
+实际占比会随 compact 频率、ledger 大小、是否显式加载 skill 以及工具调用密度变化。
+Token 占比也不等于费用占比，因为本地会话日志无法精确归因缓存输入的计费贡献。
+
 ## 私有数据与保留期
 
 插件运行时数据写入 Codex 管理的 `PLUGIN_DATA`。直接 CLI fallback 只用于隔离开发。
