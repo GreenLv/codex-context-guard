@@ -150,6 +150,13 @@ def embedded_git_metadata(root: Path) -> Path | None:
     return candidate if candidate.exists() or candidate.is_symlink() else None
 
 
+def remove_embedded_git_metadata(candidate: Path) -> None:
+    if candidate.is_dir() and not candidate.is_symlink():
+        shutil.rmtree(candidate)
+    else:
+        candidate.unlink()
+
+
 def sanitize_untrusted_current_cache(
     cache_root: Path, archive_root: Path, version: str
 ) -> bool:
@@ -162,10 +169,7 @@ def sanitize_untrusted_current_cache(
         # A trusted archive, not an in-place deletion, is the repair authority.
         # audit_cache_archive() will restore this live tree atomically.
         return False
-    if candidate.is_dir() and not candidate.is_symlink():
-        shutil.rmtree(candidate)
-    else:
-        candidate.unlink()
+    remove_embedded_git_metadata(candidate)
     return True
 
 
@@ -504,12 +508,27 @@ def audit_cache_archive(
         except RuntimeError as exc:
             issues.append(str(exc))
             continue
-        if embedded_git_metadata(archived) is not None:
-            issues.append(f"archive {version} contains embedded Git metadata")
-            continue
         if archive_manifest != expected:
             issues.append(f"archive {version} failed its trusted hash manifest")
             continue
+        archive_git_metadata = embedded_git_metadata(archived)
+        if archive_git_metadata is not None:
+            if not repair:
+                issues.append(f"archive {version} contains embedded Git metadata")
+                continue
+            remove_embedded_git_metadata(archive_git_metadata)
+            if (
+                embedded_git_metadata(archived) is not None
+                or tree_manifest(archived) != expected
+            ):
+                issues.append(
+                    f"archive {version} Git metadata cleanup changed trusted bytes"
+                )
+                continue
+            print(
+                "[OK] removed non-product Git metadata from trusted cache archive: "
+                + version
+            )
         live = cache_root / version
         live_manifest = tree_manifest(live) if live.is_dir() else {}
         live_git_metadata = embedded_git_metadata(live)

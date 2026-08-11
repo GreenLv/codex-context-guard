@@ -150,6 +150,28 @@ class SafePluginInstallTests(unittest.TestCase):
             manager.tree_manifest(self.archive_root / "0.1.2"),
         )
 
+    def test_apply_removes_only_untracked_git_metadata_from_trusted_archive(
+        self,
+    ) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        archived = self.archive_root / "0.1.2"
+        trusted_manifest = manager.tree_manifest(archived)
+        git_config = archived / ".git" / "config"
+        git_config.parent.mkdir()
+        git_config.write_text("repository-only metadata\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "embedded Git metadata"):
+            self.ensure(apply=False)
+        installed = self.ensure(apply=True)
+
+        self.assertFalse(installed)
+        self.assertFalse((archived / ".git").exists())
+        self.assertEqual(manager.tree_manifest(archived), trusted_manifest)
+        self.assertEqual(manager.tree_manifest(live), trusted_manifest)
+
     def test_same_version_first_adoption_archives_verified_current_cache(self) -> None:
         self.write_source("0.1.2")
         live = self.cache_source_as("0.1.2")
