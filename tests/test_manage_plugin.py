@@ -335,6 +335,36 @@ class SafePluginInstallTests(unittest.TestCase):
             [("plugin", "add", manager.PLUGIN_ID, "--json")],
         )
 
+    def test_upgrade_repairs_old_live_drift_before_archiving(self) -> None:
+        self.write_source("0.1.1", body="trusted old hook\n")
+        old_cache = self.cache_source_as("0.1.1")
+        self.archive_live()
+        (old_cache / "scripts" / "context_guard.py").write_text(
+            "drifted old hook\n", encoding="utf-8"
+        )
+        self.state["version"] = "0.1.1"
+        self.write_source("0.1.2", body="new hook\n")
+
+        installed = self.ensure()
+
+        self.assertFalse(installed)
+        self.assertEqual(
+            (old_cache / "scripts" / "context_guard.py").read_text(
+                encoding="utf-8"
+            ),
+            "trusted old hook\n",
+        )
+        self.assertEqual(
+            manager.tree_manifest(old_cache),
+            manager.tree_manifest(self.archive_root / "0.1.1"),
+        )
+        self.assertEqual(
+            (self.cache_root / "0.1.2" / "scripts" / "context_guard.py").read_text(
+                encoding="utf-8"
+            ),
+            "new hook\n",
+        )
+
     def test_failed_upgrade_still_restores_old_hook_script(self) -> None:
         self.write_source("0.1.2", body="old hook\n")
         old_cache = self.cache_source_as("0.1.2")

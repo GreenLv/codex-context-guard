@@ -648,10 +648,18 @@ def ensure_plugin(
             if sanitized:
                 print("[OK] removed untrusted embedded Git metadata")
         else:
-            archived = archive_live_versions(cache_root, archive_root)
-            repaired = audit_cache_archive(
-                cache_root, archive_root, repair=True
+            unarchived_live = (
+                {path.name for path in cache_root.iterdir() if path.is_dir()}
+                if cache_root.is_dir()
+                else set()
             )
+            repaired = audit_cache_archive(
+                cache_root,
+                archive_root,
+                repair=True,
+                allow_unarchived=unarchived_live,
+            )
+            archived = archive_live_versions(cache_root, archive_root)
             try:
                 run(codex, "plugin", "add", PLUGIN_ID, "--json")
             except BaseException:
