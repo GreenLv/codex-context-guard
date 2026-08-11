@@ -35,8 +35,47 @@ gates:
   versus eight public Hook keys.
 
 The public compact record ended with a manual compaction while retaining its
-pending requirement and acceptance items. This evidence does not claim native
-Windows acceptance, final PR CI/HOL, a tag, or a GitHub Release.
+pending requirement and acceptance items. Native Windows acceptance is recorded
+separately below. Neither platform claim includes final PR CI/HOL, a tag, or a
+GitHub Release.
+
+## 0.6.1 native acceptance on Windows (2026-08-11)
+
+Windows acceptance used Python 3.12.10 and Codex CLI 0.146.0 against frozen
+private runtime commit `4ddac0d402d0efb520db41fe9cd84152adc560b4`, frozen
+public runtime commit `42a2e57b80a9f36704ba8baf58db9c036615c3d2`, and the
+docs-only public predecessor `c4a85027e01119e22d2a2c96eb08a4304e256cbc`. The
+docs-only predecessor changed no runtime input.
+
+Source validation passed in both repositories. The private Hook suite ran 107
+tests with one capability-aware successor-pack symlink skip under a normal
+Windows token; manager 16, public-export 3 with one capability skip, parity 5,
+and four-class share-boundary 20 with one capability skip also passed. The
+public repository passed its repository validator, privacy audit, Ruff 0.16.1,
+in-memory compile, and 128 tests, of which 127 passed and one successor-pack
+symlink case was skipped for the same OS-token capability boundary.
+
+A disposable trusted-archive sequence exercised 0.5.1 -> frozen 0.6.0 -> 0.6.1
+with matching SHA-256 live/archive/index evidence, installed lifecycle checks,
+and a final strict no-op. The default private 0.6.1 installation preserved the
+existing versioned history, did not fabricate a real 0.6.0 installation, and
+passed source/live/archive parity, self-test, lifecycle, and no-op checks.
+Direct doctor results were `17 ok / 1 idle / 2 notes / 0 warn / 0 fail` for the
+private installation and `17 ok / 1 idle / 1 note / 0 warn / 0 fail` for the
+isolated public installation.
+
+Fresh private and public identities each ran the exact eight-Hook wire with
+normal trust and no bypass. Both paths passed a raw-receipt `user_wait`, a
+completion checkpoint, and manual schema-5 `/compact` recovery with
+`integrity.status = ok`, zero recorded continuation, and no project writes.
+Because the device-code beta setting was unavailable in the web UI, the public
+identity used the standard browser OAuth flow; that isolated identity was then
+logged out and its temporary home removed while the default login and
+configuration remained intact.
+
+The successor-pack symlink skip and a constrained-profile warning are recorded
+as capability evidence, not functional failures. This section does not claim
+final CI/HOL/PR, a tag, or a Release.
 
 The public 0.6.1 branch began at version-only commit
 `180c94c0e86503a09792af5fc04c16df21ca920f`; the private branch began at
@@ -68,7 +107,7 @@ The candidate contract is:
 - the exact eight Hook events and their Codex payload shapes remain unchanged.
 
 Before full release acceptance can be recorded, preserve the frozen runtime
-inputs and attach the remaining command/result evidence for:
+inputs and accepted native evidence while completing the following gates:
 
 1. preservation of the accepted local suites, migrations, stale-control
    invalidation, mutually exclusive and replaceable controls, all
@@ -77,8 +116,9 @@ inputs and attach the remaining command/result evidence for:
 2. preservation of the accepted isolated upgrade/no-op, installed lifecycle,
    source/cache/archive, normal-trust, raw-receipt, checkpoint, and compact
    evidence without changing frozen runtime bytes;
-3. the same native Windows evidence against those frozen commits, including
-   installed and archive disposition after the run; and
+3. preservation of the recorded native Windows source, installed, archive, and
+   fresh-session evidence, including the explicit disposition of the
+   normal-token successor-pack symlink capability; and
 4. final-commit public CI and HOL results, recorded as source automation rather
    than installed-runtime or native-platform acceptance.
 
@@ -300,8 +340,8 @@ zero-dependency runtime. Platform wording remains bounded by
 
 No candidate validation authorizes a tag or GitHub Release. Version 0.6.0 is
 consumed, unreleased, untagged, and ineligible for either. A 0.6.1 tag may be
-considered only after the final commit preserves the accepted macOS runtime
-evidence, passes all remaining local and macOS gates, completes native Windows
-fresh-runtime acceptance, remote packaging review, and the full CI/HOL/PR
-gates, and receives separate explicit authorization. Compatibility wording
+considered only after the final commit preserves the accepted macOS and Windows
+runtime evidence, passes all remaining local gates, completes remote packaging
+review and the full CI/HOL/PR gates, and receives separate explicit
+authorization. Compatibility wording
 must remain bounded by observed evidence.

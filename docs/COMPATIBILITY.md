@@ -20,16 +20,17 @@ behavior may change in future Codex releases and must be revalidated.
 
 | Platform | Source automation | Installed lifecycle | Fresh trusted Hook runtime | Current claim |
 | --- | --- | --- | --- | --- |
-| macOS | local validation passed against frozen private/public runtime inputs | private source/live/archive and installed lifecycle pass; isolated public first-install/archive/no-op/lifecycle and all Context Guard doctor subchecks pass | normally trusted private and public identities, without bypass, pass `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery | scoped native macOS candidate acceptance; final CI/HOL/PR and native Windows gates remain pending |
-| Windows | public CI may exercise the source tree after the candidate is frozen | pending native source/install/archive/doctor run | pending normal Hook trust, raw-receipt disposition/checkpoint matrix, and real compact/resume run | native 0.6.1 evidence is pending; accepted 0.5.1 evidence cannot be carried forward |
+| macOS | local validation passed against frozen private/public runtime inputs | private source/live/archive and installed lifecycle pass; isolated public first-install/archive/no-op/lifecycle and all Context Guard doctor subchecks pass | normally trusted private and public identities, without bypass, pass `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery | scoped native macOS candidate acceptance; final CI/HOL/PR gates remain pending |
+| Windows | private Hook runtime 107 tests pass with one capability-aware successor-pack symlink skip; manager 16, public-export 3 with one capability skip, parity 5, and four-class share-boundary 20 with one capability skip pass; public validation, privacy audit, Ruff 0.16.1, in-memory compile, and 128 tests pass with one capability-aware symlink skip | frozen private/public runtime inputs match; private source/live/archive, lifecycle, self-test, and strict no-op pass; an isolated 0.5.1 -> 0.6.0 -> 0.6.1 archive/index/lifecycle chain and direct private/public doctor subchecks pass | normally trusted private/public identities with the exact eight-Hook wire each passed raw-receipt `user_wait`, completion checkpoint, and manual schema-5 `/compact` recovery; isolated standard-browser OAuth was logged out and cleaned up; no project writes or continuation occurred | scoped native Windows candidate acceptance with one OS-token capability skip; final CI/HOL/PR gates remain pending |
 | Linux | per-commit public CI is the automated source gate | not yet validated by CI or a native Linux run | not claimed | source CI only; installed lifecycle and native desktop behavior are not claimed |
 
 CI runners validate source behavior and packaging contracts. They do not prove
 an installed cache, persisted Hook trust, real `/compact`, or native endpoint
-behavior on macOS, Windows, or Linux. The macOS row records bounded candidate
-evidence, not final release acceptance. Remaining cells may be upgraded only
-after the exact frozen private/public commits, commands, versions, and results
-are recorded in `LOCAL_ACCEPTANCE.md`.
+behavior on macOS, Windows, or Linux. The macOS and Windows rows record bounded
+candidate evidence, not final release acceptance. Capability-aware skips remain
+visible rather than being silently upgraded into platform support claims.
+Remaining cells may be upgraded only after the exact frozen private/public
+commits, commands, versions, and results are recorded in `LOCAL_ACCEPTANCE.md`.
 
 ## Consumed 0.6.0 candidate
 
@@ -45,9 +46,9 @@ completion.
 That failed the real fresh-runtime release gate. The installed 0.6.0 live cache
 and archive remain immutable recovery artifacts: they must not be overwritten,
 deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
-created. Version 0.6.1 adds the final success receipt. The bounded macOS runtime
-paths above are now accepted; native Windows and the remaining release gates
-still require new evidence.
+created. Version 0.6.1 adds the final success receipt. The bounded macOS and
+Windows runtime paths above are now accepted; the remaining release gates still
+require new evidence.
 
 ## Accepted 0.5.1 baseline
 

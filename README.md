@@ -26,9 +26,9 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > eight-Hook wire remain unchanged. Native macOS candidate acceptance now
 > covers the scoped source/install/archive gates and normally trusted private
 > and public identities without a bypass, including `user_wait`, a completion
-> checkpoint, and manual schema-5 `/compact` recovery. Native Windows
-> acceptance and final CI, HOL, and PR gates remain pending; `0.6.1` remains
-> unreleased.
+> checkpoint, and manual schema-5 `/compact` recovery. The same bounded native
+> Windows acceptance is also complete. Final CI, HOL, and PR gates remain
+> pending; `0.6.1` remains unreleased.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -338,10 +338,10 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 [Compatibility](docs/COMPATIBILITY.md).
 
 Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.1
-candidate has passed the scoped macOS source/install/archive gates and normally
-trusted, no-bypass private/public runs for `user_wait`, completion checkpoint,
-and manual schema-5 `/compact` recovery. Native Windows acceptance and final
-CI, HOL, and PR gates remain pending; CI is not a native-runtime substitute.
+candidate has passed the scoped native macOS and Windows source/install/archive
+gates and normally trusted, no-bypass private/public runs for `user_wait`,
+completion checkpoint, and manual schema-5 `/compact` recovery. Final CI, HOL,
+and PR gates remain pending; CI is not a native-runtime substitute.
 The unreleased, consumed 0.6.0 candidate failed its real Code Mode fresh gate
 and must not be tagged or patched in place. See
 [Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the evidence boundary.
