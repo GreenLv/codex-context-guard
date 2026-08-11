@@ -4,7 +4,7 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release line is `0.6.1`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.3 candidate acceptance (macOS accepted; Windows pending)
+## 0.6.3 candidate acceptance (macOS and Windows accepted)
 
 Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains
 classifier 2.0.0 and the exact eight-Hook wire, and makes the legacy
@@ -45,8 +45,15 @@ Scoped native macOS acceptance passes against those immutable package trees:
 
 Public PR #8 at the public package head passes the nine-job Ubuntu/macOS/Windows
 Python 3.10/3.12/3.13 CI matrix, HOL Plugin Scanner, and plugin-scanner. Native
-Windows 0.6.3 acceptance remains mandatory and is not inferred from CI. No
-0.6.3 merge, tag, or Release is authorized by this candidate section.
+Native Windows acceptance independently passes against the same frozen inputs:
+113 private and 145 public tests (one capability-aware symlink skip each),
+manager/export/parity/boundary and public privacy/identity gates, Ruff 0.16.1,
+compilation, installed lifecycle and eight-Hook self-tests, 0.6.1 -> 0.6.2 ->
+0.6.3 repair-before-archive chains, and strict second no-ops. Normally trusted
+private/public identities pass legacy continue, `user_wait`, completion,
+explicit persistence, malformed-control isolation, and manual schema-5
+`/compact` recovery. CI did not substitute for these native checks. No 0.6.3
+merge, tag, or Release is authorized by this candidate section.
 
 ## 0.6.1 native acceptance on macOS (2026-08-11)
 

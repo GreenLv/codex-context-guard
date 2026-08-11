@@ -31,10 +31,10 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > immutable and its version number is consumed. `0.6.1` changes only the
 > successful private-stage receipt; schema, protocol, classifier, and the exact
 > eight-Hook wire remain unchanged. The 0.6.3 candidate passes scoped native
-> macOS source/install/archive gates and normally trusted private and public
+> macOS and Windows source/install/archive gates and normally trusted private and public
 > identities without a bypass, including `user_wait`, a completion checkpoint,
-> and manual schema-5 `/compact` recovery. Native Windows 0.6.3 acceptance is
-> still required before merge or release. Release automation is verified
+> and manual schema-5 `/compact` recovery. Merge and release remain separate
+> unauthorized actions. Release automation is verified
 > separately on the exact public commit and tag; CI does not replace either
 > native run.
 

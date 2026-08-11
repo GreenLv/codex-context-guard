@@ -35,7 +35,10 @@ All notable public releases are documented here.
   acceptance passes, including normally trusted `user_wait`, completion
   checkpoint, and manual schema-5 `/compact` recovery. Public PR #8 at package
   head `d3df09b0ba92797ca03a26a856b6669c3f52b54c` passes the nine-job CI matrix,
-  HOL Scanner, and plugin-scanner. Native Windows 0.6.3 remains a release gate.
+  HOL Scanner, and plugin-scanner. Native Windows independently passes the
+  frozen private/public source, installed, archive, parity, boundary, lifecycle,
+  normal-trust real-wire, negative-control, doctor, and manual-compaction gates.
+  Merge, tag, and Release remain separate unauthorized actions.
 
 ## 0.6.1 - 2026-08-11
 
