@@ -5,10 +5,10 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current Context Guard release: `0.6.1`
-- Current source candidate: `0.6.3` (unreleased)
+- Current published Context Guard release: `0.6.1`
+- Current source line: `0.6.3` (merged, untagged)
 - Private state schema: `5`
-- Stop protocol: `1.1.0` in the candidate; `1.0.0` in the release
+- Stop protocol: `1.1.0` in the current source; `1.0.0` in the published release
 - Diagnostic classifier: `2.0.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -17,7 +17,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.6.3 candidate status
+## 0.6.3 merged candidate status
 
 The candidate carries the 0.6.2 schema-5 terminal-control policy and private
 control-intent parsing without changing their runtime bytes. Legacy `continue`
@@ -34,7 +34,8 @@ Normally trusted private/public identities, without bypass, pass `user_wait`,
 completion checkpoint consumption, explicit persistence, terminal legacy
 continue, negative controls, and manual schema-5 `/compact` recovery; installed
 and isolated source/live/archive lifecycles also pass. CI did not substitute for
-either native platform gate. Merge, tag, and Release remain separate actions.
+either native platform gate. The candidate is merged into `main`; tag and
+Release remain separate publication actions.
 
 Version 0.6.2 was installed during candidate acceptance before the final
 manager lifecycle bytes were frozen. Its cache remains immutable; it was never

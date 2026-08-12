@@ -1,10 +1,11 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current release line is `0.6.1`;
+Context Guard. The current published release is `0.6.1`; verified source line
+`0.6.3` is merged into `main` but remains untagged and unreleased;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.3 candidate acceptance (macOS and Windows accepted)
+## 0.6.3 candidate acceptance (macOS and Windows accepted; merged, not tagged)
 
 Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains
 classifier 2.0.0 and the exact eight-Hook wire, and makes the legacy
@@ -52,8 +53,10 @@ compilation, installed lifecycle and eight-Hook self-tests, 0.6.1 -> 0.6.2 ->
 0.6.3 repair-before-archive chains, and strict second no-ops. Normally trusted
 private/public identities pass legacy continue, `user_wait`, completion,
 explicit persistence, malformed-control isolation, and manual schema-5
-`/compact` recovery. CI did not substitute for these native checks. No 0.6.3
-merge, tag, or Release is authorized by this candidate section.
+`/compact` recovery. CI did not substitute for these native checks. This
+candidate section did not authorize merge, tag, or Release; after the native
+gate passed, the 0.6.3 code was merged into `main`, while tag and Release
+remain separate publication actions.
 
 ## 0.6.1 native acceptance on macOS (2026-08-11)
 

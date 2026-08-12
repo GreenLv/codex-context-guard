@@ -38,7 +38,8 @@ All notable public releases are documented here.
   HOL Scanner, and plugin-scanner. Native Windows independently passes the
   frozen private/public source, installed, archive, parity, boundary, lifecycle,
   normal-trust real-wire, negative-control, doctor, and manual-compaction gates.
-  Merge, tag, and Release remain separate unauthorized actions.
+  The 0.6.3 code is merged into `main`; tag and GitHub Release remain separate
+  publication actions.
 
 ## 0.6.1 - 2026-08-11
 
