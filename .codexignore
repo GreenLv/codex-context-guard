@@ -1,4 +1,6 @@
 .codex/
+.git
+.git/
 .venv/
 __pycache__/
 *.pyc

@@ -6,8 +6,9 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current Context Guard release: `0.6.1`
+- Current source candidate: `0.6.3` (unreleased)
 - Private state schema: `5`
-- Stop protocol: `1.0.0`
+- Stop protocol: `1.1.0` in the candidate; `1.0.0` in the release
 - Diagnostic classifier: `2.0.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -15,6 +16,29 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.6.3 candidate status
+
+The candidate carries the 0.6.2 schema-5 terminal-control policy and private
+control-intent parsing without changing their runtime bytes. Legacy `continue`
+remains accepted but cannot force a retry; explicit prompt-bound persistence
+and uncheckpointed whole-task completion remain the only correction-turn
+gates. Protocol-1.0.0 in-flight controls are discarded on load while the
+durable ledger is preserved. The 0.6.3 package adds fail-closed cache lifecycle
+repairs for indexed live drift and legacy non-product Git metadata.
+
+The source suites, deterministic 10,000-transition safety lattice, quoted-shell
+regressions, complete sibling parity, isolated installation, and scoped native
+macOS and Windows fresh-Hook runs pass against the frozen package commits.
+Normally trusted private/public identities, without bypass, pass `user_wait`,
+completion checkpoint consumption, explicit persistence, terminal legacy
+continue, negative controls, and manual schema-5 `/compact` recovery; installed
+and isolated source/live/archive lifecycles also pass. CI did not substitute for
+either native platform gate. Merge, tag, and Release remain separate actions.
+
+Version 0.6.2 was installed during candidate acceptance before the final
+manager lifecycle bytes were frozen. Its cache remains immutable; it was never
+tagged or released and is superseded by 0.6.3.
 
 ## 0.6.1 release status
 
@@ -94,7 +118,7 @@ Version 0.6.0 is ineligible for a public tag. Before any 0.6.1 tag:
 3. shared-core parity binds the exact frozen private and public commits;
 4. the isolated installed lifecycle smoke passes against a new 0.6.1 cache
    while all 0.5.x and 0.6.0 live/archive trees remain intact, including a
-   second strict no-op run;
+    second strict no-op run;
 5. the accepted macOS source/install/archive, private/public trust,
    `user_wait`, checkpoint, and manual compact/recovery evidence is preserved;
    the complete native Windows source, installed, fresh-trust, disposition,

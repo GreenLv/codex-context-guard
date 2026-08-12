@@ -112,6 +112,66 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertNotIn("README.md", manifest)
         self.assertNotIn(".git/config", manifest)
 
+    def test_fresh_install_removes_worktree_git_pointer_before_archive(self) -> None:
+        self.write_source("0.1.2")
+        (self.source_root / ".git").write_text(
+            "gitdir: /private/source/worktrees/candidate\n",
+            encoding="utf-8",
+        )
+
+        self.assertTrue(self.ensure())
+
+        self.assertFalse((self.cache_root / "0.1.2" / ".git").exists())
+        self.assertFalse((self.archive_root / "0.1.2" / ".git").exists())
+
+    def test_read_only_audit_rejects_embedded_git_metadata(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        (live / ".git").write_text("unexpected\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "embedded Git metadata"):
+            self.ensure(apply=False)
+
+    def test_apply_repairs_trusted_live_embedded_git_from_archive(self) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        (live / ".git").write_text("unexpected\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        installed = self.ensure(apply=True)
+
+        self.assertFalse(installed)
+        self.assertFalse((live / ".git").exists())
+        self.assertEqual(
+            manager.tree_manifest(live),
+            manager.tree_manifest(self.archive_root / "0.1.2"),
+        )
+
+    def test_apply_removes_only_untracked_git_metadata_from_trusted_archive(
+        self,
+    ) -> None:
+        self.write_source("0.1.2")
+        live = self.cache_source_as("0.1.2")
+        self.archive_live()
+        archived = self.archive_root / "0.1.2"
+        trusted_manifest = manager.tree_manifest(archived)
+        git_config = archived / ".git" / "config"
+        git_config.parent.mkdir()
+        git_config.write_text("repository-only metadata\n", encoding="utf-8")
+        self.state["version"] = "0.1.2"
+
+        with self.assertRaisesRegex(RuntimeError, "embedded Git metadata"):
+            self.ensure(apply=False)
+        installed = self.ensure(apply=True)
+
+        self.assertFalse(installed)
+        self.assertFalse((archived / ".git").exists())
+        self.assertEqual(manager.tree_manifest(archived), trusted_manifest)
+        self.assertEqual(manager.tree_manifest(live), trusted_manifest)
+
     def test_same_version_first_adoption_archives_verified_current_cache(self) -> None:
         self.write_source("0.1.2")
         live = self.cache_source_as("0.1.2")
@@ -311,6 +371,36 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertEqual(
             self.run_calls,
             [("plugin", "add", manager.PLUGIN_ID, "--json")],
+        )
+
+    def test_upgrade_repairs_old_live_drift_before_archiving(self) -> None:
+        self.write_source("0.1.1", body="trusted old hook\n")
+        old_cache = self.cache_source_as("0.1.1")
+        self.archive_live()
+        (old_cache / "scripts" / "context_guard.py").write_text(
+            "drifted old hook\n", encoding="utf-8"
+        )
+        self.state["version"] = "0.1.1"
+        self.write_source("0.1.2", body="new hook\n")
+
+        installed = self.ensure()
+
+        self.assertFalse(installed)
+        self.assertEqual(
+            (old_cache / "scripts" / "context_guard.py").read_text(
+                encoding="utf-8"
+            ),
+            "trusted old hook\n",
+        )
+        self.assertEqual(
+            manager.tree_manifest(old_cache),
+            manager.tree_manifest(self.archive_root / "0.1.1"),
+        )
+        self.assertEqual(
+            (self.cache_root / "0.1.2" / "scripts" / "context_guard.py").read_text(
+                encoding="utf-8"
+            ),
+            "new hook\n",
         )
 
     def test_failed_upgrade_still_restores_old_hook_script(self) -> None:

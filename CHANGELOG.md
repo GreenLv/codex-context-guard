@@ -4,6 +4,42 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Version 0.6.3 keeps state schema 5 and classifier 2.0.0 while advancing the
+  Stop protocol to 1.1.0. The legacy `continue` disposition remains accepted
+  for wire compatibility but is advisory only; it can no longer force another
+  turn after an assistant has already produced a terminal reply.
+- Terminal control is now one-way safe: absent a verified whole-task completion
+  claim or a hash-verified explicit persistence instruction, every disposition
+  mismatch degrades to a safe yield with pending work preserved.
+- Private-control intent detection is limited to recognized shell-execution
+  tools and detects operators only outside quoted literals. Documentation
+  patches and pure `rg`/`grep` searches can mention control subcommands and
+  regex alternation without being misclassified as an attempted control write.
+- Loading a schema-5 state with an in-flight protocol-1.0.0 control invalidates
+  only that ephemeral attempt; prompts, requirements, acceptance items,
+  evidence, and historical decisions remain intact.
+- Cache upgrades now repair every indexed live version from its trusted archive
+  before adopting any unindexed live version. Legacy archive `.git` metadata is
+  removed only after the indexed product manifest matches and remains unchanged;
+  read-only audit still fails closed. Version 0.6.2 was consumed by a real
+  installation before these manager fixes and remains untagged and unreleased.
+
+### Validation
+
+- The regression suite replays the terminal mismatch class, checks explicit
+  persistence separately, covers quoted-search and non-shell-tool boundaries,
+  and deterministically exercises 10,000 staged-control transitions and policy
+  states. Scoped native macOS private/public installed and fresh-runtime
+  acceptance passes, including normally trusted `user_wait`, completion
+  checkpoint, and manual schema-5 `/compact` recovery. Public PR #8 at package
+  head `d3df09b0ba92797ca03a26a856b6669c3f52b54c` passes the nine-job CI matrix,
+  HOL Scanner, and plugin-scanner. Native Windows independently passes the
+  frozen private/public source, installed, archive, parity, boundary, lifecycle,
+  normal-trust real-wire, negative-control, doctor, and manual-compaction gates.
+  Merge, tag, and Release remain separate unauthorized actions.
+
 ## 0.6.1 - 2026-08-11
 
 ### Added

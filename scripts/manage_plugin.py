@@ -20,7 +20,7 @@ MARKETPLACE = "codex-context-guard"
 PLUGIN_NAME = "context-guard"
 PLUGIN_ID = "context-guard@codex-context-guard"
 MINIMUM_CODEX = (0, 146, 0)
-IGNORED_TREE_NAMES = {".DS_Store", "Thumbs.db", "__pycache__"}
+IGNORED_TREE_NAMES = {".DS_Store", ".git", "Thumbs.db", "__pycache__"}
 PLUGIN_TREE_ROOTS: set[str] | None = {".codex-plugin", "assets", "hooks", "scripts", "skills"}
 ARCHIVE_INDEX_NAME = "archive-index.json"
 ARCHIVE_SCHEMA_VERSION = 1
@@ -143,6 +143,44 @@ def cache_archive_root(codex_home: Path) -> Path:
         / MARKETPLACE
         / PLUGIN_NAME
     )
+
+
+def embedded_git_metadata(root: Path) -> Path | None:
+    candidate = root / ".git"
+    return candidate if candidate.exists() or candidate.is_symlink() else None
+
+
+def remove_embedded_git_metadata(candidate: Path) -> None:
+    if candidate.is_dir() and not candidate.is_symlink():
+        shutil.rmtree(candidate)
+    else:
+        candidate.unlink()
+
+
+def sanitize_untrusted_current_cache(
+    cache_root: Path, archive_root: Path, version: str
+) -> bool:
+    """Remove installer-copied Git metadata before the version is trusted."""
+    versions = _archive_index(archive_root)
+    candidate = embedded_git_metadata(cache_root / version)
+    if candidate is None:
+        return False
+    if version in versions:
+        # A trusted archive, not an in-place deletion, is the repair authority.
+        # audit_cache_archive() will restore this live tree atomically.
+        return False
+    remove_embedded_git_metadata(candidate)
+    return True
+
+
+def require_no_embedded_git_metadata(
+    cache_root: Path, archive_root: Path, version: str
+) -> None:
+    for root in (cache_root / version, archive_root / version):
+        if embedded_git_metadata(root) is not None:
+            raise RuntimeError(
+                f"Context Guard cache {version} contains embedded Git metadata"
+            )
 
 
 def tree_manifest(root: Path) -> dict[str, str]:
@@ -473,19 +511,42 @@ def audit_cache_archive(
         if archive_manifest != expected:
             issues.append(f"archive {version} failed its trusted hash manifest")
             continue
+        archive_git_metadata = embedded_git_metadata(archived)
+        if archive_git_metadata is not None:
+            if not repair:
+                issues.append(f"archive {version} contains embedded Git metadata")
+                continue
+            remove_embedded_git_metadata(archive_git_metadata)
+            if (
+                embedded_git_metadata(archived) is not None
+                or tree_manifest(archived) != expected
+            ):
+                issues.append(
+                    f"archive {version} Git metadata cleanup changed trusted bytes"
+                )
+                continue
+            print(
+                "[OK] removed non-product Git metadata from trusted cache archive: "
+                + version
+            )
         live = cache_root / version
         live_manifest = tree_manifest(live) if live.is_dir() else {}
-        if live_manifest == expected:
+        live_git_metadata = embedded_git_metadata(live)
+        if live_manifest == expected and live_git_metadata is None:
             continue
         if repair:
             _replace_tree_atomically(archived, live)
-            if tree_manifest(live) != expected:
+            if (
+                tree_manifest(live) != expected
+                or embedded_git_metadata(live) is not None
+            ):
                 issues.append(f"live cache {version} could not be repaired")
             else:
                 repaired.append(version)
         else:
             issues.append(
-                f"live cache {version} is missing or differs from its trusted archive"
+                f"live cache {version} is missing, differs from its trusted archive, "
+                "or contains embedded Git metadata"
             )
     live_dirs = (
         {path.name for path in cache_root.iterdir() if path.is_dir()}
@@ -517,6 +578,7 @@ def ensure_plugin(
         and entry.get("version") == desired_version
         and not apply
     ):
+        require_no_embedded_git_metadata(cache_root, archive_root, desired_version)
         repaired = audit_cache_archive(
             cache_root, archive_root, repair=apply
         )
@@ -545,6 +607,9 @@ def ensure_plugin(
         with cache_install_lock(cache_root):
             entry = plugin_entry(codex)
             if entry is not None and entry.get("version") == desired_version:
+                sanitized = sanitize_untrusted_current_cache(
+                    cache_root, archive_root, desired_version
+                )
                 archived_current, repaired = archive_verified_current_version(
                     source_root,
                     cache_root,
@@ -561,6 +626,11 @@ def ensure_plugin(
                         "[OK] repaired live Context Guard cache version(s): "
                         + ", ".join(repaired)
                     )
+                if sanitized:
+                    print("[OK] removed untrusted embedded Git metadata")
+                require_no_embedded_git_metadata(
+                    cache_root, archive_root, desired_version
+                )
                 if not entry.get("enabled"):
                     raise RuntimeError(
                         f"plugin {PLUGIN_ID!r} is installed but disabled; "
@@ -583,6 +653,9 @@ def ensure_plugin(
     with cache_install_lock(cache_root):
         entry = plugin_entry(codex)
         if entry is not None and entry.get("version") == desired_version:
+            sanitized = sanitize_untrusted_current_cache(
+                cache_root, archive_root, desired_version
+            )
             archived_current, repaired = archive_verified_current_version(
                 source_root,
                 cache_root,
@@ -599,16 +672,29 @@ def ensure_plugin(
                     "[OK] repaired live Context Guard cache version(s): "
                     + ", ".join(repaired)
                 )
+            if sanitized:
+                print("[OK] removed untrusted embedded Git metadata")
         else:
-            archived = archive_live_versions(cache_root, archive_root)
-            repaired = audit_cache_archive(
-                cache_root, archive_root, repair=True
+            unarchived_live = (
+                {path.name for path in cache_root.iterdir() if path.is_dir()}
+                if cache_root.is_dir()
+                else set()
             )
+            repaired = audit_cache_archive(
+                cache_root,
+                archive_root,
+                repair=True,
+                allow_unarchived=unarchived_live,
+            )
+            archived = archive_live_versions(cache_root, archive_root)
             try:
                 run(codex, "plugin", "add", PLUGIN_ID, "--json")
             except BaseException:
                 audit_cache_archive(cache_root, archive_root, repair=True)
                 raise
+            sanitized = sanitize_untrusted_current_cache(
+                cache_root, archive_root, desired_version
+            )
             repaired.extend(
                 audit_cache_archive(
                     cache_root,
@@ -629,6 +715,8 @@ def ensure_plugin(
                     "[OK] repaired live Context Guard cache version(s): "
                     + ", ".join(dict.fromkeys(repaired))
                 )
+            if sanitized:
+                print("[OK] removed untrusted embedded Git metadata")
         entry = plugin_entry(codex)
 
     if entry is None:
@@ -644,6 +732,7 @@ def ensure_plugin(
         desired_version,
         same_version=False,
     )
+    require_no_embedded_git_metadata(cache_root, archive_root, desired_version)
     if not entry.get("enabled"):
         raise RuntimeError(
             f"plugin {PLUGIN_ID!r} is installed but disabled; apply the shared config"

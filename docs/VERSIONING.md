@@ -28,7 +28,20 @@ not as a measure of code volume.
   failure, nonzero status, or hard failure text takes priority. Schema 5, Stop
   protocol 1.0.0, classifier 2.0.0, the four dispositions, Stop priority, and
   the eight-Hook wire are unchanged.
-- `0.6.x` contains compatible fixes inside schema 5 and Stop protocol 1.0.0.
+- `0.6.2` is a one-way-safety correction inside schema 5. Stop protocol 1.1.0
+  keeps the four-value wire contract but makes legacy `continue` advisory;
+  only verified whole-task completion and hash-verified explicit persistence
+  can request a correction turn. Quote-aware, shell-tool-scoped intent parsing
+  prevents documentation and pure-search text from being mistaken for private
+  control execution. Classifier 2.0.0 and the eight-Hook wire remain unchanged.
+  A real candidate installation consumed this version before the final manager
+  lifecycle bytes were frozen; it remains immutable, untagged, and unreleased.
+- `0.6.3` carries the same schema-5 runtime and Stop protocol 1.1.0 policy while
+  hardening cache lifecycle transactions. Indexed live drift is repaired before
+  unindexed versions are adopted, and legacy archive Git metadata is removed
+  only when the trusted product manifest matches before and after cleanup.
+- `0.6.x` contains compatible fixes inside schema 5 and the Stop 1.x protocol
+  line.
   Installed cache bytes remain immutable: a runtime byte change requires a new
   patch version.
 - Requirement-to-evidence semantic relevance is not a 0.6.x capability. It is

@@ -8,9 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.6.1"
+VERSION = "0.6.3"
 SCHEMA_VERSION = 5
-STOP_PROTOCOL_VERSION = "1.0.0"
+STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
 DISPOSITION_REASONS = {
@@ -137,6 +137,20 @@ def validate(root: Path) -> list[str]:
                 f"publishing material must stay outside the public tree: {relative}"
             )
 
+    codexignore_path = root / ".codexignore"
+    if codexignore_path.is_file():
+        ignored = {
+            line.strip()
+            for line in codexignore_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        for required_pattern in {".git", ".git/"}:
+            if required_pattern not in ignored:
+                errors.append(
+                    ".codexignore must exclude Git metadata as both a worktree "
+                    f"file and clone directory: {required_pattern}"
+                )
+
     try:
         manifest = json.loads(
             (root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
@@ -213,6 +227,10 @@ def validate(root: Path) -> list[str]:
                 errors.append(
                     f"schema-5 completion attempt must define {field}"
                 )
+        if STOP_PROTOCOL_VERSION not in serialized_attempt:
+            errors.append(
+                "schema-5 completion attempt must bind the current Stop protocol"
+            )
         enums = enum_sets(schema)
         dispositions = set(DISPOSITION_REASONS)
         if dispositions not in enums:
@@ -266,6 +284,14 @@ def validate(root: Path) -> list[str]:
             errors.append("runtime must expose the private stage-disposition CLI")
         if "staged_control" not in runtime_text:
             errors.append("runtime must implement the single staged-control slot")
+        for fragment in (
+            "terminal_stop_policy",
+            "protocol_continue_advisory",
+            "tool_is_shell_execution",
+            "shell_control_operator_present",
+        ):
+            if fragment not in runtime_text:
+                errors.append(f"runtime one-way safety contract is missing: {fragment}")
         for function_name in (
             "command_stage_checkpoint",
             "command_stage_disposition",

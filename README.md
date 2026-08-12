@@ -17,17 +17,24 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.6.1` is the current release. The `0.6.0` candidate
+> Release status: `0.6.1` is the current release. `0.6.3` is an unreleased
+> one-way-safety candidate: Stop protocol 1.1.0 makes legacy `continue`
+> advisory, preserves pending work on terminal mismatch, and uses quote-aware
+> shell intent parsing. `0.6.3` also makes cache upgrades repair indexed live
+> drift before archive adoption and removes legacy repository metadata only
+> when the trusted product manifest is unchanged. The installed `0.6.2`
+> package is immutable and was never tagged or released; its version was
+> consumed before those manager lifecycle fixes. The `0.6.0` candidate
 > introduced state schema 5, Stop protocol 1.0.0, and diagnostic classifier
 > 2.0.0, but a normally trusted fresh Codex Code Mode run exposed a raw-stdout
 > staging failure, so `0.6.0` was not tagged or released. Its installed cache is
 > immutable and its version number is consumed. `0.6.1` changes only the
 > successful private-stage receipt; schema, protocol, classifier, and the exact
-> eight-Hook wire remain unchanged. Native macOS acceptance
-> covers the scoped source/install/archive gates and normally trusted private
-> and public identities without a bypass, including `user_wait`, a completion
-> checkpoint, and manual schema-5 `/compact` recovery. The same bounded native
-> Windows acceptance is also complete. Release automation is verified
+> eight-Hook wire remain unchanged. The 0.6.3 candidate passes scoped native
+> macOS and Windows source/install/archive gates and normally trusted private and public
+> identities without a bypass, including `user_wait`, a completion checkpoint,
+> and manual schema-5 `/compact` recovery. Merge and release remain separate
+> unauthorized actions. Release automation is verified
 > separately on the exact public commit and tag; CI does not replace either
 > native run.
 
@@ -77,8 +84,9 @@ Context Guard therefore separates four things:
   and structured failure, nonzero status, or hard failure text takes priority.
   Control commands never become requirement-closing evidence.
 - Yields safely with requirements still pending when no disposition is staged.
-  A verified checkpoint, a staged `continue`, a narrow whole-task completion
-  claim, and explicit user persistence have a fixed Stop priority.
+  A verified checkpoint, a narrow whole-task completion claim, and explicit
+  user persistence retain fixed Stop priority. The legacy `continue` value is
+  accepted for compatibility but is advisory only and cannot force a new turn.
 - Uses natural-language action ownership only as a diagnostic signal. It cannot
   turn an ordinary assistant future, user handoff, external wait, or deferred
   phase into a hard continuation by itself.

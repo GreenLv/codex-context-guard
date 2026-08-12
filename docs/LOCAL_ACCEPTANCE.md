@@ -4,6 +4,57 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release line is `0.6.1`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.6.3 candidate acceptance (macOS and Windows accepted)
+
+Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains
+classifier 2.0.0 and the exact eight-Hook wire, and makes the legacy
+`continue` disposition advisory. The candidate must prove that a terminal
+control mismatch can only yield with pending work preserved; it cannot request
+another turn unless the hash-verified prompt independently activates explicit
+persistence. Private-control detection is also restricted to recognized shell
+execution and quote-aware operator parsing.
+
+Local source evidence must include the complete private/public suites, 10,000
+deterministic control transitions, the historical user-handoff mismatch replay,
+quoted-search and non-shell negative cases, schema-5 protocol-attempt
+invalidation, four-class sibling parity, public privacy/identity validation,
+Ruff 0.16.1, compilation, and isolated first-install/no-op/lifecycle checks.
+
+Version 0.6.2 was consumed by a real candidate installation before the final
+cache-lifecycle manager bytes were frozen; it remains immutable, untagged, and
+unreleased. Frozen 0.6.3 package inputs are private
+`7809c42f65516e14a1f31c59c3ade8d0e2792bff` and public
+`d3df09b0ba92797ca03a26a856b6669c3f52b54c`.
+
+Scoped native macOS acceptance passes against those immutable package trees:
+
+- private validation passes 113 Hook tests with one platform skip, 21 manager
+  tests, the unified validator, export/parity/boundary gates, installed
+  eight-Hook self-test, and lifecycle smoke;
+- public validation passes repository, tracked-tree privacy, four-class parity,
+  commit-identity, Ruff 0.16.1, compilation, installed self-test/lifecycle, and
+  145 tests with one platform skip;
+- default and isolated private/public installs preserve trusted
+  source/live/archive bytes, consumed 0.6.2 caches, upgrade and fresh-install
+  paths, and strict second no-ops; and
+- normally trusted private and public identities, without bypass, each pass
+  real `user_wait`, completion checkpoint consumption, and manual schema-5
+  `/compact` recovery. Both compacted states retain pending requirements with
+  `integrity=ok`, `trigger=manual`, zero continuation attempts, and a native
+  `compacted` rollout event.
+
+Public PR #8 at the public package head passes the nine-job Ubuntu/macOS/Windows
+Python 3.10/3.12/3.13 CI matrix, HOL Plugin Scanner, and plugin-scanner. Native
+Native Windows acceptance independently passes against the same frozen inputs:
+113 private and 145 public tests (one capability-aware symlink skip each),
+manager/export/parity/boundary and public privacy/identity gates, Ruff 0.16.1,
+compilation, installed lifecycle and eight-Hook self-tests, 0.6.1 -> 0.6.2 ->
+0.6.3 repair-before-archive chains, and strict second no-ops. Normally trusted
+private/public identities pass legacy continue, `user_wait`, completion,
+explicit persistence, malformed-control isolation, and manual schema-5
+`/compact` recovery. CI did not substitute for these native checks. No 0.6.3
+merge, tag, or Release is authorized by this candidate section.
+
 ## 0.6.1 native acceptance on macOS (2026-08-11)
 
 The frozen runtime code inputs are private commit

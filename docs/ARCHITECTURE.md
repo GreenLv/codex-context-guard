@@ -40,10 +40,10 @@ sequenceDiagram
     Hooks-->>Codex: Bounded recovery packet as additional context
 
     Codex->>Hooks: Stop at the turn boundary
-    Hooks->>Ledger: Resolve integrity, checkpoint, completion, continue, persistence, wait, then default yield
+    Hooks->>Ledger: Resolve integrity, checkpoint, completion, persistence, then safe terminal yield
     alt Verified checkpoint
         Hooks-->>Codex: Derive complete and allow normal completion
-    else Bounded continuation trigger
+    else Completion or explicit-persistence gate
         Hooks-->>Codex: Continue at most twice or report the blocker
     else Wait, deferred, or default yield
         Hooks-->>Codex: Yield with pending requirements preserved
@@ -123,6 +123,12 @@ checkpoint covering every non-superseded requirement and acceptance item.
 Staging the same control is idempotent, a different control conflicts, and an
 intentional change requires `--replace`.
 
+Stop protocol 1.1.0 treats terminal controls as a one-way safety lattice.
+`user_wait`, `external_wait`, and `deferred` describe safe handoff boundaries.
+The legacy `continue` value remains accepted for protocol compatibility but is
+advisory only: assistant work continues through tool calls before a terminal
+reply, not by forcing a retry after that reply already exists.
+
 The private `stage-checkpoint` and `stage-disposition` CLI commands are
 prechecks, not state-writing authorities. `PostToolUse` is the authoritative
 staging path: it verifies the exact command, expected data directory, session,
@@ -135,7 +141,7 @@ priority over the receipt. A request observed only in assistant text, tool
 input, or an unsuccessful/unmatched tool result cannot stage anything, and no
 control command is recorded as requirement-closing evidence.
 
-Stop protocol 1.0.0 applies this fixed priority:
+Stop protocol 1.1.0 applies this fixed priority:
 
 1. private-state or prompt-boundary integrity failure, leaked private
    checkpoint/disposition metadata, and malformed staged control fail closed;
@@ -143,16 +149,16 @@ Stop protocol 1.0.0 applies this fixed priority:
    consumed as `complete`, while an invalid checkpoint blocks;
 3. a high-confidence whole-task completion claim without a valid checkpoint
    blocks even if a wait or deferred disposition was staged;
-4. staged `continue` requests bounded continuation;
-5. explicit user persistence blocks a terminal yield unless the next priority
+4. explicit user persistence blocks a terminal yield unless the next priority
    establishes a genuine unavailable boundary;
-6. `user_wait` and `external_wait` yield with requirements still pending;
+5. `user_wait` and `external_wait` yield with requirements still pending;
    `deferred` also yields when persistence is absent, or when the hash-verified
    prompt denies or excludes the specific action identified as deferred; and
-7. with no staged control and no earlier trigger, Stop yields safely and leaves
-   every unresolved requirement pending.
+6. legacy `continue`, no staged control, or a terminal-control mismatch yields
+   safely and leaves every unresolved requirement pending.
 
-Continuation is capped at two correction turns. Classifier 2.0.0 records the
+Completion and explicit-persistence corrections are capped at two turns.
+Classifier 2.0.0 records the
 observed natural-language outcome, action facts, and anomalies for diagnosis;
 inferred action ownership no longer drives ordinary continuation. Only the
 narrow high-confidence whole-task-completion and explicit-persistence checks
@@ -169,7 +175,7 @@ hash-verified prompt record; an ambiguous prompt boundary fails closed.
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
 | `SubagentStop` | record bounded result envelope | warnings only when needed |
-| `Stop` | apply the fixed integrity/checkpoint/completion/continue/persistence/wait/default-yield priority | continuation only when required |
+| `Stop` | apply integrity/checkpoint/completion/persistence and one-way-safe terminal-yield priority | correction only for verified hard gates |
 | `SessionEnd` | mark session ended, write final recovery, run retention cleanup | none |
 
 ## Private state

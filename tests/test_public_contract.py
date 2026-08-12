@@ -39,6 +39,14 @@ class PublicContractTests(unittest.TestCase):
     def test_public_tree_has_no_private_material(self) -> None:
         self.assertEqual(audit.findings(ROOT), [])
 
+    def test_plugin_package_excludes_clone_and_worktree_git_metadata(self) -> None:
+        patterns = {
+            line.strip()
+            for line in (ROOT / ".codexignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertTrue({".git", ".git/"}.issubset(patterns))
+
     def test_audit_detects_private_material_and_generated_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -71,14 +79,22 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "> Release status: `0.6.1` is the current release.", english
         )
-        self.assertIn("> 发布状态：`0.6.1` 是当前正式版本。", chinese)
+        self.assertIn("> 发布状态：`0.6.1` 是当前正式版本；", chinese)
+        self.assertIn("`0.6.3` is an unreleased", english)
+        self.assertIn("`0.6.3` 是尚未发布的单向安全候选", chinese)
+        self.assertIn("Stop protocol 1.1.0", english)
+        self.assertIn("Stop protocol 1.1.0", chinese)
+        self.assertIn("advisory only and cannot force a new turn", english)
+        self.assertIn("仅作为提示，不能强制开启新一轮", chinese)
 
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
+        self.assertIn("Version 0.6.3", changelog)
         self.assertIn("Current Context Guard release: `0.6.1`", compatibility)
+        self.assertIn("Current source candidate: `0.6.3`", compatibility)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",
