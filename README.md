@@ -17,8 +17,8 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.6.1` is the latest published release. `0.6.3` is the
-> merged, natively accepted, untagged source line: Stop protocol 1.1.0 makes legacy `continue`
+> Release status: `0.6.3` is the latest published release. It keeps Stop protocol 1.1.0,
+> which makes legacy `continue`
 > advisory, preserves pending work on terminal mismatch, and uses quote-aware
 > shell intent parsing. `0.6.3` also makes cache upgrades repair indexed live
 > drift before archive adoption and removes legacy repository metadata only
@@ -30,13 +30,13 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > staging failure, so `0.6.0` was not tagged or released. Its installed cache is
 > immutable and its version number is consumed. `0.6.1` changes only the
 > successful private-stage receipt; schema, protocol, classifier, and the exact
-> eight-Hook wire remain unchanged. The 0.6.3 source passes scoped native
+> eight-Hook wire remain unchanged. The 0.6.3 release passes scoped native
 > macOS and Windows source/install/archive gates and normally trusted private and public
 > identities without a bypass, including `user_wait`, a completion checkpoint,
-> and manual schema-5 `/compact` recovery. The 0.6.3 code is merged into main;
-> tag and GitHub Release remain separate publication actions. Release automation is verified
-> separately on the exact public commit and tag; CI does not replace either
-> native run.
+> and manual schema-5 `/compact` recovery. The 0.6.3 release is published from
+> the validated main commit; its annotated tag and GitHub Release preserve that
+> exact source state. Release automation passed separately on the exact public
+> commit and tag; CI does not replace either native run.
 
 ### 30-second sanitized compact/recovery demo
 
@@ -360,11 +360,11 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
 
-Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.1
+Native Windows 0.5.1 acceptance remains historical evidence only. The 0.6.3
 release has passed the scoped native macOS and Windows source/install/archive
 gates and normally trusted, no-bypass private/public runs for `user_wait`,
 completion checkpoint, and manual schema-5 `/compact` recovery. The exact
-release commit is gated by PR/main CI, HOL, and tag CI; CI is not a
+release commit passed PR/main CI, HOL, and tag CI; CI is not a
 native-runtime substitute.
 The unreleased, consumed 0.6.0 candidate failed its real Code Mode fresh gate
 and must not be tagged or patched in place. See

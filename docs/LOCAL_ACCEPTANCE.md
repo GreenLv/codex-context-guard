@@ -1,15 +1,15 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.6.1`; verified source line
-`0.6.3` is merged into `main` but remains untagged and unreleased;
+Context Guard. The current published release is `0.6.3`; the validated
+`v0.6.3` source is tagged and published from `main`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.6.3 candidate acceptance (macOS and Windows accepted; merged, not tagged)
+## 0.6.3 release acceptance (macOS and Windows, 2026-08-12)
 
 Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains
 classifier 2.0.0 and the exact eight-Hook wire, and makes the legacy
-`continue` disposition advisory. The candidate must prove that a terminal
+`continue` disposition advisory. The release acceptance proves that a terminal
 control mismatch can only yield with pending work preserved; it cannot request
 another turn unless the hash-verified prompt independently activates explicit
 persistence. Private-control detection is also restricted to recognized shell
@@ -46,17 +46,17 @@ Scoped native macOS acceptance passes against those immutable package trees:
 
 Public PR #8 at the public package head passes the nine-job Ubuntu/macOS/Windows
 Python 3.10/3.12/3.13 CI matrix, HOL Plugin Scanner, and plugin-scanner. Native
-Native Windows acceptance independently passes against the same frozen inputs:
+Windows acceptance independently passes against the same frozen inputs:
 113 private and 145 public tests (one capability-aware symlink skip each),
 manager/export/parity/boundary and public privacy/identity gates, Ruff 0.16.1,
 compilation, installed lifecycle and eight-Hook self-tests, 0.6.1 -> 0.6.2 ->
 0.6.3 repair-before-archive chains, and strict second no-ops. Normally trusted
 private/public identities pass legacy continue, `user_wait`, completion,
 explicit persistence, malformed-control isolation, and manual schema-5
-`/compact` recovery. CI did not substitute for these native checks. This
-candidate section did not authorize merge, tag, or Release; after the native
-gate passed, the 0.6.3 code was merged into `main`, while tag and Release
-remain separate publication actions.
+`/compact` recovery. CI did not substitute for these native checks. After the
+native gate passed, the 0.6.3 code was merged into `main`; the annotated
+`v0.6.3` tag and GitHub Release were created only after the exact release
+commit passed the source and tag automation gates.
 
 ## 0.6.1 native acceptance on macOS (2026-08-11)
 
@@ -393,8 +393,8 @@ zero-dependency runtime. Platform wording remains bounded by
 ## Publication gate
 
 Version 0.6.0 is consumed, unreleased, untagged, and ineligible for a tag or
-GitHub Release. The 0.6.1 tag and Release received explicit authorization on
-2026-08-11. Only the exact final commit that preserves the accepted macOS and
-Windows runtime evidence, passes all local and remote packaging gates, passes
-PR/main CI and HOL, and then passes tag CI may be published. Compatibility
-wording must remain bounded by observed evidence.
+GitHub Release. The 0.6.3 tag and Release received separate authorization in
+the release task and were created from the exact final commit only after it
+preserved the accepted macOS and Windows runtime evidence, passed all local and
+remote packaging gates, passed PR/main CI and HOL, and then passed tag CI.
+Compatibility wording must remain bounded by observed evidence.

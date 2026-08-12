@@ -15,8 +15,8 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.6.1` 是最近一次已发布版本；`0.6.3` 是已合并、已完成原生验收但尚未打 tag 的当前源码线。
-> Stop protocol 1.1.0 将兼容保留的 `continue` 降为仅诊断提示，在终态控制
+> 发布状态：`0.6.3` 是最近一次已发布版本。Stop protocol 1.1.0 将兼容保留的
+> `continue` 降为仅诊断提示，在终态控制
 > 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.3`
 > 还会在归档旧 live cache 前先按可信索引修复漂移，并且仅当受信产品 manifest
 > 前后不变时移除历史仓库元数据。已经安装过的 `0.6.2` 包保持不可变；该版本从未
@@ -26,10 +26,11 @@ worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context
 > fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag
 > 或 Release；其已安装 cache 不可变，版本号已经消耗。`0.6.1` 只修改成功的
 > 私有 stage receipt，schema、protocol、classifier 和八 Hook wire 均不变。
-> 0.6.3 已通过限定的 macOS source/install/archive 门；private/public
+> 0.6.3 正式版本已通过限定的 macOS source/install/archive 门；private/public
 > identity 均在正常 Hook 信任、无 trust bypass 下通过 `user_wait`、completion
-> checkpoint 和手动 schema-5 `/compact` 恢复。Windows 0.6.3 原生验收也已完成；代码已合并到 main，tag 与 GitHub Release 仍是独立的发布动作。精确公开提交和 tag 的自动化门禁单独验证；CI 不替代
-> 任何一次原生验收。
+> checkpoint 和手动 schema-5 `/compact` 恢复。Windows 0.6.3 原生验收也已完成；
+> 带注释的 `v0.6.3` tag 和 GitHub Release 保持同一份经过验证的源码状态。精确公开提交和
+> tag 的自动化门禁均已单独通过；CI 不替代任何一次原生验收。
 
 ### 30 秒脱敏 compact/recovery 演示
 
@@ -310,10 +311,10 @@ ruff check .
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-Windows 原生 0.5.1 验收只作为历史证据。0.6.1 正式版本已通过限定的 macOS 与 Windows
+Windows 原生 0.5.1 验收只作为历史证据。0.6.3 正式版本已通过限定的 macOS 与 Windows
 source/install/archive 门，且 private/public identity 均在正常 Hook 信任、无 trust
 bypass 运行中通过 `user_wait`、completion checkpoint 和手动 schema-5 `/compact`
-恢复。精确发布提交还必须通过 PR/main CI、HOL 和 tag CI；CI 不能替代原生运行。
+恢复。精确发布提交已通过 PR/main CI、HOL 和 tag CI；CI 不能替代原生运行。
 未发布且版本号已消耗的 0.6.0 候选已经在真实 Code Mode fresh gate 失败，不得创建
 tag 或原地修补。证据边界见[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
 

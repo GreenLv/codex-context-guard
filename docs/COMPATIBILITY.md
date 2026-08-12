@@ -5,10 +5,10 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.6.1`
-- Current source line: `0.6.3` (merged, untagged)
+- Current published Context Guard release: `0.6.3`
+- Current source line: `0.6.3` (released)
 - Private state schema: `5`
-- Stop protocol: `1.1.0` in the current source; `1.0.0` in the published release
+- Stop protocol: `1.1.0`
 - Diagnostic classifier: `2.0.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
@@ -17,9 +17,9 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.6.3 merged candidate status
+## 0.6.3 release status
 
-The candidate carries the 0.6.2 schema-5 terminal-control policy and private
+The release carries the 0.6.2 schema-5 terminal-control policy and private
 control-intent parsing without changing their runtime bytes. Legacy `continue`
 remains accepted but cannot force a retry; explicit prompt-bound persistence
 and uncheckpointed whole-task completion remain the only correction-turn
@@ -34,10 +34,10 @@ Normally trusted private/public identities, without bypass, pass `user_wait`,
 completion checkpoint consumption, explicit persistence, terminal legacy
 continue, negative controls, and manual schema-5 `/compact` recovery; installed
 and isolated source/live/archive lifecycles also pass. CI did not substitute for
-either native platform gate. The candidate is merged into `main`; tag and
-Release remain separate publication actions.
+either native platform gate. The release is merged into `main`, tagged as
+`v0.6.3`, and published as a GitHub Release from that exact validated commit.
 
-Version 0.6.2 was installed during candidate acceptance before the final
+Version 0.6.2 was installed during release acceptance before the final
 manager lifecycle bytes were frozen. Its cache remains immutable; it was never
 tagged or released and is superseded by 0.6.3.
 
@@ -71,8 +71,8 @@ completion.
 That failed the real fresh-runtime release gate. The installed 0.6.0 live cache
 and archive remain immutable recovery artifacts: they must not be overwritten,
 deleted, or patched in place, and no `v0.6.0` tag or GitHub Release may be
-created. Version 0.6.1 adds the final success receipt. The bounded macOS and
-Windows runtime paths above underpin the 0.6.1 release; source and tag
+created. Version 0.6.1 added the final success receipt. The bounded macOS and
+Windows runtime paths above underpin the 0.6.3 release; source and tag
 automation remain separate evidence.
 
 ## Accepted 0.5.1 baseline
@@ -108,7 +108,7 @@ same-version source drift. A 0.6.1 install must preserve every 0.5.x and 0.6.0
 live cache and archive. Open tasks that still reference an absolute 0.6.0 path
 continue on those immutable bytes; only a fresh task may load 0.6.1.
 
-## Release gates
+## Historical 0.6.1 release gates
 
 Version 0.6.0 is ineligible for a public tag. Before any 0.6.1 tag:
 

@@ -4,6 +4,8 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+## 0.6.3 - 2026-08-12
+
 ### Changed
 
 - Version 0.6.3 keeps state schema 5 and classifier 2.0.0 while advancing the
@@ -38,8 +40,9 @@ All notable public releases are documented here.
   HOL Scanner, and plugin-scanner. Native Windows independently passes the
   frozen private/public source, installed, archive, parity, boundary, lifecycle,
   normal-trust real-wire, negative-control, doctor, and manual-compaction gates.
-  The 0.6.3 code is merged into `main`; tag and GitHub Release remain separate
-  publication actions.
+  The 0.6.3 release is published from the validated `main` commit. Its
+  annotated tag and GitHub Release preserve that exact source state. Release
+  automation is source-level evidence and does not replace either native run.
 
 ## 0.6.1 - 2026-08-11
 
