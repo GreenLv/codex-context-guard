@@ -77,11 +77,11 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 实测 token 开销", chinese)
         self.assertIn("约 1%–2%", chinese)
         self.assertIn(
-            "> Release status: `0.6.1` is the current release.", english
+            "> Release status: `0.6.1` is the latest published release.", english
         )
-        self.assertIn("> 发布状态：`0.6.1` 是当前正式版本；", chinese)
-        self.assertIn("`0.6.3` is an unreleased", english)
-        self.assertIn("`0.6.3` 是尚未发布的单向安全候选", chinese)
+        self.assertIn("> 发布状态：`0.6.1` 是最近一次已发布版本；", chinese)
+        self.assertIn("`0.6.3` is the\n> merged, natively accepted, untagged source line", english)
+        self.assertIn("`0.6.3` 是已合并、已完成原生验收但尚未打 tag 的当前源码线", chinese)
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
@@ -93,8 +93,8 @@ class PublicContractTests(unittest.TestCase):
         )
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("Version 0.6.3", changelog)
-        self.assertIn("Current Context Guard release: `0.6.1`", compatibility)
-        self.assertIn("Current source candidate: `0.6.3`", compatibility)
+        self.assertIn("Current published Context Guard release: `0.6.1`", compatibility)
+        self.assertIn("Current source line: `0.6.3` (merged, untagged)", compatibility)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",
