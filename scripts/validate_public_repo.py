@@ -8,10 +8,11 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.6.3"
-SCHEMA_VERSION = 5
+VERSION = "0.7.1"
+SCHEMA_VERSION = 6
 STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.0.0"
+PROOF_PROTOCOL_VERSION = "1.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
 DISPOSITION_REASONS = {
     "continue": "assistant_work_remains",
@@ -220,16 +221,19 @@ def validate(root: Path) -> list[str]:
             errors.append(f"private state schema must be version {SCHEMA_VERSION}")
         if "decision_log" not in schema.get("required", []):
             errors.append("private state schema must require the bounded decision log")
+        for field in ("assets", "asset_sequence", "proofs", "proof_sequence"):
+            if field not in schema.get("required", []):
+                errors.append(f"private state schema must require {field}")
         completion_attempt = properties.get("completion_attempt", {})
         serialized_attempt = json.dumps(completion_attempt, sort_keys=True)
         for field in ("protocol_version", "staged_control"):
             if field not in serialized_attempt:
                 errors.append(
-                    f"schema-5 completion attempt must define {field}"
+                    f"completion attempt must define {field}"
                 )
         if STOP_PROTOCOL_VERSION not in serialized_attempt:
             errors.append(
-                "schema-5 completion attempt must bind the current Stop protocol"
+                "completion attempt must bind the current Stop protocol"
             )
         enums = enum_sets(schema)
         dispositions = set(DISPOSITION_REASONS)
@@ -270,6 +274,7 @@ def validate(root: Path) -> list[str]:
             "SCHEMA_VERSION": SCHEMA_VERSION,
             "STOP_PROTOCOL_VERSION": STOP_PROTOCOL_VERSION,
             "CLASSIFIER_VERSION": CLASSIFIER_VERSION,
+            "PROOF_PROTOCOL_VERSION": PROOF_PROTOCOL_VERSION,
             "DISPOSITION_REASONS": DISPOSITION_REASONS,
         }
         for name, expected in expected_literals.items():
@@ -284,6 +289,8 @@ def validate(root: Path) -> list[str]:
             errors.append("runtime must expose the private stage-disposition CLI")
         if "staged_control" not in runtime_text:
             errors.append("runtime must implement the single staged-control slot")
+        if "register-proof" not in runtime_text or "verification_contract" not in runtime_text:
+            errors.append("runtime must implement the Proof protocol")
         for fragment in (
             "terminal_stop_policy",
             "protocol_continue_advisory",

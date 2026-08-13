@@ -1,6 +1,6 @@
 ---
 name: context-guard
-description: Preserve authoritative task requirements, acceptance criteria, bounded native-plan state, delegated-agent results, and verified evidence across Codex context compaction. Use for long or complex tasks, Goal work, resumed sessions, subagent workflows, explicit context-guard controls, redacted or successor handoff exports, or whenever completion must be checked against an immutable local requirement ledger.
+description: Preserve authoritative task requirements, acceptance criteria, multimodal asset contracts, bounded native-plan state, delegated-agent results, and verified evidence across Codex context compaction. Use for long or complex tasks, Goal work, resumed sessions, subagent workflows, explicit context-guard controls, redacted or successor handoff exports, or whenever completion must be checked against an immutable local requirement ledger.
 ---
 
 # Context Guard
@@ -35,6 +35,9 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
    and every unverified item remains pending.
 10. Before claiming full completion for an active guarded task:
    - Run the exact `checkpoint-status` command injected for the current turn.
+   - Inspect each item's `verification.mode`. `legacy_fallback` intentionally
+     uses the compatible successful-evidence rule and remains visible as a
+     degradation. For `enforced`, satisfy every listed obligation.
    - Select only successful `E####` evidence printed by that command. Plain-text
      tool output without a structured success status or an exact authoritative
      completion marker is recorded as `unknown` and cannot close an item.
@@ -42,6 +45,13 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
      unmet condition and print a final standalone `Script completed` or
      `Command completed` line only after every check passes. The marker is
      exact and must not have trailing punctuation.
+   - For every enforced obligation, prepare a bounded JSON manifest and run the
+     injected `register-proof --manifest /path/to/proof.json` command. A proof
+     binds the item, obligation, successful evidence, surface, and subjects.
+     Visual inspection records immutable asset-bound facts; result readback
+     uses a distinct hashed asset and resolves every fact. Scope proofs provide
+     normalized expected and observed identifiers; the runtime computes counts
+     and hashes and rejects a proper subset.
    - Run the injected `stage-checkpoint` command with one
      `--requirement ID=E####[,E####]` flag for each pending requirement and one
      `--acceptance ID=E####[,E####]` flag for each pending acceptance item.
@@ -106,6 +116,8 @@ a task. Creating a successor remains a separate user-authorized action.
 
 The immutable raw prompt ledger is the fact source. Recovery summaries and
 private completion checkpoints are derived indexes. Never commit plugin runtime
-data, raw prompts, transcripts, credentials, tokens, or plugin caches. Export
+data, proof manifests, raw prompts, transcripts, credentials, tokens, or plugin
+caches. Multimodal contracts retain only bounded metadata, hashes, dimensions,
+availability, and redacted visual facts; they do not retain image bytes. Export
 only when the user explicitly requests it; exported handoffs are redacted by
 default.

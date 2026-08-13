@@ -3,6 +3,53 @@
   "$id": "https://github.com/GreenLv/codex-context-guard/blob/main/assets/state.schema.json",
   "title": "Context Guard private session state",
   "type": "object",
+  "$defs": {
+    "verificationContract": {
+      "type": "object",
+      "required": ["protocol_version", "mode", "reason", "obligations"],
+      "properties": {
+        "protocol_version": {"const": "1.0.0"},
+        "mode": {"enum": ["enforced", "legacy_fallback"]},
+        "reason": {"type": "string"},
+        "obligations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "surface", "subject_ids"],
+            "properties": {
+              "id": {"type": "string"},
+              "kind": {
+                "enum": [
+                  "input_asset_inspection",
+                  "result_visual_readback",
+                  "subject_readback",
+                  "scope_coverage"
+                ]
+              },
+              "surface": {"enum": ["visual", "ui", "artifact", "scope"]},
+              "subject_ids": {"type": "array", "items": {"type": "string"}}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "trackedItem": {
+      "type": "object",
+      "required": ["id", "prompt_id", "text", "status", "evidence", "verification_contract"],
+      "properties": {
+        "id": {"type": "string"},
+        "prompt_id": {"type": "string"},
+        "text": {"type": "string"},
+        "sha256": {"type": "string"},
+        "status": {"enum": ["pending", "pass", "superseded"]},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "verification_contract": {"$ref": "#/$defs/verificationContract"}
+      },
+      "additionalProperties": true
+    }
+  },
   "required": [
     "schema_version",
     "session",
@@ -13,6 +60,10 @@
     "supersedes",
     "evidence",
     "evidence_sequence",
+    "assets",
+    "asset_sequence",
+    "proofs",
+    "proof_sequence",
     "work_state",
     "agents",
     "open_items",
@@ -25,7 +76,7 @@
     "content_hash"
   ],
   "properties": {
-    "schema_version": {"const": 5},
+    "schema_version": {"const": 6},
     "session": {
       "type": "object",
       "required": ["id", "cwd", "created_at", "updated_at", "ended_at"]
@@ -43,11 +94,74 @@
       "type": "array",
       "description": "Metadata only. Immutable full text lives in private prompts/Pxxxx.json files."
     },
-    "requirements": {"type": "array"},
-    "acceptance_items": {"type": "array"},
+    "requirements": {"type": "array", "items": {"$ref": "#/$defs/trackedItem"}},
+    "acceptance_items": {"type": "array", "items": {"$ref": "#/$defs/trackedItem"}},
     "supersedes": {"type": "array"},
     "evidence": {"type": "array"},
     "evidence_sequence": {"type": "integer", "minimum": 0},
+    "assets": {
+      "type": "array",
+      "description": "Hash-only multimodal asset ledger. Original bytes are never persisted.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "prompt_ids", "created_at", "source", "source_kind",
+          "source_ref", "locator_sha256", "sha256", "bytes", "media_type",
+          "width", "height", "available"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^M[0-9]{4,}$"},
+          "prompt_ids": {"type": "array", "items": {"type": "string"}},
+          "created_at": {"type": "string"},
+          "source": {"enum": ["hook_payload", "transcript_tail", "tool_event"]},
+          "source_kind": {"enum": ["local_file", "data_url"]},
+          "source_ref": {"type": "string"},
+          "locator_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "sha256": {"type": ["string", "null"]},
+          "bytes": {"type": ["integer", "null"]},
+          "media_type": {"type": "string"},
+          "width": {"type": ["integer", "null"]},
+          "height": {"type": ["integer", "null"]},
+          "available": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "asset_sequence": {"type": "integer", "minimum": 0},
+    "proofs": {
+      "type": "array",
+      "description": "Immutable Proof protocol bindings between obligations and successful evidence.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id", "created_at", "protocol_version", "item_id", "obligation_id",
+          "kind", "surface", "subject_ids", "evidence_ids", "visual_facts",
+          "readback_asset_id", "resolved_fact_ids", "expected_scope_count",
+          "expected_scope_sha256", "observed_scope_count", "observed_scope_sha256", "sha256"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^V[0-9]{4,}$"},
+          "protocol_version": {"const": "1.0.0"},
+          "item_id": {"type": "string"},
+          "obligation_id": {"type": "string"},
+          "evidence_ids": {"type": "array", "items": {"type": "string"}},
+          "subject_ids": {"type": "array", "items": {"type": "string"}},
+          "visual_facts": {"type": "array"},
+          "resolved_fact_ids": {"type": "array", "items": {"type": "string"}},
+          "readback_asset_id": {"type": ["string", "null"]},
+          "expected_scope_count": {"type": "integer"},
+          "expected_scope_sha256": {"type": ["string", "null"]},
+          "observed_scope_count": {"type": "integer"},
+          "observed_scope_sha256": {"type": ["string", "null"]},
+          "created_at": {"type": "string"},
+          "kind": {"type": "string"},
+          "surface": {"type": "string"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "proof_sequence": {"type": "integer", "minimum": 0},
     "work_state": {
       "type": "object",
       "required": ["plan_snapshot"],

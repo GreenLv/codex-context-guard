@@ -25,6 +25,11 @@ The private store may contain:
 - session and turn identifiers;
 - extracted requirements, acceptance items, and revisions;
 - bounded tool input/output summaries and outcome metadata;
+- hash-only multimodal asset metadata: source kind, redacted basename/type,
+  locator hash, content hash, byte count, media type, dimensions, and
+  availability;
+- deterministic verification contracts and immutable proof bindings, including
+  bounded redacted visual facts and normalized scope counts/digests;
 - the latest bounded native-plan mirror;
 - bounded delegated-agent metadata and final result summaries;
 - recovery snapshots and private completion checkpoints;
@@ -43,6 +48,11 @@ or delegated-agent transcripts.
 - Evidence and recovery text are bounded.
 - Binary/data-URL payloads are replaced by type, byte/character length, and
   SHA-256 metadata.
+- Image bytes are read only within a 64 MiB bound to calculate hashes and basic
+  dimensions; neither local-image bytes nor data-URL bodies are written to the
+  ledger. Full local locators are represented by a hash and basename only.
+- Scope manifests are normalized in memory. Stored proofs retain counts and
+  SHA-256 digests, not the expected or observed identifier lists.
 - Delegated-agent results are bounded summaries rather than transcripts.
 - Recovery prioritizes active requirements and failures over historical detail.
 - Disposition requests accept only a fixed disposition enum and derive a fixed
@@ -55,6 +65,8 @@ or delegated-agent transcripts.
   relevant, not the decision history.
 - Schema migration invalidates in-flight private tokens and staged controls
   instead of carrying turn authorization across protocol versions.
+- Schema-5 items migrate as `legacy_fallback`; migration does not fabricate
+  retroactive multimodal or semantic proof claims.
 - Ended sessions become eligible for cleanup after 30 days.
 
 ## Redaction
@@ -86,6 +98,9 @@ outside the Hook runtime and remain explicit user actions.
 - `stage-checkpoint` and `stage-disposition` preflight private turn-bound
   requests; their tokens, commands, markers, and stored controls must never be
   copied into a user-facing reply.
+- `register-proof` accepts a bounded JSON manifest, authenticates the current
+  private turn, and stores only the normalized proof. Keep temporary proof
+  manifests out of repositories and exports.
 - `context-guard export` and `rollover` are explicit-only writes.
 - Uninstalling plugin code does not automatically delete private runtime data.
 
@@ -102,7 +117,11 @@ never auto-pruned because already-open tasks may retain their absolute Hook path
 ## Threat model and limits
 
 Context Guard reduces accidental requirement loss, stale-summary reliance,
-weak-evidence completion, binary evidence leakage, and authority confusion. It
+weak-evidence completion, subset-as-complete errors, binary evidence leakage,
+and authority confusion. It
 does not protect against a malicious local process with access to the same
 files, a user who intentionally shares raw plugin data, or an untrusted Hook
 command. It is not encryption, a sandbox, or an authorization service.
+Proof protocol 1.0.0 does not interpret arbitrary pixels or establish that a
+source is official; it enforces only the deterministic obligations shown for an
+`enforced` item.

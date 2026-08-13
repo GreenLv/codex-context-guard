@@ -17,7 +17,13 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.6.3` is the latest published release. It keeps Stop protocol 1.1.0,
+> Release status: `0.6.3` is the latest published release. The current `main`
+> source is the unreleased 0.7.1 candidate with schema 6 and Proof protocol
+> 1.0.0. It adds deterministic evidence-to-requirement and hash-only multimodal
+> contracts while retaining an auditable `legacy_fallback` for unsupported
+> cases. The 0.7.0 cache was consumed by native fresh-task acceptance before a
+> late transcript attachment-association defect was found; it remains immutable
+> and unreleased. `0.6.3` keeps Stop protocol 1.1.0,
 > which makes legacy `continue`
 > advisory, preserves pending work on terminal mismatch, and uses quote-aware
 > shell intent parsing. `0.6.3` also makes cache upgrades repair indexed live
@@ -68,6 +74,14 @@ Context Guard therefore separates four things:
 - Journals root and delegated prompts with SHA-256-bound metadata.
 - Assigns stable requirement and acceptance IDs and records explicit
   supersessions without silently rewriting history.
+- Creates deterministic verification obligations for identifiable assets,
+  subjects, UI/artifact surfaces, visual readbacks, and complete scopes. An
+  ordinary successful command cannot satisfy an incompatible obligation.
+- Records image source type, redacted reference, hash, byte count, dimensions,
+  and availability without storing the image bytes. Result readbacks must use a
+  distinct hashed asset and resolve immutable visual facts.
+- Marks unsupported contracts `legacy_fallback` instead of claiming arbitrary
+  natural-language or pixel understanding.
 - Saves a bounded recovery packet before compaction and restores it on compact
   or resume.
 - Mirrors the latest successful native `update_plan` call as a read-only
@@ -380,10 +394,11 @@ Context Guard is not:
 - a second Plan/Goal controller, agent scheduler, mailbox, or shared workspace;
 - a replacement for human review, tests, or acceptance.
 
-Requirement-to-evidence semantic relevance is not a 0.6.x capability. It is
-deferred to a possible 0.7.0 and requires an approved benchmark with
-false-acceptance, false-rejection, and abstention thresholds. Shared
-multi-agent workspaces and telemetry remain separate research decisions.
+Proof protocol 1.0.0 enforces only deterministic obligations displayed for an
+`enforced` item. It does not prove arbitrary semantic correctness, interpret
+arbitrary pixels, or establish official-source validity; `legacy_fallback`
+retains the compatible provenance/outcome gate. Shared multi-agent workspaces
+and telemetry remain separate research decisions.
 
 ## Contributing and security
 

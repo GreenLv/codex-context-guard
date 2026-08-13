@@ -44,10 +44,20 @@ not as a measure of code volume.
   line.
   Installed cache bytes remain immutable: a runtime byte change requires a new
   patch version.
-- Requirement-to-evidence semantic relevance is not a 0.6.x capability. It is
-  a possible `0.7.0` only after an approved benchmark covers positive,
-  negative, adversarial, multilingual, false-acceptance, false-rejection, and
-  abstention cases.
+- `0.7.0` introduces schema 6 and Proof protocol 1.0.0. Deterministic
+  verification contracts bind successful evidence to required subjects,
+  surfaces, visual readbacks, and normalized scope sets. Hash-only multimodal
+  asset contracts retain metadata and visual facts without persisting image
+  bytes. Unsupported cases are visibly `legacy_fallback` and keep the 0.6.3
+  checkpoint behavior. Stop protocol 1.1.0, classifier 2.0.0, and the eight-Hook
+  wire remain unchanged.
+- `0.7.1` keeps the 0.7.0 schema and protocol contracts unchanged and
+  reconciles late transcript attachment metadata before the first tool
+  evidence. Native fresh-task acceptance consumed 0.7.0 before exposing this
+  defect, so its cache remains immutable.
+- `0.7.x` contains compatible fixes inside schema 6 and Proof protocol 1.x.
+  Installed cache bytes remain immutable: a runtime-byte change requires a new
+  patch version.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
@@ -56,5 +66,6 @@ supported platform; Stop benchmarks and privacy thresholds have operational
 evidence across at least two minor series; sibling shared-core parity is a
 maintained gate; and rollback behavior lets already-open tasks finish safely.
 
-Version numbers do not prove that successful evidence is semantically relevant
-to a requirement. Current checkpoints prove provenance and tool outcome only.
+Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
+for an `enforced` item. It does not claim arbitrary pixel understanding,
+official-source validity, or semantic completeness for `legacy_fallback` items.

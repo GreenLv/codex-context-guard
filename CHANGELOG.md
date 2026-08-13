@@ -4,6 +4,34 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+### Added
+
+- State schema 6 adds hash-only multimodal assets, immutable verification
+  contracts, and Proof protocol 1.0.0 bindings for subjects, verification
+  surfaces, visual facts/readbacks, and normalized scope coverage.
+- `register-proof --manifest` validates an item-scoped proof against successful,
+  fresh, capability-compatible evidence. Proper subsets, wrong surfaces,
+  unrelated subjects, reused input images, and unresolved visual facts fail.
+
+### Changed
+
+- Version 0.7.1 reconciles late transcript attachment metadata before the first
+  `PostToolUse` evidence. The native fresh-task gate consumed 0.7.0 before
+  exposing this prompt-association defect, so 0.7.0 remains immutable and
+  unreleased.
+- Completion checkpoints enforce every deterministic proof obligation. When an
+  attachment or semantic boundary cannot be established deterministically, the
+  item is marked `legacy_fallback` and retains the compatible 0.6.3 behavior.
+- Recovery packets preserve bounded asset metadata and outstanding obligations
+  across compaction without storing image bytes. Stop protocol 1.1.0,
+  classifier 2.0.0, and all eight Hook events remain unchanged.
+
+### Validation
+
+- The regression benchmark covers Chinese and English positive, negative,
+  adversarial, multimodal, cross-item, migration, privacy, and fallback cases,
+  including an anonymized 48-of-70 subset false-completion replay.
+
 ## 0.6.3 - 2026-08-12
 
 ### Changed

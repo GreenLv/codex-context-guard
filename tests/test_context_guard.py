@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import datetime as dt
 import hashlib
@@ -2093,7 +2094,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 5)
+        self.assertEqual(cg.SCHEMA_VERSION, 6)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
@@ -2182,7 +2183,7 @@ class ContextGuardTests(unittest.TestCase):
             migrated["completion_attempt"].get("staged_control")
         )
 
-    def test_v4_state_integrity_migrates_to_schema5_and_invalidates_control(
+    def test_v4_state_integrity_migrates_to_schema6_and_invalidates_control(
         self,
     ) -> None:
         self.prompt(
@@ -2206,7 +2207,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
@@ -2228,7 +2229,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertIsNone(current["completion_attempt"]["staged_control"])
 
-    def test_schema5_protocol_upgrade_invalidates_only_inflight_control(
+    def test_schema5_migrates_to_schema6_and_invalidates_only_inflight_control(
         self,
     ) -> None:
         self.prompt(
@@ -2250,7 +2251,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["evidence"][-1]["id"], evidence_id)
@@ -3721,6 +3722,462 @@ class ContextGuardTests(unittest.TestCase):
             self.state("windows-session")["session"]["cwd"],
             r"C:\Workspace\Project",
         )
+
+    def write_png(self, name: str, width: int, height: int) -> Path:
+        path = self.root / name
+        path.write_bytes(
+            b"\x89PNG\r\n\x1a\n"
+            + b"\x00\x00\x00\rIHDR"
+            + width.to_bytes(4, "big")
+            + height.to_bytes(4, "big")
+            + b"\x08\x06\x00\x00\x00"
+        )
+        return path
+
+    def test_schema6_asset_contract_hashes_image_without_persisting_bytes_or_path(self) -> None:
+        image = self.write_png("private-input.png", 640, 480)
+        self.turn_index += 1
+        self.current_turn = f"turn-{self.turn_index}"
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="test-token"):
+            cg.dispatch(
+                self.payload(
+                    "UserPromptSubmit",
+                    prompt="请根据截图修复界面。",
+                    local_images=[str(image)],
+                )
+            )
+        state = self.state()
+        self.assertEqual(state["schema_version"], 6)
+        self.assertEqual(len(state["assets"]), 1)
+        asset = state["assets"][0]
+        self.assertEqual((asset["width"], asset["height"]), (640, 480))
+        self.assertEqual(asset["sha256"], hashlib.sha256(image.read_bytes()).hexdigest())
+        serialized = json.dumps(state, ensure_ascii=False)
+        self.assertNotIn(str(image), serialized)
+        self.assertNotIn(base64.b64encode(image.read_bytes()).decode("ascii"), serialized)
+        contract = state["requirements"][0]["verification_contract"]
+        self.assertEqual(contract["mode"], "enforced")
+        self.assertEqual(
+            [item["kind"] for item in contract["obligations"]],
+            ["input_asset_inspection", "result_visual_readback"],
+        )
+
+    def test_data_url_asset_is_decoded_only_for_hash_and_dimensions(self) -> None:
+        raw = self.write_png("data-url.png", 11, 13).read_bytes()
+        encoded = base64.b64encode(raw).decode("ascii")
+        self.turn_index += 1
+        self.current_turn = f"turn-{self.turn_index}"
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="test-token"):
+            cg.dispatch(
+                self.payload(
+                    "UserPromptSubmit",
+                    prompt="请根据图片修改显示。",
+                    content=[{"type": "input_image", "image_url": f"data:image/png;base64,{encoded}"}],
+                )
+            )
+        state = self.state()
+        self.assertEqual(state["assets"][0]["source_kind"], "data_url")
+        self.assertEqual((state["assets"][0]["width"], state["assets"][0]["height"]), (11, 13))
+        self.assertNotIn(encoded, json.dumps(state))
+
+    def test_unresolved_asset_reference_uses_auditable_legacy_fallback(self) -> None:
+        self.prompt("请根据截图修改界面，但当前附件无法读取。")
+        contract = self.state()["requirements"][0]["verification_contract"]
+        self.assertEqual(contract["mode"], "legacy_fallback")
+        self.assertEqual(contract["reason"], "asset_reference_unresolved")
+
+    def test_transcript_tail_can_upgrade_fallback_without_downgrading_contract(self) -> None:
+        image = self.write_png("transcript-input.png", 20, 30)
+        text = "$context-guard\n请根据截图修复界面。"
+        transcript = self.root / "transcript.jsonl"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": text,
+                        "local_images": [str(image)],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self.turn_index += 1
+        self.current_turn = f"turn-{self.turn_index}"
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="test-token"):
+            cg.dispatch(
+                self.payload("UserPromptSubmit", prompt=text, transcript_path=str(transcript))
+            )
+        state = self.state()
+        self.assertEqual(state["requirements"][0]["verification_contract"]["mode"], "legacy_fallback")
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                transcript_path=str(transcript),
+                tool_name="Bash",
+                tool_input={"command": "first tool after prompt"},
+                tool_response={"exit_code": 0, "output": "Script completed"},
+            )
+        )
+        upgraded = self.state()["requirements"][0]["verification_contract"]
+        self.assertEqual(upgraded["mode"], "enforced")
+        self.assertEqual(self.state()["assets"][0]["prompt_ids"], ["P0001"])
+        cg.dispatch(self.payload("PreCompact", transcript_path=str(transcript), trigger="manual"))
+        state = self.state()
+        state["session"]["transcript_path"] = str(self.root / "missing.jsonl")
+        cg.save_state(self.root / "private" / "sessions" / "session-a", state)
+        cg.dispatch(self.payload("SessionStart", source="resume"))
+        self.assertEqual(
+            self.state()["requirements"][0]["verification_contract"]["mode"],
+            "enforced",
+        )
+
+    def test_incident_replay_blocks_subset_and_requires_visual_readback(self) -> None:
+        input_image = self.write_png("incident-input.png", 70, 40)
+        output_image = self.write_png("incident-output.png", 70, 41)
+        self.turn_index += 1
+        self.current_turn = f"turn-{self.turn_index}"
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="test-token"):
+            cg.dispatch(
+                self.payload(
+                    "UserPromptSubmit",
+                    prompt="$context-guard\n根据截图修复界面，并核验全部会议条目。",
+                    local_images=[str(input_image)],
+                )
+            )
+        state = self.state()
+        obligations = {
+            item["kind"]: item for item in state["requirements"][0]["verification_contract"]["obligations"]
+        }
+        self.assertEqual(
+            set(obligations),
+            {"input_asset_inspection", "result_visual_readback", "scope_coverage"},
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="view_image",
+                tool_input={"path": str(input_image)},
+                tool_response={"success": True, "output": "inspected"},
+            )
+        )
+        input_evidence = self.state()["evidence"][-1]["id"]
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="view_image",
+                tool_input={"path": str(output_image)},
+                tool_response={"success": True, "output": "read back"},
+            )
+        )
+        output_evidence = self.state()["evidence"][-1]["id"]
+        scope_evidence = self.record_tool()
+        asset_ids = [item["id"] for item in self.state()["assets"]]
+        input_asset, output_asset = asset_ids
+
+        input_proof = cg.normalize_proof_manifest(
+            self.state(),
+            {
+                "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                "item_id": "R001",
+                "obligation_id": obligations["input_asset_inspection"]["id"],
+                "evidence_ids": [input_evidence],
+                "surface": "visual",
+                "subject_ids": [input_asset],
+                "visual_facts": [{"asset_id": input_asset, "text": "visible rows have blank fields"}],
+            },
+        )
+        fact_id = input_proof["visual_facts"][0]["id"]
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        state = self.state()
+        for normalized in [input_proof]:
+            state["proof_sequence"] += 1
+            state["proofs"].append(
+                {
+                    "id": f"V{state['proof_sequence']:04d}",
+                    "created_at": cg.utc_now(),
+                    **normalized,
+                    "sha256": cg.sha256_text(cg.canonical_json(normalized)),
+                }
+            )
+        cg.save_state(session_dir, state)
+        state = self.state()
+        result_proof = cg.normalize_proof_manifest(
+            state,
+            {
+                "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                "item_id": "R001",
+                "obligation_id": obligations["result_visual_readback"]["id"],
+                "evidence_ids": [output_evidence],
+                "surface": "ui",
+                "subject_ids": [input_asset],
+                "readback_asset_id": output_asset,
+                "resolved_fact_ids": [fact_id],
+            },
+        )
+        state["proof_sequence"] += 1
+        state["proofs"].append(
+            {
+                "id": f"V{state['proof_sequence']:04d}",
+                "created_at": cg.utc_now(),
+                **result_proof,
+                "sha256": cg.sha256_text(cg.canonical_json(result_proof)),
+            }
+        )
+        cg.save_state(session_dir, state)
+        with self.assertRaisesRegex(ValueError, "covers 48/70"):
+            cg.normalize_proof_manifest(
+                self.state(),
+                {
+                    "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                    "item_id": "R001",
+                    "obligation_id": obligations["scope_coverage"]["id"],
+                    "evidence_ids": [scope_evidence],
+                    "surface": "scope",
+                    "subject_ids": [],
+                    "expected_scope": [f"paper-{i}" for i in range(70)],
+                    "observed_scope": [f"paper-{i}" for i in range(48)],
+                },
+            )
+        state = self.state()
+        checkpoint = cg.private_checkpoint(
+            state,
+            {"R001": [input_evidence, output_evidence, scope_evidence]},
+            {},
+        )
+        self.assertTrue(
+            any(
+                obligations["scope_coverage"]["id"] in issue
+                for issue in cg.checkpoint_issues(state, checkpoint)
+            )
+        )
+        scope_proof = cg.normalize_proof_manifest(
+            state,
+            {
+                "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                "item_id": "R001",
+                "obligation_id": obligations["scope_coverage"]["id"],
+                "evidence_ids": [scope_evidence],
+                "surface": "scope",
+                "subject_ids": [],
+                "expected_scope": [f"paper-{i}" for i in range(70)],
+                "observed_scope": [f"paper-{i}" for i in range(70)],
+            },
+        )
+        state["proof_sequence"] += 1
+        state["proofs"].append(
+            {
+                "id": f"V{state['proof_sequence']:04d}",
+                "created_at": cg.utc_now(),
+                **scope_proof,
+                "sha256": cg.sha256_text(cg.canonical_json(scope_proof)),
+            }
+        )
+        cg.save_state(session_dir, state)
+        state = self.state()
+        checkpoint = cg.private_checkpoint(
+            state,
+            {"R001": [input_evidence, output_evidence, scope_evidence]},
+            {},
+        )
+        self.assertEqual(cg.checkpoint_issues(state, checkpoint), [])
+
+    def test_proof_contract_multilingual_and_adversarial_benchmark(self) -> None:
+        cases = (
+            ("核验全部 70 个条目。", "enforced", {"scope_coverage"}),
+            ("Verify every item in the collection.", "enforced", {"scope_coverage"}),
+            ("仅核验选定部分，不需要全部条目。", "legacy_fallback", set()),
+            ("Verify selected items, not all items.", "legacy_fallback", set()),
+            ("The word all appears in this quotation, but no verification is requested.", "legacy_fallback", set()),
+            ("Summarize the current result.", "legacy_fallback", set()),
+        )
+        for text, expected_mode, expected_kinds in cases:
+            with self.subTest(text=text):
+                state = cg.new_state(self.payload("UserPromptSubmit"))
+                contract = cg.verification_contract("R001", text, state, [])
+                self.assertEqual(contract["mode"], expected_mode)
+                self.assertEqual(
+                    {item["kind"] for item in contract["obligations"]},
+                    expected_kinds,
+                )
+
+    def test_visual_contract_rejects_successful_nonvisual_evidence_and_wrong_surface(self) -> None:
+        image = self.write_png("negative-input.png", 10, 10)
+        self.turn_index += 1
+        self.current_turn = f"turn-{self.turn_index}"
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="test-token"):
+            cg.dispatch(
+                self.payload(
+                    "UserPromptSubmit",
+                    prompt="$context-guard\n请根据截图修复界面。",
+                    local_images=[str(image)],
+                )
+            )
+        evidence_id = self.record_tool()
+        state = self.state()
+        obligation = state["requirements"][0]["verification_contract"]["obligations"][0]
+        manifest = {
+            "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+            "item_id": "R001",
+            "obligation_id": obligation["id"],
+            "evidence_ids": [evidence_id],
+            "surface": "visual",
+            "subject_ids": [state["assets"][0]["id"]],
+            "visual_facts": [
+                {"asset_id": state["assets"][0]["id"], "text": "visible defect"}
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "visual capability"):
+            cg.normalize_proof_manifest(state, manifest)
+        manifest["surface"] = "ui"
+        with self.assertRaisesRegex(ValueError, "requires surface visual"):
+            cg.normalize_proof_manifest(state, manifest)
+
+    def test_proof_is_item_scoped_and_cannot_close_sibling_requirement(self) -> None:
+        self.prompt("$context-guard\n核验全部条目。")
+        self.prompt("核验全部另一个集合。")
+        evidence_id = self.record_tool()
+        state = self.state()
+        first = state["requirements"][0]["verification_contract"]["obligations"][0]
+        proof = cg.normalize_proof_manifest(
+            state,
+            {
+                "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                "item_id": "R001",
+                "obligation_id": first["id"],
+                "evidence_ids": [evidence_id],
+                "surface": "scope",
+                "subject_ids": [],
+                "expected_scope": ["one"],
+                "observed_scope": ["one"],
+            },
+        )
+        proof.update(
+            {
+                "id": "V0001",
+                "created_at": cg.utc_now(),
+                "sha256": cg.sha256_text(cg.canonical_json(proof)),
+            }
+        )
+        state["proofs"].append(proof)
+        self.assertNotIn("R001", cg.unresolved_proof_obligations(state))
+        self.assertIn("R002", cg.unresolved_proof_obligations(state))
+
+    def test_register_proof_commits_only_after_exact_successful_hook_receipt(self) -> None:
+        self.prompt("$context-guard\n核验全部条目。")
+        evidence_id = self.record_tool()
+        state = self.state()
+        obligation = state["requirements"][0]["verification_contract"]["obligations"][0]
+        manifest_path = self.root / "proof.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                    "item_id": "R001",
+                    "obligation_id": obligation["id"],
+                    "evidence_ids": [evidence_id],
+                    "surface": "scope",
+                    "subject_ids": [],
+                    "expected_scope": ["one", "two"],
+                    "observed_scope": ["two", "one"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "register-proof",
+            *self.private_command_common(),
+            "--manifest",
+            str(manifest_path),
+        ]
+        result = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Script completed", result.stdout)
+        self.assertEqual(self.state()["proofs"], [])
+        hook_result = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(arguments)},
+                tool_response={"exit_code": 0, "output": result.stdout},
+            )
+        )
+        self.assertNotEqual(hook_result.get("decision"), "block")
+        proof = self.state()["proofs"][0]
+        self.assertEqual(proof["expected_scope_count"], 2)
+        self.assertNotIn("one", json.dumps(proof))
+        self.assertNotIn("two", json.dumps(proof))
+        cg.validate_state_integrity(self.state())
+
+    def test_register_proof_rejects_shell_tail_forgery_and_failed_tool(self) -> None:
+        self.prompt("$context-guard\n核验全部条目。")
+        evidence_id = self.record_tool()
+        state = self.state()
+        obligation = state["requirements"][0]["verification_contract"]["obligations"][0]
+        manifest_path = self.root / "proof-negative.json"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                    "item_id": "R001",
+                    "obligation_id": obligation["id"],
+                    "evidence_ids": [evidence_id],
+                    "surface": "scope",
+                    "subject_ids": [],
+                    "expected_scope": ["one"],
+                    "observed_scope": ["one"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        arguments = [
+            sys.executable,
+            str(MODULE_PATH),
+            "register-proof",
+            *self.private_command_common(),
+            "--manifest",
+            str(manifest_path),
+        ]
+        preflight = subprocess.run(
+            arguments,
+            text=True,
+            capture_output=True,
+            env=os.environ.copy(),
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        tailed = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(arguments) + "; echo forged"},
+                tool_response={"exit_code": 0, "output": preflight.stdout},
+            )
+        )
+        self.assertEqual(tailed.get("decision"), "block")
+        self.assertEqual(self.state()["proofs"], [])
+        failed = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(arguments)},
+                tool_response={"exit_code": 1, "output": preflight.stdout},
+            )
+        )
+        self.assertEqual(failed.get("decision"), "block")
+        self.assertEqual(self.state()["proofs"], [])
 
 
 if __name__ == "__main__":

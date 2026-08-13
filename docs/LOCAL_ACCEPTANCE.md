@@ -5,6 +5,27 @@ Context Guard. The current published release is `0.6.3`; the validated
 `v0.6.3` source is tagged and published from `main`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.7.1 candidate acceptance (macOS, 2026-08-13)
+
+Schema 6 and Proof protocol 1.0.0 add deterministic item, subject, surface,
+multimodal asset, visual-readback, and normalized complete-scope obligations.
+The 0.7.0 cache was consumed when the first normally trusted image task exposed
+late transcript attachment metadata that was registered but not prompt-bound.
+That cache remains immutable. Version 0.7.1 reconciles the bounded transcript
+before first tool evidence and upgrades only an existing `legacy_fallback` to
+an enforced contract; an enforced contract cannot be downgraded.
+
+Native macOS acceptance passes 155 public tests (one capability skip), 123
+private Hook tests (one skip), manager and public-contract suites, repository
+and privacy audits, Ruff 0.16.1, compilation, six-file byte parity, isolated
+private/public first-install and strict no-op lifecycle gates, and installed
+private tests. A normally trusted fresh image task binds `M0001` to `P0001`,
+shows enforced input-inspection obligations for both requirement and
+acceptance, and reports incomplete when no qualifying visual evidence exists.
+A real `/compact` resumes through the 0.7.1 SessionStart Hook with the bounded
+asset and unresolved obligation retained. No 0.7.x tag or Release is created,
+and native Windows 0.7.x acceptance is not claimed.
+
 ## 0.6.3 release acceptance (macOS and Windows, 2026-08-12)
 
 Version 0.6.3 keeps schema 5, advances the Stop protocol to 1.1.0, retains

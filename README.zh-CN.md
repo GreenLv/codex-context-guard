@@ -8,14 +8,19 @@
 [English](README.md)
 
 Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness sidecar）。它把
-权威需求、验收标准、后续修订、有限的原生计划状态、委托 Agent 来源和验证证据保存
+权威需求、验收标准、后续修订、有限的原生计划状态、委托 Agent 来源、哈希化多模态资产和验证证据保存
 在私有本地账本中，避免上下文压缩后任务契约被静默遗忘。
 
 它**不替代** Codex 的 compaction、Plan/Goal mode、memories、subagents、
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.6.3` 是最近一次已发布版本。Stop protocol 1.1.0 将兼容保留的
+> 发布状态：`0.6.3` 是最近一次已发布版本。当前 `main` 是尚未发布的 0.7.1
+> 候选，使用 schema 6 和 Proof protocol 1.0.0，以确定性契约约束证据对象、
+> 表面、视觉回读和完整范围；无法确定契约时显式记录 `legacy_fallback`。
+> 0.7.0 在原生 fresh-task 验收中发现 transcript 附件延迟关联缺陷后保持不可变，
+> 且未发布；0.7.1 是其修复后继版本。
+> Stop protocol 1.1.0 将兼容保留的
 > `continue` 降为仅诊断提示，在终态控制
 > 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.3`
 > 还会在归档旧 live cache 前先按可信索引修复漂移，并且仅当受信产品 manifest
@@ -60,6 +65,11 @@ Context Guard 因此把四件事分开记录：
 
 - 使用 SHA-256 绑定的元数据记录根提示和委托提示。
 - 为需求和验收项分配稳定 ID，显式记录 supersession，不静默改写历史。
+- 对可确定的资产、对象、UI/文件表面、视觉回读和完整范围建立验证义务；普通的
+  成功命令不能满足类型或对象不匹配的义务。
+- 只保存图片来源类型、脱敏引用、哈希、字节数、尺寸和可用性，不保存图片字节；
+  结果回读必须使用不同的哈希资产并解决不可变的视觉事实。
+- 无法确定性建立契约时标记 `legacy_fallback`，不宣称能理解任意自然语言或像素语义。
 - 在压缩前保存有界恢复包，并在 compact 或 resume 时恢复任务边界。
 - 将最近一次成功的原生 `update_plan` 调用镜像为只读恢复索引。
 - 保存有来源的有界委托契约和 Agent 结果，不保存 transcript 或隐藏推理。
@@ -328,9 +338,9 @@ Context Guard 不是：
 - 第二套 Plan/Goal 控制器、Agent 调度器、mailbox 或共享工作区；
 - 人工审查、测试或验收的替代品。
 
-需求—证据语义相关性不属于 0.6.x 能力，顺延到可能的 0.7.0，并要求先批准含
-false-acceptance、false-rejection 和 abstention 阈值的 benchmark。共享多 Agent
-工作区与 telemetry 仍是独立研究决策。
+Proof protocol 1.0.0 只保证 `enforced` 项中明确显示的确定性义务；它不证明任意
+语义正确性，不解释任意像素，也不确认来源是否官方。`legacy_fallback` 保留兼容的
+来源/outcome 门禁。共享多 Agent 工作区与 telemetry 仍是独立研究决策。
 
 ## 贡献与安全
 

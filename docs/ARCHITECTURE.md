@@ -2,7 +2,7 @@
 
 Context Guard is a correctness sidecar for Codex. It observes lifecycle events,
 maintains private local task state, compiles a bounded recovery packet, and
-gates completion claims against successful evidence. It does not replace or
+gates completion claims against successful, contract-compatible evidence. It does not replace or
 control Codex-native orchestration.
 
 ## Responsibility boundary
@@ -77,7 +77,8 @@ snapshot. The mirror is recovery context only and never controls Codex Plan
 mode.
 
 Post-tool evidence records bounded input/output summaries, actor provenance,
-outcome, and outcome basis. Structured success/failure is preferred.
+outcome, outcome basis, detected subjects, asset IDs, and deterministic surface
+capabilities. Structured success/failure is preferred.
 Unstructured text and weak success markers are unknown. An exact standalone
 completion marker can be successful only when the verification command itself
 fails on unmet checks.
@@ -85,6 +86,13 @@ fails on unmet checks.
 Binary and data-URL values are replaced with type, length, and SHA-256 metadata.
 Generic typed text remains text; binary omission is based on field and container
 semantics rather than a broad base64-looking heuristic.
+
+Schema 6 also maintains a hash-only multimodal asset ledger. Hook payloads and
+the bounded transcript tail contribute local-image or data-URL references. The
+runtime reads bounded bytes only to calculate SHA-256, byte count, media type,
+and dimensions; it stores no image bytes or full local locator. A later tool
+event can bind evidence to the same asset hash or to a distinct result-readback
+asset.
 
 ### L3: delegated-agent provenance
 
@@ -108,14 +116,29 @@ compact/resume restores a bounded packet in this priority order:
 3. latest native-plan mirror;
 4. active and recent bounded agent state;
 5. recent successful/failed evidence;
-6. completion rules.
+6. bounded asset metadata and unresolved proof obligations; and
+7. completion rules.
 
 The completion gate is bound to the current turn. Only successful evidence
 already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
-Schema 5 gives each active completion attempt one `staged_control` slot. It is
+Proof protocol 1.0.0 derives only deterministic contracts from immutable prompt
+signals. Its obligation types cover input-asset inspection, distinct visual
+result readback, named path/URL subject readback, and complete-scope coverage.
+An `enforced` contract cannot be weakened after creation. When an attachment or
+contract boundary cannot be established, the item is explicitly
+`legacy_fallback` and uses the compatible 0.6.3 evidence gate.
+
+`register-proof` authenticates the current session, turn, and private token,
+then stores an immutable item/obligation/evidence binding. It rejects failed or
+stale evidence, incompatible tool capabilities, wrong subjects/surfaces,
+same-image result readbacks, unresolved visual facts, and observed scope sets
+that omit any normalized expected identifier. Scope counts and digests are
+computed by the runtime rather than accepted as caller claims.
+
+Schema 6 retains the schema-5 completion attempt and gives each active attempt one `staged_control` slot. It is
 either a verified checkpoint or one typed non-completion disposition:
 `continue`, `user_wait`, `external_wait`, or `deferred`. `complete` is not a
 disposition; it can be derived only when Stop validates and consumes a
@@ -169,8 +192,8 @@ hash-verified prompt record; an ambiguous prompt boundary fails closed.
 
 | Event | Purpose | Visible context |
 | --- | --- | --- |
-| `UserPromptSubmit` | journal prompt, classify authority, update requirements and revisions | activation/status and bounded completion instructions |
-| `PostToolUse` | record bounded evidence, observe successful `update_plan`, and authoritatively stage a verified private control request | none |
+| `UserPromptSubmit` | journal prompt, classify authority, capture prompt assets, and update requirements/contracts/revisions | activation/status and bounded completion instructions |
+| `PostToolUse` | record bounded evidence/assets/capabilities, observe successful `update_plan`, and authoritatively stage a verified private control request | none |
 | `PreCompact` | validate state and write recovery snapshot | continue/fail-closed result |
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
@@ -180,12 +203,16 @@ hash-verified prompt record; an ambiguous prompt boundary fails closed.
 
 ## Private state
 
-Schema 5 contains:
+Schema 6 contains:
 
 - session identity and lifecycle timestamps;
 - prompt metadata and immutable prompt records;
 - requirements, acceptance items, and supersessions;
 - evidence with monotonic IDs and bounded retention;
+- a hash-only multimodal asset ledger with source type, redacted reference,
+  SHA-256, byte count, media type, dimensions, and availability;
+- immutable per-item verification contracts plus Proof protocol bindings,
+  visual facts, distinct result readbacks, and normalized scope digests;
 - `work_state.plan_snapshot`;
 - bounded agent records;
 - compaction history;
@@ -201,7 +228,9 @@ Writes are atomic. Session operations use a cross-platform lock. State is
 validated before use; corrupted state is preserved for diagnosis and rebuilt
 only from hash-verified prompt records. Reconstructed requirements return to
 pending because prior evidence cannot be silently re-trusted. Schema 1, 2, 3,
-and 4 migrate to schema 5 while preserving the durable ledger. Migration
+and 4 migrate through schema 5 to schema 6 while preserving the durable ledger.
+Existing schema-5 items are marked `legacy_fallback`; migration never invents
+retroactive proof obligations. Migration
 deliberately discards any in-flight completion attempt, token, or staged control
 so a stale turn cannot authorize the new protocol.
 
@@ -236,8 +265,7 @@ receipt; state schema 5, Stop protocol 1.0.0, classifier 2.0.0, dispositions,
 Stop priority, and all eight Hooks remain unchanged. The installed 0.6.0 cache
 is immutable and must not be patched in place or tagged.
 
-Requirement-to-evidence semantic relevance is not implemented by 0.6.x. It
-remains benchmark-first research and is deferred to a possible 0.7.0 capability
-only after positive, negative, adversarial, multilingual, false-acceptance,
-false-rejection, and abstention thresholds are approved. A shared multi-agent
-workspace also requires separate evidence and approval.
+The 0.7.x line adds schema 6 and deterministic Proof protocol 1.x while keeping
+Stop protocol 1.1.0, classifier 2.0.0, and the eight-event Hook wire. It
+guarantees only displayed `enforced` obligations and does not claim arbitrary
+pixel understanding or semantic completeness for `legacy_fallback` items.

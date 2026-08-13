@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import datetime as dt
 import hashlib
 import hmac
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -22,9 +24,10 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.0.0"
+PROOF_PROTOCOL_VERSION = "1.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
 EVIDENCE_LIMIT = 200
@@ -43,6 +46,8 @@ MAX_SUCCESSOR_HASH_BYTES = 256 * 1024 * 1024
 MAX_SUCCESSOR_AUDIT_FILES = 80
 MAX_SUCCESSOR_AUDIT_BYTES = 256 * 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
+MAX_ASSET_BYTES = 64 * 1024 * 1024
+MAX_PROOF_MANIFEST_BYTES = 64 * 1024
 STATE_REQUIRED_KEYS = {
     "schema_version",
     "session",
@@ -53,6 +58,10 @@ STATE_REQUIRED_KEYS = {
     "supersedes",
     "evidence",
     "evidence_sequence",
+    "assets",
+    "asset_sequence",
+    "proofs",
+    "proof_sequence",
     "work_state",
     "agents",
     "open_items",
@@ -64,6 +73,34 @@ STATE_REQUIRED_KEYS = {
     "integrity",
     "content_hash",
 }
+ASSET_ID_RE = re.compile(r"M\d{4,}")
+PROOF_ID_RE = re.compile(r"V\d{4,}")
+ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![\w])(?:/[\w.@+~\-\u0080-\uffff][^\s,;，；。!?！？'\"<>]*)"
+)
+URL_RE = re.compile(r"https?://[^\s,;，；。!?！？'\"<>]+", re.IGNORECASE)
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+IMAGE_REFERENCE_RE = re.compile(r"(?:截图|图片|图像|image|screenshot|visual)", re.IGNORECASE)
+VISUAL_MUTATION_RE = re.compile(
+    r"(?:修改|修复|调整|更新|替换|编辑|生成|渲染|展示|显示|改成|"
+    r"edit|fix|change|update|replace|generate|render|display)",
+    re.IGNORECASE,
+)
+FULL_SCOPE_RE = re.compile(
+    r"(?:全部|所有|完整|整个|全量|每(?:个|一)|\b(?:all|every|entire|whole|complete|full)\b)",
+    re.IGNORECASE,
+)
+FULL_SCOPE_NEGATION_RE = re.compile(
+    r"(?:\b(?:not|without)\s+(?:all|every|complete|full)\b|"
+    r"(?:不要|无需|不需要|并非|不是|不必)\s*(?:全部|所有|完整|整个|全量)|"
+    r"(?:仅|只)\s*(?:处理|核验|检查|修改|覆盖)?\s*(?:部分|选定|指定)|"
+    r"\bno\s+(?:scope\s+|full\s+)?verification\s+is\s+requested\b)",
+    re.IGNORECASE,
+)
+UI_SURFACE_RE = re.compile(
+    r"(?:界面|页面|窗口|可见|列|浏览器|应用|GUI|UI|screen|browser|window|visible)",
+    re.IGNORECASE,
+)
 CHECKPOINT_RE = re.compile(
     r"<!--\s*context-guard-checkpoint\s*(\{.*?\})\s*-->",
     re.IGNORECASE | re.DOTALL,
@@ -340,6 +377,7 @@ INTERNAL_CONTINUATION_PREFIX = "[Context Guard continuation]"
 EVIDENCE_ID_RE = re.compile(r"^E\d{4,}$")
 STAGE_REQUEST_MARKER = "CONTEXT_GUARD_STAGE_REQUEST"
 DISPOSITION_REQUEST_MARKER = "CONTEXT_GUARD_DISPOSITION_REQUEST"
+PROOF_REQUEST_MARKER = "CONTEXT_GUARD_PROOF_REQUEST"
 DISPOSITION_REASONS = {
     "continue": "assistant_work_remains",
     "user_wait": "user_action_required",
@@ -677,7 +715,7 @@ def prompt_record_hash(record: dict[str, Any]) -> str:
 
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, 3, 4, SCHEMA_VERSION}:
+    if version not in {1, 2, 3, 4, 5, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -697,6 +735,13 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         required = STATE_REQUIRED_KEYS - {"integrity", "work_state", "agents"}
     elif version == 3:
         required = STATE_REQUIRED_KEYS - {"decision_log"}
+    elif version == 5:
+        required = STATE_REQUIRED_KEYS - {
+            "assets",
+            "asset_sequence",
+            "proofs",
+            "proof_sequence",
+        }
     else:
         required = STATE_REQUIRED_KEYS
     missing = sorted(required - set(state))
@@ -718,6 +763,8 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         "acceptance_items",
         "supersedes",
         "evidence",
+        "assets",
+        "proofs",
         "agents",
         "open_items",
         "compactions",
@@ -725,6 +772,51 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
     ):
         if key in state and not isinstance(state.get(key), list):
             raise StateIntegrityError(f"private state field {key} must be a list")
+    if version == SCHEMA_VERSION:
+        asset_ids: set[str] = set()
+        for asset in state.get("assets", []):
+            if (
+                not isinstance(asset, dict)
+                or not ASSET_ID_RE.fullmatch(str(asset.get("id") or ""))
+                or asset.get("id") in asset_ids
+                or not isinstance(asset.get("prompt_ids"), list)
+                or any(
+                    not isinstance(prompt_id, str)
+                    for prompt_id in asset.get("prompt_ids", [])
+                )
+                or not re.fullmatch(r"[0-9a-f]{64}", str(asset.get("locator_sha256") or ""))
+                or ";base64," in str(asset.get("source_ref") or "")
+            ):
+                raise StateIntegrityError("private asset ledger is invalid")
+            asset_ids.add(str(asset["id"]))
+        for collection in ("requirements", "acceptance_items"):
+            for item in state.get(collection, []):
+                contract = item.get("verification_contract") if isinstance(item, dict) else None
+                if (
+                    not isinstance(contract, dict)
+                    or contract.get("protocol_version") != PROOF_PROTOCOL_VERSION
+                    or contract.get("mode") not in {"enforced", "legacy_fallback"}
+                    or not isinstance(contract.get("obligations"), list)
+                ):
+                    raise StateIntegrityError("private verification contract is invalid")
+                if contract.get("mode") == "legacy_fallback" and contract.get("obligations"):
+                    raise StateIntegrityError("legacy fallback cannot retain enforced obligations")
+        proof_ids: set[str] = set()
+        for proof in state.get("proofs", []):
+            if (
+                not isinstance(proof, dict)
+                or not PROOF_ID_RE.fullmatch(str(proof.get("id") or ""))
+                or proof.get("id") in proof_ids
+                or proof.get("protocol_version") != PROOF_PROTOCOL_VERSION
+            ):
+                raise StateIntegrityError("private proof ledger is invalid")
+            normalized = dict(proof)
+            normalized.pop("id", None)
+            normalized.pop("created_at", None)
+            stored_proof_hash = normalized.pop("sha256", None)
+            if stored_proof_hash != sha256_text(canonical_json(normalized)):
+                raise StateIntegrityError("private proof hash mismatch")
+            proof_ids.add(str(proof["id"]))
 
 
 def preserve_corrupt_state(path: Path) -> Path | None:
@@ -811,6 +903,10 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "supersedes": [],
         "evidence": [],
         "evidence_sequence": 0,
+        "assets": [],
+        "asset_sequence": 0,
+        "proofs": [],
+        "proof_sequence": 0,
         "work_state": {
             "plan_snapshot": None,
         },
@@ -854,7 +950,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["status"] = "pending"
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
-    elif version not in {2, 3, 4, SCHEMA_VERSION}:
+    elif version not in {2, 3, 4, 5, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
@@ -883,12 +979,25 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             item.setdefault("observed_outcome", outcome)
             migrated_decisions.append(item)
         state["decision_log"] = migrated_decisions[-DECISION_LOG_LIMIT:]
-    if version in {1, 2, 3, 4}:
+    if version in {1, 2, 3, 4, 5}:
         # Turn tokens and partially staged controls are intentionally ephemeral.
         # Preserve the durable ledger/history while requiring a fresh protocol
         # token after a schema upgrade.
         state["completion_attempt"] = None
         state["schema_version"] = SCHEMA_VERSION
+    if version in {1, 2, 3, 4, 5}:
+        state["assets"] = []
+        state["asset_sequence"] = 0
+        state["proofs"] = []
+        state["proof_sequence"] = 0
+        for collection in ("requirements", "acceptance_items"):
+            for item in state.get(collection, []):
+                item["verification_contract"] = {
+                    "protocol_version": PROOF_PROTOCOL_VERSION,
+                    "mode": "legacy_fallback",
+                    "reason": "migrated_schema5_or_earlier",
+                    "obligations": [],
+                }
     if not isinstance(state.get("integrity"), dict):
         state["integrity"] = {
             "status": "ok",
@@ -897,6 +1006,10 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             "backup_file": None,
         }
     state.setdefault("evidence_sequence", 0)
+    state.setdefault("assets", [])
+    state.setdefault("asset_sequence", 0)
+    state.setdefault("proofs", [])
+    state.setdefault("proof_sequence", 0)
     work_state = state.setdefault("work_state", {"plan_snapshot": None})
     if isinstance(work_state, dict):
         work_state.setdefault("plan_snapshot", None)
@@ -989,6 +1102,227 @@ def prompt_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def recursive_strings(value: Any, *, depth: int = 0) -> Iterator[str]:
+    """Yield bounded string leaves without retaining multimodal bytes."""
+    if depth > 8:
+        return
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from recursive_strings(item, depth=depth + 1)
+    elif isinstance(value, list):
+        for item in value[:64]:
+            yield from recursive_strings(item, depth=depth + 1)
+
+
+def image_dimensions(raw: bytes, media_type: str) -> tuple[int | None, int | None]:
+    try:
+        if media_type == "image/png" and raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+        if media_type == "image/gif" and raw[:6] in {b"GIF87a", b"GIF89a"}:
+            return int.from_bytes(raw[6:8], "little"), int.from_bytes(raw[8:10], "little")
+        if media_type == "image/jpeg" and raw.startswith(b"\xff\xd8"):
+            offset = 2
+            while offset + 9 < len(raw):
+                if raw[offset] != 0xFF:
+                    offset += 1
+                    continue
+                marker = raw[offset + 1]
+                offset += 2
+                if marker in {0xD8, 0xD9}:
+                    continue
+                length = int.from_bytes(raw[offset : offset + 2], "big")
+                if length < 2 or offset + length > len(raw):
+                    break
+                if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                    return (
+                        int.from_bytes(raw[offset + 5 : offset + 7], "big"),
+                        int.from_bytes(raw[offset + 3 : offset + 5], "big"),
+                    )
+                offset += length
+    except (IndexError, ValueError):
+        pass
+    return None, None
+
+
+def asset_candidate(value: str) -> tuple[str, str, bytes | None, bool] | None:
+    """Return kind, locator, bounded bytes, availability for an image reference."""
+    stripped = value.strip()
+    if stripped.startswith("data:image/") and ";base64," in stripped:
+        header, encoded = stripped.split(",", 1)
+        if len(encoded) > (MAX_ASSET_BYTES * 4 // 3 + 8):
+            return "data_url", header.split(";", 1)[0][5:], None, False
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError):
+            return "data_url", header.split(";", 1)[0][5:], None, False
+        if len(raw) > MAX_ASSET_BYTES:
+            return "data_url", header.split(";", 1)[0][5:], None, False
+        return "data_url", header.split(";", 1)[0][5:], raw, True
+    raw_path = stripped[7:] if stripped.startswith("file://") else stripped
+    path = Path(raw_path).expanduser()
+    if path.suffix.lower() not in IMAGE_SUFFIXES:
+        return None
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_ASSET_BYTES:
+            return "local_file", raw_path, None, False
+        raw = path.read_bytes()
+    except OSError:
+        return "local_file", raw_path, None, False
+    return "local_file", raw_path, raw, True
+
+
+def add_asset(
+    state: dict[str, Any], prompt_id: str | None, candidate: tuple[str, str, bytes | None, bool], source: str
+) -> str:
+    kind, locator, raw, available = candidate
+    media_type = (
+        locator if kind == "data_url" else (mimetypes.guess_type(locator)[0] or "application/octet-stream")
+    )
+    digest = hashlib.sha256(raw).hexdigest() if raw is not None else None
+    for item in state.get("assets", []):
+        if digest and item.get("sha256") == digest:
+            if prompt_id and prompt_id not in item.get("prompt_ids", []):
+                item.setdefault("prompt_ids", []).append(prompt_id)
+            return str(item["id"])
+        if not digest and item.get("locator_sha256") == sha256_text(locator):
+            if prompt_id and prompt_id not in item.get("prompt_ids", []):
+                item.setdefault("prompt_ids", []).append(prompt_id)
+            return str(item["id"])
+    width, height = image_dimensions(raw or b"", media_type)
+    state["asset_sequence"] = int(state.get("asset_sequence", 0)) + 1
+    asset_id = f"M{state['asset_sequence']:04d}"
+    source_ref = (
+        f"data:{media_type}"
+        if kind == "data_url"
+        else Path(locator).name
+    )
+    state["assets"].append(
+        {
+            "id": asset_id,
+            "prompt_ids": [prompt_id] if prompt_id else [],
+            "created_at": utc_now(),
+            "source": source,
+            "source_kind": kind,
+            "source_ref": bounded(source_ref, 180),
+            "locator_sha256": sha256_text(locator),
+            "sha256": digest,
+            "bytes": len(raw) if raw is not None else None,
+            "media_type": media_type,
+            "width": width,
+            "height": height,
+            "available": available,
+        }
+    )
+    return asset_id
+
+
+def discover_assets(
+    state: dict[str, Any], value: Any, *, prompt_id: str | None, source: str
+) -> list[str]:
+    found: list[str] = []
+    for text in recursive_strings(value):
+        candidate = (
+            asset_candidate(text)
+            if text.startswith("data:image/")
+            or text.startswith("file://")
+            or not any(character.isspace() for character in text)
+            else None
+        )
+        if candidate is not None:
+            found.append(add_asset(state, prompt_id, candidate, source))
+        for match in ABSOLUTE_PATH_RE.findall(text):
+            candidate = asset_candidate(match.rstrip(")]}>"))
+            if candidate is not None:
+                found.append(add_asset(state, prompt_id, candidate, source))
+    return list(dict.fromkeys(found))
+
+
+def prompt_subjects(text: str) -> list[dict[str, str]]:
+    subjects: list[dict[str, str]] = []
+    for kind, pattern in (("path", ABSOLUTE_PATH_RE), ("url", URL_RE)):
+        for value in pattern.findall(text):
+            cleaned = value.rstrip(")]}>.,")
+            if kind == "path" and Path(cleaned).suffix.lower() in IMAGE_SUFFIXES:
+                continue
+            subjects.append(
+                {
+                    "id": f"subject:{sha256_text(cleaned)[:20]}",
+                    "kind": kind,
+                    "display": Path(cleaned).name if kind == "path" else cleaned[:120],
+                    "locator_sha256": sha256_text(cleaned),
+                }
+            )
+    return list({item["id"]: item for item in subjects}.values())
+
+
+def discovered_subject_ids(value: Any) -> list[str]:
+    result: list[str] = []
+    for text in recursive_strings(value):
+        result.extend(item["id"] for item in prompt_subjects(text))
+    return list(dict.fromkeys(result))
+
+
+def verification_contract(
+    item_id: str, text: str, state: dict[str, Any], asset_ids: list[str]
+) -> dict[str, Any]:
+    assets = [item for item in state.get("assets", []) if item.get("id") in asset_ids]
+    subjects = prompt_subjects(text)
+    if IMAGE_REFERENCE_RE.search(text) and not assets:
+        return {
+            "protocol_version": PROOF_PROTOCOL_VERSION,
+            "mode": "legacy_fallback",
+            "reason": "asset_reference_unresolved",
+            "obligations": [],
+        }
+    if assets and any(not item.get("available") for item in assets):
+        return {
+            "protocol_version": PROOF_PROTOCOL_VERSION,
+            "mode": "legacy_fallback",
+            "reason": "asset_unavailable",
+            "obligations": [],
+        }
+    obligations: list[dict[str, Any]] = []
+
+    def add(kind: str, surface: str, subject_ids: list[str]) -> None:
+        obligations.append(
+            {
+                "id": f"O-{item_id}-{len(obligations) + 1:03d}",
+                "kind": kind,
+                "surface": surface,
+                "subject_ids": list(dict.fromkeys(subject_ids)),
+            }
+        )
+
+    for asset in assets:
+        add("input_asset_inspection", "visual", [str(asset["id"])])
+    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(text))
+    if visual_signal and VISUAL_MUTATION_RE.search(text):
+        add("result_visual_readback", "ui", [str(item["id"]) for item in assets])
+    if subjects:
+        add(
+            "subject_readback",
+            "ui" if UI_SURFACE_RE.search(text) else "artifact",
+            [item["id"] for item in subjects],
+        )
+    if FULL_SCOPE_RE.search(text) and not FULL_SCOPE_NEGATION_RE.search(text):
+        add("scope_coverage", "scope", [item["id"] for item in subjects])
+    if not obligations:
+        return {
+            "protocol_version": PROOF_PROTOCOL_VERSION,
+            "mode": "legacy_fallback",
+            "reason": "no_deterministic_contract",
+            "obligations": [],
+        }
+    return {
+        "protocol_version": PROOF_PROTOCOL_VERSION,
+        "mode": "enforced",
+        "reason": "deterministic_prompt_contract",
+        "obligations": obligations,
+    }
+
+
 def assistant_text(payload: dict[str, Any]) -> str:
     for key in ("last_assistant_message", "assistant_response", "response"):
         if isinstance(payload.get(key), str):
@@ -1035,6 +1369,100 @@ def latest_transcript_turn_id(
         if isinstance(turn_id, str) and turn_id.strip():
             return turn_id.strip()
     return None
+
+
+def transcript_tail_records(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    session = state.get("session")
+    stored_path = session.get("transcript_path") if isinstance(session, dict) else None
+    raw_path = payload.get("transcript_path") or stored_path
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return []
+    transcript = Path(raw_path).expanduser()
+    try:
+        with transcript.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - TRANSCRIPT_TAIL_BYTES)
+            handle.seek(start)
+            tail = handle.read()
+    except OSError:
+        return []
+    if start:
+        _, separator, tail = tail.partition(b"\n")
+        if not separator:
+            return []
+    records: list[dict[str, Any]] = []
+    for raw_line in tail.splitlines():
+        try:
+            record = json.loads(raw_line.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records[-512:]
+
+
+def reconcile_transcript_assets(state: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Supplement Hook payload assets from the bounded transcript tail."""
+    human_prompts = [
+        item for item in state.get("prompts", []) if item.get("origin", "human") == "human"
+    ]
+    if not human_prompts:
+        return
+    for record in transcript_tail_records(state, payload):
+        record_payload = record.get("payload")
+        if not isinstance(record_payload, dict):
+            continue
+        record_type = record.get("type")
+        if record_type == "response_item":
+            if record_payload.get("role") != "user":
+                continue
+        elif record_type == "event_msg":
+            if record_payload.get("type") != "user_message":
+                continue
+        else:
+            continue
+        text_values = [
+            value for value in recursive_strings(record_payload) if len(value) < 20000
+        ]
+        prompt_meta = next(
+            (
+                item
+                for item in reversed(human_prompts)
+                if any(sha256_text(value) == item.get("sha256") for value in text_values)
+            ),
+            None,
+        )
+        if prompt_meta is None:
+            continue
+        before = set(
+            item["id"]
+            for item in state.get("assets", [])
+            if prompt_meta.get("id") in item.get("prompt_ids", [])
+        )
+        discover_assets(
+            state,
+            record_payload,
+            prompt_id=str(prompt_meta.get("id")),
+            source="transcript_tail",
+        )
+        after = [
+            item["id"]
+            for item in state.get("assets", [])
+            if prompt_meta.get("id") in item.get("prompt_ids", [])
+        ]
+        if set(after) == before:
+            continue
+        for collection in ("requirements", "acceptance_items"):
+            for item in state.get(collection, []):
+                if item.get("prompt_id") != prompt_meta.get("id"):
+                    continue
+                contract = item.get("verification_contract")
+                if not isinstance(contract, dict) or contract.get("mode") != "legacy_fallback":
+                    continue
+                upgraded = verification_contract(item["id"], item.get("text", ""), state, after)
+                if upgraded.get("mode") == "enforced":
+                    item["verification_contract"] = upgraded
 
 
 def _protected_prompt_clauses(text: str) -> list[str]:
@@ -1567,8 +1995,11 @@ def append_prompt(
     return metadata
 
 
-def append_requirement(state: dict[str, Any], prompt: dict[str, Any], text: str) -> str:
+def append_requirement(
+    state: dict[str, Any], prompt: dict[str, Any], text: str, asset_ids: list[str] | None = None
+) -> str:
     requirement_id = f"R{len(state['requirements']) + 1:03d}"
+    contract = verification_contract(requirement_id, text, state, asset_ids or [])
     state["requirements"].append(
         {
             "id": requirement_id,
@@ -1577,23 +2008,30 @@ def append_requirement(state: dict[str, Any], prompt: dict[str, Any], text: str)
             "sha256": prompt["sha256"],
             "status": "pending",
             "evidence": [],
+            "verification_contract": contract,
         }
     )
     return requirement_id
 
 
-def append_acceptance(state: dict[str, Any], prompt_id: str, text: str) -> None:
+def append_acceptance(
+    state: dict[str, Any], prompt_id: str, text: str, asset_ids: list[str] | None = None
+) -> None:
     existing = {item["text"] for item in state["acceptance_items"]}
     for candidate in extract_acceptance(text):
         if candidate in existing:
             continue
+        acceptance_id = f"A{len(state['acceptance_items']) + 1:03d}"
         state["acceptance_items"].append(
             {
-                "id": f"A{len(state['acceptance_items']) + 1:03d}",
+                "id": acceptance_id,
                 "prompt_id": prompt_id,
                 "text": candidate,
                 "status": "pending",
                 "evidence": [],
+                "verification_contract": verification_contract(
+                    acceptance_id, candidate, state, asset_ids or []
+                ),
             }
         )
         existing.add(candidate)
@@ -1733,8 +2171,8 @@ def replay_prompt_record(
         state["mode"]["manual_off"] = True
     if is_control_prompt(text):
         return
-    requirement_id = append_requirement(state, metadata, text)
-    append_acceptance(state, metadata["id"], text)
+    requirement_id = append_requirement(state, metadata, text, [])
+    append_acceptance(state, metadata["id"], text, [])
     record_supersession(state, text, requirement_id)
     score, reasons = score_complexity(text)
     goal_requested = bool(re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE))
@@ -1885,6 +2323,7 @@ def status_context(state: dict[str, Any]) -> str:
         f"integrity={integrity.get('status', 'unknown')}, "
         f"stop_protocol={STOP_PROTOCOL_VERSION}, "
         f"classifier={CLASSIFIER_VERSION}, "
+        f"proof_protocol={PROOF_PROTOCOL_VERSION}, "
         f"last_decision={last_decision}, "
         f"requirements={len(state['requirements'])}, "
         f"acceptance={len(state['acceptance_items'])}, "
@@ -1938,6 +2377,19 @@ def tool_actor(state: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str
     if isinstance(payload_agent_id, str) and payload_agent_id.strip():
         return "subagent", payload_agent_id.strip()
     return "runtime_unattributed", None
+
+
+def evidence_capabilities(tool_name: str) -> list[str]:
+    normalized = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
+    capabilities = {"artifact"}
+    if any(token in normalized for token in ("view_image", "image", "screenshot")):
+        capabilities.add("visual")
+        capabilities.add("ui")
+    if any(token in normalized for token in ("computer", "browser", "chrome")):
+        capabilities.add("ui")
+    if tool_is_shell_execution(tool_name):
+        capabilities.add("scope")
+    return sorted(capabilities)
 
 
 def private_metadata_free_text(value: str) -> str:
@@ -2023,6 +2475,19 @@ def format_items(title: str, items: list[dict[str, Any]], include_evidence: bool
         line = f"- {item['id']} [{item.get('status', 'pending')}]: {bounded(item.get('text', ''), 600)}"
         if include_evidence and item.get("evidence"):
             line += f" | evidence: {bounded(item['evidence'], 500)}"
+        contract = item.get("verification_contract")
+        if isinstance(contract, dict):
+            obligations = contract.get("obligations", [])
+            line += (
+                f" | proof={contract.get('mode', 'legacy_fallback')}"
+                f"/{contract.get('reason', 'unknown')}"
+            )
+            if obligations:
+                line += " obligations=" + ",".join(
+                    str(value.get("id"))
+                    for value in obligations
+                    if isinstance(value, dict)
+                )
         lines.append(line)
     return "\n".join(lines)
 
@@ -2049,6 +2514,25 @@ def recovery_packet(session_dir: Path, state: dict[str, Any]) -> str:
         sections.append("\n".join(lines))
     open_ids = open_item_ids(state)
     sections.append("## Unfinished items\n- " + (", ".join(open_ids) if open_ids else "None"))
+    if state.get("assets"):
+        lines = ["## Multimodal asset contract"]
+        for item in state["assets"][-16:]:
+            lines.append(
+                f"- {item['id']} prompts={','.join(item.get('prompt_ids', [])) or 'none'} "
+                f"type={item.get('media_type')} size={item.get('width')}x{item.get('height')} "
+                f"available={item.get('available')} sha256={item.get('sha256') or 'unavailable'} "
+                f"source={item.get('source_ref')}"
+            )
+        sections.append("\n".join(lines))
+    unresolved = unresolved_proof_obligations(state)
+    if unresolved:
+        sections.append(
+            "## Unresolved verification obligations\n- "
+            + "\n- ".join(
+                f"{item_id}: {','.join(obligation_ids)}"
+                for item_id, obligation_ids in unresolved.items()
+            )
+        )
     decisions = state.get("decision_log", [])
     if (
         decisions
@@ -2201,6 +2685,9 @@ def completion_command_context(
     disposition_command = shell_join(
         [sys.executable, script, "stage-disposition", *common]
     )
+    proof_command = shell_join(
+        [sys.executable, script, "register-proof", *common, "--manifest", "/path/to/proof.json"]
+    )
     requirement_ids = [
         item["id"]
         for item in state["requirements"]
@@ -2229,6 +2716,9 @@ def completion_command_context(
         f"{disposition_command}\n"
         "A different already-staged control can be replaced only with `--replace`. "
         "Only successful evidence IDs printed by checkpoint-status are valid. "
+        "For an enforced verification contract, register each immutable proof "
+        "manifest before staging the checkpoint with this command:\n"
+        f"{proof_command}\n"
         "Previously passed items are carried forward automatically. "
         f"Tracked requirements: {','.join(requirement_ids) or 'none'}; "
         f"acceptance: {','.join(acceptance_ids) or 'none'}."
@@ -2277,6 +2767,288 @@ def parse_evidence_assignments(
     return result
 
 
+def normalized_scope(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > 10000:
+        raise ValueError(f"{label} must be a non-empty bounded string list")
+    normalized: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip() or len(raw) > 500:
+            raise ValueError(f"{label} contains an invalid identifier")
+        normalized.append(raw.strip())
+    return sorted(set(normalized))
+
+
+def proof_item(state: dict[str, Any], item_id: str) -> dict[str, Any]:
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            if item.get("id") == item_id and item.get("status") != "superseded":
+                return item
+    raise ValueError(f"proof references unknown item {item_id}")
+
+
+def proof_obligation(item: dict[str, Any], obligation_id: str) -> dict[str, Any]:
+    contract = item.get("verification_contract")
+    if not isinstance(contract, dict) or contract.get("mode") != "enforced":
+        raise ValueError(f"{item['id']} has no enforced verification contract")
+    for obligation in contract.get("obligations", []):
+        if isinstance(obligation, dict) and obligation.get("id") == obligation_id:
+            return obligation
+    raise ValueError(f"proof references unknown obligation {obligation_id}")
+
+
+def visual_fact_id(asset_id: str, text: str) -> str:
+    return f"F-{asset_id}-{sha256_text(text)[:16]}"
+
+
+def normalize_proof_manifest(state: dict[str, Any], data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("proof manifest must be an object")
+    allowed = {
+        "protocol_version",
+        "item_id",
+        "obligation_id",
+        "evidence_ids",
+        "surface",
+        "subject_ids",
+        "visual_facts",
+        "readback_asset_id",
+        "resolved_fact_ids",
+        "expected_scope",
+        "observed_scope",
+    }
+    unknown = set(data).difference(allowed)
+    if unknown:
+        raise ValueError("proof manifest has unknown fields: " + ", ".join(sorted(unknown)))
+    if data.get("protocol_version") != PROOF_PROTOCOL_VERSION:
+        raise ValueError(f"proof protocol must be {PROOF_PROTOCOL_VERSION}")
+    item_id = str(data.get("item_id") or "").upper()
+    obligation_id = str(data.get("obligation_id") or "")
+    item = proof_item(state, item_id)
+    obligation = proof_obligation(item, obligation_id)
+    surface = str(data.get("surface") or "")
+    if surface != obligation.get("surface"):
+        raise ValueError(
+            f"{obligation_id} requires surface {obligation.get('surface')}, got {surface or 'none'}"
+        )
+    evidence_ids = data.get("evidence_ids")
+    if (
+        not isinstance(evidence_ids, list)
+        or not evidence_ids
+        or len(evidence_ids) > 20
+        or any(not isinstance(value, str) or not EVIDENCE_ID_RE.fullmatch(value) for value in evidence_ids)
+    ):
+        raise ValueError("evidence_ids must be a non-empty E#### list")
+    evidence_by_id = {item["id"]: item for item in state.get("evidence", [])}
+    prompt_created_at = next(
+        (
+            prompt.get("created_at")
+            for prompt in state.get("prompts", [])
+            if prompt.get("id") == item.get("prompt_id")
+        ),
+        None,
+    )
+    for evidence_id in evidence_ids:
+        evidence = evidence_by_id.get(evidence_id)
+        if evidence is None or evidence.get("outcome") != "success":
+            raise ValueError(f"proof requires successful existing evidence {evidence_id}")
+        if (
+            isinstance(prompt_created_at, str)
+            and isinstance(evidence.get("created_at"), str)
+            and evidence["created_at"] < prompt_created_at
+        ):
+            raise ValueError(f"proof evidence {evidence_id} predates {item_id}")
+    evidence_capability_set = {
+        capability
+        for evidence_id in evidence_ids
+        for capability in evidence_by_id[evidence_id].get("capabilities", [])
+    }
+    if surface not in evidence_capability_set:
+        raise ValueError(f"proof evidence lacks required {surface} capability")
+    subject_ids = data.get("subject_ids")
+    if (
+        not isinstance(subject_ids, list)
+        or len(subject_ids) > 64
+        or any(not isinstance(value, str) or not value for value in subject_ids)
+    ):
+        raise ValueError("subject_ids must be a bounded string list")
+    required_subjects = set(obligation.get("subject_ids", []))
+    if not required_subjects.issubset(set(subject_ids)):
+        missing = sorted(required_subjects.difference(subject_ids))
+        raise ValueError("proof omits required subjects: " + ", ".join(missing))
+    kind = str(obligation.get("kind"))
+    evidence_assets = {
+        asset_id
+        for evidence_id in evidence_ids
+        for asset_id in evidence_by_id[evidence_id].get("asset_ids", [])
+    }
+    evidence_subjects = {
+        subject_id
+        for evidence_id in evidence_ids
+        for subject_id in evidence_by_id[evidence_id].get("subject_ids", [])
+    }
+    if kind == "input_asset_inspection" and not required_subjects.issubset(evidence_assets):
+        raise ValueError("input asset proof evidence does not reference every required asset")
+    if kind == "subject_readback" and not required_subjects.issubset(evidence_subjects):
+        raise ValueError("subject proof evidence does not reference every required subject")
+    visual_facts: list[dict[str, str]] = []
+    raw_facts = data.get("visual_facts", [])
+    if raw_facts is not None:
+        if not isinstance(raw_facts, list) or len(raw_facts) > 32:
+            raise ValueError("visual_facts must be a bounded list")
+        for index, raw_fact in enumerate(raw_facts):
+            if not isinstance(raw_fact, dict) or set(raw_fact) != {"asset_id", "text"}:
+                raise ValueError(f"visual_facts[{index}] must contain asset_id and text")
+            asset_id = str(raw_fact.get("asset_id") or "")
+            text = private_metadata_free_text(str(raw_fact.get("text") or "").strip())
+            if asset_id not in required_subjects or not text or len(text) > 500:
+                raise ValueError(f"visual_facts[{index}] is not bound to a required asset")
+            visual_facts.append(
+                {"id": visual_fact_id(asset_id, text), "asset_id": asset_id, "text": text}
+            )
+    if kind == "input_asset_inspection" and not visual_facts:
+        raise ValueError("input asset inspection requires at least one visual fact")
+    readback_asset_id = data.get("readback_asset_id")
+    if readback_asset_id is not None:
+        readback_asset_id = str(readback_asset_id)
+        assets = {asset["id"]: asset for asset in state.get("assets", [])}
+        readback = assets.get(readback_asset_id)
+        if readback is None or not readback.get("available") or not readback.get("sha256"):
+            raise ValueError("readback_asset_id must reference an available hashed asset")
+        input_hashes = {
+            assets[asset_id].get("sha256")
+            for asset_id in required_subjects
+            if asset_id in assets
+        }
+        if readback.get("sha256") in input_hashes:
+            raise ValueError("result readback must differ from every input asset")
+    if kind == "result_visual_readback" and not readback_asset_id:
+        raise ValueError("result visual readback requires readback_asset_id")
+    if kind == "result_visual_readback" and readback_asset_id not in evidence_assets:
+        raise ValueError("result proof evidence does not reference the readback asset")
+    resolved_fact_ids = data.get("resolved_fact_ids", [])
+    if not isinstance(resolved_fact_ids, list) or any(
+        not isinstance(value, str) for value in resolved_fact_ids
+    ):
+        raise ValueError("resolved_fact_ids must be a string list")
+    if kind == "result_visual_readback":
+        known_fact_ids = {
+            fact["id"]
+            for proof in state.get("proofs", [])
+            if proof.get("item_id") == item_id
+            for fact in proof.get("visual_facts", [])
+            if isinstance(fact, dict) and isinstance(fact.get("id"), str)
+        }
+        if not known_fact_ids or not known_fact_ids.issubset(set(resolved_fact_ids)):
+            raise ValueError("result readback must resolve every immutable visual fact")
+    expected_scope: list[str] = []
+    observed_scope: list[str] = []
+    if kind == "scope_coverage":
+        expected_scope = normalized_scope(data.get("expected_scope"), "expected_scope")
+        observed_scope = normalized_scope(data.get("observed_scope"), "observed_scope")
+        missing = sorted(set(expected_scope).difference(observed_scope))
+        if missing:
+            raise ValueError(
+                f"scope proof covers {len(observed_scope)}/{len(expected_scope)}; "
+                f"missing {len(missing)} identifiers"
+            )
+    return {
+        "protocol_version": PROOF_PROTOCOL_VERSION,
+        "item_id": item_id,
+        "obligation_id": obligation_id,
+        "kind": kind,
+        "surface": surface,
+        "subject_ids": sorted(set(subject_ids)),
+        "evidence_ids": list(dict.fromkeys(evidence_ids)),
+        "visual_facts": visual_facts,
+        "readback_asset_id": readback_asset_id,
+        "resolved_fact_ids": sorted(set(resolved_fact_ids)),
+        "expected_scope_count": len(expected_scope),
+        "expected_scope_sha256": sha256_text(canonical_json(expected_scope)) if expected_scope else None,
+        "observed_scope_count": len(observed_scope),
+        "observed_scope_sha256": sha256_text(canonical_json(observed_scope)) if observed_scope else None,
+    }
+
+
+def normalized_proof_file(state: dict[str, Any], manifest_path: Path) -> dict[str, Any]:
+    raw = read_bounded_regular_file(manifest_path, MAX_PROOF_MANIFEST_BYTES, "proof manifest")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"proof manifest is invalid UTF-8 JSON: {exc}") from exc
+    return normalize_proof_manifest(state, data)
+
+
+def append_normalized_proof(state: dict[str, Any], normalized: dict[str, Any]) -> dict[str, Any]:
+    digest = sha256_text(canonical_json(normalized))
+    for proof in state.get("proofs", []):
+        if proof.get("sha256") == digest:
+            return proof
+    state["proof_sequence"] = int(state.get("proof_sequence", 0)) + 1
+    proof = {
+        "id": f"V{state['proof_sequence']:04d}",
+        "created_at": utc_now(),
+        **normalized,
+        "sha256": digest,
+    }
+    state["proofs"].append(proof)
+    return proof
+
+
+def validate_proof_request(
+    root: Path, session_id: str, turn_id: str, token: str, manifest_path: Path
+) -> str:
+    session_dir = root / "sessions" / safe_session_id(session_id)
+    state = load_state(session_dir, {"session_id": session_id})
+    require_usable_state(state)
+    completion_attempt_for(state, turn_id, token)
+    normalized = normalized_proof_file(state, manifest_path)
+    return sha256_text(canonical_json(normalized))
+
+
+def fulfilled_obligation_ids(state: dict[str, Any], item_id: str) -> set[str]:
+    proofs = [proof for proof in state.get("proofs", []) if proof.get("item_id") == item_id]
+    fact_ids = {
+        fact["id"]
+        for proof in proofs
+        for fact in proof.get("visual_facts", [])
+        if isinstance(fact, dict) and isinstance(fact.get("id"), str)
+    }
+    fulfilled: set[str] = set()
+    item = proof_item(state, item_id)
+    for obligation in item.get("verification_contract", {}).get("obligations", []):
+        obligation_id = obligation.get("id")
+        candidates = [proof for proof in proofs if proof.get("obligation_id") == obligation_id]
+        if obligation.get("kind") == "result_visual_readback":
+            candidates = [
+                proof
+                for proof in candidates
+                if fact_ids.issubset(set(proof.get("resolved_fact_ids", [])))
+            ]
+        if candidates:
+            fulfilled.add(str(obligation_id))
+    return fulfilled
+
+
+def unresolved_proof_obligations(state: dict[str, Any]) -> dict[str, list[str]]:
+    unresolved: dict[str, list[str]] = {}
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            contract = item.get("verification_contract")
+            if item.get("status") == "superseded" or not isinstance(contract, dict):
+                continue
+            if contract.get("mode") != "enforced":
+                continue
+            fulfilled = fulfilled_obligation_ids(state, item["id"])
+            missing = [
+                str(obligation.get("id"))
+                for obligation in contract.get("obligations", [])
+                if obligation.get("id") not in fulfilled
+            ]
+            if missing:
+                unresolved[item["id"]] = missing
+    return unresolved
+
+
 def checkpoint_status_snapshot(state: dict[str, Any], turn_id: str) -> dict[str, Any]:
     successful = [
         {
@@ -2287,30 +3059,87 @@ def checkpoint_status_snapshot(state: dict[str, Any], turn_id: str) -> dict[str,
         for item in state["evidence"]
         if item.get("outcome") == "success"
     ]
+    unresolved = unresolved_proof_obligations(state)
+
+    def item_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+        contract = item.get("verification_contract")
+        mode = contract.get("mode") if isinstance(contract, dict) else "legacy_fallback"
+        obligations = contract.get("obligations", []) if isinstance(contract, dict) else []
+        fulfilled = fulfilled_obligation_ids(state, item["id"]) if mode == "enforced" else set()
+        return {
+            "id": item["id"],
+            "status": item.get("status", "pending"),
+            "text": bounded(item.get("text", ""), 350),
+            "evidence": item.get("evidence", []),
+            "verification": {
+                "protocol_version": PROOF_PROTOCOL_VERSION,
+                "mode": mode,
+                "reason": contract.get("reason") if isinstance(contract, dict) else "missing_contract",
+                "obligations": [
+                    {
+                        "id": obligation.get("id"),
+                        "kind": obligation.get("kind"),
+                        "surface": obligation.get("surface"),
+                        "subject_ids": obligation.get("subject_ids", []),
+                        "fulfilled": obligation.get("id") in fulfilled,
+                    }
+                    for obligation in obligations
+                    if isinstance(obligation, dict)
+                ],
+                "unresolved": unresolved.get(item["id"], []),
+            },
+        }
+
     return {
         "turn_id": turn_id,
+        "proof_protocol_version": PROOF_PROTOCOL_VERSION,
         "requirements": [
-            {
-                "id": item["id"],
-                "status": item.get("status", "pending"),
-                "text": bounded(item.get("text", ""), 350),
-                "evidence": item.get("evidence", []),
-            }
+            item_snapshot(item)
             for item in state["requirements"]
             if item.get("status") != "superseded"
         ],
         "acceptance": [
-            {
-                "id": item["id"],
-                "status": item.get("status", "pending"),
-                "text": bounded(item.get("text", ""), 350),
-                "evidence": item.get("evidence", []),
-            }
+            item_snapshot(item)
             for item in state["acceptance_items"]
             if item.get("status") != "superseded"
         ],
         "successful_evidence_count": len(successful),
         "recent_successful_evidence": successful[-30:],
+        "assets": [
+            {
+                key: item.get(key)
+                for key in (
+                    "id",
+                    "prompt_ids",
+                    "source_kind",
+                    "source_ref",
+                    "sha256",
+                    "bytes",
+                    "media_type",
+                    "width",
+                    "height",
+                    "available",
+                )
+            }
+            for item in state.get("assets", [])[-32:]
+        ],
+        "proofs": [
+            {
+                key: item.get(key)
+                for key in (
+                    "id",
+                    "item_id",
+                    "obligation_id",
+                    "kind",
+                    "surface",
+                    "evidence_ids",
+                    "readback_asset_id",
+                    "expected_scope_count",
+                    "observed_scope_count",
+                )
+            }
+            for item in state.get("proofs", [])[-64:]
+        ],
     }
 
 
@@ -2574,6 +3403,9 @@ def handle_user_prompt(
         authority=authority,
         actor_id=actor_id,
     )
+    asset_ids = discover_assets(
+        state, payload, prompt_id=prompt["id"], source="hook_payload"
+    )
     if origin == "subagent_delegation":
         save_state(session_dir, state)
         return {}
@@ -2602,9 +3434,9 @@ def handle_user_prompt(
         export_requested = False
     if not is_control_prompt(text):
         state["continuation_attempts"] = 0
-        requirement_id = append_requirement(state, prompt, text)
+        requirement_id = append_requirement(state, prompt, text, asset_ids)
         acceptance_count = len(state["acceptance_items"])
-        append_acceptance(state, prompt["id"], text)
+        append_acceptance(state, prompt["id"], text, asset_ids)
         new_acceptance_ids = [
             item["id"] for item in state["acceptance_items"][acceptance_count:]
         ]
@@ -2862,6 +3694,7 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
         return False
     control_commands = (
         "checkpoint-status",
+        "register-proof",
         "stage-checkpoint",
         "stage-disposition",
     )
@@ -2876,7 +3709,7 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
     except ValueError:
         return bool(
             re.search(
-                r"(?<![A-Za-z0-9_-])(?:checkpoint-status|stage-checkpoint|"
+                r"(?<![A-Za-z0-9_-])(?:checkpoint-status|register-proof|stage-checkpoint|"
                 r"stage-disposition)(?![A-Za-z0-9_-])",
                 command,
             )
@@ -2915,7 +3748,7 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
             continue
     return bool(
         re.search(
-            r"(?<![A-Za-z0-9_-])(?:checkpoint-status|stage-checkpoint|"
+            r"(?<![A-Za-z0-9_-])(?:checkpoint-status|register-proof|stage-checkpoint|"
             r"stage-disposition)(?![A-Za-z0-9_-])",
             command,
         )
@@ -2981,6 +3814,85 @@ def is_exact_checkpoint_status_command(
         return False
     completion_attempt_for(state, turn_id, values["--token"][0])
     return True
+
+
+def parse_proof_request_from_tool(
+    state: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return None
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str) or "register-proof" not in command:
+        return None
+    if shell_control_operator_present(command):
+        raise ValueError("private proof request must be one exact command")
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError as exc:
+        raise ValueError(f"invalid private proof command: {exc}") from exc
+    tokens = [
+        token[1:-1]
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
+        else token
+        for token in tokens
+    ]
+    if len(tokens) < 3 or tokens[2] != "register-proof":
+        raise ValueError("private proof request must be one exact command")
+    try:
+        if (
+            Path(tokens[0]).expanduser().resolve() != Path(sys.executable).resolve()
+            or Path(tokens[1]).expanduser().resolve() != Path(__file__).resolve()
+        ):
+            raise ValueError("private proof request uses a different runtime")
+    except (OSError, RuntimeError):
+        raise ValueError("private proof request path could not be resolved") from None
+    values = {
+        name: []
+        for name in ("--data-dir", "--session-id", "--turn-id", "--token", "--manifest")
+    }
+    position = 3
+    while position < len(tokens):
+        raw = tokens[position]
+        if raw.startswith("--") and "=" in raw:
+            option, value = raw.split("=", 1)
+            position += 1
+        elif raw in values and position + 1 < len(tokens):
+            option, value = raw, tokens[position + 1]
+            position += 2
+        else:
+            raise ValueError(f"invalid private proof option {raw!r}")
+        if option not in values or not value:
+            raise ValueError(f"invalid private proof option {raw!r}")
+        values[option].append(value)
+    if any(len(value) != 1 for value in values.values()):
+        raise ValueError("private proof request requires each option exactly once")
+    if Path(values["--data-dir"][0]).expanduser().resolve() != data_root().resolve():
+        raise ValueError("private proof request targets a different data directory")
+    if values["--session-id"][0] != str(state["session"]["id"]):
+        raise ValueError("private proof request targets a different session")
+    turn_id = values["--turn-id"][0]
+    if turn_id != str(payload.get("turn_id") or ""):
+        raise ValueError("private proof request targets a different turn")
+    completion_attempt_for(state, turn_id, values["--token"][0])
+    manifest_path = Path(values["--manifest"][0]).expanduser().resolve()
+    normalized = normalized_proof_file(state, manifest_path)
+    expected_sha256 = sha256_text(canonical_json(normalized))
+    response_values = response_text_values(payload.get("tool_response"))
+    found: list[str] = []
+    for value in response_values:
+        for line in value.splitlines():
+            match = re.fullmatch(
+                rf"\s*{re.escape(PROOF_REQUEST_MARKER)} ([0-9a-f]{{64}})\s*",
+                line,
+            )
+            if match is not None:
+                found.append(match.group(1))
+    if len(found) != 1:
+        raise ValueError("private proof request requires one exact hash marker")
+    if not hmac.compare_digest(found[0], expected_sha256):
+        raise ValueError("private proof request marker does not match the manifest")
+    return normalized
 
 
 def parse_stage_request_from_tool(
@@ -3138,10 +4050,27 @@ def handle_post_tool(
 ) -> dict[str, Any]:
     if state["mode"]["active"]:
         require_usable_state(state)
+        # Codex may persist attachment metadata only after UserPromptSubmit.
+        # Reconcile the bounded transcript before recording the first tool so
+        # an available prompt asset cannot remain an accidental fallback.
+        reconcile_transcript_assets(state, payload)
         tool_name = str(payload.get("tool_name") or "unknown-tool")
         outcome, outcome_basis = tool_outcome_details(payload)
         control_intent = private_control_command_intent(payload)
         try:
+            proof_request = parse_proof_request_from_tool(state, payload)
+            if proof_request is not None:
+                if outcome != "success":
+                    raise ValueError(
+                        "private proof request tool result was not successful"
+                    )
+                proof = append_normalized_proof(state, proof_request)
+                save_state(session_dir, state)
+                return hook_output(
+                    "PostToolUse",
+                    "Context Guard privately registered immutable proof "
+                    f"{proof['id']}. Continue with the remaining obligations.",
+                )
             stage_request = parse_stage_request_from_tool(state, payload)
             if stage_request is not None:
                 if outcome != "success":
@@ -3187,6 +4116,9 @@ def handle_post_tool(
             }
         tool_input = bounded_evidence(payload.get("tool_input"), 700)
         tool_response = bounded_evidence(payload.get("tool_response"), 900)
+        evidence_asset_ids = discover_assets(
+            state, payload, prompt_id=None, source="tool_event"
+        )
         evidence_origin, evidence_actor_id = tool_actor(state, payload)
         state["evidence_sequence"] += 1
         evidence = {
@@ -3201,6 +4133,9 @@ def handle_post_tool(
             "unicode_repairs": int(
                 payload.get("_context_guard_unicode_repairs") or 0
             ),
+            "asset_ids": evidence_asset_ids,
+            "subject_ids": discovered_subject_ids(payload),
+            "capabilities": evidence_capabilities(tool_name),
         }
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
@@ -3215,6 +4150,7 @@ def handle_pre_compact(
     if state["mode"]["manual_off"]:
         return {"continue": True}
     require_usable_state(state)
+    reconcile_transcript_assets(state, payload)
     state["mode"]["active"] = True
     state["mode"]["activation_reasons"] = list(
         dict.fromkeys(state["mode"]["activation_reasons"] + ["first_compaction"])
@@ -3237,6 +4173,7 @@ def handle_session_start(
     if source not in {"compact", "resume"} or not state["mode"]["active"]:
         return {}
     require_usable_state(state)
+    reconcile_transcript_assets(state, payload)
     existing_attempt = state.get("completion_attempt")
     transcript_turn_id = latest_transcript_turn_id(state, payload)
     fallback_turn_id = transcript_turn_id
@@ -3407,6 +4344,30 @@ def checkpoint_issues(
                     issues.append(
                         f"{item_id} references non-success evidence {evidence_id} "
                         f"(outcome={evidence.get('outcome') or 'unknown'})"
+                    )
+            contract = item.get("verification_contract")
+            if isinstance(contract, dict) and contract.get("mode") == "enforced":
+                missing = unresolved_proof_obligations(state).get(item_id, [])
+                if missing:
+                    issues.append(
+                        f"{item_id} has unresolved proof obligations: {','.join(missing)}"
+                    )
+                proof_evidence = {
+                    evidence_id
+                    for proof in state.get("proofs", [])
+                    if proof.get("item_id") == item_id
+                    for evidence_id in proof.get("evidence_ids", [])
+                    if proof.get("obligation_id")
+                    in {
+                        obligation.get("id")
+                        for obligation in contract.get("obligations", [])
+                        if isinstance(obligation, dict)
+                    }
+                }
+                omitted = sorted(proof_evidence.difference(evidence_ids))
+                if omitted:
+                    issues.append(
+                        f"{item_id} checkpoint omits proof evidence: {','.join(omitted)}"
                     )
     open_items = checkpoint.get("open_items")
     if not isinstance(open_items, list):
@@ -4609,6 +5570,23 @@ def command_stage_disposition(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_register_proof(args: argparse.Namespace) -> int:
+    try:
+        proof_sha256 = validate_proof_request(
+            args.data_dir.expanduser().resolve(),
+            args.session_id,
+            args.turn_id,
+            args.token,
+            args.manifest.expanduser().resolve(),
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
+        return 1
+    print(f"{PROOF_REQUEST_MARKER} {proof_sha256}")
+    print("Script completed")
+    return 0
+
+
 def command_self_test() -> int:
     hooks = Path(__file__).resolve().parent.parent / "hooks" / "hooks.json"
     config = read_json(hooks)
@@ -4647,6 +5625,14 @@ def main() -> int:
     diagnose.add_argument("--limit", type=int, default=5)
     subparsers.add_parser("cleanup", help="Delete ended sessions older than 30 days")
     subparsers.add_parser("self-test", help="Validate the runtime and hook bundle")
+    proof = subparsers.add_parser(
+        "register-proof", help="Register an immutable Proof protocol manifest"
+    )
+    proof.add_argument("--data-dir", type=Path, required=True)
+    proof.add_argument("--session-id", required=True)
+    proof.add_argument("--turn-id", required=True)
+    proof.add_argument("--token", required=True)
+    proof.add_argument("--manifest", type=Path, required=True)
     for name, help_text in (
         (
             "checkpoint-status",
@@ -4687,6 +5673,8 @@ def main() -> int:
     if args.command == "cleanup":
         print(f"Removed {cleanup_old_sessions(data_root())} expired session(s).")
         return 0
+    if args.command == "register-proof":
+        return command_register_proof(args)
     if args.command == "checkpoint-status":
         return command_checkpoint_status(args)
     if args.command == "stage-checkpoint":
