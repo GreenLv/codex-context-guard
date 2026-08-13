@@ -9,12 +9,14 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 MARKETPLACE = "codex-context-guard"
 PLUGIN_NAME = "context-guard"
@@ -151,9 +153,26 @@ def embedded_git_metadata(root: Path) -> Path | None:
 
 
 def remove_embedded_git_metadata(candidate: Path) -> None:
+    def remove_read_only(
+        function: Callable[[str], object],
+        path: str,
+        error: tuple[type[BaseException], BaseException, Any],
+    ) -> None:
+        exception = error[1]
+        if not isinstance(exception, PermissionError):
+            raise exception
+        blocked = Path(path)
+        if blocked.is_symlink():
+            blocked.unlink()
+            return
+        os.chmod(blocked, stat.S_IWRITE)
+        function(path)
+
     if candidate.is_dir() and not candidate.is_symlink():
-        shutil.rmtree(candidate)
+        shutil.rmtree(candidate, onerror=remove_read_only)
     else:
+        if not candidate.is_symlink():
+            os.chmod(candidate, stat.S_IWRITE)
         candidate.unlink()
 
 

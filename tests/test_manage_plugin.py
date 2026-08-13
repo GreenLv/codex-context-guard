@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -118,6 +119,19 @@ class SafePluginInstallTests(unittest.TestCase):
             "gitdir: /private/source/worktrees/candidate\n",
             encoding="utf-8",
         )
+
+        self.assertTrue(self.ensure())
+
+        self.assertFalse((self.cache_root / "0.1.2" / ".git").exists())
+        self.assertFalse((self.archive_root / "0.1.2" / ".git").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows read-only deletion semantics")
+    def test_fresh_install_removes_read_only_checkout_git_directory(self) -> None:
+        self.write_source("0.1.2")
+        git_object = self.source_root / ".git" / "objects" / "00" / "object"
+        git_object.parent.mkdir(parents=True)
+        git_object.write_bytes(b"repository-only metadata\n")
+        os.chmod(git_object, stat.S_IREAD)
 
         self.assertTrue(self.ensure())
 
