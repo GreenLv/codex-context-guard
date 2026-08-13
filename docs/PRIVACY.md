@@ -54,7 +54,11 @@ or delegated-agent transcripts.
 - Scope manifests are normalized in memory. Stored proofs retain counts and
   SHA-256 digests, not the expected or observed identifier lists.
 - Delegated-agent results are bounded summaries rather than transcripts.
-- Recovery prioritizes active requirements and failures over historical detail.
+- Recovery prioritizes active requirements and failures over historical detail,
+  and reserves its completion rule even when lower-priority text is clipped.
+- Transcript attachment reconciliation stores only bounded prompt IDs and scan
+  state. Tool use scans a readable transcript at most once per pending prompt;
+  compaction and resume may retry to recover late metadata.
 - Disposition requests accept only a fixed disposition enum and derive a fixed
   reason enum; there is no free-form disposition reason field.
 - The legacy `continue` enum is compatibility-only under Stop protocol 1.1.0;

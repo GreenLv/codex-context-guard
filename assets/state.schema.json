@@ -27,7 +27,16 @@
                 ]
               },
               "surface": {"enum": ["visual", "ui", "artifact", "scope"]},
-              "subject_ids": {"type": "array", "items": {"type": "string"}}
+              "subject_ids": {"type": "array", "items": {"type": "string"}},
+              "expected_scope_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000
+              },
+              "expected_scope_sha256": {
+                "type": ["string", "null"],
+                "pattern": "^[0-9a-f]{64}$"
+              }
             },
             "additionalProperties": false
           }

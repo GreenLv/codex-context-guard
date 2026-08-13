@@ -18,12 +18,16 @@ subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
 > Release status: `0.6.3` is the latest published release. The current `main`
-> source is the unreleased 0.7.1 candidate with schema 6 and Proof protocol
+> source is the unreleased 0.7.3 candidate with schema 6 and Proof protocol
 > 1.0.0. It adds deterministic evidence-to-requirement and hash-only multimodal
 > contracts while retaining an auditable `legacy_fallback` for unsupported
-> cases. The 0.7.0 cache was consumed by native fresh-task acceptance before a
-> late transcript attachment-association defect was found; it remains immutable
-> and unreleased. `0.6.3` keeps Stop protocol 1.1.0,
+> cases. It additionally requires prompt-constructible complete scopes, parses
+> private controls only when the current runtime is executed, reconciles each
+> late attachment once per prompt plus lifecycle retries, and reserves the
+> completion rule when recovery is clipped. Visual readback obligations now
+> require an affirmative mutation clause, and explicit scope counts outrank
+> attachment counts. The consumed 0.7.0, 0.7.1, and 0.7.2 caches remain
+> immutable and unreleased. `0.6.3` keeps Stop protocol 1.1.0,
 > which makes legacy `continue`
 > advisory, preserves pending work on terminal mismatch, and uses quote-aware
 > shell intent parsing. `0.6.3` also makes cache upgrades repair indexed live

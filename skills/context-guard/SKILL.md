@@ -51,7 +51,10 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
      Visual inspection records immutable asset-bound facts; result readback
      uses a distinct hashed asset and resolves every fact. Scope proofs provide
      normalized expected and observed identifiers; the runtime computes counts
-     and hashes and rejects a proper subset.
+     and hashes, requires the expected set to match the prompt-derived
+     cardinality/digest, and rejects a proper subset. Qualitative uses of
+     `all`/`完整` without a constructible expected scope remain visibly
+     `legacy_fallback` rather than becoming an enforced contract.
    - Run the injected `stage-checkpoint` command with one
      `--requirement ID=E####[,E####]` flag for each pending requirement and one
      `--acceptance ID=E####[,E####]` flag for each pending acceptance item.
@@ -120,4 +123,6 @@ data, proof manifests, raw prompts, transcripts, credentials, tokens, or plugin
 caches. Multimodal contracts retain only bounded metadata, hashes, dimensions,
 availability, and redacted visual facts; they do not retain image bytes. Export
 only when the user explicitly requests it; exported handoffs are redacted by
-default.
+default. Transcript attachment recovery is incremental during tool use and
+retried at compaction/resume; bounded recovery clipping always preserves the
+completion rule.

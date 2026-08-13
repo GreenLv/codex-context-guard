@@ -5,6 +5,34 @@ Context Guard. The current published release is `0.6.3`; the validated
 `v0.6.3` source is tagged and published from `main`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.7.3 candidate differential gate (macOS, 2026-08-14)
+
+Version 0.7.3 follows a differential audit that found four 0.7.1 regressions:
+ordinary `rg` text containing `register-proof` was blocked; qualitative
+complete-scope wording was over-enforced; every `PostToolUse` reread up to 2
+MiB of transcript; and contract metadata made recovery clipping occur earlier
+while allowing the completion rule to be removed. Native 0.7.2 multimodal
+acceptance then exposed that denied or out-of-scope mutation wording could
+create a false result-readback obligation, and that explicit scope cardinality
+must outrank attachment count. The 0.7.3 source requires
+current-runtime execution for private-control intent, prompt-constructible
+scope, once-per-prompt tool-time transcript reconciliation with forced
+lifecycle retries, and a reserved recovery suffix.
+
+The local candidate gate passes 128 private and 128 public Hook tests (one
+Windows-only skip in each), 21 private and 22 public manager tests, 10 public
+contract tests, export and sibling-parity suites, repository/privacy audits,
+compilation, and project-configured Ruff. Isolated private and standalone
+installs pass strict second-run no-op and installed lifecycle smokes. The
+formal private install creates distinct, source-identical live and archive
+0.7.3 trees while preserving 0.7.0/0.7.1/0.7.2. A normally trusted fresh image
+task binds an available 64 x 64 PNG to its prompt and, for denied/out-of-scope
+mutation wording, enforces only input inspection without a false result
+readback obligation. A 2 MiB transcript differential benchmark measures 3.264
+ms per steady-state 0.7.3 `PostToolUse` versus 2.267 ms for 0.6.3; the bounded
+once-per-prompt scan invariant prevents growth with transcript size after the
+first reconciliation. Native Windows 0.7.x acceptance remains unclaimed.
+
 ## 0.7.1 candidate acceptance (macOS, 2026-08-13)
 
 Schema 6 and Proof protocol 1.0.0 add deterministic item, subject, surface,

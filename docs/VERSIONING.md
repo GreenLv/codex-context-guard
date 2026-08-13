@@ -55,6 +55,18 @@ not as a measure of code volume.
   reconciles late transcript attachment metadata before the first tool
   evidence. Native fresh-task acceptance consumed 0.7.0 before exposing this
   defect, so its cache remains immutable.
+- `0.7.2` hardens compatibility after a differential 0.6.3 versus 0.7.1
+  audit. Private controls require execution of the current runtime; complete
+  scope enforcement requires a prompt-derived expected count or exact object
+  set; `PostToolUse` performs at most one transcript scan per pending prompt
+  while compaction/resume remain forced retries; and recovery clipping reserves
+  the completion rule. Schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,
+  classifier 2.0.0, and the eight-Hook wire remain unchanged.
+- `0.7.3` requires an affirmative mutation clause before enforcing visual
+  result readback and gives an unambiguous prompt-explicit scope count
+  precedence over attachment count. Denied or out-of-scope mutation wording
+  remains inspection-only. The consumed 0.7.2 cache remains immutable; schema
+  and all protocol versions are unchanged.
 - `0.7.x` contains compatible fixes inside schema 6 and Proof protocol 1.x.
   Installed cache bytes remain immutable: a runtime-byte change requires a new
   patch version.

@@ -15,6 +15,17 @@ All notable public releases are documented here.
 
 ### Changed
 
+- Version 0.7.3 requires an affirmative, authorized mutation clause before
+  adding a visual result-readback obligation; negated, denied, and out-of-scope
+  mutation wording remains inspection-only. An unambiguous prompt-explicit
+  complete-scope count now takes precedence over attachment count, preventing
+  five screenshots from narrowing an explicitly requested 70-item audit.
+- Version 0.7.2 closes four regressions found by differential 0.6.3/0.7.1
+  review: ordinary command text containing `register-proof` is evidence rather
+  than a control attempt; qualitative complete-scope wording without a
+  prompt-derived expected set uses `legacy_fallback`; transcript reconciliation
+  is bounded to once per prompt during tool use with forced lifecycle retries;
+  and recovery clipping reserves the completion rule.
 - Version 0.7.1 reconciles late transcript attachment metadata before the first
   `PostToolUse` evidence. The native fresh-task gate consumed 0.7.0 before
   exposing this prompt-association defect, so 0.7.0 remains immutable and
@@ -31,6 +42,9 @@ All notable public releases are documented here.
 - The regression benchmark covers Chinese and English positive, negative,
   adversarial, multimodal, cross-item, migration, privacy, and fallback cases,
   including an anonymized 48-of-70 subset false-completion replay.
+- A compatibility matrix replays the 0.6.3 command behavior, locks
+  prompt-constructible scope and qualitative abstention, asserts the transcript
+  scan-count invariant, and preserves the pre-0.7 recovery-capacity threshold.
 
 ## 0.6.3 - 2026-08-12
 

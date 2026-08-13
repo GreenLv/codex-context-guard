@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.7.1"
+VERSION = "0.7.3"
 SCHEMA_VERSION = 6
 STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.0.0"

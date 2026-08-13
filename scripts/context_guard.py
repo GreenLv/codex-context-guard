@@ -30,6 +30,11 @@ CLASSIFIER_VERSION = "2.0.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
+RECOVERY_COMPLETION_RULE = (
+    "## Completion rule\nDo not declare completion unless every non-superseded "
+    "requirement and acceptance item passes with concrete evidence and open_items "
+    "is empty."
+)
 EVIDENCE_LIMIT = 200
 AGENT_RECORD_LIMIT = 64
 PLAN_STEP_LIMIT = 32
@@ -97,6 +102,22 @@ FULL_SCOPE_NEGATION_RE = re.compile(
     r"\bno\s+(?:scope\s+|full\s+)?verification\s+is\s+requested\b)",
     re.IGNORECASE,
 )
+SCOPE_CARDINALITY_PATTERNS = (
+    re.compile(
+        r"(?:全部|所有|全量|每(?:个|一))\s*(\d{1,5})\s*"
+        r"(?:个|项|条|张|份|套|组)?\s*"
+        r"[\u4e00-\u9fffA-Za-z_-]{0,8}?"
+        r"(?:条目|项目|文件|截图|图片|测试|用例|记录|页面|对象|结果)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:all|every)\s+(?:the\s+)?(\d{1,5})\s+"
+        r"(?:items?|entries|files?|screenshots?|images?|tests?|cases?|"
+        r"records?|pages?|objects?|results?)\b",
+        re.IGNORECASE,
+    ),
+)
+COMPLETE_RATIO_RE = re.compile(r"(?<!\d)(\d{1,5})\s*/\s*\1(?!\d)")
 UI_SURFACE_RE = re.compile(
     r"(?:界面|页面|窗口|可见|列|浏览器|应用|GUI|UI|screen|browser|window|visible)",
     re.IGNORECASE,
@@ -890,6 +911,10 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
             "created_at": now,
             "updated_at": now,
             "ended_at": None,
+            "asset_reconciliation": {
+                "pending_prompt_ids": [],
+                "post_tool_attempted_prompt_ids": [],
+            },
         },
         "mode": {
             "active": False,
@@ -1028,6 +1053,20 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             attempt.setdefault("staged_at", None)
     state.setdefault("continuation_attempts", 0)
     state.setdefault("decision_log", [])
+    session = state.setdefault("session", {})
+    reconciliation = session.setdefault("asset_reconciliation", {})
+    if isinstance(reconciliation, dict):
+        reconciliation.setdefault(
+            "pending_prompt_ids",
+            [
+                str(item["id"])
+                for item in state.get("prompts", [])
+                if isinstance(item, dict)
+                and item.get("origin", "human") == "human"
+                and isinstance(item.get("id"), str)
+            ],
+        )
+        reconciliation.setdefault("post_tool_attempted_prompt_ids", [])
     return state
 
 
@@ -1264,6 +1303,67 @@ def discovered_subject_ids(value: Any) -> list[str]:
     return list(dict.fromkeys(result))
 
 
+def deterministic_scope_spec(
+    text: str,
+    subjects: list[dict[str, str]],
+    assets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return prompt-derived scope facts, never a caller-asserted count."""
+    counts: set[int] = set()
+    for pattern in SCOPE_CARDINALITY_PATTERNS:
+        counts.update(
+            int(match.group(1))
+            for match in pattern.finditer(text)
+            if 0 < int(match.group(1)) <= 10000
+        )
+    counts.update(
+        int(match.group(1))
+        for match in COMPLETE_RATIO_RE.finditer(text)
+        if 0 < int(match.group(1)) <= 10000
+    )
+    if len(counts) > 1:
+        return None
+    expected_ids = sorted(
+        {
+            str(item["id"])
+            for item in [*subjects, *assets]
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+    )
+    if counts:
+        expected_count = counts.pop()
+        return {
+            "expected_scope_count": expected_count,
+            "expected_scope_sha256": (
+                sha256_text(canonical_json(expected_ids))
+                if len(expected_ids) >= 2 and len(expected_ids) == expected_count
+                else None
+            ),
+        }
+    if len(expected_ids) >= 2:
+        return {
+            "expected_scope_count": len(expected_ids),
+            "expected_scope_sha256": sha256_text(canonical_json(expected_ids)),
+        }
+    return None
+
+
+def visual_mutation_requested(text: str) -> bool:
+    """Return true only for an affirmative visual-mutation clause."""
+    negation = re.compile(
+        r"\b(?:do\s+not|don't|must\s+not|should\s+not|no|without)\b|"
+        r"(?:不要|不得|无需|不需要|暂不|不再|别|切勿|勿)",
+        re.IGNORECASE,
+    )
+    for clause in _protected_prompt_clauses(text):
+        if not VISUAL_MUTATION_RE.search(clause):
+            continue
+        if negation.search(clause) or DEFERRED_ACTION_CLAUSE_RE.search(clause):
+            continue
+        return True
+    return False
+
+
 def verification_contract(
     item_id: str, text: str, state: dict[str, Any], asset_ids: list[str]
 ) -> dict[str, Any]:
@@ -1283,22 +1383,43 @@ def verification_contract(
             "reason": "asset_unavailable",
             "obligations": [],
         }
+    full_scope_requested = bool(
+        FULL_SCOPE_RE.search(text) and not FULL_SCOPE_NEGATION_RE.search(text)
+    )
+    scope_spec = (
+        deterministic_scope_spec(text, subjects, assets)
+        if full_scope_requested
+        else None
+    )
+    if full_scope_requested and scope_spec is None:
+        return {
+            "protocol_version": PROOF_PROTOCOL_VERSION,
+            "mode": "legacy_fallback",
+            "reason": "scope_not_constructible",
+            "obligations": [],
+        }
     obligations: list[dict[str, Any]] = []
 
-    def add(kind: str, surface: str, subject_ids: list[str]) -> None:
-        obligations.append(
-            {
-                "id": f"O-{item_id}-{len(obligations) + 1:03d}",
-                "kind": kind,
-                "surface": surface,
-                "subject_ids": list(dict.fromkeys(subject_ids)),
-            }
-        )
+    def add(
+        kind: str,
+        surface: str,
+        subject_ids: list[str],
+        scope: dict[str, Any] | None = None,
+    ) -> None:
+        obligation = {
+            "id": f"O-{item_id}-{len(obligations) + 1:03d}",
+            "kind": kind,
+            "surface": surface,
+            "subject_ids": list(dict.fromkeys(subject_ids)),
+        }
+        if scope is not None:
+            obligation.update(scope)
+        obligations.append(obligation)
 
     for asset in assets:
         add("input_asset_inspection", "visual", [str(asset["id"])])
     visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(text))
-    if visual_signal and VISUAL_MUTATION_RE.search(text):
+    if visual_signal and visual_mutation_requested(text):
         add("result_visual_readback", "ui", [str(item["id"]) for item in assets])
     if subjects:
         add(
@@ -1306,8 +1427,13 @@ def verification_contract(
             "ui" if UI_SURFACE_RE.search(text) else "artifact",
             [item["id"] for item in subjects],
         )
-    if FULL_SCOPE_RE.search(text) and not FULL_SCOPE_NEGATION_RE.search(text):
-        add("scope_coverage", "scope", [item["id"] for item in subjects])
+    if scope_spec is not None:
+        add(
+            "scope_coverage",
+            "scope",
+            [item["id"] for item in subjects],
+            scope_spec,
+        )
     if not obligations:
         return {
             "protocol_version": PROOF_PROTOCOL_VERSION,
@@ -1402,13 +1528,61 @@ def transcript_tail_records(state: dict[str, Any], payload: dict[str, Any]) -> l
     return records[-512:]
 
 
-def reconcile_transcript_assets(state: dict[str, Any], payload: dict[str, Any]) -> None:
-    """Supplement Hook payload assets from the bounded transcript tail."""
+def transcript_is_readable(state: dict[str, Any], payload: dict[str, Any]) -> bool:
+    session = state.get("session")
+    stored_path = session.get("transcript_path") if isinstance(session, dict) else None
+    raw_path = payload.get("transcript_path") or stored_path
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return False
+    transcript = Path(raw_path).expanduser()
+    try:
+        return not transcript.is_symlink() and transcript.is_file()
+    except OSError:
+        return False
+
+
+def reconciliation_tracker(state: dict[str, Any]) -> dict[str, list[str]]:
+    session = state.setdefault("session", {})
+    raw = session.setdefault("asset_reconciliation", {})
+    if not isinstance(raw, dict):
+        raw = {}
+        session["asset_reconciliation"] = raw
+    for key in ("pending_prompt_ids", "post_tool_attempted_prompt_ids"):
+        value = raw.setdefault(key, [])
+        if not isinstance(value, list):
+            raw[key] = []
+    return raw  # type: ignore[return-value]
+
+
+def reconcile_transcript_assets(
+    state: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    trigger: str,
+) -> None:
+    """Supplement late assets once per prompt, plus forced lifecycle recovery."""
+    tracker = reconciliation_tracker(state)
+    pending = list(dict.fromkeys(str(value) for value in tracker["pending_prompt_ids"]))
+    if not pending:
+        return
+    attempted = set(str(value) for value in tracker["post_tool_attempted_prompt_ids"])
+    candidate_ids = set(pending)
+    if trigger == "post_tool":
+        candidate_ids.difference_update(attempted)
+        if not candidate_ids:
+            return
+        if not transcript_is_readable(state, payload):
+            return
+        attempted.update(candidate_ids)
+        tracker["post_tool_attempted_prompt_ids"] = sorted(attempted)
     human_prompts = [
-        item for item in state.get("prompts", []) if item.get("origin", "human") == "human"
+        item
+        for item in state.get("prompts", [])
+        if item.get("origin", "human") == "human" and item.get("id") in candidate_ids
     ]
     if not human_prompts:
         return
+    matched_prompt_ids: set[str] = set()
     for record in transcript_tail_records(state, payload):
         record_payload = record.get("payload")
         if not isinstance(record_payload, dict):
@@ -1435,6 +1609,7 @@ def reconcile_transcript_assets(state: dict[str, Any], payload: dict[str, Any]) 
         )
         if prompt_meta is None:
             continue
+        matched_prompt_ids.add(str(prompt_meta["id"]))
         before = set(
             item["id"]
             for item in state.get("assets", [])
@@ -1463,6 +1638,15 @@ def reconcile_transcript_assets(state: dict[str, Any], payload: dict[str, Any]) 
                 upgraded = verification_contract(item["id"], item.get("text", ""), state, after)
                 if upgraded.get("mode") == "enforced":
                     item["verification_contract"] = upgraded
+    if matched_prompt_ids:
+        tracker["pending_prompt_ids"] = [
+            prompt_id for prompt_id in pending if prompt_id not in matched_prompt_ids
+        ]
+        tracker["post_tool_attempted_prompt_ids"] = [
+            prompt_id
+            for prompt_id in tracker["post_tool_attempted_prompt_ids"]
+            if prompt_id not in matched_prompt_ids
+        ]
 
 
 def _protected_prompt_clauses(text: str) -> list[str]:
@@ -1992,6 +2176,16 @@ def append_prompt(
         "record_sha256": record["record_sha256"],
     }
     state["prompts"].append(metadata)
+    if origin == "human":
+        tracker = reconciliation_tracker(state)
+        tracker["pending_prompt_ids"] = list(
+            dict.fromkeys([*tracker["pending_prompt_ids"], prompt_id])
+        )
+        tracker["post_tool_attempted_prompt_ids"] = [
+            value
+            for value in tracker["post_tool_attempted_prompt_ids"]
+            if value != prompt_id
+        ]
     return metadata
 
 
@@ -2476,10 +2670,10 @@ def format_items(title: str, items: list[dict[str, Any]], include_evidence: bool
         if include_evidence and item.get("evidence"):
             line += f" | evidence: {bounded(item['evidence'], 500)}"
         contract = item.get("verification_contract")
-        if isinstance(contract, dict):
+        if isinstance(contract, dict) and contract.get("mode") == "enforced":
             obligations = contract.get("obligations", [])
             line += (
-                f" | proof={contract.get('mode', 'legacy_fallback')}"
+                f" | proof={contract.get('mode')}"
                 f"/{contract.get('reason', 'unknown')}"
             )
             if obligations:
@@ -2490,6 +2684,22 @@ def format_items(title: str, items: list[dict[str, Any]], include_evidence: bool
                 )
         lines.append(line)
     return "\n".join(lines)
+
+
+def clip_preserving_suffix(
+    text: str,
+    limit: int,
+    suffix: str,
+    marker: str,
+) -> str:
+    """Bound text while reserving a non-negotiable recovery suffix."""
+    if len(text) <= limit:
+        return text
+    if limit <= len(suffix):
+        return suffix[-limit:] if limit > 0 else ""
+    prefix = text[: -len(suffix)].rstrip() if text.endswith(suffix) else text
+    budget = max(0, limit - len(suffix) - len(marker) - 4)
+    return prefix[:budget].rstrip() + "\n\n" + marker + "\n\n" + suffix
 
 
 def recovery_packet(session_dir: Path, state: dict[str, Any]) -> str:
@@ -2608,13 +2818,14 @@ def recovery_packet(session_dir: Path, state: dict[str, Any]) -> str:
             seen.add(record["id"])
             lines.append(f"- {record['id']}: {bounded(record.get('text', ''), 1800)}")
         sections.append("\n".join(lines))
-    sections.append(
-        "## Completion rule\nDo not declare completion unless every non-superseded requirement and acceptance item passes with concrete evidence and open_items is empty."
-    )
+    sections.append(RECOVERY_COMPLETION_RULE)
     text = redact_text("\n\n".join(sections))
-    if len(text) > RECOVERY_CHAR_LIMIT:
-        text = text[: RECOVERY_CHAR_LIMIT - 120] + "\n\n…[recovery packet clipped to budget]"
-    return text
+    return clip_preserving_suffix(
+        text,
+        RECOVERY_CHAR_LIMIT,
+        RECOVERY_COMPLETION_RULE,
+        "…[recovery packet clipped to budget; completion rule preserved]",
+    )
 
 
 def write_recovery(session_dir: Path, state: dict[str, Any], trigger: str) -> str:
@@ -2945,6 +3156,19 @@ def normalize_proof_manifest(state: dict[str, Any], data: Any) -> dict[str, Any]
     if kind == "scope_coverage":
         expected_scope = normalized_scope(data.get("expected_scope"), "expected_scope")
         observed_scope = normalized_scope(data.get("observed_scope"), "observed_scope")
+        required_count = obligation.get("expected_scope_count")
+        if not isinstance(required_count, int) or required_count <= 0:
+            raise ValueError("scope obligation has no prompt-derived expected count")
+        if len(expected_scope) != required_count:
+            raise ValueError(
+                f"scope proof expected set has {len(expected_scope)} identifiers; "
+                f"the prompt-derived contract requires {required_count}"
+            )
+        required_sha256 = obligation.get("expected_scope_sha256")
+        if required_sha256 is not None and not hmac.compare_digest(
+            str(required_sha256), sha256_text(canonical_json(expected_scope))
+        ):
+            raise ValueError("scope proof expected set differs from the prompt-derived scope")
         missing = sorted(set(expected_scope).difference(observed_scope))
         if missing:
             raise ValueError(
@@ -3081,6 +3305,8 @@ def checkpoint_status_snapshot(state: dict[str, Any], turn_id: str) -> dict[str,
                         "kind": obligation.get("kind"),
                         "surface": obligation.get("surface"),
                         "subject_ids": obligation.get("subject_ids", []),
+                        "expected_scope_count": obligation.get("expected_scope_count"),
+                        "expected_scope_sha256": obligation.get("expected_scope_sha256"),
                         "fulfilled": obligation.get("id") in fulfilled,
                     }
                     for obligation in obligations
@@ -3685,7 +3911,7 @@ def tool_is_shell_execution(tool_name: str) -> bool:
 
 
 def private_control_command_intent(payload: dict[str, Any]) -> bool:
-    """Recognize a trusted private-control prefix before strict validation."""
+    """Recognize execution of this runtime, never mere control-name text."""
     if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
         return False
     tool_input = payload.get("tool_input")
@@ -3707,12 +3933,8 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
     try:
         tokens = shlex.split(command, posix=os.name != "nt")
     except ValueError:
-        return bool(
-            re.search(
-                r"(?<![A-Za-z0-9_-])(?:checkpoint-status|register-proof|stage-checkpoint|"
-                r"stage-disposition)(?![A-Za-z0-9_-])",
-                command,
-            )
+        return script_path in command and any(
+            control_command in command for control_command in control_commands
         )
     tokens = [
         token[1:-1]
@@ -3727,32 +3949,17 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
     )
     if plain_search:
         return False
-    if any(token in control_commands for token in tokens):
-        return True
-    expected_executable = Path(sys.executable).resolve()
     expected_script = Path(__file__).resolve()
     for index in range(max(0, len(tokens) - 2)):
         if tokens[index + 2] not in control_commands:
             continue
-        executable = Path(tokens[index]).expanduser()
         script = Path(tokens[index + 1]).expanduser()
         try:
-            if (
-                executable.is_absolute()
-                and executable.resolve() == expected_executable
-                and script.is_absolute()
-                and script.resolve() == expected_script
-            ):
+            if script.is_absolute() and script.resolve() == expected_script:
                 return True
         except (OSError, RuntimeError):
             continue
-    return bool(
-        re.search(
-            r"(?<![A-Za-z0-9_-])(?:checkpoint-status|register-proof|stage-checkpoint|"
-            r"stage-disposition)(?![A-Za-z0-9_-])",
-            command,
-        )
-    )
+    return False
 
 
 def is_exact_checkpoint_status_command(
@@ -4053,50 +4260,50 @@ def handle_post_tool(
         # Codex may persist attachment metadata only after UserPromptSubmit.
         # Reconcile the bounded transcript before recording the first tool so
         # an available prompt asset cannot remain an accidental fallback.
-        reconcile_transcript_assets(state, payload)
+        reconcile_transcript_assets(state, payload, trigger="post_tool")
         tool_name = str(payload.get("tool_name") or "unknown-tool")
         outcome, outcome_basis = tool_outcome_details(payload)
         control_intent = private_control_command_intent(payload)
-        try:
-            proof_request = parse_proof_request_from_tool(state, payload)
-            if proof_request is not None:
-                if outcome != "success":
-                    raise ValueError(
-                        "private proof request tool result was not successful"
+        if control_intent:
+            try:
+                proof_request = parse_proof_request_from_tool(state, payload)
+                if proof_request is not None:
+                    if outcome != "success":
+                        raise ValueError(
+                            "private proof request tool result was not successful"
+                        )
+                    proof = append_normalized_proof(state, proof_request)
+                    save_state(session_dir, state)
+                    return hook_output(
+                        "PostToolUse",
+                        "Context Guard privately registered immutable proof "
+                        f"{proof['id']}. Continue with the remaining obligations.",
                     )
-                proof = append_normalized_proof(state, proof_request)
-                save_state(session_dir, state)
-                return hook_output(
-                    "PostToolUse",
-                    "Context Guard privately registered immutable proof "
-                    f"{proof['id']}. Continue with the remaining obligations.",
-                )
-            stage_request = parse_stage_request_from_tool(state, payload)
-            if stage_request is not None:
-                if outcome != "success":
-                    raise ValueError(
-                        "private stage request tool result was not successful"
+                stage_request = parse_stage_request_from_tool(state, payload)
+                if stage_request is not None:
+                    if outcome != "success":
+                        raise ValueError(
+                            "private stage request tool result was not successful"
+                        )
+                    attempt = completion_attempt_for(
+                        state, stage_request["turn_id"], stage_request["token"]
                     )
-                attempt = completion_attempt_for(
-                    state, stage_request["turn_id"], stage_request["token"]
-                )
-                idempotent = stage_control(
-                    attempt,
-                    stage_request["control"],
-                    replace=stage_request["replace"],
-                )
-                save_state(session_dir, state)
-                suffix = " (idempotent)" if idempotent else ""
-                return hook_output(
-                    "PostToolUse",
-                    "Context Guard privately staged the turn-bound control"
-                    f"{suffix}. Send a normal user-facing response without "
-                    "private control metadata.",
-                )
-            if is_exact_checkpoint_status_command(state, payload):
-                save_state(session_dir, state)
-                return {}
-            if control_intent:
+                    idempotent = stage_control(
+                        attempt,
+                        stage_request["control"],
+                        replace=stage_request["replace"],
+                    )
+                    save_state(session_dir, state)
+                    suffix = " (idempotent)" if idempotent else ""
+                    return hook_output(
+                        "PostToolUse",
+                        "Context Guard privately staged the turn-bound control"
+                        f"{suffix}. Send a normal user-facing response without "
+                        "private control metadata.",
+                    )
+                if is_exact_checkpoint_status_command(state, payload):
+                    save_state(session_dir, state)
+                    return {}
                 save_state(session_dir, state)
                 return {
                     "decision": "block",
@@ -4105,15 +4312,15 @@ def handle_post_tool(
                         "control command rejected; it was not recorded as evidence."
                     ),
                 }
-        except (OSError, RuntimeError, ValueError) as exc:
-            save_state(session_dir, state)
-            return {
-                "decision": "block",
-                "reason": (
-                    f"{INTERNAL_CONTINUATION_PREFIX} Private control staging "
-                    f"failed: {bounded(exc, 800)}"
-                ),
-            }
+            except (OSError, RuntimeError, ValueError) as exc:
+                save_state(session_dir, state)
+                return {
+                    "decision": "block",
+                    "reason": (
+                        f"{INTERNAL_CONTINUATION_PREFIX} Private control staging "
+                        f"failed: {bounded(exc, 800)}"
+                    ),
+                }
         tool_input = bounded_evidence(payload.get("tool_input"), 700)
         tool_response = bounded_evidence(payload.get("tool_response"), 900)
         evidence_asset_ids = discover_assets(
@@ -4150,7 +4357,7 @@ def handle_pre_compact(
     if state["mode"]["manual_off"]:
         return {"continue": True}
     require_usable_state(state)
-    reconcile_transcript_assets(state, payload)
+    reconcile_transcript_assets(state, payload, trigger="pre_compact")
     state["mode"]["active"] = True
     state["mode"]["activation_reasons"] = list(
         dict.fromkeys(state["mode"]["activation_reasons"] + ["first_compaction"])
@@ -4173,7 +4380,7 @@ def handle_session_start(
     if source not in {"compact", "resume"} or not state["mode"]["active"]:
         return {}
     require_usable_state(state)
-    reconcile_transcript_assets(state, payload)
+    reconcile_transcript_assets(state, payload, trigger="session_start")
     existing_attempt = state.get("completion_attempt")
     transcript_turn_id = latest_transcript_turn_id(state, payload)
     fallback_turn_id = transcript_turn_id
@@ -4190,9 +4397,15 @@ def handle_session_start(
     combined = f"{packet}\n\n{private_context}"
     if len(combined) > RECOVERY_CHAR_LIMIT:
         packet_budget = max(0, RECOVERY_CHAR_LIMIT - len(private_context) - 80)
+        packet = clip_preserving_suffix(
+            packet,
+            packet_budget,
+            RECOVERY_COMPLETION_RULE,
+            "…[recovery packet clipped to preserve private completion commands]",
+        )
         combined = (
-            packet[:packet_budget]
-            + "\n\n…[recovery packet clipped to preserve private completion commands]\n\n"
+            packet
+            + "\n\n"
             + private_context
         )
     return hook_output("SessionStart", combined)

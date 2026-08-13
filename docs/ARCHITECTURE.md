@@ -94,6 +94,12 @@ and dimensions; it stores no image bytes or full local locator. A later tool
 event can bind evidence to the same asset hash or to a distinct result-readback
 asset.
 
+Late attachment discovery is incremental rather than a per-tool transcript
+rescan. A readable transcript is inspected at most once for each pending human
+prompt during `PostToolUse`; `PreCompact` and compact/resume `SessionStart`
+remain forced recovery opportunities. Only prompt IDs and bounded scan state
+are persisted.
+
 ### L3: delegated-agent provenance
 
 `SubagentStart` records a bounded delegated contract and injects the root
@@ -119,6 +125,10 @@ compact/resume restores a bounded packet in this priority order:
 6. bounded asset metadata and unresolved proof obligations; and
 7. completion rules.
 
+The packet uses a reserved suffix budget: lower-priority sections may be
+clipped, but the completion rule cannot be displaced by contract or asset
+metadata.
+
 The completion gate is bound to the current turn. Only successful evidence
 already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
@@ -127,6 +137,10 @@ assistant response.
 Proof protocol 1.0.0 derives only deterministic contracts from immutable prompt
 signals. Its obligation types cover input-asset inspection, distinct visual
 result readback, named path/URL subject readback, and complete-scope coverage.
+Complete-scope wording first becomes a candidate; enforcement requires a
+prompt-derived expected cardinality or an exact multi-object set and digest.
+Qualitative uses such as “完整介绍” or “summarize all changes” abstain to
+`legacy_fallback` instead of fabricating an enumerable scope.
 An `enforced` contract cannot be weakened after creation. When an attachment or
 contract boundary cannot be established, the item is explicitly
 `legacy_fallback` and uses the compatible 0.6.3 evidence gate.
@@ -136,7 +150,8 @@ then stores an immutable item/obligation/evidence binding. It rejects failed or
 stale evidence, incompatible tool capabilities, wrong subjects/surfaces,
 same-image result readbacks, unresolved visual facts, and observed scope sets
 that omit any normalized expected identifier. Scope counts and digests are
-computed by the runtime rather than accepted as caller claims.
+computed by the runtime rather than accepted as caller claims, and the proof's
+expected set must match the prompt-derived cardinality/digest.
 
 Schema 6 retains the schema-5 completion attempt and gives each active attempt one `staged_control` slot. It is
 either a verified checkpoint or one typed non-completion disposition:

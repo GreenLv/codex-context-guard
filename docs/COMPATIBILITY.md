@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.6.3`
-- Current source line: `0.7.1` (unreleased candidate)
+- Current source line: `0.7.3` (unreleased candidate)
 - Private state schema: `6`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,7 +18,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.7.1 candidate status
+## 0.7.3 candidate status
 
 The candidate retains Stop protocol 1.1.0, classifier 2.0.0, and the exact
 eight-Hook wire. Schema 6 adds deterministic verification contracts, hash-only
@@ -27,7 +27,15 @@ successful evidence with the wrong item, subject, surface, freshness,
 capability, visual readback, or scope coverage. Unsupported contracts are
 auditable `legacy_fallback`, not claims of arbitrary semantic understanding.
 
-Current source acceptance includes schema-5 migration, local/data-URL image
+The 0.7.3 compatibility gate additionally covers ordinary shell/search text
+containing private subcommand names, qualitative `all`/`完整` wording that must
+fall back, prompt-derived scope cardinality, once-per-prompt transcript scans,
+and recovery clipping that cannot remove the completion rule. It also proves
+that denied or out-of-scope visual mutation wording does not create a result
+readback obligation, while an affirmative mutation clause still does, and that
+an explicit 70-item scope is not narrowed by five attachments. The eight Hook
+definitions remain byte-identical to 0.6.3. Current source acceptance includes
+schema-5 migration, local/data-URL image
 hashing and dimensions, transcript-tail supplementation, no-byte persistence,
 Chinese/English positive and negative cases, adversarial wording, wrong-surface
 and cross-item rejection, and the anonymized 48-of-70 subset incident replay.

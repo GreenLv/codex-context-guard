@@ -3060,14 +3060,17 @@ class ContextGuardTests(unittest.TestCase):
                     )
                 )
 
-        wrapped = (
+        wrapped_search_or_text = (
             "rg -n stage-disposition source.py | sed -n '1p'",
             'rg -n "$(stage-disposition)" source.py',
             "rg -n stage-disposition source.py; echo injected",
+            "sed -n '/register-proof/p' source.py",
+            "printf '%s\\n' register-proof",
+            "python -c \"print('register-proof')\"",
         )
-        for command in wrapped:
+        for command in wrapped_search_or_text:
             with self.subTest(command=command):
-                self.assertTrue(
+                self.assertFalse(
                     cg.private_control_command_intent(
                         {
                             "tool_name": "Bash",
@@ -3075,6 +3078,35 @@ class ContextGuardTests(unittest.TestCase):
                         }
                     )
                 )
+
+    def test_control_names_in_regular_shell_text_remain_successful_evidence(self) -> None:
+        self.prompt("$context-guard\nAudit the current behavior.")
+        commands = (
+            "rg -n 'input_asset_inspection|register-proof|obligation_id' source.py",
+            "grep -E 'checkpoint-status|stage-checkpoint' source.py",
+            "sed -n '/register-proof/p' source.py",
+            "python /tmp/unrelated.py register-proof",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                result = cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        tool_name="Bash",
+                        tool_input={"command": command},
+                        tool_response={"exit_code": 0, "output": "match"},
+                    )
+                )
+                self.assertNotEqual(result.get("decision"), "block")
+                self.assertEqual(self.state()["evidence"][-1]["outcome"], "success")
+        malformed_runtime = cg.shell_join(
+            [sys.executable, str(MODULE_PATH), "register-proof", "--bad-option"]
+        )
+        self.assertTrue(
+            cg.private_control_command_intent(
+                {"tool_name": "Bash", "tool_input": {"command": malformed_runtime}}
+            )
+        )
 
         private_command_name = "stage" + "-" + "disposition"
         status_command_name = "checkpoint" + "-" + "status"
@@ -3762,6 +3794,33 @@ class ContextGuardTests(unittest.TestCase):
             ["input_asset_inspection", "result_visual_readback"],
         )
 
+    def test_visual_readback_requires_an_affirmative_mutation_clause(self) -> None:
+        image = self.write_png("inspect-only.png", 64, 64)
+        asset = cg.asset_candidate(str(image))
+        assert asset is not None
+        cases = (
+            (
+                "Inspect the attached image; any modification is outside this smoke scope. "
+                "Do not edit files.",
+                {"input_asset_inspection"},
+            ),
+            ("查看图片，不要修改界面。", {"input_asset_inspection"}),
+            ("Inspect the image without editing it.", {"input_asset_inspection"}),
+            (
+                "根据截图修复界面；不要修改文档。",
+                {"input_asset_inspection", "result_visual_readback"},
+            ),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                state = cg.new_state(self.payload("UserPromptSubmit"))
+                asset_id = cg.add_asset(state, "P0001", asset, "hook_payload")
+                contract = cg.verification_contract("R001", text, state, [asset_id])
+                self.assertEqual(contract["mode"], "enforced")
+                self.assertEqual(
+                    {item["kind"] for item in contract["obligations"]}, expected
+                )
+
     def test_data_url_asset_is_decoded_only_for_hash_and_dimensions(self) -> None:
         raw = self.write_png("data-url.png", 11, 13).read_bytes()
         encoded = base64.b64encode(raw).decode("ascii")
@@ -3834,6 +3893,76 @@ class ContextGuardTests(unittest.TestCase):
             "enforced",
         )
 
+    def test_post_tool_reconciles_each_prompt_once_then_lifecycle_forces_retry(self) -> None:
+        text = "$context-guard\nAudit attachment association."
+        self.prompt(text)
+        transcript = self.root / "late-transcript.jsonl"
+        with mock.patch.object(cg, "transcript_tail_records", return_value=[]) as scan:
+            cg.dispatch(
+                self.payload(
+                    "PostToolUse",
+                    tool_name="Bash",
+                    tool_input={"command": "tool before transcript exists"},
+                    tool_response={"exit_code": 0, "output": "ok"},
+                )
+            )
+            self.assertEqual(scan.call_count, 0)
+            transcript.write_text(
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": text},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            for command in ("first tool", "second tool", "third tool"):
+                cg.dispatch(
+                    self.payload(
+                        "PostToolUse",
+                        transcript_path=str(transcript),
+                        tool_name="Bash",
+                        tool_input={"command": command},
+                        tool_response={"exit_code": 0, "output": "ok"},
+                    )
+                )
+            self.assertEqual(scan.call_count, 1)
+            cg.dispatch(
+                self.payload(
+                    "PreCompact", transcript_path=str(transcript), trigger="manual"
+                )
+            )
+            self.assertEqual(scan.call_count, 2)
+
+    def test_recovery_budget_always_preserves_completion_rule(self) -> None:
+        session_dir = self.root / "private" / "sessions" / "recovery-budget"
+        state = cg.new_state(self.payload("UserPromptSubmit", session="recovery-budget"))
+        state["mode"]["active"] = True
+        for index in range(36):
+            text = (
+                f"Task {index:02d}: analyze the current behavior and retain this requirement. "
+                + ("detail " * 36)
+            )
+            prompt = cg.append_prompt(session_dir, state, text)
+            cg.append_requirement(state, prompt, text)
+            cg.append_acceptance(state, prompt["id"], text)
+        before_limit = cg.recovery_packet(session_dir, state)
+        self.assertNotIn("recovery packet clipped", before_limit)
+        for index in range(36, 48):
+            text = (
+                f"Task {index:02d}: analyze the current behavior and retain this requirement. "
+                + ("detail " * 36)
+            )
+            prompt = cg.append_prompt(session_dir, state, text)
+            cg.append_requirement(state, prompt, text)
+            cg.append_acceptance(state, prompt["id"], text)
+        packet = cg.recovery_packet(session_dir, state)
+        self.assertLessEqual(len(packet), cg.RECOVERY_CHAR_LIMIT)
+        self.assertIn("recovery packet clipped", packet)
+        self.assertTrue(packet.endswith(cg.RECOVERY_COMPLETION_RULE))
+        self.assertNotIn("proof=legacy_fallback", packet)
+
     def test_incident_replay_blocks_subset_and_requires_visual_readback(self) -> None:
         input_image = self.write_png("incident-input.png", 70, 40)
         output_image = self.write_png("incident-output.png", 70, 41)
@@ -3843,7 +3972,7 @@ class ContextGuardTests(unittest.TestCase):
             cg.dispatch(
                 self.payload(
                     "UserPromptSubmit",
-                    prompt="$context-guard\n根据截图修复界面，并核验全部会议条目。",
+                    prompt="$context-guard\n根据截图修复界面，并核验全部 70 个会议条目。",
                     local_images=[str(input_image)],
                 )
             )
@@ -3984,10 +4113,36 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(cg.checkpoint_issues(state, checkpoint), [])
 
+    def test_explicit_scope_count_overrides_attachment_count(self) -> None:
+        state = cg.new_state(self.payload("UserPromptSubmit"))
+        asset_ids: list[str] = []
+        for index in range(5):
+            image = self.write_png(f"scope-input-{index}.png", 70, 40 + index)
+            candidate = cg.asset_candidate(str(image))
+            assert candidate is not None
+            asset_ids.append(
+                cg.add_asset(state, "P0001", candidate, "hook_payload")
+            )
+        contract = cg.verification_contract(
+            "R001",
+            "根据五张截图核验全部 70 个会议条目。",
+            state,
+            asset_ids,
+        )
+        obligation = next(
+            item for item in contract["obligations"] if item["kind"] == "scope_coverage"
+        )
+        self.assertEqual(obligation["expected_scope_count"], 70)
+        self.assertIsNone(obligation["expected_scope_sha256"])
+
     def test_proof_contract_multilingual_and_adversarial_benchmark(self) -> None:
         cases = (
             ("核验全部 70 个条目。", "enforced", {"scope_coverage"}),
-            ("Verify every item in the collection.", "enforced", {"scope_coverage"}),
+            ("Verify all 70 items in the collection.", "enforced", {"scope_coverage"}),
+            ("Verify every item in the collection.", "legacy_fallback", set()),
+            ("Run all tests.", "legacy_fallback", set()),
+            ("完整介绍这个概念。", "legacy_fallback", set()),
+            ("Summarize all changes.", "legacy_fallback", set()),
             ("仅核验选定部分，不需要全部条目。", "legacy_fallback", set()),
             ("Verify selected items, not all items.", "legacy_fallback", set()),
             ("The word all appears in this quotation, but no verification is requested.", "legacy_fallback", set()),
@@ -4002,6 +4157,10 @@ class ContextGuardTests(unittest.TestCase):
                     {item["kind"] for item in contract["obligations"]},
                     expected_kinds,
                 )
+                if expected_kinds == {"scope_coverage"}:
+                    self.assertEqual(
+                        contract["obligations"][0]["expected_scope_count"], 70
+                    )
 
     def test_visual_contract_rejects_successful_nonvisual_evidence_and_wrong_surface(self) -> None:
         image = self.write_png("negative-input.png", 10, 10)
@@ -4036,8 +4195,8 @@ class ContextGuardTests(unittest.TestCase):
             cg.normalize_proof_manifest(state, manifest)
 
     def test_proof_is_item_scoped_and_cannot_close_sibling_requirement(self) -> None:
-        self.prompt("$context-guard\n核验全部条目。")
-        self.prompt("核验全部另一个集合。")
+        self.prompt("$context-guard\n核验全部 1 个条目。")
+        self.prompt("核验另一个集合的全部 1 个条目。")
         evidence_id = self.record_tool()
         state = self.state()
         first = state["requirements"][0]["verification_contract"]["obligations"][0]
@@ -4066,7 +4225,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("R002", cg.unresolved_proof_obligations(state))
 
     def test_register_proof_commits_only_after_exact_successful_hook_receipt(self) -> None:
-        self.prompt("$context-guard\n核验全部条目。")
+        self.prompt("$context-guard\n核验全部 2 个条目。")
         evidence_id = self.record_tool()
         state = self.state()
         obligation = state["requirements"][0]["verification_contract"]["obligations"][0]
@@ -4086,6 +4245,10 @@ class ContextGuardTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        wrong_count = json.loads(manifest_path.read_text(encoding="utf-8"))
+        wrong_count["expected_scope"] = ["one"]
+        with self.assertRaisesRegex(ValueError, "prompt-derived contract requires 2"):
+            cg.normalize_proof_manifest(state, wrong_count)
         arguments = [
             sys.executable,
             str(MODULE_PATH),
@@ -4121,7 +4284,7 @@ class ContextGuardTests(unittest.TestCase):
         cg.validate_state_integrity(self.state())
 
     def test_register_proof_rejects_shell_tail_forgery_and_failed_tool(self) -> None:
-        self.prompt("$context-guard\n核验全部条目。")
+        self.prompt("$context-guard\n核验全部 1 个条目。")
         evidence_id = self.record_tool()
         state = self.state()
         obligation = state["requirements"][0]["verification_contract"]["obligations"][0]
