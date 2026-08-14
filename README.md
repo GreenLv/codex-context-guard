@@ -107,33 +107,33 @@ boundary and checks it before a completion claim is accepted.
 See [Architecture](docs/ARCHITECTURE.md) and
 [Privacy](docs/PRIVACY.md) for the full boundary.
 
-## Everyday example: refactor code without breaking callers
+## Everyday example: write a technical design document without losing decisions
 
-Imagine a repository exposes `submit_order(payload)` to several existing
-callers. You ask Codex to clean up an increasingly hard-to-maintain checkout
-module.
+Imagine you ask Codex to prepare a technical design document for a new service.
+The task will span research, revisions, diagrams, and review comments, while
+several important decisions have already been approved.
 
 ### 1. Initial request
 
 ```text
-Refactor checkout validation out of checkout.py into validators.py.
+Write docs/design/checkout-v2.md for the new checkout service.
 
 Requirements:
-- Keep the public submit_order(payload) signature and behavior unchanged.
-- Do not add or edit database migrations.
-- Add regression tests for invalid coupons and duplicate orders.
-- Finish only when the existing and new tests pass.
+- Keep the approved API and data-flow diagrams unchanged.
+- Do not change the public rollout date or add new infrastructure commitments.
+- Include sections for problem, design, risks, rollout, and open questions.
+- Finish only when every checklist item has evidence from the source notes or review.
 ```
 
 Context Guard turns those requirements into a private checklist. Codex remains
-free to inspect files, make a plan, edit code, run tools, or delegate bounded
-subtasks normally.
+free to inspect source notes, make a plan, draft the document, run checks, or
+delegate bounded subtasks normally.
 
 ### 2. A later correction
 
 ```text
-One more constraint: keep normalize_phone() as a compatibility wrapper because
-an older integration still imports it directly.
+One more constraint: use the team's RFC template, and give every recommendation
+either a source link or an explicit "to verify" label.
 ```
 
 The correction is appended to the checklist; it does not silently rewrite the
@@ -141,40 +141,40 @@ original request.
 
 ### 3. The task becomes long and `/compact` runs
 
-After many file reads, edits, test failures, and fixes, the conversation is
-compacted. A normal summary might remember “move validation and make tests
-pass” while dropping the compatibility wrapper or migration prohibition.
-Context Guard restores the active checklist instead:
+After research, drafting, diagram updates, and review comments, the conversation
+is compacted. A normal summary might remember “write the design document” while
+dropping the approved decisions, RFC template, or source-link rule. Context
+Guard restores the active checklist instead:
 
 ```text
 Still required after compaction:
-- submit_order(payload) remains compatible with existing callers.
-- Database migrations remain untouched.
-- normalize_phone() remains as a compatibility wrapper.
-- Invalid-coupon and duplicate-order regressions exist.
-- Existing and new tests must pass before completion.
+- Approved API and data-flow decisions remain unchanged.
+- No new infrastructure commitments or rollout-date changes are introduced.
+- The document follows the RFC template.
+- Every recommendation has a source link or a "to verify" label.
+- Required sections and open questions are present before completion.
 ```
 
-### 4. “The refactor is done” is checked against evidence
+### 4. “The document is done” is checked against evidence
 
 Before Codex can finish, each open item still needs captured successful
 evidence:
 
 | Checklist item | Example evidence | If evidence is missing |
 | --- | --- | --- |
-| Public API unchanged | signature/contract inspection and compatibility tests | continue working |
-| No migration changes | a successful diff check over the migration directory | continue working |
-| Wrapper preserved | implementation inspection plus its regression test | continue working |
-| Required behavior covered | invalid-coupon and duplicate-order tests exist | continue working |
-| Refactor passes | existing and new test suites exit successfully | allow completion |
+| Approved decisions preserved | a diff check against source notes and review decisions | continue working |
+| No new commitments | a claim scan and diff of rollout/infrastructure statements | continue working |
+| RFC template followed | heading and order check against the team template | continue working |
+| Recommendations grounded | source links or explicit `to verify` labels | continue working |
+| Complete document | required sections and links are present | allow completion |
 
 The final reply can then say what changed and cite the checks that passed,
 without relying on the post-compaction summary to remember every constraint.
 
-This is a representative refactoring case, not a benchmark or a claim of
+This is a representative document-writing case, not a benchmark or a claim of
 semantic proof. Context Guard ensures that requirements remain visible and
-that completion is evidence-bound; humans and tests still decide whether the
-implementation is actually correct.
+that completion is evidence-bound; people still decide whether the document's
+recommendations are sound.
 
 ## Requirements
 

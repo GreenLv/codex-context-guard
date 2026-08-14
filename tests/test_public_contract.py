@@ -65,11 +65,13 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("```mermaid\nflowchart TB", english)
         self.assertIn("```mermaid\nflowchart TB", chinese)
         self.assertIn(
-            "## Everyday example: refactor code without breaking callers", english
+            "## Everyday example: write a technical design document without losing decisions",
+            english,
         )
-        self.assertIn("## 日常示例：重构代码，但不能破坏现有调用方", chinese)
-        for term in ("submit_order(payload)", "normalize_phone()"):
+        self.assertIn("## 日常示例：撰写技术方案，但不能漏掉已确认决策", chinese)
+        for term in ("docs/design/checkout-v2.md", "RFC template"):
             self.assertIn(term, english)
+        for term in ("docs/design/checkout-v2.md", "RFC 模板"):
             self.assertIn(term, chinese)
 
         self.assertIn("## Observed token overhead", english)
