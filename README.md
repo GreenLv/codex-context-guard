@@ -7,58 +7,26 @@
 
 [简体中文](README.zh-CN.md)
 
-Context Guard is a local correctness sidecar for long-running Codex tasks. It
-keeps authoritative requirements, acceptance criteria, revisions, bounded
-native-plan state, delegated-agent provenance, and verification evidence in a
-private local ledger so that compaction does not silently erase the task
-contract.
+Context Guard is a local correctness layer for long-running Codex tasks. It
+keeps the task's non-negotiable requirements visible across context compaction
+and checks that a completion claim is backed by successful evidence.
 
 It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.7.3` is the latest published release. It uses schema 6 and Proof protocol
-> 1.0.0. It adds deterministic evidence-to-requirement and hash-only multimodal
-> contracts while retaining an auditable `legacy_fallback` for unsupported
-> cases. It additionally requires prompt-constructible complete scopes, parses
-> private controls only when the current runtime is executed, reconciles each
-> late attachment once per prompt plus lifecycle retries, and reserves the
-> completion rule when recovery is clipped. Visual readback obligations now
-> require an affirmative mutation clause, and explicit scope counts outrank
-> attachment counts. Scoped native macOS and Windows source/install/archive,
-> strict no-op, and installed lifecycle acceptance passed before publication.
-> The consumed 0.7.0, 0.7.1, and 0.7.2 caches remain
-> immutable and unreleased. `0.7.3` keeps Stop protocol 1.1.0,
-> which makes legacy `continue`
-> advisory, preserves pending work on terminal mismatch, and uses quote-aware
-> shell intent parsing. `0.6.3` also makes cache upgrades repair indexed live
-> drift before archive adoption and removes legacy repository metadata only
-> when the trusted product manifest is unchanged. The installed `0.6.2`
-> package is immutable and was never tagged or released; its version was
-> consumed before those manager lifecycle fixes. The `0.6.0` candidate
-> introduced state schema 5, Stop protocol 1.0.0, and diagnostic classifier
-> 2.0.0, but a normally trusted fresh Codex Code Mode run exposed a raw-stdout
-> staging failure, so `0.6.0` was not tagged or released. Its installed cache is
-> immutable and its version number is consumed. `0.6.1` changes only the
-> successful private-stage receipt; schema, protocol, classifier, and the exact
-> eight-Hook wire remain unchanged. The 0.6.3 release passes scoped native
-> macOS and Windows source/install/archive gates and normally trusted private and public
-> identities without a bypass, including `user_wait`, a completion checkpoint,
-> and manual schema-5 `/compact` recovery. The 0.6.3 release is published from
-> the validated main commit; its annotated tag and GitHub Release preserve that
-> exact source state. Release automation passed separately on the exact public
-> commit and tag; CI does not replace either native run.
+> Release status: `0.7.3` is the latest published release. For protocol versions,
+> platform evidence, and release history, see [Compatibility](docs/COMPATIBILITY.md),
+> [Local acceptance](docs/LOCAL_ACCEPTANCE.md), and the [changelog](CHANGELOG.md).
 
-### 30-second sanitized compact/recovery demo
+## Start here
 
-```text
-1. Activate Context Guard for a synthetic task with two requirements.
-2. Continue normal work, then run /compact.
-3. The resumed task receives the same bounded requirement checklist.
-4. Completion remains blocked until successful evidence covers both items.
-```
-
-The demo contains no real prompts, local paths, task state, or plugin data.
+| If you want to... | Read... |
+| --- | --- |
+| understand the problem and value | [Why it exists](#why-it-exists) and [Core capabilities](#core-capabilities) |
+| see the lifecycle at a glance | [How it works in 30 seconds](#how-it-works-in-30-seconds) |
+| install and try it | [Requirements](#requirements), [Install](#install-from-a-local-clone), and [Quick check](#quick-check) |
+| inspect technical or privacy boundaries | [Architecture](docs/ARCHITECTURE.md), [Privacy](docs/PRIVACY.md), and [Compatibility](docs/COMPATIBILITY.md) |
 
 ## Why it exists
 
@@ -74,51 +42,37 @@ Context Guard therefore separates four things:
 3. what tools actually produced and whether that outcome was successful;
 4. what may safely be claimed complete.
 
-## Core behavior
+## Core capabilities
 
-- Journals root and delegated prompts with SHA-256-bound metadata.
-- Assigns stable requirement and acceptance IDs and records explicit
-  supersessions without silently rewriting history.
-- Creates deterministic verification obligations for identifiable assets,
-  subjects, UI/artifact surfaces, visual readbacks, and complete scopes. An
-  ordinary successful command cannot satisfy an incompatible obligation.
-- Records image source type, redacted reference, hash, byte count, dimensions,
-  and availability without storing the image bytes. Result readbacks must use a
-  distinct hashed asset and resolve immutable visual facts.
-- Marks unsupported contracts `legacy_fallback` instead of claiming arbitrary
-  natural-language or pixel understanding.
-- Saves a bounded recovery packet before compaction and restores it on compact
-  or resume.
-- Mirrors the latest successful native `update_plan` call as a read-only
-  recovery index.
-- Records bounded, provenance-aware delegated-agent contracts and results, not
-  transcripts or hidden reasoning.
-- Treats unstructured or ambiguous tool output as unknown and prevents it from
-  satisfying completion gates.
-- Keeps exactly one private turn-bound staged control: a completion checkpoint,
-  or `continue`, `user_wait`, `external_wait`, or `deferred`.
-- Accepts a private stage request only after the exact hash marker is paired
-  with a successful tool outcome. For raw stdout, the successful CLI emits a
-  final standalone `Script completed` receipt. A bare marker remains rejected,
-  and structured failure, nonzero status, or hard failure text takes priority.
-  Control commands never become requirement-closing evidence.
-- Yields safely with requirements still pending when no disposition is staged.
-  A verified checkpoint, a narrow whole-task completion claim, and explicit
-  user persistence retain fixed Stop priority. The legacy `continue` value is
-  accepted for compatibility but is advisory only and cannot force a new turn.
-- Uses natural-language action ownership only as a diagnostic signal. It cannot
-  turn an ordinary assistant future, user handoff, external wait, or deferred
-  phase into a hard continuation by itself.
-- Stores at most 32 recent Stop decisions as timestamps, turn IDs, protocol and
-  control sources, declared dispositions, diagnostic outcomes, hashes, and
-  reason codes. It stores no raw reply text.
-- Serializes concurrent session updates with a bounded cross-platform file
-  lock, including the Windows access-denied/holder-exit race observed in CI.
-- Replaces binary/data-URL payloads with bounded type, length, and hash
-  metadata.
-- Verifies private-state integrity and reconstructs only from hash-verified
-  immutable prompt records; unrecoverable state fails closed.
-- Supports redacted handoff exports and explicit, bounded successor packs.
+The capabilities below are ordered by their importance to task correctness.
+
+| Priority | Capability | What it means in practice |
+| --- | --- | --- |
+| 1 | **Preserve the task contract** | Requirements, acceptance criteria, prohibitions, and later corrections keep stable identities. A correction supersedes an earlier item explicitly instead of silently rewriting history. |
+| 2 | **Require evidence before completion** | Each open item must be covered by successful, compatible evidence. A command that succeeded for the wrong file, UI surface, image, or subset does not close the requirement. |
+| 3 | **Recover after compaction or resume** | Before compaction, Context Guard saves a bounded recovery packet. On compact or resume, it restores the active checklist, unresolved items, recent evidence, and the completion rule. |
+| 4 | **Keep plans, subagents, and visual work attributable** | It mirrors the latest successful native plan as a read-only index, records bounded subagent contracts/results with provenance, and represents images with hashes and metadata rather than stored image bytes. |
+| 5 | **Fail safely and protect private state** | Ambiguous tool output remains `unknown`; damaged or unverifiable state fails closed. Private controls are turn-bound, binary payloads are minimized, and exports are redacted and explicit. |
+
+When a verification boundary can be derived deterministically, Proof protocol
+1.0.0 enforces it. Unsupported cases remain visible as `legacy_fallback`
+instead of being presented as semantic or pixel-level proof. See
+[Architecture](docs/ARCHITECTURE.md) for protocol and lifecycle details.
+
+Stop protocol 1.1.0 keeps completion control turn-bound: an unfinished
+disposition is advisory only and cannot force a new turn. It records why the
+current turn ended without turning Context Guard into a task scheduler.
+
+## How it works in 30 seconds
+
+```text
+1. Activate Context Guard for a synthetic task with two requirements.
+2. Continue normal work, then run /compact.
+3. The resumed task receives the same bounded requirement checklist.
+4. Completion remains blocked until successful evidence covers both items.
+```
+
+The demo contains no real prompts, local paths, task state, or plugin data.
 
 ## Architecture
 
@@ -245,13 +199,17 @@ On Windows, use a Python 3.10+ launcher:
 py -3.10 scripts\manage_plugin.py --apply
 ```
 
-The helper registers this non-default repository marketplace, installs
-`context-guard@codex-context-guard`, verifies source/cache parity, and archives
-every version under `CODEX_HOME/plugins/cache-archive/codex-context-guard/context-guard/`
-with a trusted SHA-256 index. Read-only runs audit the archive; `--apply` repairs
-a missing or changed live cache only from the trusted archive. Archive damage
-fails closed, archives are never auto-pruned, and same-version source drift is
-still rejected.
+The helper:
+
+1. registers this repository as a marketplace;
+2. installs `context-guard@codex-context-guard`;
+3. verifies that the source and installed cache match; and
+4. keeps a SHA-256-indexed archive of installed versions so tasks that already
+   loaded an older Hook path can finish safely.
+
+It rejects same-version source drift and fails closed when trusted archive
+evidence is missing or damaged. See [Versioning](docs/VERSIONING.md) for the
+cache and upgrade contract.
 
 Installing a plugin does not automatically trust its Hooks. Start a fresh
 Codex CLI task, open `/hooks`, inspect the eight definitions, and trust them
@@ -291,20 +249,21 @@ python3 scripts/smoke_installed.py
 
 ## User controls
 
-- `$context-guard` or `context-guard on` activates full recovery and completion
-  gating.
-- `context-guard off` disables recovery and completion gating while preserving
-  prompt journaling.
-- `context-guard status` reports protected-state counts, Stop protocol and
-  classifier versions, and the latest decision without exposing raw prompts.
-- `context-guard diagnose` reports bounded protocol/control sources, declared
-  dispositions, diagnostic outcomes, reason codes, and hashes without raw
-  prompts or replies.
-- `context-guard export <path>` writes a redacted handoff inside the current
-  project. The default is `.codex/context-guard/CONTEXT_HANDOFF.md`.
-- `context-guard rollover <directory>` validates an explicitly prepared
-  successor input and writes a non-overwriting bounded handoff plus hash
-  manifest. It never creates or authorizes another task.
+Most users need only the first four controls:
+
+| Command | Purpose |
+| --- | --- |
+| `$context-guard` or `context-guard on` | activate recovery and completion gating |
+| `context-guard off` | disable gating while preserving prompt journaling |
+| `context-guard status` | show protected-state counts and the latest decision without raw prompts |
+| `context-guard diagnose` | show bounded protocol and diagnostic details without raw prompts or replies |
+
+Advanced handoff controls are explicit writes:
+
+| Command | Purpose |
+| --- | --- |
+| `context-guard export <path>` | write a redacted handoff in the current project; default: `.codex/context-guard/CONTEXT_HANDOFF.md` |
+| `context-guard rollover <directory>` | validate an explicitly prepared successor input and write a non-overwriting handoff plus hash manifest; it never creates or authorizes another task |
 
 Read [Successor Pack Input](skills/context-guard/references/successor-pack.md)
 before using `rollover`.
@@ -379,14 +338,13 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.12, and
 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
 
-Native Windows 0.5.1 and 0.6.3 acceptance remains historical evidence. The
-0.7.3 release passed scoped native macOS and Windows source/install/archive,
-strict no-op, and installed lifecycle gates. The exact release commit and tag
-are verified separately by CI and HOL; automation is not a native-runtime
-substitute.
-The unreleased, consumed 0.6.0 candidate failed its real Code Mode fresh gate
-and must not be tagged or patched in place. See
-[Local release acceptance](docs/LOCAL_ACCEPTANCE.md) for the evidence boundary.
+The 0.7.3 release passed scoped native macOS and Windows
+source/install/archive, strict no-op, and installed lifecycle gates. CI and HOL
+verify the exact public commit and tag separately; automation is not a
+substitute for native runtime acceptance. Historical and unreleased-version
+evidence remains in [Compatibility](docs/COMPATIBILITY.md) and
+[Local acceptance](docs/LOCAL_ACCEPTANCE.md), rather than in this quick-start
+document.
 
 ## Explicit non-goals
 

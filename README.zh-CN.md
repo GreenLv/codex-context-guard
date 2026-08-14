@@ -7,50 +7,25 @@
 
 [English](README.md)
 
-Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness sidecar）。它把
-权威需求、验收标准、后续修订、有限的原生计划状态、委托 Agent 来源、哈希化多模态资产和验证证据保存
-在私有本地账本中，避免上下文压缩后任务契约被静默遗忘。
+Context Guard 是面向 Codex 长任务的本地正确性保护层。它让任务中不能丢失的要求
+在上下文压缩后仍然清晰可见，并在任务宣称完成前检查是否已有成功证据。
 
 它**不替代** Codex 的 compaction、Plan/Goal mode、memories、subagents、
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.7.3` 是最近一次已发布版本。该版本使用 schema 6 和 Proof protocol
-> 1.0.0，以确定性契约约束证据对象、
-> 表面、视觉回读和完整范围；无法确定契约时显式记录 `legacy_fallback`。
-> 0.7.3 仅在能从提示确定完整集合时强制范围证明，只把当前 runtime 的实际执行
-> 识别为私有控制，并把附件补齐限定为每 prompt 一次加生命周期强制重试；恢复包
-> 被裁剪时仍保留完成规则；视觉结果回读仅由肯定式修改分句触发，明示范围基数
-> 优先于附件数量。发布前已完成限定的 macOS 与 Windows source/install/archive、
-> 严格 no-op 和已安装生命周期验收。已消耗的 0.7.0/0.7.1/0.7.2 cache
-> 保持不可变且未发布。
-> Stop protocol 1.1.0 将兼容保留的
-> `continue` 降为仅诊断提示，在终态控制
-> 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.3`
-> 还会在归档旧 live cache 前先按可信索引修复漂移，并且仅当受信产品 manifest
-> 前后不变时移除历史仓库元数据。已经安装过的 `0.6.2` 包保持不可变；该版本从未
-> 打 tag 或发布，但在这些 manager 生命周期修复前已经被消耗。`0.6.0`
-> 候选引入了 state schema 5、
-> Stop protocol 1.0.0 和 diagnostic classifier 2.0.0，但在正常信任 Hook 的
-> fresh Codex Code Mode 任务中暴露了 raw-stdout staging 失败，因此未创建 tag
-> 或 Release；其已安装 cache 不可变，版本号已经消耗。`0.6.1` 只修改成功的
-> 私有 stage receipt，schema、protocol、classifier 和八 Hook wire 均不变。
-> 0.6.3 正式版本已通过限定的 macOS source/install/archive 门；private/public
-> identity 均在正常 Hook 信任、无 trust bypass 下通过 `user_wait`、completion
-> checkpoint 和手动 schema-5 `/compact` 恢复。Windows 0.6.3 原生验收也已完成；
-> 带注释的 `v0.6.3` tag 和 GitHub Release 保持同一份经过验证的源码状态。精确公开提交和
-> tag 的自动化门禁均已单独通过；CI 不替代任何一次原生验收。
+> 发布状态：`0.7.3` 是最近一次已发布版本。协议版本、平台证据和历史版本详见
+> [兼容性说明](docs/COMPATIBILITY.md)、[本地验收记录](docs/LOCAL_ACCEPTANCE.md)
+> 与[更新日志](CHANGELOG.md)。
 
-### 30 秒脱敏 compact/recovery 演示
+## 从这里开始
 
-```text
-1. 为一个只有两项要求的合成任务启用 Context Guard。
-2. 正常执行工作，然后运行 /compact。
-3. 恢复后的任务收到同一份有界要求清单。
-4. 两项要求都有成功证据前，任务仍不能宣称完成。
-```
-
-该演示不包含任何真实提示、路径、任务状态或插件数据。
+| 如果你想…… | 建议阅读 |
+| --- | --- |
+| 先理解它解决什么问题 | [为什么需要它](#为什么需要它)和[核心能力](#核心能力) |
+| 快速了解工作流程 | [30 秒看懂工作流程](#30-秒看懂工作流程) |
+| 安装并亲自试用 | [环境要求](#环境要求)、[安装](#从本地克隆安装)和[快速检查](#快速检查) |
+| 查看技术或隐私边界 | [架构说明](docs/ARCHITECTURE.md)、[隐私说明](docs/PRIVACY.md)和[兼容性说明](docs/COMPATIBILITY.md) |
 
 ## 为什么需要它？
 
@@ -67,36 +42,34 @@ Context Guard 因此把四件事分开记录：
 
 ## 核心能力
 
-- 使用 SHA-256 绑定的元数据记录根提示和委托提示。
-- 为需求和验收项分配稳定 ID，显式记录 supersession，不静默改写历史。
-- 对可确定的资产、对象、UI/文件表面、视觉回读和完整范围建立验证义务；普通的
-  成功命令不能满足类型或对象不匹配的义务。
-- 只保存图片来源类型、脱敏引用、哈希、字节数、尺寸和可用性，不保存图片字节；
-  结果回读必须使用不同的哈希资产并解决不可变的视觉事实。
-- 无法确定性建立契约时标记 `legacy_fallback`，不宣称能理解任意自然语言或像素语义。
-- 在压缩前保存有界恢复包，并在 compact 或 resume 时恢复任务边界。
-- 将最近一次成功的原生 `update_plan` 调用镜像为只读恢复索引。
-- 保存有来源的有界委托契约和 Agent 结果，不保存 transcript 或隐藏推理。
-- 将无结构或含糊的工具输出记为 unknown，阻止其满足完成门禁。
-- 每轮最多保留一个私有、turn-bound staged control：完成 checkpoint，或
-  `continue`、`user_wait`、`external_wait`、`deferred` 之一。
-- 私有 stage request 只有在精确 hash marker 与成功工具 outcome 同时成立时才会被
-  接受；raw stdout 路径由成功 CLI 最终输出独立 `Script completed` receipt。
-  bare marker 仍会被拒绝，structured failure、非零状态或硬失败文本优先。
-  控制命令不会成为关闭 requirement 的成功 evidence。
-- 未 stage disposition 时安全让出，本轮结束但需求继续 pending。已验证 checkpoint、
-  窄范围整体完成声明和用户显式 persistence 仍按固定 Stop 优先级处理。兼容保留的
-  `continue` 仅作为提示，不能强制开启新一轮。
-- 自然语言动作归属只作为诊断信号；普通的 assistant future、用户交接、外部等待或
-  延期描述本身不能再直接触发强制续轮。
-- 最多保存 32 条 Stop 决策的时间、turn ID、protocol/control source、声明的
-  disposition、诊断 outcome、哈希与 reason codes，不保存原始回复正文。
-- 使用有界跨平台文件锁串行化同一会话的并发更新，并覆盖公开 CI 发现的 Windows
-  access-denied/持有者退出竞态。
-- 将二进制和 data URL 替换为类型、长度与哈希元数据。
-- 校验私有状态完整性；只允许从通过哈希验证的不可变提示记录重建，无法重建时
-  fail closed。
-- 支持脱敏 handoff 和显式、受限、不可覆盖的 successor pack。
+以下能力按照它们对任务正确性的重要程度降序排列。
+
+| 优先级 | 能力 | 实际含义 |
+| --- | --- | --- |
+| 1 | **守住任务契约** | 为需求、验收标准、禁止事项和后续修订保留稳定身份。新要求会显式替代旧事项，而不是悄悄改写历史。 |
+| 2 | **没有证据就不宣称完成** | 每个未完成事项都必须有成功且匹配的证据。命令即使成功，如果针对了错误文件、错误 UI 表面、错误图片或不完整子集，也不能关闭要求。 |
+| 3 | **在 compact 或 resume 后恢复边界** | 压缩前保存有界恢复包；恢复时重新注入有效清单、未完成事项、近期证据和完成规则。 |
+| 4 | **让计划、subagent 和视觉工作可追溯** | 将最近一次成功的原生计划镜像为只读索引，记录有来源的有界 subagent 契约与结果，并只用哈希和元数据表示图片，不保存图片字节。 |
+| 5 | **失败时保守处理并保护私有状态** | 含糊工具输出保持为 `unknown`，状态损坏或无法验证时 fail closed；私有控制只对当前轮有效，二进制数据最小化保存，导出必须显式触发并经过脱敏。 |
+
+当验证边界能够被确定性构造时，Proof protocol 1.0.0 会强制执行该边界；不支持的
+情况会清晰标记为 `legacy_fallback`，而不会包装成语义或像素级证明。协议和生命周期
+细节见[架构说明](docs/ARCHITECTURE.md)。
+
+Stop protocol 1.1.0 把完成控制限制在当前轮：未完成 disposition
+仅作为提示，不能强制开启新一轮。它只记录本轮为什么结束，不会把 Context Guard
+变成任务调度器。
+
+## 30 秒看懂工作流程
+
+```text
+1. 为一个只有两项要求的合成任务启用 Context Guard。
+2. 正常执行工作，然后运行 /compact。
+3. 恢复后的任务收到同一份有界要求清单。
+4. 两项要求都有成功证据前，任务仍不能宣称完成。
+```
+
+该演示不包含任何真实提示、路径、任务状态或插件数据。
 
 ## 架构
 
@@ -214,10 +187,15 @@ Windows 使用 Python 3.10+ launcher：
 py -3.10 scripts\manage_plugin.py --apply
 ```
 
-安装器会注册这个非默认 repo marketplace，安装
-`context-guard@codex-context-guard`，检查源码与缓存一致性，并在升级时保留旧版本
-缓存。如果源码在相同版本号下发生变化，它会拒绝就地刷新，因为仍在运行的任务
-可能继续调用旧的绝对 Hook 缓存路径。
+安装器会依次：
+
+1. 把本仓库注册为 marketplace；
+2. 安装 `context-guard@codex-context-guard`；
+3. 检查源码与已安装 cache 是否一致；
+4. 用 SHA-256 索引保留已安装版本，让仍引用旧 Hook 路径的任务可以安全结束。
+
+相同版本号下的源码漂移会被拒绝；可信归档缺失或损坏时会 fail closed。缓存与升级
+规则详见[版本策略](docs/VERSIONING.md)。
 
 安装插件并不等于信任 Hook。安装后应启动一个新的 Codex CLI 任务，打开 `/hooks`，
 逐项检查八类 Hook 定义，只在内容与本仓库一致时信任。不要使用 trust bypass。
@@ -253,16 +231,21 @@ python3 scripts/smoke_installed.py
 
 ## 用户控制
 
-- `$context-guard` 或 `context-guard on`：启用完整恢复与完成门禁。
-- `context-guard off`：关闭恢复和完成门禁，但继续记录提示。
-- `context-guard status`：显示保护状态、Stop protocol/classifier 版本和最近决策，
-  不暴露原始提示。
-- `context-guard diagnose`：显示有界的 protocol/control source、声明的 disposition、
-  诊断 outcome、reason codes 与哈希，不暴露原始提示或回复。
-- `context-guard export <path>`：在当前项目中生成脱敏 handoff；默认路径为
-  `.codex/context-guard/CONTEXT_HANDOFF.md`。
-- `context-guard rollover <directory>`：验证用户显式准备的 successor 输入，写入
-  不可覆盖的有界 handoff 和哈希清单；它不会创建或授权另一个任务。
+大多数用户只需要前四个控制项：
+
+| 命令 | 用途 |
+| --- | --- |
+| `$context-guard` 或 `context-guard on` | 启用恢复与完成门禁 |
+| `context-guard off` | 关闭门禁，但继续记录提示 |
+| `context-guard status` | 查看保护状态与最近决策，不暴露原始提示 |
+| `context-guard diagnose` | 查看有界协议与诊断信息，不暴露原始提示或回复 |
+
+以下高级 handoff 控制会显式写入文件：
+
+| 命令 | 用途 |
+| --- | --- |
+| `context-guard export <path>` | 在当前项目中生成脱敏 handoff；默认路径是 `.codex/context-guard/CONTEXT_HANDOFF.md` |
+| `context-guard rollover <directory>` | 验证用户显式准备的 successor 输入，写入不可覆盖的 handoff 与哈希清单；不会创建或授权另一个任务 |
 
 使用 `rollover` 前请阅读
 [Successor Pack 输入说明](skills/context-guard/references/successor-pack.md)。
@@ -325,11 +308,10 @@ ruff check .
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-Windows 原生 0.5.1 与 0.6.3 验收只作为历史证据。0.7.3 正式版本已通过限定的
-macOS 与 Windows source/install/archive、严格 no-op 和已安装生命周期门。
-精确发布提交与 tag 由 CI 和 HOL 单独验证；自动化不能替代原生运行。
-未发布且版本号已消耗的 0.6.0 候选已经在真实 Code Mode fresh gate 失败，不得创建
-tag 或原地修补。证据边界见[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
+0.7.3 正式版本已通过限定的 macOS 与 Windows source/install/archive、严格 no-op
+和已安装生命周期门。CI 与 HOL 另行验证精确公开提交和 tag；自动化不能替代原生
+运行。历史版本与未发布版本的证据统一保留在[兼容性说明](docs/COMPATIBILITY.md)和
+[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)，不再挤占这份快速入门文档。
 
 ## 明确不做
 
