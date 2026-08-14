@@ -77,9 +77,9 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 实测 token 开销", chinese)
         self.assertIn("约 1%–2%", chinese)
         self.assertIn(
-            "> Release status: `0.6.3` is the latest published release.", english
+            "> Release status: `0.7.3` is the latest published release.", english
         )
-        self.assertIn("> 发布状态：`0.6.3` 是最近一次已发布版本。", chinese)
+        self.assertIn("> 发布状态：`0.7.3` 是最近一次已发布版本。", chinese)
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
@@ -89,11 +89,12 @@ class PublicContractTests(unittest.TestCase):
         compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(
             encoding="utf-8"
         )
+        self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("## 0.6.3 - 2026-08-12", changelog)
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("Version 0.6.3", changelog)
-        self.assertIn("Current published Context Guard release: `0.6.3`", compatibility)
-        self.assertIn("Current source line: `0.7.3` (unreleased candidate)", compatibility)
+        self.assertIn("Current published Context Guard release: `0.7.3`", compatibility)
+        self.assertIn("Current source line: `0.7.3` (released)", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         for stale in (
             "`0.6.1` is an unreleased candidate",

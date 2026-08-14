@@ -15,13 +15,15 @@ Context Guard 是面向 Codex 长任务的本地正确性旁路（correctness si
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.6.3` 是最近一次已发布版本。当前 `main` 是尚未发布的 0.7.3
-> 候选，使用 schema 6 和 Proof protocol 1.0.0，以确定性契约约束证据对象、
+> 发布状态：`0.7.3` 是最近一次已发布版本。该版本使用 schema 6 和 Proof protocol
+> 1.0.0，以确定性契约约束证据对象、
 > 表面、视觉回读和完整范围；无法确定契约时显式记录 `legacy_fallback`。
 > 0.7.3 仅在能从提示确定完整集合时强制范围证明，只把当前 runtime 的实际执行
 > 识别为私有控制，并把附件补齐限定为每 prompt 一次加生命周期强制重试；恢复包
 > 被裁剪时仍保留完成规则；视觉结果回读仅由肯定式修改分句触发，明示范围基数
-> 优先于附件数量。已消耗的 0.7.0/0.7.1/0.7.2 cache 保持不可变且未发布。
+> 优先于附件数量。发布前已完成限定的 macOS 与 Windows source/install/archive、
+> 严格 no-op 和已安装生命周期验收。已消耗的 0.7.0/0.7.1/0.7.2 cache
+> 保持不可变且未发布。
 > Stop protocol 1.1.0 将兼容保留的
 > `continue` 降为仅诊断提示，在终态控制
 > 不一致时保留 pending 并安全让出，同时使用引号感知的 shell 意图解析。`0.6.3`
@@ -323,10 +325,9 @@ ruff check .
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-Windows 原生 0.5.1 验收只作为历史证据。0.6.3 正式版本已通过限定的 macOS 与 Windows
-source/install/archive 门，且 private/public identity 均在正常 Hook 信任、无 trust
-bypass 运行中通过 `user_wait`、completion checkpoint 和手动 schema-5 `/compact`
-恢复。精确发布提交已通过 PR/main CI、HOL 和 tag CI；CI 不能替代原生运行。
+Windows 原生 0.5.1 与 0.6.3 验收只作为历史证据。0.7.3 正式版本已通过限定的
+macOS 与 Windows source/install/archive、严格 no-op 和已安装生命周期门。
+精确发布提交与 tag 由 CI 和 HOL 单独验证；自动化不能替代原生运行。
 未发布且版本号已消耗的 0.6.0 候选已经在真实 Code Mode fresh gate 失败，不得创建
 tag 或原地修补。证据边界见[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)。
 

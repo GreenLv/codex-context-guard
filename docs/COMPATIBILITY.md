@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.6.3`
-- Current source line: `0.7.3` (unreleased candidate)
+- Current published Context Guard release: `0.7.3`
+- Current source line: `0.7.3` (released)
 - Private state schema: `6`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,9 +18,9 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.7.3 candidate status
+## 0.7.3 release status
 
-The candidate retains Stop protocol 1.1.0, classifier 2.0.0, and the exact
+The release retains Stop protocol 1.1.0, classifier 2.0.0, and the exact
 eight-Hook wire. Schema 6 adds deterministic verification contracts, hash-only
 multimodal assets, and Proof protocol 1.0.0. Enforced contracts reject
 successful evidence with the wrong item, subject, surface, freshness,
@@ -39,7 +39,11 @@ schema-5 migration, local/data-URL image
 hashing and dimensions, transcript-tail supplementation, no-byte persistence,
 Chinese/English positive and negative cases, adversarial wording, wrong-surface
 and cross-item rejection, and the anonymized 48-of-70 subset incident replay.
-Native Windows 0.7.x acceptance is not claimed; CI cannot substitute for it.
+Scoped native macOS and Windows acceptance passed for the frozen 0.7.3 source,
+installation, archive, strict no-op, and installed lifecycle boundaries. The
+release is published from the exact validated `main` commit as `v0.7.3`; CI
+and HOL verify the source commit and tag separately and do not substitute for
+either native run.
 
 ## 0.6.3 release status
 

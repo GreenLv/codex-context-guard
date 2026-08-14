@@ -4,6 +4,8 @@ All notable public releases are documented here.
 
 ## Unreleased
 
+## 0.7.3 - 2026-08-14
+
 ### Added
 
 - State schema 6 adds hash-only multimodal assets, immutable verification
@@ -45,6 +47,10 @@ All notable public releases are documented here.
 - A compatibility matrix replays the 0.6.3 command behavior, locks
   prompt-constructible scope and qualitative abstention, asserts the transcript
   scan-count invariant, and preserves the pre-0.7 recovery-capacity threshold.
+- Scoped native macOS and Windows acceptance passed for the frozen 0.7.3
+  source, installation, archive, strict no-op, and installed lifecycle
+  boundaries. Release automation remains source-level evidence and does not
+  replace either native run.
 
 ## 0.6.3 - 2026-08-12
 

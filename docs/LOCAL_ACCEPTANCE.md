@@ -1,11 +1,11 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.6.3`; the validated
-`v0.6.3` source is tagged and published from `main`;
+Context Guard. The current published release is `0.7.3`; the validated
+`v0.7.3` source is tagged and published from `main`;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.7.3 candidate differential gate (macOS, 2026-08-14)
+## 0.7.3 release differential gate (macOS and Windows, 2026-08-14)
 
 Version 0.7.3 follows a differential audit that found four 0.7.1 regressions:
 ordinary `rg` text containing `register-proof` was blocked; qualitative
@@ -31,7 +31,11 @@ mutation wording, enforces only input inspection without a false result
 readback obligation. A 2 MiB transcript differential benchmark measures 3.264
 ms per steady-state 0.7.3 `PostToolUse` versus 2.267 ms for 0.6.3; the bounded
 once-per-prompt scan invariant prevents growth with transcript size after the
-first reconciliation. Native Windows 0.7.x acceptance remains unclaimed.
+first reconciliation. Native Windows independently completed the bounded
+0.7.3 source, installation, archive, strict no-op, and installed lifecycle
+gates. The annotated `v0.7.3` tag and GitHub Release are created only from the
+exact release commit after its source automation passes; tag automation is
+tracked separately and does not substitute for either native run.
 
 ## 0.7.1 candidate acceptance (macOS, 2026-08-13)
 
