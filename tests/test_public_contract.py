@@ -212,6 +212,25 @@ class CommitIdentityTests(unittest.TestCase):
             self.assertEqual(commits, [head])
             self.assertEqual(identity.violations(root, commits), [])
 
+    def test_non_ancestor_base_uses_new_head_first_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.repository(root)
+            accepted = "123456+example-user@users.noreply.github.com"
+            initial = self.commit(root, "initial.txt", accepted, accepted)
+            old_history = self.commit(
+                root,
+                "old-history.txt",
+                "private-author@example.com",
+                "private-committer@example.com",
+            )
+            self.git(root, "checkout", "-q", "-b", "rewritten", initial)
+            head = self.commit(root, "replacement.txt", accepted, accepted)
+
+            commits = identity.candidate_commits(root, old_history, head)
+            self.assertEqual(commits, [head])
+            self.assertEqual(identity.violations(root, commits), [])
+
     def test_cli_redacts_invalid_email_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

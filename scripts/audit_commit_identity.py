@@ -48,13 +48,32 @@ def is_zero_revision(revision: str) -> bool:
     return len(revision) >= 40 and set(revision) == {"0"}
 
 
+def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", ancestor, descendant],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise GitInspectionError("Git could not inspect commit ancestry")
+
+
 def candidate_commits(root: Path, base: str, head: str) -> list[str]:
     head_commit = resolve_commit(root, head)
     if not base or is_zero_revision(base):
         return [head_commit]
 
     base_commit = resolve_commit(root, base)
-    raw = run_git(root, "rev-list", "--reverse", f"{base_commit}..{head_commit}")
+    range_base = base_commit
+    if not is_ancestor(root, base_commit, head_commit):
+        # A force-pushed ref can report an event.before commit that is no
+        # longer in the new history. Audit the new first-parent range rather
+        # than failing because Git cannot form the obsolete range.
+        range_base = resolve_commit(root, f"{head_commit}^1")
+    raw = run_git(root, "rev-list", "--reverse", f"{range_base}..{head_commit}")
     try:
         commits = raw.decode("ascii").splitlines()
     except UnicodeDecodeError as exc:
