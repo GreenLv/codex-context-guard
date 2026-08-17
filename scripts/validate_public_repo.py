@@ -32,6 +32,7 @@ HOOK_EVENTS = {
     "SessionEnd",
 }
 REQUIRED_FILES = {
+    "AGENTS.md",
     ".codex-plugin/plugin.json",
     ".agents/plugins/marketplace.json",
     ".github/workflows/ci.yml",

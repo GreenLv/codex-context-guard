@@ -24,7 +24,7 @@ and a compact validation note. `0.7.3` is the latest published release.
   upstream. Schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and the
   eight-Hook wire are unchanged.
 
-### History folded into this candidate
+### Changes
 
 - Version 0.7.4 advances the diagnostic classifier to 2.1.0 and distinguishes
   current-task completion assertions from hypotheticals, attributed quotations,

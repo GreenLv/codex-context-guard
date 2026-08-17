@@ -88,9 +88,19 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("仅作为提示，不能强制开启新一轮", chinese)
 
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(
             encoding="utf-8"
         )
+        self.assertLess(
+            changelog.index("### Highlights"), changelog.index("### Changes")
+        )
+        self.assertLess(
+            changelog.index("### Changes"), changelog.index("### Validation")
+        )
+        self.assertIn("Write for adopters, not as a commit transcript.", agents)
+        self.assertIn("Derive the GitHub Release body", agents)
+        self.assertIn("Create and push an annotated `vX.Y.Z` tag", agents)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("Version 0.7.5", changelog)
         self.assertIn("Version 0.7.6", changelog)
