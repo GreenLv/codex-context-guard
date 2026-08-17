@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.7.3`
-- Current source line: `0.7.6` (unreleased synchronized candidate)
+- Current published Context Guard release: `0.7.6`
+- Current source line: `0.7.6`
 - Private state schema: `6`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,9 +18,9 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.7.6 synchronized source candidate
+## 0.7.6 release status
 
-The 0.7.6 candidate keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,
+The 0.7.6 release keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,
 and the exact eight-Hook wire. Classifier 2.2.0 distinguishes current-task
 completion assertions from hypotheticals, attributed quotations, framed
 examples, questions, and trailing negations, while recognizing plural and
@@ -34,10 +34,12 @@ The shared runtime and its regression contract have been synchronized into this
 public source tree. Scoped native Windows verification for this public commit
 passes repository validation, the tracked-tree audit, sibling parity, the 168
 test suite with one capability-aware skip, Ruff 0.16.1, compilation, and an
-isolated first-install/strict-no-op/installed-lifecycle chain. This evidence is
-platform- and scope-specific: a normally trusted public fresh-CLI Hook task,
-native macOS runtime, CI/HOL, tag, and release gates remain separate, and
-`v0.7.3` remains the latest published release.
+isolated first-install/strict-no-op/installed-lifecycle chain. Native macOS
+passes the public repository gates, 168 tests with two capability-aware skips,
+the source self-test, and the same isolated install/no-op/lifecycle chain. A
+normally trusted public fresh-CLI Hook task was not repeated for this patch.
+Main and tag CI/HOL remain separate source-automation evidence and do not
+substitute for either native result.
 
 ## 0.7.3 release status
 

@@ -45,6 +45,7 @@ REQUIRED_FILES = {
     "SECURITY.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
     "requirements-lock.txt",
     "assets/icon.svg",
     "assets/state.schema.json",

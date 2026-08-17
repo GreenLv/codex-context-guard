@@ -1,10 +1,12 @@
 # Changelog
 
+[简体中文](CHANGELOG.zh-CN.md)
+
 All notable public releases are documented here, newest first. Each version
 opens with its highlights in descending priority, followed by grouped changes
-and a compact validation note. `0.7.3` is the latest published release.
+and a compact validation note. `0.7.6` is the latest published release.
 
-## Unreleased — 0.7.6 (source candidate)
+## 0.7.6 - 2026-08-17
 
 ### Highlights
 
@@ -35,13 +37,13 @@ and a compact validation note. `0.7.3` is the latest published release.
 - Version 0.7.6 advances the diagnostic classifier to 2.2.0 and adds the
   fail-closed Python guard.
 
-### Validation boundary
+### Validation
 
-- `0.7.3` remains the latest published release. Scoped native Windows source
-  and isolated-install/lifecycle verification for the public 0.7.6 candidate
-  passes, but a normally trusted public fresh-CLI Hook task, native macOS
-  runtime, CI/HOL, tagging, and release gates remain separate. `0.7.6` has no
-  tag or release.
+- Scoped native Windows and macOS source plus isolated-install/lifecycle gates
+  pass for the public 0.7.6 runtime. The Windows run also verifies sibling
+  parity and the installed eight-Hook self-test. A normally trusted public
+  fresh-CLI Hook task was not repeated for this patch; CI/HOL and tag checks
+  remain separate source-automation gates rather than native-runtime evidence.
 
 ## 0.7.3 - 2026-08-14
 

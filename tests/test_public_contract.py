@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -79,15 +80,16 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 实测 token 开销", chinese)
         self.assertIn("约 1%–2%", chinese)
         self.assertIn(
-            "> Release status: `0.7.3` is the latest published release.", english
+            "> Release status: `0.7.6` is the latest published release.", english
         )
-        self.assertIn("> 发布状态：`0.7.3` 是最近一次已发布版本。", chinese)
+        self.assertIn("> 发布状态：`0.7.6` 是最近一次已发布版本。", chinese)
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
         self.assertIn("仅作为提示，不能强制开启新一轮", chinese)
 
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        changelog_zh = (ROOT / "CHANGELOG.zh-CN.md").read_text(encoding="utf-8")
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         compatibility = (ROOT / "docs" / "COMPATIBILITY.md").read_text(
             encoding="utf-8"
@@ -101,15 +103,25 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("Write for adopters, not as a commit transcript.", agents)
         self.assertIn("Derive the GitHub Release body", agents)
         self.assertIn("Create and push an annotated `vX.Y.Z` tag", agents)
+        self.assertIn("[简体中文](CHANGELOG.zh-CN.md)", changelog)
+        self.assertIn("[English](CHANGELOG.md)", changelog_zh)
+        version_heading = re.compile(r"^## (0\.\d+\.\d+)(?:\s+-|$)", re.MULTILINE)
+        self.assertEqual(
+            version_heading.findall(changelog), version_heading.findall(changelog_zh)
+        )
+        self.assertIn("### 重点", changelog_zh)
+        self.assertIn("### 变化", changelog_zh)
+        self.assertIn("### 验证", changelog_zh)
+        self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("Version 0.7.5", changelog)
         self.assertIn("Version 0.7.6", changelog)
         self.assertIn("## 0.6.3 - 2026-08-12", changelog)
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("Version 0.6.3", changelog)
-        self.assertIn("Current published Context Guard release: `0.7.3`", compatibility)
+        self.assertIn("Current published Context Guard release: `0.7.6`", compatibility)
         self.assertIn(
-            "Current source line: `0.7.6` (unreleased synchronized candidate)",
+            "Current source line: `0.7.6`",
             compatibility,
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)

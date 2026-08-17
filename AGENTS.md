@@ -76,6 +76,12 @@ authoritative.
 
 - Keep English and Simplified Chinese README behavior, diagrams, examples,
   version status, and compatibility claims synchronized.
+- Treat README, CHANGELOG, and the GitHub Release body as bilingual adopter
+  surfaces. Keep separate English and Simplified Chinese changelog files with
+  matching version/date structure, and publish one release body with English
+  first and Chinese second. Keep detailed architecture, privacy, compatibility,
+  and acceptance evidence in one authoritative language unless the project
+  explicitly adopts a complete translated evidence set.
 - Keep quick-start material concise. Put protocol history in
   `docs/VERSIONING.md`, compatibility boundaries in `docs/COMPATIBILITY.md`,
   and concrete acceptance evidence in `docs/LOCAL_ACCEPTANCE.md`.

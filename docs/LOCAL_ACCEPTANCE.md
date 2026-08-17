@@ -1,17 +1,16 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.7.3`; the synchronized
-`0.7.6` source candidate is not tagged or published;
-accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
+Context Guard. The current published release is `0.7.6`; accepted `0.7.3`,
+`0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.7.6 synchronized source candidate (2026-08-17)
+## 0.7.6 release acceptance (2026-08-17)
 
 The public tree now carries the 0.7.6 shared runtime and its regression
 contract. The plugin manifest, packaging metadata, public validator, versioning
 documentation, and bilingual release notes identify 0.7.6 as the current
-unreleased source line while preserving 0.7.3 as the latest published release.
-The candidate keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and
+published release. The release keeps schema 6, Proof protocol 1.0.0, Stop
+protocol 1.1.0, and
 the eight-Hook wire; classifier 2.2.0 recognizes plural and quantified
 completion claims and explicit first-person reporting while ignoring questions,
 trailing negations, attributed speech, and hypotheticals. The Hook entry now
@@ -22,10 +21,12 @@ Scoped native Windows verification passed against source commit
 tracked-tree audit, sibling parity, 168 tests with one capability-aware skip,
 Ruff 0.16.1, and scripts/tests compilation all passed.
 An isolated Windows 0.7.6 install also passed first install, strict second-run
-no-op, installed eight-Hook self-test, and lifecycle smoke. Public source,
-normally trusted public fresh-CLI Hook runtime, native macOS runtime, CI/HOL,
-tagging, and release remain separate gates. No 0.7.6 tag or GitHub Release is
-claimed here.
+no-op, installed eight-Hook self-test, and lifecycle smoke. Native macOS passes
+the same public repository gates, 168 tests with two capability-aware skips,
+the eight-Hook source self-test, and an isolated first-install/strict-no-op/
+installed-lifecycle chain. A normally trusted public fresh-CLI Hook task was
+not repeated for this patch. Main and tag CI/HOL are separate source-automation
+gates and do not substitute for either native result.
 
 ## 0.7.5 synchronized source candidate (2026-08-17)
 

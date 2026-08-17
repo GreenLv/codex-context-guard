@@ -14,8 +14,7 @@ Context Guard 是面向 Codex 长任务的本地正确性保护层。它让任�
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.7.3` 是最近一次已发布版本。
-> 当前源码候选为 `0.7.6`，尚未发布。协议版本、平台证据和历史版本详见
+> 发布状态：`0.7.6` 是最近一次已发布版本。协议版本、平台证据和历史版本详见
 > [兼容性说明](docs/COMPATIBILITY.md)、
 > [本地验收记录](docs/LOCAL_ACCEPTANCE.md)与[更新日志](CHANGELOG.md)。
 
@@ -306,16 +305,15 @@ python3 -m unittest discover -s tests -p "test_*.py"
 ruff check .
 ```
 
-CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.12、3.13。平台能力只能
+CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.11、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-0.7.3 正式版本已通过限定的 macOS 与 Windows source/install/archive、严格 no-op
-和已安装生命周期门。CI 与 HOL 另行验证精确公开提交和 tag；自动化不能替代原生
-运行。历史版本与未发布版本的证据统一保留在[兼容性说明](docs/COMPATIBILITY.md)和
-[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)，不再挤占这份快速入门文档。
-当前同步的 0.7.6 源码候选将诊断分类器推进到 2.2.0：补上了复数/量化完成表述与
-第一人称转述式断言的识别，并排除疑问句、尾随否定、引文式与假设式完成表述；
-公开仓库的原生验收与发布门仍需单独通过。
+0.7.6 正式版本将诊断分类器推进到 2.2.0：补上复数/量化完成表述与第一人称转述式
+断言的识别，并排除疑问句、尾随否定、引文式与假设式完成表述。限定的 Windows 与
+macOS 源码及隔离安装/生命周期门均已通过；CI 与 HOL 另行验证精确公开提交和 tag，
+自动化不能替代原生运行。历史版本与候选证据统一保留在
+[兼容性说明](docs/COMPATIBILITY.md)和[本地发布验收记录](docs/LOCAL_ACCEPTANCE.md)，
+不再挤占这份快速入门文档。
 
 ## 明确不做
 
