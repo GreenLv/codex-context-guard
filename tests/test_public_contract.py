@@ -92,12 +92,24 @@ class PublicContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
+        self.assertIn("Version 0.7.5", changelog)
+        self.assertIn("Version 0.7.6", changelog)
         self.assertIn("## 0.6.3 - 2026-08-12", changelog)
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("Version 0.6.3", changelog)
         self.assertIn("Current published Context Guard release: `0.7.3`", compatibility)
-        self.assertIn("Current source line: `0.7.3` (released)", compatibility)
+        self.assertIn(
+            "Current source line: `0.7.6` (unreleased synchronized candidate)",
+            compatibility,
+        )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
+        self.assertIn("Diagnostic classifier: `2.2.0`", compatibility)
+        versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("`0.7.4` keeps schema 6", versioning)
+        self.assertIn("`0.7.5` keeps the 0.7.4 protocol", versioning)
+        self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",

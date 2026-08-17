@@ -6,17 +6,36 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.7.3`
-- Current source line: `0.7.3` (released)
+- Current source line: `0.7.6` (unreleased synchronized candidate)
 - Private state schema: `6`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
-- Diagnostic classifier: `2.0.0`
+- Diagnostic classifier: `2.2.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.7.6 synchronized source candidate
+
+The 0.7.6 candidate keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,
+and the exact eight-Hook wire. Classifier 2.2.0 distinguishes current-task
+completion assertions from hypotheticals, attributed quotations, framed
+examples, questions, and trailing negations, while recognizing plural and
+quantified completion claims and explicit first-person reporting. Versions
+0.7.4 and 0.7.5 bound negation to the latest explicit assistant-future segment,
+so an authorized action after “but I will ...” remains visible, and
+review/configuration verbs are not discarded merely because they mention
+documentation. The Hook entry now fails closed on Python older than 3.10.
+
+The shared runtime and its regression contract have been synchronized into this
+public source tree. The private upstream's native Windows 0.7.5 result is
+platform- and source-specific evidence; it does not establish native Windows or
+native macOS acceptance for this public candidate. Public install, native
+runtime, CI/HOL, tag, and release gates remain separate, and `v0.7.3` remains
+the latest published release.
 
 ## 0.7.3 release status
 

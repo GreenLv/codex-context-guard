@@ -67,6 +67,23 @@ not as a measure of code volume.
   precedence over attachment count. Denied or out-of-scope mutation wording
   remains inspection-only. The consumed 0.7.2 cache remains immutable; schema
   and all protocol versions are unchanged.
+- `0.7.4` keeps schema 6, Proof protocol 1.0.0, and Stop protocol 1.1.0 while
+  advancing the diagnostic classifier to 2.1.0. Whole-completion gating now
+  requires a current-task assertion instead of treating object complements,
+  hypotheticals, attributed quotations, or framed examples as the assistant's
+  own completion claim. Remaining-action extraction also excludes negated
+  topical mentions such as “configuration tutorial” from future assistant work.
+- `0.7.5` keeps the 0.7.4 protocol and classifier versions while constraining
+  negation to the latest explicit assistant-future segment. A denied action
+  before “but I will ...” no longer hides the later authorized action, and
+  action verbs such as “review documentation” remain actionable rather than
+  being discarded as nominal topic mentions. The 0.7.4 cache remains immutable.
+- `0.7.6` keeps the 0.7.5 protocol and Hook surface while advancing the
+  diagnostic classifier to 2.2.0. Whole-completion gating recognizes plural and
+  quantified claims and explicit first-person reporting, and ignores questions,
+  trailing negations, attributed speech, and hypothetical completions. The Hook
+  entry fails closed on Python older than 3.10. The 0.7.5 cache remains
+  immutable.
 - `0.7.x` contains compatible fixes inside schema 6 and Proof protocol 1.x.
   Installed cache bytes remain immutable: a runtime-byte change requires a new
   patch version.

@@ -26,7 +26,7 @@ from typing import Any, Iterator
 
 SCHEMA_VERSION = 6
 STOP_PROTOCOL_VERSION = "1.1.0"
-CLASSIFIER_VERSION = "2.0.0"
+CLASSIFIER_VERSION = "2.2.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
@@ -138,17 +138,51 @@ COMPLETION_RE = re.compile(
 )
 WHOLE_COMPLETION_RE = re.compile(
     r"^\s*(?:done|complete[dn]?|finished|resolved|fixed)\s*[.!。！]?\s*$|"
-    r"\b(?:(?:the|this|entire|whole|overall|full)\s+)?"
-    r"(?:task|request|plan|project|work)\s+(?:is\s+|has\s+been\s+)?"
+    r"^\s*(?:(?:the|this)\s+)?(?:task|request|plan|project|work)\s+"
+    r"(?:(?:is|has\s+been)\s+)?(?:fully\s+|safely\s+)?"
+    r"(?:done|complete[dn]?|finished|resolved|fixed)\s*[.!。！]?\s*$|"
+    r"\b(?:I|we)\s+(?:now\s+)?(?:consider|declare|regard|confirm)\s+"
+    r"(?:(?:the|this)\s+)?(?:task|request|plan|project|work)\s+"
     r"(?:fully\s+|safely\s+)?(?:done|complete[dn]?|finished|resolved|fixed)\b|"
-    r"\b(?:everything|all\s+(?:requested\s+)?(?:work|requirements?|items?))"
-    r"\s+(?:is\s+|has\s+been\s+)?(?:done|complete[dn]?|finished|resolved|fixed)\b|"
+    r"\b(?:(?:the|this|entire|whole|overall|full)\s+)?"
+    r"(?:tasks?|requests?|plans?|projects?|work|items?)\s+"
+    r"(?:(?:is|are)\s+|(?:has|have)\s+been\s+)"
+    r"(?:fully\s+|safely\s+)?(?:done|complete[dn]?|finished|resolved|fixed)\b|"
+    r"\b(?:everything|all\s+(?:requested\s+)?(?:work|tasks?|requirements?|items?)"
+    r"|every\s+(?:single\s+)?(?:task|request|requirement|item|plan|project))"
+    r"\s+(?:(?:is|are)\s+|(?:has|have)\s+been\s+)?"
+    r"(?:done|complete[dn]?|finished|resolved|fixed|satisfied)\b|"
     r"(?:整个|整体|全部|所有|本次|当前)(?:任务|工作|需求|计划|项目)"
     r".{0,16}(?:已|已经|均已|全部)?(?:完成|结束|解决|修复)|"
-    r"(?:任务|工作|需求|计划|项目).{0,12}(?:已|已经|均已|全部|整体)"
+    r"(?:任务|工作|需求|计划|项目).{0,12}(?:已|已经|均已|都|全部|整体)"
     r"(?:完成|结束|解决|修复)|"
     r"^\s*(?:已完成|全部完成|任务完成|搞定了)\s*[。！!]?\s*$",
     re.IGNORECASE | re.DOTALL,
+)
+FIRST_PERSON_COMPLETION_ASSERTION_RE = re.compile(
+    r"\b(?:I|we)\s+(?:now\s+)?"
+    r"(?:say|said|state|stated|declare|declared|consider|regard|confirm|"
+    r"report|reported)\b.{0,64}$|"
+    r"(?:我|我们)(?:现在)?(?:认为|确认|宣布|判定|声明).{0,40}$",
+    re.IGNORECASE | re.DOTALL,
+)
+NONASSERTIVE_COMPLETION_CONTEXT_RE = re.compile(
+    r"\b(?:may|might|could|would|should)\b.{0,64}"
+    r"\b(?:call|claim|declare|describe|label|mark|present|report|say|treat)\b.{0,48}$|"
+    r"\b(?:call(?:ing|s|ed)?|claim(?:ing|s|ed)?|declar(?:e|es|ed|ing)|"
+    r"describ(?:e|es|ed|ing)|label(?:s|ed|ing)?|mark(?:s|ed|ing)?|"
+    r"quot(?:e|es|ed|ing)|report(?:s|ed|ing)?|say(?:s|ing)?|said|"
+    r"treat(?:s|ed|ing)?)\b.{0,64}$|"
+    r"(?:可能|也许|或许|假如|假设|会|可能会).{0,32}"
+    r"(?:称|声称|宣称|认为|描述|标记|写成|说成).{0,32}$|"
+    r"(?:称|声称|宣称|认为|描述|标记|写着|写成|说成).{0,40}$",
+    re.IGNORECASE | re.DOTALL,
+)
+COMPLETION_DISCUSSION_RE = re.compile(
+    r"\b(?:article|case|docs?|documentation|example|hypothetical|phrase|"
+    r"quotation?|quoted|scenario|text|wording)\b|"
+    r"(?:文章|案例|文档|示例|反例|假设|场景|引文|引用|措辞|表述|说法|文案)",
+    re.IGNORECASE,
 )
 USER_PERSISTENCE_RE = re.compile(
     r"\b(?:(?:do\s+not|don't|never)\s+(?:stop|pause|yield|end)\s+"
@@ -270,22 +304,6 @@ BROAD_EXECUTION_PROMPT_RE = re.compile(
     rf"\b{EN_BROAD_EXECUTION_ACTION}\b|{ZH_BROAD_EXECUTION_ACTION}",
     re.IGNORECASE | re.DOTALL,
 )
-NEGATED_BROAD_EXECUTION_RE = re.compile(
-    rf"\b(?:do\s+not|don't|must\s+not|should\s+not|without)\s+"
-    rf"{EN_BROAD_EXECUTION_ACTION}"
-    rf"(?:\s*(?:,|or|and)\s*{EN_BROAD_EXECUTION_ACTION})*\b|"
-    rf"(?:不要|不得|无需|不需要|不再|别|切勿|勿)"
-    rf"{ZH_BROAD_EXECUTION_ACTION}"
-    rf"(?:(?:、|，|,|或|和|及|与)*{ZH_BROAD_EXECUTION_ACTION})*",
-    re.IGNORECASE | re.DOTALL,
-)
-DEFERRED_PHASE_RE = re.compile(
-    r"\b(?:next|later|subsequent)\s+(?:phase|step).{0,32}"
-    r"(?:still\s+)?(?:need|require|remain|pending)|"
-    r"(?:下一|后续)(?:个)?(?:阶段|步).{0,16}"
-    r"(?:仍|还|尚)?(?:需|需要|待)",
-    re.IGNORECASE | re.DOTALL,
-)
 DEFERRED_ACTION_CLAUSE_RE = re.compile(
     r"\b(?:defer(?:red)?|paused|on\s+hold|out\s+of\s+scope|"
     r"outside\s+.{0,20}\bscope|denied)\b|"
@@ -393,6 +411,17 @@ ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("review_followup", re.compile(r"\b(?:address|handle|process|check).{0,24}(?:review\s+(?:comment|feedback)|review\s+log)\b|(?:处理|检查).{0,16}(?:审查意见|审核意见|审核日志)", re.I)),
     ("test_verify", re.compile(r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)", re.I)),
     ("artifact_work", re.compile(r"\b(?:import|download|configure|configuration)\w*\b|(?:导入|下载|配置|打开页面|处理PDF|PDF\s*阶段)", re.I)),
+)
+REPLY_ACTION_NEGATION_PREFIX_RE = re.compile(
+    r"\b(?:do\s+not|don't|does\s+not|doesn't|will\s+not|won't|never|"
+    r"without|avoid(?:s|ed|ing)?)\b.{0,48}$|"
+    r"(?:不|不要|不会|不得|未|没有|并非|不是|避免|无需|不需要).{0,40}$",
+    re.IGNORECASE | re.DOTALL,
+)
+ACTION_MENTION_SUFFIX_RE = re.compile(
+    r"^\s*(?:article|case|docs?|documentation|example|guide|phrase|reference|"
+    r"scenario|text|tutorial|wording|文章|案例|文档|示例|指南|教程|说法|表述)",
+    re.IGNORECASE,
 )
 INTERNAL_CONTINUATION_PREFIX = "[Context Guard continuation]"
 EVIDENCE_ID_RE = re.compile(r"^E\d{4,}$")
@@ -1706,14 +1735,6 @@ def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
     }
 
 
-def _prompt_clauses(text: str) -> list[str]:
-    return [
-        clause.strip()
-        for clause in re.split(r"[\n。！？!?；;.]+", text)
-        if clause.strip()
-    ]
-
-
 def _reply_clauses(text: str) -> list[str]:
     sentinel = "\u241f"
 
@@ -1745,6 +1766,78 @@ def _reply_clauses(text: str) -> list[str]:
         else:
             clauses.append(clause)
     return clauses
+
+
+def _completion_context_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    left = max(
+        (text.rfind(separator, 0, start) for separator in "\n.。！？!?；;"),
+        default=-1,
+    )
+    right_candidates = [
+        index
+        for separator in "\n.。！？!?；;"
+        for index in [text.find(separator, end)]
+        if index >= 0
+    ]
+    right = min(right_candidates, default=len(text))
+    return left + 1, right
+
+
+def _inside_bounded_quotation(
+    text: str, start: int, end: int, lower: int, upper: int
+) -> bool:
+    for opening, closing in (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』")):
+        opening_index = text.rfind(opening, lower, start)
+        closing_index = text.find(closing, end, upper)
+        if opening_index >= 0 and closing_index >= 0:
+            return True
+    for delimiter in ('"', "`"):
+        if text[lower:start].count(delimiter) % 2 == 1 and text.find(
+            delimiter, end, upper
+        ) >= 0:
+            return True
+    return False
+
+
+def _completion_match_is_nonassertive(
+    text: str, match: re.Match[str]
+) -> bool:
+    lower, upper = _completion_context_bounds(text, match.start(), match.end())
+    prefix = text[lower : match.start()]
+    if FIRST_PERSON_COMPLETION_ASSERTION_RE.search(prefix):
+        return False
+    if NONASSERTIVE_COMPLETION_CONTEXT_RE.search(prefix):
+        return True
+    framing = text[max(0, lower - 160) : upper]
+    if _inside_bounded_quotation(
+        text, match.start(), match.end(), lower, upper
+    ) and COMPLETION_DISCUSSION_RE.search(framing):
+        return True
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    return bool(
+        text[line_start : match.start()].lstrip().startswith(">")
+        and COMPLETION_DISCUSSION_RE.search(text[max(0, line_start - 160) : line_start])
+    )
+
+
+def _reply_action_match(
+    pattern: re.Pattern[str], text: str
+) -> re.Match[str] | None:
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 64) : match.start()]
+        future_matches = list(EXPLICIT_ASSISTANT_FUTURE_RE.finditer(prefix))
+        if future_matches:
+            prefix = prefix[future_matches[-1].start() :]
+        suffix = text[match.end() : match.end() + 32]
+        if REPLY_ACTION_NEGATION_PREFIX_RE.search(prefix):
+            continue
+        if (
+            match.group(0).casefold() == "configuration"
+            and ACTION_MENTION_SUFFIX_RE.search(suffix)
+        ):
+            continue
+        return match
+    return None
 
 
 def _action_authorization(category: str, scope: dict[str, Any]) -> str:
@@ -1852,7 +1945,7 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             continue
         matched = False
         for category, pattern in ACTION_PATTERNS:
-            if not pattern.search(assistant_clause):
+            if _reply_action_match(pattern, assistant_clause) is None:
                 continue
             # Review words inside a pure external-wait clause belong to the
             # reviewer unless the assistant explicitly claims a future action.
@@ -1966,14 +2059,32 @@ def claims_whole_completion(text: str) -> bool:
     """Return true only for an affirmative whole-task completion declaration."""
     for match in WHOLE_COMPLETION_RE.finditer(text):
         nearby = text[max(0, match.start() - 32) : match.end()]
+        prefix = text[max(0, match.start() - 24) : match.start()]
         if re.search(
             r"\b(?:not|never|cannot|can't|unable\s+to|must\s+not|"
             r"should\s+not)\b.{0,28}$|"
+            r"\bwhether\b.{0,32}$|"
             r"(?:未|尚未|还未|没有|并非|不是|不能|无法|不可|不应)"
             r".{0,28}(?:完成|结束|解决|修复)$",
             nearby,
             re.IGNORECASE | re.DOTALL,
+        ) or re.search(
+            r"(?:他|她|它|其|有人|据|报道)[^。！？\n]{0,8}(?:说|称|表示|写道)$|"
+            r"(?:假设|假如|如果|若是|倘若|预计|推测|若)\s*$",
+            prefix,
         ):
+            continue
+        tail = text[match.end() : min(len(text), match.end() + 64)]
+        if re.search(
+            r"^\s*[?？]|"
+            r"^\s*(?:[,，]\s*)?(?:and\s+|but\s+)?(?:the\s+answer|our\s+answer|"
+            r"my\s+answer|the\s+reply)\s+is\s+(?:no|not|negative)\b|"
+            r"(?:but|however)[^。.！？!?\n]{0,40}\bnot\b",
+            tail,
+            re.IGNORECASE,
+        ):
+            continue
+        if _completion_match_is_nonassertive(text, match):
             continue
         return True
     return False
@@ -3811,16 +3922,6 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
 
 def tool_outcome(payload: dict[str, Any]) -> str:
     return tool_outcome_details(payload)[0]
-
-
-def tool_response_text(payload: dict[str, Any]) -> str:
-    response = payload.get("tool_response")
-    if isinstance(response, str):
-        return response
-    try:
-        return json.dumps(response, ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):
-        return repr(response)
 
 
 def tool_is_update_plan(tool_name: str) -> bool:
@@ -5828,6 +5929,9 @@ def command_self_test() -> int:
 
 
 def main() -> int:
+    if sys.version_info < (3, 10):
+        print(f"Python 3.10+ required, got {sys.version.split()[0]}")
+        return 2
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("hook", help="Read one Codex hook payload from stdin")

@@ -1,9 +1,47 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.7.3`; the validated
-`v0.7.3` source is tagged and published from `main`;
+Context Guard. The current published release is `0.7.3`; the synchronized
+`0.7.6` source candidate is not tagged or published;
 accepted `0.5.1` and historical `0.5.0`/`0.4.9` evidence remains below.
+
+## 0.7.6 synchronized source candidate (2026-08-17)
+
+The public tree now carries the 0.7.6 shared runtime and its regression
+contract. The plugin manifest, packaging metadata, public validator, versioning
+documentation, and bilingual release notes identify 0.7.6 as the current
+unreleased source line while preserving 0.7.3 as the latest published release.
+The candidate keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and
+the eight-Hook wire; classifier 2.2.0 recognizes plural and quantified
+completion claims and explicit first-person reporting while ignoring questions,
+trailing negations, attributed speech, and hypotheticals. The Hook entry now
+fails closed on Python older than 3.10.
+
+Public source, install, native macOS/Windows runtime acceptance, CI/HOL,
+tagging, and release remain separate gates. No 0.7.6 tag or GitHub Release is
+claimed here.
+
+## 0.7.5 synchronized source candidate (2026-08-17)
+
+The public tree now carries the 0.7.5 shared runtime and its regression
+contract. The plugin manifest, packaging metadata, public validator, versioning
+documentation, and bilingual release notes identify 0.7.5 as the current
+unreleased source line while preserving 0.7.3 as the latest published release.
+The candidate keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and
+the eight-Hook wire; classifier 2.1.0 now separates direct current-task
+completion assertions from quotations, hypotheticals, and examples, and keeps
+later authorized actions visible after a negated clause.
+
+The public source gate passes 132 Hook tests with one Windows-only skip, 23
+manager tests with one Windows-only skip, 11 public-contract tests, the complete
+sibling shared-core/boundary parity check, the tracked-tree privacy audit, Ruff,
+source compilation, and diff checks. The combined public suite reports 166
+tests with two capability-aware skips.
+
+The private upstream reports a native Windows 0.7.5 result, but that evidence is
+not reused for the public tree. Public source parity, standalone installation,
+native macOS/Windows runtime acceptance, CI/HOL, tagging, and release remain
+separate gates. No 0.7.5 tag or GitHub Release is claimed here.
 
 ## 0.7.3 release differential gate (macOS and Windows, 2026-08-14)
 

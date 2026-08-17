@@ -274,19 +274,6 @@ def _copy_file_atomically(source: Path, target: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def restore_tree(source_root: Path, target_root: Path) -> None:
-    files = [path for path in source_root.rglob("*") if path.is_file()]
-    hook_script = Path("scripts") / "context_guard.py"
-    files.sort(
-        key=lambda path: (
-            path.relative_to(source_root) != hook_script,
-            path.relative_to(source_root).as_posix(),
-        )
-    )
-    for source in files:
-        _copy_file_atomically(source, target_root / source.relative_to(source_root))
-
-
 @contextmanager
 def cache_install_lock(cache_root: Path) -> Iterator[None]:
     cache_root.parent.mkdir(parents=True, exist_ok=True)

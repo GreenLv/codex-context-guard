@@ -997,6 +997,22 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result["decision"], "block")
         self.assertIsNone(self.state()["completion_checkpoint"])
 
+    def test_staged_deferred_cannot_hide_direct_whole_completion(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        staged, _ = self.stage_disposition("deferred")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        result = cg.dispatch(
+            self.payload("Stop", last_assistant_message="The task is complete.")
+        )
+        self.assertEqual(result["decision"], "block")
+        self.assertEqual(
+            self.state()["decision_log"][-1]["outcome"],
+            "gate_completion_claim",
+        )
+        self.assertIsNone(self.state()["completion_checkpoint"])
+
     def test_private_checkpoint_passes_without_reply_metadata(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
@@ -1182,6 +1198,148 @@ class ContextGuardTests(unittest.TestCase):
         ):
             with self.subTest(local_milestone=local_milestone):
                 self.assertFalse(cg.claims_whole_completion(local_milestone))
+
+    def test_examples_hypotheticals_and_attributed_quotes_are_not_completion_claims(
+        self,
+    ) -> None:
+        examples = (
+            "A team may call the task complete after unit tests alone.",
+            'The docs say "the task is complete" only after validation.',
+            "Calling the task complete after unit tests alone would be unsafe.",
+            "Example:\n> The task is complete.",
+            "示例里写着“整个任务已全部完成”，但那只是反例。",
+            "假设有人宣称整个任务已全部完成，我们仍应检查证据。",
+        )
+        for message in examples:
+            with self.subTest(message=message):
+                self.assertFalse(cg.claims_whole_completion(message))
+
+        direct_claims = (
+            "The task is complete.",
+            "> The task is complete.",
+            "I can confirm the task is complete.",
+            "I consider the task complete.",
+            "整个任务已全部完成，所有要求均已满足。",
+        )
+        for message in direct_claims:
+            with self.subTest(message=message):
+                self.assertTrue(cg.claims_whole_completion(message))
+
+    def test_real_session_blog_example_does_not_trigger_completion_gate(self) -> None:
+        self.prompt(
+            "$context-guard\n继续查看补充材料并给出建议，但不要修改仓库或博客。"
+        )
+        staged, _ = self.stage_disposition("deferred")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        message = (
+            "看完补充材料后，我会调整上一轮的判断：保留“1M 上下文”这个热点，"
+            "但不把文章写成 Codex 新闻或配置教程。\n\n"
+            "> A European SaaS team asks an agent to migrate its authentication "
+            "service. After a long run or handoff, the agent may call the task "
+            "complete after unit tests alone.\n\n"
+            "本轮没有修改仓库、文章或平台内容。"
+        )
+        observed = cg.classify_stop_decision(
+            message,
+            "继续查看补充材料并给出建议，但不要修改仓库或博客。",
+        )
+        self.assertEqual(observed["outcome"], "allow_external_wait")
+        self.assertEqual(observed["actions"], [])
+        self.assertFalse(cg.claims_whole_completion(message))
+        self.assertEqual(
+            cg.dispatch(self.payload("Stop", last_assistant_message=message)),
+            {},
+        )
+        decision = self.state()["decision_log"][-1]
+        self.assertEqual(decision["observed_outcome"], "allow_external_wait")
+        self.assertEqual(decision["outcome"], "allow_out_of_scope_deferred")
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+
+    def test_classifier_22_whole_completion_plurals_questions_and_attribution(
+        self,
+    ) -> None:
+        claims = (
+            "All tasks are complete.",
+            "The tasks are complete.",
+            "All items are complete.",
+            "Every requirement is done.",
+            "All requirements are satisfied.",
+            "We report the task is complete.",
+            "I report that the task is complete.",
+            "As I said, the task is complete.",
+            "任务都完成了。",
+        )
+        for message in claims:
+            with self.subTest(message=message):
+                self.assertTrue(cg.claims_whole_completion(message))
+        non_claims = (
+            "Do I consider the task complete? No, it is not.",
+            (
+                "I asked myself whether I consider the task complete, "
+                "and the answer is no."
+            ),
+            "The task is complete?",
+            "他说整个任务已全部完成。",
+            "我们假设整个任务已全部完成。",
+            "The team reported the task is complete.",
+        )
+        for message in non_claims:
+            with self.subTest(message=message):
+                self.assertFalse(cg.claims_whole_completion(message))
+
+    def test_future_action_binding_ignores_negated_topical_mentions(self) -> None:
+        prompt = "继续完成修复，配置运行时并修改仓库。"
+        topical = (
+            "我会调整上一轮的判断：保留 1M 热点，"
+            "但不把文章写成 Codex 新闻或配置教程。"
+        )
+        topical_decision = cg.classify_stop_decision(topical, prompt)
+        self.assertEqual(topical_decision["outcome"], "allow_neutral")
+        self.assertEqual(topical_decision["actions"], [])
+
+        actionable = "我会继续配置运行时并修改仓库。"
+        actionable_decision = cg.classify_stop_decision(actionable, prompt)
+        self.assertEqual(
+            actionable_decision["outcome"], "gate_authorized_remaining_work"
+        )
+        self.assertTrue(
+            any(
+                action["category"] == "artifact_work"
+                and action["authorization"] == "authorized"
+                for action in actionable_decision["actions"]
+            )
+        )
+
+        for contrastive in (
+            "I won't publish, but I will configure the runtime.",
+            "我不会发布，但我会继续配置运行时。",
+        ):
+            with self.subTest(contrastive=contrastive):
+                contrastive_decision = cg.classify_stop_decision(
+                    contrastive, prompt
+                )
+                self.assertTrue(
+                    any(
+                        action["category"] == "artifact_work"
+                        for action in contrastive_decision["actions"]
+                    )
+                )
+
+        for documentation_action in (
+            "I will review documentation.",
+            "I will configure documentation.",
+            "我会配置文档。",
+        ):
+            with self.subTest(documentation_action=documentation_action):
+                documentation_decision = cg.classify_stop_decision(
+                    documentation_action, prompt
+                )
+                self.assertTrue(
+                    any(
+                        action["owner"] == "assistant"
+                        for action in documentation_decision["actions"]
+                    )
+                )
 
     def test_explicit_incomplete_report_defaults_to_safe_yield(self) -> None:
         self.prompt(
@@ -3642,6 +3800,20 @@ class ContextGuardTests(unittest.TestCase):
             mock.patch("builtins.print") as printed,
         ):
             self.assertEqual(cg.command_self_test(), 1)
+        self.assertTrue(
+            any(
+                "Python 3.10+ required" in str(call.args[0])
+                for call in printed.call_args_list
+            )
+        )
+
+    def test_main_entry_rejects_python_older_than_310(self) -> None:
+        with (
+            mock.patch.object(cg.sys, "version_info", (3, 9, 18)),
+            mock.patch.object(cg.sys, "argv", ["context_guard.py", "hook"]),
+            mock.patch("builtins.print") as printed,
+        ):
+            self.assertEqual(cg.main(), 2)
         self.assertTrue(
             any(
                 "Python 3.10+ required" in str(call.args[0])

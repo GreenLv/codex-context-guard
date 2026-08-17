@@ -15,8 +15,9 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.7.3` is the latest published release. For protocol versions,
-> platform evidence, and release history, see [Compatibility](docs/COMPATIBILITY.md),
+> Release status: `0.7.3` is the latest published release.
+> Current source candidate: `0.7.6` remains unreleased. For protocol versions, platform
+> evidence, and release history, see [Compatibility](docs/COMPATIBILITY.md),
 > [Local acceptance](docs/LOCAL_ACCEPTANCE.md), and the [changelog](CHANGELOG.md).
 
 ## Start here
@@ -344,7 +345,10 @@ verify the exact public commit and tag separately; automation is not a
 substitute for native runtime acceptance. Historical and unreleased-version
 evidence remains in [Compatibility](docs/COMPATIBILITY.md) and
 [Local acceptance](docs/LOCAL_ACCEPTANCE.md), rather than in this quick-start
-document.
+document. The synchronized 0.7.6 source candidate adds classifier 2.2.0 fixes
+for plural/quantified completion claims, first-person reporting, quoted
+completion language, questions, trailing negations, and contrastive future
+actions; its public native and release gates remain separate.
 
 ## Explicit non-goals
 

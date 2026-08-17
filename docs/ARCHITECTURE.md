@@ -196,12 +196,17 @@ Stop protocol 1.1.0 applies this fixed priority:
    safely and leaves every unresolved requirement pending.
 
 Completion and explicit-persistence corrections are capped at two turns.
-Classifier 2.0.0 records the
+Classifier 2.2.0 records the
 observed natural-language outcome, action facts, and anomalies for diagnosis;
 inferred action ownership no longer drives ordinary continuation. Only the
 narrow high-confidence whole-task-completion and explicit-persistence checks
 participate in the fixed priority above. Classification reads the full
-hash-verified prompt record; an ambiguous prompt boundary fails closed.
+hash-verified prompt record; an ambiguous prompt boundary fails closed. A
+completion match is ignored when it is framed as a quotation, hypothetical, or
+example, question, or trailing negation, while an explicit assistant assertion
+remains actionable. Plural and quantified completion claims such as “all tasks
+are complete” are recognized. Negation is bounded to the latest explicit future
+segment so a later authorized action is not hidden by an earlier denial.
 
 ## Hook lifecycle
 
@@ -281,6 +286,8 @@ Stop priority, and all eight Hooks remain unchanged. The installed 0.6.0 cache
 is immutable and must not be patched in place or tagged.
 
 The 0.7.x line adds schema 6 and deterministic Proof protocol 1.x while keeping
-Stop protocol 1.1.0, classifier 2.0.0, and the eight-event Hook wire. It
+Stop protocol 1.1.0, classifier 2.2.0, and the eight-event Hook wire. Versions
+0.7.4, 0.7.5, and 0.7.6 refine completion assertions and future-action binding
+without changing the schema or Hook surface. It
 guarantees only displayed `enforced` obligations and does not claim arbitrary
 pixel understanding or semantic completeness for `legacy_fallback` items.
