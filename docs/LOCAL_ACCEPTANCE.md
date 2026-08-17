@@ -17,7 +17,13 @@ completion claims and explicit first-person reporting while ignoring questions,
 trailing negations, attributed speech, and hypotheticals. The Hook entry now
 fails closed on Python older than 3.10.
 
-Public source, install, native macOS/Windows runtime acceptance, CI/HOL,
+Scoped native Windows verification passed against source commit
+`ec7f2ec5e381a23585848e7995cbd9271b9d9e7a`: public repository validation,
+tracked-tree audit, sibling parity, 168 tests with one capability-aware skip,
+Ruff 0.16.1, and scripts/tests compilation all passed.
+An isolated Windows 0.7.6 install also passed first install, strict second-run
+no-op, installed eight-Hook self-test, and lifecycle smoke. Public source,
+normally trusted public fresh-CLI Hook runtime, native macOS runtime, CI/HOL,
 tagging, and release remain separate gates. No 0.7.6 tag or GitHub Release is
 claimed here.
 

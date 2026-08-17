@@ -31,11 +31,13 @@ review/configuration verbs are not discarded merely because they mention
 documentation. The Hook entry now fails closed on Python older than 3.10.
 
 The shared runtime and its regression contract have been synchronized into this
-public source tree. The private upstream's native Windows 0.7.5 result is
-platform- and source-specific evidence; it does not establish native Windows or
-native macOS acceptance for this public candidate. Public install, native
-runtime, CI/HOL, tag, and release gates remain separate, and `v0.7.3` remains
-the latest published release.
+public source tree. Scoped native Windows verification for this public commit
+passes repository validation, the tracked-tree audit, sibling parity, the 168
+test suite with one capability-aware skip, Ruff 0.16.1, compilation, and an
+isolated first-install/strict-no-op/installed-lifecycle chain. This evidence is
+platform- and scope-specific: a normally trusted public fresh-CLI Hook task,
+native macOS runtime, CI/HOL, tag, and release gates remain separate, and
+`v0.7.3` remains the latest published release.
 
 ## 0.7.3 release status
 

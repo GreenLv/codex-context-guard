@@ -37,11 +37,11 @@ and a compact validation note. `0.7.3` is the latest published release.
 
 ### Validation boundary
 
-- `0.7.3` remains the latest published release. `0.7.6` has no tag or release;
-  public install, native macOS/Windows runtime, CI/HOL, tagging, and release
-  gates remain separate. The private upstream's native Windows 0.7.5
-  verification is platform- and source-specific evidence and is not reused as
-  public acceptance.
+- `0.7.3` remains the latest published release. Scoped native Windows source
+  and isolated-install/lifecycle verification for the public 0.7.6 candidate
+  passes, but a normally trusted public fresh-CLI Hook task, native macOS
+  runtime, CI/HOL, tagging, and release gates remain separate. `0.7.6` has no
+  tag or release.
 
 ## 0.7.3 - 2026-08-14
 
