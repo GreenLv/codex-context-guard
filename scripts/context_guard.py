@@ -26,7 +26,7 @@ from typing import Any, Iterator
 
 SCHEMA_VERSION = 6
 STOP_PROTOCOL_VERSION = "1.1.0"
-CLASSIFIER_VERSION = "2.2.0"
+CLASSIFIER_VERSION = "2.2.1"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
@@ -81,9 +81,12 @@ STATE_REQUIRED_KEYS = {
 ASSET_ID_RE = re.compile(r"M\d{4,}")
 PROOF_ID_RE = re.compile(r"V\d{4,}")
 ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![\w])(?:/[\w.@+~\-\u0080-\uffff][^\s,;，；。!?！？'\"<>]*)"
+    r"(?<![\w:/\\])(?:/[\w.@+~\-\u0080-\uffff][^\s,;，；。!?！？'\"<>]*)"
 )
-URL_RE = re.compile(r"https?://[^\s,;，；。!?！？'\"<>]+", re.IGNORECASE)
+URL_RE = re.compile(
+    r"(?:https?://[^\s,;，；。!?！？'\"<>]+|codex://threads/[0-9a-f-]{20,})",
+    re.IGNORECASE,
+)
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 IMAGE_REFERENCE_RE = re.compile(r"(?:截图|图片|图像|image|screenshot|visual)", re.IGNORECASE)
 VISUAL_MUTATION_RE = re.compile(
@@ -119,7 +122,7 @@ SCOPE_CARDINALITY_PATTERNS = (
 )
 COMPLETE_RATIO_RE = re.compile(r"(?<!\d)(\d{1,5})\s*/\s*\1(?!\d)")
 UI_SURFACE_RE = re.compile(
-    r"(?:界面|页面|窗口|可见|列|浏览器|应用|GUI|UI|screen|browser|window|visible)",
+    r"(?:界面|页面|窗口|可见|列|浏览器|应用(?:界面|页面|窗口)|GUI|UI|screen|browser|window|visible)",
     re.IGNORECASE,
 )
 CHECKPOINT_RE = re.compile(
@@ -1312,6 +1315,16 @@ def prompt_subjects(text: str) -> list[dict[str, str]]:
     for kind, pattern in (("path", ABSOLUTE_PATH_RE), ("url", URL_RE)):
         for value in pattern.findall(text):
             cleaned = value.rstrip(")]}>.,")
+            if (
+                kind == "path"
+                and "/" not in cleaned[1:]
+                and not Path(cleaned).suffix
+            ):
+                # A bare slash-delimited prose fragment (for example
+                # "公共/macOS" after lossy decoding) is not an inspectable
+                # absolute-path subject. Real artifact paths normally contain
+                # another path separator or a filename suffix.
+                continue
             if kind == "path" and Path(cleaned).suffix.lower() in IMAGE_SUFFIXES:
                 continue
             subjects.append(
@@ -3909,6 +3922,15 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
             or response.get("success") is True
         ):
             return "success", "structured_status"
+        image_url = response.get("image_url")
+        image_match = DATA_URL_RE.match(image_url) if isinstance(image_url, str) else None
+        if (
+            image_match is not None
+            and (image_match.group("mime") or "").lower().startswith("image/")
+            and "view_image"
+            in re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower())
+        ):
+            return "success", "structured_visual_result"
     if has_hard_tool_failure(diagnostic):
         return "failed", "failure_marker"
     if AUTHORITATIVE_SUCCESS_TOOL_RESPONSE_RE.search(diagnostic):

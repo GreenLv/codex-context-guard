@@ -84,6 +84,13 @@ not as a measure of code volume.
   trailing negations, attributed speech, and hypothetical completions. The Hook
   entry fails closed on Python older than 3.10. The 0.7.5 cache remains
   immutable.
+- `0.7.7` keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and the
+  eight-Hook wire while advancing classifier metadata to 2.2.1. Subject
+  discovery rejects slash-delimited prose and URL path fragments, recognizes
+  bounded `codex://threads/...` locators, and avoids inferring a UI surface from
+  generic Chinese apply wording. A valid structured `view_image` image data URL
+  is successful visual evidence while explicit failures remain authoritative.
+  The consumed 0.7.6 cache remains immutable.
 - `0.7.x` contains compatible fixes inside schema 6 and Proof protocol 1.x.
   Installed cache bytes remain immutable: a runtime-byte change requires a new
   patch version.

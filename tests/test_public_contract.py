@@ -83,6 +83,8 @@ class PublicContractTests(unittest.TestCase):
             "> Release status: `0.7.6` is the latest published release.", english
         )
         self.assertIn("> 发布状态：`0.7.6` 是最近一次已发布版本。", chinese)
+        self.assertIn("Version `0.7.7` is an unreleased source candidate.", english)
+        self.assertIn("`0.7.7` 是尚未发布的源码候选。", chinese)
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
@@ -112,6 +114,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("### 重点", changelog_zh)
         self.assertIn("### 变化", changelog_zh)
         self.assertIn("### 验证", changelog_zh)
+        self.assertIn("## 0.7.7 - Unreleased", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("Version 0.7.5", changelog)
@@ -121,17 +124,18 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("Version 0.6.3", changelog)
         self.assertIn("Current published Context Guard release: `0.7.6`", compatibility)
         self.assertIn(
-            "Current source line: `0.7.6`",
+            "Current source line: `0.7.7` (unreleased candidate)",
             compatibility,
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
-        self.assertIn("Diagnostic classifier: `2.2.0`", compatibility)
+        self.assertIn("Diagnostic classifier: `2.2.1`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"
         )
         self.assertIn("`0.7.4` keeps schema 6", versioning)
         self.assertIn("`0.7.5` keeps the 0.7.4 protocol", versioning)
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
+        self.assertIn("`0.7.7` keeps schema 6", versioning)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",

@@ -6,6 +6,36 @@ All notable public releases are documented here, newest first. Each version
 opens with its highlights in descending priority, followed by grouped changes
 and a compact validation note. `0.7.6` is the latest published release.
 
+## 0.7.7 - Unreleased
+
+### Highlights
+
+- Subject discovery no longer turns slash-delimited prose or a path fragment
+  inside another URL into a false absolute-path verification obligation.
+- Bounded `codex://threads/...` locators remain inspectable subjects, while the
+  generic Chinese word for apply no longer implies a UI surface.
+- A non-error `view_image` response carrying a valid image data URL is now
+  successful visual evidence instead of an unknown result.
+- Schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and the eight-Hook wire
+  remain unchanged; classifier metadata advances to 2.2.1.
+
+### Changes
+
+- The shared runtime and transformed regression contract are synchronized from
+  the private sibling under the declared shared-core boundary.
+- Public packaging, validation constants, bilingual documentation, and
+  installed lifecycle smoke identify 0.7.7 as an unreleased source candidate.
+
+### Validation
+
+- Native Windows source validation passed the public repository and privacy
+  audits, sibling parity, 170 tests with one capability-aware skip, the
+  eight-Hook self-test, Ruff 0.16.1, compilation, and `git diff --check`.
+- An isolated Codex CLI 0.146.0 install passed first install, source/cache
+  parity, strict second-run no-op, installed eight-Hook self-test, and lifecycle
+  smoke. Public CI/HOL, tagging, release, macOS, and fresh trusted-Hook evidence
+  remain separate and are not claimed.
+
 ## 0.7.6 - 2026-08-17
 
 ### Highlights

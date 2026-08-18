@@ -379,6 +379,16 @@ def main() -> int:
             for item in snapshot["recent_successful_evidence"]
             if item["tool"] == "Bash"
         )
+        visual_evidence = next(
+            (
+                item
+                for item in snapshot["recent_successful_evidence"]
+                if item["tool"] == "view_image"
+            ),
+            None,
+        )
+        if visual_evidence is None:
+            raise RuntimeError("structured view_image result was not successful evidence")
         if any(
             item["tool"] == "weak-marker-regression"
             for item in snapshot["recent_successful_evidence"]

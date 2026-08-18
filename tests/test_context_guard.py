@@ -3488,6 +3488,47 @@ class ContextGuardTests(unittest.TestCase):
             ("unknown", "unstructured_text"),
         )
 
+    def test_prompt_subjects_reject_prose_slashes_and_preserve_real_locators(
+        self,
+    ) -> None:
+        thread_uri = "codex://threads/01a01503-a631-7681-92cb-cac150d2b94a"
+        prose = (
+            f"接续{thread_uri}的任务；覆盖原始字节/哈希场景、newline；"
+            "不修改公共/macOS规则或运行时应用。"
+        )
+        self.assertEqual(
+            cg.prompt_subjects(prose),
+            [
+                {
+                    "id": f"subject:{cg.sha256_text(thread_uri)[:20]}",
+                    "kind": "url",
+                    "display": thread_uri,
+                    "locator_sha256": cg.sha256_text(thread_uri),
+                }
+            ],
+        )
+        locators = cg.prompt_subjects(
+            "核验 /tmp/context-guard/result.json 和 https://example.test/report。"
+        )
+        self.assertEqual([item["kind"] for item in locators], ["path", "url"])
+        self.assertFalse(cg.UI_SURFACE_RE.search("使用官方入口完成运行时应用。"))
+        self.assertTrue(cg.UI_SURFACE_RE.search("在应用界面中核验可见结果。"))
+
+    def test_view_image_data_url_is_structured_success(self) -> None:
+        response = {"image_url": "data:image/png;base64,AAAA", "detail": "original"}
+        self.assertEqual(
+            cg.tool_outcome_details(
+                {"tool_name": "view_image", "tool_response": response}
+            ),
+            ("success", "structured_visual_result"),
+        )
+        self.assertEqual(
+            cg.tool_outcome_details(
+                {"tool_name": "other_tool", "tool_response": response}
+            ),
+            ("unknown", "unstructured_text"),
+        )
+
     def test_explicit_success_status_wins_over_warning_text(self) -> None:
         warning = "Script completed\nOutput:\nWarning: Operation not permitted"
         self.assertEqual(
@@ -3554,6 +3595,8 @@ class ContextGuardTests(unittest.TestCase):
         self.assertNotIn("base64,AAAA", evidence["summary"])
         self.assertLess(len(evidence["summary"]), 1800)
         self.assertEqual(evidence["origin"], "runtime_unattributed")
+        self.assertEqual(evidence["outcome"], "success")
+        self.assertEqual(evidence["outcome_basis"], "structured_visual_result")
 
         cg.dispatch(
             self.payload(

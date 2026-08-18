@@ -19,6 +19,7 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > versions, platform evidence, and release history, see
 > [Compatibility](docs/COMPATIBILITY.md),
 > [Local acceptance](docs/LOCAL_ACCEPTANCE.md), and the [changelog](CHANGELOG.md).
+> Version `0.7.7` is an unreleased source candidate.
 
 ## Start here
 
@@ -338,6 +339,11 @@ runtime remains standard-library-only and has no third-party dependencies.
 The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.11, 3.12,
 and 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
+
+The unreleased 0.7.7 source candidate corrects false subject and UI-surface
+classification and recognizes a valid structured `view_image` image data URL
+as successful visual evidence. Schema, Proof/Stop protocols, and the eight-Hook
+wire remain unchanged.
 
 The 0.7.6 release adds classifier 2.2.0 fixes for plural/quantified completion
 claims, first-person reporting, quoted completion language, questions, trailing
