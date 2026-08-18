@@ -4,9 +4,9 @@
 
 All notable public releases are documented here, newest first. Each version
 opens with its highlights in descending priority, followed by grouped changes
-and a compact validation note. `0.7.6` is the latest published release.
+and a compact validation note. `0.7.7` is the latest published release.
 
-## 0.7.7 - Unreleased
+## 0.7.7 - 2026-08-18
 
 ### Highlights
 
@@ -24,17 +24,19 @@ and a compact validation note. `0.7.6` is the latest published release.
 - The shared runtime and transformed regression contract are synchronized from
   the private sibling under the declared shared-core boundary.
 - Public packaging, validation constants, bilingual documentation, and
-  installed lifecycle smoke identify 0.7.7 as an unreleased source candidate.
+  installed lifecycle smoke identify 0.7.7 as the current release.
 
 ### Validation
 
 - Native Windows source validation passed the public repository and privacy
   audits, sibling parity, 170 tests with one capability-aware skip, the
   eight-Hook self-test, Ruff 0.16.1, compilation, and `git diff --check`.
-- An isolated Codex CLI 0.146.0 install passed first install, source/cache
-  parity, strict second-run no-op, installed eight-Hook self-test, and lifecycle
-  smoke. Public CI/HOL, tagging, release, macOS, and fresh trusted-Hook evidence
-  remain separate and are not claimed.
+- Native macOS passed the same public source gates with two capability-aware
+  skips. An isolated Codex CLI 0.146.0 install passed first install,
+  source/cache parity, strict second-run no-op, installed eight-Hook self-test,
+  and lifecycle smoke on both native platforms. A normally trusted public
+  fresh-CLI Hook task was not repeated for this patch; CI/HOL and tag checks
+  remain separate source-automation gates rather than native-runtime evidence.
 
 ## 0.7.6 - 2026-08-17
 

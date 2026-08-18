@@ -80,11 +80,9 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 实测 token 开销", chinese)
         self.assertIn("约 1%–2%", chinese)
         self.assertIn(
-            "> Release status: `0.7.6` is the latest published release.", english
+            "> Release status: `0.7.7` is the latest published release.", english
         )
-        self.assertIn("> 发布状态：`0.7.6` 是最近一次已发布版本。", chinese)
-        self.assertIn("Version `0.7.7` is an unreleased source candidate.", english)
-        self.assertIn("`0.7.7` 是尚未发布的源码候选。", chinese)
+        self.assertIn("> 发布状态：`0.7.7` 是最近一次已发布版本。", chinese)
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
@@ -114,7 +112,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("### 重点", changelog_zh)
         self.assertIn("### 变化", changelog_zh)
         self.assertIn("### 验证", changelog_zh)
-        self.assertIn("## 0.7.7 - Unreleased", changelog)
+        self.assertIn("## 0.7.7 - 2026-08-18", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("Version 0.7.5", changelog)
@@ -122,11 +120,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.3 - 2026-08-12", changelog)
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("Version 0.6.3", changelog)
-        self.assertIn("Current published Context Guard release: `0.7.6`", compatibility)
-        self.assertIn(
-            "Current source line: `0.7.7` (unreleased candidate)",
-            compatibility,
-        )
+        self.assertIn("Current published Context Guard release: `0.7.7`", compatibility)
+        self.assertIn("Current source line: `0.7.7`", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.2.1`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(

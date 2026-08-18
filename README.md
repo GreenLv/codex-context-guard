@@ -15,11 +15,10 @@ It does **not** replace Codex compaction, Plan or Goal mode, memories,
 subagents, worktrees, or the transcript. Codex owns those systems; Context
 Guard adds a bounded recovery and completion-verification layer beside them.
 
-> Release status: `0.7.6` is the latest published release. For protocol
+> Release status: `0.7.7` is the latest published release. For protocol
 > versions, platform evidence, and release history, see
 > [Compatibility](docs/COMPATIBILITY.md),
 > [Local acceptance](docs/LOCAL_ACCEPTANCE.md), and the [changelog](CHANGELOG.md).
-> Version `0.7.7` is an unreleased source candidate.
 
 ## Start here
 
@@ -340,10 +339,12 @@ The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.11, 3.12,
 and 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
 
-The unreleased 0.7.7 source candidate corrects false subject and UI-surface
+The 0.7.7 release corrects false subject and UI-surface
 classification and recognizes a valid structured `view_image` image data URL
 as successful visual evidence. Schema, Proof/Stop protocols, and the eight-Hook
-wire remain unchanged.
+wire remain unchanged. Scoped native Windows and macOS source plus isolated
+install/lifecycle gates pass; CI and HOL verify the exact public commit and tag
+separately and do not substitute for native runtime acceptance.
 
 The 0.7.6 release adds classifier 2.2.0 fixes for plural/quantified completion
 claims, first-person reporting, quoted completion language, questions, trailing

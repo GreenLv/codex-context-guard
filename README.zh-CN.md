@@ -14,10 +14,9 @@ Context Guard 是面向 Codex 长任务的本地正确性保护层。它让任�
 worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context Guard 只在旁边
 补充有界恢复与完成证据门禁。
 
-> 发布状态：`0.7.6` 是最近一次已发布版本。协议版本、平台证据和历史版本详见
+> 发布状态：`0.7.7` 是最近一次已发布版本。协议版本、平台证据和历史版本详见
 > [兼容性说明](docs/COMPATIBILITY.md)、
 > [本地验收记录](docs/LOCAL_ACCEPTANCE.md)与[更新日志](CHANGELOG.md)。
-> `0.7.7` 是尚未发布的源码候选。
 
 ## 从这里开始
 
@@ -309,9 +308,11 @@ ruff check .
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.11、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
 
-未发布的 0.7.7 源码候选修正了错误对象与 UI 表面分类，并把有效的
+0.7.7 正式版本修正了错误对象与 UI 表面分类，并把有效的
 `view_image` 图像 data URL 结构化结果识别为成功视觉证据。Schema、Proof/Stop
-protocol 与八个 Hook 的 wire contract 不变。
+protocol 与八个 Hook 的 wire contract 不变。限定的 Windows 与 macOS 源码及
+隔离安装/生命周期门均已通过；CI 与 HOL 另行验证精确公开提交和 tag，不能替代
+原生运行验收。
 
 0.7.6 正式版本将诊断分类器推进到 2.2.0：补上复数/量化完成表述与第一人称转述式
 断言的识别，并排除疑问句、尾随否定、引文式与假设式完成表述。限定的 Windows 与

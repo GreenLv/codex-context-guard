@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.7.6`
-- Current source line: `0.7.7` (unreleased candidate)
+- Current published Context Guard release: `0.7.7`
+- Current source line: `0.7.7`
 - Private state schema: `6`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,9 +18,9 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.7.7 source-candidate status
+## 0.7.7 release status
 
-The 0.7.7 candidate keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,
+The 0.7.7 release keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,
 Python 3.10+, and the exact eight-Hook wire. It corrects false subjects derived
 from slash-delimited prose and URL fragments, narrows generic Chinese apply
 wording so it does not imply a UI surface, and treats a valid structured
@@ -31,9 +31,12 @@ Native Windows validation passes repository validation, the tracked-tree privacy
 audit, sibling parity, 170 tests with one capability-aware skip, the eight-Hook
 source self-test, Ruff 0.16.1, compilation, and `git diff --check`. An isolated
 Codex CLI 0.146.0 install passes first install, source/cache parity, strict
-second-run no-op, the installed eight-Hook self-test, and lifecycle smoke. No
-public CI/HOL result, tag, release, macOS result, or fresh trusted-Hook
-acceptance is claimed for 0.7.7 yet.
+second-run no-op, the installed eight-Hook self-test, and lifecycle smoke.
+Native macOS passes the same public source gates with two capability-aware
+skips, the source self-test, and the same isolated install/no-op/lifecycle
+chain. A normally trusted public fresh-CLI Hook task was not repeated for this
+patch. Main and tag CI/HOL remain separate source-automation evidence and do
+not substitute for either native result.
 
 ## 0.7.6 release status
 

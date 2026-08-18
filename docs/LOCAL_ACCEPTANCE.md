@@ -1,12 +1,12 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.7.6`; accepted `0.7.3`,
+Context Guard. The current published release is `0.7.7`; accepted `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.7.7 local candidate (2026-08-18)
+## 0.7.7 release acceptance (2026-08-18)
 
-The candidate synchronizes the declared shared runtime and transformed
+The release synchronizes the declared shared runtime and transformed
 regression contract from its authoritative sibling source. It keeps schema 6,
 Proof protocol 1.0.0, Stop protocol 1.1.0, Python 3.10+, and the exact eight-Hook
 wire while advancing classifier metadata to 2.2.1.
@@ -18,8 +18,14 @@ skip, the eight-Hook source self-test, Ruff 0.16.1, compilation, and
 passed first install, source/cache parity, strict second-run no-op, the installed
 eight-Hook self-test, and lifecycle smoke.
 
-This evidence is limited to the exact candidate source. Public CI/HOL, tag,
-release, native macOS, and fresh trusted-Hook evidence are not claimed.
+Native macOS passes the same public repository and privacy gates, sibling
+parity, 170 tests with two capability-aware skips, the eight-Hook source
+self-test, Ruff 0.16.1, compilation, and `git diff --check` with Python 3.12.2.
+An isolated Codex CLI 0.146.0 install passes first install, source/cache parity,
+strict second-run no-op, the installed eight-Hook self-test, and lifecycle
+smoke. A normally trusted public fresh-CLI Hook task was not repeated for this
+patch. Main and tag CI/HOL remain separate source-automation evidence and do
+not substitute for either native result.
 
 ## 0.7.6 release acceptance (2026-08-17)
 
