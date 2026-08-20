@@ -79,6 +79,17 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("about 1%–2%", english)
         self.assertIn("## 实测 token 开销", chinese)
         self.assertIn("约 1%–2%", chinese)
+        self.assertIn("## What you may see in a guarded task", english)
+        self.assertIn("## 在受保护任务中可能看到什么", chinese)
+        for readme in (english, chinese):
+            for term in (
+                "R001",
+                "A003",
+                "whole_completion_without_checkpoint",
+                "[Context Guard continuation] The task is not yet safely complete.",
+                "can't open file '.../context-guard/0.7.3/scripts/context_guard.py'",
+            ):
+                self.assertIn(term, readme)
         self.assertIn(
             "> Release status: `0.7.7` is the latest published release.", english
         )

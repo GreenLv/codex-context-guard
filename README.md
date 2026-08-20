@@ -108,6 +108,79 @@ boundary and checks it before a completion claim is accepted.
 See [Architecture](docs/ARCHITECTURE.md) and
 [Privacy](docs/PRIVACY.md) for the full boundary.
 
+## What you may see in a guarded task
+
+Context Guard keeps a private, task-local ledger.
+These stable IDs may appear in model progress text, but they are not printed in the final user-facing reply:
+
+| Example | Meaning | Practical effect |
+| --- | --- | --- |
+| `R001` | first requirement captured for this task | stays pending across `/compact` until matching successful evidence is recorded |
+| `A003` | third acceptance item captured for this task | is checked independently; a nearby passing test does not silently close it |
+| `E####` | successful evidence record | closes an `R`/`A` item only when item, subject, surface, and outcome match |
+
+`R001` and `A003` are local ledger identifiers, not GitHub issues, error codes, or global task numbers.
+The same identifier in another task means something else, and the private ledger is never shown verbatim.
+
+Recent acceptance work showed this behavior in practice: a pending `R001` survived a real `/compact` and remained pending until fresh evidence and a valid checkpoint existed.
+In another review, source tests passed but an enforced readback obligation was still open.
+The agent therefore continued to refer to the requirement instead of declaring the whole task complete.
+That is the intended effect: preserve the boundary, rather than make a passing sub-check look like whole-task completion.
+
+## Historical Hook failure modes
+
+The following are real failure classes observed in earlier sessions.
+They help explain repeated or surprising Hook interventions. They are not expected success paths, and they do not claim arbitrary semantic verification.
+
+### False completion match
+
+A reply was explaining the hypothetical phrase `may call the task complete after unit tests alone`.
+An older classifier matched `the task complete` as a direct whole-task claim.
+Stop therefore returned `whole_completion_without_checkpoint`, and the model produced an unnecessary continuation.
+
+Observed Hook feedback, with private IDs and commands redacted:
+
+```text
+[Context Guard continuation] The task is not yet safely complete.
+Resolve or explicitly report these items.
+whole-task completion requires a staged private checkpoint.
+```
+
+Versions 0.7.4–0.7.6 added context-aware attribution for current-task assertions,
+quotations, hypotheticals, examples, questions, trailing negation, plural claims,
+and later actions.
+
+### False remaining-action match
+
+Earlier 0.4.x sessions treated a user handoff, external/policy hold, or deferred
+phase as assistant-owned work.
+Stop asked for another turn even though the correct boundary was to yield and wait.
+The protocol-first design now separates completion authenticity from continuation
+control with typed dispositions, safe default yield, and a two-continuation cap.
+
+### Stale versioned Hook path
+
+After a runtime upgrade, an active task still pointed at an older cache.
+Stop repeatedly reported that the Hook runtime could not be opened, and the task
+could not self-heal in place.
+
+Observed Hook error, with the local path redacted:
+
+```text
+python3: can't open file '.../context-guard/0.7.3/scripts/context_guard.py': [Errno 2] No such file or directory
+```
+
+Versioned caches are immutable. The installer preserves and archives historical
+caches, and upgrades are tested from a fresh task.
+
+A normal bounded continuation means that the turn has not established a safe
+terminal boundary—usually because evidence is missing or explicit persistence
+still applies. It does not by itself mean that the repository work is wrong.
+A repeated identical Hook error, or an intervention that exceeds bounded
+correction behavior, is a diagnosis signal.
+See [Architecture](docs/ARCHITECTURE.md), [Versioning](docs/VERSIONING.md), and
+[Compatibility](docs/COMPATIBILITY.md) for the current boundary and upgrade rules.
+
 ## Everyday example: write a technical design document without losing decisions
 
 Imagine you ask Codex to prepare a technical design document for a new service.

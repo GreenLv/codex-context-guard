@@ -103,6 +103,70 @@ Context Guard 只把与正确性有关的有界检查清单带过上下文边界
 完整职责边界见[架构说明](docs/ARCHITECTURE.md)和
 [隐私说明](docs/PRIVACY.md)。
 
+## 在受保护任务中可能看到什么
+
+Context Guard 会在本地维护一份只属于当前任务的私有 ledger。
+模型工作时可能引用这些稳定 ID，但它们不会原样出现在最终给用户的回复中：
+
+| 示例 | 含义 | 实际作用 |
+| --- | --- | --- |
+| `R001` | 当前任务捕获的第一项 requirement | 跨过 `/compact` 后仍保持 pending，直到记录到匹配的成功证据 |
+| `A003` | 当前任务捕获的第三项 acceptance item | 独立核对；附近的一项测试通过，不能静默关闭它 |
+| `E####` | 一条成功的 evidence 记录 | 只有 item、subject、surface 和 outcome 都匹配时，才能满足某个 `R`/`A` 项 |
+
+`R001` 和 `A003` 是当前任务私有 ledger 的标识，不是 GitHub issue、错误码或全局任务编号。
+另一个任务中的同名 ID 没有相同含义；私有 ledger 也不会被原样展示。
+
+最近的验收工作实际观察到了这一点：一个 pending 的 `R001` 经过真实 `/compact` 后仍然保留，直到有新鲜证据和有效 checkpoint 才能闭合。
+另一次仓库 review 中，源码测试虽然通过，但 `R001` 的 enforced readback obligation 仍未解决。
+因此 agent 继续引用 requirement，而不是宣称整个任务完成。
+这正是它应该产生的效果：守住边界，而不是把局部检查通过误当成整个任务完成。
+
+## 历史上出现过的 Hook 异常
+
+下面是近期相关会话中真实出现过的故障类别。
+它们帮助解释反复或意外的 Hook 干预，不是当前版本的正常成功路径，也不代表 Context Guard 能进行任意语义验证。
+
+### 错误命中完成声明
+
+某次回复只是在解释假设句 `may call the task complete after unit tests alone`。
+旧分类器却把 `the task complete` 当成当前任务的完整完成声明。
+因此 Stop 返回 `whole_completion_without_checkpoint`，模型被迫多输出一轮。
+
+真实 Hook 反馈（已脱敏私有 ID 和命令）：
+
+```text
+[Context Guard continuation] The task is not yet safely complete.
+Resolve or explicitly report these items.
+whole-task completion requires a staged private checkpoint.
+```
+
+0.7.4–0.7.6 逐步加入当前任务断言、引文、假设、示例、疑问句、尾随否定、复数完成表述以及后续真实动作的上下文区分。
+
+### 错误识别剩余动作
+
+更早的 0.4.x 会话把用户接手、外部/策略等待或 deferred 阶段误判为 agent 仍有工作。
+Stop 要求再来一轮，而正确边界其实是交给用户或等待。
+协议优先的设计把“是否真的完成”和“本轮是否继续”分开，使用 typed disposition、安全默认 yield，并限制最多两次 continuation。
+
+### 版本化 Hook 路径失效
+
+运行时升级后，活动任务仍指向旧 cache。
+Stop 反复报告无法打开 Hook runtime，原任务无法在当前路径上自愈。
+
+真实 Hook 错误（本地路径已脱敏）：
+
+```text
+python3: can't open file '.../context-guard/0.7.3/scripts/context_guard.py': [Errno 2] No such file or directory
+```
+
+版本化 cache 不可原地覆盖。
+安装器保留并归档历史 cache，升级验证从全新任务开始。
+
+正常的、有界 continuation 只表示本轮还没有建立安全的终止边界——通常是证据不足，或用户明确要求继续。
+这并不等于仓库工作本身出错。相同的 Hook 错误反复出现，或干预次数超出有界修正行为时，应把它视为诊断信号。
+当前边界和升级规则见[架构说明](docs/ARCHITECTURE.md)、[版本策略](docs/VERSIONING.md)和[兼容性说明](docs/COMPATIBILITY.md)。
+
 ## 日常示例：撰写技术方案，但不能漏掉已确认决策
 
 假设你让 Codex 为一个新服务撰写技术方案。任务会经历资料检索、反复修改、图表更新
