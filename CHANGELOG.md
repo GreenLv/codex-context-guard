@@ -6,15 +6,15 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ## How protection evolved
 
-- **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
-- **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
-- **0.6.x — verify whether a turn may finish:** distinguish a verified completion checkpoint from “continue”, waiting for the user, waiting for an external result, or deliberately deferred work. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
-- **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required subject, output surface, and requested scope. This line also added privacy-preserving protection for images and other multimodal inputs by storing hashes and metadata rather than image bytes.
 - **0.8.x — keep adopted project instructions and execution plans aligned:** the unreleased line can bind declared instruction sources, including Skill contracts, to a project execution contract and optionally to the current Codex Plan. A later change makes the binding stale instead of silently accepting the old plan.
+- **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required subject, output surface, and requested scope. This line also added privacy-preserving protection for images and other multimodal inputs by storing hashes and metadata rather than image bytes.
+- **0.6.x — verify whether a turn may finish:** distinguish a verified completion checkpoint from “continue”, waiting for the user, waiting for an external result, or deliberately deferred work. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
+- **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
+- **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
 ## 0.8.3 - Unreleased
 
-### What changes for users
+### Changed
 
 - A long task can now keep a reviewed execution checklist alongside its requirements and evidence. This project execution contract records which instruction sources apply, which phases and gates remain, and whether it should stay aligned with the current Codex Plan.
 - The contract starts inactive. Only the user who started the root task can activate a reviewed, project-relative JSON contract with `context-guard adopt`; ordinary prose cannot grant authority.

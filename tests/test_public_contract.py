@@ -110,8 +110,7 @@ class PublicContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertLess(
-            changelog.index("### What changes for users"),
-            changelog.index("### Technical details"),
+            changelog.index("### Changed"), changelog.index("### Technical details")
         )
         self.assertLess(
             changelog.index("### Technical details"),
@@ -140,11 +139,19 @@ class PublicContractTests(unittest.TestCase):
             "**0.8.x——让已采用的项目指令和执行计划保持一致：**",
             changelog_zh,
         )
+        english_line_order = [
+            changelog.index(f"**0.{minor}.x") for minor in range(8, 3, -1)
+        ]
+        chinese_line_order = [
+            changelog_zh.index(f"**0.{minor}.x") for minor in range(8, 3, -1)
+        ]
+        self.assertEqual(english_line_order, sorted(english_line_order))
+        self.assertEqual(chinese_line_order, sorted(chinese_line_order))
         version_heading = re.compile(r"^## (0\.\d+\.\d+)(?:\s+-|$)", re.MULTILINE)
         self.assertEqual(
             version_heading.findall(changelog), version_heading.findall(changelog_zh)
         )
-        self.assertIn("### 用户能感知的变化", changelog_zh)
+        self.assertIn("### 变化", changelog_zh)
         self.assertIn("### 技术说明", changelog_zh)
         self.assertIn("### 验证状态", changelog_zh)
         self.assertIn("## 0.7.7 - 2026-08-18", changelog)
