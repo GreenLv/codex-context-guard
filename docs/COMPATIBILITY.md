@@ -42,15 +42,25 @@ Native macOS source validation passes the repository contract and privacy
 audits, 192 tests with two capability-aware skips, the source self-test, Ruff
 0.16.1, compilation, and `git diff --check`. An isolated Codex CLI 0.149.0 home
 passes first install, source/cache parity, strict second-run no-op, installed
-schema-7 lifecycle smoke, and the installed eight-Hook self-test. This does not
-yet claim a fresh trusted Hook task, native Windows, CI, tag, or GitHub Release.
-A downstream configuration consumer independently verifies the exact public Git
-commit and manifest, installs 0.8.3 into the default home, enables the public
-identity, disables the old private identity without deleting its caches, and
-passes a strict second no-op plus source self-test.
+schema-7 lifecycle smoke, and the installed eight-Hook self-test. A downstream
+configuration consumer independently verifies the exact public Git commit and
+manifest, installs 0.8.3 into the default home, enables the public identity,
+disables the old private identity without deleting its caches, and passes a
+strict second no-op plus source self-test.
+
+Native Windows source validation passes with Python 3.12.10: the repository
+contract and tracked-tree privacy audits, 192 tests with one capability-aware
+symbolic-link skip, the source self-test, Ruff 0.16.1, compilation, and
+`git diff --check`. The Windows consumer independently verifies the exact
+public commit and manifest, installs `context-guard@codex-context-guard` 0.8.3,
+passes source/cache/archive parity, installed schema-7 lifecycle and eight-Hook
+self-tests, and a second strict no-op. The old private identity is disabled
+without deleting its versioned live/archive cache set. These native macOS and
+Windows results do not claim a fresh trusted Hook task, CI, tag, or GitHub
+Release.
 
 The candidate source is present on public `main`. That remote-source fact does
-not upgrade any pending CI, native-runtime, tag, or release gate.
+not upgrade any pending fresh trusted-runtime, CI, tag, or release gate.
 
 ## 0.7.7 release status
 

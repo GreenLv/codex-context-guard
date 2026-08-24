@@ -34,8 +34,12 @@
 - Codex CLI 0.149.0 隔离 home 通过首次安装、源码/缓存一致性、严格第二次 no-op、
   已安装 schema-7 生命周期 smoke 和八 Hook 自检。下游配置消费者校验精确
   公开提交，完成默认 home 安装，启用公开身份并在不删除缓存的前提下禁用旧私有身份，
-  且通过严格第二次 no-op 与自检。候选源码已推送到公开 `main`；fresh-task Hook
-  trust、CI、tag 与 release 仍是独立门。
+  且通过严格第二次 no-op 与自检。
+- Windows 原生源码门通过仓库校验、公开树隐私审计、192 项测试（1 项能力相关符号链接
+  跳过）、八 Hook 自检、Ruff 0.16.1、编译和 `git diff --check`。固定的公开消费者通过
+  精确提交校验、安装、源码/缓存/归档一致性、已安装 schema-7 生命周期和八 Hook 自检，
+  以及第二次严格 no-op；旧私有缓存集合保留不变。候选源码已推送到公开 `main`；
+  fresh-task Hook trust、CI、tag 与 release 仍是独立门。
 
 ## 0.7.7 - 2026-08-18
 

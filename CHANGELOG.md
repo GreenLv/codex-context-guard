@@ -44,8 +44,15 @@ and a compact validation note. `0.7.7` is the latest published release.
   eight-Hook self-test. A downstream configuration consumer verifies an exact
   public commit, performs the default-home install, enables the public identity,
   disables the old private identity without deleting its caches, and passes a
-  strict second no-op plus self-test. The candidate source is pushed to public
-  `main`; fresh-task Hook trust, CI, tag, and release remain separate gates.
+  strict second no-op plus self-test.
+- Native Windows source gates pass repository validation, the tracked-tree
+  privacy audit, 192 tests with one capability-aware symbolic-link skip, the
+  eight-Hook self-test, Ruff 0.16.1, compilation, and `git diff --check`.
+  The pinned public consumer passes exact-commit verification, installation,
+  source/cache/archive parity, installed schema-7 lifecycle and eight-Hook
+  self-tests, and a second strict no-op while retaining the old private cache
+  set. The candidate source is pushed to public `main`; fresh-task Hook trust,
+  CI, tag, and release remain separate gates.
 
 ## 0.7.7 - 2026-08-18
 

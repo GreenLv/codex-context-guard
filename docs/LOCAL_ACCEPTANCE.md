@@ -27,13 +27,24 @@ A downstream configuration consumer manager verifies the exact clean Git commit,
 origin, manifest repository, and 0.8.3 pin before invoking this installer. The
 default Codex home then passes installation, strict second no-op, source
 self-test, and plugin-list readback with the public identity enabled. The old
-private identity is disabled while its 0.8.1 and 0.8.3 caches remain present.
+private identity is disabled while its existing versioned live/archive caches,
+including 0.8.3, remain present.
+
+Native Windows source validation passes with Python 3.12.10: repository
+validation, tracked-tree privacy audit, 192 tests with one capability-aware
+symbolic-link skip, the eight-Hook source self-test, Ruff 0.16.1, compilation,
+and `git diff --check`. The pinned Windows consumer install verifies the clean
+public commit and manifest, installs `context-guard@codex-context-guard` 0.8.3,
+passes source/cache/archive parity, the installed schema-7 lifecycle smoke,
+the installed eight-Hook self-test, and a second strict no-op. The old private
+identity is disabled without deleting its live/archive cache set; SHA-256
+snapshots of the public and legacy live/archive trees remain unchanged across
+the second manager run.
 
 The candidate source was pushed to public `main` and read back with local
-`HEAD == origin/main`. A fresh trusted Hook task, native Windows, CI, tag, and
-GitHub Release remain separate pending gates. No tag or GitHub Release is
-authorized by this candidate entry, and 0.7.7 remains the latest published
-release.
+`HEAD == origin/main`. A fresh trusted Hook task, CI, tag, and GitHub Release
+remain separate pending gates. No tag or GitHub Release is authorized by this
+candidate entry, and 0.7.7 remains the latest published release.
 
 ## 0.7.7 release acceptance (2026-08-18)
 
