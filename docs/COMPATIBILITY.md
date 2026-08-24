@@ -49,6 +49,9 @@ commit and manifest, installs 0.8.3 into the default home, enables the public
 identity, disables the old private identity without deleting its caches, and
 passes a strict second no-op plus source self-test.
 
+The candidate source is present on public `main`. That remote-source fact does
+not upgrade any pending CI, native-runtime, tag, or release gate.
+
 ## 0.7.7 release status
 
 The 0.7.7 release keeps schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0,

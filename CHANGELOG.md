@@ -44,8 +44,8 @@ and a compact validation note. `0.7.7` is the latest published release.
   eight-Hook self-test. A downstream configuration consumer verifies an exact
   public commit, performs the default-home install, enables the public identity,
   disables the old private identity without deleting its caches, and passes a
-  strict second no-op plus self-test. Fresh-task Hook trust, remote main, CI,
-  tag, and release remain separate gates.
+  strict second no-op plus self-test. The candidate source is pushed to public
+  `main`; fresh-task Hook trust, CI, tag, and release remain separate gates.
 
 ## 0.7.7 - 2026-08-18
 

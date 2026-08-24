@@ -29,9 +29,11 @@ default Codex home then passes installation, strict second no-op, source
 self-test, and plugin-list readback with the public identity enabled. The old
 private identity is disabled while its 0.8.1 and 0.8.3 caches remain present.
 
-A fresh trusted Hook task, native Windows, remote `main`, CI, tag, and GitHub
-Release remain separate pending gates. No tag or GitHub Release is authorized
-by this candidate entry, and 0.7.7 remains the latest published release.
+The candidate source was pushed to public `main` and read back with local
+`HEAD == origin/main`. A fresh trusted Hook task, native Windows, CI, tag, and
+GitHub Release remain separate pending gates. No tag or GitHub Release is
+authorized by this candidate entry, and 0.7.7 remains the latest published
+release.
 
 ## 0.7.7 release acceptance (2026-08-18)
 
