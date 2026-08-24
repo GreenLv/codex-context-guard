@@ -55,10 +55,27 @@ For a recovery check, use it on a non-trivial synthetic task, run `/compact`, an
 - Requirements, acceptance criteria, prohibitions, and later corrections keep stable task-local identities.
 - Compaction and resume restore the open checklist instead of relying only on a conversational summary.
 - Successful tool evidence must match the required subject and surface before it can close an item.
+- Images and other multimodal inputs keep only hashes and bounded metadata. When the user asks for an image change, completion evidence can be tied to an inspection of the changed image rather than merely to a successful tool call.
 - Ambiguous output remains `unknown`; damaged or unverifiable private state fails closed.
 - Exports are explicit and redacted. Image bytes, credentials, and raw transcript content are not copied into the requirement ledger.
 
-Proof protocol 1.0.0 enforces only obligations that Context Guard can derive deterministically. Other cases remain visible as `legacy_fallback`; this is not arbitrary semantic or pixel-level proof. Stop protocol 1.1.0 keeps completion control turn-bound: an unfinished disposition is advisory only and cannot force a new turn.
+Proof protocol 1.0.0 checks only obligations that follow clearly from the user's request: for example, whether evidence belongs to the named file or URL, whether an edited image was inspected, or whether every explicitly listed object was covered. Cases without that kind of deterministic check use the earlier completion behavior (internally named `legacy_fallback`) rather than pretending to understand arbitrary semantics or pixels. Stop protocol 1.1.0 keeps completion control turn-bound: an unfinished disposition is advisory only and cannot force a new turn.
+
+## How 0.8.3 separates different sources
+
+Version 0.8.3 no longer treats user instructions, repository guidance, Skills, Codex Plan, and tool results as interchangeable text. After a project execution contract is adopted, it records what each source is allowed to decide in this order:
+
+| Source | What it decides in a task |
+| --- | --- |
+| System, sandbox, platform permissions, and Hook trust | These are hard boundaries; lower sources cannot override them. |
+| The user who started the task | Defines the goal and which writes are allowed or prohibited. A Skill or Codex Plan cannot expand this authority. |
+| Repository `AGENTS.md` and selected Skills | Define the adopted workflow and safety checks, but cannot authorize a push, release, or installation by themselves. |
+| Codex Plan | Describes the model's current, revisable execution steps. Context Guard keeps only a read-only mirror and optional binding; it does not edit the plan. |
+| Tool, file, image, UI, and public-readback evidence | Establishes facts such as whether a file changed, an image was inspected, or a page is public. A successful result cannot create user authority. |
+
+For example, suppose the user asks Codex to follow a publishing Skill and update an article with a cover image. Context Guard can record which Skill was adopted, the current execution phase, and an optional Codex Plan binding; image protection can bind the cover image and its edited readback to the exact object. If the Skill or Plan later changes, the old binding is marked for review. Merely installing the Skill, adding “publish” to the model plan, or receiving a successful tool result does not replace user authorization.
+
+Version 0.8.3 records and restores these relationships and reports drift during completion checks. It does not add a `PreToolUse` Hook or intercept an operation before the tool runs.
 
 ## How it works
 
@@ -77,7 +94,7 @@ flowchart TB
   E -->|Yes| G
 ```
 
-Codex still owns the work and its native planning state. Context Guard carries only the bounded correctness checklist across context boundaries and checks it before a completion claim.
+Codex still owns the work and its native planning state. Context Guard carries the bounded correctness checklist across context boundaries; after an explicit 0.8.3 project adoption, it also restores the adopted instruction sources, unfinished phases, and plan-drift state before checking a completion claim.
 
 ## Everyday example: write a technical design document without losing decisions
 
@@ -187,7 +204,7 @@ The Hook runtime uses only the Python standard library. CI covers Ubuntu, macOS,
 
 Context Guard is not a semantic proof system, security sandbox, transcript backup, cloud sync service, second Plan/Goal controller, agent scheduler, or replacement for tests and human review.
 
-The `0.8.3` execution-contract model is dormant until an explicit root-user adoption control succeeds. It adds no `PreToolUse` Hook, does not block tools, does not modify Codex Plan state, and does not grant authority.
+Version 0.8.3 adopts project instructions and plan bindings only after the user who started the root task successfully runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in ordinary prose does not activate it. This release adds no `PreToolUse` Hook, does not block tools, does not modify Codex Plan state, and does not grant authority.
 
 ## Contributing and security
 

@@ -114,15 +114,18 @@ not as a measure of code volume.
   lossy downgrade. No contract is activated and no authority is granted.
 - `0.8.2` is a consumed intermediate Phase 3 package identity. Its installed
   bytes remain immutable; it was neither tagged nor released.
-- `0.8.3` is the first completed Phase 3 release. A root-user-only
-  `context-guard adopt <project-relative-json>` control can adopt a bounded,
-  hash-only deterministic contract. Natural-language candidates remain
-  non-authoritative. Optional native-plan binding uses a semantic digest;
-  semantic drift marks the contract and affected records stale without
-  modifying Codex Plan. Status, diagnosis, and recovery expose only bounded
-  IDs, counts, states, and hashes. The candidate does not add `PreToolUse`,
-  block tools, reserve tickets, commit, publish, or grant authority to
-  uncovered surfaces.
+- `0.8.3` is the first completed Phase 3 release and the first release that can
+  adopt reviewed project instructions and an optional Codex Plan binding. It
+  keeps the source roles separate: the root
+  user defines task and write authority; `AGENTS.md` and Skills define workflow;
+  Codex Plan remains revisable; and tool, file, image, UI, or public readback
+  provides facts rather than authority. The root-user-only `context-guard adopt
+  <project-relative-json>` control accepts a bounded, hash-only deterministic
+  contract. A changed Skill or plan marks the affected binding for review
+  without modifying Codex Plan. Status, diagnosis, and recovery expose only
+  bounded IDs, counts, states, and hashes. The release does not add
+  `PreToolUse`, block tools, reserve tickets, commit, publish, or grant authority
+  to uncovered surfaces.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

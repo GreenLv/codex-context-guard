@@ -91,9 +91,15 @@ authoritative.
 
 ## Changelog and release writing
 
-- Write for adopters, not as a commit transcript. Lead with the user-visible
-  outcome and explain internals only when they affect behavior, compatibility,
-  security, installation, or operation.
+- Write for adopters, not as a commit transcript. Lead with the concrete change
+  and explain internals only when they affect behavior, compatibility, security,
+  installation, or operation. Do not use editorial headings such as
+  `User-visible changes`; follow the existing `Highlights`, `Changes`, and
+  `Validation` structure.
+- When a release introduces an authority or priority model, state what wins in
+  a conflict instead of listing storage fields. Include a repository-proven
+  example with concrete objects such as an image, selected Skill, Codex Plan,
+  file, or public readback, and state the boundary the release does not enforce.
 - Keep releases newest first. Each release uses `Highlights`, `Changes`, and
   `Validation` in that order. Put three to five highlights in descending
   importance: correctness or safety first, then compatibility and operations,

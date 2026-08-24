@@ -6,9 +6,9 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ## How protection evolved
 
-- **0.8.x — keep adopted project instructions and execution plans aligned:** bind declared instruction sources, including Skill contracts, to a project execution contract and optionally to the current Codex Plan. A later change makes the binding stale instead of silently accepting the old plan.
-- **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required subject, output surface, and requested scope. This line also added privacy-preserving protection for images and other multimodal inputs by storing hashes and metadata rather than image bytes.
-- **0.6.x — verify whether a turn may finish:** distinguish a verified completion checkpoint from “continue”, waiting for the user, waiting for an external result, or deliberately deferred work. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
+- **0.8.x — separate what user instructions, Skills, and the model plan may decide:** the user defines the task and write authority; adopted `AGENTS.md` or Skills define the workflow; Codex Plan is a revisable execution arrangement; and tool, file, image, or public-readback results provide factual evidence. Version 0.8.3 records these sources and an optional plan binding, requests review after drift, and does not turn them into new authority or tool interception.
+- **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required item, file or page, and complete requested scope. This line also added privacy-preserving protection for images and other multimodal inputs. It stores hashes and bounded metadata, and an image-editing task requires inspection of the changed image rather than only a successful tool call.
+- **0.6.x — separate “the task is complete” from “this turn may stop”:** only a verified completion checkpoint marks the task complete. Waiting for the user, waiting for an external result, or explicitly deferring work can end the current turn while requirements remain open. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
@@ -16,9 +16,9 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Highlights
 
-- A long task can keep a reviewed execution checklist alongside its requirements and evidence, including the applicable instruction sources, phases, gates, and optional Codex Plan binding.
-- Only the user who started the root task can activate a reviewed, project-relative contract; ordinary prose and natural-language candidates cannot grant authority.
-- Plan or instruction-source drift marks the affected records stale without rewriting Codex Plan, blocking tools, reserving work, or publishing on the user's behalf.
+- Version 0.8.3 records different sources separately: user instructions define the task and write authority; `AGENTS.md` and selected Skills define the workflow; Codex Plan describes revisable execution steps; and tool, file, image, or public-readback results provide factual evidence. The latter three cannot expand user authority.
+- For example, adopting a publishing Skill can record the exact Skill and version, the current phase, and an optional Codex Plan binding. If the Skill or Plan later changes, the old binding is marked for review instead of being followed silently.
+- Only the user who started the root task can explicitly adopt this project contract. Version 0.8.3 records, restores, and checks it at completion; it does not rewrite Codex Plan, intercept tools before use, publish automatically, or grant new authority.
 
 ### Changes
 

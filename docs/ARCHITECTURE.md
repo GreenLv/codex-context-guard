@@ -55,7 +55,29 @@ not Context Guard, performs compaction, controls the task lifecycle, and runs
 tools or subagents. The private ledger never becomes a second transcript or
 editable plan.
 
-## Four-layer model
+## Source authority in an adopted 0.8.3 contract
+
+Version 0.8.3 records instruction and evidence sources without treating the
+last text seen as the winner. Their roles follow this order:
+
+| Source | Role |
+| --- | --- |
+| System, sandbox, platform permissions, and Hook trust | Hard boundaries that lower sources cannot override. |
+| Root-user instructions | Define the task, write authority, prohibitions, and later revisions. |
+| Adopted repository `AGENTS.md` and Skills | Define workflow and safety constraints, but cannot expand user authority. |
+| Codex Plan | Provides revisable execution steps; its mirror and optional binding are read-only. |
+| Tool, file, image, UI, and public-readback evidence | Establishes current facts, but cannot create user authority. |
+
+For example, a publishing Skill may require an image readback and public page
+check. Adopting that Skill records which version supplies the workflow; it does
+not authorize publication. A Codex Plan may schedule the image edit and page
+check, but it cannot remove the user's prohibition on publishing. The returned
+image and public page can prove facts only when they are bound to the requested
+asset and output surface. If the adopted Skill or plan changes, 0.8.3 marks the
+old binding for review. It does not intercept the next tool call because this
+release has no `PreToolUse` Hook.
+
+## Runtime state model
 
 ### L1: immutable task contract
 
@@ -100,14 +122,15 @@ prompt during `PostToolUse`; `PreCompact` and compact/resume `SessionStart`
 remain forced recovery opportunities. Only prompt IDs and bounded scan state
 are persisted.
 
-Schema 7 retains that completion and proof ledger and adds a dormant execution
-contract model. It stores bounded instruction-source metadata, canonical
-contract hashes, phase/gate state, authorization candidates, drift markers,
-exact-host coverage, ticket namespaces, unified-exec sessions, and delegated
-actor bindings. Only a root-user control can adopt a deterministic,
-project-relative manifest. Natural-language candidates cannot activate a
-contract or grant authority. Optional native-plan binding compares semantic
-digests and marks affected records stale; the plan mirror remains read-only.
+Schema 7 retains that completion and proof ledger and adds storage for adopted
+project instructions and execution plans. Until the root user explicitly adopts
+a deterministic, project-relative manifest, that storage does not affect the
+task. It keeps bounded instruction-source metadata, contract hashes, phase/gate
+state, authorization candidates, drift markers, exact-host coverage, ticket
+namespaces, unified-exec sessions, and delegated actor bindings. Natural-language
+candidates cannot activate a contract or grant authority. Optional native-plan
+binding compares semantic digests and marks changed bindings for review; the
+plan mirror remains read-only.
 
 ### L3: delegated-agent provenance
 

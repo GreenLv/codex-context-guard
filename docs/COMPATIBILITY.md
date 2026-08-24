@@ -21,16 +21,24 @@ behavior may change in future Codex releases and must be revalidated.
 
 ## 0.8.3 release status
 
-The 0.8.3 release is the first completed Phase 3 source line. Schema 7 adds
-a dormant execution-contract model for bounded source metadata, phases, gates,
-authorization candidates, drift, coverage, ticket namespaces, unified-exec
-sessions, and delegated actors. A root-user-only `context-guard adopt` control
-may activate a deterministic, project-relative, hash-only contract manifest.
-Natural-language candidates remain non-authoritative. Optional native-plan
-binding is semantic and read-only: drift marks the contract and affected
-records stale without changing Codex Plan state.
+Version 0.8.3 can keep an adopted project's instruction sources and execution
+plan aligned across a long task. It records the user as the source of task and
+write authority, `AGENTS.md` or selected Skills as workflow sources, Codex Plan
+as a revisable execution arrangement, and tool/file/image/public readback as
+factual evidence. A workflow source, model plan, or successful tool result
+cannot expand the user's authority.
 
-The Hook surface remains the same eight events. The release adds no
+For example, an adopted publishing Skill can be bound by exact source hash,
+while an optional Codex Plan binding records the current plan meaning. If the
+Skill or plan later changes, the previous binding is marked for review rather
+than silently reused. The root-user-only `context-guard adopt` control accepts
+only a deterministic, project-relative, hash-only manifest; ordinary prose
+cannot activate it. Internally, schema 7 stores bounded source metadata,
+phases, gates, authorization candidates, drift, coverage, ticket namespaces,
+unified-exec sessions, and delegated actors.
+
+The Hook surface remains the same eight events. The release records and restores
+the adopted relationships and checks them at completion; it adds no
 `PreToolUse`, tool interception, ticket reservation in normal lifecycle,
 commit/publish action, or authority for uncovered surfaces. Source validation,
 privacy audit, isolated install, native macOS acceptance, downstream consumer

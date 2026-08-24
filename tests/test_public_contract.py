@@ -81,6 +81,12 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("约 1%–2%", chinese)
         self.assertIn("## What you may see in a guarded task", english)
         self.assertIn("## 在受保护任务中可能看到什么", chinese)
+        self.assertIn("## How 0.8.3 separates different sources", english)
+        self.assertIn("## 0.8.3 如何区分不同来源", chinese)
+        for term in ("selected Skills", "Codex Plan", "image", "public-readback"):
+            self.assertIn(term, english)
+        for term in ("已选择的 Skill", "Codex Plan", "图片", "公开读回"):
+            self.assertIn(term, chinese)
         for readme in (english, chinese):
             for term in (
                 "R001",
@@ -133,7 +139,7 @@ class PublicContractTests(unittest.TestCase):
             "**0.7.x — bind evidence to the thing being verified:**", changelog
         )
         self.assertIn(
-            "**0.8.x — keep adopted project instructions and execution plans aligned:**",
+            "**0.8.x — separate what user instructions, Skills, and the model plan may decide:**",
             changelog,
         )
         self.assertIn("**0.4.x——记住用户交代的任务：**", changelog_zh)
@@ -141,7 +147,7 @@ class PublicContractTests(unittest.TestCase):
             "**0.7.x——把证据绑定到需要验证的对象：**", changelog_zh
         )
         self.assertIn(
-            "**0.8.x——让已采用的项目指令和执行计划保持一致：**",
+            "**0.8.x——分清用户要求、Skill 和模型计划各自能决定什么：**",
             changelog_zh,
         )
         english_line_order = [
@@ -156,8 +162,10 @@ class PublicContractTests(unittest.TestCase):
         self.assertEqual(
             version_heading.findall(changelog), version_heading.findall(changelog_zh)
         )
-        self.assertIn("### 变化", changelog_zh)
+        self.assertIn("### 变更", changelog_zh)
         self.assertIn("### 验证", changelog_zh)
+        self.assertNotIn("execution checklist", english + changelog)
+        self.assertNotIn("执行清单", chinese + changelog_zh)
         self.assertIn("## 0.7.7 - 2026-08-18", changelog)
         self.assertIn("## 0.8.3 - 2026-08-24", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
