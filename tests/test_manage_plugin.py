@@ -44,6 +44,7 @@ class SafePluginInstallTests(unittest.TestCase):
         manifest = {
             "name": manager.PLUGIN_NAME,
             "version": version,
+            "repository": "https://github.com/GreenLv/codex-context-guard",
         }
         manifest_path = self.source_root / ".codex-plugin" / "plugin.json"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -535,6 +536,123 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertTrue(manager.same_path(self.run_calls[1][3], staging))
         self.assertIsNotNone(self.marketplace_state)
         self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
+
+    def test_ensure_marketplace_migrates_previous_pinned_checkout(self) -> None:
+        current = self.codex_home / "upstreams" / manager.PLUGIN_NAME / ("b" * 40)
+        self.repo_root = current
+        self.source_root = current
+        self.write_source("0.1.3")
+        previous = current.parent / ("a" * 40)
+        previous_manifest = previous / ".codex-plugin" / "plugin.json"
+        previous_manifest.parent.mkdir(parents=True)
+        previous_manifest.write_text(
+            json.dumps(
+                {
+                    "name": manager.PLUGIN_NAME,
+                    "version": "0.1.2",
+                    "repository": "https://github.com/GreenLv/codex-context-guard",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(previous),
+            "marketplaceSource": {"source": str(previous)},
+        }
+
+        changed = self.ensure_marketplace(apply=True)
+
+        self.assertTrue(changed)
+        staging = manager.marketplace_staging_root(self.codex_home, current)
+        self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
+        self.assertEqual(
+            [call[:3] for call in self.run_calls],
+            [
+                ("plugin", "marketplace", "remove"),
+                ("plugin", "marketplace", "add"),
+            ],
+        )
+
+    def test_previous_pinned_checkout_dry_run_is_read_only(self) -> None:
+        current = self.codex_home / "upstreams" / manager.PLUGIN_NAME / ("b" * 40)
+        self.repo_root = current
+        self.source_root = current
+        self.write_source("0.1.3")
+        previous = current.parent / ("a" * 40)
+        previous_manifest = previous / ".codex-plugin" / "plugin.json"
+        previous_manifest.parent.mkdir(parents=True)
+        previous_manifest.write_text(
+            json.dumps(
+                {
+                    "name": manager.PLUGIN_NAME,
+                    "version": "0.1.2",
+                    "repository": "https://github.com/GreenLv/codex-context-guard",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(previous),
+            "marketplaceSource": {"source": str(previous)},
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "--apply"):
+            self.ensure_marketplace(apply=False)
+        self.assertEqual(self.run_calls, [])
+        self.assertFalse(
+            manager.marketplace_staging_root(self.codex_home, current).exists()
+        )
+
+    def test_ensure_marketplace_migrates_previous_managed_staging(self) -> None:
+        current = self.codex_home / "upstreams" / manager.PLUGIN_NAME / ("b" * 40)
+        self.repo_root = current
+        self.source_root = current
+        self.write_source("0.1.3")
+        previous = current.parent / (("a" * 40) + ".marketplace")
+        previous_manifest = previous / ".codex-plugin" / "plugin.json"
+        previous_manifest.parent.mkdir(parents=True)
+        previous_manifest.write_text(
+            json.dumps(
+                {
+                    "name": manager.PLUGIN_NAME,
+                    "version": "0.1.2",
+                    "repository": "https://github.com/GreenLv/codex-context-guard",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(previous),
+            "marketplaceSource": {"source": str(previous)},
+        }
+
+        self.assertTrue(self.ensure_marketplace(apply=True))
+        staging = manager.marketplace_staging_root(self.codex_home, current)
+        self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
+
+    def test_ensure_marketplace_rejects_unrelated_same_identity_checkout(self) -> None:
+        self.write_source("0.1.3")
+        unrelated = self.root / "unrelated" / ("a" * 40)
+        unrelated_manifest = unrelated / ".codex-plugin" / "plugin.json"
+        unrelated_manifest.parent.mkdir(parents=True)
+        unrelated_manifest.write_text(
+            (self.repo_root / ".codex-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(unrelated),
+            "marketplaceSource": {"source": str(unrelated)},
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "points elsewhere"):
+            self.ensure_marketplace(apply=True)
+        self.assertEqual(self.run_calls, [])
 
     def test_ensure_marketplace_dry_run_reports_staging_migration(self) -> None:
         self.write_source("0.1.2")

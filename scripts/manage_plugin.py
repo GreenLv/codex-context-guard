@@ -87,6 +87,37 @@ def marketplace_staging_root(codex_home: Path, repo_root: Path) -> Path:
     )
 
 
+def plugin_repository(root: Path) -> str | None:
+    manifest_path = root / ".codex-plugin" / "plugin.json"
+    try:
+        value = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if value.get("name") != PLUGIN_NAME:
+        return None
+    repository = value.get("repository")
+    return repository if isinstance(repository, str) else None
+
+
+def prior_managed_marketplace_root(
+    value: str | Path, codex_home: Path, repo_root: Path
+) -> bool:
+    """Recognize a previous pinned checkout or its sanitized staging root."""
+    candidate = Path(value).expanduser().resolve()
+    managed_parent = (
+        codex_home.expanduser().resolve() / "upstreams" / PLUGIN_NAME
+    )
+    if candidate.parent != managed_parent or not candidate.is_dir():
+        return False
+    if not re.fullmatch(r"[0-9a-f]{40}(?:\.marketplace)?", candidate.name):
+        return False
+    expected_repository = plugin_repository(repo_root)
+    return bool(
+        expected_repository
+        and plugin_repository(candidate) == expected_repository
+    )
+
+
 def marketplace_staging(codex_home: Path, repo_root: Path) -> Path:
     """Return a sanitized marketplace root for the Codex CLI to clone from.
 
@@ -140,10 +171,20 @@ def ensure_marketplace(
                 )
             print(f"[OK] marketplace {MARKETPLACE} points to {staging}")
             return False
-        if any(same_path(value, repo_root) for value in known):
+        points_at_current_checkout = any(
+            same_path(value, repo_root) for value in known
+        )
+        points_at_prior_managed_root = bool(known) and all(
+            prior_managed_marketplace_root(
+                value, codex_home, repo_root
+            )
+            for value in known
+        )
+        if points_at_current_checkout or points_at_prior_managed_root:
             if not apply:
                 raise RuntimeError(
-                    f"marketplace {MARKETPLACE!r} still points at the Git checkout; "
+                    f"marketplace {MARKETPLACE!r} still points at a Git checkout "
+                    "or prior managed staging root; "
                     "run --apply to repoint it at the sanitized staging root"
                 )
             marketplace_staging(codex_home, repo_root)

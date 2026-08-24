@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.4`
-- Current source line: `0.8.4`
+- Current source line: `0.8.5` (`Unreleased`)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,6 +18,21 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.5 source-candidate status
+
+Version 0.8.5 keeps every runtime, schema, protocol, classifier, and Hook
+contract from 0.8.4. It extends only marketplace migration recognition for
+commit-addressed pinned consumers: a previous checkout or sanitized staging
+root is eligible only when it is a direct child of the managed
+`CODEX_HOME/upstreams/context-guard` directory, has the exact commit/staging
+name shape, and declares the same plugin repository as the current source.
+
+Version 0.8.4 remains the latest published release. Its direct-checkout and
+isolated installation paths pass, but a real pinned downstream 0.8.3-to-0.8.4
+pin raise exposed that the old and new immutable checkout paths differ. The
+0.8.5 candidate fails closed for unrelated roots and preserves read-only
+no-write behavior. Publication and default-home acceptance remain pending.
 
 ## 0.8.4 release status
 

@@ -4,6 +4,23 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.4`; accepted `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.5 source-candidate acceptance (2026-08-25)
+
+The real macOS pinned downstream 0.8.3-to-0.8.4 consumer apply verified the new public
+commit and materialized its immutable checkout, then stopped before marketplace
+or plugin mutation because the existing registration named the previous pinned
+checkout. The installed public plugin therefore remained at 0.8.3 and private
+task data was not changed. This integration failure is distinct from the
+successful isolated 0.8.4 install and from CI.
+
+The 0.8.5 candidate recognizes a previous managed commit checkout and its
+sanitized staging sibling while rejecting same-identity paths outside the
+managed upstream root. Focused manager tests pass for migration, no-write dry
+run, unrelated-root rejection, fresh registration, staging parity, and cleanup.
+Full source gates, isolated lifecycle, exact consumer pin, real default-home
+migration, main/tag CI, tag, and Release remain pending and must be verified
+separately.
+
 ## 0.8.4 release acceptance (2026-08-25)
 
 Version 0.8.4 is an installer and cache-lifecycle patch. It registers the

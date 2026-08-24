@@ -12,6 +12,25 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.8.5 - Unreleased
+
+### Highlights
+
+- Pinned consumers can now migrate from a previous immutable checkout or its sanitized staging root when the new release uses a different commit-addressed directory.
+- Migration remains narrowly bounded to Context Guard roots under the managed `CODEX_HOME/upstreams/context-guard` directory whose manifest repository matches the current product. Same-identity paths elsewhere are still rejected.
+- Read-only checks report the required `--apply` migration without changing marketplace, staging, plugin, cache, archive, or private task data.
+
+### Changes
+
+- Version 0.8.4 introduced sanitized staging but recognized only the current checkout path. A pinned downstream upgrade therefore stopped before marketplace mutation when the existing registration still named the previous pinned commit.
+- The managed-root recognizer accepts both a 40-character lowercase commit directory and its `.marketplace` staging sibling, preventing the same integration failure on later pin raises.
+- Schema 7, all protocol and classifier versions, the eight-Hook wire, and the cache/archive trust model are unchanged.
+
+### Validation
+
+- Focused regressions cover previous pinned checkouts, previous managed staging roots, read-only no-write behavior, unrelated-path rejection, current-checkout migration, fresh registration, staging parity, and temporary-directory cleanup.
+- Full source, privacy, regression, lint, compilation, isolated install/lifecycle, and real pinned-consumer migration evidence remains required before release.
+
 ## 0.8.4 - 2026-08-25
 
 ### Highlights

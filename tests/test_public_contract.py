@@ -177,7 +177,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "Current published Context Guard release: `0.8.4`", compatibility
         )
-        self.assertIn("Current source line: `0.8.4`", compatibility)
+        self.assertIn("Current source line: `0.8.5` (`Unreleased`)", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.3.0`", compatibility)
@@ -189,6 +189,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
+        self.assertIn("`0.8.5` is the unreleased correction", versioning)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",

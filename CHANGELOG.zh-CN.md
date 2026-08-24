@@ -12,6 +12,25 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
+## 0.8.5 - Unreleased
+
+### 重点
+
+- 精确 pin 消费者现在可以从上一个不可变 checkout 或其消毒 staging 根迁移，即使新版本使用了不同的 commit 定址目录。
+- 迁移仍严格限定在受管 `CODEX_HOME/upstreams/context-guard` 目录下，并且 manifest repository 必须与当前产品一致。位于其他目录的同身份路径仍会被拒绝。
+- 只读检查会报告需要执行 `--apply`，但不会修改 marketplace、staging、插件、缓存、归档或私有任务数据。
+
+### 变更
+
+- 0.8.4 引入了消毒 staging，但只识别当前 checkout 路径。因此精确 pin 下游升级时，如果现有注册仍指向上一个 pinned commit，流程会在修改 marketplace 之前停止。
+- 受管根识别器同时接受 40 位小写 commit 目录及其 `.marketplace` staging 同级目录，避免后续 pin 提升重复出现同类集成失败。
+- Schema 7、所有协议与 classifier 版本、八 Hook wire 和缓存/归档信任模型均不变。
+
+### 验证
+
+- 定向回归覆盖旧 pinned checkout、旧受管 staging、只读 no-write、无关路径拒绝、当前 checkout 迁移、新注册、staging 一致性和临时目录清理。
+- 发布前仍需通过完整源码、隐私、回归、lint、编译、隔离安装/生命周期和真实 pinned-consumer 迁移验证。
+
 ## 0.8.4 - 2026-08-25
 
 ### 重点

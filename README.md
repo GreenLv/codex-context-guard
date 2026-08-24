@@ -13,6 +13,8 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Release status: `0.8.4` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+> Source status: `0.8.5` is an unreleased candidate that corrects migration between different commit-addressed managed checkouts. Use the published release unless you are validating this candidate from source.
+
 ## Install
 
 Requirements: Python 3.10 or newer, Codex CLI `0.146.0` or newer as the tested minimum, and a Codex surface that loads plugins and lifecycle Hooks.
