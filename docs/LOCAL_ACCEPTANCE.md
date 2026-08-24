@@ -24,11 +24,26 @@ recovers it before a later managed apply. Read-only diagnosis is no-write;
 embedded Git metadata, symlinks, product drift, and malformed transaction data
 fail closed.
 
-The focused manager suite currently passes 36 tests on macOS with one existing
-Windows-only capability skip. Exact-source full validation, isolated real-CLI
-upgrade evidence, candidate PR CI/HOL, and native Windows candidate acceptance
-are still pending. Version 0.8.7 remains untagged and unreleased by explicit
-workflow gate.
+Candidate commit `285c3905bcf20a1c326761cfe719d02c4dcf06c0` passes the
+public repository/privacy gates, 206 tests with two capability-aware skips,
+eight-Hook self-test, Ruff, external-cache compilation, and diff checks on
+macOS with Python 3.12.2. A disposable Codex CLI 0.149.0 home first installs
+exact 0.8.6 and archives it, then a direct runtime import creates an actual
+339,172-byte historical `.pyc` with SHA-256
+`2ac6feb0e4f6d3dd34bfe0a7392cde7b727c6c45dfbb8027551b8cf5fced0588`
+only in the old live tree.
+
+The managed candidate upgrade preserves that file's path, size, hash, and the
+complete 0.8.6 live-tree all-file SHA-256 snapshot while leaving the 0.8.6
+trusted archive product-only. The transaction bundle is absent after verified
+restoration. A second candidate apply is a strict no-op; normal read-only
+readback and the eight-Hook self-test pass. The installed lifecycle smoke runs
+without an outer bytecode guard and leaves the 0.8.7 live all-file snapshot
+unchanged; 0.8.7 staging/live/archive remain identical and contain no `.git`,
+`__pycache__`, `.pyc`, or `.pyo` residue.
+
+Candidate PR CI/HOL and native Windows candidate acceptance are still pending.
+Version 0.8.7 remains untagged and unreleased by explicit workflow gate.
 
 ## 0.8.6 release acceptance (2026-08-25)
 

@@ -34,10 +34,17 @@ without writing; a later managed apply restores it before inspecting current
 plugin state. Invalid transaction metadata, embedded Git metadata, symlinks,
 or product drift fail closed before `codex plugin add`.
 
-The focused manager suite passes 36 tests on macOS with one existing
-Windows-only skip. Full source validation, isolated real-Codex upgrade,
-candidate PR automation, and native Windows acceptance remain pending. No
-native Windows 0.8.7 result, tag, or GitHub Release is claimed.
+Native macOS source validation passes the repository/privacy gates, 206 tests
+with two capability-aware skips, eight-Hook self-test, Ruff, external-cache
+compilation, and diff checks. A real Codex CLI 0.149.0 isolated upgrade creates
+an actual 339,172-byte `.pyc` in the 0.8.6 live tree, then applies candidate
+commit `285c3905bcf20a1c326761cfe719d02c4dcf06c0`. The old live all-file
+SHA-256 snapshot remains unchanged through upgrade, no-op, read-only readback,
+and the new installed smoke; its trusted archive remains product-only. The new
+staging/live/archive trees match, and the smoke runs without an outer bytecode
+guard without changing the new live snapshot. Candidate PR automation and
+native Windows acceptance remain pending. No native Windows 0.8.7 result, tag,
+or GitHub Release is claimed.
 
 ## 0.8.6 release status
 

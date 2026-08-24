@@ -28,7 +28,8 @@
 
 ### 验证
 
-- macOS 上 manager 定向套件通过 36 项测试，含 1 项既有 Windows-only 能力 skip。完整源码门、真实 CLI 隔离升级、PR CI 和 Windows 原生候选验收仍待完成。
+- macOS 已通过公开仓库/隐私门、206 项测试（含 2 项能力 skip）、八 Hook 自检、Ruff、外部 cache 编译和 diff 检查。真实 Codex CLI 0.149.0 隔离环境从 0.8.6 升级到 0.8.7 时，原样保留了一枚真实的 339,172-byte 历史 `.pyc` 及旧 live tree 的完整 SHA-256 快照，同时旧 trusted archive 继续保持 product-only。
+- 隔离候选还通过第二次 apply 严格 no-op、只读读回、installed self-test、无外层 bytecode guard 的 lifecycle smoke，以及 staging/live/archive parity；新版本中无事务或 bytecode 残留。PR CI 和 Windows 原生候选验收仍待完成。
 - 0.8.7 仍是未发布源码候选。精确候选通过 Windows 原生验收前，不得创建 tag 或 GitHub Release。
 
 ## 0.8.6 - 2026-08-25

@@ -28,7 +28,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- The focused manager suite passes 36 tests on macOS with one existing Windows-only capability skip. Full source, isolated real-CLI upgrade, PR CI, and native Windows candidate acceptance remain pending.
+- The public repository/privacy gates, 206 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks pass on macOS. A real Codex CLI 0.149.0 isolated 0.8.6-to-0.8.7 upgrade preserves an actual 339,172-byte historical `.pyc` and the complete old live-tree SHA-256 snapshot while keeping the old trusted archive product-only.
+- The isolated candidate also passes strict second apply no-op, read-only readback, installed self-test, lifecycle smoke without an outer bytecode guard, and staging/live/archive parity with no transaction or bytecode residue in the new version. PR CI and native Windows candidate acceptance remain pending.
 - Version 0.8.7 remains an unreleased source candidate. No tag or GitHub Release may be created until the exact candidate passes native Windows acceptance.
 
 ## 0.8.6 - 2026-08-25
