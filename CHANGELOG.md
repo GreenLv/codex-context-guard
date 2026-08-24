@@ -12,6 +12,25 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.8.6 - Unreleased
+
+### Highlights
+
+- The installed lifecycle smoke no longer writes `__pycache__` or `.pyc` files into an immutable plugin root when its caller has not set `PYTHONDONTWRITEBYTECODE`.
+- Bytecode suppression is scoped to the smoke process's direct validation import. Hook subprocesses retain their existing no-bytecode environment, and the installed runtime, private data, cache, and archive contracts are otherwise unchanged.
+- Native-platform acceptance can now require both a passing lifecycle smoke and a byte-for-byte clean product root without relying on an outer `python -B` workaround.
+
+### Changes
+
+- The smoke temporarily sets `sys.dont_write_bytecode` only while loading the installed runtime module, then restores the caller's process setting.
+- A focused regression removes the outer `PYTHONDONTWRITEBYTECODE` variable, runs the full installed lifecycle smoke against a disposable plugin root, and rejects any resulting `__pycache__`, `.pyc`, or `.pyo` artifact.
+- Schema 7, all protocol and classifier versions, the eight-Hook wire, marketplace migration, and cache/archive manifests are unchanged.
+
+### Validation
+
+- Native Windows 0.8.5 successfully completed the managed 0.8.3-to-0.8.5 migration, strict no-op, read-only readback, eight-Hook self-test, lifecycle assertions, and manifest parity, but correctly failed final acceptance when the smoke's direct import wrote one `.pyc` into the live cache. It stopped without deleting that artifact or updating downstream state.
+- Candidate source, isolated install, no-bytecode lifecycle, CI, tag, Release, downstream pin, and native Windows rerun remain separate gates.
+
 ## 0.8.5 - 2026-08-25
 
 ### Highlights

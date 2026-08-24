@@ -83,12 +83,17 @@ def option_from_command_context(context: str, option: str) -> str:
 
 
 def load_runtime_module(runtime: Path) -> Any:
-    spec = importlib.util.spec_from_file_location("context_guard_smoke", runtime)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot import {runtime}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec = importlib.util.spec_from_file_location("context_guard_smoke", runtime)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot import {runtime}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.dont_write_bytecode = previous
 
 
 def main() -> int:

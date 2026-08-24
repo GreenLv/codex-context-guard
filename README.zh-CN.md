@@ -13,6 +13,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > 发布状态：`0.8.5` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+> 源码状态：`0.8.6` 是未发布候选版，用于防止 installed lifecycle smoke 向不可变插件根写入 Python bytecode。除非正在从源码验证该候选，请使用已发布版本。
+
 ## 安装
 
 需要 Python 3.10 或更高版本、Codex CLI `0.146.0` 或更高版本作为当前已测试下限，以及能够加载插件和生命周期 Hook 的 Codex 界面。

@@ -12,6 +12,25 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
+## 0.8.6 - Unreleased
+
+### 重点
+
+- 如果调用方没有设置 `PYTHONDONTWRITEBYTECODE`，installed lifecycle smoke 也不会再向不可变插件根写入 `__pycache__` 或 `.pyc` 文件。
+- Bytecode 禁写只覆盖 smoke 主进程的直接验证导入。Hook 子进程继续使用原有禁写环境；已安装 runtime、私有数据、缓存和归档契约均不改变。
+- 原生平台验收现在可以同时要求 lifecycle smoke 通过和产品根字节级干净，不再依赖外层 `python -B` workaround。
+
+### 变更
+
+- Smoke 仅在加载已安装 runtime module 时临时设置 `sys.dont_write_bytecode`，随后恢复调用方的进程设置。
+- 新增定向回归：移除外层 `PYTHONDONTWRITEBYTECODE`，针对一次性插件根运行完整 installed lifecycle smoke，并拒绝任何新生成的 `__pycache__`、`.pyc` 或 `.pyo`。
+- Schema 7、各协议与 classifier 版本、八 Hook wire、marketplace 迁移及缓存/归档 manifest 均不变。
+
+### 验证
+
+- Windows 原生 0.8.5 已成功完成受管 0.8.3 到 0.8.5 迁移、严格 no-op、只读读回、八 Hook 自检、lifecycle assertions 和 manifest parity，但 smoke 直接导入向 live cache 写入一枚 `.pyc`，因此最终验收正确失败；Windows 随即停止，未删除该文件，也未更新下游状态。
+- 候选源码、隔离安装、无 bytecode lifecycle、CI、tag、Release、下游 pin 和 Windows 原生复验仍是相互独立的门。
+
 ## 0.8.5 - 2026-08-25
 
 ### 重点

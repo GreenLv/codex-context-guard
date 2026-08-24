@@ -169,6 +169,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.7.7 - 2026-08-18", changelog)
         self.assertIn("## 0.8.3 - 2026-08-24", changelog)
         self.assertIn("## 0.8.5 - 2026-08-25", changelog)
+        self.assertIn("## 0.8.6 - Unreleased", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -178,7 +179,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "Current published Context Guard release: `0.8.5`", compatibility
         )
-        self.assertIn("Current source line: `0.8.5`", compatibility)
+        self.assertIn("Current source line: `0.8.6` (`Unreleased`)", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.3.0`", compatibility)
@@ -191,6 +192,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)
+        self.assertIn("`0.8.6` corrects the installed lifecycle smoke", versioning)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",

@@ -140,6 +140,12 @@ not as a measure of code volume.
   Context Guard upstream directory with matching product repository identity;
   unrelated roots remain fail-closed. All schema, protocol, classifier, Hook,
   cache immutability, and private-state contracts are unchanged.
+- `0.8.6` corrects the installed lifecycle smoke's direct runtime import. The
+  smoke now suppresses bytecode inside its own process, so an invocation
+  without an outer environment guard cannot write `__pycache__` or `.pyc` into
+  an immutable installed plugin root. Runtime, schema, protocol, classifier,
+  Hook, installer, marketplace, cache/archive, and private-state contracts are
+  unchanged.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

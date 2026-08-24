@@ -4,6 +4,27 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.5`; accepted `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.6 source-candidate acceptance (2026-08-25)
+
+Native Windows applied exact public 0.8.5 from the pinned downstream into the
+real default Codex home. The 0.8.3 checkout registration migrated to sanitized
+0.8.5 staging; the public plugin was installed and enabled; a second apply was
+a strict no-op; read-only readback, the eight-Hook self-test, and lifecycle
+assertions passed; and source, staging, live-cache, and archive product
+manifests each contained the same 13 files and SHA-256 values. The final
+acceptance nevertheless failed because the smoke's direct runtime import wrote
+`scripts/__pycache__/context_guard.cpython-312.pyc` into the 0.8.5 live cache.
+Windows stopped immediately, retained the artifact for diagnosis, and did not
+update downstream state or delete historical checkouts, caches, archives, or
+private task data.
+
+The 0.8.6 candidate disables bytecode writing inside the smoke's direct import
+and restores the prior process setting afterward. Its focused regression
+removes the outer environment guard, runs the full smoke against a disposable
+plugin root, and requires both `SMOKE_PASS` and the absence of `__pycache__`,
+`.pyc`, and `.pyo`. Source gates, isolated install/no-op/parity, publication,
+downstream pinning, and native Windows rerun remain separately pending.
+
 ## 0.8.5 release acceptance (2026-08-25)
 
 The real macOS pinned downstream 0.8.3-to-0.8.4 consumer apply verified the new public

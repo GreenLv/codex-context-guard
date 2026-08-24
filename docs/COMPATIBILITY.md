@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.5`
-- Current source line: `0.8.5`
+- Current source line: `0.8.6` (`Unreleased`)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,6 +18,23 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.6 source-candidate status
+
+Version 0.8.6 changes only the installed lifecycle smoke. Its final validation
+step directly imports the installed runtime with bytecode writing disabled in
+the smoke process itself, so callers do not need an outer
+`PYTHONDONTWRITEBYTECODE=1` or `python -B` guard to keep the immutable plugin
+root clean. The setting is restored after the import.
+
+Native Windows 0.8.5 passed the managed upgrade, no-op, read-only, self-test,
+lifecycle assertions, and manifest-parity gates, then correctly stopped when
+the old smoke wrote one ignored `.pyc` artifact into the live cache. Ignoring
+bytecode in product manifests prevents false source drift; it does not make an
+acceptance tool's live-cache mutation acceptable. Version 0.8.6 adds an
+environment-independent no-bytecode regression. Native Windows 0.8.6 remains
+pending and is not inferred from macOS or CI. All schema, protocol, classifier,
+Hook, installer, marketplace, private-data, and archive contracts are unchanged.
 
 ## 0.8.5 release status
 
