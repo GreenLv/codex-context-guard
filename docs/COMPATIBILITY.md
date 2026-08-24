@@ -32,7 +32,10 @@ Version 0.8.4 remains the latest published release. Its direct-checkout and
 isolated installation paths pass, but a real pinned downstream 0.8.3-to-0.8.4
 pin raise exposed that the old and new immutable checkout paths differ. The
 0.8.5 candidate fails closed for unrelated roots and preserves read-only
-no-write behavior. Publication and default-home acceptance remain pending.
+no-write behavior. An exact-commit isolated consumer migrated from 0.8.3,
+preserved both versioned cache/archive sets, passed installed lifecycle and
+self-test, then completed a strict no-op and normal read-only readback.
+Publication and default-home acceptance remain pending.
 
 ## 0.8.4 release status
 

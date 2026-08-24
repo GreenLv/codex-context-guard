@@ -29,7 +29,8 @@
 ### 验证
 
 - 定向回归覆盖旧 pinned checkout、旧受管 staging、只读 no-write、无关路径拒绝、当前 checkout 迁移、新注册、staging 一致性和临时目录清理。
-- 发布前仍需通过完整源码、隐私、回归、lint、编译、隔离安装/生命周期和真实 pinned-consumer 迁移验证。
+- 公开仓库/隐私门、201 项测试（含 2 项能力相关 skip）、八 Hook 自检、Ruff 和编译均通过。精确 commit 隔离 pinned consumer 已从 0.8.3 迁移到 0.8.5，保留旧缓存/归档，通过 installed lifecycle 和自检，并以严格 no-op 及成功只读读回结束。
+- 真实 default-home 迁移、main/tag CI、注释 tag 和 GitHub Release 仍是分开的待完成发布门。
 
 ## 0.8.4 - 2026-08-25
 

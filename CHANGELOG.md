@@ -29,7 +29,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Validation
 
 - Focused regressions cover previous pinned checkouts, previous managed staging roots, read-only no-write behavior, unrelated-path rejection, current-checkout migration, fresh registration, staging parity, and temporary-directory cleanup.
-- Full source, privacy, regression, lint, compilation, isolated install/lifecycle, and real pinned-consumer migration evidence remains required before release.
+- The public repository/privacy gates, 201 tests with two capability-aware skips, eight-Hook self-test, Ruff, and compilation pass. An exact-commit isolated pinned consumer migrated from 0.8.3 to 0.8.5, preserved the old cache/archive, passed installed lifecycle and self-test, and ended with a strict no-op plus successful read-only readback.
+- Real default-home migration, main/tag CI, the annotated tag, and GitHub Release remain separate pending publication gates.
 
 ## 0.8.4 - 2026-08-25
 

@@ -17,9 +17,22 @@ The 0.8.5 candidate recognizes a previous managed commit checkout and its
 sanitized staging sibling while rejecting same-identity paths outside the
 managed upstream root. Focused manager tests pass for migration, no-write dry
 run, unrelated-root rejection, fresh registration, staging parity, and cleanup.
-Full source gates, isolated lifecycle, exact consumer pin, real default-home
-migration, main/tag CI, tag, and Release remain pending and must be verified
-separately.
+The public repository/privacy gates, 201 tests with two capability-aware skips,
+the eight-Hook self-test, Ruff, and compilation pass on macOS with Python
+3.12.2.
+
+An isolated consumer first installed exact public 0.8.3, then materialized and
+verified exact candidate commit `763d2e5b55c7deef6618562816e08885e0a29956`.
+The upgrade repointed the old checkout registration to the new sanitized
+staging root, installed 0.8.5, repaired the old live cache from its trusted
+archive after the CLI refresh, retained both versioned cache/archive sets, and
+passed source/staging/cache parity, installed lifecycle smoke, and the installed
+eight-Hook self-test. A second apply was a strict no-op; the normal read-only
+consumer path then passed without writes. Staging and live cache carried no
+`.git` metadata or leftover temporary directories.
+
+Real default-home migration, main/tag CI, the annotated tag, and GitHub Release
+remain pending and must be verified separately.
 
 ## 0.8.4 release acceptance (2026-08-25)
 
