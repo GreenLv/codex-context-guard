@@ -97,9 +97,13 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Release status: `0.8.6` is the latest published release.", english
+            "> Release status: `0.8.6` is the latest published release; `0.8.7` is an unreleased source candidate pending native Windows acceptance.",
+            english,
         )
-        self.assertIn("> 发布状态：`0.8.6` 是最近一次已发布版本。", chinese)
+        self.assertIn(
+            "> 发布状态：`0.8.6` 是最近一次已发布版本；`0.8.7` 是等待 Windows 原生验收的未发布源码候选。",
+            chinese,
+        )
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
@@ -170,6 +174,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.8.3 - 2026-08-24", changelog)
         self.assertIn("## 0.8.5 - 2026-08-25", changelog)
         self.assertIn("## 0.8.6 - 2026-08-25", changelog)
+        self.assertIn("## 0.8.7 - Unreleased", changelog)
+        self.assertIn("## 0.8.7 - 未发布", changelog_zh)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -179,7 +185,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "Current published Context Guard release: `0.8.6`", compatibility
         )
-        self.assertIn("Current source line: `0.8.6`", compatibility)
+        self.assertIn("Current source line: `0.8.7` (unreleased candidate)", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.3.0`", compatibility)
@@ -193,6 +199,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)
         self.assertIn("`0.8.6` corrects the installed lifecycle smoke", versioning)
+        self.assertIn("`0.8.7` is an unreleased cache-lifecycle candidate", versioning)
         for stale in (
             "`0.6.1` is an unreleased candidate",
             "`0.6.1` 是未发布候选",

@@ -422,6 +422,100 @@ class SafePluginInstallTests(unittest.TestCase):
             [("plugin", "add", manager.PLUGIN_ID, "--json")],
         )
 
+    def test_upgrade_preserves_historical_non_product_file_exactly(self) -> None:
+        self.write_source("0.1.2", body="old hook\n")
+        old_cache = self.cache_source_as("0.1.2")
+        self.archive_live()
+        artifact = old_cache / "scripts" / "__pycache__" / "context_guard.pyc"
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"historical bytecode evidence\x00\xff")
+        before = manager.full_file_manifest(old_cache)
+        self.state["version"] = "0.1.2"
+        self.write_source("0.1.3", body="new hook\n")
+
+        installed = self.ensure()
+
+        self.assertFalse(installed)
+        self.assertEqual(manager.full_file_manifest(old_cache), before)
+        self.assertEqual(artifact.read_bytes(), b"historical bytecode evidence\x00\xff")
+        self.assertFalse(
+            (
+                self.archive_root
+                / "0.1.2"
+                / "scripts"
+                / "__pycache__"
+                / "context_guard.pyc"
+            ).exists()
+        )
+        self.assertFalse(manager.historical_preservation_root(self.archive_root).exists())
+
+    def test_pending_preservation_is_recovered_before_same_version_apply(self) -> None:
+        self.write_source("0.1.2", body="old hook\n")
+        old_cache = self.cache_source_as("0.1.2")
+        self.archive_live()
+        artifact = old_cache / "scripts" / "__pycache__" / "context_guard.pyc"
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"recover after interruption\n")
+        before = manager.full_file_manifest(old_cache)
+        self.assertEqual(
+            manager.prepare_historical_cache_preservation(
+                self.cache_root, self.archive_root, "0.1.3"
+            ),
+            ["0.1.2"],
+        )
+        shutil.rmtree(self.cache_root)
+        self.write_source("0.1.3", body="new hook\n")
+        self.cache_source_as("0.1.3")
+        self.state["version"] = "0.1.3"
+
+        installed = self.ensure()
+
+        self.assertFalse(installed)
+        self.assertEqual(manager.full_file_manifest(old_cache), before)
+        self.assertEqual(artifact.read_bytes(), b"recover after interruption\n")
+        self.assertFalse(manager.historical_preservation_root(self.archive_root).exists())
+        self.assertEqual(self.run_calls, [])
+
+    def test_read_only_run_preserves_pending_transaction_without_writes(self) -> None:
+        self.write_source("0.1.2")
+        old_cache = self.cache_source_as("0.1.2")
+        self.archive_live()
+        artifact = old_cache / "scripts" / "__pycache__" / "context_guard.pyc"
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"pending transaction\n")
+        before = manager.full_file_manifest(old_cache)
+        manager.prepare_historical_cache_preservation(
+            self.cache_root, self.archive_root, "0.1.3"
+        )
+        self.state["version"] = "0.1.2"
+        self.write_source("0.1.3")
+
+        with self.assertRaisesRegex(RuntimeError, "interrupted historical cache"):
+            self.ensure(apply=False)
+
+        self.assertEqual(manager.full_file_manifest(old_cache), before)
+        self.assertTrue(manager.historical_preservation_root(self.archive_root).is_dir())
+        self.assertEqual(self.run_calls, [])
+
+    def test_upgrade_rejects_symlink_artifact_before_plugin_add(self) -> None:
+        self.write_source("0.1.2")
+        old_cache = self.cache_source_as("0.1.2")
+        self.archive_live()
+        link = old_cache / "scripts" / "__pycache__" / "context_guard.pyc"
+        link.parent.mkdir()
+        try:
+            link.symlink_to(old_cache / "scripts" / "context_guard.py")
+        except OSError as exc:
+            self.skipTest(f"symlink capability unavailable: {exc}")
+        self.state["version"] = "0.1.2"
+        self.write_source("0.1.3")
+
+        with self.assertRaisesRegex(RuntimeError, "unsafe symlink"):
+            self.ensure()
+
+        self.assertEqual(self.run_calls, [])
+        self.assertTrue(link.is_symlink())
+
     def test_upgrade_repairs_old_live_drift_before_archiving(self) -> None:
         self.write_source("0.1.1", body="trusted old hook\n")
         old_cache = self.cache_source_as("0.1.1")
@@ -455,6 +549,11 @@ class SafePluginInstallTests(unittest.TestCase):
     def test_failed_upgrade_still_restores_old_hook_script(self) -> None:
         self.write_source("0.1.2", body="old hook\n")
         old_cache = self.cache_source_as("0.1.2")
+        self.archive_live()
+        artifact = old_cache / "scripts" / "__pycache__" / "context_guard.pyc"
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"survive failed update\n")
+        before = manager.full_file_manifest(old_cache)
         self.state["version"] = "0.1.2"
         self.write_source("0.1.3", body="new hook\n")
 
@@ -476,6 +575,9 @@ class SafePluginInstallTests(unittest.TestCase):
             (old_cache / "scripts" / "context_guard.py").read_text(encoding="utf-8"),
             "old hook\n",
         )
+        self.assertEqual(manager.full_file_manifest(old_cache), before)
+        self.assertEqual(artifact.read_bytes(), b"survive failed update\n")
+        self.assertFalse(manager.historical_preservation_root(self.archive_root).exists())
 
     def test_dry_run_reports_version_mismatch_without_installing(self) -> None:
         self.write_source("0.1.2")

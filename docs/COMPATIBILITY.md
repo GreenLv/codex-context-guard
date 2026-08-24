@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.6`
-- Current source line: `0.8.6`
+- Current source line: `0.8.7` (unreleased candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,6 +18,26 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.7 unreleased candidate status
+
+Version 0.8.7 changes only managed cache-upgrade preservation. Product parity
+continues to ignore bytecode and other non-product files, and trusted archives
+continue to authenticate only product bytes. Before a Codex refresh that may
+replace the complete cache root, the installer separately snapshots any
+all-file difference between an indexed historical live tree and its archive.
+The snapshot is path- and SHA-256-bound, lives outside the replaceable root,
+and is removed only after the same historical live path is restored exactly.
+
+An interrupted snapshot remains recoverable. Read-only inspection reports it
+without writing; a later managed apply restores it before inspecting current
+plugin state. Invalid transaction metadata, embedded Git metadata, symlinks,
+or product drift fail closed before `codex plugin add`.
+
+The focused manager suite passes 36 tests on macOS with one existing
+Windows-only skip. Full source validation, isolated real-Codex upgrade,
+candidate PR automation, and native Windows acceptance remain pending. No
+native Windows 0.8.7 result, tag, or GitHub Release is claimed.
 
 ## 0.8.6 release status
 
@@ -32,9 +52,11 @@ lifecycle assertions, and manifest-parity gates, then correctly stopped when
 the old smoke wrote one ignored `.pyc` artifact into the live cache. Ignoring
 bytecode in product manifests prevents false source drift; it does not make an
 acceptance tool's live-cache mutation acceptable. Version 0.8.6 adds an
-environment-independent no-bytecode regression. Native Windows 0.8.6 remains
-pending and is not inferred from macOS or CI. All schema, protocol, classifier,
-Hook, installer, marketplace, private-data, and archive contracts are unchanged.
+environment-independent no-bytecode regression. Native Windows 0.8.6 later
+failed during managed apply because the Codex refresh replaced the cache root
+and the product-only archive restoration omitted that historical `.pyc`.
+No-op, smoke, and parity were not continued. This is the distinct preservation
+defect addressed by the 0.8.7 candidate; it is not inferred away by macOS or CI.
 
 Native macOS source validation passes the repository/privacy gates, 202 tests
 with two capability-aware skips, the eight-Hook self-test, Ruff, compilation,

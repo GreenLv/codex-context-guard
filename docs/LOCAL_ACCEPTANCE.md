@@ -4,6 +4,32 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.6`; accepted `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.7 unreleased candidate acceptance (2026-08-25)
+
+Native Windows 0.8.6 stopped after the managed apply created the new checkout,
+staging, live cache, and archive but deleted the retained historical 0.8.5
+`scripts/__pycache__/context_guard.cpython-312.pyc`. Before apply the file was
+338,639 bytes with SHA-256
+`323bf8d6fd31f9ae979ec6c5b02d33195a29d5ce985a0bf7c132d19e5262e033`;
+after apply it was absent from both the historical live tree and archive. The
+Windows operator performed no later no-op, smoke, parity, state, commit, push,
+or CI step and retained the resulting 0.8.6 directories for diagnosis.
+
+The 0.8.7 source candidate separates product trust from historical all-file
+preservation. Before `codex plugin add`, any indexed historical live tree that
+differs from its archive receives an external transaction copy and SHA-256
+manifest. The installer restores and verifies that exact live tree after the
+Codex cache-root refresh, retains the transaction on incomplete recovery, and
+recovers it before a later managed apply. Read-only diagnosis is no-write;
+embedded Git metadata, symlinks, product drift, and malformed transaction data
+fail closed.
+
+The focused manager suite currently passes 36 tests on macOS with one existing
+Windows-only capability skip. Exact-source full validation, isolated real-CLI
+upgrade evidence, candidate PR CI/HOL, and native Windows candidate acceptance
+are still pending. Version 0.8.7 remains untagged and unreleased by explicit
+workflow gate.
+
 ## 0.8.6 release acceptance (2026-08-25)
 
 Native Windows applied exact public 0.8.5 from the pinned downstream into the
@@ -32,7 +58,10 @@ strict second no-op. With the outer bytecode environment variable explicitly
 removed, its full installed smoke passes without changing an all-file live-cache
 SHA-256 snapshot or leaving `.git`, `__pycache__`, `.pyc`, or `.pyo` anywhere in
 the staging/live/archive roots. Main/tag CI, tag, Release, downstream pinning,
-and native Windows 0.8.6 rerun remain separate evidence surfaces.
+and native Windows 0.8.6 rerun remain separate evidence surfaces. That Windows
+rerun later failed at historical-file protection during managed apply, as
+recorded in the 0.8.7 candidate section above; it did not reach no-op, smoke,
+or parity verification.
 
 ## 0.8.5 release acceptance (2026-08-25)
 

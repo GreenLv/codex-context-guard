@@ -12,6 +12,25 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.8.7 - Unreleased
+
+### Highlights
+
+- A plugin upgrade now preserves historical live-cache files that are outside the trusted product manifest, including lifecycle-generated `.pyc` evidence, even when Codex replaces the entire plugin cache root.
+- Product archives remain product-only trust authorities. Historical non-product differences are carried through a separate SHA-256-bound transaction and restored to the same versioned live path without entering the trusted archive.
+- An interrupted transaction fails closed on read-only inspection and is recovered before the next managed `--apply`. Invalid manifests, embedded Git metadata, and symlinks are rejected before the destructive plugin refresh.
+
+### Changes
+
+- Before `codex plugin add`, the installer compares each indexed historical live tree with its archive using an all-file manifest. Only differing historical trees receive a transaction backup.
+- After Codex refreshes the cache root, the installer restores and verifies the exact historical file trees, retains the backup if verification cannot complete, and removes it only after successful restoration.
+- Focused regressions cover exact bytecode preservation, failed upgrades, interrupted recovery, read-only no-write behavior, and symlink rejection. Schema 7, the eight-Hook wire, runtime behavior, private data, and product archive hashes are unchanged.
+
+### Validation
+
+- The focused manager suite passes 36 tests on macOS with one existing Windows-only capability skip. Full source, isolated real-CLI upgrade, PR CI, and native Windows candidate acceptance remain pending.
+- Version 0.8.7 remains an unreleased source candidate. No tag or GitHub Release may be created until the exact candidate passes native Windows acceptance.
+
 ## 0.8.6 - 2026-08-25
 
 ### Highlights
@@ -30,7 +49,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Native Windows 0.8.5 successfully completed the managed 0.8.3-to-0.8.5 migration, strict no-op, read-only readback, eight-Hook self-test, lifecycle assertions, and manifest parity, but correctly failed final acceptance when the smoke's direct import wrote one `.pyc` into the live cache. It stopped without deleting that artifact or updating downstream state.
 - The public repository/privacy gates, 202 tests with two capability-aware skips, eight-Hook self-test, Ruff, compilation, and an exact-candidate isolated 0.8.6 install pass on macOS. Its second apply is a strict no-op; a full smoke without the outer bytecode environment guard leaves an all-file SHA-256 snapshot unchanged; and source, staging, live cache, and archive remain byte-identical with no Git or bytecode residue.
-- Main/tag CI, the annotated tag, GitHub Release, downstream pin, and native Windows 0.8.6 rerun are separate acceptance surfaces and do not substitute for the local source and isolated-install evidence above.
+- Main/tag CI, the annotated tag, GitHub Release, and downstream pin passed as separate surfaces. Native Windows 0.8.6 later failed before no-op and lifecycle verification because the managed upgrade replaced the cache root and restored only trusted product files, silently dropping the retained 0.8.5 `.pyc` evidence. Version 0.8.7 addresses that separate historical-file preservation defect.
 
 ## 0.8.5 - 2026-08-25
 

@@ -26,6 +26,12 @@ IGNORED_TREE_NAMES = {".DS_Store", ".git", "Thumbs.db", "__pycache__"}
 PLUGIN_TREE_ROOTS: set[str] | None = {".codex-plugin", "assets", "hooks", "scripts", "skills"}
 ARCHIVE_INDEX_NAME = "archive-index.json"
 ARCHIVE_SCHEMA_VERSION = 1
+PRESERVATION_ROOT_NAME = ".historical-cache-preservation"
+PRESERVATION_INDEX_NAME = "preservation-index.json"
+PRESERVATION_SCHEMA_VERSION = 1
+SEMVER_RE = re.compile(
+    r"(?:0|[1-9]\d*)(?:\.(?:0|[1-9]\d*)){2}(?:[-+][0-9A-Za-z.-]+)?"
+)
 
 
 def run(codex: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -353,6 +359,25 @@ def tree_manifest(root: Path) -> dict[str, str]:
     return manifest
 
 
+def full_file_manifest(root: Path) -> dict[str, str]:
+    """Hash every regular file in a cache tree and reject unsafe entries."""
+    if not root.is_dir():
+        return {}
+    manifest: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if any(part == ".git" for part in relative.parts):
+            raise RuntimeError(f"embedded Git metadata in cache tree: {path}")
+        if path.is_symlink():
+            raise RuntimeError(f"unsafe symlink in cache tree: {path}")
+        if path.is_dir():
+            continue
+        if not path.is_file():
+            raise RuntimeError(f"unsupported entry in cache tree: {path}")
+        manifest[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return manifest
+
+
 def tree_difference(
     source_root: Path, cache_root: Path, *, allow_cache_extras: bool = False
 ) -> list[str]:
@@ -498,6 +523,133 @@ def _write_archive_index(
             "versions": dict(sorted(versions.items())),
         },
     )
+
+
+def historical_preservation_root(archive_root: Path) -> Path:
+    """Keep recovery data outside the Codex-owned live-cache hierarchy."""
+    return archive_root.parent / PRESERVATION_ROOT_NAME
+
+
+def _load_preservation_index(root: Path) -> dict[str, dict[str, str]]:
+    index_path = root / PRESERVATION_INDEX_NAME
+    try:
+        value = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"historical cache preservation index is unreadable: {index_path}"
+        ) from exc
+    versions = value.get("versions") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != PRESERVATION_SCHEMA_VERSION
+        or not isinstance(versions, dict)
+        or not versions
+    ):
+        raise RuntimeError("historical cache preservation index is invalid")
+    for version, manifest in versions.items():
+        if (
+            not isinstance(version, str)
+            or not SEMVER_RE.fullmatch(version)
+            or not isinstance(manifest, dict)
+            or not manifest
+        ):
+            raise RuntimeError("historical cache preservation entry is invalid")
+        if any(
+            not isinstance(name, str)
+            or Path(name).is_absolute()
+            or ".." in Path(name).parts
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for name, digest in manifest.items()
+        ):
+            raise RuntimeError(
+                f"historical cache preservation hashes are invalid for {version}"
+            )
+    return versions
+
+
+def prepare_historical_cache_preservation(
+    cache_root: Path, archive_root: Path, desired_version: str
+) -> list[str]:
+    """Preserve non-product live differences before Codex replaces the cache root."""
+    preservation = historical_preservation_root(archive_root)
+    if preservation.exists():
+        raise RuntimeError(
+            "historical cache preservation transaction is already pending"
+        )
+    trusted = _archive_index(archive_root)
+    candidates: list[tuple[str, Path, dict[str, str]]] = []
+    for version in sorted(trusted):
+        if version == desired_version:
+            continue
+        live = cache_root / version
+        archived = archive_root / version
+        live_manifest = full_file_manifest(live)
+        archived_manifest = full_file_manifest(archived)
+        if live_manifest != archived_manifest:
+            if tree_manifest(live) != trusted[version]:
+                raise RuntimeError(
+                    f"historical live cache {version} has untrusted product drift"
+                )
+            candidates.append((version, live, live_manifest))
+    if not candidates:
+        return []
+
+    preservation.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(
+        tempfile.mkdtemp(
+            prefix=f".{PRESERVATION_ROOT_NAME}.staged-",
+            dir=preservation.parent,
+        )
+    )
+    try:
+        versions_root = temporary / "versions"
+        manifests: dict[str, dict[str, str]] = {}
+        for version, live, manifest in candidates:
+            target = versions_root / version
+            shutil.copytree(live, target)
+            if full_file_manifest(target) != manifest:
+                raise RuntimeError(
+                    f"historical live cache {version} could not be preserved"
+                )
+            manifests[version] = manifest
+        _atomic_json(
+            temporary / PRESERVATION_INDEX_NAME,
+            {
+                "schema_version": PRESERVATION_SCHEMA_VERSION,
+                "versions": manifests,
+            },
+        )
+        os.replace(temporary, preservation)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+    return [version for version, _, _ in candidates]
+
+
+def restore_historical_cache_preservation(
+    cache_root: Path, archive_root: Path
+) -> list[str]:
+    """Restore and verify a completed preservation transaction."""
+    preservation = historical_preservation_root(archive_root)
+    if not preservation.exists():
+        return []
+    versions = _load_preservation_index(preservation)
+    versions_root = preservation / "versions"
+    for version, expected in sorted(versions.items()):
+        preserved = versions_root / version
+        if full_file_manifest(preserved) != expected:
+            raise RuntimeError(
+                f"historical cache preservation failed verification for {version}"
+            )
+    for version, expected in sorted(versions.items()):
+        _replace_tree_atomically(versions_root / version, cache_root / version)
+        if full_file_manifest(cache_root / version) != expected:
+            raise RuntimeError(
+                f"historical live cache {version} could not be restored"
+            )
+    shutil.rmtree(preservation)
+    return sorted(versions)
 
 
 def _replace_tree_atomically(source_root: Path, target_root: Path) -> None:
@@ -708,6 +860,23 @@ def ensure_plugin(
     entry = plugin_entry(codex)
     was_installed = entry is not None
 
+    preservation = historical_preservation_root(archive_root)
+    if preservation.exists():
+        if not apply:
+            raise RuntimeError(
+                "an interrupted historical cache preservation transaction is pending; "
+                "run with --apply to restore it before continuing"
+            )
+        with cache_install_lock(cache_root):
+            restored = restore_historical_cache_preservation(cache_root, archive_root)
+        if restored:
+            print(
+                "[OK] recovered interrupted historical cache preservation: "
+                + ", ".join(restored)
+            )
+        entry = plugin_entry(codex)
+        was_installed = entry is not None
+
     if (
         entry is not None
         and entry.get("version") == desired_version
@@ -830,23 +999,32 @@ def ensure_plugin(
                 allow_unarchived=unarchived_live,
             )
             archived = archive_live_versions(cache_root, archive_root)
-            try:
-                run(codex, "plugin", "add", PLUGIN_ID, "--json")
-            except BaseException:
-                audit_cache_archive(cache_root, archive_root, repair=True)
-                raise
-            sanitized = sanitize_untrusted_current_cache(
+            preserved = prepare_historical_cache_preservation(
                 cache_root, archive_root, desired_version
             )
-            repaired.extend(
-                audit_cache_archive(
-                    cache_root,
-                    archive_root,
-                    repair=True,
-                    allow_unarchived={desired_version},
+            try:
+                run(codex, "plugin", "add", PLUGIN_ID, "--json")
+                sanitized = sanitize_untrusted_current_cache(
+                    cache_root, archive_root, desired_version
                 )
-            )
-            archived.extend(archive_live_versions(cache_root, archive_root))
+                repaired.extend(
+                    audit_cache_archive(
+                        cache_root,
+                        archive_root,
+                        repair=True,
+                        allow_unarchived={desired_version},
+                    )
+                )
+                archived.extend(archive_live_versions(cache_root, archive_root))
+                audit_cache_archive(cache_root, archive_root, repair=False)
+            finally:
+                restored = restore_historical_cache_preservation(
+                    cache_root, archive_root
+                )
+            if restored != preserved:
+                raise RuntimeError(
+                    "historical cache preservation restored an unexpected version set"
+                )
             audit_cache_archive(cache_root, archive_root, repair=False)
             if archived:
                 print(
@@ -860,6 +1038,11 @@ def ensure_plugin(
                 )
             if sanitized:
                 print("[OK] removed untrusted embedded Git metadata")
+            if restored:
+                print(
+                    "[OK] preserved historical live cache file tree(s): "
+                    + ", ".join(restored)
+                )
         entry = plugin_entry(codex)
 
     if entry is None:

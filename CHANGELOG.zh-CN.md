@@ -12,6 +12,25 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
+## 0.8.7 - 未发布
+
+### 重点
+
+- 插件升级现在会保留 trusted product manifest 之外的历史 live-cache 文件，包括 lifecycle 生成并留作证据的 `.pyc`；即使 Codex 整体替换插件 cache root，也不会静默丢失这些文件。
+- 产品 archive 仍然只作为产品文件的信任来源。历史非产品差异通过独立的 SHA-256 绑定事务跨升级保全，恢复到同一版本 live 路径，但不会进入 trusted archive。
+- 事务中断后，只读检查会 fail-closed；下一次受管 `--apply` 会先恢复历史文件。Manifest 无效、内嵌 Git 元数据或 symlink 都会在破坏性刷新前被拒绝。
+
+### 变更
+
+- 执行 `codex plugin add` 前，installer 通过全文件 manifest 比较每个已索引历史 live tree 与 archive，只为确有差异的历史版本建立事务备份。
+- Codex 刷新 cache root 后，installer 恢复并验证历史全文件树；验证无法完成时保留备份，仅在精确恢复成功后删除事务目录。
+- 定向回归覆盖 bytecode 原样保留、升级失败、中断恢复、只读 no-write 和 symlink 拒绝。Schema 7、八 Hook wire、runtime 行为、私有数据和产品 archive 哈希均不改变。
+
+### 验证
+
+- macOS 上 manager 定向套件通过 36 项测试，含 1 项既有 Windows-only 能力 skip。完整源码门、真实 CLI 隔离升级、PR CI 和 Windows 原生候选验收仍待完成。
+- 0.8.7 仍是未发布源码候选。精确候选通过 Windows 原生验收前，不得创建 tag 或 GitHub Release。
+
 ## 0.8.6 - 2026-08-25
 
 ### 重点
@@ -30,7 +49,7 @@
 
 - Windows 原生 0.8.5 已成功完成受管 0.8.3 到 0.8.5 迁移、严格 no-op、只读读回、八 Hook 自检、lifecycle assertions 和 manifest parity，但 smoke 直接导入向 live cache 写入一枚 `.pyc`，因此最终验收正确失败；Windows 随即停止，未删除该文件，也未更新下游状态。
 - macOS 已通过公开仓库/隐私门、202 项测试（含 2 项能力相关 skip）、八 Hook 自检、Ruff、编译和精确候选 0.8.6 隔离安装。第二次 apply 是严格 no-op；移除外层 bytecode 环境保护后，完整 smoke 不改变全文件 SHA-256 快照；source、staging、live cache 和 archive 保持字节一致，且无 Git 或 bytecode 残留。
-- Main/tag CI、注释 tag、GitHub Release、下游 pin 和 Windows 原生 0.8.6 复验是相互独立的验收面，不能替代上述本地源码与隔离安装证据。
+- Main/tag CI、注释 tag、GitHub Release 和下游 pin 已分别通过。随后 Windows 原生 0.8.6 在 no-op 与 lifecycle 验证前失败：受管升级整体替换 cache root，只恢复 trusted product files，导致保留作证据的 0.8.5 `.pyc` 被静默丢弃。0.8.7 修复的是这一独立的历史文件保全缺陷。
 
 ## 0.8.5 - 2026-08-25
 

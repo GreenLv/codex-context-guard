@@ -308,6 +308,18 @@ Read-only runs audit only; `--apply` repairs a live cache only from a valid
 archive. Missing or corrupt archive evidence fails closed, and no archive is
 auto-pruned.
 
+Product manifests intentionally exclude runtime artifacts such as
+`__pycache__` and `.pyc`, but that exclusion does not authorize their deletion.
+Before a destructive Codex cache refresh, the 0.8.7 installer compares every
+indexed historical live tree with its trusted archive using a separate all-file
+SHA-256 view. A differing historical tree is copied into a transaction bundle
+outside the replaceable cache root. After refresh, the exact live tree is
+restored and verified; the bundle is removed only after success. A pending
+bundle is read-only evidence of an interrupted transaction: non-apply diagnosis
+fails without writing, while the next managed `--apply` restores it first.
+The bundle never becomes archive trust authority, and embedded Git metadata,
+symlinks, malformed paths, or invalid hashes fail closed.
+
 ## Exports and successor packs
 
 `export` produces a redacted project-bounded handoff. `rollover` additionally
