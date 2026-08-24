@@ -116,6 +116,13 @@ class PublicContractTests(unittest.TestCase):
         )
         self.assertIn("Write for adopters, not as a commit transcript.", agents)
         self.assertIn("Derive the GitHub Release body", agents)
+        self.assertIn(
+            "the English section links only the\n  English changelog", agents
+        )
+        self.assertIn(
+            "the Simplified Chinese section links only the Chinese\n  changelog",
+            agents,
+        )
         self.assertIn("Create and push an annotated `vX.Y.Z` tag", agents)
         self.assertIn("[简体中文](CHANGELOG.zh-CN.md)", changelog)
         self.assertIn("[English](CHANGELOG.md)", changelog_zh)

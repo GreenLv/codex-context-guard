@@ -110,6 +110,9 @@ authoritative.
   with the same outcome-focused highlights, include only material upgrade or
   compatibility notes, and end with a link to the full changelog. Do not use an
   automatically generated raw commit list as the primary release narrative.
+- In the bilingual GitHub Release body, the English section links only the
+  English changelog and the Simplified Chinese section links only the Chinese
+  changelog. Do not repeat the same two-language link pair after both sections.
 
 ## Validation matrix
 
