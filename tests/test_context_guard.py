@@ -72,6 +72,69 @@ class ContextGuardTests(unittest.TestCase):
         path = self.root / "private" / "sessions" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def execution_manifest(self, plan_sha256: str | None = None) -> dict:
+        sources = [
+            {
+                "id": "source-skill",
+                "kind": "skill_contract",
+                "origin_id": "skill-publisher",
+                "revision": 1,
+                "sha256": "1" * 64,
+            }
+        ]
+        if plan_sha256 is not None:
+            sources.append(
+                {
+                    "id": "source-plan",
+                    "kind": "plan_snapshot",
+                    "origin_id": "codex-plan",
+                    "revision": 1,
+                    "sha256": plan_sha256,
+                }
+            )
+        return {
+            "protocol_version": cg.EXECUTION_PROTOCOL_VERSION,
+            "contract_id": "contract-phase3",
+            "revision": 1,
+            "instruction_sources": sources,
+            "phases": [
+                {"id": "phase-write", "depends_on": []},
+                {"id": "phase-readback", "depends_on": ["phase-write"]},
+            ],
+            "gates": [{"id": "gate-authorization", "depends_on": []}],
+            "authorization_candidates": [
+                {
+                    "id": "candidate-deterministic",
+                    "prompt_id": "P0001",
+                    "prompt_sha256": "2" * 64,
+                    "semantic_action_id": "publish",
+                    "canonical_target_id": "target-test",
+                    "write_surface_id": "external-api",
+                    "binding": "deterministic",
+                },
+                {
+                    "id": "candidate-natural",
+                    "prompt_id": "P0001",
+                    "prompt_sha256": "3" * 64,
+                    "semantic_action_id": "publish",
+                    "canonical_target_id": "target-heuristic",
+                    "write_surface_id": "external-api",
+                    "binding": "natural_language",
+                },
+            ],
+            "coverage_manifest": {
+                "host_lock": None,
+                "adapters": [],
+                "uncovered_write_surfaces": [
+                    {"id": "surface-ui", "reason_code": "no-native-hook", "status": "uncovered"}
+                ],
+                "unclassified_high_risk_policy": "deny_when_active",
+                "non_active_contract_policy": "completion_only",
+                "stale_conflicted_policy": "deny_covered_high_risk",
+                "pre_tool_output_policy": "allow_deny_only",
+            },
+        }
+
     def prompt(self, text: str, session: str = "session-a") -> dict:
         self.turn_index += 1
         self.current_turn = f"turn-{self.turn_index}"
@@ -1094,6 +1157,57 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result["decision"], "block")
         self.assertIn("private checkpoint metadata", result["reason"])
         self.assertIsNone(self.state()["completion_checkpoint"])
+
+    def test_stop_privacy_classifier_separates_explanation_control_and_ambiguity(
+        self,
+    ) -> None:
+        explanatory = (
+            "文档只说明 `checkpoint-status`、STAGE-CHECKPOINT 和 register-proof；"
+            "另见 /tmp/stage-checkpoint.log、https://example.test/checkpoint-status "
+            "与 tests/stage-checkpoint-fixture.json；CONTEXT_GUARD_DATA_DIR "
+            "只是变量名称。"
+        )
+        self.assertEqual(
+            cg.classify_private_metadata(explanatory),
+            ("explanatory_reference", ["bare_control_reference"]),
+        )
+        sensitive_cases = (
+            "stage-checkpoint --requirement R001=E0001",
+            "`checkpoint-status`：--token redacted-token",
+            "The private argument was --token redacted-token.",
+            "CONTEXT_GUARD_DATA_DIR=/private/example checkpoint-status",
+            '{"token":"redacted"}',
+            '{"command":"stage-checkpoint","token":"redacted","turn_id":"turn-a"}',
+        )
+        for text in sensitive_cases:
+            with self.subTest(text=text):
+                category, reasons = cg.classify_private_metadata(text)
+                self.assertEqual(category, "sensitive_control")
+                self.assertTrue(reasons)
+        category, reasons = cg.classify_private_metadata(
+            "The fragment ends with stage-disposition --disposition"
+        )
+        self.assertEqual(category, "ambiguous_control_fragment")
+        self.assertEqual(reasons, ["incomplete_control_invocation"])
+
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        self.stage_all(evidence_id)
+        result = cg.dispatch(
+            self.payload(
+                "Stop",
+                last_assistant_message=(
+                    "任务已经完成。故障说明仅提到 checkpoint-status 与 "
+                    "stage-checkpoint 两个命令名称。"
+                ),
+            )
+        )
+        self.assertEqual(result, {})
+        self.assertTrue(
+            all(item["status"] == "pass" for item in self.state()["requirements"])
+        )
 
     def test_failed_or_unknown_evidence_cannot_be_staged(self) -> None:
         self.prompt(
@@ -2252,7 +2366,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 6)
+        self.assertEqual(cg.SCHEMA_VERSION, 7)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
@@ -2341,7 +2455,7 @@ class ContextGuardTests(unittest.TestCase):
             migrated["completion_attempt"].get("staged_control")
         )
 
-    def test_v4_state_integrity_migrates_to_schema6_and_invalidates_control(
+    def test_v4_state_integrity_migrates_to_schema7_and_invalidates_control(
         self,
     ) -> None:
         self.prompt(
@@ -2365,7 +2479,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
@@ -2387,7 +2501,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertIsNone(current["completion_attempt"]["staged_control"])
 
-    def test_schema5_migrates_to_schema6_and_invalidates_only_inflight_control(
+    def test_schema5_migrates_to_schema7_and_invalidates_only_inflight_control(
         self,
     ) -> None:
         self.prompt(
@@ -2409,7 +2523,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["evidence"][-1]["id"], evidence_id)
@@ -2423,6 +2537,547 @@ class ContextGuardTests(unittest.TestCase):
             cg.STOP_PROTOCOL_VERSION,
         )
         self.assertIsNone(current["completion_attempt"]["staged_control"])
+
+    def test_schema6_migrates_losslessly_to_dormant_schema7(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        current = self.state()
+        schema6 = cg.project_state_to_schema6(current)
+        original_requirements = json.loads(json.dumps(schema6["requirements"]))
+        original_evidence = json.loads(json.dumps(schema6["evidence"]))
+        original_assets = json.loads(json.dumps(schema6["assets"]))
+        original_proofs = json.loads(json.dumps(schema6["proofs"]))
+        cg.atomic_write_json(session_dir / "state.json", schema6)
+
+        migrated = cg.load_state(
+            session_dir,
+            self.payload("SessionStart", source="resume"),
+        )
+
+        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["requirements"], original_requirements)
+        self.assertEqual(migrated["evidence"], original_evidence)
+        self.assertEqual(migrated["assets"], original_assets)
+        self.assertEqual(migrated["proofs"], original_proofs)
+        self.assertEqual(migrated["evidence"][-1]["id"], evidence_id)
+        self.assertTrue(cg.execution_state_is_dormant(migrated["execution"]))
+        self.assertIsNone(migrated["completion_attempt"])
+
+    def test_schema7_dormant_projection_round_trips_to_schema6(self) -> None:
+        self.prompt("实现复杂系统并测试。")
+        current = self.state()
+
+        projected = cg.project_state_to_schema6(current)
+
+        self.assertEqual(projected["schema_version"], 6)
+        self.assertNotIn("execution", projected)
+        cg.validate_state_integrity(projected)
+        self.assertEqual(projected["requirements"], current["requirements"])
+        self.assertEqual(projected["evidence"], current["evidence"])
+        self.assertEqual(projected["assets"], current["assets"])
+        self.assertEqual(projected["proofs"], current["proofs"])
+
+    def test_execution_contract_and_phase_transitions_are_bounded(self) -> None:
+        execution = cg.dormant_execution_state()
+
+        cg.transition_execution_contract(
+            execution,
+            "candidate",
+            revision=1,
+            contract_id="contract-1",
+        )
+        execution["contract"]["phases"].append(
+            {
+                "id": "phase-1",
+                "state": "pending",
+                "depends_on": [],
+                "evidence_ids": [],
+                "resolution_sha256": None,
+            }
+        )
+        execution["contract"]["canonical_sha256"] = cg.contract_content_hash(
+            execution["contract"]
+        )
+        cg.transition_execution_phase(execution, "phases", "phase-1", "passed")
+        adoption = {
+            "prompt_id": "P0001",
+            "prompt_sha256": "a" * 64,
+            "contract_sha256": execution["contract"]["canonical_sha256"],
+            "revision": 1,
+            "adopted_at": "2026-08-24T00:00:00Z",
+        }
+        cg.transition_execution_contract(execution, "active", adoption=adoption)
+
+        self.assertEqual(execution["contract"]["state"], "active")
+        self.assertEqual(execution["contract"]["phases"][0]["state"], "passed")
+        cg.validate_execution_state(execution)
+        with self.assertRaisesRegex(ValueError, "active -> candidate"):
+            cg.transition_execution_contract(execution, "candidate", revision=2, contract_id="contract-2")
+        with self.assertRaisesRegex(ValueError, "passed -> pending"):
+            cg.transition_execution_phase(execution, "phases", "phase-1", "pending")
+        cg.transition_execution_phase(execution, "phases", "phase-1", "stale")
+        with self.assertRaises(cg.StateIntegrityError):
+            cg.transition_execution_phase(execution, "phases", "phase-1", "pending")
+        cg.transition_execution_phase(
+            execution,
+            "phases",
+            "phase-1",
+            "pending",
+            resolution_sha256="c" * 64,
+        )
+
+    def test_execution_state_rejects_raw_paths_text_and_oversize_values(self) -> None:
+        cases: list[dict] = []
+        raw_text = cg.dormant_execution_state()
+        raw_text["coverage_manifest"]["content"] = "copied Skill body"
+        cases.append(raw_text)
+        raw_path = cg.dormant_execution_state()
+        raw_path["coverage_manifest"]["uncovered_write_surfaces"] = [
+            {"id": "surface-1", "reason_code": "/workspace/private/target", "status": "uncovered"}
+        ]
+        cases.append(raw_path)
+        oversized = cg.dormant_execution_state()
+        oversized["coverage_manifest"]["uncovered_write_surfaces"] = [
+            {"id": "surface-1", "reason_code": "x" * 513, "status": "uncovered"}
+        ]
+        cases.append(oversized)
+        deep = cg.dormant_execution_state()
+        nested: dict[str, object] = {}
+        cursor = nested
+        for index in range(10):
+            child: dict[str, object] = {}
+            cursor[f"level_{index}"] = child
+            cursor = child
+        deep["coverage_manifest"]["host_lock"] = nested
+        cases.append(deep)
+
+        for case in cases:
+            with self.subTest(case=cases.index(case)):
+                with self.assertRaises(cg.StateIntegrityError):
+                    cg.validate_execution_state(case)
+
+    def test_execution_state_rejects_duplicate_ticket_namespace_and_lossy_rollback(self) -> None:
+        self.prompt("实现复杂系统并测试。")
+        state = self.state()
+        execution = state["execution"]
+        cg.transition_execution_contract(
+            execution,
+            "candidate",
+            revision=1,
+            contract_id="contract-1",
+        )
+        ticket = {
+            "id": "ticket-1",
+            "session_id": "session-a",
+            "turn_id": "turn-1",
+            "actor_id": "root",
+            "tool_use_id": "tool-1",
+            "contract_revision": 1,
+            "semantic_action_id": "write-file",
+            "canonical_target_id": "target-1",
+            "write_surface_id": "workspace",
+            "input_sha256": "b" * 64,
+            "state": "reserved",
+            "reserved_at": "2026-08-24T00:00:00Z",
+            "expires_at": "2026-08-24T00:01:00Z",
+            "settled_at": None,
+        }
+        execution["action_tickets"] = [ticket, {**ticket, "id": "ticket-2"}]
+        execution["contract"]["canonical_sha256"] = cg.contract_content_hash(
+            execution["contract"]
+        )
+
+        with self.assertRaisesRegex(cg.StateIntegrityError, "ticket identity"):
+            cg.validate_execution_state(execution)
+        execution["action_tickets"] = []
+        state["content_hash"] = cg.state_content_hash(state)
+        with self.assertRaisesRegex(ValueError, "non-dormant"):
+            cg.project_state_to_schema6(state)
+
+    def test_execution_ticket_expiry_is_unsettled_and_terminal(self) -> None:
+        execution = cg.dormant_execution_state()
+        cg.transition_execution_contract(
+            execution,
+            "candidate",
+            revision=1,
+            contract_id="contract-1",
+        )
+        execution["action_tickets"] = [
+            {
+                "id": "ticket-1",
+                "session_id": "session-a",
+                "turn_id": "turn-1",
+                "actor_id": "root",
+                "tool_use_id": "tool-1",
+                "contract_revision": 1,
+                "semantic_action_id": "write-file",
+                "canonical_target_id": "target-1",
+                "write_surface_id": "workspace",
+                "input_sha256": "b" * 64,
+                "state": "reserved",
+                "reserved_at": "2026-08-24T00:00:00Z",
+                "expires_at": "2026-08-24T00:01:00Z",
+                "settled_at": None,
+            }
+        ]
+
+        expired = cg.expire_execution_tickets(
+            execution,
+            observed_at="2026-08-24T00:02:00Z",
+        )
+
+        self.assertEqual(expired, ["ticket-1"])
+        self.assertEqual(execution["action_tickets"][0]["state"], "expired_unsettled")
+        with self.assertRaisesRegex(ValueError, "expired_unsettled -> consumed"):
+            cg.transition_execution_ticket(
+                execution,
+                "ticket-1",
+                "consumed",
+                settled_at="2026-08-24T00:03:00Z",
+            )
+
+    def test_phase2_pre_tool_output_schema_rejects_ask_and_updated_input(self) -> None:
+        allow = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+            }
+        }
+        deny = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "contract gate blocked",
+            }
+        }
+        cg.validate_pre_tool_decision(allow)
+        cg.validate_pre_tool_decision(deny)
+
+        invalid = [
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                }
+            },
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": {"command": "changed"},
+                }
+            },
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "blocked",
+                    "updatedInput": {},
+                }
+            },
+        ]
+        for decision in invalid:
+            with self.subTest(decision=decision):
+                with self.assertRaises(ValueError):
+                    cg.validate_pre_tool_decision(decision)
+
+    def test_schema7_normal_lifecycle_creates_no_execution_ticket(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        evidence_id = self.record_tool()
+        state = self.state()
+
+        self.assertEqual(state["schema_version"], 7)
+        self.assertEqual(state["execution"]["contract"]["state"], "absent")
+        self.assertEqual(state["execution"]["action_tickets"], [])
+        self.assertEqual(state["execution"]["denials"], [])
+        self.assertIn(evidence_id, {item["id"] for item in state["evidence"]})
+
+    def test_phase3_explicit_manifest_adoption_activates_only_deterministic_bindings(self) -> None:
+        self.prompt("Implement the bounded Phase 3 test plan. Must verify every step.")
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="update_plan",
+                tool_input={
+                    "plan": [{"step": "bounded step", "status": "in_progress"}],
+                    "explanation": "phase 3",
+                },
+                tool_response="Plan updated",
+                tool_use_id="plan-1",
+            )
+        )
+        plan_sha256 = self.state()["work_state"]["plan_snapshot"]["semantic_sha256"]
+        manifest = self.project / "execution-contract.json"
+        manifest.write_text(
+            json.dumps(self.execution_manifest(plan_sha256)), encoding="utf-8"
+        )
+
+        result = self.prompt("context-guard adopt execution-contract.json")
+        state = self.state()
+        execution = state["execution"]
+
+        self.assertIn("adopted explicitly", result["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(execution["contract"]["state"], "active")
+        self.assertEqual(cg.execution_contract_mode(execution), "active_contract")
+        candidates = {item["id"]: item for item in execution["contract"]["authorization_candidates"]}
+        self.assertEqual(candidates["candidate-deterministic"]["state"], "active")
+        self.assertIsNotNone(candidates["candidate-deterministic"]["activation"])
+        self.assertEqual(candidates["candidate-natural"]["state"], "candidate")
+        self.assertIsNone(candidates["candidate-natural"]["activation"])
+        self.assertEqual(execution["action_tickets"], [])
+        self.assertEqual(execution["denials"], [])
+        self.assertEqual(len(state["requirements"]), 1)
+        self.assertNotIn(str(self.project), cg.canonical_json(execution))
+
+    def test_phase3_manifest_or_policy_presence_never_implicitly_adopts(self) -> None:
+        (self.project / "execution-contract.json").write_text(
+            json.dumps(self.execution_manifest()), encoding="utf-8"
+        )
+
+        self.prompt(
+            "The Skill and AGENTS mention execution-contract.json; inspect them without adopting."
+        )
+        execution = self.state()["execution"]
+
+        self.assertEqual(execution["contract"]["state"], "absent")
+        self.assertEqual(cg.execution_contract_mode(execution), "completion_only")
+        self.assertEqual(execution["action_tickets"], [])
+        self.assertEqual(execution["denials"], [])
+
+    def test_phase3_adoption_conflict_keeps_every_candidate_non_authoritative(self) -> None:
+        manifest = self.project / "execution-contract.json"
+        manifest.write_text(
+            json.dumps(self.execution_manifest("4" * 64)), encoding="utf-8"
+        )
+
+        result = self.prompt("context-guard adopt execution-contract.json")
+        execution = self.state()["execution"]
+
+        self.assertIn("recorded as conflicted", result["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(execution["contract"]["state"], "conflicted")
+        self.assertEqual(cg.execution_contract_mode(execution), "completion_only")
+        self.assertTrue(
+            all(
+                item["state"] == "candidate" and item["activation"] is None
+                for item in execution["contract"]["authorization_candidates"]
+            )
+        )
+
+    def test_phase3_plan_drift_is_soft_persisted_and_recovered(self) -> None:
+        self.prompt("Implement the bounded Phase 3 test plan. Must verify every step.")
+        initial_plan = {
+            "plan": [{"step": "bounded step", "status": "in_progress"}],
+            "explanation": "phase 3",
+        }
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="update_plan",
+                tool_input=initial_plan,
+                tool_response="Plan updated",
+                tool_use_id="plan-1",
+            )
+        )
+        manifest = self.project / "execution-contract.json"
+        manifest.write_text(
+            json.dumps(
+                self.execution_manifest(
+                    self.state()["work_state"]["plan_snapshot"]["semantic_sha256"]
+                )
+            ),
+            encoding="utf-8",
+        )
+        self.prompt("context-guard adopt execution-contract.json")
+
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="update_plan",
+                tool_input={
+                    "plan": [{"step": "silently changed step", "status": "in_progress"}],
+                    "explanation": "phase 3",
+                },
+                tool_response="Plan updated",
+                tool_use_id="plan-2",
+            )
+        )
+        state = self.state()
+        execution = state["execution"]
+
+        self.assertEqual(execution["contract"]["state"], "stale")
+        self.assertEqual(cg.execution_contract_mode(execution), "completion_only")
+        self.assertEqual(len(execution["drift"]), 1)
+        self.assertEqual(execution["drift"][0]["state"], "detected")
+        self.assertEqual(execution["action_tickets"], [])
+        packet = cg.recovery_packet(
+            self.root / "private" / "sessions" / "session-a", state
+        )
+        self.assertIn("Execution contract recovery state", packet)
+        self.assertIn("drift-1", packet)
+        self.assertIn("phase-write", packet)
+        self.assertNotIn("silently changed step", cg.diagnose_context(state))
+
+    def test_phase3_identical_semantic_plan_does_not_drift_on_new_receipt(self) -> None:
+        self.prompt("Implement the bounded Phase 3 test plan. Must verify every step.")
+        plan_input = {
+            "plan": [{"step": "bounded step", "status": "in_progress"}],
+            "explanation": "phase 3",
+        }
+        for tool_use_id in ("plan-1",):
+            cg.dispatch(
+                self.payload(
+                    "PostToolUse",
+                    tool_name="update_plan",
+                    tool_input=plan_input,
+                    tool_response="Plan updated",
+                    tool_use_id=tool_use_id,
+                )
+            )
+        manifest = self.project / "execution-contract.json"
+        manifest.write_text(
+            json.dumps(
+                self.execution_manifest(
+                    self.state()["work_state"]["plan_snapshot"]["semantic_sha256"]
+                )
+            ),
+            encoding="utf-8",
+        )
+        self.prompt("context-guard adopt execution-contract.json")
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="update_plan",
+                tool_input=plan_input,
+                tool_response="Plan updated",
+                tool_use_id="plan-2",
+            )
+        )
+
+        execution = self.state()["execution"]
+        self.assertEqual(execution["contract"]["state"], "active")
+        self.assertEqual(execution["drift"], [])
+
+    def test_phase3_adoption_rejects_out_of_project_manifest(self) -> None:
+        external = self.root / "outside.json"
+        external.write_text(json.dumps(self.execution_manifest()), encoding="utf-8")
+
+        result = self.prompt("context-guard adopt ../outside.json")
+
+        self.assertIn("must stay inside the project", result["hookSpecificOutput"]["additionalContext"])
+        self.assertEqual(self.state()["execution"]["contract"]["state"], "absent")
+
+    def test_phase3_every_non_active_contract_state_is_completion_only(self) -> None:
+        for contract_state in (
+            "absent",
+            "candidate",
+            "inactive",
+            "rejected",
+            "superseded",
+        ):
+            with self.subTest(contract_state=contract_state):
+                execution = cg.dormant_execution_state()
+                if contract_state != "absent":
+                    cg.transition_execution_contract(
+                        execution,
+                        "candidate",
+                        revision=1,
+                        contract_id="contract-1",
+                    )
+                    if contract_state != "candidate":
+                        cg.transition_execution_contract(execution, contract_state)
+                self.assertEqual(cg.execution_contract_mode(execution), "completion_only")
+                self.assertEqual(execution["action_tickets"], [])
+                self.assertEqual(execution["denials"], [])
+
+    def test_phase3_adoption_rejects_duplicate_raw_and_oversize_manifests(self) -> None:
+        duplicate = self.execution_manifest()
+        duplicate["instruction_sources"].append(
+            dict(duplicate["instruction_sources"][0])
+        )
+        raw_path = self.execution_manifest()
+        raw_path["instruction_sources"][0]["origin_id"] = str(self.project / "private")
+        cases = {
+            "duplicate.json": json.dumps(duplicate),
+            "raw-path.json": json.dumps(raw_path),
+            "oversize.json": json.dumps(self.execution_manifest()) + (" " * 65536),
+        }
+
+        for name, content in cases.items():
+            with self.subTest(name=name):
+                (self.project / name).write_text(content, encoding="utf-8")
+                result = self.prompt(f"context-guard adopt {name}")
+                context = result["hookSpecificOutput"]["additionalContext"]
+                self.assertTrue(
+                    any(
+                        marker in context
+                        for marker in (
+                            "invalid",
+                            "exceeds 64 KiB",
+                            "must not retain raw machine paths",
+                        )
+                    ),
+                    context,
+                )
+                self.assertEqual(
+                    self.state()["execution"]["contract"]["state"], "absent"
+                )
+
+    def test_invalid_schema7_execution_ledger_recovers_from_prompts(self) -> None:
+        original = "实现复杂系统。必须保留原始需求，必须验证 schema 7 损坏恢复。"
+        self.prompt(original)
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        invalid = self.state()
+        invalid["execution"]["coverage_manifest"]["content"] = "copied private contract"
+        invalid["content_hash"] = cg.state_content_hash(invalid)
+        cg.atomic_write_json(session_dir / "state.json", invalid)
+
+        restored = cg.dispatch(self.payload("SessionStart", source="resume"))
+
+        self.assertIn(
+            "recovered_from_prompts",
+            restored["hookSpecificOutput"]["additionalContext"],
+        )
+        rebuilt = self.state()
+        self.assertEqual(rebuilt["schema_version"], 7)
+        self.assertTrue(cg.execution_state_is_dormant(rebuilt["execution"]))
+        self.assertIn(original, rebuilt["requirements"][0]["text"])
+
+    def test_natural_language_authorization_candidate_cannot_activate(self) -> None:
+        execution = cg.dormant_execution_state()
+        cg.transition_execution_contract(
+            execution,
+            "candidate",
+            revision=1,
+            contract_id="contract-1",
+        )
+        execution["contract"]["authorization_candidates"] = [
+            {
+                "id": "candidate-1",
+                "prompt_id": "P0001",
+                "prompt_sha256": "d" * 64,
+                "semantic_action_id": "publish",
+                "canonical_target_id": "target-1",
+                "write_surface_id": "external-api",
+                "binding": "natural_language",
+                "state": "active",
+                "activation": {
+                    "prompt_id": "P0002",
+                    "prompt_sha256": "e" * 64,
+                    "activated_at": "2026-08-24T00:00:00Z",
+                },
+            }
+        ]
+        execution["contract"]["canonical_sha256"] = cg.contract_content_hash(
+            execution["contract"]
+        )
+
+        with self.assertRaisesRegex(cg.StateIntegrityError, "deterministic"):
+            cg.validate_execution_state(execution)
 
     def test_current_schema_load_and_save_normalize_stale_open_items(self) -> None:
         self.prompt(
@@ -3528,6 +4183,111 @@ class ContextGuardTests(unittest.TestCase):
             ),
             ("unknown", "unstructured_text"),
         )
+        content_response = {
+            "content": [
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,BBBB",
+                }
+            ]
+        }
+        for tool_name, visual_response in (
+            ("view_image", content_response),
+            ("functions.view_image", content_response["content"]),
+        ):
+            with self.subTest(tool_name=tool_name):
+                self.assertEqual(
+                    cg.tool_outcome_details(
+                        {"tool_name": tool_name, "tool_response": visual_response}
+                    ),
+                    ("success", "structured_visual_result"),
+                )
+        for tool_name, visual_response in (
+            ("fake_view_image", content_response),
+            ("other_image_tool", content_response),
+            ("view_image", {"nested": content_response}),
+        ):
+            with self.subTest(tool_name=tool_name, visual_response=visual_response):
+                self.assertEqual(
+                    cg.tool_outcome_details(
+                        {"tool_name": tool_name, "tool_response": visual_response}
+                    )[0],
+                    "unknown",
+                )
+        self.assertEqual(cg.evidence_capabilities("other_image_tool"), ["artifact"])
+        self.assertEqual(
+            cg.tool_outcome_details(
+                {
+                    "tool_name": "view_image",
+                    "tool_response": {
+                        "content": content_response["content"],
+                        "error": "render failed",
+                    },
+                }
+            ),
+            ("failed", "structured_error"),
+        )
+        self.assertEqual(
+            cg.tool_outcome_details(
+                {
+                    "tool_name": "view_image",
+                    "tool_response": content_response["content"]
+                    + [{"type": "text", "text": "Script failed"}],
+                }
+            ),
+            ("failed", "failure_marker"),
+        )
+
+    def test_real_view_image_receipt_binds_asset_but_not_visual_fact(self) -> None:
+        image = self.write_png("visual-receipt.png", 21, 34)
+        encoded = base64.b64encode(image.read_bytes()).decode("ascii")
+        self.turn_index += 1
+        self.current_turn = f"turn-{self.turn_index}"
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="test-token"):
+            cg.dispatch(
+                self.payload(
+                    "UserPromptSubmit",
+                    prompt="$context-guard\n请检查这张截图并报告可见事实，不要修改。",
+                    local_images=[str(image)],
+                )
+            )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="functions.view_image",
+                tool_input={"path": str(image)},
+                tool_response=[
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:image/png;base64,{encoded}",
+                    }
+                ],
+            )
+        )
+        state = self.state()
+        evidence = state["evidence"][-1]
+        asset_id = state["assets"][0]["id"]
+        self.assertEqual(evidence["outcome"], "success")
+        self.assertEqual(evidence["outcome_basis"], "structured_visual_result")
+        self.assertIn("visual", evidence["capabilities"])
+        self.assertEqual(evidence["asset_ids"], [asset_id])
+        self.assertEqual(state["proofs"], [])
+        obligation = state["requirements"][0]["verification_contract"]["obligations"][0]
+        proof = cg.normalize_proof_manifest(
+            state,
+            {
+                "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                "item_id": "R001",
+                "obligation_id": obligation["id"],
+                "evidence_ids": [evidence["id"]],
+                "surface": "visual",
+                "subject_ids": [asset_id],
+                "visual_facts": [
+                    {"asset_id": asset_id, "text": "The image has a visible frame."}
+                ],
+            },
+        )
+        self.assertEqual(proof["evidence_ids"], [evidence["id"]])
 
     def test_explicit_success_status_wins_over_warning_text(self) -> None:
         warning = "Script completed\nOutput:\nWarning: Operation not permitted"
@@ -3673,6 +4433,135 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("Latest Codex plan mirror", packet)
         self.assertIn("[in_progress] Implement", packet)
         self.assertIn("E0002 [failed]", packet)
+
+    def test_real_update_plan_receipt_survives_compact_resume_with_health(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保护当前计划，必须验证恢复，必须运行测试。"
+        )
+        real_plan = {
+            "explanation": "Real first-party receipt.",
+            "plan": [
+                {"step": "Inspect", "status": "completed"},
+                {"step": "Implement", "status": "in_progress"},
+                {"step": "Verify", "status": "pending"},
+            ],
+        }
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="functions.update_plan",
+                tool_use_id="tool-real-plan",
+                tool_input=real_plan,
+                tool_response="Plan updated",
+            )
+        )
+        state = self.state()
+        snapshot_hash = state["work_state"]["plan_snapshot"]["sha256"]
+        self.assertEqual(state["evidence"][-1]["outcome"], "success")
+        self.assertEqual(
+            state["evidence"][-1]["outcome_basis"], "first_party_plan_receipt"
+        )
+        self.assertEqual(cg.plan_mirror_health(state), "healthy")
+        self.assertIn("plan_mirror=healthy", cg.status_context(state))
+        self.assertIn("plan mirror healthy", cg.diagnose_context(state))
+
+        cg.dispatch(self.payload("PreCompact", trigger="manual"))
+        cg.dispatch(self.payload("SessionStart", source="resume"))
+        resumed = self.state()
+        self.assertEqual(
+            resumed["work_state"]["plan_snapshot"]["sha256"], snapshot_hash
+        )
+        self.assertEqual(cg.plan_mirror_health(resumed), "healthy")
+
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="update_plan",
+                tool_use_id="tool-unknown-plan",
+                tool_input={
+                    "plan": [{"step": "Do not overwrite", "status": "completed"}]
+                },
+                tool_response="Plan may have been updated",
+            )
+        )
+        self.assertEqual(
+            self.state()["work_state"]["plan_snapshot"]["sha256"], snapshot_hash
+        )
+
+        missing = cg.new_state(self.payload("UserPromptSubmit"))
+        self.assertEqual(cg.plan_mirror_health(missing), "missing")
+        missing["work_state"]["plan_snapshot"] = {
+            "steps": [{"step": "Tampered", "status": "completed"}],
+            "sha256": "0" * 64,
+        }
+        self.assertEqual(cg.plan_mirror_health(missing), "degraded")
+
+    def test_phase1_redacted_incident_fixture_event_order_is_frozen(self) -> None:
+        fixtures = {
+            "original_task": [
+                {"event": "UserPromptSubmit"},
+                {
+                    "event": "PostToolUse",
+                    "tool": "functions.update_plan",
+                    "response": "Plan updated",
+                    "baseline_outcome": "unknown",
+                    "candidate_outcome": "success",
+                },
+                {"event": "PreCompact"},
+                {"event": "SessionStart"},
+            ],
+            "review_task": [
+                {"event": "UserPromptSubmit", "asset": "redacted-image"},
+                {
+                    "event": "PostToolUse",
+                    "tool": "functions.view_image",
+                    "response": [
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,AAAA",
+                        }
+                    ],
+                    "baseline_outcome": "unknown",
+                    "candidate_outcome": "success",
+                },
+                {"event": "Stop"},
+            ],
+            "clean_handoff_task": [
+                {"event": "UserPromptSubmit"},
+                {"event": "PostToolUse", "tool": "exec_command"},
+                {
+                    "event": "Stop",
+                    "reply": "说明文字只提及 checkpoint-status 名称。",
+                    "baseline_outcome": "fail_closed_integrity",
+                    "candidate_outcome": "explanatory_reference",
+                },
+            ],
+        }
+        self.assertEqual(
+            [item["event"] for item in fixtures["original_task"]],
+            ["UserPromptSubmit", "PostToolUse", "PreCompact", "SessionStart"],
+        )
+        self.assertEqual(
+            [item["event"] for item in fixtures["review_task"]],
+            ["UserPromptSubmit", "PostToolUse", "Stop"],
+        )
+        self.assertEqual(
+            [item["event"] for item in fixtures["clean_handoff_task"]],
+            ["UserPromptSubmit", "PostToolUse", "Stop"],
+        )
+        self.assertEqual(
+            fixtures["review_task"][1]["response"][0]["type"], "input_image"
+        )
+        self.assertEqual(
+            fixtures["original_task"][1]["baseline_outcome"], "unknown"
+        )
+        self.assertEqual(
+            fixtures["review_task"][1]["baseline_outcome"], "unknown"
+        )
+        self.assertEqual(
+            cg.classify_private_metadata(fixtures["clean_handoff_task"][2]["reply"])[0],
+            fixtures["clean_handoff_task"][2]["candidate_outcome"],
+        )
 
     def test_delegated_prompt_is_journaled_without_root_authority(self) -> None:
         self.prompt(
@@ -3961,13 +4850,13 @@ class ContextGuardTests(unittest.TestCase):
             {
                 "hook_event_name": "UserPromptSubmit",
                 "session_id": "windows-session",
-                "cwd": r"C:\Workspace\Project",
+                "cwd": r"C:\Work\Project",
                 "prompt": "simple prompt",
             }
         )
         self.assertEqual(
             self.state("windows-session")["session"]["cwd"],
-            r"C:\Workspace\Project",
+            r"C:\Work\Project",
         )
 
     def write_png(self, name: str, width: int, height: int) -> Path:
@@ -3981,7 +4870,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         return path
 
-    def test_schema6_asset_contract_hashes_image_without_persisting_bytes_or_path(self) -> None:
+    def test_schema7_asset_contract_hashes_image_without_persisting_bytes_or_path(self) -> None:
         image = self.write_png("private-input.png", 640, 480)
         self.turn_index += 1
         self.current_turn = f"turn-{self.turn_index}"
@@ -3994,7 +4883,7 @@ class ContextGuardTests(unittest.TestCase):
                 )
             )
         state = self.state()
-        self.assertEqual(state["schema_version"], 6)
+        self.assertEqual(state["schema_version"], 7)
         self.assertEqual(len(state["assets"]), 1)
         asset = state["assets"][0]
         self.assertEqual((asset["width"], asset["height"]), (640, 480))

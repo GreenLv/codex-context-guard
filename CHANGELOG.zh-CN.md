@@ -5,6 +5,36 @@
 这里按时间倒序记录所有重要公开版本。每个版本先列出按重要性降序排列的重点，
 再说明其他变化与精简的验证边界。`0.7.7` 是最新公开版本。
 
+## 0.8.3 - 未发布
+
+### 重点
+
+- Schema 7 加入 dormant、哈希绑定的执行契约 ledger，但不新增 Hook 事件、
+  不拦截工具，也不修改 Codex 所有的 Plan 状态。
+- 仅限根用户的 `context-guard adopt <project-relative-json>` 控制可以采用有界的
+  确定性契约；自然语言候选仍不具权威性，也不能授予执行权限。
+- 可选的原生计划绑定使用语义摘要。后续语义变化会将契约和相关记录标记为 stale，
+  同时保持计划为只读的 Codex 原生表面。
+- 公开仓库成为唯一实现上游；下游配置仓库固定不可变版本与提交，不再维护第二份
+  产品实现树。
+
+### 变化
+
+- 0.7.9 完成真实 `Plan updated` receipt、Stop 控制文本隐私分类和桌面
+  `input_image` content-block receipt 的兼容性修复；已使用的 0.7.8 保持不可变。
+- 0.8.1 完成 dormant schema-7 Phase 2 模型；已使用的 0.8.0 保持不可变。
+  0.8.3 在已使用的 0.8.2 包身份之后完成 Phase 3 契约采用。
+- Status、diagnosis 与 recovery 仅暴露有界 ID、计数、状态与哈希。本候选仍不含
+  `PreToolUse`、工具阻断、ticket 预留、提交/发布动作或未覆盖表面的授权。
+
+### 验证
+
+- macOS 原生源码门通过仓库契约、公开树隐私审计、192 项测试（2 项能力相关跳过）、
+  八 Hook 自检、Ruff 0.16.1、编译和 `git diff --check`。
+- Codex CLI 0.149.0 隔离 home 通过首次安装、源码/缓存一致性、严格第二次 no-op、
+  已安装 schema-7 生命周期 smoke 和八 Hook 自检。默认 home 安装、下游消费者 pin、
+  远端 main、CI、tag 与 release 仍是独立门。
+
 ## 0.7.7 - 2026-08-18
 
 ### 重点

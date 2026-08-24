@@ -4,6 +4,30 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.7.7`; accepted `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.3 source candidate acceptance (2026-08-24)
+
+Version 0.8.3 is an unreleased source candidate. It is the first completed
+Phase 3 implementation with schema 7, execution protocol 1.0.0, classifier
+2.3.0, root-only deterministic contract adoption, and semantic native-plan
+drift. It retains Proof protocol 1.0.0, Stop protocol 1.1.0, Python 3.10+, and
+the exact eight-Hook wire.
+
+Native macOS source validation passed on the candidate worktree with Python
+3.12.2: repository validation, tracked-tree privacy audit, 192 tests with two
+capability-aware symbolic-link skips, the eight-Hook self-test, Ruff 0.16.1,
+compilation with an external bytecode cache, and `git diff --check` all passed.
+
+A disposable Codex home under `/private/tmp` and Codex CLI 0.149.0 passed first
+installation as `context-guard@codex-context-guard` 0.8.3, source/cache parity,
+strict second-run no-op, installed schema-7 lifecycle smoke, and the installed
+eight-Hook self-test. The temporary absolute path is intentionally not retained
+as product evidence.
+
+Default-home installation, a fresh trusted Hook task, native Windows, the
+downstream consumer pin, remote `main`, CI, tag, and GitHub Release remain
+separate pending gates. No tag or GitHub Release is authorized by this
+candidate entry, and 0.7.7 remains the latest published release.
+
 ## 0.7.7 release acceptance (2026-08-18)
 
 The release synchronizes the declared shared runtime and transformed

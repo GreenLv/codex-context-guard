@@ -444,9 +444,10 @@ def main() -> int:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         module = load_runtime_module(runtime)
         module.validate_state_integrity(state)
+        expected_schema = int(getattr(module, "SCHEMA_VERSION", 0))
         serialized = json.dumps(state, ensure_ascii=False)
         assertions = {
-            "schema6": state.get("schema_version") == 6,
+            "current_schema": state.get("schema_version") == expected_schema,
             "proof_protocol": getattr(module, "PROOF_PROTOCOL_VERSION", None)
             == "1.0.0",
             "root_and_resume_requirements": len(state.get("requirements", [])) == 2,
@@ -481,13 +482,20 @@ def main() -> int:
                 + state.get("acceptance_items", [])
             ),
         }
+        if expected_schema >= 7:
+            assertions["execution_dormant"] = bool(
+                module.execution_state_is_dormant(state.get("execution"))
+            )
+            assertions["no_execution_tickets"] = not state.get("execution", {}).get(
+                "action_tickets"
+            )
         failed = [name for name, passed in assertions.items() if not passed]
         if failed:
             raise RuntimeError("smoke assertions failed: " + ", ".join(failed))
 
     print(
         "SMOKE_PASS context-guard installed lifecycle: "
-        "schema6/proof-1.0.0, private disposition consumption, plan mirror, delegated "
+        f"schema{expected_schema}/proof-1.0.0, private disposition consumption, plan mirror, delegated "
         "authority, bounded agent result, unknown-text exclusion, binary "
         "omission, compaction recovery, and private completion gate"
     )

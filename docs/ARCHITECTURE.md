@@ -100,6 +100,15 @@ prompt during `PostToolUse`; `PreCompact` and compact/resume `SessionStart`
 remain forced recovery opportunities. Only prompt IDs and bounded scan state
 are persisted.
 
+Schema 7 retains that completion and proof ledger and adds a dormant execution
+contract model. It stores bounded instruction-source metadata, canonical
+contract hashes, phase/gate state, authorization candidates, drift markers,
+exact-host coverage, ticket namespaces, unified-exec sessions, and delegated
+actor bindings. Only a root-user control can adopt a deterministic,
+project-relative manifest. Natural-language candidates cannot activate a
+contract or grant authority. Optional native-plan binding compares semantic
+digests and marks affected records stale; the plan mirror remains read-only.
+
 ### L3: delegated-agent provenance
 
 `SubagentStart` records a bounded delegated contract and injects the root
@@ -223,7 +232,17 @@ segment so a later authorized action is not hidden by an earlier denial.
 
 ## Private state
 
-Schema 6 contains:
+Schema 7 contains all schema-6 task, evidence, proof, and completion fields,
+plus:
+
+- bounded instruction-source metadata and canonical contract digests;
+- contract, phase, gate, authorization-candidate, drift, and exact-host
+  coverage records;
+- dormant ticket namespaces, unified-exec session metadata, and delegated actor
+  bindings; and
+- optional semantic native-plan binding with stale-state propagation.
+
+The retained schema-6 task ledger contains:
 
 - session identity and lifecycle timestamps;
 - prompt metadata and immutable prompt records;
@@ -248,7 +267,8 @@ Writes are atomic. Session operations use a cross-platform lock. State is
 validated before use; corrupted state is preserved for diagnosis and rebuilt
 only from hash-verified prompt records. Reconstructed requirements return to
 pending because prior evidence cannot be silently re-trusted. Schema 1, 2, 3,
-and 4 migrate through schema 5 to schema 6 while preserving the durable ledger.
+and 4 migrate through schema 5 and schema 6 to schema 7 while preserving the
+durable ledger.
 Existing schema-5 items are marked `legacy_fallback`; migration never invents
 retroactive proof obligations. Migration
 deliberately discards any in-flight completion attempt, token, or staged control
@@ -293,3 +313,9 @@ structured visual-result classification. None changes the schema or Hook
 surface. It
 guarantees only displayed `enforced` obligations and does not claim arbitrary
 pixel understanding or semantic completeness for `legacy_fallback` items.
+
+The 0.8.x line introduces schema 7 and execution protocol 1.0.0. Version 0.8.3
+is the first completed contract-adoption candidate. It remains on the existing
+eight-event Hook wire and adds no `PreToolUse`, tool interception, automatic
+ticket reservation, commit/publish action, or authority for uncovered
+surfaces.

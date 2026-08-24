@@ -17,6 +17,9 @@ worktrees 或 transcript。上述能力仍由 Codex 原生系统负责；Context
 > 发布状态：`0.7.7` 是最近一次已发布版本。协议版本、平台证据和历史版本详见
 > [兼容性说明](docs/COMPATIBILITY.md)、
 > [本地验收记录](docs/LOCAL_ACCEPTANCE.md)与[更新日志](CHANGELOG.md)。
+>
+> 当前源码候选：`0.8.3`（未发布）。它加入下文所述的 schema-7 dormant
+> 执行契约模型与仅限根用户的契约采用控制；该候选没有 tag 或 GitHub Release。
 
 ## 从这里开始
 
@@ -371,6 +374,12 @@ ruff check .
 
 CI 矩阵覆盖 Ubuntu、macOS、Windows，以及 Python 3.10、3.11、3.12、3.13。平台能力只能
 按实际证据描述，详见[兼容性说明](docs/COMPATIBILITY.md)。
+
+未发布的 0.8.3 源码候选加入有界、仅哈希的执行契约 ledger，以及仅限根用户的
+`context-guard adopt` 控制。确定性候选可以被采用；自然语言候选仍不具权威性。
+原生计划发生语义漂移时，相关记录会标记为 stale，但它不会修改 Codex Plan、
+阻止工具、授予权限或新增 `PreToolUse` Hook。源码、安装和原生平台证据分别记录
+在兼容性与验收文档中。
 
 0.7.7 正式版本修正了错误对象与 UI 表面分类，并把有效的
 `view_image` 图像 data URL 结构化结果识别为成功视觉证据。Schema、Proof/Stop

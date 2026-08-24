@@ -19,6 +19,10 @@ Guard adds a bounded recovery and completion-verification layer beside them.
 > versions, platform evidence, and release history, see
 > [Compatibility](docs/COMPATIBILITY.md),
 > [Local acceptance](docs/LOCAL_ACCEPTANCE.md), and the [changelog](CHANGELOG.md).
+>
+> Current source candidate: `0.8.3` (unreleased). It adds the schema-7 dormant
+> execution-contract model and root-only contract adoption described below;
+> no tag or GitHub Release exists for this candidate.
 
 ## Start here
 
@@ -411,6 +415,14 @@ runtime remains standard-library-only and has no third-party dependencies.
 The CI matrix covers Ubuntu, macOS, and Windows with Python 3.10, 3.11, 3.12,
 and 3.13. Platform claims remain evidence-bounded; see
 [Compatibility](docs/COMPATIBILITY.md).
+
+The unreleased 0.8.3 source candidate adds a bounded, hash-only execution
+contract ledger and root-only `context-guard adopt` control. Deterministic
+candidates may become active; natural-language candidates remain
+non-authoritative. Semantic native-plan drift marks related records stale but
+does not modify Codex Plan state, block tools, grant authority, or add a
+`PreToolUse` Hook. Its source, installer, and native-platform evidence are
+tracked separately in the compatibility and acceptance records.
 
 The 0.7.7 release corrects false subject and UI-surface
 classification and recognizes a valid structured `view_image` image data URL

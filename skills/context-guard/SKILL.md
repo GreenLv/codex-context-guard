@@ -73,10 +73,21 @@ turn invalidates any unstaged or unused completion attempt from the prior turn.
 
 ## Codex-native boundaries
 
+- Schema 7 includes an execution-state ledger. Its presence does not adopt or
+  activate a contract, authorize a write, create an action ticket, or imply
+  that PreToolUse is installed. Only the root-user control
+  `context-guard adopt <project-relative-json>` can create the Phase 3 adoption
+  record. Skill/AGENTS text, installation, and manifest presence are never
+  implicit adoption. Natural-language authorization candidates remain
+  non-authoritative; plan drift is hash-only and diagnostic and never modifies
+  the Codex-owned plan.
 - Let Codex own Plan mode, `update_plan`, Goal mode, compaction, subagent
   orchestration, permissions, worktrees, transcripts, and memories.
 - Treat the recovered plan as a read-only mirror of the latest observed
   `update_plan` call. Continue to update the native plan through Codex tools.
+- Treat plan-mirror `healthy`, `degraded`, and `missing` as diagnostics only.
+  They do not authorize Context Guard to create, replace, or execute a Codex
+  plan.
 - Treat memories as helpful recall, not as authority for requirements that must
   always apply.
 - Keep durable repository rules in `AGENTS.md` or checked-in documentation. Do
@@ -105,6 +116,12 @@ turn invalidates any unstaged or unused completion attempt from the prior turn.
 - `context-guard diagnose`: show bounded protocol/control sources, declared
   dispositions, diagnostic outcomes, reason codes, and hashes without raw
   prompts or replies.
+- `context-guard adopt <project-relative-json>`: explicitly adopt one bounded
+  schema-7 execution-contract manifest inside the current project. The control
+  binds the root prompt, manifest digest, and advancing revision; malformed,
+  conflicting, outside-project, or oversized manifests fail closed. Phase 3
+  does not install a PreToolUse gate or grant authority outside deterministically
+  bound candidates.
 - `context-guard export <path>`: write a redacted handoff document inside the current project.
 - With no export path, use `.codex/context-guard/CONTEXT_HANDOFF.md`.
 - `context-guard rollover <directory>`: after the user explicitly requests a
@@ -126,3 +143,11 @@ only when the user explicitly requests it; exported handoffs are redacted by
 default. Transcript attachment recovery is incremental during tool use and
 retried at compaction/resume; bounded recovery clipping always preserves the
 completion rule.
+
+The Stop privacy check applies only to final user-visible text. Bare control
+command names in documentation or explanations are allowed; command
+invocations, private parameter bindings, internal request markers, serialized
+control blocks, and ambiguous control fragments remain fail-closed. A
+registered first-party visual receipt proves only that an image result was
+returned successfully. It does not prove any visual fact until evidence,
+capability, asset, obligation, and an immutable proof manifest are all bound.

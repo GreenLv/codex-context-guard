@@ -30,6 +30,10 @@ The private store may contain:
   availability;
 - deterministic verification contracts and immutable proof bindings, including
   bounded redacted visual facts and normalized scope counts/digests;
+- schema-7 execution metadata: bounded instruction-source identifiers and
+  origins, canonical contract hashes, phase/gate/candidate states, drift and
+  exact-host coverage, dormant ticket namespaces, unified-exec metadata, and
+  delegated actor bindings;
 - the latest bounded native-plan mirror;
 - bounded delegated-agent metadata and final result summaries;
 - recovery snapshots and private completion checkpoints;
@@ -71,6 +75,11 @@ or delegated-agent transcripts.
   instead of carrying turn authorization across protocol versions.
 - Schema-5 items migrate as `legacy_fallback`; migration does not fabricate
   retroactive multimodal or semantic proof claims.
+- Contract manifests are normalized to bounded identifiers, states, counts,
+  and hashes. Status, diagnosis, and recovery do not expose raw manifest bodies,
+  absolute source paths, prompt text, authority-bearing tokens, or Plan text.
+- Native-plan binding persists a semantic digest and stale markers rather than
+  a second editable plan.
 - Ended sessions become eligible for cleanup after 30 days.
 
 ## Redaction
@@ -105,6 +114,9 @@ outside the Hook runtime and remain explicit user actions.
 - `register-proof` accepts a bounded JSON manifest, authenticates the current
   private turn, and stores only the normalized proof. Keep temporary proof
   manifests out of repositories and exports.
+- `context-guard adopt <project-relative-json>` is root-user-only. It reads a
+  bounded local manifest, stores its normalized hash-only contract, and cannot
+  grant authority to natural-language or uncovered candidates.
 - `context-guard export` and `rollover` are explicit-only writes.
 - Uninstalling plugin code does not automatically delete private runtime data.
 

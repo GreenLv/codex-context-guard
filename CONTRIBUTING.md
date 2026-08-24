@@ -51,7 +51,9 @@ local Git configuration and local hooks are not installed automatically.
 
 ## Upstream policy
 
-This public repository is maintained independently from the author's private
-Codex configuration repository. Changes are transferred manually and reviewed;
-there is no automatic bidirectional synchronization. Contributions retain their
-original authorship when manually integrated.
+This public repository is the sole implementation upstream for Context Guard.
+Product changes land and are validated here before downstream configuration
+repositories update an immutable version-and-commit pin. Downstream repositories
+may keep private overlays and platform acceptance records, but do not maintain a
+second implementation. Contributions retain their original authorship when
+integrated.

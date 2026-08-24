@@ -6,17 +6,45 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.7.7`
-- Current source line: `0.7.7`
-- Private state schema: `6`
+- Current source line: `0.8.3` (unreleased candidate)
+- Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
-- Diagnostic classifier: `2.2.1`
+- Execution protocol: `1.0.0`
+- Diagnostic classifier: `2.3.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.3 source candidate status
+
+The 0.8.3 candidate is the first completed Phase 3 source line. Schema 7 adds
+a dormant execution-contract model for bounded source metadata, phases, gates,
+authorization candidates, drift, coverage, ticket namespaces, unified-exec
+sessions, and delegated actors. A root-user-only `context-guard adopt` control
+may activate a deterministic, project-relative, hash-only contract manifest.
+Natural-language candidates remain non-authoritative. Optional native-plan
+binding is semantic and read-only: drift marks the contract and affected
+records stale without changing Codex Plan state.
+
+The Hook surface remains the same eight events. The candidate adds no
+`PreToolUse`, tool interception, ticket reservation in normal lifecycle,
+commit/publish action, or authority for uncovered surfaces. Source validation,
+privacy audit, isolated install, native macOS acceptance, downstream consumer
+pinning, CI, tag, and GitHub Release are separate claims. Until recorded below,
+none is implied by the source version; 0.7.7 remains the latest published
+release.
+
+Native macOS source validation passes the repository contract and privacy
+audits, 192 tests with two capability-aware skips, the source self-test, Ruff
+0.16.1, compilation, and `git diff --check`. An isolated Codex CLI 0.149.0 home
+passes first install, source/cache parity, strict second-run no-op, installed
+schema-7 lifecycle smoke, and the installed eight-Hook self-test. This does not
+yet claim default-home installation, a fresh trusted Hook task, native Windows,
+CI, a downstream consumer pin, tag, or GitHub Release.
 
 ## 0.7.7 release status
 

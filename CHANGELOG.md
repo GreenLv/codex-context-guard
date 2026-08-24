@@ -6,6 +6,44 @@ All notable public releases are documented here, newest first. Each version
 opens with its highlights in descending priority, followed by grouped changes
 and a compact validation note. `0.7.7` is the latest published release.
 
+## 0.8.3 - Unreleased
+
+### Highlights
+
+- Schema 7 adds a dormant, hash-bound execution-contract ledger without adding
+  a new Hook event, intercepting tools, or changing Codex-owned Plan state.
+- A root-user-only `context-guard adopt <project-relative-json>` control may
+  adopt a bounded deterministic contract; natural-language candidates remain
+  non-authoritative and cannot grant execution authority.
+- Optional native-plan binding uses a semantic digest. Later semantic changes
+  mark the contract and affected records stale while preserving the plan as a
+  read-only Codex-owned surface.
+- The public repository becomes the sole implementation upstream. Downstream
+  configuration repositories consume an immutable version and commit instead
+  of maintaining a second product tree.
+
+### Changes
+
+- Version 0.7.9 completed the compatibility repairs for real `Plan updated`
+  receipts, privacy-safe Stop control classification, and desktop
+  `input_image` content-block receipts; consumed 0.7.8 remains immutable.
+- Version 0.8.1 completed the dormant schema-7 Phase 2 model; consumed 0.8.0
+  remains immutable. Version 0.8.3 completes Phase 3 contract adoption after
+  the consumed 0.8.2 package identity.
+- Status, diagnosis, and recovery expose bounded IDs, counts, states, and
+  hashes. The candidate still has no `PreToolUse`, tool blocking, ticket
+  reservation, commit/publish action, or authority for uncovered surfaces.
+
+### Validation
+
+- Native macOS source gates pass repository validation, the tracked-tree
+  privacy audit, 192 tests with two capability-aware skips, the eight-Hook
+  self-test, Ruff 0.16.1, compilation, and `git diff --check`.
+- An isolated Codex CLI 0.149.0 home passes first install, source/cache parity,
+  strict second-run no-op, installed schema-7 lifecycle smoke, and the installed
+  eight-Hook self-test. Default-home installation, downstream consumer pin,
+  remote main, CI, tag, and release remain separate gates.
+
 ## 0.7.7 - 2026-08-18
 
 ### Highlights

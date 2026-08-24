@@ -104,14 +104,14 @@ class SafePluginInstallTests(unittest.TestCase):
         )
         git_config = self.repo_root / ".git" / "config"
         git_config.parent.mkdir(parents=True)
-        git_config.write_text("private repository metadata\n", encoding="utf-8")
+        git_config.write_text("repository metadata\n", encoding="utf-8")
 
         manifest = manager.tree_manifest(self.repo_root)
 
         self.assertIn(".codex-plugin/plugin.json", manifest)
         self.assertIn("scripts/context_guard.py", manifest)
         self.assertNotIn("README.md", manifest)
-        self.assertNotIn(".git/config", manifest)
+        self.assertFalse(any(path.startswith(".git/") for path in manifest))
 
     def test_fresh_install_removes_worktree_git_pointer_before_archive(self) -> None:
         self.write_source("0.1.2")

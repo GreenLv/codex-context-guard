@@ -24,10 +24,11 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 STOP_PROTOCOL_VERSION = "1.1.0"
-CLASSIFIER_VERSION = "2.2.1"
+CLASSIFIER_VERSION = "2.3.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
+EXECUTION_PROTOCOL_VERSION = "1.0.0"
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
 RECOVERY_COMPLETION_RULE = (
@@ -53,6 +54,11 @@ MAX_SUCCESSOR_AUDIT_BYTES = 256 * 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024
 MAX_ASSET_BYTES = 64 * 1024 * 1024
 MAX_PROOF_MANIFEST_BYTES = 64 * 1024
+MAX_EXECUTION_STATE_BYTES = 64 * 1024
+MAX_EXECUTION_DEPTH = 8
+MAX_EXECUTION_STRING = 512
+MAX_EXECUTION_RECORDS = 64
+MAX_EXECUTION_TICKETS = 128
 STATE_REQUIRED_KEYS = {
     "schema_version",
     "session",
@@ -75,11 +81,50 @@ STATE_REQUIRED_KEYS = {
     "completion_checkpoint",
     "continuation_attempts",
     "decision_log",
+    "execution",
     "integrity",
     "content_hash",
 }
 ASSET_ID_RE = re.compile(r"M\d{4,}")
 PROOF_ID_RE = re.compile(r"V\d{4,}")
+EXECUTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+CONTRACT_STATES = {
+    "absent", "candidate", "inactive", "active", "stale", "conflicted",
+    "rejected", "superseded",
+}
+CONTRACT_TRANSITIONS = {
+    "absent": {"candidate"},
+    "candidate": {"inactive", "active", "conflicted", "rejected", "superseded"},
+    "inactive": {"active", "conflicted", "rejected", "superseded"},
+    "active": {"stale", "conflicted", "superseded"},
+    "stale": {"candidate", "conflicted", "rejected", "superseded"},
+    "conflicted": {"candidate", "inactive", "rejected", "superseded"},
+    "rejected": {"candidate", "superseded"},
+    "superseded": set(),
+}
+PHASE_STATES = {"pending", "passed", "failed", "waived", "stale", "conflicted", "superseded"}
+PHASE_TRANSITIONS = {
+    "pending": {"passed", "failed", "waived", "conflicted", "superseded"},
+    "passed": {"stale", "conflicted", "superseded"},
+    "failed": {"pending", "waived", "superseded"},
+    "waived": {"stale", "superseded"},
+    "stale": {"pending", "conflicted", "superseded"},
+    "conflicted": {"pending", "waived", "superseded"},
+    "superseded": set(),
+}
+TICKET_STATES = {"reserved", "consumed", "failed", "expired_unsettled"}
+TICKET_TRANSITIONS = {
+    "reserved": {"consumed", "failed", "expired_unsettled"},
+    "consumed": set(),
+    "failed": set(),
+    "expired_unsettled": set(),
+}
+FORBIDDEN_EXECUTION_KEYS = {
+    "command", "content", "cwd", "path", "prompt", "raw_prompt", "secret",
+    "text", "token", "tool_input",
+}
 ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/\\])(?:/[\w.@+~\-\u0080-\uffff][^\s,;，；。!?！？'\"<>]*)"
 )
@@ -444,6 +489,101 @@ PRIVATE_METADATA_RE = re.compile(
     r"CONTEXT_GUARD_DATA_DIR|CLAUDE_PLUGIN_DATA",
     re.IGNORECASE,
 )
+
+# Always-sensitive internal markers — their mere presence is a leak.
+SENSITIVE_MARKER_RE = re.compile(
+    r"context-guard-checkpoint|CONTEXT_GUARD_STAGE_REQUEST|"
+    r"CONTEXT_GUARD_DISPOSITION_REQUEST|CONTEXT_GUARD_PROOF_REQUEST",
+    re.IGNORECASE,
+)
+
+# Bare command names are ordinary documentation terms. They become private
+# control material only when they participate in an invocation, binding, or
+# serialized control structure.
+CONTROL_COMMAND_PATTERN = (
+    r"(?:checkpoint-status|stage-checkpoint|stage-disposition|register-proof)"
+)
+CONTROL_COMMAND_RE = re.compile(CONTROL_COMMAND_PATTERN, re.IGNORECASE)
+CONTROL_INVOCATION_RE = re.compile(
+    CONTROL_COMMAND_PATTERN
+    + r"(?:[\s`'\"“”‘’：:,，]*)"
+    + r"(?P<option>--[a-z][a-z0-9-]*)"
+    + r"(?P<binding>[\s=]+(?P<value>[^\s`'\"“”‘’，,;；|&<>]{1,500}))?",
+    re.IGNORECASE,
+)
+SECRET_OPTION_BINDING_RE = re.compile(
+    r"--(?:data-dir|session-id|turn-id|token)(?:[\s=]+)\S+",
+    re.IGNORECASE,
+)
+CONTROL_OPTION_BINDING_RE = re.compile(
+    r"--(?:requirement|acceptance|manifest|disposition)(?:[\s=]+)\S+",
+    re.IGNORECASE,
+)
+PRIVATE_ENV_ASSIGNMENT_RE = re.compile(
+    r"(?:CLAUDE_PLUGIN_DATA|CONTEXT_GUARD_DATA_DIR)\s*=\s*\S+",
+    re.IGNORECASE,
+)
+SERIALIZED_CONTROL_KEY_RE = re.compile(
+    r"[\"'](?:command|token|data[_-]dir|session[_-]id|turn[_-]id|"
+    r"requirements?|acceptance|manifest|disposition)[\"']\s*:",
+    re.IGNORECASE,
+)
+SERIALIZED_SECRET_KEY_RE = re.compile(
+    r"[\"'](?:token|data[_-]dir|session[_-]id|turn[_-]id)[\"']\s*:",
+    re.IGNORECASE,
+)
+CONTROL_RUNTIME_RE = re.compile(
+    r"(?:context_guard\.py|context-guard(?:/|\\)scripts(?:/|\\)context_guard\.py)"
+    r"[^\r\n]{0,240}"
+    + CONTROL_COMMAND_PATTERN,
+    re.IGNORECASE,
+)
+
+
+def classify_private_metadata(text: str) -> tuple[str, list[str]]:
+    """Classify final user-visible text without retaining sensitive values.
+
+    The stable categories are ``sensitive_control``,
+    ``ambiguous_control_fragment``, and ``explanatory_reference``. Only the
+    latter is safe for a user-facing reply.
+    """
+    sensitive_reasons: list[str] = []
+    ambiguous_reasons: list[str] = []
+
+    if SENSITIVE_MARKER_RE.search(text):
+        sensitive_reasons.append("internal_marker_or_serialized_control")
+    if PRIVATE_ENV_ASSIGNMENT_RE.search(text):
+        sensitive_reasons.append("environment_binding")
+    if SECRET_OPTION_BINDING_RE.search(text) or SERIALIZED_SECRET_KEY_RE.search(text):
+        sensitive_reasons.append("private_parameter_binding")
+    if CONTROL_RUNTIME_RE.search(text):
+        sensitive_reasons.append("full_command_invocation")
+
+    invocations = list(CONTROL_INVOCATION_RE.finditer(text))
+    for invocation in invocations[:8]:
+        if invocation.group("binding") and invocation.group("value"):
+            sensitive_reasons.append("full_command_invocation")
+        else:
+            ambiguous_reasons.append("incomplete_control_invocation")
+
+    if CONTROL_COMMAND_RE.search(text) and CONTROL_OPTION_BINDING_RE.search(text):
+        sensitive_reasons.append("private_parameter_binding")
+
+    serialized_keys = SERIALIZED_CONTROL_KEY_RE.findall(text)
+    if CONTROL_COMMAND_RE.search(text) and len(serialized_keys) >= 2:
+        sensitive_reasons.append("internal_marker_or_serialized_control")
+    elif len(serialized_keys) >= 3:
+        ambiguous_reasons.append("serialized_control_fragment")
+
+    if sensitive_reasons:
+        return "sensitive_control", list(dict.fromkeys(sensitive_reasons))[:4]
+    if ambiguous_reasons:
+        return (
+            "ambiguous_control_fragment",
+            list(dict.fromkeys(ambiguous_reasons))[:4],
+        )
+    reasons = ["bare_control_reference"] if CONTROL_COMMAND_RE.search(text) else []
+    return "explanatory_reference", reasons
 FAILED_TOOL_RESPONSE_RE = re.compile(
     r"(?im)^\s*(?:script (?:failed|error)|command failed|"
     r"(?:script|command) completed with (?:errors?|failures?)|"
@@ -455,8 +595,11 @@ FAILED_TOOL_RESPONSE_RE = re.compile(
 AUTHORITATIVE_SUCCESS_TOOL_RESPONSE_RE = re.compile(
     r"(?im)^\s*(?:script completed|command completed)\s*$"
 )
+UPDATE_PLAN_SUCCESS_TOOL_RESPONSE_RE = re.compile(
+    r"^\s*Plan updated\s*$", re.IGNORECASE
+)
 WEAK_SUCCESS_TOOL_RESPONSE_RE = re.compile(
-    r"(?im)^\s*(?:\[ok\]|smoke_pass\b|pass\b|done!\s*$|plan updated\s*$)"
+    r"(?im)^\s*(?:\[ok\]|smoke_pass\b|pass\b|done!\s*$)"
 )
 SUPERSESSION_INTENT_RE = re.compile(
     r"(?:改为|改成|取消|不再|以此为准|替代|覆盖|修正|"
@@ -766,9 +909,842 @@ def prompt_record_hash(record: dict[str, Any]) -> str:
     return sha256_text(canonical_json(hashable))
 
 
+def dormant_execution_state() -> dict[str, Any]:
+    """Return the schema-7 execution ledger without activating enforcement."""
+    return {
+        "protocol_version": EXECUTION_PROTOCOL_VERSION,
+        "instruction_sources": [],
+        "contract": {
+            "state": "absent",
+            "revision": 0,
+            "contract_id": None,
+            "canonical_sha256": None,
+            "adoption": None,
+            "supersedes_revision": None,
+            "phases": [],
+            "gates": [],
+            "authorization_candidates": [],
+        },
+        "coverage_manifest": {
+            "host_lock": None,
+            "adapters": [],
+            "uncovered_write_surfaces": [],
+            "unclassified_high_risk_policy": "deny_when_active",
+            "non_active_contract_policy": "completion_only",
+            "stale_conflicted_policy": "deny_covered_high_risk",
+            "pre_tool_output_policy": "allow_deny_only",
+        },
+        "drift": [],
+        "action_tickets": [],
+        "denials": [],
+        "unified_exec_sessions": [],
+        "delegations": [],
+    }
+
+
+def contract_content_hash(contract: dict[str, Any]) -> str:
+    normalized = dict(contract)
+    normalized.pop("canonical_sha256", None)
+    return sha256_text(canonical_json(normalized))
+
+
+def _execution_id(value: Any, field: str) -> str:
+    text = str(value or "")
+    if not EXECUTION_ID_RE.fullmatch(text):
+        raise StateIntegrityError(f"execution field {field} has an invalid identifier")
+    return text
+
+
+def _execution_sha(value: Any, field: str, *, nullable: bool = False) -> str | None:
+    if value is None and nullable:
+        return None
+    text = str(value or "")
+    if not SHA256_RE.fullmatch(text):
+        raise StateIntegrityError(f"execution field {field} has an invalid sha256")
+    return text
+
+
+def _execution_time(value: Any, field: str, *, nullable: bool = False) -> str | None:
+    if value is None and nullable:
+        return None
+    text = str(value or "")
+    if parse_time(text) is None:
+        raise StateIntegrityError(f"execution field {field} has an invalid timestamp")
+    return text
+
+
+def _validate_execution_value(value: Any, *, depth: int = 0) -> None:
+    if depth > MAX_EXECUTION_DEPTH:
+        raise StateIntegrityError("execution state nesting limit exceeded")
+    if isinstance(value, str):
+        if len(value) > MAX_EXECUTION_STRING:
+            raise StateIntegrityError("execution state string limit exceeded")
+        if value.startswith(("/", "\\\\")) or WINDOWS_ABSOLUTE_PATH_RE.match(value):
+            raise StateIntegrityError("execution state must not retain raw machine paths")
+    elif isinstance(value, list):
+        for item in value:
+            _validate_execution_value(item, depth=depth + 1)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in FORBIDDEN_EXECUTION_KEYS:
+                raise StateIntegrityError(f"execution state forbids raw field {key!r}")
+            _validate_execution_value(item, depth=depth + 1)
+
+
+def _require_record_keys(
+    record: Any,
+    *,
+    field: str,
+    required: set[str],
+    optional: set[str] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        raise StateIntegrityError(f"execution field {field} must contain objects")
+    allowed = required | (optional or set())
+    if set(record) != allowed:
+        raise StateIntegrityError(f"execution field {field} has invalid record keys")
+    return record
+
+
+def _validate_phase_records(records: Any, field: str) -> None:
+    if not isinstance(records, list) or len(records) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError(f"execution field {field} exceeds its record limit")
+    seen: set[str] = set()
+    for raw in records:
+        record = _require_record_keys(
+            raw,
+            field=field,
+            required={"id", "state", "depends_on", "evidence_ids", "resolution_sha256"},
+        )
+        record_id = _execution_id(record["id"], f"{field}.id")
+        if record_id in seen or record.get("state") not in PHASE_STATES:
+            raise StateIntegrityError(f"execution field {field} has a duplicate id or invalid state")
+        seen.add(record_id)
+        _execution_sha(record.get("resolution_sha256"), f"{field}.resolution_sha256", nullable=True)
+        for list_field in ("depends_on", "evidence_ids"):
+            values = record.get(list_field)
+            if not isinstance(values, list) or len(values) > MAX_EXECUTION_RECORDS:
+                raise StateIntegrityError(f"execution field {field}.{list_field} is invalid")
+            for value in values:
+                _execution_id(value, f"{field}.{list_field}")
+
+
+def validate_execution_state(execution: Any) -> None:
+    if not isinstance(execution, dict):
+        raise StateIntegrityError("private execution state must be an object")
+    if len(canonical_json(execution).encode("utf-8")) > MAX_EXECUTION_STATE_BYTES:
+        raise StateIntegrityError("execution state byte limit exceeded")
+    _validate_execution_value(execution)
+    expected_top = {
+        "protocol_version", "instruction_sources", "contract", "coverage_manifest", "drift",
+        "action_tickets", "denials", "unified_exec_sessions", "delegations",
+    }
+    if set(execution) != expected_top or execution.get("protocol_version") != EXECUTION_PROTOCOL_VERSION:
+        raise StateIntegrityError("private execution state has invalid top-level fields")
+
+    sources = execution.get("instruction_sources")
+    if not isinstance(sources, list) or len(sources) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError("execution instruction source limit exceeded")
+    source_ids: set[str] = set()
+    for raw in sources:
+        record = _require_record_keys(
+            raw,
+            field="instruction_sources",
+            required={"id", "kind", "origin_id", "revision", "sha256", "state"},
+        )
+        source_id = _execution_id(record["id"], "instruction_sources.id")
+        _execution_id(record["kind"], "instruction_sources.kind")
+        _execution_id(record["origin_id"], "instruction_sources.origin_id")
+        _execution_sha(record["sha256"], "instruction_sources.sha256")
+        if source_id in source_ids or not isinstance(record.get("revision"), int) or record["revision"] < 1:
+            raise StateIntegrityError("execution instruction source is duplicated or has invalid revision")
+        if record.get("state") not in {"active", "stale", "superseded"}:
+            raise StateIntegrityError("execution instruction source has invalid state")
+        source_ids.add(source_id)
+
+    contract = execution.get("contract")
+    contract_keys = {
+        "state", "revision", "contract_id", "canonical_sha256", "adoption",
+        "supersedes_revision", "phases", "gates", "authorization_candidates",
+    }
+    if not isinstance(contract, dict) or set(contract) != contract_keys:
+        raise StateIntegrityError("execution contract has invalid fields")
+    contract_state = contract.get("state")
+    revision = contract.get("revision")
+    if contract_state not in CONTRACT_STATES or not isinstance(revision, int) or revision < 0:
+        raise StateIntegrityError("execution contract state or revision is invalid")
+    if contract_state == "absent":
+        dormant_fields = (
+            revision == 0
+            and contract.get("contract_id") is None
+            and contract.get("canonical_sha256") is None
+            and contract.get("adoption") is None
+            and contract.get("supersedes_revision") is None
+            and not contract.get("phases")
+            and not contract.get("gates")
+            and not contract.get("authorization_candidates")
+        )
+        if not dormant_fields:
+            raise StateIntegrityError("absent execution contract must be dormant")
+    else:
+        if revision < 1:
+            raise StateIntegrityError("non-absent execution contract needs a revision")
+        _execution_id(contract.get("contract_id"), "contract.contract_id")
+        stored_contract_hash = _execution_sha(
+            contract.get("canonical_sha256"), "contract.canonical_sha256"
+        )
+        if stored_contract_hash != contract_content_hash(contract):
+            raise StateIntegrityError("execution contract canonical hash mismatch")
+    adoption = contract.get("adoption")
+    if adoption is not None:
+        adoption = _require_record_keys(
+            adoption,
+            field="contract.adoption",
+            required={"prompt_id", "prompt_sha256", "contract_sha256", "revision", "adopted_at"},
+        )
+        _execution_id(adoption["prompt_id"], "contract.adoption.prompt_id")
+        _execution_sha(adoption["prompt_sha256"], "contract.adoption.prompt_sha256")
+        _execution_sha(adoption["contract_sha256"], "contract.adoption.contract_sha256")
+        _execution_time(adoption["adopted_at"], "contract.adoption.adopted_at")
+        if adoption.get("revision") != revision:
+            raise StateIntegrityError("execution adoption revision mismatch")
+    if contract_state == "active" and adoption is None:
+        raise StateIntegrityError("active execution contract requires adoption")
+    supersedes_revision = contract.get("supersedes_revision")
+    if supersedes_revision is not None and (
+        not isinstance(supersedes_revision, int) or supersedes_revision < 1 or supersedes_revision >= revision
+    ):
+        raise StateIntegrityError("execution contract supersedes revision is invalid")
+    _validate_phase_records(contract.get("phases"), "contract.phases")
+    _validate_phase_records(contract.get("gates"), "contract.gates")
+
+    candidates = contract.get("authorization_candidates")
+    if not isinstance(candidates, list) or len(candidates) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError("execution authorization candidate limit exceeded")
+    candidate_ids: set[str] = set()
+    for raw in candidates:
+        record = _require_record_keys(
+            raw,
+            field="authorization_candidates",
+            required={
+                "id", "prompt_id", "prompt_sha256", "semantic_action_id",
+                "canonical_target_id", "write_surface_id", "binding", "state", "activation",
+            },
+        )
+        candidate_id = _execution_id(record["id"], "authorization_candidates.id")
+        for key in ("prompt_id", "semantic_action_id", "canonical_target_id", "write_surface_id"):
+            _execution_id(record[key], f"authorization_candidates.{key}")
+        _execution_sha(record["prompt_sha256"], "authorization_candidates.prompt_sha256")
+        if candidate_id in candidate_ids or record.get("binding") not in {"deterministic", "natural_language"}:
+            raise StateIntegrityError("execution authorization candidate is duplicated or invalid")
+        if record.get("state") not in {"candidate", "active", "rejected", "superseded"}:
+            raise StateIntegrityError("execution authorization candidate state is invalid")
+        activation = record.get("activation")
+        if activation is not None:
+            activation = _require_record_keys(
+                activation,
+                field="authorization_candidates.activation",
+                required={"prompt_id", "prompt_sha256", "activated_at"},
+            )
+            _execution_id(activation["prompt_id"], "authorization_candidates.activation.prompt_id")
+            _execution_sha(activation["prompt_sha256"], "authorization_candidates.activation.prompt_sha256")
+            _execution_time(activation["activated_at"], "authorization_candidates.activation.activated_at")
+        if record.get("state") == "active" and (
+            record.get("binding") != "deterministic" or activation is None
+        ):
+            raise StateIntegrityError("authorization activation requires deterministic binding and record")
+        if record.get("state") != "active" and activation is not None:
+            raise StateIntegrityError("inactive authorization candidate cannot retain activation")
+        candidate_ids.add(candidate_id)
+
+    coverage = execution.get("coverage_manifest")
+    coverage_keys = {
+        "host_lock", "adapters", "uncovered_write_surfaces", "unclassified_high_risk_policy",
+        "non_active_contract_policy", "stale_conflicted_policy", "pre_tool_output_policy",
+    }
+    if not isinstance(coverage, dict) or set(coverage) != coverage_keys:
+        raise StateIntegrityError("execution coverage manifest has invalid fields")
+    if coverage.get("unclassified_high_risk_policy") != "deny_when_active":
+        raise StateIntegrityError("execution unclassified high-risk policy must fail closed")
+    if coverage.get("non_active_contract_policy") != "completion_only":
+        raise StateIntegrityError("non-active execution contracts must remain completion-only")
+    if coverage.get("stale_conflicted_policy") != "deny_covered_high_risk":
+        raise StateIntegrityError("stale/conflicted execution policy must fail closed")
+    if coverage.get("pre_tool_output_policy") != "allow_deny_only":
+        raise StateIntegrityError("execution PreToolUse output policy is invalid")
+    host_lock = coverage.get("host_lock")
+    if host_lock is not None:
+        host_lock = _require_record_keys(
+            host_lock,
+            field="coverage_manifest.host_lock",
+            required={"cli_version", "desktop_version", "snapshot_id", "sha256"},
+        )
+        for key in ("cli_version", "desktop_version", "snapshot_id"):
+            _execution_id(host_lock[key], f"coverage_manifest.host_lock.{key}")
+        _execution_sha(host_lock["sha256"], "coverage_manifest.host_lock.sha256")
+    adapters = coverage.get("adapters")
+    if not isinstance(adapters, list) or len(adapters) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError("execution adapter limit exceeded")
+    adapter_ids: set[str] = set()
+    for raw in adapters:
+        record = _require_record_keys(
+            raw,
+            field="coverage_manifest.adapters",
+            required={"id", "tool_name", "revision", "input_schema_sha256", "host_lock_sha256", "status"},
+        )
+        adapter_id = _execution_id(record["id"], "coverage_manifest.adapters.id")
+        _execution_id(record["tool_name"], "coverage_manifest.adapters.tool_name")
+        _execution_sha(record["input_schema_sha256"], "coverage_manifest.adapters.input_schema_sha256")
+        _execution_sha(record["host_lock_sha256"], "coverage_manifest.adapters.host_lock_sha256")
+        if adapter_id in adapter_ids or not isinstance(record.get("revision"), int) or record["revision"] < 1:
+            raise StateIntegrityError("execution adapter is duplicated or invalid")
+        if record.get("status") not in {"eligible", "unverified", "uncovered"}:
+            raise StateIntegrityError("execution adapter status is invalid")
+        adapter_ids.add(adapter_id)
+    uncovered = coverage.get("uncovered_write_surfaces")
+    if not isinstance(uncovered, list) or len(uncovered) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError("execution uncovered surface limit exceeded")
+    uncovered_ids: set[str] = set()
+    for raw in uncovered:
+        record = _require_record_keys(
+            raw,
+            field="coverage_manifest.uncovered_write_surfaces",
+            required={"id", "reason_code", "status"},
+        )
+        surface_id = _execution_id(record["id"], "uncovered_write_surfaces.id")
+        _execution_id(record["reason_code"], "uncovered_write_surfaces.reason_code")
+        if surface_id in uncovered_ids or record.get("status") != "uncovered":
+            raise StateIntegrityError("execution uncovered surface is duplicated or invalid")
+        uncovered_ids.add(surface_id)
+
+    drift = execution.get("drift")
+    if not isinstance(drift, list) or len(drift) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError("execution drift record limit exceeded")
+    drift_ids: set[str] = set()
+    for raw in drift:
+        record = _require_record_keys(
+            raw,
+            field="drift",
+            required={
+                "id", "source_id", "baseline_sha256", "observed_sha256",
+                "affected_ids", "state", "detected_at", "resolution_sha256",
+            },
+        )
+        drift_id = _execution_id(record["id"], "drift.id")
+        _execution_id(record["source_id"], "drift.source_id")
+        _execution_sha(record["baseline_sha256"], "drift.baseline_sha256")
+        _execution_sha(record["observed_sha256"], "drift.observed_sha256")
+        _execution_sha(record["resolution_sha256"], "drift.resolution_sha256", nullable=True)
+        _execution_time(record["detected_at"], "drift.detected_at")
+        affected = record.get("affected_ids")
+        if not isinstance(affected, list) or not affected or len(affected) > MAX_EXECUTION_RECORDS:
+            raise StateIntegrityError("execution drift affected ids are invalid")
+        for affected_id in affected:
+            _execution_id(affected_id, "drift.affected_ids")
+        if drift_id in drift_ids or record.get("state") not in {"detected", "resolved", "superseded"}:
+            raise StateIntegrityError("execution drift record is duplicated or invalid")
+        if record.get("state") == "resolved" and record.get("resolution_sha256") is None:
+            raise StateIntegrityError("resolved execution drift requires a resolution digest")
+        drift_ids.add(drift_id)
+
+    tickets = execution.get("action_tickets")
+    if not isinstance(tickets, list) or len(tickets) > MAX_EXECUTION_TICKETS:
+        raise StateIntegrityError("execution ticket limit exceeded")
+    ticket_ids: set[str] = set()
+    namespaces: set[tuple[str, str, str, str, int]] = set()
+    for raw in tickets:
+        record = _require_record_keys(
+            raw,
+            field="action_tickets",
+            required={
+                "id", "session_id", "turn_id", "actor_id", "tool_use_id",
+                "contract_revision", "semantic_action_id", "canonical_target_id",
+                "write_surface_id", "input_sha256", "state", "reserved_at",
+                "expires_at", "settled_at",
+            },
+        )
+        ticket_id = _execution_id(record["id"], "action_tickets.id")
+        ids = [
+            _execution_id(record[key], f"action_tickets.{key}")
+            for key in (
+                "session_id", "turn_id", "actor_id", "tool_use_id", "semantic_action_id",
+                "canonical_target_id", "write_surface_id",
+            )
+        ]
+        _execution_sha(record["input_sha256"], "action_tickets.input_sha256")
+        reserved_at = _execution_time(record["reserved_at"], "action_tickets.reserved_at")
+        expires_at = _execution_time(record["expires_at"], "action_tickets.expires_at")
+        settled_at = _execution_time(
+            record["settled_at"], "action_tickets.settled_at", nullable=True
+        )
+        ticket_revision = record.get("contract_revision")
+        namespace = (ids[0], ids[1], ids[2], ids[3], ticket_revision)
+        if (
+            ticket_id in ticket_ids
+            or namespace in namespaces
+            or not isinstance(ticket_revision, int)
+            or ticket_revision < 1
+            or record.get("state") not in TICKET_STATES
+        ):
+            raise StateIntegrityError("execution ticket identity, namespace, revision, or state is invalid")
+        if parse_time(expires_at) <= parse_time(reserved_at):
+            raise StateIntegrityError("execution ticket lease must expire after reservation")
+        if record["state"] == "reserved" and record.get("settled_at") is not None:
+            raise StateIntegrityError("reserved execution ticket cannot be settled")
+        if record["state"] != "reserved" and record.get("settled_at") is None:
+            raise StateIntegrityError("settled execution ticket needs a settlement timestamp")
+        if settled_at is not None and parse_time(settled_at) < parse_time(reserved_at):
+            raise StateIntegrityError("execution ticket cannot settle before reservation")
+        ticket_ids.add(ticket_id)
+        namespaces.add(namespace)
+
+    bounded_collections = {
+        "denials": MAX_EXECUTION_TICKETS,
+        "unified_exec_sessions": MAX_EXECUTION_RECORDS,
+        "delegations": MAX_EXECUTION_RECORDS,
+    }
+    for field, limit in bounded_collections.items():
+        values = execution.get(field)
+        if not isinstance(values, list) or len(values) > limit:
+            raise StateIntegrityError(f"execution field {field} exceeds its record limit")
+        ids: set[str] = set()
+        denial_keys: set[tuple[str, int, str, str]] = set()
+        for raw in values:
+            if field == "denials":
+                required = {
+                    "id", "deny_key", "reason_code", "contract_revision",
+                    "semantic_action_id", "canonical_target_id", "retry_count", "last_seen_at",
+                    "decision_id", "activation_prompt_id", "activation_prompt_sha256",
+                }
+            elif field == "unified_exec_sessions":
+                required = {
+                    "id", "session_id", "turn_id", "actor_id", "tool_use_id",
+                    "contract_revision", "creation_input_sha256", "stdin_coverage", "state",
+                }
+            else:
+                required = {
+                    "id", "parent_session_id", "parent_actor_id", "child_agent_id",
+                    "child_turn_id", "contract_revision", "contract_view_sha256", "relay_state",
+                }
+            record = _require_record_keys(raw, field=field, required=required)
+            record_id = _execution_id(record["id"], f"{field}.id")
+            if record_id in ids:
+                raise StateIntegrityError(f"execution field {field} has duplicate ids")
+            ids.add(record_id)
+            for key, value in record.items():
+                if key.endswith("_sha256"):
+                    _execution_sha(
+                        value,
+                        f"{field}.{key}",
+                        nullable=field == "denials" and key == "activation_prompt_sha256",
+                    )
+                elif key.endswith("_id") or key in {"deny_key", "reason_code"}:
+                    if value is not None:
+                        _execution_id(value, f"{field}.{key}")
+            revision_value = record.get("contract_revision")
+            if not isinstance(revision_value, int) or revision_value < 1:
+                raise StateIntegrityError(f"execution field {field} has invalid contract revision")
+            if field == "denials":
+                if not isinstance(record.get("retry_count"), int) or not 0 <= record["retry_count"] <= 8:
+                    raise StateIntegrityError("execution denial retry count is invalid")
+                _execution_time(record["last_seen_at"], "denials.last_seen_at")
+                for key in ("decision_id", "activation_prompt_id"):
+                    if record.get(key) is not None:
+                        _execution_id(record[key], f"denials.{key}")
+                _execution_sha(
+                    record.get("activation_prompt_sha256"),
+                    "denials.activation_prompt_sha256",
+                    nullable=True,
+                )
+                if record.get("reason_code") == "user_decision_required" and record.get("decision_id") is None:
+                    raise StateIntegrityError("user-decision denial requires decision id")
+                activation_fields = (
+                    record.get("activation_prompt_id"),
+                    record.get("activation_prompt_sha256"),
+                )
+                if (activation_fields[0] is None) != (activation_fields[1] is None):
+                    raise StateIntegrityError("execution denial activation binding is incomplete")
+                denial_identity = (
+                    str(record["deny_key"]),
+                    int(record["contract_revision"]),
+                    str(record["semantic_action_id"]),
+                    str(record["canonical_target_id"]),
+                )
+                if denial_identity in denial_keys:
+                    raise StateIntegrityError("execution denial identity is duplicated")
+                denial_keys.add(denial_identity)
+            elif field == "unified_exec_sessions":
+                if record.get("stdin_coverage") not in {"none", "creation_only"} or record.get("state") not in {"active", "closed", "expired_unsettled"}:
+                    raise StateIntegrityError("execution unified-exec coverage or state is invalid")
+            elif record.get("relay_state") not in {"pending", "relayed", "resolved", "failed"}:
+                raise StateIntegrityError("execution delegation relay state is invalid")
+
+
+def transition_execution_contract(
+    execution: dict[str, Any],
+    next_state: str,
+    *,
+    revision: int | None = None,
+    contract_id: str | None = None,
+    adoption: dict[str, Any] | None = None,
+    supersedes_revision: int | None = None,
+) -> None:
+    validate_execution_state(execution)
+    contract = execution["contract"]
+    current = str(contract["state"])
+    if next_state not in CONTRACT_TRANSITIONS.get(current, set()):
+        raise ValueError(f"invalid execution contract transition: {current} -> {next_state}")
+    if next_state == "candidate" and current in {"absent", "stale", "conflicted", "rejected"}:
+        previous_revision = int(contract["revision"])
+        if revision is None or revision <= previous_revision or contract_id is None:
+            raise ValueError("candidate transition requires a newer revision and contract id")
+        contract["revision"] = revision
+        contract["contract_id"] = contract_id
+        contract["adoption"] = None
+        contract["supersedes_revision"] = (
+            supersedes_revision if supersedes_revision is not None else (previous_revision or None)
+        )
+    elif revision is not None or contract_id is not None or supersedes_revision is not None:
+        raise ValueError("revision metadata is only valid for a candidate transition")
+    if next_state == "active":
+        if adoption is None:
+            raise ValueError("active transition requires an adoption record")
+        contract["adoption"] = adoption
+    elif adoption is not None:
+        raise ValueError("adoption is only valid for an active transition")
+    contract["state"] = next_state
+    contract["canonical_sha256"] = contract_content_hash(contract)
+    validate_execution_state(execution)
+
+
+def execution_contract_mode(execution: dict[str, Any]) -> str:
+    """Return the Phase-3 mode without granting authority to inactive state."""
+    validate_execution_state(execution)
+    contract = execution["contract"]
+    if contract["state"] != "active":
+        return "completion_only"
+    if any(
+        item.get("state") == "active"
+        for item in contract["authorization_candidates"]
+        if isinstance(item, dict)
+    ):
+        return "active_contract"
+    return "active_without_write_authority"
+
+
+def _bounded_contract_manifest(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("execution contract manifest must be a regular file")
+    if path.stat().st_size > MAX_EXECUTION_STATE_BYTES:
+        raise ValueError("execution contract manifest exceeds 64 KiB")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"execution contract manifest is unreadable: {type(exc).__name__}") from exc
+    if not isinstance(value, dict):
+        raise ValueError("execution contract manifest must contain one object")
+    return value
+
+
+def _manifest_records(
+    value: Any,
+    *,
+    field: str,
+    required: set[str],
+    limit: int = MAX_EXECUTION_RECORDS,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or len(value) > limit:
+        raise ValueError(f"execution contract manifest field {field} is invalid")
+    records: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict) or set(raw) != required:
+            raise ValueError(f"execution contract manifest field {field} has invalid keys")
+        records.append(dict(raw))
+    return records
+
+
+def adopt_execution_contract(
+    state: dict[str, Any],
+    prompt: dict[str, Any],
+    manifest_argument: str | None,
+) -> str:
+    """Explicitly adopt a bounded project manifest from one root-user prompt."""
+    if not manifest_argument or not manifest_argument.strip():
+        raise ValueError("context-guard adopt requires a project-relative JSON manifest")
+    project_root = Path(str(state.get("session", {}).get("cwd") or ".")).resolve()
+    manifest_path = (project_root / manifest_argument.strip()).resolve()
+    try:
+        manifest_path.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError("execution contract manifest must stay inside the project") from exc
+    manifest = _bounded_contract_manifest(manifest_path)
+    allowed = {
+        "protocol_version", "contract_id", "revision", "instruction_sources",
+        "phases", "gates", "authorization_candidates", "coverage_manifest",
+    }
+    if set(manifest) != allowed or manifest.get("protocol_version") != EXECUTION_PROTOCOL_VERSION:
+        raise ValueError("execution contract manifest has invalid top-level fields")
+    contract_id = _execution_id(manifest.get("contract_id"), "manifest.contract_id")
+    revision = manifest.get("revision")
+    if not isinstance(revision, int) or revision < 1:
+        raise ValueError("execution contract manifest revision must be positive")
+    execution = state["execution"]
+    current_revision = int(execution["contract"]["revision"])
+    if revision <= current_revision:
+        raise ValueError("execution contract manifest must advance the current revision")
+
+    sources = _manifest_records(
+        manifest.get("instruction_sources"),
+        field="instruction_sources",
+        required={"id", "kind", "origin_id", "revision", "sha256"},
+    )
+    manifest_sha256 = sha256_text(canonical_json(manifest))
+    normalized_sources = [
+        {**item, "state": "active"}
+        for item in sources
+    ]
+    normalized_sources.append(
+        {
+            "id": f"manifest-{contract_id}",
+            "kind": "contract_manifest",
+            "origin_id": contract_id,
+            "revision": revision,
+            "sha256": manifest_sha256,
+            "state": "active",
+        }
+    )
+
+    def phase_records(field: str) -> list[dict[str, Any]]:
+        records = _manifest_records(
+            manifest.get(field), field=field, required={"id", "depends_on"}
+        )
+        return [
+            {
+                "id": item["id"],
+                "state": "pending",
+                "depends_on": item["depends_on"],
+                "evidence_ids": [],
+                "resolution_sha256": None,
+            }
+            for item in records
+        ]
+
+    candidates = _manifest_records(
+        manifest.get("authorization_candidates"),
+        field="authorization_candidates",
+        required={
+            "id", "prompt_id", "prompt_sha256", "semantic_action_id",
+            "canonical_target_id", "write_surface_id", "binding",
+        },
+    )
+    normalized_candidates: list[dict[str, Any]] = []
+    for item in candidates:
+        binding = item.get("binding")
+        if binding not in {"deterministic", "natural_language"}:
+            raise ValueError("authorization candidate binding is invalid")
+        active = binding == "deterministic"
+        normalized_candidates.append(
+            {
+                **item,
+                "state": "active" if active else "candidate",
+                "activation": (
+                    {
+                        "prompt_id": prompt["id"],
+                        "prompt_sha256": prompt["sha256"],
+                        "activated_at": utc_now(),
+                    }
+                    if active
+                    else None
+                ),
+            }
+        )
+
+    coverage = manifest.get("coverage_manifest")
+    if not isinstance(coverage, dict):
+        raise ValueError("execution contract coverage manifest is missing")
+    expected_coverage = {
+        "host_lock", "adapters", "uncovered_write_surfaces",
+        "unclassified_high_risk_policy", "non_active_contract_policy",
+        "stale_conflicted_policy", "pre_tool_output_policy",
+    }
+    if set(coverage) != expected_coverage:
+        raise ValueError("execution contract coverage manifest has invalid fields")
+
+    candidate_execution = dormant_execution_state()
+    transition_execution_contract(
+        candidate_execution,
+        "candidate",
+        revision=revision,
+        contract_id=contract_id,
+        supersedes_revision=current_revision or None,
+    )
+    candidate_execution["instruction_sources"] = normalized_sources
+    candidate_execution["contract"]["phases"] = phase_records("phases")
+    candidate_execution["contract"]["gates"] = phase_records("gates")
+    candidate_execution["contract"]["authorization_candidates"] = normalized_candidates
+    candidate_execution["coverage_manifest"] = json.loads(canonical_json(coverage))
+    candidate_execution["contract"]["canonical_sha256"] = contract_content_hash(
+        candidate_execution["contract"]
+    )
+    validate_execution_state(candidate_execution)
+
+    plan_sources = [
+        item for item in normalized_sources if item.get("kind") == "plan_snapshot"
+    ]
+    if len(plan_sources) > 1:
+        raise ValueError("execution contract may bind at most one plan snapshot")
+    current_plan = state.get("work_state", {}).get("plan_snapshot")
+    current_plan_sha = (
+        current_plan.get("semantic_sha256")
+        if isinstance(current_plan, dict)
+        else None
+    )
+    if plan_sources and current_plan_sha != plan_sources[0]["sha256"]:
+        for item in candidate_execution["contract"]["authorization_candidates"]:
+            item["state"] = "candidate"
+            item["activation"] = None
+        candidate_execution["contract"]["canonical_sha256"] = contract_content_hash(
+            candidate_execution["contract"]
+        )
+        transition_execution_contract(candidate_execution, "conflicted")
+        state["execution"] = candidate_execution
+        return "Execution contract recorded as conflicted because the current plan does not match its bound digest."
+
+    candidate_hash = candidate_execution["contract"]["canonical_sha256"]
+    adoption = {
+        "prompt_id": prompt["id"],
+        "prompt_sha256": prompt["sha256"],
+        "contract_sha256": candidate_hash,
+        "revision": revision,
+        "adopted_at": utc_now(),
+    }
+    transition_execution_contract(candidate_execution, "active", adoption=adoption)
+    state["execution"] = candidate_execution
+    return (
+        f"Execution contract {contract_id} revision {revision} adopted explicitly; "
+        f"mode={execution_contract_mode(candidate_execution)}."
+    )
+
+
+def transition_execution_phase(
+    execution: dict[str, Any],
+    collection: str,
+    record_id: str,
+    next_state: str,
+    *,
+    resolution_sha256: str | None = None,
+) -> None:
+    validate_execution_state(execution)
+    if collection not in {"phases", "gates"}:
+        raise ValueError("execution phase collection must be phases or gates")
+    record = next(
+        (
+            item
+            for item in execution["contract"][collection]
+            if isinstance(item, dict) and item.get("id") == record_id
+        ),
+        None,
+    )
+    if record is None:
+        raise ValueError(f"unknown execution {collection} id: {record_id}")
+    current = str(record.get("state") or "")
+    if next_state not in PHASE_TRANSITIONS.get(current, set()):
+        raise ValueError(f"invalid execution phase transition: {current} -> {next_state}")
+    if current in {"stale", "conflicted"} and next_state == "pending":
+        _execution_sha(resolution_sha256, "execution phase resolution_sha256")
+        record["resolution_sha256"] = resolution_sha256
+    elif resolution_sha256 is not None:
+        raise ValueError("resolution digest is only valid when reopening stale/conflicted state")
+    record["state"] = next_state
+    execution["contract"]["canonical_sha256"] = contract_content_hash(
+        execution["contract"]
+    )
+    validate_execution_state(execution)
+
+
+def transition_execution_ticket(
+    execution: dict[str, Any], ticket_id: str, next_state: str, *, settled_at: str
+) -> None:
+    validate_execution_state(execution)
+    ticket = next(
+        (
+            item
+            for item in execution["action_tickets"]
+            if isinstance(item, dict) and item.get("id") == ticket_id
+        ),
+        None,
+    )
+    if ticket is None:
+        raise ValueError(f"unknown execution ticket id: {ticket_id}")
+    current = str(ticket.get("state") or "")
+    if next_state not in TICKET_TRANSITIONS.get(current, set()):
+        raise ValueError(f"invalid execution ticket transition: {current} -> {next_state}")
+    _execution_time(settled_at, "action_tickets.settled_at")
+    ticket["state"] = next_state
+    ticket["settled_at"] = settled_at
+    validate_execution_state(execution)
+
+
+def expire_execution_tickets(execution: dict[str, Any], *, observed_at: str) -> list[str]:
+    """Settle expired reservations without claiming that no side effect occurred."""
+    validate_execution_state(execution)
+    now = parse_time(observed_at)
+    if now is None:
+        raise ValueError("observed_at must be an ISO-8601 timestamp")
+    expired: list[str] = []
+    for ticket in execution["action_tickets"]:
+        expires_at = parse_time(ticket.get("expires_at"))
+        if ticket.get("state") == "reserved" and expires_at is not None and expires_at <= now:
+            ticket["state"] = "expired_unsettled"
+            ticket["settled_at"] = observed_at
+            expired.append(str(ticket["id"]))
+    validate_execution_state(execution)
+    return expired
+
+
+def validate_pre_tool_decision(decision: Any) -> None:
+    """Validate the future Phase-4 output subset without activating a Hook."""
+    if not isinstance(decision, dict) or set(decision) != {"hookSpecificOutput"}:
+        raise ValueError("PreToolUse decision must contain only hookSpecificOutput")
+    output = decision.get("hookSpecificOutput")
+    if not isinstance(output, dict):
+        raise ValueError("PreToolUse hookSpecificOutput must be an object")
+    allowed = {"hookEventName", "permissionDecision", "permissionDecisionReason"}
+    if not set(output).issubset(allowed) or output.get("hookEventName") != "PreToolUse":
+        raise ValueError("unsupported PreToolUse output field")
+    permission = output.get("permissionDecision")
+    if permission not in {"allow", "deny"}:
+        raise ValueError("Phase-4 PreToolUse decision must be allow or deny")
+    reason = output.get("permissionDecisionReason")
+    if permission == "deny" and (not isinstance(reason, str) or not reason or len(reason) > 512):
+        raise ValueError("PreToolUse deny requires a bounded reason")
+    if permission == "allow" and reason is not None and (
+        not isinstance(reason, str) or len(reason) > 512
+    ):
+        raise ValueError("PreToolUse allow reason is invalid")
+
+
+def execution_state_is_dormant(execution: Any) -> bool:
+    return isinstance(execution, dict) and canonical_json(execution) == canonical_json(dormant_execution_state())
+
+
+def project_state_to_schema6(state: dict[str, Any]) -> dict[str, Any]:
+    """Return a lossless schema-6 projection only for a dormant execution ledger."""
+    if state.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError("schema-6 projection requires current private state")
+    validate_state_integrity(state)
+    if not execution_state_is_dormant(state.get("execution")):
+        raise ValueError("cannot project non-dormant execution state to schema 6")
+    projected = json.loads(canonical_json(state))
+    projected.pop("execution", None)
+    projected["schema_version"] = 6
+    projected["content_hash"] = state_content_hash(projected)
+    return projected
+
+
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, 3, 4, 5, SCHEMA_VERSION}:
+    if version not in {1, 2, 3, 4, 5, 6, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -783,18 +1759,22 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
             "completion_attempt",
             "work_state",
             "agents",
+            "execution",
         }
     elif version == 2:
-        required = STATE_REQUIRED_KEYS - {"integrity", "work_state", "agents"}
+        required = STATE_REQUIRED_KEYS - {"integrity", "work_state", "agents", "execution"}
     elif version == 3:
-        required = STATE_REQUIRED_KEYS - {"decision_log"}
+        required = STATE_REQUIRED_KEYS - {"decision_log", "execution"}
     elif version == 5:
         required = STATE_REQUIRED_KEYS - {
             "assets",
             "asset_sequence",
             "proofs",
             "proof_sequence",
+            "execution",
         }
+    elif version in {4, 6}:
+        required = STATE_REQUIRED_KEYS - {"execution"}
     else:
         required = STATE_REQUIRED_KEYS
     missing = sorted(required - set(state))
@@ -826,6 +1806,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         if key in state and not isinstance(state.get(key), list):
             raise StateIntegrityError(f"private state field {key} must be a list")
     if version == SCHEMA_VERSION:
+        validate_execution_state(state.get("execution"))
         asset_ids: set[str] = set()
         for asset in state.get("assets", []):
             if (
@@ -974,6 +1955,7 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "completion_checkpoint": None,
         "continuation_attempts": 0,
         "decision_log": [],
+        "execution": dormant_execution_state(),
         "integrity": {
             "status": "ok",
             "issue": None,
@@ -1007,7 +1989,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["status"] = "pending"
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
-    elif version not in {2, 3, 4, 5, SCHEMA_VERSION}:
+    elif version not in {2, 3, 4, 5, 6, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
@@ -1036,7 +2018,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             item.setdefault("observed_outcome", outcome)
             migrated_decisions.append(item)
         state["decision_log"] = migrated_decisions[-DECISION_LOG_LIMIT:]
-    if version in {1, 2, 3, 4, 5}:
+    if version in {1, 2, 3, 4, 5, 6}:
         # Turn tokens and partially staged controls are intentionally ephemeral.
         # Preserve the durable ledger/history while requiring a fresh protocol
         # token after a schema upgrade.
@@ -1085,6 +2067,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             attempt.setdefault("staged_at", None)
     state.setdefault("continuation_attempts", 0)
     state.setdefault("decision_log", [])
+    state.setdefault("execution", dormant_execution_state())
     session = state.setdefault("session", {})
     reconciliation = session.setdefault("asset_reconciliation", {})
     if isinstance(reconciliation, dict):
@@ -2200,7 +3183,7 @@ def is_control_prompt(text: str) -> bool:
     return bool(
         stripped.startswith(INTERNAL_CONTINUATION_PREFIX)
         or re.fullmatch(
-            r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover)(?:\s+.+)?)?",
+            r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover|adopt)(?:\s+.+)?)?",
             stripped,
             re.I,
         )
@@ -2210,7 +3193,7 @@ def is_control_prompt(text: str) -> bool:
 def control_action(text: str) -> tuple[str | None, str | None]:
     stripped = text.strip()
     match = re.fullmatch(
-        r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover)(?:\s+(.+))?)?",
+        r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover|adopt)(?:\s+(.+))?)?",
         stripped,
         re.I,
     )
@@ -2635,6 +3618,14 @@ def status_context(state: dict[str, Any]) -> str:
         if decisions and isinstance(decisions[-1], dict)
         else "none"
     )
+    execution = state.get("execution", dormant_execution_state())
+    execution_state = execution.get("contract", {}).get("state", "absent")
+    execution_mode = execution_contract_mode(execution)
+    drift_count = sum(
+        item.get("state") == "detected"
+        for item in execution.get("drift", [])
+        if isinstance(item, dict)
+    )
     return (
         "Context Guard status: "
         f"active={state['mode']['active']}, "
@@ -2642,6 +3633,10 @@ def status_context(state: dict[str, Any]) -> str:
         f"stop_protocol={STOP_PROTOCOL_VERSION}, "
         f"classifier={CLASSIFIER_VERSION}, "
         f"proof_protocol={PROOF_PROTOCOL_VERSION}, "
+        f"plan_mirror={plan_mirror_health(state)}, "
+        f"execution_contract={execution_state}, "
+        f"execution_mode={execution_mode}, "
+        f"execution_drift={drift_count}, "
         f"last_decision={last_decision}, "
         f"requirements={len(state['requirements'])}, "
         f"acceptance={len(state['acceptance_items'])}, "
@@ -2658,8 +3653,22 @@ def diagnose_context(state: dict[str, Any], limit: int = 5) -> str:
         for item in state.get("decision_log", [])[-max(1, min(limit, 10)) :]
         if isinstance(item, dict)
     ]
+    mirror = plan_mirror_health(state)
+    execution = state.get("execution", dormant_execution_state())
+    contract = execution.get("contract", {})
+    coverage = execution.get("coverage_manifest", {})
+    execution_summary = (
+        f"execution={contract.get('state', 'absent')}/r{contract.get('revision', 0)}, "
+        f"mode={execution_contract_mode(execution)}, "
+        f"eligible_adapters={sum(item.get('status') == 'eligible' for item in coverage.get('adapters', []) if isinstance(item, dict))}, "
+        f"uncovered={len(coverage.get('uncovered_write_surfaces', []))}, "
+        f"drift={sum(item.get('state') == 'detected' for item in execution.get('drift', []) if isinstance(item, dict))}"
+    )
     if not decisions:
-        return f"Context Guard classifier {CLASSIFIER_VERSION}: no Stop decisions recorded."
+        return (
+            f"Context Guard classifier {CLASSIFIER_VERSION}, plan mirror {mirror}: "
+            f"{execution_summary}; no Stop decisions recorded."
+        )
     summaries = []
     for item in decisions:
         reasons = ",".join(str(value) for value in item.get("reason_codes", [])[:4])
@@ -2670,7 +3679,7 @@ def diagnose_context(state: dict[str, Any], limit: int = 5) -> str:
         )
     return (
         f"Context Guard Stop protocol {STOP_PROTOCOL_VERSION}, classifier "
-        f"{CLASSIFIER_VERSION} recent decisions: "
+        f"{CLASSIFIER_VERSION}, plan mirror {mirror}, {execution_summary}, recent decisions: "
         + "; ".join(summaries)
         + ". Raw prompts and replies are not included."
     )
@@ -2700,7 +3709,7 @@ def tool_actor(state: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str
 def evidence_capabilities(tool_name: str) -> list[str]:
     normalized = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
     capabilities = {"artifact"}
-    if any(token in normalized for token in ("view_image", "image", "screenshot")):
+    if _is_registered_visual_tool(tool_name):
         capabilities.add("visual")
         capabilities.add("ui")
     if any(token in normalized for token in ("computer", "browser", "chrome")):
@@ -2894,6 +3903,40 @@ def recovery_packet(session_dir: Path, state: dict[str, Any]) -> str:
                 lines.append(
                     f"- [{item.get('status', 'pending')}] {bounded(item.get('step', ''), 420)}"
                 )
+        sections.append("\n".join(lines))
+    execution = state.get("execution")
+    if isinstance(execution, dict) and not execution_state_is_dormant(execution):
+        contract = execution.get("contract", {})
+        lines = [
+            "## Execution contract recovery state",
+            f"- state: {contract.get('state', 'unknown')}",
+            f"- revision: {contract.get('revision', 0)}",
+            f"- mode: {execution_contract_mode(execution)}",
+        ]
+        unfinished = [
+            str(item.get("id"))
+            for collection in ("phases", "gates")
+            for item in contract.get(collection, [])
+            if isinstance(item, dict)
+            and item.get("state") not in {"passed", "waived", "superseded"}
+        ]
+        detected = [
+            str(item.get("id"))
+            for item in execution.get("drift", [])
+            if isinstance(item, dict) and item.get("state") == "detected"
+        ]
+        lines.append("- unfinished: " + (", ".join(unfinished[:32]) or "none"))
+        lines.append("- detected drift: " + (", ".join(detected[:32]) or "none"))
+        lines.append(
+            "- coverage: eligible="
+            + str(sum(
+                item.get("status") == "eligible"
+                for item in execution.get("coverage_manifest", {}).get("adapters", [])
+                if isinstance(item, dict)
+            ))
+            + ", uncovered="
+            + str(len(execution.get("coverage_manifest", {}).get("uncovered_write_surfaces", [])))
+        )
         sections.append("\n".join(lines))
     agent_items = [
         item
@@ -3778,6 +4821,11 @@ def handle_user_prompt(
         context = status_context(state)
     elif action == "diagnose":
         context = diagnose_context(state)
+    elif action == "adopt":
+        try:
+            context = adopt_execution_contract(state, prompt, argument)
+        except (OSError, StateIntegrityError, ValueError) as exc:
+            context = "Execution contract adoption rejected: " + bounded(str(exc), 400)
     elif action == "export":
         export_requested = True
     elif action == "rollover":
@@ -3823,7 +4871,7 @@ def handle_user_prompt(
         state["mode"]["active"]
         and not state["mode"]["manual_off"]
         and state.get("integrity", {}).get("status") != "failed"
-        and action not in {"on", "off", "status", "export", "rollover"}
+        and action not in {"on", "off", "status", "export", "rollover", "adopt"}
     )
     if needs_private_completion:
         turn_id, token = begin_completion_attempt(state, payload, prompt["id"])
@@ -3893,6 +4941,49 @@ def has_hard_tool_failure(diagnostic: str) -> bool:
     )
 
 
+REGISTERED_VISUAL_TOOL_ALIASES = {
+    "view_image",
+    "functions_view_image",
+    "tools_view_image",
+}
+
+
+def _visual_image_content_blocks(response: Any) -> list[str]:
+    """Normalize only the registered first-party visual receipt shapes."""
+    if isinstance(response, list):
+        raw_blocks = response
+    elif isinstance(response, dict) and isinstance(response.get("content"), list):
+        raw_blocks = response["content"]
+    elif isinstance(response, dict) and response.get("type") == "input_image":
+        raw_blocks = [response]
+    else:
+        raw_blocks = []
+    blocks: list[str] = []
+    for value in raw_blocks[:16]:
+        if not isinstance(value, dict) or value.get("type") != "input_image":
+            continue
+        image_url = value.get("image_url")
+        if isinstance(image_url, str):
+            blocks.append(image_url)
+        if len(blocks) >= 8:
+            break
+    return blocks
+
+
+def _is_registered_visual_tool(tool_name: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(tool_name).lower()).strip("_")
+    return normalized in REGISTERED_VISUAL_TOOL_ALIASES
+
+
+def _is_image_data_url(value: Any) -> bool:
+    match = DATA_URL_RE.match(value) if isinstance(value, str) else None
+    return bool(
+        match is not None
+        and (match.group("mime") or "").lower().startswith("image/")
+        and (match.group("body") or "").strip()
+    )
+
+
 def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
     response = payload.get("tool_response")
     diagnostic = "\n".join(response_text_values(response))
@@ -3922,17 +5013,25 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
             or response.get("success") is True
         ):
             return "success", "structured_status"
-        image_url = response.get("image_url")
-        image_match = DATA_URL_RE.match(image_url) if isinstance(image_url, str) else None
-        if (
-            image_match is not None
-            and (image_match.group("mime") or "").lower().startswith("image/")
-            and "view_image"
-            in re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower())
-        ):
-            return "success", "structured_visual_result"
     if has_hard_tool_failure(diagnostic):
         return "failed", "failure_marker"
+    if _is_registered_visual_tool(str(payload.get("tool_name") or "")):
+        # Top-level data URL object form.
+        if isinstance(response, dict):
+            image_url = response.get("image_url")
+            if _is_image_data_url(image_url):
+                return "success", "structured_visual_result"
+        # Structured content-block form (e.g., input_image arrays).
+        visual_blocks = _visual_image_content_blocks(response)
+        if visual_blocks:
+            has_valid = any(_is_image_data_url(block) for block in visual_blocks)
+            if has_valid:
+                return "success", "structured_visual_result"
+    if (
+        tool_is_update_plan(str(payload.get("tool_name") or ""))
+        and UPDATE_PLAN_SUCCESS_TOOL_RESPONSE_RE.fullmatch(diagnostic)
+    ):
+        return "success", "first_party_plan_receipt"
     if AUTHORITATIVE_SUCCESS_TOOL_RESPONSE_RE.search(diagnostic):
         return "success", "authoritative_success_marker"
     if FAILED_TOOL_RESPONSE_RE.search(diagnostic):
@@ -3949,6 +5048,72 @@ def tool_outcome(payload: dict[str, Any]) -> str:
 def tool_is_update_plan(tool_name: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
     return normalized == "update_plan" or normalized.endswith("_update_plan")
+
+
+def plan_semantic_sha256(steps: list[dict[str, str]], explanation: str | None = None) -> str:
+    semantic: dict[str, Any] = {"steps": steps}
+    if isinstance(explanation, str) and explanation.strip():
+        semantic["explanation"] = bounded(explanation, 800)
+    return sha256_text(canonical_json(semantic))
+
+
+def observe_plan_drift(state: dict[str, Any], observed_sha256: str) -> None:
+    """Record adopted-plan drift without changing the Codex-owned plan."""
+    execution = state.get("execution")
+    if not isinstance(execution, dict):
+        return
+    validate_execution_state(execution)
+    contract = execution["contract"]
+    if contract["state"] not in {"active", "stale"}:
+        return
+    sources = [
+        item
+        for item in execution["instruction_sources"]
+        if isinstance(item, dict)
+        and item.get("kind") == "plan_snapshot"
+        and item.get("state") in {"active", "stale"}
+    ]
+    if len(sources) != 1:
+        return
+    source = sources[0]
+    baseline_sha256 = str(source["sha256"])
+    if hmac.compare_digest(baseline_sha256, observed_sha256):
+        return
+    if any(
+        item.get("source_id") == source["id"]
+        and item.get("observed_sha256") == observed_sha256
+        and item.get("state") == "detected"
+        for item in execution["drift"]
+        if isinstance(item, dict)
+    ):
+        return
+    affected_ids = [
+        str(item["id"])
+        for collection in ("phases", "gates")
+        for item in contract[collection]
+        if isinstance(item, dict) and item.get("state") != "superseded"
+    ] or [str(contract["contract_id"])]
+    execution["drift"].append(
+        {
+            "id": f"drift-{len(execution['drift']) + 1}",
+            "source_id": source["id"],
+            "baseline_sha256": baseline_sha256,
+            "observed_sha256": observed_sha256,
+            "affected_ids": affected_ids,
+            "state": "detected",
+            "detected_at": utc_now(),
+            "resolution_sha256": None,
+        }
+    )
+    source["state"] = "stale"
+    if contract["state"] == "active":
+        transition_execution_contract(execution, "stale")
+    for collection in ("phases", "gates"):
+        for item in contract[collection]:
+            if item.get("state") == "passed":
+                item["state"] = "stale"
+    contract["canonical_sha256"] = contract_content_hash(contract)
+    validate_execution_state(execution)
 
 
 def capture_plan_snapshot(
@@ -3973,6 +5138,11 @@ def capture_plan_snapshot(
     if not steps:
         return
     explanation = tool_input.get("explanation")
+    normalized_explanation = (
+        bounded(explanation, 800)
+        if isinstance(explanation, str) and explanation.strip()
+        else None
+    )
     snapshot: dict[str, Any] = {
         "source": "update_plan",
         "updated_at": utc_now(),
@@ -3980,10 +5150,38 @@ def capture_plan_snapshot(
         "tool_use_id": str(payload.get("tool_use_id") or ""),
         "steps": steps,
     }
-    if isinstance(explanation, str) and explanation.strip():
-        snapshot["explanation"] = bounded(explanation, 800)
+    if normalized_explanation is not None:
+        snapshot["explanation"] = normalized_explanation
+    snapshot["semantic_sha256"] = plan_semantic_sha256(
+        steps, normalized_explanation
+    )
     snapshot["sha256"] = sha256_text(canonical_json(snapshot))
     state.setdefault("work_state", {})["plan_snapshot"] = snapshot
+    observe_plan_drift(state, snapshot["semantic_sha256"])
+
+
+def plan_mirror_health(state: dict[str, Any]) -> str:
+    snapshot = state.get("work_state", {}).get("plan_snapshot")
+    if snapshot is None:
+        return "missing"
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("steps"), list):
+        return "degraded"
+    steps = snapshot.get("steps")
+    if not steps or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("step"), str)
+        or item.get("status") not in {"pending", "in_progress", "completed"}
+        for item in steps
+    ):
+        return "degraded"
+    expected_hash = snapshot.get("sha256")
+    unhashed = dict(snapshot)
+    unhashed.pop("sha256", None)
+    if not isinstance(expected_hash, str) or expected_hash != sha256_text(
+        canonical_json(unhashed)
+    ):
+        return "degraded"
+    return "healthy"
 
 
 def shell_control_operator_present(command: str) -> bool:
@@ -4821,7 +6019,8 @@ def handle_stop(
         }
 
     legacy_checkpoint = CHECKPOINT_RE.search(text) is not None
-    leaked_private_metadata = PRIVATE_METADATA_RE.search(text) is not None
+    privacy_classification, privacy_reasons = classify_private_metadata(text)
+    leaked_private_metadata = privacy_classification != "explanatory_reference"
     turn_matches = (
         isinstance(attempt, dict)
         and str(attempt.get("turn_id")) == turn_id
@@ -4852,7 +6051,11 @@ def handle_stop(
         decision.update(
             {
                 "outcome": "fail_closed_integrity",
-                "reason_codes": ["private_metadata_leak"],
+                "reason_codes": [
+                    "private_metadata_leak",
+                    privacy_classification,
+                    *privacy_reasons,
+                ],
                 "decision_source": "integrity",
             }
         )

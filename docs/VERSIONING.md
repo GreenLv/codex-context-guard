@@ -91,16 +91,46 @@ not as a measure of code volume.
   generic Chinese apply wording. A valid structured `view_image` image data URL
   is successful visual evidence while explicit failures remain authoritative.
   The consumed 0.7.6 cache remains immutable.
+- `0.7.8` is a consumed compatibility candidate. It advanced the classifier to
+  2.2.2 but was installed before the exact `Plan updated` receipt and required
+  regression fixtures were complete. Its cache remains immutable.
+- `0.7.9` completes the compatibility fixes and advances the classifier to
+  2.3.0. Real `update_plan` string receipts can update the read-only plan
+  mirror; Stop privacy uses bounded control-text categories without retaining
+  sensitive values; and visual receipts accept legacy data-URL objects and
+  desktop `input_image` content blocks. It adds no execution authority.
 - `0.7.x` contains compatible fixes inside schema 6 and Proof protocol 1.x.
   Installed cache bytes remain immutable: a runtime-byte change requires a new
   patch version.
+- `0.8.0` is the consumed intermediate schema-7 Phase 2 candidate. It was
+  installed before its state-schema contract was complete and remains
+  immutable.
+- `0.8.1` is the first completed Phase 2 candidate. Schema 7 and execution
+  protocol 1.0.0 add a dormant, canonical-hash-bound model for instruction
+  sources, contracts, phases, gates, authorization candidates, drift, exact
+  host coverage, ticket namespaces, unified-exec sessions, and delegated actor
+  bindings. Schema 6 migrates without losing durable evidence; dormant schema
+  7 can project back for rollback reading, while a non-dormant ledger refuses a
+  lossy downgrade. No contract is activated and no authority is granted.
+- `0.8.2` is a consumed intermediate Phase 3 package identity. Its installed
+  bytes remain immutable; it was neither tagged nor released.
+- `0.8.3` is the first completed Phase 3 candidate. A root-user-only
+  `context-guard adopt <project-relative-json>` control can adopt a bounded,
+  hash-only deterministic contract. Natural-language candidates remain
+  non-authoritative. Optional native-plan binding uses a semantic digest;
+  semantic drift marks the contract and affected records stale without
+  modifying Codex Plan. Status, diagnosis, and recovery expose only bounded
+  IDs, counts, states, and hashes. The candidate does not add `PreToolUse`,
+  block tools, reserve tickets, commit, publish, or grant authority to
+  uncovered surfaces.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
 schema migration and historical-cache recovery have native acceptance on every
 supported platform; Stop benchmarks and privacy thresholds have operational
-evidence across at least two minor series; sibling shared-core parity is a
-maintained gate; and rollback behavior lets already-open tasks finish safely.
+evidence across at least two minor series; this public repository is the sole
+implementation upstream and downstream consumers pin immutable public commits;
+and rollback behavior lets already-open tasks finish safely.
 
 Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
 for an `enforced` item. It does not claim arbitrary pixel understanding,

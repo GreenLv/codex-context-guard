@@ -22,17 +22,15 @@ authoritative.
 
 ## Repository and privacy boundaries
 
-- This public product and the maintainer's private configuration product are
-  sibling products with selected shared-core files, not a public generated tree
-  and not an automatic bidirectional mirror.
-- The public shared core comprises the state schema, Hook definitions, runtime,
-  runtime regression tests, Context Guard Skill, Skill UI metadata, and
-  successor-pack reference. Keep exact sibling parity when a change touches one
-  of these files, using the private maintainer repository's read-only parity
-  checker when that repository is available.
-- Public-owned packaging, installer, documentation, governance, CI, marketplace
-  metadata, release notes, and release history remain independently reviewed.
-  Never overwrite them wholesale from a sibling repository.
+- This public repository is the sole implementation owner for Context Guard.
+  Runtime, schema, Hook definitions, tests, Skill content, packaging, installer,
+  documentation, governance, CI, and release history all change here first.
+- A private configuration repository may retain a version-and-commit consumer
+  index, private overlays, and platform-specific acceptance records. It must not
+  maintain a second Context Guard implementation or serve as an upstream source.
+- Keep contribution flow one-way: land and validate product changes here, then
+  update consumers to an immutable public commit. Never import consumer-private
+  configuration, state, prompts, handoffs, paths, or identities into this tree.
 - Never commit raw prompts, transcripts, plugin-private state, proof manifests,
   credentials, tokens, private handoffs, local paths, user identifiers, runtime
   caches, archives, generated files, or binary filesystem metadata.
@@ -59,7 +57,7 @@ authoritative.
   behavior change or bug fix. Prefer a regression that fails on the old code.
 - Keep all eight Hook events and both POSIX and Windows command forms aligned
   unless an intentional versioned contract change says otherwise.
-- A Hook definition, state schema, observable behavior, shared runtime byte, or
+- A Hook definition, state schema, observable behavior, runtime byte, or
   installed lifecycle change requires a new plugin version and release-note
   entry. Keep `pyproject.toml`, `.codex-plugin/plugin.json`, validator constants,
   protocol documentation, and compatibility claims consistent.
@@ -137,8 +135,9 @@ git diff --check
   `scripts/smoke_installed.py` against the installed plugin root. Use a fresh
   Codex task without trust bypass when the observable trusted-Hook lifecycle is
   in scope.
-- Validate public/private shared-core parity when shared files change. Record
-  capability-aware platform skips precisely; never turn a skip into a pass.
+- Validate the standalone public product and any consumer pin independently.
+  Record capability-aware platform skips precisely; never turn a skip into a
+  pass.
 - Ensure validation commands propagate the first real failure. After a failure,
   classify it and change a relevant variable before retrying.
 
@@ -152,8 +151,8 @@ git diff --check
   release commit.
 - Release in this order:
 
-1. Freeze the exact version and commit; verify clean public/private boundaries
-   and shared-core parity.
+1. Freeze the exact version and commit; verify the standalone public boundary
+   and any downstream consumer contract separately.
 2. Pass local source, test, lint, compile, audit, isolated install/lifecycle,
    and required native-platform gates for that exact source.
 3. Push `main`, then require green main CI and HOL for the release commit.
