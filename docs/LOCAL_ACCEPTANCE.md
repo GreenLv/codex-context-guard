@@ -22,8 +22,17 @@ The 0.8.6 candidate disables bytecode writing inside the smoke's direct import
 and restores the prior process setting afterward. Its focused regression
 removes the outer environment guard, runs the full smoke against a disposable
 plugin root, and requires both `SMOKE_PASS` and the absence of `__pycache__`,
-`.pyc`, and `.pyo`. Source gates, isolated install/no-op/parity, publication,
-downstream pinning, and native Windows rerun remain separately pending.
+`.pyc`, and `.pyo`. Exact candidate commit
+`e28e5aa90016d60d3678d2edc9124fa3e2b7d833` passes the public repository and
+privacy gates, 202 tests with two capability-aware skips, source self-test,
+Ruff, compilation, and diff checks on macOS with Python 3.12.2. A disposable
+Codex CLI 0.149.0 home installs 0.8.6 through sanitized staging, retains
+source/staging/live/archive parity, passes installed self-test, and completes a
+strict second no-op. With the outer bytecode environment variable explicitly
+removed, its full installed smoke passes without changing an all-file live-cache
+SHA-256 snapshot or leaving `.git`, `__pycache__`, `.pyc`, or `.pyo` anywhere in
+the staging/live/archive roots. Main/tag CI, tag, Release, downstream pinning,
+and native Windows 0.8.6 rerun remain separately pending.
 
 ## 0.8.5 release acceptance (2026-08-25)
 

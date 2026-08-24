@@ -29,7 +29,8 @@
 ### 验证
 
 - Windows 原生 0.8.5 已成功完成受管 0.8.3 到 0.8.5 迁移、严格 no-op、只读读回、八 Hook 自检、lifecycle assertions 和 manifest parity，但 smoke 直接导入向 live cache 写入一枚 `.pyc`，因此最终验收正确失败；Windows 随即停止，未删除该文件，也未更新下游状态。
-- 候选源码、隔离安装、无 bytecode lifecycle、CI、tag、Release、下游 pin 和 Windows 原生复验仍是相互独立的门。
+- macOS 已通过公开仓库/隐私门、202 项测试（含 2 项能力相关 skip）、八 Hook 自检、Ruff、编译和精确候选 0.8.6 隔离安装。第二次 apply 是严格 no-op；移除外层 bytecode 环境保护后，完整 smoke 不改变全文件 SHA-256 快照；source、staging、live cache 和 archive 保持字节一致，且无 Git 或 bytecode 残留。
+- Main/tag CI、注释 tag、GitHub Release、下游 pin 和 Windows 原生 0.8.6 复验仍是相互独立的门。
 
 ## 0.8.5 - 2026-08-25
 

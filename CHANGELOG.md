@@ -29,7 +29,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Validation
 
 - Native Windows 0.8.5 successfully completed the managed 0.8.3-to-0.8.5 migration, strict no-op, read-only readback, eight-Hook self-test, lifecycle assertions, and manifest parity, but correctly failed final acceptance when the smoke's direct import wrote one `.pyc` into the live cache. It stopped without deleting that artifact or updating downstream state.
-- Candidate source, isolated install, no-bytecode lifecycle, CI, tag, Release, downstream pin, and native Windows rerun remain separate gates.
+- The public repository/privacy gates, 202 tests with two capability-aware skips, eight-Hook self-test, Ruff, compilation, and an exact-candidate isolated 0.8.6 install pass on macOS. Its second apply is a strict no-op; a full smoke without the outer bytecode environment guard leaves an all-file SHA-256 snapshot unchanged; and source, staging, live cache, and archive remain byte-identical with no Git or bytecode residue.
+- Main/tag CI, the annotated tag, GitHub Release, downstream pin, and native Windows 0.8.6 rerun remain separate gates.
 
 ## 0.8.5 - 2026-08-25
 

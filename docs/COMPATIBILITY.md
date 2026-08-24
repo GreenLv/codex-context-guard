@@ -36,6 +36,14 @@ environment-independent no-bytecode regression. Native Windows 0.8.6 remains
 pending and is not inferred from macOS or CI. All schema, protocol, classifier,
 Hook, installer, marketplace, private-data, and archive contracts are unchanged.
 
+Native macOS source validation passes the repository/privacy gates, 202 tests
+with two capability-aware skips, the eight-Hook self-test, Ruff, compilation,
+and diff checks. An exact-candidate isolated install passes a strict second
+no-op, installed self-test, source/staging/live/archive parity, and the full
+smoke without an outer bytecode guard while preserving an all-file SHA-256
+snapshot and leaving no Git or bytecode residue. Publication and downstream
+native acceptance remain separate evidence surfaces.
+
 ## 0.8.5 release status
 
 Version 0.8.5 keeps every runtime, schema, protocol, classifier, and Hook
