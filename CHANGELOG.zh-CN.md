@@ -32,8 +32,10 @@
 - macOS 原生源码门通过仓库契约、公开树隐私审计、192 项测试（2 项能力相关跳过）、
   八 Hook 自检、Ruff 0.16.1、编译和 `git diff --check`。
 - Codex CLI 0.149.0 隔离 home 通过首次安装、源码/缓存一致性、严格第二次 no-op、
-  已安装 schema-7 生命周期 smoke 和八 Hook 自检。默认 home 安装、下游消费者 pin、
-  远端 main、CI、tag 与 release 仍是独立门。
+  已安装 schema-7 生命周期 smoke 和八 Hook 自检。下游配置消费者校验精确
+  公开提交，完成默认 home 安装，启用公开身份并在不删除缓存的前提下禁用旧私有身份，
+  且通过严格第二次 no-op 与自检。fresh-task Hook trust、远端 main、CI、tag 与 release
+  仍是独立门。
 
 ## 0.7.7 - 2026-08-18
 

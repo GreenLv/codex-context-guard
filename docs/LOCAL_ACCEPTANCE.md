@@ -23,10 +23,15 @@ strict second-run no-op, installed schema-7 lifecycle smoke, and the installed
 eight-Hook self-test. The temporary absolute path is intentionally not retained
 as product evidence.
 
-Default-home installation, a fresh trusted Hook task, native Windows, the
-downstream consumer pin, remote `main`, CI, tag, and GitHub Release remain
-separate pending gates. No tag or GitHub Release is authorized by this
-candidate entry, and 0.7.7 remains the latest published release.
+A downstream configuration consumer manager verifies the exact clean Git commit,
+origin, manifest repository, and 0.8.3 pin before invoking this installer. The
+default Codex home then passes installation, strict second no-op, source
+self-test, and plugin-list readback with the public identity enabled. The old
+private identity is disabled while its 0.8.1 and 0.8.3 caches remain present.
+
+A fresh trusted Hook task, native Windows, remote `main`, CI, tag, and GitHub
+Release remain separate pending gates. No tag or GitHub Release is authorized
+by this candidate entry, and 0.7.7 remains the latest published release.
 
 ## 0.7.7 release acceptance (2026-08-18)
 

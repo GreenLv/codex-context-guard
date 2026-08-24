@@ -43,8 +43,11 @@ audits, 192 tests with two capability-aware skips, the source self-test, Ruff
 0.16.1, compilation, and `git diff --check`. An isolated Codex CLI 0.149.0 home
 passes first install, source/cache parity, strict second-run no-op, installed
 schema-7 lifecycle smoke, and the installed eight-Hook self-test. This does not
-yet claim default-home installation, a fresh trusted Hook task, native Windows,
-CI, a downstream consumer pin, tag, or GitHub Release.
+yet claim a fresh trusted Hook task, native Windows, CI, tag, or GitHub Release.
+A downstream configuration consumer independently verifies the exact public Git
+commit and manifest, installs 0.8.3 into the default home, enables the public
+identity, disables the old private identity without deleting its caches, and
+passes a strict second no-op plus source self-test.
 
 ## 0.7.7 release status
 

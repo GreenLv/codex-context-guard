@@ -41,8 +41,11 @@ and a compact validation note. `0.7.7` is the latest published release.
   self-test, Ruff 0.16.1, compilation, and `git diff --check`.
 - An isolated Codex CLI 0.149.0 home passes first install, source/cache parity,
   strict second-run no-op, installed schema-7 lifecycle smoke, and the installed
-  eight-Hook self-test. Default-home installation, downstream consumer pin,
-  remote main, CI, tag, and release remain separate gates.
+  eight-Hook self-test. A downstream configuration consumer verifies an exact
+  public commit, performs the default-home install, enables the public identity,
+  disables the old private identity without deleting its caches, and passes a
+  strict second no-op plus self-test. Fresh-task Hook trust, remote main, CI,
+  tag, and release remain separate gates.
 
 ## 0.7.7 - 2026-08-18
 
