@@ -35,6 +35,7 @@ class SafePluginInstallTests(unittest.TestCase):
         self.archive_root = manager.cache_archive_root(self.codex_home)
         self.state: dict[str, object] = {"version": None, "enabled": True}
         self.run_calls: list[tuple[str, ...]] = []
+        self.marketplace_state: dict | None = None
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -76,6 +77,36 @@ class SafePluginInstallTests(unittest.TestCase):
         shutil.copytree(self.source_root, self.cache_root / version)
         self.state["version"] = version
         return subprocess.CompletedProcess(["codex", *args], 0, "{}", "")
+
+    def current_marketplace_entry(self, _codex: str) -> dict | None:
+        return self.marketplace_state
+
+    def marketplace_mutation(
+        self, _codex: str, *args: str
+    ) -> subprocess.CompletedProcess[str]:
+        self.run_calls.append(args)
+        if len(args) >= 3 and args[:2] == ("plugin", "marketplace"):
+            if args[2] == "remove":
+                self.marketplace_state = None
+            elif args[2] == "add":
+                self.marketplace_state = {
+                    "root": args[3],
+                    "marketplaceSource": {"source": args[3]},
+                }
+        return subprocess.CompletedProcess(["codex", *args], 0, "{}", "")
+
+    def ensure_marketplace(self, apply: bool) -> bool:
+        with (
+            mock.patch.object(
+                manager,
+                "marketplace_entry",
+                side_effect=self.current_marketplace_entry,
+            ),
+            mock.patch.object(manager, "run", side_effect=self.marketplace_mutation),
+        ):
+            return manager.ensure_marketplace(
+                "codex", self.repo_root, self.codex_home, apply
+            )
 
     def ensure(self, apply: bool = True) -> bool:
         with (
@@ -145,8 +176,11 @@ class SafePluginInstallTests(unittest.TestCase):
         (live / ".git").write_text("unexpected\n", encoding="utf-8")
         self.state["version"] = "0.1.2"
 
-        with self.assertRaisesRegex(RuntimeError, "embedded Git metadata"):
+        with self.assertRaisesRegex(
+            RuntimeError, "embedded Git metadata"
+        ) as raised:
             self.ensure(apply=False)
+        self.assertIn("--apply", str(raised.exception))
 
     def test_apply_repairs_trusted_live_embedded_git_from_archive(self) -> None:
         self.write_source("0.1.2")
@@ -452,11 +486,114 @@ class SafePluginInstallTests(unittest.TestCase):
 
         self.assertEqual(self.run_calls, [])
 
+    def test_marketplace_staging_excludes_git_metadata_and_matches_manifest(self) -> None:
+        self.write_source("0.1.2")
+        (self.repo_root / ".git" / "config").parent.mkdir(parents=True)
+        (self.repo_root / ".git" / "config").write_text(
+            "git metadata\n", encoding="utf-8"
+        )
+        (self.repo_root / "__pycache__").mkdir()
+        (self.repo_root / "__pycache__" / "x.pyc").write_bytes(b"pyc\n")
+
+        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
+
+        self.assertEqual(
+            manager.tree_manifest(staged), manager.tree_manifest(self.repo_root)
+        )
+        self.assertFalse((staged / ".git").exists())
+        self.assertFalse((staged / "__pycache__").exists())
+        self.assertEqual(
+            manager.marketplace_staging(self.codex_home, self.repo_root), staged
+        )
+        self.assertEqual(
+            [
+                path.name
+                for path in staged.parent.iterdir()
+                if path.name.startswith(".marketplace-")
+            ],
+            [],
+        )
+
+    def test_ensure_marketplace_migrates_checkout_entry_to_sanitized_staging(self) -> None:
+        self.write_source("0.1.2")
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(self.repo_root.resolve()),
+            "marketplaceSource": {"source": str(self.repo_root.resolve())},
+        }
+
+        changed = self.ensure_marketplace(apply=True)
+
+        self.assertTrue(changed)
+        self.assertEqual(len(self.run_calls), 2)
+        self.assertEqual(
+            self.run_calls[0],
+            ("plugin", "marketplace", "remove", manager.MARKETPLACE),
+        )
+        self.assertEqual(self.run_calls[1][:3], ("plugin", "marketplace", "add"))
+        staging = manager.marketplace_staging_root(self.codex_home, self.repo_root)
+        self.assertTrue(manager.same_path(self.run_calls[1][3], staging))
+        self.assertIsNotNone(self.marketplace_state)
+        self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
+
+    def test_ensure_marketplace_dry_run_reports_staging_migration(self) -> None:
+        self.write_source("0.1.2")
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(self.repo_root.resolve()),
+            "marketplaceSource": {"source": str(self.repo_root.resolve())},
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "--apply"):
+            self.ensure_marketplace(apply=False)
+        self.assertEqual(self.run_calls, [])
+        self.assertFalse(
+            manager.marketplace_staging_root(
+                self.codex_home, self.repo_root
+            ).is_dir()
+        )
+
+    def test_ensure_marketplace_non_apply_validates_staging_without_writing(self) -> None:
+        self.write_source("0.1.2")
+        staging = manager.marketplace_staging(self.codex_home, self.repo_root)
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(staging),
+            "marketplaceSource": {"source": str(staging)},
+        }
+
+        self.assertFalse(self.ensure_marketplace(apply=False))
+        self.assertEqual(self.run_calls, [])
+
+        shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        (staging / "stale.txt").write_text("stale\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "--apply"):
+            self.ensure_marketplace(apply=False)
+        self.assertEqual(self.run_calls, [])
+        self.assertTrue((staging / "stale.txt").exists())
+
+    def test_ensure_marketplace_registers_sanitized_staging_when_absent(self) -> None:
+        self.write_source("0.1.2")
+        self.marketplace_state = None
+
+        changed = self.ensure_marketplace(apply=True)
+
+        self.assertTrue(changed)
+        self.assertEqual(len(self.run_calls), 1)
+        self.assertEqual(self.run_calls[0][:3], ("plugin", "marketplace", "add"))
+        staging = manager.marketplace_staging_root(self.codex_home, self.repo_root)
+        self.assertTrue(manager.same_path(self.run_calls[0][3], staging))
+        self.assertIsNotNone(self.marketplace_state)
+        self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
+
     def test_main_routes_codex_subprocesses_to_explicit_home(self) -> None:
         self.write_source("0.1.2")
         observed: list[str | None] = []
 
-        def observe_marketplace(_codex: str, _repo: Path, _apply: bool) -> bool:
+        def observe_marketplace(
+            _codex: str, _repo: Path, _codex_home: Path, _apply: bool
+        ) -> bool:
             observed.append(os.environ.get("CODEX_HOME"))
             return False
 

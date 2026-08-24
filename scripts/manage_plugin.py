@@ -69,28 +69,116 @@ def same_path(left: str | Path, right: str | Path) -> bool:
     return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
 
 
-def ensure_marketplace(codex: str, repo_root: Path, apply: bool) -> bool:
+def _ignored_tree_names(directory: str, names: list[str]) -> set[str]:
+    """Mirror tree_manifest's ignored-name rule for copy-time filtering."""
+    return {
+        name
+        for name in names
+        if name in IGNORED_TREE_NAMES or name.endswith((".pyc", ".pyo"))
+    }
+
+
+def marketplace_staging_root(codex_home: Path, repo_root: Path) -> Path:
+    return (
+        codex_home.expanduser().resolve()
+        / "upstreams"
+        / PLUGIN_NAME
+        / (repo_root.name + ".marketplace")
+    )
+
+
+def marketplace_staging(codex_home: Path, repo_root: Path) -> Path:
+    """Return a sanitized marketplace root for the Codex CLI to clone from.
+
+    The Codex CLI materializes plugin caches from the registered marketplace
+    directory without filtering, so registering the verified immutable Git
+    checkout directly leaks its ``.git`` metadata into the live cache whenever
+    the CLI refreshes the cache (the trusted-archive repair only runs under
+    ``--apply``). Registering an on-disk filtered copy of the product tree
+    removes that possibility at the source.
+    """
+    staged = marketplace_staging_root(codex_home, repo_root)
+    if staged.is_dir() and tree_manifest(staged) == tree_manifest(repo_root):
+        if embedded_git_metadata(staged) is None:
+            return staged
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".marketplace-", dir=staged.parent))
+    try:
+        filtered = temporary / "tree"
+        shutil.copytree(repo_root, filtered, ignore=_ignored_tree_names)
+        if tree_manifest(filtered) != tree_manifest(repo_root):
+            raise RuntimeError("sanitized marketplace staging failed manifest parity")
+        if embedded_git_metadata(filtered) is not None:
+            raise RuntimeError("sanitized marketplace staging still carries Git metadata")
+        _replace_tree_atomically(filtered, staged)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    print(f"[OK] staged sanitized marketplace root: {staged}")
+    return staged
+
+
+def ensure_marketplace(
+    codex: str, repo_root: Path, codex_home: Path, apply: bool
+) -> bool:
+    staging = marketplace_staging_root(codex_home, repo_root)
     entry = marketplace_entry(codex)
     if entry is not None:
         root = entry.get("root")
         source = entry.get("marketplaceSource", {}).get("source")
-        if not any(
-            value and same_path(value, repo_root)
-            for value in (root, source)
-        ):
-            raise RuntimeError(
-                f"marketplace {MARKETPLACE!r} already points elsewhere: "
-                f"root={root!r}, source={source!r}"
+        known = {value for value in (root, source) if value}
+        if any(same_path(value, staging) for value in known):
+            if apply:
+                marketplace_staging(codex_home, repo_root)
+            elif (
+                not staging.is_dir()
+                or tree_manifest(staging) != tree_manifest(repo_root)
+                or embedded_git_metadata(staging) is not None
+            ):
+                raise RuntimeError(
+                    f"marketplace {MARKETPLACE!r} points to a stale or missing "
+                    "sanitized staging root; run --apply to refresh it"
+                )
+            print(f"[OK] marketplace {MARKETPLACE} points to {staging}")
+            return False
+        if any(same_path(value, repo_root) for value in known):
+            if not apply:
+                raise RuntimeError(
+                    f"marketplace {MARKETPLACE!r} still points at the Git checkout; "
+                    "run --apply to repoint it at the sanitized staging root"
+                )
+            marketplace_staging(codex_home, repo_root)
+            run(codex, "plugin", "marketplace", "remove", MARKETPLACE)
+            run(codex, "plugin", "marketplace", "add", str(staging), "--json")
+            entry = marketplace_entry(codex)
+            if entry is None or not any(
+                same_path(value, staging) for value in (entry.get("root"), entry.get("marketplaceSource", {}).get("source")) if value
+            ):
+                raise RuntimeError(
+                    f"marketplace {MARKETPLACE!r} was not visible at the sanitized "
+                    "staging root after repointing"
+                )
+            print(
+                f"[OK] repointed marketplace {MARKETPLACE} at sanitized staging root: {staging}"
             )
-        print(f"[OK] marketplace {MARKETPLACE} points to {repo_root}")
-        return False
+            return True
+        raise RuntimeError(
+            f"marketplace {MARKETPLACE!r} already points elsewhere: "
+            f"root={root!r}, source={source!r}"
+        )
     if not apply:
         raise RuntimeError(f"marketplace {MARKETPLACE!r} is not registered")
-    run(codex, "plugin", "marketplace", "add", str(repo_root), "--json")
+    marketplace_staging(codex_home, repo_root)
+    run(codex, "plugin", "marketplace", "add", str(staging), "--json")
     entry = marketplace_entry(codex)
-    if entry is None:
-        raise RuntimeError(f"marketplace {MARKETPLACE!r} was not visible after registration")
-    print(f"[OK] registered marketplace {MARKETPLACE}: {repo_root}")
+    if entry is None or not any(
+        same_path(value, staging)
+        for value in (entry.get("root"), entry.get("marketplaceSource", {}).get("source"))
+        if value
+    ):
+        raise RuntimeError(
+            f"marketplace {MARKETPLACE!r} was not visible at the sanitized staging root"
+        )
+    print(f"[OK] registered marketplace {MARKETPLACE}: {staging}")
     return True
 
 
@@ -584,7 +672,15 @@ def ensure_plugin(
         and entry.get("version") == desired_version
         and not apply
     ):
-        require_no_embedded_git_metadata(cache_root, archive_root, desired_version)
+        git_meta = (
+            embedded_git_metadata(cache_root / desired_version)
+            or embedded_git_metadata(archive_root / desired_version)
+        )
+        if git_meta is not None:
+            raise RuntimeError(
+                f"Context Guard cache {desired_version} contains embedded Git metadata; "
+                "run with --apply to restore the live cache from the trusted archive"
+            )
         repaired = audit_cache_archive(
             cache_root, archive_root, repair=apply
         )
@@ -774,7 +870,7 @@ def main() -> int:
                 f"Codex {actual} is below the Context Guard baseline {minimum}; upgrade first"
             )
         print(f"[OK] Codex version supports stable hooks: {'.'.join(map(str, version))}")
-        ensure_marketplace(args.codex, repo_root, args.apply)
+        ensure_marketplace(args.codex, repo_root, codex_home, args.apply)
         ensure_plugin(args.codex, repo_root, codex_home, args.apply)
     except (OSError, RuntimeError) as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
