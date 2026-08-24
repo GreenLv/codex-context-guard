@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.4` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.8.5` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.8.5 - Unreleased
+## 0.8.5 - 2026-08-25
 
 ### 重点
 
@@ -30,7 +30,7 @@
 
 - 定向回归覆盖旧 pinned checkout、旧受管 staging、只读 no-write、无关路径拒绝、当前 checkout 迁移、新注册、staging 一致性和临时目录清理。
 - 公开仓库/隐私门、201 项测试（含 2 项能力相关 skip）、八 Hook 自检、Ruff 和编译均通过。精确 commit 隔离 pinned consumer 已从 0.8.3 迁移到 0.8.5，保留旧缓存/归档，通过 installed lifecycle 和自检，并以严格 no-op 及成功只读读回结束。
-- 真实 default-home 迁移、main/tag CI、注释 tag 和 GitHub Release 仍是分开的待完成发布门。
+- 真实 default-home 迁移、main/tag CI、注释 tag 和 GitHub Release 是相互独立的验收面，不能替代上述隔离 consumer 证据。
 
 ## 0.8.4 - 2026-08-25
 

@@ -133,7 +133,7 @@ not as a measure of code volume.
   under managed `--apply`, while non-apply diagnosis remains read-only and
   actionable. Already-affected live caches are repaired from their trusted
   archives without overwriting consumed versions or deleting private state.
-- `0.8.5` is the unreleased correction for commit-addressed consumer upgrades.
+- `0.8.5` corrects commit-addressed consumer upgrades.
   Version 0.8.4 recognized only the current checkout or staging path, while a
   pinned consumer retains the previous commit path until migration. The new
   recognizer accepts only prior commit or staging roots under the managed

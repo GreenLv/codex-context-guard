@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.4`; accepted `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.5`; accepted `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.5 source-candidate acceptance (2026-08-25)
+## 0.8.5 release acceptance (2026-08-25)
 
 The real macOS pinned downstream 0.8.3-to-0.8.4 consumer apply verified the new public
 commit and materialized its immutable checkout, then stopped before marketplace
@@ -32,7 +32,7 @@ consumer path then passed without writes. Staging and live cache carried no
 `.git` metadata or leftover temporary directories.
 
 Real default-home migration, main/tag CI, the annotated tag, and GitHub Release
-remain pending and must be verified separately.
+are separate evidence surfaces and must be verified independently.
 
 ## 0.8.4 release acceptance (2026-08-25)
 

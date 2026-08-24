@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.4` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.5 - Unreleased
+## 0.8.5 - 2026-08-25
 
 ### Highlights
 
@@ -30,7 +30,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Focused regressions cover previous pinned checkouts, previous managed staging roots, read-only no-write behavior, unrelated-path rejection, current-checkout migration, fresh registration, staging parity, and temporary-directory cleanup.
 - The public repository/privacy gates, 201 tests with two capability-aware skips, eight-Hook self-test, Ruff, and compilation pass. An exact-commit isolated pinned consumer migrated from 0.8.3 to 0.8.5, preserved the old cache/archive, passed installed lifecycle and self-test, and ended with a strict no-op plus successful read-only readback.
-- Real default-home migration, main/tag CI, the annotated tag, and GitHub Release remain separate pending publication gates.
+- Real default-home migration, main/tag CI, the annotated tag, and GitHub Release are separate acceptance surfaces and do not substitute for the isolated consumer evidence above.
 
 ## 0.8.4 - 2026-08-25
 

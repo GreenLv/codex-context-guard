@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.4`
-- Current source line: `0.8.5` (`Unreleased`)
+- Current published Context Guard release: `0.8.5`
+- Current source line: `0.8.5`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,7 +19,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.5 source-candidate status
+## 0.8.5 release status
 
 Version 0.8.5 keeps every runtime, schema, protocol, classifier, and Hook
 contract from 0.8.4. It extends only marketplace migration recognition for
@@ -28,14 +28,15 @@ root is eligible only when it is a direct child of the managed
 `CODEX_HOME/upstreams/context-guard` directory, has the exact commit/staging
 name shape, and declares the same plugin repository as the current source.
 
-Version 0.8.4 remains the latest published release. Its direct-checkout and
-isolated installation paths pass, but a real pinned downstream 0.8.3-to-0.8.4
-pin raise exposed that the old and new immutable checkout paths differ. The
-0.8.5 candidate fails closed for unrelated roots and preserves read-only
-no-write behavior. An exact-commit isolated consumer migrated from 0.8.3,
+Version 0.8.4's direct-checkout and isolated installation paths pass, but a
+real pinned downstream 0.8.3-to-0.8.4 pin raise exposed that the old and new
+immutable checkout paths differ. Version 0.8.5 corrects that limitation,
+fails closed for unrelated roots, and preserves read-only no-write behavior.
+An exact-commit isolated consumer migrated from 0.8.3,
 preserved both versioned cache/archive sets, passed installed lifecycle and
 self-test, then completed a strict no-op and normal read-only readback.
-Publication and default-home acceptance remain pending.
+Default-home acceptance, CI, tag metadata, and GitHub Release metadata remain
+separate evidence surfaces.
 
 ## 0.8.4 release status
 
