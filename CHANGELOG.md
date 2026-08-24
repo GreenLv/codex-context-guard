@@ -2,393 +2,155 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-All notable public releases are documented here, newest first. Each version
-opens with its highlights in descending priority, followed by grouped changes
-and a compact validation note. `0.7.7` is the latest published release.
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.7.7` is the latest published release, while `0.8.3` is an unreleased source candidate. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+
+## How protection evolved
+
+- **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
+- **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
+- **0.6.x — verify whether a turn may finish:** distinguish a verified completion checkpoint from “continue”, waiting for the user, waiting for an external result, or deliberately deferred work. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
+- **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required subject, output surface, and requested scope. This line also added privacy-preserving protection for images and other multimodal inputs by storing hashes and metadata rather than image bytes.
+- **0.8.x — keep adopted project instructions and execution plans aligned:** the unreleased line can bind declared instruction sources, including Skill contracts, to a project execution contract and optionally to the current Codex Plan. A later change makes the binding stale instead of silently accepting the old plan.
 
 ## 0.8.3 - Unreleased
 
-### Highlights
+### What changes for users
 
-- Schema 7 adds a dormant, hash-bound execution-contract ledger without adding
-  a new Hook event, intercepting tools, or changing Codex-owned Plan state.
-- A root-user-only `context-guard adopt <project-relative-json>` control may
-  adopt a bounded deterministic contract; natural-language candidates remain
-  non-authoritative and cannot grant execution authority.
-- Optional native-plan binding uses a semantic digest. Later semantic changes
-  mark the contract and affected records stale while preserving the plan as a
-  read-only Codex-owned surface.
-- The public repository becomes the sole implementation upstream. Downstream
-  configuration repositories consume an immutable version and commit instead
-  of maintaining a second product tree.
+- A long task can now keep a reviewed execution checklist alongside its requirements and evidence. This project execution contract records which instruction sources apply, which phases and gates remain, and whether it should stay aligned with the current Codex Plan.
+- The contract starts inactive. Only the user who started the root task can activate a reviewed, project-relative JSON contract with `context-guard adopt`; ordinary prose cannot grant authority.
+- If an adopted plan or instruction source changes, Context Guard marks the affected contract records stale. It does not rewrite the Codex Plan, block tools, reserve work automatically, or commit and publish on the user's behalf.
 
-### Changes
+### Technical details
 
-- Version 0.7.9 completed the compatibility repairs for real `Plan updated`
-  receipts, privacy-safe Stop control classification, and desktop
-  `input_image` content-block receipts; consumed 0.7.8 remains immutable.
-- Version 0.8.1 completed the dormant schema-7 Phase 2 model; consumed 0.8.0
-  remains immutable. Version 0.8.3 completes Phase 3 contract adoption after
-  the consumed 0.8.2 package identity.
-- Status, diagnosis, and recovery expose bounded IDs, counts, states, and
-  hashes. The candidate still has no `PreToolUse`, tool blocking, ticket
-  reservation, commit/publish action, or authority for uncovered surfaces.
-
-### Validation
-
-- Native macOS source gates pass repository validation, the tracked-tree
-  privacy audit, 192 tests with two capability-aware skips, the eight-Hook
-  self-test, Ruff 0.16.1, compilation, and `git diff --check`.
-- An isolated Codex CLI 0.149.0 home passes first install, source/cache parity,
-  strict second-run no-op, installed schema-7 lifecycle smoke, and the installed
-  eight-Hook self-test. A downstream configuration consumer verifies an exact
-  public commit, performs the default-home install, enables the public identity,
-  disables the old private identity without deleting its caches, and passes a
-  strict second no-op plus self-test.
-- Native Windows source gates pass repository validation, the tracked-tree
-  privacy audit, 192 tests with one capability-aware symbolic-link skip, the
-  eight-Hook self-test, Ruff 0.16.1, compilation, and `git diff --check`.
-  The pinned public consumer passes exact-commit verification, installation,
-  source/cache/archive parity, installed schema-7 lifecycle and eight-Hook
-  self-tests, and a second strict no-op while retaining the old private cache
-  set. The candidate source is pushed to public `main`; fresh-task Hook trust,
-  CI, tag, and release remain separate gates.
-
-## 0.7.7 - 2026-08-18
-
-### Highlights
-
-- Subject discovery no longer turns slash-delimited prose or a path fragment
-  inside another URL into a false absolute-path verification obligation.
-- Bounded `codex://threads/...` locators remain inspectable subjects, while the
-  generic Chinese word for apply no longer implies a UI surface.
-- A non-error `view_image` response carrying a valid image data URL is now
-  successful visual evidence instead of an unknown result.
-- Schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and the eight-Hook wire
-  remain unchanged; classifier metadata advances to 2.2.1.
-
-### Changes
-
-- The shared runtime and transformed regression contract are synchronized from
-  the private sibling under the declared shared-core boundary.
-- Public packaging, validation constants, bilingual documentation, and
-  installed lifecycle smoke identify 0.7.7 as the current release.
-
-### Validation
-
-- Native Windows source validation passed the public repository and privacy
-  audits, sibling parity, 170 tests with one capability-aware skip, the
-  eight-Hook self-test, Ruff 0.16.1, compilation, and `git diff --check`.
-- Native macOS passed the same public source gates with two capability-aware
-  skips. An isolated Codex CLI 0.146.0 install passed first install,
-  source/cache parity, strict second-run no-op, installed eight-Hook self-test,
-  and lifecycle smoke on both native platforms. A normally trusted public
-  fresh-CLI Hook task was not repeated for this patch; CI/HOL and tag checks
-  remain separate source-automation gates rather than native-runtime evidence.
-
-## 0.7.6 - 2026-08-17
-
-### Highlights
-
-- Classifier 2.2.0 closes both blind-spot families found in the 2.1.0 review.
-  Plural and quantified completion claims (`All tasks are complete.`,
-  `Every requirement is done.`, `任务都完成了。`) and explicit first-person
-  reporting (`We report ... complete.`) are now recognized, while questions,
-  trailing negations, attributed speech (`他说...`), and hypotheticals
-  (`我们假设...`) are no longer treated as completion assertions.
-- The Hook entry fails closed on Python older than 3.10 instead of silently
-  running an unsupported interpreter.
-- Dead code was removed from the shared runtime and installer: two unreferenced
-  regexes, an unused clause helper, an unused response formatter, and the
-  unused `restore_tree` path. The public 168-test suite and the sibling parity
-  gate stay green.
-- The 0.7.6 runtime and regression contract are synchronized from the private
-  upstream. Schema 6, Proof protocol 1.0.0, Stop protocol 1.1.0, and the
-  eight-Hook wire are unchanged.
-
-### Changes
-
-- Version 0.7.4 advances the diagnostic classifier to 2.1.0 and distinguishes
-  current-task completion assertions from hypotheticals, attributed quotations,
-  and framed examples.
-- Version 0.7.5 keeps the protocol surface while bounding negation to the
-  latest explicit assistant-future segment and retaining actionable
-  review/configuration verbs.
-- Version 0.7.6 advances the diagnostic classifier to 2.2.0 and adds the
-  fail-closed Python guard.
-
-### Validation
-
-- Scoped native Windows and macOS source plus isolated-install/lifecycle gates
-  pass for the public 0.7.6 runtime. The Windows run also verifies sibling
-  parity and the installed eight-Hook self-test. A normally trusted public
-  fresh-CLI Hook task was not repeated for this patch; CI/HOL and tag checks
-  remain separate source-automation gates rather than native-runtime evidence.
-
-## 0.7.3 - 2026-08-14
-
-### Highlights
-
-- State schema 6 with hash-only multimodal assets and deterministic Proof
-  protocol 1.0.0: `register-proof` binds evidence to required subjects,
-  surfaces, visual readbacks, and normalized scope sets.
-- Visual result readback is enforced only for affirmative, authorized mutation
-  wording; an unambiguous prompt-explicit complete-scope count outranks the
-  attachment count.
-- Closes four 0.7.1 regressions found by differential 0.6.3/0.7.1 review:
-  control-text false positives, qualitative scope over-enforcement, unbounded
-  transcript rescans, and recovery clipping.
-
-### Changes
-
-- `register-proof --manifest` rejects wrong surfaces, unrelated subjects,
-  reused input images, and unresolved visual facts.
-- Unsupported deterministic boundaries fall back visibly to `legacy_fallback`
-  with the compatible 0.6.3 behavior instead of over-claiming.
-- Recovery packets preserve bounded asset metadata and outstanding obligations
-  without storing image bytes. Stop protocol 1.1.0, classifier 2.0.0, and all
-  eight Hook events are unchanged.
-- The regression benchmark covers bilingual positive, negative, adversarial,
-  multimodal, migration, privacy, and fallback cases, including an anonymized
-  48-of-70 subset false-completion replay.
-
-### Validation
-
-- Scoped native macOS and Windows acceptance passed for the frozen 0.7.3
-  source, install, archive, strict no-op, and installed lifecycle boundaries.
-  Release automation remains source-level evidence and does not replace either
-  native run.
-
-## 0.6.3 - 2026-08-12
-
-### Highlights
-
-- Version 0.6.3 keeps state schema 5 and classifier 2.0.0 while advancing the
-  Stop protocol to 1.1.0: legacy `continue` is advisory only and terminal
-  control is one-way safe.
-- Private-control intent detection is scoped to recognized shell tools and
-  quoted operators, so documentation patches and plain `rg`/`grep` searches no
-  longer look like control writes.
-- Cache upgrades repair indexed live versions from trusted archives before
-  adopting anything unindexed, and remove legacy archive `.git` metadata only
-  after the indexed product manifest matches.
-
-### Changes
-
-- A schema-5 state with an in-flight protocol-1.0.0 control invalidates only
-  that ephemeral attempt; prompts, items, evidence, and decisions are intact.
-- The 0.6.2 cache was consumed by a real installation before these manager
-  fixes and remains untagged and unreleased.
-
-### Validation
-
-- Regression replay covers the terminal mismatch class, explicit persistence,
-  quoted-search and non-shell boundaries, and 10,000 staged-control
-  transitions. Native macOS and Windows acceptance passed; the published 0.6.3
-  release is built from the validated `main` commit with matching annotated
-  tag and GitHub Release. CI/HOL remain source-level gates, not native
-  acceptance.
-
-## 0.6.1 - 2026-08-11
-
-### Highlights
-
-- Schema 5 turn control: one private `completion_attempt.staged_control` slot
-  for a verified checkpoint or one of `continue` / `user_wait` / `external_wait`
-  / `deferred`; `complete` is derived only from a checkpoint.
-- Stop protocol 1.0.0 with classifier 2.0.0 diagnostics records decision
-  source, declared disposition, observed outcome, bounded enums, and hashes
-  without retaining raw reply text.
-- Adds the final standalone `Script completed` receipt so a raw-stdout Code
-  Mode tool response can prove the same success as a structured one.
-
-### Changes
-
-- The 0.6.x line is a protocol-first turn-control minor, first implemented in
-  the unreleased 0.6.0 candidate. The exact eight Hook events are unchanged.
-- `PostToolUse` remains the only authoritative staging writer after verifying
-  command, data directory, session, turn, token, marker, and successful
-  outcome.
-- Stop applies a fixed priority: integrity and private-metadata checks, a
-  verified checkpoint, an uncheckpointed whole-completion claim, staged
-  `continue`, explicit persistence, typed wait/deferred, then safe yield.
-- Schema 1–4 migration preserves the ledger but invalidates in-flight tokens
-  and staged controls; public release validation audits commit identities with
-  redacted failures.
-- The bilingual README reports an anonymized token-overhead range.
-  Requirement-to-evidence semantic relevance is not implemented in 0.6.x; it
-  remains benchmark-first research.
+- State schema 7 stores only bounded identifiers, counts, states, and hashes for the execution contract. “Dormant” in design documents means that the storage exists but no contract has been adopted; “stale” means a previously adopted source or plan no longer matches its recorded digest.
+- Compatibility fixes from the installed but unpublished 0.7.8–0.8.2 candidates are included without rewriting those immutable installed versions.
+- The public repository is now the sole implementation upstream; downstream configuration repositories consume an exact version and commit.
 
 ### Validation status
 
-- Version 0.6.0 was never tagged or released; its cache bytes are immutable
-  and its number consumed. Version 0.6.1 passed native macOS and Windows
-  acceptance and gates publication on the exact release commit passing PR/main
-  CI and HOL plus tag CI. No 0.6.0 tag may be created.
+- Native macOS and Windows source checks, privacy audits, the 192-test suite, eight-Hook self-test, compilation, and isolated installation/upgrade checks passed, with platform-specific symbolic-link skips recorded in the acceptance log.
+- Exact-commit downstream installation and source/cache/archive parity passed on both platforms. Fresh-task Hook trust, CI, tag, and GitHub Release remain separate gates; this candidate is not yet a published release.
+
+## 0.7.7 - 2026-08-18
+
+### Fixed
+
+- Reduced false verification obligations: ordinary slash-delimited prose and URL fragments are no longer mistaken for local paths, and the general Chinese word for “apply” no longer implies that a UI result must exist.
+- A successful `view_image` result carrying a valid image data URL now counts as visual evidence instead of remaining unknown.
+
+### Technical details
+
+- This patch keeps the 0.7 evidence model unchanged and advances only the subject, surface, and visual-result classifier to 2.2.1.
+- Native macOS and Windows source, install, archive, no-op, and lifecycle checks passed. See the acceptance record for the exact platform scope.
+
+## 0.7.6 - 2026-08-17
+
+### Fixed
+
+- Context Guard more reliably distinguishes a real “the task is complete” claim from a question, quotation, hypothetical example, trailing negation, or report about somebody else's statement.
+- Python versions older than 3.10 now fail closed instead of running an unsupported Hook runtime.
+
+### Technical details
+
+- The 0.7.4–0.7.6 classifier patches refined completion and remaining-work detection without changing the evidence model or Hook events.
+- Native macOS and Windows source and isolated lifecycle checks passed; CI and Hook trust remain separate evidence scopes.
+
+## 0.7.3 - 2026-08-14
+
+### Added
+
+- Evidence can be tied to the exact requirement, subject, output surface, requested scope, and required visual readback before an item is considered complete.
+- Images and other multimodal inputs are tracked with hashes and bounded metadata; Context Guard does not copy image bytes into its private ledger or recovery packets.
+
+### Fixed
+
+- Visual readback is required only for an affirmative, authorized mutation request. Explicit requested counts take precedence over the number of attached inputs.
+- Unsupported cases fall back visibly to the earlier checkpoint behavior instead of claiming stronger verification than the available evidence supports.
+
+### Technical details
+
+- This was the first published 0.7 release. The internal names are state schema 6 and Proof protocol 1.0.0.
+- Native macOS and Windows source, installation, archive, no-op, and lifecycle checks passed.
+
+## 0.6.3 - 2026-08-12
+
+### Fixed
+
+- Continuing work is now advisory rather than a way to override a terminal safety decision; only a verified completion checkpoint or explicit persistence request can demand another correction turn.
+- Documentation edits and ordinary searches no longer look like private control commands merely because they contain shell-like text.
+- Upgrades repair a damaged installed cache from its trusted archive before considering unindexed copies.
+
+### Technical details
+
+- This patch finalized the one-way-safe 0.6 turn-control behavior and hardened cache repair. Native macOS and Windows acceptance passed.
+
+## 0.6.1 - 2026-08-11
+
+### Added
+
+- A task can be marked complete only from a verified checkpoint. Other endings are recorded explicitly as continue, wait for the user, wait for an external result, or defer the remaining work.
+- Raw command output can now provide the same verifiable success receipt as a structured tool result.
+
+### Release note
+
+- The unreleased 0.6.0 candidate introduced this turn-control model but its raw-output receipt could not prove success. Its version remains consumed and immutable; 0.6.1 was the first published release in the series.
 
 ## 0.5.1 - 2026-08-10
 
-### Highlights
-
-- Stop classifier 1.0.1 separates explicit user handoffs from independent
-  assistant futures in the same reply.
-- Persisted `open_items` is recomputed on load and save, normalizing stale
-  schema-3/4 derived state.
-
 ### Fixed
 
-- Same-version first archive adoption is allowed only under the install lock
-  after exact source/cache parity and archive integrity are proved; drift,
-  corruption, and unindexed archives still fail closed.
-
-### Validation
-
-- Adds bilingual handoff/authority matrices, stale-state migration, and
-  first-adoption archive regressions. Native macOS (111 private / 108 public
-  tests) and native Windows 0.5.1 acceptance pass independently.
+- Explicitly handing control to the user is no longer confused with work the assistant has promised to do itself.
+- Open-item counts are recalculated when state is loaded or saved, preventing stale counts from surviving an upgrade.
+- A same-version installed cache is trusted only after its source and archive integrity are verified.
 
 ## 0.5.0 - 2026-08-09
 
-### Highlights
+### Added
 
-- State schema 4 with a bounded 32-entry hash-only `decision_log`; schemas 1,
-  2, and 3 migrate with an empty diagnostic history.
-- Stop classifier 1.0.0 with stable allow/gate/consume/fail-closed outcomes,
-  reason codes, action category, owner, and current-turn authorization.
-- Versioned archive lifecycle under `CODEX_HOME/plugins/cache-archive/` with an
-  atomic SHA-256 index, explicit trusted repair, and no automatic pruning.
-
-### Changes
-
-- `context-guard diagnose` plus classifier/latest-decision fields in `status`;
-  a documented version policy and sibling-product shared-core parity gate.
-- Deferred remote work stays safe only when denied or out of scope; broad
-  authority and double-negated commands remain gated, and external-review
-  sentences cannot hide assistant-owned follow-up work.
-- Live historical caches are repaired only from intact trusted archives.
-
-### Validation
-
-- Seven observed/adversarial phase-boundary cases plus bilingual metamorphic
-  scope, schema migration/privacy/rebuild, and archive-lifecycle tests. Native
-  Windows 0.5.0 acceptance was recorded later; no tag or GitHub Release was
-  created by this source update.
+- `context-guard diagnose` explains the latest stop decision with bounded, privacy-preserving records instead of requiring maintainers to infer it from raw task text.
+- Installed Hook versions are archived with hashes so older tasks can keep using their original runtime and damaged live caches can be repaired from a trusted copy.
 
 ## 0.4.16 - 2026-08-09
 
-Versions 0.4.14 and 0.4.15 were unpublished local candidates. Their numbers
-remain consumed because an installed versioned Hook cache is never overwritten
-in place.
-
 ### Fixed
 
-- Deferred-phase status reports are interpreted together with the current
-  prompt instead of completion words alone, and bounded review/audit/test/
-  verification/local-commit/reporting turns may end after explicitly leaving a
-  later phase unresolved.
-- The completion gate is preserved when the current prompt asks to continue,
-  finish, push, publish, deploy, promote, create a remote, or run CI, reading
-  the full immutable prompt record rather than the bounded recovery summary.
-- Explicit boundaries such as "do not push or run CI" count as denied
-  authority; affirmative execution requests stay gated, and the gate fails
-  closed when the prompt record, path, or digests no longer match.
-
-### Validation
-
-- Nine-job Ubuntu/macOS/Windows CI matrix on Python 3.10, 3.12, and 3.13,
-  repository validation, public-tree audit, 91 tests, Ruff, bytecode
-  compilation, and the mandatory HOL Plugin Scanner all pass.
+- A bounded review, test, local commit, or reporting phase may end after clearly leaving a later phase unresolved, while a request to continue, push, publish, deploy, or run CI still keeps the whole-task completion gate active.
+- Explicit restrictions such as “do not push” are treated as denied authority; missing or mismatched prompt history fails closed.
 
 ## 0.4.13 - 2026-08-08
 
 ### Fixed
 
-- Status-only replies about submitted external reviews, platform selection,
-  policy holds, and intentionally unchanged repositories are valid
-  non-completion boundaries even when a local status sentence uses a
-  completion word.
-- The same whole-message non-completion classifier applies to completion
-  detection and Stop handling, including staged-checkpoint cleanup.
+- Status-only replies about submitted reviews, policy holds, platform choices, or intentionally unchanged repositories can end safely without being mistaken for a whole-task completion claim.
 
 ## 0.4.12 - 2026-08-08
 
-Version 0.4.11 was an unpublished local candidate; its number remains consumed
-so an installed versioned Hook cache is never overwritten in place.
-
 ### Fixed
 
-- Explicit user-action handoffs such as login, publisher configuration,
-  deployment approval, and reply-after-action are valid non-completion
-  boundaries even when the reply reports completed local milestones.
-- The completion gate is retained when a reply lists actionable remaining work
-  without handing control to the user, and handoff phrases require an explicit
-  user subject or reply-to-agent instruction.
+- Waiting for a user login, publishing configuration, deployment approval, or another explicit user action can end the current turn safely. Merely listing work that the assistant still owns cannot.
 
 ## 0.4.10 - 2026-08-07
 
-### Distribution
+### Documentation and distribution
 
-- Text-free shield-and-checkpoint SVG icon exposed through
-  `interface.composerIcon`; pinned GitHub Actions references and validation
-  tool lock; mandatory HOL scanner gate with SARIF upload, score 80 minimum,
-  and high-severity failure threshold.
-
-### Documentation
-
-- Rendered, visually checked bilingual Mermaid flowcharts and lifecycle
-  sequence; bilingual everyday refactoring case covering constraint,
-  correction, `/compact` recovery, and evidence-gated completion.
-
-### Validation
-
-- Native Windows 25H2 (build 26200, Python 3.12.10) passed 83 tests; a standard
-  user token passed 82 plus the separately elevated symlink test. A disposable
-  `--codex-home` install passed strict no-op and lifecycle smoke, and a fresh
-  Windows task completed normal Hook trust plus real manual `/compact` recovery
-  with no project file changes.
+- Added the plugin icon, pinned release checks, bilingual lifecycle diagrams, and a complete compaction-recovery example.
+- Native Windows installation, Hook trust, and manual compaction recovery were verified in addition to repository checks.
 
 ## 0.4.9 - 2026-08-06
 
-First public release, based on the validated Context Guard 0.4.8 runtime
-lineage.
-
 ### Fixed
 
-- The installer routes every Codex subprocess through the explicit
-  `--codex-home` value instead of silently using the caller's default home.
+- The installer now routes every Codex subprocess through the requested isolated home instead of accidentally using the caller's default Codex directory.
 
-### Validation status
+### Platform scope
 
-- macOS: all eight Hooks were individually reviewed and trusted; a fresh CLI
-  task completed real manual `/compact`, recovered both acceptance markers,
-  and made no file changes.
-- Windows: CI validated Python 3.10, 3.12, and 3.13; native fresh-runtime
-  verification remained pending at release.
-- Linux: CI and isolated installed-lifecycle evidence only; no desktop Hook
-  trust claim.
+- macOS completed native Hook trust and manual compaction recovery. Windows was CI-only at release and received native validation later; Linux remained CI and isolated-lifecycle only.
 
 ## 0.4.8 - superseded release candidate
 
-Initial open-source candidate based on the validated Context Guard 0.4.8
-lineage. This candidate was not tagged; 0.4.9 supersedes it with the installer
-isolation fix and completed standalone trusted-runtime gate.
-
 ### Included
 
-- Immutable hash-verified prompt journaling and requirement/acceptance ledger;
-  explicit supersession tracking and fail-closed ambiguous revisions.
-- Bounded compaction recovery, native plan mirror, provenance-aware delegated
-  contracts, structured evidence capture, and private completion gating.
-- Safe local installer that rejects same-version drift and preserves older
-  versioned Hook caches.
-- User-decision-gate precedence so approval-awaiting replies do not trigger
-  repeated Stop Hook continuations.
-- Windows lock-race hardening with bounded retry for access-denied results that
-  outlive a previous holder's lock.
+- The initial public candidate preserved prompts, requirements, corrections, delegated work, evidence, and open completion conditions across compaction and resume.
+- It also introduced bounded recovery, a read-only Codex Plan mirror, safe local installation, and immutable versioned Hook caches.
 
-### Validation status
-
-- macOS source lineage: 80 local tests plus one Windows-only skip, plugin
-  validation, privacy audit, parity, idempotent install, and isolated lifecycle
-  smoke; the 9-job CI matrix passed twice. Windows native runtime verification
-  remained pending; Linux was CI-only.
+This candidate was not tagged. Version 0.4.9 superseded it with the installer isolation fix and completed standalone runtime gate.
