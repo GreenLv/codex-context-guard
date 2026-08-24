@@ -11,7 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 发布状态：`0.7.7` 是最近一次已发布版本。当前源码候选：`0.8.3`（未发布），尚无 tag 或 GitHub Release。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 发布状态：`0.8.3` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -187,7 +187,7 @@ Hook 运行时只使用 Python 标准库。CI 覆盖 Ubuntu、macOS、Windows �
 
 Context Guard 不是语义证明系统、安全沙箱、会话备份、云同步服务、第二套 Plan/Goal 控制器、Agent 调度器，也不能替代测试和人工审查。
 
-未发布的 `0.8.3` 执行契约模型在发起任务的用户显式采用前保持未启用状态。它不新增 `PreToolUse` Hook，不阻止工具，不修改 Codex Plan 状态，也不授予权限。
+`0.8.3` 的执行契约模型在发起任务的用户显式采用前保持未启用状态。它不新增 `PreToolUse` Hook，不阻止工具，不修改 Codex Plan 状态，也不授予权限。
 
 ## 贡献与安全
 

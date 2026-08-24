@@ -315,7 +315,7 @@ guarantees only displayed `enforced` obligations and does not claim arbitrary
 pixel understanding or semantic completeness for `legacy_fallback` items.
 
 The 0.8.x line introduces schema 7 and execution protocol 1.0.0. Version 0.8.3
-is the first completed contract-adoption candidate. It remains on the existing
+is the first completed contract-adoption release. It remains on the existing
 eight-event Hook wire and adds no `PreToolUse`, tool interception, automatic
 ticket reservation, commit/publish action, or authority for uncovered
 surfaces.

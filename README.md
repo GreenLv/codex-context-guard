@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Release status: `0.7.7` is the latest published release. Current source candidate: `0.8.3` (unreleased). No tag or GitHub Release exists for this candidate. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Release status: `0.8.3` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -187,7 +187,7 @@ The Hook runtime uses only the Python standard library. CI covers Ubuntu, macOS,
 
 Context Guard is not a semantic proof system, security sandbox, transcript backup, cloud sync service, second Plan/Goal controller, agent scheduler, or replacement for tests and human review.
 
-The unreleased `0.8.3` execution-contract model is dormant until an explicit root-user adoption control succeeds. It adds no `PreToolUse` Hook, does not block tools, does not modify Codex Plan state, and does not grant authority.
+The `0.8.3` execution-contract model is dormant until an explicit root-user adoption control succeeds. It adds no `PreToolUse` Hook, does not block tools, does not modify Codex Plan state, and does not grant authority.
 
 ## Contributing and security
 

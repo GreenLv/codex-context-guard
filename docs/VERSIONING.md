@@ -114,7 +114,7 @@ not as a measure of code volume.
   lossy downgrade. No contract is activated and no authority is granted.
 - `0.8.2` is a consumed intermediate Phase 3 package identity. Its installed
   bytes remain immutable; it was neither tagged nor released.
-- `0.8.3` is the first completed Phase 3 candidate. A root-user-only
+- `0.8.3` is the first completed Phase 3 release. A root-user-only
   `context-guard adopt <project-relative-json>` control can adopt a bounded,
   hash-only deterministic contract. Natural-language candidates remain
   non-authoritative. Optional native-plan binding uses a semantic digest;

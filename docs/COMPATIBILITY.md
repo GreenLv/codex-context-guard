@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.7.7`
-- Current source line: `0.8.3` (unreleased candidate)
+- Current published Context Guard release: `0.8.3`
+- Current source line: `0.8.3`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,9 +19,9 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.3 source candidate status
+## 0.8.3 release status
 
-The 0.8.3 candidate is the first completed Phase 3 source line. Schema 7 adds
+The 0.8.3 release is the first completed Phase 3 source line. Schema 7 adds
 a dormant execution-contract model for bounded source metadata, phases, gates,
 authorization candidates, drift, coverage, ticket namespaces, unified-exec
 sessions, and delegated actors. A root-user-only `context-guard adopt` control
@@ -30,13 +30,11 @@ Natural-language candidates remain non-authoritative. Optional native-plan
 binding is semantic and read-only: drift marks the contract and affected
 records stale without changing Codex Plan state.
 
-The Hook surface remains the same eight events. The candidate adds no
+The Hook surface remains the same eight events. The release adds no
 `PreToolUse`, tool interception, ticket reservation in normal lifecycle,
 commit/publish action, or authority for uncovered surfaces. Source validation,
 privacy audit, isolated install, native macOS acceptance, downstream consumer
-pinning, CI, tag, and GitHub Release are separate claims. Until recorded below,
-none is implied by the source version; 0.7.7 remains the latest published
-release.
+pinning, CI, tag, and GitHub Release are separate claims.
 
 Native macOS source validation passes the repository contract and privacy
 audits, 192 tests with two capability-aware skips, the source self-test, Ruff
@@ -56,11 +54,16 @@ public commit and manifest, installs `context-guard@codex-context-guard` 0.8.3,
 passes source/cache/archive parity, installed schema-7 lifecycle and eight-Hook
 self-tests, and a second strict no-op. The old private identity is disabled
 without deleting its versioned live/archive cache set. These native macOS and
-Windows results do not claim a fresh trusted Hook task, CI, tag, or GitHub
-Release.
+Windows results do not substitute for a fresh trusted Hook task, CI, tag, or
+GitHub Release.
 
-The candidate source is present on public `main`. That remote-source fact does
-not upgrade any pending fresh trusted-runtime, CI, tag, or release gate.
+A normally trusted fresh Codex CLI 0.149.0 task on macOS, with no trust bypass
+and Python 3.12.2 selected on `PATH`, loaded the public 0.8.3 eight-Hook runtime.
+Its root-user adoption control activated the schema-7 contract with
+`integrity=ok`; the deterministic candidate became active, the natural-language
+candidate remained non-authoritative, and no action ticket or denial was
+created. Main and tag CI/HOL, tag metadata, and GitHub Release metadata remain
+separate publication evidence.
 
 ## 0.7.7 release status
 

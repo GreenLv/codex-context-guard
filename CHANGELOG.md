@@ -2,34 +2,35 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.7.7` is the latest published release, while `0.8.3` is an unreleased source candidate. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.3` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
-- **0.8.x — keep adopted project instructions and execution plans aligned:** the unreleased line can bind declared instruction sources, including Skill contracts, to a project execution contract and optionally to the current Codex Plan. A later change makes the binding stale instead of silently accepting the old plan.
+- **0.8.x — keep adopted project instructions and execution plans aligned:** bind declared instruction sources, including Skill contracts, to a project execution contract and optionally to the current Codex Plan. A later change makes the binding stale instead of silently accepting the old plan.
 - **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required subject, output surface, and requested scope. This line also added privacy-preserving protection for images and other multimodal inputs by storing hashes and metadata rather than image bytes.
 - **0.6.x — verify whether a turn may finish:** distinguish a verified completion checkpoint from “continue”, waiting for the user, waiting for an external result, or deliberately deferred work. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.3 - Unreleased
+## 0.8.3 - 2026-08-24
 
-### Changed
+### Highlights
 
-- A long task can now keep a reviewed execution checklist alongside its requirements and evidence. This project execution contract records which instruction sources apply, which phases and gates remain, and whether it should stay aligned with the current Codex Plan.
-- The contract starts inactive. Only the user who started the root task can activate a reviewed, project-relative JSON contract with `context-guard adopt`; ordinary prose cannot grant authority.
-- If an adopted plan or instruction source changes, Context Guard marks the affected contract records stale. It does not rewrite the Codex Plan, block tools, reserve work automatically, or commit and publish on the user's behalf.
+- A long task can keep a reviewed execution checklist alongside its requirements and evidence, including the applicable instruction sources, phases, gates, and optional Codex Plan binding.
+- Only the user who started the root task can activate a reviewed, project-relative contract; ordinary prose and natural-language candidates cannot grant authority.
+- Plan or instruction-source drift marks the affected records stale without rewriting Codex Plan, blocking tools, reserving work, or publishing on the user's behalf.
 
-### Technical details
+### Changes
 
 - State schema 7 stores only bounded identifiers, counts, states, and hashes for the execution contract. “Dormant” in design documents means that the storage exists but no contract has been adopted; “stale” means a previously adopted source or plan no longer matches its recorded digest.
 - Compatibility fixes from the installed but unpublished 0.7.8–0.8.2 candidates are included without rewriting those immutable installed versions.
 - The public repository is now the sole implementation upstream; downstream configuration repositories consume an exact version and commit.
 
-### Validation status
+### Validation
 
 - Native macOS and Windows source checks, privacy audits, the 192-test suite, eight-Hook self-test, compilation, and isolated installation/upgrade checks passed, with platform-specific symbolic-link skips recorded in the acceptance log.
-- Exact-commit downstream installation and source/cache/archive parity passed on both platforms. Fresh-task Hook trust, CI, tag, and GitHub Release remain separate gates; this candidate is not yet a published release.
+- Exact-commit downstream installation and source/cache/archive parity passed on both platforms. A normally trusted fresh Codex CLI 0.149.0 task on macOS, without trust bypass and with Python 3.12.2 selected, adopted a schema-7 contract with integrity intact: the deterministic candidate became active, the natural-language candidate remained non-authoritative, and no action ticket was created.
+- Main and tag CI/HOL, the annotated tag, and the GitHub Release remain separately verified publication facts; they do not substitute for native runtime evidence.
 
 ## 0.7.7 - 2026-08-18
 

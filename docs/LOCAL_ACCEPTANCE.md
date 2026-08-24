@@ -1,12 +1,12 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.7.7`; accepted `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.3`; accepted `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.3 source candidate acceptance (2026-08-24)
+## 0.8.3 release acceptance (2026-08-24)
 
-Version 0.8.3 is an unreleased source candidate. It is the first completed
+Version 0.8.3 is the first completed
 Phase 3 implementation with schema 7, execution protocol 1.0.0, classifier
 2.3.0, root-only deterministic contract adoption, and semantic native-plan
 drift. It retains Proof protocol 1.0.0, Stop protocol 1.1.0, Python 3.10+, and
@@ -42,9 +42,17 @@ snapshots of the public and legacy live/archive trees remain unchanged across
 the second manager run.
 
 The candidate source was pushed to public `main` and read back with local
-`HEAD == origin/main`. A fresh trusted Hook task, CI, tag, and GitHub Release
-remain separate pending gates. No tag or GitHub Release is authorized by this
-candidate entry, and 0.7.7 remains the latest published release.
+`HEAD == origin/main`. Main CI #79 completed all 12 matrix jobs successfully and
+HOL Plugin Scanner #59 also passed for candidate commit `2d1b6ac`.
+
+A normally trusted fresh interactive Codex CLI 0.149.0 task on macOS, without
+`--dangerously-bypass-hook-trust`, loaded the public 0.8.3 profile after the
+verified Python 3.12.2 interpreter was selected on `PATH`. UserPromptSubmit
+adopted revision 1 of a bounded schema-7 contract. Readback reported
+`integrity=ok`, an active deterministic candidate, a non-authoritative
+natural-language candidate, zero action tickets, zero denials, and a normal
+SessionEnd. Main and tag CI/HOL, the annotated tag, and GitHub Release metadata
+remain separate publication evidence.
 
 ## 0.7.7 release acceptance (2026-08-18)
 
