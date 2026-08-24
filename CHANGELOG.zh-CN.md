@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.3` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.8.4` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -11,6 +11,26 @@
 - **0.6.x——把“任务已经完成”和“这一回合可以先停下”分开：** 只有通过检查的完成 checkpoint 才能把任务标为完成；等待用户、等待外部结果或明确延期时可以结束当前回合，同时保留未完成要求。`0.6.0` 首次实现这套机制但没有发布，`0.6.1` 是该系列第一个正式版本。
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
+
+## 0.8.4 - 2026-08-25
+
+### 重点
+
+- Context Guard 现在从经过消毒的 staging 副本注册 marketplace，不再直接使用不可变 Git checkout，因此 Codex 刷新插件缓存时不会把 `.git` 元数据复制到 live cache。
+- 已经指向 checkout 的注册只需执行一次受管 `--apply` 就会迁移。同一次执行会从可信归档修复已受影响的 live cache，不删除历史版本或私有任务数据。
+- 只读检查仍保持只读；需要迁移或修复时，它会给出可执行的 `--apply` 提示，不会静默改动安装状态。
+
+### 变更
+
+- staging 使用与缓存验证相同的产品树忽略规则和 manifest，拒绝内嵌 Git 元数据，原子替换过期 staging，并在成功或失败后清理临时目录。
+- 新增注册或 checkout 迁移后都会验证最终 staging 路径；已经正确指向消毒 staging 的注册保持幂等。
+- 本补丁只改变安装和缓存生命周期。Schema 7、execution protocol 1.0.0、Proof protocol 1.0.0、Stop protocol 1.1.0、classifier 2.3.0 和八 Hook wire 均不变。
+
+### 验证
+
+- Windows 原生复现和真实 CLI 端到端测试已验证新 staging、checkout 迁移、live-cache 修复、第二次执行严格 no-op、只读诊断，以及 staging/live cache 中没有 `.git` 和遗留临时目录。
+- macOS 原生源码验收通过公开仓库/隐私门、197 项测试（含 2 项能力相关 skip）、八 Hook 自检、Ruff、编译，以及 0.8.4 候选版的隔离安装/no-op/生命周期链。
+- PR 和合并后 main CI 的 12 项 OS/Python 矩阵及 HOL 扫描均已通过。Tag CI、注释 tag 和 GitHub Release 仍是需要分开验证的发布事实。
 
 ## 0.8.3 - 2026-08-24
 

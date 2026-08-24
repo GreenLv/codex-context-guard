@@ -1,8 +1,36 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.3`; accepted `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.4`; accepted `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
+
+## 0.8.4 release acceptance (2026-08-25)
+
+Version 0.8.4 is an installer and cache-lifecycle patch. It registers the
+marketplace from a sanitized, manifest-verified staging copy instead of the Git
+checkout, migrates an existing checkout registration under `--apply`, and gives
+read-only checks an actionable repair instruction. Schema 7, execution protocol
+1.0.0, Proof protocol 1.0.0, Stop protocol 1.1.0, classifier 2.3.0, Python 3.10+,
+and the exact eight-Hook wire are unchanged.
+
+The native Windows report reproduced the original defect in a real Codex home
+and verified fresh staging, checkout-to-staging migration, repair from the
+trusted archive, strict second-run no-op, read-only diagnosis, and absence of
+embedded `.git` or leftover staging temp directories. PR CI passed all 12
+OS/Python jobs plus plugin scanning and HOL scanning.
+
+Native macOS source validation passed with Python 3.12.2: repository validation,
+the tracked-tree privacy audit, 197 tests with two capability-aware skips, the
+eight-Hook self-test, Ruff, compilation with an external bytecode cache, and
+`git diff --check`. An isolated Codex home passed first installation as
+`context-guard@codex-context-guard` 0.8.4, staging/source and source/cache parity,
+strict second-run no-op, installed lifecycle smoke, and the installed eight-Hook
+self-test. The disposable absolute path is intentionally not retained.
+
+The fix commit was fast-forwarded to public `main` without generating a new
+merge identity. Its 12-job main CI matrix and HOL scan passed. Release-commit
+CI, the annotated tag, tag CI, GitHub Release, downstream consumer pin, and
+default-home migration are verified separately rather than inferred here.
 
 ## 0.8.3 release acceptance (2026-08-24)
 

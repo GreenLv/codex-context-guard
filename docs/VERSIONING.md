@@ -126,6 +126,13 @@ not as a measure of code volume.
   bounded IDs, counts, states, and hashes. The release does not add
   `PreToolUse`, block tools, reserve tickets, commit, publish, or grant authority
   to uncovered surfaces.
+- `0.8.4` keeps every 0.8.3 schema, protocol, classifier, and Hook contract
+  unchanged while hardening installation and cache lifecycle. The marketplace
+  is registered at a sanitized, manifest-verified staging copy instead of the
+  immutable Git checkout; an existing checkout registration migrates only
+  under managed `--apply`, while non-apply diagnosis remains read-only and
+  actionable. Already-affected live caches are repaired from their trusted
+  archives without overwriting consumed versions or deleting private state.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

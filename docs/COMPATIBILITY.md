@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.3`
-- Current source line: `0.8.3`
+- Current published Context Guard release: `0.8.4`
+- Current source line: `0.8.4`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,6 +18,28 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.4 release status
+
+Version 0.8.4 changes the installer and cache lifecycle without changing the
+eight Hook events, schema 7, execution protocol 1.0.0, Proof protocol 1.0.0,
+Stop protocol 1.1.0, or classifier 2.3.0. The managed installer registers the
+marketplace at a sanitized, manifest-verified staging copy rather than at the
+immutable Git checkout, so a Codex cache refresh cannot copy checkout `.git`
+metadata into the live versioned cache.
+
+An existing checkout registration requires one managed `--apply`. That run
+atomically creates or refreshes staging, repoints the marketplace, and repairs
+an affected live cache only from its trusted archive. A non-apply check remains
+read-only and reports the exact `--apply` remediation. Historical caches,
+archives, task ledgers, and private plugin data are preserved.
+
+Native Windows real-CLI testing covers the original defect, fresh registration,
+checkout-to-staging migration, already-embedded `.git` repair, strict no-op,
+and read-only diagnosis. Native macOS independently covers the public source
+gates and an isolated 0.8.4 install/no-op/lifecycle chain. CI, HOL, a downstream
+consumer pin, a default-home migration, tag metadata, and GitHub Release
+metadata remain separate evidence surfaces.
 
 ## 0.8.3 release status
 

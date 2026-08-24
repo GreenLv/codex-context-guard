@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.3` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.4` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -11,6 +11,26 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.6.x — separate “the task is complete” from “this turn may stop”:** only a verified completion checkpoint marks the task complete. Waiting for the user, waiting for an external result, or explicitly deferring work can end the current turn while requirements remain open. `0.6.0` introduced this line but was never released; `0.6.1` was the first published version in the line.
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
+
+## 0.8.4 - 2026-08-25
+
+### Highlights
+
+- Context Guard now registers its marketplace from a sanitized staging copy instead of an immutable Git checkout, preventing Codex cache refreshes from copying `.git` metadata into the live plugin cache.
+- Existing checkout-based registrations migrate with one managed `--apply` run. The same run repairs an already-affected live cache from its trusted archive without deleting historical versions or private task data.
+- Read-only checks remain read-only: when migration or repair is needed, they fail with an actionable `--apply` instruction instead of silently changing the installation.
+
+### Changes
+
+- Staging uses the same product-tree ignore rules and manifest as cache verification, rejects embedded Git metadata, replaces stale staging atomically, and cleans temporary directories on both success and failure.
+- Marketplace registration verifies the final staging path after a fresh add or checkout-to-staging migration. A current sanitized registration is idempotent.
+- This patch changes only installation and cache lifecycle behavior. Schema 7, execution protocol 1.0.0, Proof protocol 1.0.0, Stop protocol 1.1.0, classifier 2.3.0, and the eight-Hook wire remain unchanged.
+
+### Validation
+
+- Native Windows reproduction and real-CLI end-to-end testing verified fresh staging, checkout migration, live-cache repair, strict second-run no-op, read-only diagnosis, and absence of `.git` or leftover staging temp directories.
+- Native macOS source validation passed the public repository/privacy gates, 197 tests with two capability-aware skips, the eight-Hook self-test, Ruff, compilation, and an isolated install/no-op/lifecycle chain for the 0.8.4 candidate.
+- PR and merged-main CI passed the 12-job OS/Python matrix and HOL scanning. Tag CI, the annotated tag, and GitHub Release remain separate publication facts.
 
 ## 0.8.3 - 2026-08-24
 
