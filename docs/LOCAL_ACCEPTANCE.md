@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.5`; accepted `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.6`; accepted `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.6 source-candidate acceptance (2026-08-25)
+## 0.8.6 release acceptance (2026-08-25)
 
 Native Windows applied exact public 0.8.5 from the pinned downstream into the
 real default Codex home. The 0.8.3 checkout registration migrated to sanitized
@@ -32,7 +32,7 @@ strict second no-op. With the outer bytecode environment variable explicitly
 removed, its full installed smoke passes without changing an all-file live-cache
 SHA-256 snapshot or leaving `.git`, `__pycache__`, `.pyc`, or `.pyo` anywhere in
 the staging/live/archive roots. Main/tag CI, tag, Release, downstream pinning,
-and native Windows 0.8.6 rerun remain separately pending.
+and native Windows 0.8.6 rerun remain separate evidence surfaces.
 
 ## 0.8.5 release acceptance (2026-08-25)
 

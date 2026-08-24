@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.5`
-- Current source line: `0.8.6` (`Unreleased`)
+- Current published Context Guard release: `0.8.6`
+- Current source line: `0.8.6`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,7 +19,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.6 source-candidate status
+## 0.8.6 release status
 
 Version 0.8.6 changes only the installed lifecycle smoke. Its final validation
 step directly imports the installed runtime with bytecode writing disabled in

@@ -97,9 +97,9 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Release status: `0.8.5` is the latest published release.", english
+            "> Release status: `0.8.6` is the latest published release.", english
         )
-        self.assertIn("> 发布状态：`0.8.5` 是最近一次已发布版本。", chinese)
+        self.assertIn("> 发布状态：`0.8.6` 是最近一次已发布版本。", chinese)
         self.assertIn("Stop protocol 1.1.0", english)
         self.assertIn("Stop protocol 1.1.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
@@ -169,7 +169,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.7.7 - 2026-08-18", changelog)
         self.assertIn("## 0.8.3 - 2026-08-24", changelog)
         self.assertIn("## 0.8.5 - 2026-08-25", changelog)
-        self.assertIn("## 0.8.6 - Unreleased", changelog)
+        self.assertIn("## 0.8.6 - 2026-08-25", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -177,9 +177,9 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current published Context Guard release: `0.8.5`", compatibility
+            "Current published Context Guard release: `0.8.6`", compatibility
         )
-        self.assertIn("Current source line: `0.8.6` (`Unreleased`)", compatibility)
+        self.assertIn("Current source line: `0.8.6`", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.3.0`", compatibility)

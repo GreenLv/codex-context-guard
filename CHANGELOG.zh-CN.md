@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.5` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.8.6` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.8.6 - Unreleased
+## 0.8.6 - 2026-08-25
 
 ### 重点
 
@@ -30,7 +30,7 @@
 
 - Windows 原生 0.8.5 已成功完成受管 0.8.3 到 0.8.5 迁移、严格 no-op、只读读回、八 Hook 自检、lifecycle assertions 和 manifest parity，但 smoke 直接导入向 live cache 写入一枚 `.pyc`，因此最终验收正确失败；Windows 随即停止，未删除该文件，也未更新下游状态。
 - macOS 已通过公开仓库/隐私门、202 项测试（含 2 项能力相关 skip）、八 Hook 自检、Ruff、编译和精确候选 0.8.6 隔离安装。第二次 apply 是严格 no-op；移除外层 bytecode 环境保护后，完整 smoke 不改变全文件 SHA-256 快照；source、staging、live cache 和 archive 保持字节一致，且无 Git 或 bytecode 残留。
-- Main/tag CI、注释 tag、GitHub Release、下游 pin 和 Windows 原生 0.8.6 复验仍是相互独立的门。
+- Main/tag CI、注释 tag、GitHub Release、下游 pin 和 Windows 原生 0.8.6 复验是相互独立的验收面，不能替代上述本地源码与隔离安装证据。
 
 ## 0.8.5 - 2026-08-25
 
