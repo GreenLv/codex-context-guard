@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.7` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.8.8` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.8.8 - 未发布
+## 0.8.8 - 2026-08-25
 
 ### 重点
 
@@ -30,7 +30,8 @@
 - macOS 已在最终发布 pin 上通过 0.8.7 真实安装、严格 no-op、只读审计、installed lifecycle smoke 和八 Hook 自检。新信任的交互 Hook 随后失败，因为宿主把裸 `python3` 解析为 `/usr/bin/python3` 3.9.6；直接复现得到相同的 Python 3.10+ 版本门失败。
 - 候选已在 macOS 通过仓库/隐私验证、209 项测试（含 2 项能力 skip）、八 Hook 自检、Ruff、外部 cache 编译和 diff 检查。一次性 Codex home 通过首次安装、严格 no-op、只读审计、launcher 自检、lifecycle smoke 和禁留检查。
 - 全新交互式 Codex CLI 0.149.0 任务已检查并信任候选的全部 8 个 Hook。`UserPromptSubmit` 和 `Stop` 不再出现此前的 code-2 失败，精确固定回复返回，私有状态以 `0600` 权限落盘，0.8.8 live cache 也没有 Git 或 bytecode 残留。
-- 0.8.8 的 Windows 原生、最终 head PR/CI 和发布证据仍待完成；当前没有 tag 或 GitHub Release。
+- Windows 已通过下游精确 pin 应用候选提交 `40987d48d6a6f7a8ea8b3ae6e468c472170748a4`。受管升级、第二次严格 no-op、只读读回、八 Hook 自检、lifecycle smoke、PowerShell launcher 和全新交互信任均通过。0.8.3/0.8.5/0.8.6/0.8.7 历史 live tree 逐字节不变；新 staging/live/archive 均保留 41 个文件且无 Git 或 bytecode 残留，source、staging、live cache 和 archive 的 15 个产品文件完全一致。
+- 精确候选的 PR 自动化已通过 12 项 OS/Python 矩阵、HOL Scanner 和 plugin scanner。Main/tag 自动化、注释 tag、GitHub Release 读回和下游最终发布 pin 与原生 runtime 验收分别验证。
 
 ## 0.8.7 - 2026-08-25
 

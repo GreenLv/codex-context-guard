@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.7`
+- Current published Context Guard release: `0.8.8`
 - Current source line: `0.8.8`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
@@ -19,7 +19,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.8 source-candidate status
+## 0.8.8 release status
 
 Version 0.8.8 changes Hook interpreter selection without changing the eight
 events, payloads, schema, protocols, classifier, or private-state behavior.
@@ -37,8 +37,18 @@ gate therefore failed and motivated this candidate. The candidate now passes
 the macOS source gates and an isolated install/no-op/read-only/self-test/smoke
 chain. A fresh interactive Codex CLI 0.149.0 task then trusted all eight Hooks;
 `UserPromptSubmit` and `Stop` ran successfully, the fixed reply returned, and
-private state was written with mode `0600`. Native Windows remains pending; no
-release claim is made.
+private state was written with mode `0600`.
+
+Native Windows applied exact candidate
+`40987d48d6a6f7a8ea8b3ae6e468c472170748a4` through the pinned consumer into
+the real Codex home. The managed upgrade, strict second no-op, read-only
+readback, eight-Hook self-test, lifecycle smoke, PowerShell launcher, and fresh
+interactive trust all passed. Historical 0.8.3/0.8.5/0.8.6/0.8.7 live trees
+stayed byte-wise unchanged. The new staging/live/archive trees retained 41
+files without Git or bytecode residue, and all 15 product files match across
+source, staging, live cache, and archive. The exact downstream acceptance
+commit and its CI passed separately. PR, main, tag, Release, and downstream
+final-pin evidence remain distinct publication surfaces.
 
 ## 0.8.7 release status
 

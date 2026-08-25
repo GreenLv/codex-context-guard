@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.7` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.8` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.8 - Unreleased
+## 0.8.8 - 2026-08-25
 
 ### Highlights
 
@@ -30,7 +30,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - Native macOS 0.8.7 installation, strict no-op, read-only audit, installed lifecycle smoke, and eight-Hook self-test passed at the final release pin. A newly trusted interactive Hook then failed because the host resolved bare `python3` to `/usr/bin/python3` 3.9.6; direct reproduction returned the same Python 3.10+ guard failure.
 - The candidate passes repository/privacy validation, 209 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks on macOS. A disposable Codex home passes first install, strict no-op, read-only audit, launcher self-test, lifecycle smoke, and forbidden-residue checks.
 - A fresh interactive Codex CLI 0.149.0 task reviewed and trusted all eight candidate Hooks. `UserPromptSubmit` and `Stop` ran without the earlier code-2 failure, the exact fixed reply returned, private state was written with mode `0600`, and the 0.8.8 live cache retained no Git or bytecode residue.
-- Native Windows, final-head PR/CI, and release evidence for 0.8.8 remain pending. No tag or GitHub Release exists for this candidate.
+- Native Windows applied exact candidate `40987d48d6a6f7a8ea8b3ae6e468c472170748a4` through the pinned consumer. The managed upgrade, strict second no-op, read-only readback, eight-Hook self-test, lifecycle smoke, PowerShell launcher, and fresh interactive trust all passed. Historical 0.8.3/0.8.5/0.8.6/0.8.7 live trees stayed byte-wise unchanged; the new staging/live/archive trees each retained 41 files with no Git or bytecode residue, and all 15 product files matched across source, staging, live cache, and archive.
+- Exact candidate PR automation passes the 12-job OS/Python matrix, HOL Scanner, and plugin scanner. Main and tag automation, the annotated tag, GitHub Release readback, and the downstream final release pin are verified separately from native runtime acceptance.
 
 ## 0.8.7 - 2026-08-25
 

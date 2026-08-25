@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.7`; accepted `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.8`; accepted `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.8 source-candidate acceptance (2026-08-25)
+## 0.8.8 release acceptance (2026-08-25)
 
 The real macOS default home applied final 0.8.7 release commit
 `5c0375eb92e1c03eed0309d570d06380ebcfefe7` through the pinned downstream
@@ -28,9 +28,27 @@ self-test, lifecycle smoke, and forbidden-residue checks. A fresh interactive
 Codex CLI 0.149.0 task reviewed and trusted all eight candidate Hooks. Its
 `UserPromptSubmit` and `Stop` completed without the 0.8.7 code-2 failure, the
 requested exact reply returned, and the matching private state file was mode
-`0600`. The 0.8.8 live tree retained no Git or bytecode residue. Native Windows
-acceptance, final-head PR CI, and publication remain pending. No 0.8.8 tag or
-GitHub Release exists.
+`0600`. The 0.8.8 live tree retained no Git or bytecode residue.
+
+Native Windows applied exact candidate
+`40987d48d6a6f7a8ea8b3ae6e468c472170748a4` through the pinned consumer into
+the real Codex home. The managed upgrade created checkout, sanitized staging,
+live cache, and archive; the second apply was a strict no-op. Read-only
+readback, the eight-Hook self-test, lifecycle smoke, and the PowerShell launcher
+passed with Python 3.12.10. A fresh interactive task trusted all eight Hooks;
+`UserPromptSubmit` and `Stop` succeeded without code 2 and produced schema-7
+private state.
+
+The 0.8.3/0.8.5/0.8.6/0.8.7 historical live trees stayed byte-wise unchanged
+across the upgrade. The 0.8.8 smoke left its 41-file live snapshot unchanged;
+staging, live cache, and archive each retained 41 files with no `.git`,
+`__pycache__`, `.pyc`, or `.pyo`. All 15 product files match across source,
+staging, live cache, and archive. Downstream manager, installer, Skill-validator,
+and execution-policy contracts passed; the exact upstream suite reported 209
+tests with three capability-aware skips on Windows, and exact downstream CI
+passed. Exact-candidate PR CI passes the 12-job OS/Python matrix, HOL Scanner,
+and plugin scanner. Main/tag automation, the annotated tag, GitHub Release, and
+the downstream final release pin remain separate publication evidence.
 
 ## 0.8.7 release acceptance (2026-08-25)
 
