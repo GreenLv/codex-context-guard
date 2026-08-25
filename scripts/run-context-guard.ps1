@@ -2,18 +2,18 @@ $ErrorActionPreference = "Stop"
 
 $runtime = Join-Path $PSScriptRoot "context_guard.py"
 $candidates = @(
-    @{ Command = "py"; Prefix = @("-3.14") },
-    @{ Command = "py"; Prefix = @("-3.13") },
-    @{ Command = "py"; Prefix = @("-3.12") },
-    @{ Command = "py"; Prefix = @("-3.11") },
-    @{ Command = "py"; Prefix = @("-3.10") },
+    @{ Command = "python"; Prefix = @() },
+    @{ Command = "python3"; Prefix = @() },
     @{ Command = "python3.14"; Prefix = @() },
     @{ Command = "python3.13"; Prefix = @() },
     @{ Command = "python3.12"; Prefix = @() },
     @{ Command = "python3.11"; Prefix = @() },
     @{ Command = "python3.10"; Prefix = @() },
-    @{ Command = "python3"; Prefix = @() },
-    @{ Command = "python"; Prefix = @() }
+    @{ Command = "py"; Prefix = @("-3.14") },
+    @{ Command = "py"; Prefix = @("-3.13") },
+    @{ Command = "py"; Prefix = @("-3.12") },
+    @{ Command = "py"; Prefix = @("-3.11") },
+    @{ Command = "py"; Prefix = @("-3.10") }
 )
 
 foreach ($candidate in $candidates) {

@@ -22,7 +22,7 @@
 
 ### 变更
 
-- POSIX Hook 改为调用一个小型 `sh` launcher，先探测带版本号的 Python，再尝试通用命令。Windows Hook 调用 PowerShell launcher，依次探测 `py -3.x`、带版本号及通用 Python 命令。
+- POSIX Hook 改为调用一个小型 `sh` launcher，先探测带版本号的 Python，再尝试通用命令。Windows Hook 先验证常见的通用命令以缩短启动时间，再尝试带版本号命令和 `py -3.x` fallback。
 - 定向回归把不受支持的 `python3` 放在受支持的 `python3.12` 前面，要求 launcher 跳过前者并用后者通过八 Hook 自检。
 
 ### 验证

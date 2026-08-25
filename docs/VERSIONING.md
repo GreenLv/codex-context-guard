@@ -159,8 +159,8 @@ not as a measure of code volume.
   release commit was finalized.
 - `0.8.8` selects a supported Hook interpreter instead of assuming that the
   first bare `python3` or `python` on `PATH` satisfies the documented Python
-  3.10+ requirement. POSIX and Windows launchers probe versioned interpreters
-  before generic names, preserve the Hook stdin/stdout contract, and fail
+  3.10+ requirement. POSIX and Windows launchers probe bounded supported
+  candidates by capability, preserve the Hook stdin/stdout contract, and fail
   closed with an actionable stderr message when no supported interpreter is
   available. Schema, protocols, classifier, and private-state contracts remain
   unchanged; the Hook command bytes and installed package identity advance.

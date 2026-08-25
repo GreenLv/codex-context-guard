@@ -24,7 +24,8 @@ behavior may change in future Codex releases and must be revalidated.
 Version 0.8.8 changes Hook interpreter selection without changing the eight
 events, payloads, schema, protocols, classifier, or private-state behavior.
 The POSIX launcher probes versioned Python 3 commands before generic names;
-the Windows launcher probes `py -3.x` plus versioned and generic commands.
+the Windows launcher validates generic commands first, then versioned commands
+and `py -3.x` fallbacks.
 Both require Python 3.10+ and preserve Hook stdin/stdout/stderr.
 
 Native macOS 0.8.7 deterministic install and lifecycle gates passed, but a

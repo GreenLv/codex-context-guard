@@ -22,7 +22,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Changes
 
-- POSIX Hooks call a small `sh` launcher that probes versioned Python commands before the generic names. Windows Hooks call a PowerShell launcher that probes `py -3.x` and versioned/generic Python commands.
+- POSIX Hooks call a small `sh` launcher that probes versioned Python commands before the generic names. Windows Hooks validate the active generic command first for fast common-case startup, then try versioned commands and `py -3.x` fallbacks.
 - Focused regression coverage places an unsupported `python3` before a supported `python3.12` and requires the launcher to skip the former and pass the eight-Hook self-test with the latter.
 
 ### Validation
