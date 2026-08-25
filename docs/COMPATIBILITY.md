@@ -35,8 +35,10 @@ later on `PATH`. `UserPromptSubmit` and `Stop` exited with code 2; direct
 reproduction reached the runtime's Python 3.10+ guard. That fresh trusted-Hook
 gate therefore failed and motivated this candidate. The candidate now passes
 the macOS source gates and an isolated install/no-op/read-only/self-test/smoke
-chain. Fresh candidate Hook trust and native Windows remain pending; no release
-claim is made.
+chain. A fresh interactive Codex CLI 0.149.0 task then trusted all eight Hooks;
+`UserPromptSubmit` and `Stop` ran successfully, the fixed reply returned, and
+private state was written with mode `0600`. Native Windows remains pending; no
+release claim is made.
 
 ## 0.8.7 release status
 

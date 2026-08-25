@@ -29,7 +29,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Native macOS 0.8.7 installation, strict no-op, read-only audit, installed lifecycle smoke, and eight-Hook self-test passed at the final release pin. A newly trusted interactive Hook then failed because the host resolved bare `python3` to `/usr/bin/python3` 3.9.6; direct reproduction returned the same Python 3.10+ guard failure.
 - The candidate passes repository/privacy validation, 209 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks on macOS. A disposable Codex home passes first install, strict no-op, read-only audit, launcher self-test, lifecycle smoke, and forbidden-residue checks.
-- Fresh trusted-Hook, native Windows, PR/CI, and release evidence for 0.8.8 remain pending. No tag or GitHub Release exists for this candidate.
+- A fresh interactive Codex CLI 0.149.0 task reviewed and trusted all eight candidate Hooks. `UserPromptSubmit` and `Stop` ran without the earlier code-2 failure, the exact fixed reply returned, private state was written with mode `0600`, and the 0.8.8 live cache retained no Git or bytecode residue.
+- Native Windows, final-head PR/CI, and release evidence for 0.8.8 remain pending. No tag or GitHub Release exists for this candidate.
 
 ## 0.8.7 - 2026-08-25
 

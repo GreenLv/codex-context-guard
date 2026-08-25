@@ -24,9 +24,13 @@ focused POSIX regression. On macOS with Python 3.12.2, repository/privacy
 validation, 209 tests with two capability-aware skips, eight-Hook self-test,
 Ruff, external-cache compilation, and diff checks pass. A disposable Codex
 home passes first install, strict no-op, read-only audit, installed launcher
-self-test, lifecycle smoke, and forbidden-residue checks. A fresh trusted
-candidate Hook, native Windows acceptance, PR CI, and publication remain
-pending. No 0.8.8 tag or GitHub Release exists.
+self-test, lifecycle smoke, and forbidden-residue checks. A fresh interactive
+Codex CLI 0.149.0 task reviewed and trusted all eight candidate Hooks. Its
+`UserPromptSubmit` and `Stop` completed without the 0.8.7 code-2 failure, the
+requested exact reply returned, and the matching private state file was mode
+`0600`. The 0.8.8 live tree retained no Git or bytecode residue. Native Windows
+acceptance, final-head PR CI, and publication remain pending. No 0.8.8 tag or
+GitHub Release exists.
 
 ## 0.8.7 release acceptance (2026-08-25)
 

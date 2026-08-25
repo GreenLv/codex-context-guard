@@ -29,7 +29,8 @@
 
 - macOS 已在最终发布 pin 上通过 0.8.7 真实安装、严格 no-op、只读审计、installed lifecycle smoke 和八 Hook 自检。新信任的交互 Hook 随后失败，因为宿主把裸 `python3` 解析为 `/usr/bin/python3` 3.9.6；直接复现得到相同的 Python 3.10+ 版本门失败。
 - 候选已在 macOS 通过仓库/隐私验证、209 项测试（含 2 项能力 skip）、八 Hook 自检、Ruff、外部 cache 编译和 diff 检查。一次性 Codex home 通过首次安装、严格 no-op、只读审计、launcher 自检、lifecycle smoke 和禁留检查。
-- 0.8.8 的 fresh trusted-Hook、Windows 原生、PR/CI 和发布证据仍待完成；当前没有 tag 或 GitHub Release。
+- 全新交互式 Codex CLI 0.149.0 任务已检查并信任候选的全部 8 个 Hook。`UserPromptSubmit` 和 `Stop` 不再出现此前的 code-2 失败，精确固定回复返回，私有状态以 `0600` 权限落盘，0.8.8 live cache 也没有 Git 或 bytecode 残留。
+- 0.8.8 的 Windows 原生、最终 head PR/CI 和发布证据仍待完成；当前没有 tag 或 GitHub Release。
 
 ## 0.8.7 - 2026-08-25
 
