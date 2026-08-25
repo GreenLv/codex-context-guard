@@ -12,6 +12,25 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.8.8 - Unreleased
+
+### Highlights
+
+- Hooks now select an available Python 3.10+ interpreter instead of blindly using the first `python3` or `python` on `PATH`.
+- A supported interpreter later on `PATH` is used when macOS resolves bare `python3` to Apple's unsupported Python 3.9; if none is available, the launcher fails closed with an actionable stderr message.
+- POSIX and Windows launchers preserve the existing eight-event Hook protocol, standard-library-only runtime, stdin/stdout contract, and private-state behavior.
+
+### Changes
+
+- POSIX Hooks call a small `sh` launcher that probes versioned Python commands before the generic names. Windows Hooks call a PowerShell launcher that probes `py -3.x` and versioned/generic Python commands.
+- Focused regression coverage places an unsupported `python3` before a supported `python3.12` and requires the launcher to skip the former and pass the eight-Hook self-test with the latter.
+
+### Validation
+
+- Native macOS 0.8.7 installation, strict no-op, read-only audit, installed lifecycle smoke, and eight-Hook self-test passed at the final release pin. A newly trusted interactive Hook then failed because the host resolved bare `python3` to `/usr/bin/python3` 3.9.6; direct reproduction returned the same Python 3.10+ guard failure.
+- The candidate passes repository/privacy validation, 209 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks on macOS. A disposable Codex home passes first install, strict no-op, read-only audit, launcher self-test, lifecycle smoke, and forbidden-residue checks.
+- Fresh trusted-Hook, native Windows, PR/CI, and release evidence for 0.8.8 remain pending. No tag or GitHub Release exists for this candidate.
+
 ## 0.8.7 - 2026-08-25
 
 ### Highlights

@@ -17,6 +17,10 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 Requirements: Python 3.10 or newer, Codex CLI `0.146.0` or newer as the tested minimum, and a Codex surface that loads plugins and lifecycle Hooks.
 
+The unreleased 0.8.8 source candidate selects a supported Python interpreter
+for Hook execution instead of assuming the first `python3` on `PATH` is new
+enough. This matters on macOS hosts where `/usr/bin/python3` can still be 3.9.
+
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
 cd codex-context-guard

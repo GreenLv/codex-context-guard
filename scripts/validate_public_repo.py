@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.8.7"
+VERSION = "0.8.8"
 SCHEMA_VERSION = 7
 STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.3.0"
@@ -57,6 +57,8 @@ REQUIRED_FILES = {
     "hooks/hooks.json",
     "scripts/audit_commit_identity.py",
     "scripts/context_guard.py",
+    "scripts/run_context_guard.sh",
+    "scripts/run-context-guard.ps1",
     "scripts/manage_plugin.py",
     "scripts/smoke_installed.py",
     "skills/context-guard/SKILL.md",

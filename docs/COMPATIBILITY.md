@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.7`
-- Current source line: `0.8.7`
+- Current source line: `0.8.8`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -18,6 +18,24 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.8 source-candidate status
+
+Version 0.8.8 changes Hook interpreter selection without changing the eight
+events, payloads, schema, protocols, classifier, or private-state behavior.
+The POSIX launcher probes versioned Python 3 commands before generic names;
+the Windows launcher probes `py -3.x` plus versioned and generic commands.
+Both require Python 3.10+ and preserve Hook stdin/stdout/stderr.
+
+Native macOS 0.8.7 deterministic install and lifecycle gates passed, but a
+newly trusted interactive Codex CLI 0.149.0 task exposed that bare `python3`
+resolved to `/usr/bin/python3` 3.9.6 even though Python 3.12.2 was available
+later on `PATH`. `UserPromptSubmit` and `Stop` exited with code 2; direct
+reproduction reached the runtime's Python 3.10+ guard. That fresh trusted-Hook
+gate therefore failed and motivated this candidate. The candidate now passes
+the macOS source gates and an isolated install/no-op/read-only/self-test/smoke
+chain. Fresh candidate Hook trust and native Windows remain pending; no release
+claim is made.
 
 ## 0.8.7 release status
 

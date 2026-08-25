@@ -17,6 +17,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 需要 Python 3.10 或更高版本、Codex CLI `0.146.0` 或更高版本作为当前已测试下限，以及能够加载插件和生命周期 Hook 的 Codex 界面。
 
+未发布的 0.8.8 源码候选会为 Hook 选择符合要求的 Python 解释器，不再假定 `PATH` 中排在最前面的 `python3` 一定足够新。这对 `/usr/bin/python3` 仍为 3.9 的 macOS 宿主尤其重要。
+
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
 cd codex-context-guard

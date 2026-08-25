@@ -4,6 +4,30 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.7`; accepted `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.8 source-candidate acceptance (2026-08-25)
+
+The real macOS default home applied final 0.8.7 release commit
+`5c0375eb92e1c03eed0309d570d06380ebcfefe7` through the pinned downstream
+manager. The first apply updated checkout, sanitized staging, plugin, live
+cache, and archive; the second apply skipped cache refresh. Read-only audit,
+eight-Hook self-test, and installed lifecycle smoke passed.
+
+A new interactive Codex CLI 0.149.0 task then displayed and trusted all eight
+changed Hooks. Its `UserPromptSubmit` and `Stop` Hooks both exited with code 2.
+The Hook command resolved bare `python3` to `/usr/bin/python3` 3.9.6, while the
+runtime requires Python 3.10+; running the same installed entry with that
+interpreter reproduced the exit exactly. Python 3.12.2 was installed later on
+`PATH`, so this is interpreter selection rather than a missing dependency.
+
+The 0.8.8 candidate adds capability-probing POSIX and Windows launchers and a
+focused POSIX regression. On macOS with Python 3.12.2, repository/privacy
+validation, 209 tests with two capability-aware skips, eight-Hook self-test,
+Ruff, external-cache compilation, and diff checks pass. A disposable Codex
+home passes first install, strict no-op, read-only audit, installed launcher
+self-test, lifecycle smoke, and forbidden-residue checks. A fresh trusted
+candidate Hook, native Windows acceptance, PR CI, and publication remain
+pending. No 0.8.8 tag or GitHub Release exists.
+
 ## 0.8.7 release acceptance (2026-08-25)
 
 Native Windows 0.8.6 stopped after the managed apply created the new checkout,

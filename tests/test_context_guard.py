@@ -4709,6 +4709,10 @@ class ContextGuardTests(unittest.TestCase):
                     self.assertIn("commandWindows", hook)
                     self.assertIn("PLUGIN_ROOT", hook["command"])
                     self.assertIn("$env:PLUGIN_ROOT", hook["commandWindows"])
+                    self.assertIn("run_context_guard.sh", hook["command"])
+                    self.assertIn(
+                        "run-context-guard.ps1", hook["commandWindows"]
+                    )
                     if hook is hooks["SessionEnd"][0]["hooks"][0]:
                         self.assertLessEqual(hook["timeout"], 3)
         skill_text = (
@@ -4725,6 +4729,35 @@ class ContextGuardTests(unittest.TestCase):
             windows=True,
         )
         self.assertIn('"C:\\Plugin Root\\context_guard.py"', windows_command)
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher check")
+    def test_posix_hook_launcher_skips_unsupported_python3(self) -> None:
+        launcher = MODULE_PATH.parent / "run_context_guard.sh"
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        probed = self.root / "unsupported-python3-probed"
+        old_python = fake_bin / "python3.14"
+        old_python.write_text(
+            "#!/bin/sh\n"
+            f"printf probed > '{probed}'\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        old_python.chmod(0o755)
+        (fake_bin / "python3.12").symlink_to(sys.executable)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+        result = subprocess.run(
+            ["/bin/sh", str(launcher), "self-test"],
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(probed.is_file())
+        self.assertIn("PASS context-guard self-test", result.stdout)
 
     def test_self_test_requires_python_310_or_newer(self) -> None:
         with (

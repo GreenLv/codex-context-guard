@@ -12,6 +12,25 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
+## 0.8.8 - 未发布
+
+### 重点
+
+- Hook 现在会选择可用的 Python 3.10+ 解释器，不再直接使用 `PATH` 中排在最前面的 `python3` 或 `python`。
+- 如果 macOS 的裸 `python3` 指向不受支持的 Apple Python 3.9，而 `PATH` 后面存在受支持版本，launcher 会跳过前者；完全找不到受支持解释器时，会 fail-closed 并向 stderr 输出可执行的错误说明。
+- POSIX 与 Windows launcher 保持现有八事件 Hook 协议、仅标准库 runtime、stdin/stdout 合同和私有状态行为不变。
+
+### 变更
+
+- POSIX Hook 改为调用一个小型 `sh` launcher，先探测带版本号的 Python，再尝试通用命令。Windows Hook 调用 PowerShell launcher，依次探测 `py -3.x`、带版本号及通用 Python 命令。
+- 定向回归把不受支持的 `python3` 放在受支持的 `python3.12` 前面，要求 launcher 跳过前者并用后者通过八 Hook 自检。
+
+### 验证
+
+- macOS 已在最终发布 pin 上通过 0.8.7 真实安装、严格 no-op、只读审计、installed lifecycle smoke 和八 Hook 自检。新信任的交互 Hook 随后失败，因为宿主把裸 `python3` 解析为 `/usr/bin/python3` 3.9.6；直接复现得到相同的 Python 3.10+ 版本门失败。
+- 候选已在 macOS 通过仓库/隐私验证、209 项测试（含 2 项能力 skip）、八 Hook 自检、Ruff、外部 cache 编译和 diff 检查。一次性 Codex home 通过首次安装、严格 no-op、只读审计、launcher 自检、lifecycle smoke 和禁留检查。
+- 0.8.8 的 fresh trusted-Hook、Windows 原生、PR/CI 和发布证据仍待完成；当前没有 tag 或 GitHub Release。
+
 ## 0.8.7 - 2026-08-25
 
 ### 重点
