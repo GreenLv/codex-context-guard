@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.6`
-- Current source line: `0.8.7` (unreleased candidate)
+- Current published Context Guard release: `0.8.7`
+- Current source line: `0.8.7`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,7 +19,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.7 unreleased candidate status
+## 0.8.7 release status
 
 Version 0.8.7 changes only managed cache-upgrade preservation. Product parity
 continues to ignore bytecode and other non-product files, and trusted archives
@@ -38,13 +38,21 @@ Native macOS source validation passes the repository/privacy gates, 206 tests
 with two capability-aware skips, eight-Hook self-test, Ruff, external-cache
 compilation, and diff checks. A real Codex CLI 0.149.0 isolated upgrade creates
 an actual 339,172-byte `.pyc` in the 0.8.6 live tree, then applies candidate
-commit `285c3905bcf20a1c326761cfe719d02c4dcf06c0`. The old live all-file
+implementation commit `285c3905bcf20a1c326761cfe719d02c4dcf06c0`. The old live all-file
 SHA-256 snapshot remains unchanged through upgrade, no-op, read-only readback,
 and the new installed smoke; its trusted archive remains product-only. The new
 staging/live/archive trees match, and the smoke runs without an outer bytecode
-guard without changing the new live snapshot. Candidate PR automation and
-native Windows acceptance remain pending. No native Windows 0.8.7 result, tag,
-or GitHub Release is claimed.
+guard without changing the new live snapshot. Exact candidate commit
+`d91a663af20623c1a38d69e3a062903f9e30e673` passes the 12-job PR CI matrix,
+HOL Scanner, and plugin scanner.
+
+Native Windows acceptance installed that exact candidate in the real Codex
+home. All pre-existing 0.8.3, 0.8.5, and 0.8.6 historical live-tree file/hash
+snapshots remained unchanged across apply; the already-lost 0.8.5 `.pyc`
+remained absent rather than being recreated. The new smoke left the 0.8.7
+all-file snapshot unchanged, and all 13 product files match across source,
+staging, live cache, and archive with no forbidden residue. The exact downstream
+acceptance commit and its CI passed separately.
 
 ## 0.8.6 release status
 

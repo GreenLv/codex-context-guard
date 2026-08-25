@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.6` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.7` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.7 - Unreleased
+## 0.8.7 - 2026-08-25
 
 ### Highlights
 
@@ -29,8 +29,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Validation
 
 - The public repository/privacy gates, 206 tests with two capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks pass on macOS. A real Codex CLI 0.149.0 isolated 0.8.6-to-0.8.7 upgrade preserves an actual 339,172-byte historical `.pyc` and the complete old live-tree SHA-256 snapshot while keeping the old trusted archive product-only.
-- The isolated candidate also passes strict second apply no-op, read-only readback, installed self-test, lifecycle smoke without an outer bytecode guard, and staging/live/archive parity with no transaction or bytecode residue in the new version. PR CI and native Windows candidate acceptance remain pending.
-- Version 0.8.7 remains an unreleased source candidate. No tag or GitHub Release may be created until the exact candidate passes native Windows acceptance.
+- The isolated candidate also passes strict second apply no-op, read-only readback, installed self-test, lifecycle smoke without an outer bytecode guard, and staging/live/archive parity with no transaction or bytecode residue in the new version. PR CI passes the 12-job OS/Python matrix, HOL Scanner, and plugin scanner.
+- Native Windows acceptance installed the exact candidate in the real Codex home without changing any pre-existing 0.8.3, 0.8.5, or 0.8.6 historical live-tree snapshot. The 0.8.7 smoke left its all-file snapshot unchanged; all 13 product files match across source, staging, live cache, and archive with no forbidden residue. The already-lost 0.8.5 `.pyc` was not recreated or misreported as recovered. The exact downstream acceptance commit and CI passed separately.
 
 ## 0.8.6 - 2026-08-25
 

@@ -146,7 +146,7 @@ not as a measure of code volume.
   an immutable installed plugin root. Runtime, schema, protocol, classifier,
   Hook, installer, marketplace, cache/archive, and private-state contracts are
   unchanged.
-- `0.8.7` is an unreleased cache-lifecycle candidate. Native Windows 0.8.6
+- `0.8.7` is a cache-lifecycle preservation patch. Native Windows 0.8.6
   exposed that Codex replaces the complete plugin cache root during an upgrade;
   product-only archive restoration therefore dropped a retained historical
   `.pyc` that was correctly excluded from product parity. The candidate keeps
@@ -155,8 +155,8 @@ not as a measure of code volume.
   version after refresh, and recovers an interrupted transaction before a later
   apply. Read-only diagnosis never recovers or removes the transaction. Schema,
   protocols, classifier, Hook wire, runtime, and private-state contracts remain
-  unchanged. This version must remain untagged and unreleased until its exact
-  source passes native Windows acceptance.
+  unchanged. Its exact candidate passed native Windows acceptance before the
+  release commit was finalized.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

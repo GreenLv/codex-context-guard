@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.6`; accepted `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.7`; accepted `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.7 unreleased candidate acceptance (2026-08-25)
+## 0.8.7 release acceptance (2026-08-25)
 
 Native Windows 0.8.6 stopped after the managed apply created the new checkout,
 staging, live cache, and archive but deleted the retained historical 0.8.5
@@ -24,7 +24,7 @@ recovers it before a later managed apply. Read-only diagnosis is no-write;
 embedded Git metadata, symlinks, product drift, and malformed transaction data
 fail closed.
 
-Candidate commit `285c3905bcf20a1c326761cfe719d02c4dcf06c0` passes the
+Implementation commit `285c3905bcf20a1c326761cfe719d02c4dcf06c0` passes the
 public repository/privacy gates, 206 tests with two capability-aware skips,
 eight-Hook self-test, Ruff, external-cache compilation, and diff checks on
 macOS with Python 3.12.2. A disposable Codex CLI 0.149.0 home first installs
@@ -42,8 +42,17 @@ without an outer bytecode guard and leaves the 0.8.7 live all-file snapshot
 unchanged; 0.8.7 staging/live/archive remain identical and contain no `.git`,
 `__pycache__`, `.pyc`, or `.pyo` residue.
 
-Candidate PR CI/HOL and native Windows candidate acceptance are still pending.
-Version 0.8.7 remains untagged and unreleased by explicit workflow gate.
+Exact candidate commit `d91a663af20623c1a38d69e3a062903f9e30e673` passes the
+12-job PR CI matrix, HOL Scanner, and plugin scanner. Native Windows acceptance
+installed that candidate in the real Codex home and preserved the pre-existing
+file lists and SHA-256 snapshots for the 0.8.3, 0.8.5, and 0.8.6 historical
+live trees. The already-lost 0.8.5 `.pyc` remained absent and was not recreated.
+The 0.8.7 smoke left its own all-file snapshot unchanged; source, staging, live
+cache, and archive contain the same 13 product files with no forbidden residue.
+The downstream acceptance suite passed the upstream 206-test suite with two
+capability-aware skips, Windows smoke 2/2, path contracts 5/5, the full
+34-Skill validator, and exact downstream CI. Main CI, tag CI, annotated tag,
+and GitHub Release remain separate publication evidence.
 
 ## 0.8.6 release acceptance (2026-08-25)
 

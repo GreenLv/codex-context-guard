@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.6` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.8.7` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.8.7 - 未发布
+## 0.8.7 - 2026-08-25
 
 ### 重点
 
@@ -29,8 +29,8 @@
 ### 验证
 
 - macOS 已通过公开仓库/隐私门、206 项测试（含 2 项能力 skip）、八 Hook 自检、Ruff、外部 cache 编译和 diff 检查。真实 Codex CLI 0.149.0 隔离环境从 0.8.6 升级到 0.8.7 时，原样保留了一枚真实的 339,172-byte 历史 `.pyc` 及旧 live tree 的完整 SHA-256 快照，同时旧 trusted archive 继续保持 product-only。
-- 隔离候选还通过第二次 apply 严格 no-op、只读读回、installed self-test、无外层 bytecode guard 的 lifecycle smoke，以及 staging/live/archive parity；新版本中无事务或 bytecode 残留。PR CI 和 Windows 原生候选验收仍待完成。
-- 0.8.7 仍是未发布源码候选。精确候选通过 Windows 原生验收前，不得创建 tag 或 GitHub Release。
+- 隔离候选还通过第二次 apply 严格 no-op、只读读回、installed self-test、无外层 bytecode guard 的 lifecycle smoke，以及 staging/live/archive parity；新版本中无事务或 bytecode 残留。PR CI 的 12 项 OS/Python 矩阵、HOL Scanner 和 plugin scanner 均通过。
+- Windows 原生验收把精确候选安装到真实 Codex home，升级前后 0.8.3、0.8.5 和 0.8.6 的历史 live-tree 快照均未变化。0.8.7 smoke 也没有改变自身全文件快照；source、staging、live cache 和 archive 的 13 个产品文件完全一致且无禁留。此前已经丢失的 0.8.5 `.pyc` 没有被重建，也没有被误报为已恢复。下游精确验收提交及其 CI 另行通过。
 
 ## 0.8.6 - 2026-08-25
 
