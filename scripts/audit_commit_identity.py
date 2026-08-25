@@ -66,9 +66,19 @@ def candidate_commits(root: Path, base: str, head: str) -> list[str]:
     if not base or is_zero_revision(base):
         return [head_commit]
 
-    base_commit = resolve_commit(root, base)
-    range_base = base_commit
-    if not is_ancestor(root, base_commit, head_commit):
+    base_commit: str | None = None
+    try:
+        base_commit = resolve_commit(root, base)
+    except GitInspectionError:
+        if not re.fullmatch(r"[0-9a-fA-F]{40,64}", base):
+            raise
+        # After a force-push, GitHub's event.before can name an unreachable
+        # commit that a fresh checkout cannot fetch or resolve. Apply the same
+        # bounded new-head fallback used for a resolvable non-ancestor base.
+        range_base = resolve_commit(root, f"{head_commit}^1")
+    else:
+        range_base = base_commit
+    if base_commit is not None and not is_ancestor(root, base_commit, head_commit):
         # A force-pushed ref can report an event.before commit that is no
         # longer in the new history. Audit the new first-parent range rather
         # than failing because Git cannot form the obsolete range.

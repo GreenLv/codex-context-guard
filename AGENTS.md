@@ -155,6 +155,12 @@ git diff --check
 - Preserve unrelated worktree changes. Keep commits narrow, review staged paths,
   run `git diff --cached --check`, and verify the exact author and committer
   identity before pushing.
+- Do not use GitHub rebase, squash, or merge operations when they would rewrite
+  or create commits with a platform-owned committer identity that fails this
+  repository's identity audit. When the verified PR head is a direct descendant
+  of the unchanged remote `main`, preserve its audited commits with an exact
+  ordinary fast-forward push; if `main` moved, refresh the branch and rerun PR
+  checks before merging.
 - Do not rewrite published history, move an existing release tag, or overwrite a
   consumed cache. Tags are annotated and must point to the exact validated
   release commit.

@@ -333,6 +333,29 @@ class CommitIdentityTests(unittest.TestCase):
             self.assertEqual(commits, [head])
             self.assertEqual(identity.violations(root, commits), [])
 
+    def test_unavailable_force_push_base_uses_new_head_first_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.repository(root)
+            accepted = "123456+example-user@users.noreply.github.com"
+            self.commit(root, "initial.txt", accepted, accepted)
+            head = self.commit(root, "replacement.txt", accepted, accepted)
+
+            commits = identity.candidate_commits(root, "f" * 40, head)
+            self.assertEqual(commits, [head])
+            self.assertEqual(identity.violations(root, commits), [])
+
+    def test_invalid_unavailable_base_does_not_use_force_push_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.repository(root)
+            accepted = "123456+example-user@users.noreply.github.com"
+            self.commit(root, "initial.txt", accepted, accepted)
+            head = self.commit(root, "replacement.txt", accepted, accepted)
+
+            with self.assertRaises(identity.GitInspectionError):
+                identity.candidate_commits(root, "not-a-commit", head)
+
     def test_cli_redacts_invalid_email_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
