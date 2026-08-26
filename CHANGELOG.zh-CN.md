@@ -31,7 +31,8 @@
 - macOS 原生源码验证已通过仓库与 tracked-tree 隐私审计、211 项测试（含 2 项能力 skip）、Python 3.12.2 八 Hook 自检、Ruff 0.16.1、外部 cache 编译、未变化公开基线的提交身份审计和 diff 检查；定向 classifier 与 Stop 路径回归覆盖本次误报及保留的 fail-closed 情形。
 - 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、source/staging/live/archive 的全部 15 个产品文件一致性、安装态八 Hook 自检、lifecycle smoke、禁留检查，以及 147 文件全量 manifest 不变的严格重复 no-op。
 - macOS 默认 home 已应用精确候选 `540c59e`，保留历史 live 状态，并通过第二次严格 no-op、15 个产品文件一致性、安装态自检、lifecycle smoke 和禁留检查。全新 Codex CLI 0.149.0 任务以显式激活运行了已安装的 `UserPromptSubmit` 与 Stop 路径，使用 classifier 2.3.1 并返回预期的精确回复。
-- Windows 原生、CI、tag、GitHub Release 和下游 consumer pin 证据仍待完成，不能由 macOS 或隔离检查推断。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
+- PR #15 已通过 Ubuntu/macOS/Windows 上 Python 3.10–3.13 的完整 12 项矩阵、HOL Plugin Scanner 和 plugin scanner。Windows 原生默认 home 安装与可信 Hook 行为仍待完成，不能由 Windows CI 推断。
+- tag、GitHub Release 和下游 consumer pin 证据仍待完成。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
 
 ## 0.8.8 - 2026-08-25
 

@@ -45,6 +45,14 @@ the expected neutral allow outcome. This native macOS evidence is bound to
 runtime provenance. Native Windows, CI, tag, GitHub Release, and downstream
 consumer-pin evidence remain pending.
 
+PR #15 at evidence head `fe24aec` passes the complete 12-job GitHub Actions
+matrix on `ubuntu-latest`, `macos-latest`, and `windows-latest` with Python
+3.10, 3.11, 3.12, and 3.13. The HOL Plugin Scanner and its uploaded plugin
+scanner check also pass. Windows runner results are CI evidence only: a native
+Windows default-home install, strict no-op, installed lifecycle smoke, and
+fresh trusted-Hook task remain separate and have not been performed for 0.8.9.
+Tag, GitHub Release, and downstream consumer-pin evidence also remain pending.
+
 ## 0.8.8 release acceptance (2026-08-25)
 
 The real macOS default home applied final 0.8.7 release commit
