@@ -833,7 +833,9 @@ def audit_cache_archive(
         else:
             issues.append(
                 f"live cache {version} is missing, differs from its trusted archive, "
-                "or contains embedded Git metadata"
+                "or contains embedded Git metadata; if a fresh Codex task start "
+                "pruned historical live caches, run scripts/manage_plugin.py "
+                "--apply to restore this tree from its trusted archive"
             )
     live_dirs = (
         {path.name for path in cache_root.iterdir() if path.is_dir()}

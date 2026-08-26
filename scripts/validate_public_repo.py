@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.8.9"
+VERSION = "0.8.10"
 SCHEMA_VERSION = 7
 STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.3.1"
@@ -31,6 +31,9 @@ HOOK_EVENTS = {
     "Stop",
     "SessionEnd",
 }
+HOOK_CACHE_FRAGMENT_POSIX = "plugins/cache/codex-context-guard/context-guard"
+HOOK_CACHE_FRAGMENT_WINDOWS = "plugins\\cache\\codex-context-guard\\context-guard"
+HOOK_REPAIR_HINT = "manage_plugin.py --apply"
 REQUIRED_FILES = {
     "AGENTS.md",
     ".codex-plugin/plugin.json",
@@ -209,10 +212,27 @@ def validate(root: Path) -> list[str]:
         for event, groups in hooks.items():
             for group in groups:
                 for hook in group.get("hooks", []):
-                    if "$PLUGIN_ROOT" not in hook.get("command", ""):
+                    command = hook.get("command", "")
+                    command_windows = hook.get("commandWindows", "")
+                    if "$PLUGIN_ROOT" not in command:
                         errors.append(f"{event}: POSIX command must use PLUGIN_ROOT")
-                    if "$env:PLUGIN_ROOT" not in hook.get("commandWindows", ""):
+                    if "$env:PLUGIN_ROOT" not in command_windows:
                         errors.append(f"{event}: Windows command must use PLUGIN_ROOT")
+                    if HOOK_CACHE_FRAGMENT_POSIX not in command:
+                        errors.append(
+                            f"{event}: POSIX command must resolve the managed "
+                            "plugin cache fallback"
+                        )
+                    if HOOK_CACHE_FRAGMENT_WINDOWS not in command_windows:
+                        errors.append(
+                            f"{event}: Windows command must resolve the managed "
+                            "plugin cache fallback"
+                        )
+                    if HOOK_REPAIR_HINT not in command or HOOK_REPAIR_HINT not in command_windows:
+                        errors.append(
+                            f"{event}: both Hook commands must report the "
+                            "actionable reinstall hint"
+                        )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid hooks document: {exc}")
 

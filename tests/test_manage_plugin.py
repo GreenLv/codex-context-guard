@@ -371,6 +371,42 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertEqual(repaired, ["0.1.2"])
         self.assertTrue((historical / "scripts" / "context_guard.py").is_file())
 
+    def test_host_startup_prune_is_diagnosed_read_only_then_restored_on_apply(
+        self,
+    ) -> None:
+        """A fresh Codex task start can prune historical live caches outside any
+        managed apply. Read-only diagnosis must stay no-write and actionable;
+        the next managed apply restores the pruned tree from its archive."""
+        self.write_source("0.1.2", body="old hook\n")
+        old_cache = self.cache_source_as("0.1.2")
+        self.archive_live()
+        self.state["version"] = "0.1.2"
+        self.write_source("0.1.3", body="new hook\n")
+        self.ensure()
+        self.assertTrue(old_cache.is_dir())
+        shutil.rmtree(old_cache)  # host startup prune of historical live cache
+        archived_before = manager.full_file_manifest(self.archive_root / "0.1.2")
+
+        with self.assertRaises(RuntimeError) as raised:
+            self.ensure(apply=False)
+
+        message = str(raised.exception)
+        self.assertIn("live cache 0.1.2 is missing", message)
+        self.assertIn("--apply", message)
+        # Read-only diagnosis performed no repair and touched no trust data.
+        self.assertFalse(old_cache.exists())
+        self.assertEqual(
+            manager.full_file_manifest(self.archive_root / "0.1.2"),
+            archived_before,
+        )
+
+        self.assertFalse(self.ensure())
+        self.assertTrue((old_cache / "scripts" / "context_guard.py").is_file())
+        self.assertEqual(
+            (old_cache / "scripts" / "context_guard.py").read_text(encoding="utf-8"),
+            "old hook\n",
+        )
+
     def test_cache_install_lock_serializes_concurrent_installers(self) -> None:
         entered = threading.Event()
         release = threading.Event()

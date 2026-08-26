@@ -4776,6 +4776,20 @@ class ContextGuardTests(unittest.TestCase):
                     self.assertIn(
                         "run-context-guard.ps1", hook["commandWindows"]
                     )
+                    # Both command forms must survive a host that prunes
+                    # historical versioned live caches at fresh-task startup:
+                    # prefer the pinned PLUGIN_ROOT, else resolve the managed
+                    # cache root, and always report the actionable repair hint.
+                    for command in (hook["command"], hook["commandWindows"]):
+                        self.assertIn("manage_plugin.py --apply", command)
+                    self.assertIn(
+                        "plugins/cache/codex-context-guard/context-guard",
+                        hook["command"],
+                    )
+                    self.assertIn(
+                        "plugins\\cache\\codex-context-guard\\context-guard",
+                        hook["commandWindows"],
+                    )
                     if hook is hooks["SessionEnd"][0]["hooks"][0]:
                         self.assertLessEqual(hook["timeout"], 3)
         skill_text = (
@@ -4821,6 +4835,128 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(probed.is_file())
         self.assertIn("PASS context-guard self-test", result.stdout)
+
+    def _installed_hook_command(self, key: str) -> str:
+        hooks_path = MODULE_PATH.parent.parent / "hooks" / "hooks.json"
+        hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+        return hooks["UserPromptSubmit"][0]["hooks"][0][key]
+
+    def _write_stub_cache_tree(
+        self, cache_root: Path, version: str, marker: str
+    ) -> Path:
+        scripts = cache_root / version / "scripts"
+        scripts.mkdir(parents=True)
+        launcher = scripts / "run_context_guard.sh"
+        launcher.write_text(
+            f"#!/bin/sh\nprintf 'EXEC-{marker}\\n'\n", encoding="utf-8"
+        )
+        return launcher
+
+    @unittest.skipIf(os.name == "nt", "POSIX resolver check")
+    def test_posix_hook_command_survives_pruned_plugin_root(self) -> None:
+        command = self._installed_hook_command("command")
+        home = self.root / "home"
+        cache = (
+            home
+            / "plugins"
+            / "cache"
+            / "codex-context-guard"
+            / "context-guard"
+        )
+        self._write_stub_cache_tree(cache, "0.8.9", "OLD")
+        self._write_stub_cache_tree(cache, "0.8.10", "NEW")
+        decoy = cache / "current" / "scripts"
+        decoy.mkdir(parents=True)
+        (decoy / "run_context_guard.sh").write_text(
+            "#!/bin/sh\nprintf 'EXEC-DECOY\\n'\n", encoding="utf-8"
+        )
+        os.symlink(cache / "0.8.9", cache / "0.7.0")
+
+        def resolve(plugin_root: Path) -> subprocess.CompletedProcess[str]:
+            environment = os.environ.copy()
+            environment["PLUGIN_ROOT"] = str(plugin_root)
+            environment["CODEX_HOME"] = str(home)
+            return subprocess.run(
+                ["/bin/sh", "-c", command],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=15,
+                check=False,
+            )
+
+        # A pruned pinned root falls back to the newest surviving tree.
+        result = resolve(cache / "0.9.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "EXEC-NEW")
+        # An intact pinned root still wins over newer survivors.
+        restored = resolve(cache / "0.8.9")
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertEqual(restored.stdout.strip(), "EXEC-OLD")
+        # Decoy names and symlinked trees never win the cache scan.
+        resolved_decoy = resolve(cache / "1.0.0")
+        self.assertEqual(resolved_decoy.stdout.strip(), "EXEC-NEW")
+        # No candidate anywhere fails closed with the reinstall hint.
+        environment = os.environ.copy()
+        environment["PLUGIN_ROOT"] = str(self.root / "missing" / "9.9.9")
+        environment["CODEX_HOME"] = str(self.root / "empty-home")
+        failed = subprocess.run(
+            ["/bin/sh", "-c", command],
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("manage_plugin.py --apply", failed.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
+    def test_windows_hook_command_survives_pruned_plugin_root(self) -> None:
+        command = self._installed_hook_command("commandWindows")
+        home = self.root / "home"
+        cache = (
+            home
+            / "plugins"
+            / "cache"
+            / "codex-context-guard"
+            / "context-guard"
+        )
+        stub = cache / "0.8.10" / "scripts" / "run-context-guard.ps1"
+        stub.parent.mkdir(parents=True)
+        stub.write_text("Write-Output 'EXEC-STUB'\nexit 0\n", encoding="utf-8")
+
+        environment = os.environ.copy()
+        environment.pop("CONTEXT_GUARD_DATA_DIR", None)
+        environment.pop("CLAUDE_PLUGIN_DATA", None)
+        environment["PLUGIN_ROOT"] = str(cache / "0.9.0")
+        environment["CODEX_HOME"] = str(home)
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            input="{}",
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EXEC-STUB", result.stdout)
+
+        missing_environment = os.environ.copy()
+        missing_environment["PLUGIN_ROOT"] = str(self.root / "missing" / "9.9.9")
+        missing_environment["CODEX_HOME"] = str(self.root / "empty-home")
+        failed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            input="{}",
+            text=True,
+            capture_output=True,
+            env=missing_environment,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn("manage_plugin.py --apply", failed.stderr)
 
     def test_self_test_requires_python_310_or_newer(self) -> None:
         with (
