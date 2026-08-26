@@ -173,21 +173,32 @@ not as a measure of code volume.
   was installed into real homes before a release-blocking Hook-lifecycle
   defect was found; its installed cache bytes remain immutable and the version
   number stays consumed.
-- `0.8.10` is an unreleased Hook-lifecycle availability patch that folds in the
-  consumed 0.8.9 classifier work. An observed macOS Codex CLI 0.149.0 host
-  prunes historical versioned live caches when a fresh task starts and keeps
-  only the current version, so an open task whose trusted `$PLUGIN_ROOT` tree
-  disappears loses every later Hook invocation until a managed apply restores
-  it from the trusted archive. Both command forms now prefer the pinned plugin
-  root, fall back to the newest surviving strictly semver-named, non-symlink
-  Context Guard tree under the managed marketplace cache root (`CODEX_HOME`
-  when set, otherwise `~/.codex`), and fail closed with an actionable reinstall
-  hint when nothing survives. The fallback executes only trees materialized by
+- `0.8.10` is a consumed intermediate candidate. It folded in the consumed
+  0.8.9 classifier work and introduced the Hook command fallback: an observed
+  macOS Codex CLI 0.149.0 host prunes historical versioned live caches when a
+  fresh task starts and keeps only the current version, so an open task whose
+  trusted `$PLUGIN_ROOT` tree disappears loses every later Hook invocation
+  until a managed apply restores it from the trusted archive. Both command
+  forms prefer the pinned plugin root, fall back to the newest surviving
+  non-symlink Context Guard tree under the managed marketplace cache root
+  (`CODEX_HOME` when set, otherwise `~/.codex`), and fail closed with an
+  actionable reinstall hint. It was installed into a real home and exercised by
+  a real task before a review found that its fallback version gate was looser
+  than the documented strict-semver contract; its installed cache bytes remain
+  immutable and the version number stays consumed.
+- `0.8.11` is an unreleased Hook-lifecycle availability patch that folds in the
+  consumed 0.8.9 and 0.8.10 work. Its fallback resolves the newest surviving
+  strictly semver-named (exactly three dot-separated numeric components, no
+  leading zeros), non-symlink Context Guard tree, with both command forms
+  enforcing the same strict gate: POSIX requires exactly three canonical
+  numeric components and rejects leading zeros, and Windows matches only
+  `X.Y.Z` without leading zeros; a lone `0.0.0` tree is still a valid first
+  candidate on both platforms. The fallback executes only trees materialized by
   the host from the sanitized marketplace source; it may run a newer runtime
   than the one a rescued task originally trusted, never mutates consumed
   caches, and leaves the hash-indexed archive as the only authority for
-  restoring exact historical trees. Read-only installer diagnosis names this
-  host startup pruning and its restore action. Schema 7, Proof protocol 1.0.0,
+  restoring exact historical trees. Read-only installer diagnosis names host
+  startup pruning and its restore action. Schema 7, Proof protocol 1.0.0,
   Stop protocol 1.1.0, Execution protocol 1.0.0, classifier 2.3.1,
   Python 3.10+, and the eight-Hook event set are unchanged; observable Hook
   command bytes and the installed package identity advance.

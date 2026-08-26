@@ -4,65 +4,46 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.8`; accepted `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.10 source-candidate acceptance (2026-08-26)
+## 0.8.11 source-candidate acceptance (2026-08-26)
 
-The macOS source candidate passes repository validation, the tracked-tree
-privacy audit, 214 unittests with three capability-aware skips (the
-Windows-only PowerShell resolver cases run on Windows CI), the eight-Hook
-self-test on Python 3.12.2, Ruff, external-cache compilation, the
+Consumed 0.8.10 recap (recorded, not a release): that candidate introduced the
+Hook command fallback after an observed macOS Codex CLI 0.149.0 host pruned
+historical versioned live caches at fresh-task startup. On the default home a
+managed upgrade archived 0.8.10 and repaired every host-pruned tree (0.6.1
+through 0.8.9); a real fresh `codex exec` task fired the installed 0.8.10 Hook;
+the host then genuinely pruned all historical live versions again; consumed
+0.8.9 bytes failed with exit 127 while installed 0.8.10 bytes returned exit 0
+through the fallback and persisted schema-7 state; and a later apply restored
+every version. Review then found the 0.8.10 fallback version gate was looser
+than the documented strict-semver contract, so 0.8.10 stays a consumed
+intermediate and 0.8.11 narrows the gate.
+
+The 0.8.11 source candidate passes repository validation, the tracked-tree
+privacy audit, 218 unittests with five capability-aware skips, the eight-Hook
+self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation, the
 commit-identity audit of the unchanged public baseline, and `git diff --check`.
-New focused regressions cover pinned-root preference over newer survivors,
-newest-survivor fallback when the pinned root is pruned, decoy-name and
-symlink rejection inside the managed cache scan, fail-closed exit 2 with the
-reinstall hint, read-only diagnosis of host startup pruning without writes,
-and archive restoration on the next managed apply.
+Adversarial resolver regressions now cover, on POSIX and (via Windows CI) the
+PowerShell form: pinned-root preference, newest-survivor fallback, decoy and
+symlink rejection, fail-closed reinstall hints, rejection of `99.99`, `1`,
+`01.0.0`, `00.0.0`, `0.0.0.0`, and `1.2.3-rc1`, and selection of a lone
+`0.0.0` tree as first candidate. The repository validator asserts the
+strict-version gate and eight-event command-shape consistency instead of only
+the cache-path and reinstall-hint fragments.
 
 An isolated Codex CLI 0.149.0 home passes first managed installation of the
-0.8.10 versioned cache and archive, a strict second apply no-op, a read-only
+0.8.11 versioned cache and archive, a strict second apply no-op, a read-only
 no-op, source/staging/live/archive parity across all 15 product files with the
 archive index bound to the same manifest, the installed eight-Hook self-test,
 `SMOKE_PASS` lifecycle smoke, and no `.git`, `__pycache__`, `.pyc`, or `.pyo`
 residue in the new cache or staging trees.
 
-The macOS default home then applied the candidate through the safe installer.
-The managed upgrade archived 0.8.10 and repaired every historical live tree the
-host had pruned (0.6.1 through 0.8.9) from the trusted archive in one apply; a
-second apply was a strict no-op and the read-only run stayed clean. All 15
-product files match across source, sanitized staging, live cache, and archive;
-the installed eight-Hook self-test and lifecycle smoke pass on Python 3.12.2.
-Pre-existing `.git` directories under old commit-addressed upstream checkouts
-and retained historical bytecode under 0.7.7 were left untouched.
-
-Real-host startup regression on the macOS default home (Codex CLI 0.149.0): a
-fresh headless `codex exec` task started normally, fired the installed 0.8.10
-`UserPromptSubmit` Hook, and wrote schema-7 private state. Minutes later —
-without local intervention — the host genuinely pruned every historical live
-version again, leaving only 0.8.10, which reproduces the release-blocking
-cleanup against the new candidate without simulation. Against that exact state:
-the consumed 0.8.9 command bytes with the same pruned `$PLUGIN_ROOT` fail with
-exit 127 (`sh: .../0.8.9/scripts/run_context_guard.sh: No such file or
-directory`), while the installed 0.8.10 command bytes return exit 0 through the
-fallback, resolve the surviving tree, return activation context, and persist
-schema-7 state. A subsequent managed `--apply` restored every pruned version
-from the trusted archive, the read-only run turned clean again, and the
-restored 0.8.9 pinned root executes directly once more. The cleanup trigger
-conditions are not fully characterized (observed at fresh-task starts on this
-macOS host, not reproduced on demand); native Windows installation, trusted-Hook
-behavior, tag, GitHub Release, and downstream consumer-pin evidence remain
-pending and are not inferred from CI.
-
-Two candidate revisions then hardened only the Windows command form after
-Windows CI proved that the host lane expands `$env:` references with PowerShell
-semantics and strips nested transport quoting: commit `214bfd6` ships the
-readable resolver statements themselves as `commandWindows` with no envelope,
-and both Windows regressions feed those statements to the same outer PowerShell
-lane hosts use. PR #15 at exact evidence head `214bfd6` passes the complete
-14-check GitHub Actions matrix — `ubuntu-latest`, `macos-latest`, and
-`windows-latest` with Python 3.10, 3.11, 3.12, and 3.13 — plus the HOL Plugin
-Scanner and its uploaded plugin scanner check. Windows runner results remain
-CI evidence only: a native Windows default-home install, strict no-op, installed
-lifecycle smoke, and fresh trusted-Hook task are separate pending gates. Tag,
-GitHub Release, and downstream consumer-pin evidence also remain pending.
+The macOS default home still holds the consumed 0.8.10 install from the earlier
+recap; upgrading it to 0.8.11 is part of the pending native re-acceptance and
+was not repeated this round to avoid further churn to the live machine state.
+Native Windows default-home installation, trusted-Hook behavior, tag, GitHub
+Release, and downstream consumer-pin evidence remain pending and are not
+inferred from CI. PR CI for this candidate is recorded at its green evidence
+head below.
 
 ## 0.8.9 source-candidate acceptance (2026-08-26)
 
@@ -115,7 +96,7 @@ pruned 0.8.8 path lost its later Hook invocations until a safe-installer apply
 restored that tree from the archive, and starting another fresh task can prune
 it again. Historical live-cache retention therefore does not survive host task
 starts, PR #15 must not merge or publish this candidate as-is, and the
-lifecycle fix is handled as the 0.8.10 source candidate below.
+lifecycle fix is handled as the 0.8.11 source candidate below.
 
 PR #15 at evidence head `fe24aec` passes the complete 12-job GitHub Actions
 matrix on `ubuntu-latest`, `macos-latest`, and `windows-latest` with Python

@@ -187,7 +187,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "Current published Context Guard release: `0.8.8`", compatibility
         )
-        self.assertIn("Current source line: `0.8.10`", compatibility)
+        self.assertIn("Current source line: `0.8.11`", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.3.1`", compatibility)
@@ -208,7 +208,11 @@ class PublicContractTests(unittest.TestCase):
             versioning,
         )
         self.assertIn(
-            "`0.8.10` is an unreleased Hook-lifecycle availability patch",
+            "`0.8.10` is a consumed intermediate candidate",
+            versioning,
+        )
+        self.assertIn(
+            "`0.8.11` is an unreleased Hook-lifecycle availability patch",
             versioning,
         )
         for stale in (

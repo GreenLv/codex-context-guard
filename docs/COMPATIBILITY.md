@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.8`
-- Current source line: `0.8.10` (`Unreleased` source candidate)
+- Current source line: `0.8.11` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,11 +19,16 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.10 source-candidate status
+## 0.8.11 source-candidate status
 
-Version 0.8.10 keeps every runtime contract from the consumed 0.8.9 candidate
-(schema 7, classifier 2.3.1, Proof/Stop/Execution protocols) and changes only
-Hook command resolution plus installer diagnosis.
+Version 0.8.11 folds in the consumed 0.8.9 and 0.8.10 candidates (schema 7,
+classifier 2.3.1, Proof/Stop/Execution protocols) and changes only Hook
+command resolution plus installer diagnosis. The consumed 0.8.10 candidate
+introduced the fallback; 0.8.11 tightens its version gate to the documented
+strict-semver contract: both command forms accept only a lone `X.Y.Z`-shaped
+directory (exactly three dot-separated numeric components, no leading zeros)
+as a surviving candidate, and a lone `0.0.0` tree is still a valid first
+candidate on both platforms.
 
 An observed macOS Codex CLI 0.149.0 default home pruned every historical
 versioned live cache when a fresh task started on 2026-08-26, keeping only the
@@ -34,7 +39,8 @@ preservation therefore does not extend to host task-startup cleanup. This
 observation is recorded for macOS only; other platforms remain unverified.
 
 Both Hook command forms now prefer the pinned plugin root and otherwise resolve
-the newest surviving strictly semver-named, non-symlink Context Guard tree
+the newest surviving strictly semver-named (exactly three dot-separated numeric
+components, no leading zeros), non-symlink Context Guard tree
 under the managed marketplace cache root (`CODEX_HOME` when set, otherwise
 `~/.codex`), failing closed with an actionable reinstall hint when nothing
 survives. Windows hosts execute `commandWindows` through a shell with
