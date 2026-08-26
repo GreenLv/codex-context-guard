@@ -51,6 +51,19 @@ macOS host, not reproduced on demand); native Windows installation, trusted-Hook
 behavior, tag, GitHub Release, and downstream consumer-pin evidence remain
 pending and are not inferred from CI.
 
+Two candidate revisions then hardened only the Windows command form after
+Windows CI proved that the host lane expands `$env:` references with PowerShell
+semantics and strips nested transport quoting: commit `214bfd6` ships the
+readable resolver statements themselves as `commandWindows` with no envelope,
+and both Windows regressions feed those statements to the same outer PowerShell
+lane hosts use. PR #15 at exact evidence head `214bfd6` passes the complete
+14-check GitHub Actions matrix — `ubuntu-latest`, `macos-latest`, and
+`windows-latest` with Python 3.10, 3.11, 3.12, and 3.13 — plus the HOL Plugin
+Scanner and its uploaded plugin scanner check. Windows runner results remain
+CI evidence only: a native Windows default-home install, strict no-op, installed
+lifecycle smoke, and fresh trusted-Hook task are separate pending gates. Tag,
+GitHub Release, and downstream consumer-pin evidence also remain pending.
+
 ## 0.8.9 source-candidate acceptance (2026-08-26)
 
 The macOS source candidate passes repository validation, the tracked-tree
