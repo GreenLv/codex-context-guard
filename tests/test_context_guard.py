@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -4959,7 +4960,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "EXEC-ZERO")
 
     @unittest.skipIf(os.name == "nt", "POSIX resolver check")
-    def test_posix_hook_command_rejects_leading_zero_version(self) -> None:
+    def test_posix_hook_command_rejects_invalid_versions(self) -> None:
         command = self._installed_hook_command("command")
         home = self.root / "home"
         cache = (
@@ -4969,20 +4970,30 @@ class ContextGuardTests(unittest.TestCase):
             / "codex-context-guard"
             / "context-guard"
         )
-        self._write_stub_cache_tree(cache, "01.0.0", "LEAD")
-        environment = os.environ.copy()
-        environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
-        environment["CODEX_HOME"] = str(home)
-        result = subprocess.run(
-            ["/bin/sh", "-c", command],
-            text=True,
-            capture_output=True,
-            env=environment,
-            timeout=15,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("manage_plugin.py --apply", result.stderr)
+        for invalid in (
+            "01.0.0",
+            "00.0.0",
+            "99.99",
+            "1",
+            "0.0.0.0",
+            "1.2.3-rc1",
+        ):
+            with self.subTest(invalid=invalid):
+                self._write_stub_cache_tree(cache, invalid, "BAD")
+                environment = os.environ.copy()
+                environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
+                environment["CODEX_HOME"] = str(home)
+                result = subprocess.run(
+                    ["/bin/sh", "-c", command],
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    timeout=15,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("manage_plugin.py --apply", result.stderr)
+                shutil.rmtree(cache / invalid, ignore_errors=True)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
     def test_windows_hook_command_survives_pruned_plugin_root(self) -> None:
@@ -5004,6 +5015,9 @@ class ContextGuardTests(unittest.TestCase):
             ("01.0.0", "BAD"),
             ("99.99", "BAD"),
             ("1", "BAD"),
+            ("00.0.0", "BAD"),
+            ("0.0.0.0", "BAD"),
+            ("1.2.3-rc1", "BAD"),
         ):
             self._write_stub_ps_tree(cache, version, marker)
 
@@ -5068,7 +5082,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("EXEC-ZERO", result.stdout)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
-    def test_windows_hook_command_rejects_leading_zero_version(self) -> None:
+    def test_windows_hook_command_rejects_invalid_versions(self) -> None:
         command = self._installed_hook_command("commandWindows")
         home = self.root / "home"
         cache = (
@@ -5078,21 +5092,37 @@ class ContextGuardTests(unittest.TestCase):
             / "codex-context-guard"
             / "context-guard"
         )
-        self._write_stub_ps_tree(cache, "01.0.0", "LEAD")
-        environment = os.environ.copy()
-        environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
-        environment["CODEX_HOME"] = str(home)
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            input="{}",
-            text=True,
-            capture_output=True,
-            env=environment,
-            timeout=30,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("manage_plugin.py --apply", result.stderr)
+        for invalid in (
+            "01.0.0",
+            "00.0.0",
+            "99.99",
+            "1",
+            "0.0.0.0",
+            "1.2.3-rc1",
+        ):
+            with self.subTest(invalid=invalid):
+                self._write_stub_ps_tree(cache, invalid, "BAD")
+                environment = os.environ.copy()
+                environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
+                environment["CODEX_HOME"] = str(home)
+                result = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        command,
+                    ],
+                    input="{}",
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("manage_plugin.py --apply", result.stderr)
+                shutil.rmtree(cache / invalid, ignore_errors=True)
 
     def test_self_test_requires_python_310_or_newer(self) -> None:
         with (

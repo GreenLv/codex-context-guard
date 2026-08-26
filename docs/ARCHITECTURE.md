@@ -329,12 +329,14 @@ cannot observe this cleanup while it happens: read-only diagnosis names it
 explicitly, and a managed `--apply` restores the exact trees from the archive.
 
 Because an already-open task cannot be told to trust new Hook command bytes,
-the 0.8.10 commands carry their own resolution policy: prefer the pinned
+the 0.8.11 commands carry their own resolution policy: prefer the pinned
 `$PLUGIN_ROOT` tree; when it is missing, resolve the newest surviving strictly
 semver-named (`X.Y.Z`, exactly three dot-separated numeric components, no
 leading zeros), non-symlink Context Guard tree under the managed marketplace
 cache root (`CODEX_HOME` when set, otherwise `~/.codex`); otherwise exit 2
-with the actionable reinstall hint. The fallback executes only host-
+with the actionable reinstall hint. The consumed 0.8.10 candidate introduced
+the fallback with a looser version gate that is now superseded; its installed
+cache bytes remain immutable. The fallback executes only host-
 materialized product trees inside that root. It may run a newer runtime than
 the one a rescued task originally trusted; consumed caches stay immutable, and
 only the trusted archive can restore exact historical bytes.
