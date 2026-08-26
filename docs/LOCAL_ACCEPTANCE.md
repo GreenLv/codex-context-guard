@@ -27,10 +27,23 @@ bytecode residue. The second and a repeated managed apply both report the
 current version and skip cache refresh. Before and after the repeated apply,
 the isolated home's 147-file all-file manifest has the same SHA-256 digest.
 
-The candidate has not been installed into the default Codex home. Native
-Windows, fresh trusted-Hook behavior, CI, tag, GitHub Release, and downstream
-consumer-pin evidence remain pending and are not inferred from the isolated
-installation.
+The macOS default Codex home then applied exact candidate commit
+`540c59e78bfb63fd358dbff9f9327917f47831f5`. The managed upgrade preserved
+historical live state, created the 0.8.9 versioned live cache and trusted
+archive, and a second apply skipped cache refresh. Sanitized staging, live
+cache, and archive each retained the same 48-file all-file manifest across the
+strict no-op, with all 15 product files matching source. Read-only manager
+audit, installed eight-Hook self-test, lifecycle smoke, and Git/bytecode
+residue checks passed.
+
+A fresh interactive Codex CLI 0.149.0 task then ran the installed
+`UserPromptSubmit` Hook with explicit activation and displayed classifier
+2.3.1. The requested exact reply returned. Private state readback showed schema
+7, explicit activation, one prompt, and one classifier-2.3.1 Stop decision with
+the expected neutral allow outcome. This native macOS evidence is bound to
+`540c59e`; later documentation-only evidence commits do not replace that
+runtime provenance. Native Windows, CI, tag, GitHub Release, and downstream
+consumer-pin evidence remain pending.
 
 ## 0.8.8 release acceptance (2026-08-25)
 

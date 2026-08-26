@@ -30,7 +30,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Native macOS source validation passes repository and tracked-tree privacy audits, 211 tests with two capability-aware skips, the eight-Hook self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation, commit-identity audit of the unchanged public baseline, and diff checks. Focused classifier and Stop-path regressions cover the observed false positive and retained fail-closed cases.
 - A disposable Codex CLI 0.149.0 home passes first managed install, source/staging/live/archive parity for all 15 product files, installed eight-Hook self-test, lifecycle smoke, forbidden-residue checks, and strict repeated no-op with an unchanged 147-file all-file manifest.
-- Native Windows, default-home installation, fresh trusted-Hook behavior, CI, tag, GitHub Release, and downstream consumer-pin evidence remain pending and are not inferred from isolated checks. Detailed evidence is recorded in `docs/LOCAL_ACCEPTANCE.md`.
+- The macOS default home applied exact candidate `540c59e`, preserved historical live state, and passed strict second no-op, 15-product-file parity, installed self-test, lifecycle smoke, and forbidden-residue checks. A fresh Codex CLI 0.149.0 task ran the installed `UserPromptSubmit` and Stop paths with explicit activation, classifier 2.3.1, and the expected exact reply.
+- Native Windows, CI, tag, GitHub Release, and downstream consumer-pin evidence remain pending and are not inferred from macOS or isolated checks. Detailed evidence is recorded in `docs/LOCAL_ACCEPTANCE.md`.
 
 ## 0.8.8 - 2026-08-25
 
