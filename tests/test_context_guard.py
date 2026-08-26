@@ -4913,9 +4913,10 @@ class ContextGuardTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
     def test_windows_hook_command_survives_pruned_plugin_root(self) -> None:
-        """Hosts execute commandWindows through a cmd-compatible shell, as the
-        accepted 0.8.8 `-File` form proved; the nested powershell.exe child
-        parses the resolver script itself."""
+        """Hosts execute commandWindows through a shell that expands `$env:`
+        references (the accepted 0.8.8 `-File` form proved this), so the test
+        uses the same outer PowerShell lane; the single-quoted transport
+        passes the resolver verbatim to the nested powershell.exe child."""
         command = self._installed_hook_command("commandWindows")
         home = self.root / "home"
         cache = (
@@ -4935,7 +4936,7 @@ class ContextGuardTests(unittest.TestCase):
         environment["PLUGIN_ROOT"] = str(cache / "0.9.0")
         environment["CODEX_HOME"] = str(home)
         result = subprocess.run(
-            ["cmd", "/c", command],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input="{}",
             text=True,
             capture_output=True,
@@ -4950,7 +4951,7 @@ class ContextGuardTests(unittest.TestCase):
         missing_environment["PLUGIN_ROOT"] = str(self.root / "missing" / "9.9.9")
         missing_environment["CODEX_HOME"] = str(self.root / "empty-home")
         failed = subprocess.run(
-            ["cmd", "/c", command],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input="{}",
             text=True,
             capture_output=True,
@@ -5047,8 +5048,9 @@ class ContextGuardTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "PowerShell command check is Windows-only")
     def test_windows_hook_command_executes_in_powershell(self) -> None:
-        """The full commandWindows string runs through a cmd-compatible shell
-        and its nested powershell.exe child processes the real payload."""
+        """The full commandWindows string runs through a `$env:`-expanding
+        host shell; the single-quoted transport delivers the resolver verbatim
+        to the nested powershell.exe child, which processes the real payload."""
         hooks_path = MODULE_PATH.parent.parent / "hooks" / "hooks.json"
         hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
         command = hooks["UserPromptSubmit"][0]["hooks"][0]["commandWindows"]
@@ -5063,7 +5065,7 @@ class ContextGuardTests(unittest.TestCase):
             prompt="synthetic PowerShell hook command test",
         )
         result = subprocess.run(
-            ["cmd", "/c", command],
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input=json.dumps(payload),
             text=True,
             capture_output=True,

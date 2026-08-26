@@ -37,10 +37,11 @@ Both Hook command forms now prefer the pinned plugin root and otherwise resolve
 the newest surviving strictly semver-named, non-symlink Context Guard tree
 under the managed marketplace cache root (`CODEX_HOME` when set, otherwise
 `~/.codex`), failing closed with an actionable reinstall hint when nothing
-survives. Windows hosts execute `commandWindows` through a cmd-compatible
-shell whose nested `powershell.exe -Command` child parses the resolver script,
-matching the accepted 0.8.8 `-File` execution shape; routing the raw string
-through an outer PowerShell parser is not a supported executor form. The
+survives. Windows hosts execute `commandWindows` through a shell that expands
+`$env:` references, as the accepted 0.8.8 `-File` form proved; the payload is
+therefore wrapped in a single-quoted transport that an outer PowerShell parser
+passes verbatim to the nested `powershell.exe -Command` child, and every
+literal inside the resolver uses double quotes. The
 fallback executes only trees materialized by the host from the
 sanitized marketplace source; it may run a newer runtime than the one a
 rescued task originally trusted, it does not verify per-file hashes at spawn
