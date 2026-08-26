@@ -4852,6 +4852,17 @@ class ContextGuardTests(unittest.TestCase):
         )
         return launcher
 
+    def _write_stub_ps_tree(
+        self, cache_root: Path, version: str, marker: str
+    ) -> Path:
+        scripts = cache_root / version / "scripts"
+        scripts.mkdir(parents=True)
+        launcher = scripts / "run-context-guard.ps1"
+        launcher.write_text(
+            f"Write-Output 'EXEC-{marker}'\nexit 0\n", encoding="utf-8"
+        )
+        return launcher
+
     @unittest.skipIf(os.name == "nt", "POSIX resolver check")
     def test_posix_hook_command_survives_pruned_plugin_root(self) -> None:
         command = self._installed_hook_command("command")
@@ -4865,6 +4876,16 @@ class ContextGuardTests(unittest.TestCase):
         )
         self._write_stub_cache_tree(cache, "0.8.9", "OLD")
         self._write_stub_cache_tree(cache, "0.8.10", "NEW")
+        # Strictly-semver decoys that must never win the cache scan.
+        for decoy_version in (
+            "99.99",
+            "1",
+            "01.0.0",
+            "00.0.0",
+            "0.0.0.0",
+            "1.2.3-rc1",
+        ):
+            self._write_stub_cache_tree(cache, decoy_version, "BAD")
         decoy = cache / "current" / "scripts"
         decoy.mkdir(parents=True)
         (decoy / "run_context_guard.sh").write_text(
@@ -4911,6 +4932,58 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(failed.returncode, 2)
         self.assertIn("manage_plugin.py --apply", failed.stderr)
 
+    @unittest.skipIf(os.name == "nt", "POSIX resolver check")
+    def test_posix_hook_command_selects_lone_zero_version(self) -> None:
+        command = self._installed_hook_command("command")
+        home = self.root / "home"
+        cache = (
+            home
+            / "plugins"
+            / "cache"
+            / "codex-context-guard"
+            / "context-guard"
+        )
+        self._write_stub_cache_tree(cache, "0.0.0", "ZERO")
+        environment = os.environ.copy()
+        environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
+        environment["CODEX_HOME"] = str(home)
+        result = subprocess.run(
+            ["/bin/sh", "-c", command],
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "EXEC-ZERO")
+
+    @unittest.skipIf(os.name == "nt", "POSIX resolver check")
+    def test_posix_hook_command_rejects_leading_zero_version(self) -> None:
+        command = self._installed_hook_command("command")
+        home = self.root / "home"
+        cache = (
+            home
+            / "plugins"
+            / "cache"
+            / "codex-context-guard"
+            / "context-guard"
+        )
+        self._write_stub_cache_tree(cache, "01.0.0", "LEAD")
+        environment = os.environ.copy()
+        environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
+        environment["CODEX_HOME"] = str(home)
+        result = subprocess.run(
+            ["/bin/sh", "-c", command],
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("manage_plugin.py --apply", result.stderr)
+
     @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
     def test_windows_hook_command_survives_pruned_plugin_root(self) -> None:
         """Hosts execute commandWindows through a PowerShell-semantics shell
@@ -4926,9 +4999,13 @@ class ContextGuardTests(unittest.TestCase):
             / "codex-context-guard"
             / "context-guard"
         )
-        stub = cache / "0.8.10" / "scripts" / "run-context-guard.ps1"
-        stub.parent.mkdir(parents=True)
-        stub.write_text("Write-Output 'EXEC-STUB'\nexit 0\n", encoding="utf-8")
+        for version, marker in (
+            ("0.8.10", "STUB"),
+            ("01.0.0", "BAD"),
+            ("99.99", "BAD"),
+            ("1", "BAD"),
+        ):
+            self._write_stub_ps_tree(cache, version, marker)
 
         environment = os.environ.copy()
         environment.pop("CONTEXT_GUARD_DATA_DIR", None)
@@ -4946,6 +5023,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("EXEC-STUB", result.stdout)
+        self.assertNotIn("EXEC-BAD", result.stdout)
 
         missing_environment = os.environ.copy()
         missing_environment["PLUGIN_ROOT"] = str(self.root / "missing" / "9.9.9")
@@ -4961,6 +5039,60 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(failed.returncode, 2)
         self.assertIn("manage_plugin.py --apply", failed.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
+    def test_windows_hook_command_selects_lone_zero_version(self) -> None:
+        command = self._installed_hook_command("commandWindows")
+        home = self.root / "home"
+        cache = (
+            home
+            / "plugins"
+            / "cache"
+            / "codex-context-guard"
+            / "context-guard"
+        )
+        self._write_stub_ps_tree(cache, "0.0.0", "ZERO")
+        environment = os.environ.copy()
+        environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
+        environment["CODEX_HOME"] = str(home)
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            input="{}",
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EXEC-ZERO", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
+    def test_windows_hook_command_rejects_leading_zero_version(self) -> None:
+        command = self._installed_hook_command("commandWindows")
+        home = self.root / "home"
+        cache = (
+            home
+            / "plugins"
+            / "cache"
+            / "codex-context-guard"
+            / "context-guard"
+        )
+        self._write_stub_ps_tree(cache, "01.0.0", "LEAD")
+        environment = os.environ.copy()
+        environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
+        environment["CODEX_HOME"] = str(home)
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            input="{}",
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("manage_plugin.py --apply", result.stderr)
 
     def test_self_test_requires_python_310_or_newer(self) -> None:
         with (

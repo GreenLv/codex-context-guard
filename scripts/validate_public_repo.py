@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.8.10"
+VERSION = "0.8.11"
 SCHEMA_VERSION = 7
 STOP_PROTOCOL_VERSION = "1.1.0"
 CLASSIFIER_VERSION = "2.3.1"
@@ -34,6 +34,8 @@ HOOK_EVENTS = {
 HOOK_CACHE_FRAGMENT_POSIX = "plugins/cache/codex-context-guard/context-guard"
 HOOK_CACHE_FRAGMENT_WINDOWS = "plugins\\cache\\codex-context-guard\\context-guard"
 HOOK_REPAIR_HINT = "manage_plugin.py --apply"
+POSIX_STRICT_GATES = ("[ $# -eq 3 ]", "0?*)", '[ -z "$n" ]')
+WINDOWS_STRICT_RE = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 REQUIRED_FILES = {
     "AGENTS.md",
     ".codex-plugin/plugin.json",
@@ -209,11 +211,15 @@ def validate(root: Path) -> list[str]:
         hooks = json.loads((root / "hooks" / "hooks.json").read_text())["hooks"]
         if set(hooks) != HOOK_EVENTS:
             errors.append("hooks.json must define the exact eight-event lifecycle")
+        posix_commands: list[str] = []
+        windows_commands: list[str] = []
         for event, groups in hooks.items():
             for group in groups:
                 for hook in group.get("hooks", []):
                     command = hook.get("command", "")
                     command_windows = hook.get("commandWindows", "")
+                    posix_commands.append(command)
+                    windows_commands.append(command_windows)
                     if "$PLUGIN_ROOT" not in command:
                         errors.append(f"{event}: POSIX command must use PLUGIN_ROOT")
                     if "$env:PLUGIN_ROOT" not in command_windows:
@@ -233,6 +239,22 @@ def validate(root: Path) -> list[str]:
                             f"{event}: both Hook commands must report the "
                             "actionable reinstall hint"
                         )
+                    for fragment in POSIX_STRICT_GATES:
+                        if fragment not in command:
+                            errors.append(
+                                f"{event}: POSIX fallback must enforce strictly "
+                                f"semver versioned trees ({fragment!r} missing)"
+                            )
+                    if WINDOWS_STRICT_RE not in command_windows:
+                        errors.append(
+                            f"{event}: Windows fallback must match only strictly "
+                            "semver versioned trees"
+                        )
+        if len(set(posix_commands)) != 1 or len(set(windows_commands)) != 1:
+            errors.append(
+                "all eight Hook events must share one POSIX and one Windows "
+                "fallback command shape"
+            )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid hooks document: {exc}")
 
