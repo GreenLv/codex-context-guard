@@ -164,15 +164,33 @@ not as a measure of code volume.
   closed with an actionable stderr message when no supported interpreter is
   available. Schema, protocols, classifier, and private-state contracts remain
   unchanged; the Hook command bytes and installed package identity advance.
-- `0.8.9` is an unreleased privacy-classifier compatibility patch. Classifier
-  2.3.1 recognizes canonical redaction placeholders and short human-readable
-  quoted examples that cannot match Context Guard's URL-safe private token.
-  Whitespace is removed before token-shape comparison, so padded or split
-  token-shaped values, private directory/session/turn bindings, control
-  invocations, internal markers, and serialized control structures remain
-  fail-closed. Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution
-  protocol 1.0.0, and the eight-Hook wire are unchanged; observable runtime
-  bytes and the installed package identity advance.
+- `0.8.9` is a consumed intermediate candidate. Classifier 2.3.1 recognizes
+  canonical redaction placeholders and short human-readable quoted examples
+  that cannot match Context Guard's URL-safe private token, and removes
+  whitespace before token-shape comparison so padded or split token-shaped
+  values, private directory/session/turn bindings, control invocations,
+  internal markers, and serialized control structures remain fail-closed. It
+  was installed into real homes before a release-blocking Hook-lifecycle
+  defect was found; its installed cache bytes remain immutable and the version
+  number stays consumed.
+- `0.8.10` is an unreleased Hook-lifecycle availability patch that folds in the
+  consumed 0.8.9 classifier work. An observed macOS Codex CLI 0.149.0 host
+  prunes historical versioned live caches when a fresh task starts and keeps
+  only the current version, so an open task whose trusted `$PLUGIN_ROOT` tree
+  disappears loses every later Hook invocation until a managed apply restores
+  it from the trusted archive. Both command forms now prefer the pinned plugin
+  root, fall back to the newest surviving strictly semver-named, non-symlink
+  Context Guard tree under the managed marketplace cache root (`CODEX_HOME`
+  when set, otherwise `~/.codex`), and fail closed with an actionable reinstall
+  hint when nothing survives. The fallback executes only trees materialized by
+  the host from the sanitized marketplace source; it may run a newer runtime
+  than the one a rescued task originally trusted, never mutates consumed
+  caches, and leaves the hash-indexed archive as the only authority for
+  restoring exact historical trees. Read-only installer diagnosis names this
+  host startup pruning and its restore action. Schema 7, Proof protocol 1.0.0,
+  Stop protocol 1.1.0, Execution protocol 1.0.0, classifier 2.3.1,
+  Python 3.10+, and the eight-Hook event set are unchanged; observable Hook
+  command bytes and the installed package identity advance.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

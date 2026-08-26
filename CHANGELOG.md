@@ -12,27 +12,26 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.9 - Unreleased
+## 0.8.10 - Unreleased
 
 ### Highlights
 
-- Stop no longer mistakes clearly redacted or human-readable serialized token examples for leaked private control metadata.
-- URL-safe token-shaped values, private directory/session/turn bindings, control invocations, internal markers, and serialized control structures remain fail-closed.
-- A rejected reply now identifies private control metadata or a credential-like binding instead of reporting every privacy-classifier failure as checkpoint metadata.
+- Hooks keep working when Codex prunes historical versioned live caches while a fresh task starts: every command prefers the task's trusted plugin root, falls back to the newest surviving Context Guard tree under the managed plugin cache, and fails closed with a reinstall hint if nothing survives.
+- Stop no longer mistakes clearly redacted or human-readable serialized token examples for leaked private control metadata, folded from the consumed 0.8.9 candidate; URL-safe token shapes, private bindings, control invocations, internal markers, and serialized control structures remain fail-closed.
+- Read-only installer diagnosis names host startup pruning directly and points at the exact restore action instead of reporting an ambiguous audit failure.
 
 ### Changes
 
+- An observed macOS Codex CLI 0.149.0 default home pruned every historical live version when a new task started, leaving an open task whose `PLUGIN_ROOT` pointed at the pruned 0.8.8 path without its later Hook events until a safe-installer apply restored them. POSIX and Windows Hook commands now resolve pinned-root-first, then the newest strictly semver-named, non-symlink tree under the `CODEX_HOME` (or `~/.codex`) marketplace cache root. The fallback may execute a newer runtime than a rescued task originally trusted; consumed caches stay immutable, and the hash-indexed archive remains the only repair authority for restoring exact historical trees.
 - Classifier 2.3.1 inspects serialized private-field values instead of rejecting a quoted `token` key on sight. Canonical redaction placeholders and short human-readable token examples are explanatory; whitespace-padded or split values that collapse to the private-token shape remain sensitive.
-- Focused positive and negative regressions cover the observed review false positive, canonical placeholders, realistic token values, whitespace-obfuscated and wrapped token shapes, private paths and session identifiers, and control structures containing redacted values.
-- Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook wire are unchanged.
+- Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook event set are unchanged; observable Hook command bytes and the installed package identity advance.
 
 ### Validation
 
-- Native macOS source validation passes repository and tracked-tree privacy audits, 211 tests with two capability-aware skips, the eight-Hook self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation, commit-identity audit of the unchanged public baseline, and diff checks. Focused classifier and Stop-path regressions cover the observed false positive and retained fail-closed cases.
-- A disposable Codex CLI 0.149.0 home passes first managed install, source/staging/live/archive parity for all 15 product files, installed eight-Hook self-test, lifecycle smoke, forbidden-residue checks, and strict repeated no-op with an unchanged 147-file all-file manifest.
-- The macOS default home applied exact candidate `540c59e`, preserved historical live state, and passed strict second no-op, 15-product-file parity, installed self-test, lifecycle smoke, and forbidden-residue checks. A fresh Codex CLI 0.149.0 task ran the installed `UserPromptSubmit` and Stop paths with explicit activation, classifier 2.3.1, and the expected exact reply.
-- PR #15 passes the complete 12-job Ubuntu/macOS/Windows Python 3.10–3.13 matrix, HOL Plugin Scanner, and plugin scanner. Native Windows default-home installation and trusted-Hook behavior remain pending and are not inferred from Windows CI.
-- Tag, GitHub Release, and downstream consumer-pin evidence remain pending. Detailed evidence is recorded in `docs/LOCAL_ACCEPTANCE.md`.
+- Native macOS source validation passes repository and tracked-tree privacy audits, 214 tests with three capability-aware skips, the eight-Hook self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation, commit-identity audit of the unchanged public baseline, and diff checks. New focused regressions cover pinned-root preference, newest-survivor fallback, decoy and symlink rejection, fail-closed reinstall hints, read-only diagnosis of host startup pruning, and archive restoration on the next apply; the Windows resolver regressions run on Windows CI.
+- A disposable Codex CLI 0.149.0 home passes first managed install, strict repeated no-op, 15-product-file source/staging/live/archive parity, installed self-test, lifecycle smoke, and forbidden-residue checks. The macOS default home upgrade archives 0.8.10 and restores every host-pruned historical live tree (0.6.1–0.8.9) in one managed apply.
+- On that default home a real fresh `codex exec` task fires the installed 0.8.10 Hook; the host then genuinely prunes all historical live versions again. With the pruned pinned root, consumed 0.8.9 bytes fail with exit 127 while installed 0.8.10 bytes return exit 0 through the fallback and persist schema-7 state; the next apply restores every version from the trusted archive.
+- Native Windows installation, trusted-Hook behavior, tag, GitHub Release, downstream consumer-pin evidence, and PR CI for this candidate remain pending and are not inferred from existing runs. Detailed evidence is recorded in `docs/LOCAL_ACCEPTANCE.md`.
 
 ## 0.8.8 - 2026-08-25
 

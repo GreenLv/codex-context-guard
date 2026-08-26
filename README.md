@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Release status: `0.8.8` is the latest published release. `0.8.9` is an unreleased source candidate. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Release status: `0.8.8` is the latest published release. `0.8.10` is an unreleased source candidate. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -20,6 +20,11 @@ Requirements: Python 3.10 or newer, Codex CLI `0.146.0` or newer as the tested m
 Version 0.8.8 selects a supported Python interpreter for Hook execution instead
 of assuming the first `python3` on `PATH` is new enough. This matters on macOS
 hosts where `/usr/bin/python3` can still be 3.9.
+
+Version 0.8.10 additionally keeps Hooks working when a host prunes historical
+versioned caches while a fresh task starts: each command prefers the task's
+trusted plugin root and falls back to the newest surviving Context Guard tree
+under the managed plugin cache, failing closed with a reinstall hint otherwise.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

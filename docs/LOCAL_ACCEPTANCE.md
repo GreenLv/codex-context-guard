@@ -4,6 +4,53 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.8`; accepted `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.10 source-candidate acceptance (2026-08-26)
+
+The macOS source candidate passes repository validation, the tracked-tree
+privacy audit, 214 unittests with three capability-aware skips (the
+Windows-only PowerShell resolver cases run on Windows CI), the eight-Hook
+self-test on Python 3.12.2, Ruff, external-cache compilation, the
+commit-identity audit of the unchanged public baseline, and `git diff --check`.
+New focused regressions cover pinned-root preference over newer survivors,
+newest-survivor fallback when the pinned root is pruned, decoy-name and
+symlink rejection inside the managed cache scan, fail-closed exit 2 with the
+reinstall hint, read-only diagnosis of host startup pruning without writes,
+and archive restoration on the next managed apply.
+
+An isolated Codex CLI 0.149.0 home passes first managed installation of the
+0.8.10 versioned cache and archive, a strict second apply no-op, a read-only
+no-op, source/staging/live/archive parity across all 15 product files with the
+archive index bound to the same manifest, the installed eight-Hook self-test,
+`SMOKE_PASS` lifecycle smoke, and no `.git`, `__pycache__`, `.pyc`, or `.pyo`
+residue in the new cache or staging trees.
+
+The macOS default home then applied the candidate through the safe installer.
+The managed upgrade archived 0.8.10 and repaired every historical live tree the
+host had pruned (0.6.1 through 0.8.9) from the trusted archive in one apply; a
+second apply was a strict no-op and the read-only run stayed clean. All 15
+product files match across source, sanitized staging, live cache, and archive;
+the installed eight-Hook self-test and lifecycle smoke pass on Python 3.12.2.
+Pre-existing `.git` directories under old commit-addressed upstream checkouts
+and retained historical bytecode under 0.7.7 were left untouched.
+
+Real-host startup regression on the macOS default home (Codex CLI 0.149.0): a
+fresh headless `codex exec` task started normally, fired the installed 0.8.10
+`UserPromptSubmit` Hook, and wrote schema-7 private state. Minutes later —
+without local intervention — the host genuinely pruned every historical live
+version again, leaving only 0.8.10, which reproduces the release-blocking
+cleanup against the new candidate without simulation. Against that exact state:
+the consumed 0.8.9 command bytes with the same pruned `$PLUGIN_ROOT` fail with
+exit 127 (`sh: .../0.8.9/scripts/run_context_guard.sh: No such file or
+directory`), while the installed 0.8.10 command bytes return exit 0 through the
+fallback, resolve the surviving tree, return activation context, and persist
+schema-7 state. A subsequent managed `--apply` restored every pruned version
+from the trusted archive, the read-only run turned clean again, and the
+restored 0.8.9 pinned root executes directly once more. The cleanup trigger
+conditions are not fully characterized (observed at fresh-task starts on this
+macOS host, not reproduced on demand); native Windows installation, trusted-Hook
+behavior, tag, GitHub Release, and downstream consumer-pin evidence remain
+pending and are not inferred from CI.
+
 ## 0.8.9 source-candidate acceptance (2026-08-26)
 
 The macOS source candidate passes repository validation, the tracked-tree
@@ -29,12 +76,12 @@ the isolated home's 147-file all-file manifest has the same SHA-256 digest.
 
 The macOS default Codex home then applied exact candidate commit
 `540c59e78bfb63fd358dbff9f9327917f47831f5`. The managed upgrade preserved
-historical live state, created the 0.8.9 versioned live cache and trusted
-archive, and a second apply skipped cache refresh. Sanitized staging, live
-cache, and archive each retained the same 48-file all-file manifest across the
-strict no-op, with all 15 product files matching source. Read-only manager
-audit, installed eight-Hook self-test, lifecycle smoke, and Git/bytecode
-residue checks passed.
+historical live state at managed-apply time, created the 0.8.9 versioned live
+cache and trusted archive, and a second apply skipped cache refresh. Sanitized
+staging, live cache, and archive each retained the same 48-file all-file
+manifest across the strict no-op, with all 15 product files matching source.
+Read-only manager audit, installed eight-Hook self-test, lifecycle smoke, and
+Git/bytecode residue checks passed.
 
 A fresh interactive Codex CLI 0.149.0 task then ran the installed
 `UserPromptSubmit` Hook with explicit activation and displayed classifier
@@ -44,6 +91,18 @@ the expected neutral allow outcome. This native macOS evidence is bound to
 `540c59e`; later documentation-only evidence commits do not replace that
 runtime provenance. Native Windows, CI, tag, GitHub Release, and downstream
 consumer-pin evidence remain pending.
+
+Release-blocking correction (2026-08-26, same day): every preservation claim
+above describes managed applies only. Starting a fresh interactive Codex CLI
+0.149.0 task on the same macOS default home pruned every historical versioned
+live directory under `plugins/cache/codex-context-guard/context-guard/`
+(0.6.1 through 0.8.8), keeping only the installed 0.8.9 tree; the hash-indexed
+archive stayed intact. An open task whose trusted `PLUGIN_ROOT` pointed at the
+pruned 0.8.8 path lost its later Hook invocations until a safe-installer apply
+restored that tree from the archive, and starting another fresh task can prune
+it again. Historical live-cache retention therefore does not survive host task
+starts, PR #15 must not merge or publish this candidate as-is, and the
+lifecycle fix is handled as the 0.8.10 source candidate below.
 
 PR #15 at evidence head `fe24aec` passes the complete 12-job GitHub Actions
 matrix on `ubuntu-latest`, `macos-latest`, and `windows-latest` with Python

@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.8`
-- Current source line: `0.8.9` (`Unreleased` source candidate)
+- Current source line: `0.8.10` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,17 +19,30 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.9 source-candidate status
+## 0.8.10 source-candidate status
 
-Version 0.8.9 narrows the Stop privacy classifier without weakening private
-control protection. Canonical redaction placeholders and short human-readable
-quoted token examples contain no private control value, so those explanatory
-forms no longer cause a continuation. Whitespace is removed before token-shape
-comparison; padding or splitting a private-token-shaped value therefore remains
-fail-closed. Private directory/session/turn bindings, control invocations,
-internal markers, and serialized control structures also remain fail-closed.
-Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0,
-and the eight-Hook wire are unchanged.
+Version 0.8.10 keeps every runtime contract from the consumed 0.8.9 candidate
+(schema 7, classifier 2.3.1, Proof/Stop/Execution protocols) and changes only
+Hook command resolution plus installer diagnosis.
+
+An observed macOS Codex CLI 0.149.0 default home pruned every historical
+versioned live cache when a fresh task started on 2026-08-26, keeping only the
+installed 0.8.9 tree. The hash-indexed archive stayed intact, but an open task
+that still referenced its pruned `$PLUGIN_ROOT` path lost later Hook
+invocations until a safe-installer apply restored the exact bytes. Managed-apply
+preservation therefore does not extend to host task-startup cleanup. This
+observation is recorded for macOS only; other platforms remain unverified.
+
+Both Hook command forms now prefer the pinned plugin root and otherwise resolve
+the newest surviving strictly semver-named, non-symlink Context Guard tree
+under the managed marketplace cache root (`CODEX_HOME` when set, otherwise
+`~/.codex`), failing closed with an actionable reinstall hint when nothing
+survives. The fallback executes only trees materialized by the host from the
+sanitized marketplace source; it may run a newer runtime than the one a
+rescued task originally trusted, it does not verify per-file hashes at spawn
+time, and it never mutates consumed caches. The hash-indexed archive remains
+the only authority for restoring exact historical trees. Read-only installer
+runs now name host startup pruning and the `--apply` restore action directly.
 
 ## 0.8.8 release status
 

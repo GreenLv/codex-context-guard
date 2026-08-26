@@ -320,6 +320,24 @@ fails without writing, while the next managed `--apply` restores it first.
 The bundle never becomes archive trust authority, and embedded Git metadata,
 symlinks, malformed paths, or invalid hashes fail closed.
 
+A managed apply is not the only actor in this hierarchy. An observed macOS
+Codex CLI 0.149.0 host prunes historical versioned live caches when a fresh
+task starts and keeps only the registered current version. Open tasks still
+reference their trusted versioned path, so a pruned tree breaks their later
+Hook invocations even though the trusted archive stays intact. The installer
+cannot observe this cleanup while it happens: read-only diagnosis names it
+explicitly, and a managed `--apply` restores the exact trees from the archive.
+
+Because an already-open task cannot be told to trust new Hook command bytes,
+the 0.8.10 commands carry their own resolution policy: prefer the pinned
+`$PLUGIN_ROOT` tree; when it is missing, resolve the newest surviving strictly
+semver-named, non-symlink Context Guard tree under the managed marketplace
+cache root (`CODEX_HOME` when set, otherwise `~/.codex`); otherwise exit 2
+with the actionable reinstall hint. The fallback executes only host-
+materialized product trees inside that root. It may run a newer runtime than
+the one a rescued task originally trusted; consumed caches stay immutable, and
+only the trusted archive can restore exact historical bytes.
+
 ## Exports and successor packs
 
 `export` produces a redacted project-bounded handoff. `rollover` additionally

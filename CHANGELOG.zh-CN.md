@@ -12,27 +12,26 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.8.9 - 未发布
+## 0.8.10 - 未发布
 
 ### 重点
 
-- Stop 不再把明确脱敏或供人阅读的序列化 token 示例误判为私有控制元数据泄露。
-- URL-safe 的 token 形态值、私有目录/会话/turn 绑定、控制命令、内部标记和序列化控制结构继续 fail-closed。
-- 回复被拒绝时会指出私有控制元数据或凭证形态绑定，不再把所有隐私分类失败都笼统称为 checkpoint 元数据。
+- 宿主在新任务启动时清理历史版本 live 缓存后，Hook 仍能继续工作：每条命令优先使用任务信任的插件根目录，缺失时回退到受管插件缓存中最新的存活 Context Guard 目录，全部缺失时按可操作的修复指引失败关闭。
+- Stop 不再把明确脱敏或供人阅读的序列化 token 示例误判为私有控制元数据泄露（并入已消费的 0.8.9 候选）；URL-safe 的 token 形态值、私有绑定、控制命令、内部标记和序列化控制结构继续 fail-closed。
+- 安装器的只读诊断直接点名宿主启动清理行为并给出恢复动作，而不是报出含糊的审计失败。
 
 ### 变更
 
+- 在 macOS 默认 home 的实际观察中，Codex CLI 0.149.0 启动新任务时清掉了全部历史 live 版本；一个 `PLUGIN_ROOT` 指向已被清理的 0.8.8 路径的进行中任务因此丢失后续 Hook 事件，直到用安全安装器恢复。现在 POSIX 与 Windows Hook 命令都会先解析钉住的插件根目录，再回退到 `CODEX_HOME`（或 `~/.codex`）下 marketplace 缓存根目录中最新的严格 semver 命名、非符号链接的版本树。回退可能让被救回的任务执行比其最初信任版本更新的运行时；已消费缓存保持不可变，带哈希索引的可信 archive 仍是恢复精确历史字节的唯一权威。
 - Classifier 2.3.1 会检查序列化私有字段的值，不再只要看到带引号的 `token` 键就拒绝。标准脱敏占位值和较短的可读 token 示例属于说明文本；加空格或分段后折叠回私有 token 形态的值仍视为敏感。
-- 正反向定向回归覆盖本次真实审查误报、标准占位值、真实 token 形态、空白混淆与包裹 token、私有路径与会话标识，以及包含脱敏值的控制结构。
-- Schema 7、Proof protocol 1.0.0、Stop protocol 1.1.0、Execution protocol 1.0.0、Python 3.10+ 和八 Hook wire 均不变。
+- Schema 7、Proof protocol 1.0.0、Stop protocol 1.1.0、Execution protocol 1.0.0、Python 3.10+ 和八事件 Hook 集合均不变；可观察的 Hook 命令字节与安装包身份随本版推进。
 
 ### 验证
 
-- macOS 原生源码验证已通过仓库与 tracked-tree 隐私审计、211 项测试（含 2 项能力 skip）、Python 3.12.2 八 Hook 自检、Ruff 0.16.1、外部 cache 编译、未变化公开基线的提交身份审计和 diff 检查；定向 classifier 与 Stop 路径回归覆盖本次误报及保留的 fail-closed 情形。
-- 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、source/staging/live/archive 的全部 15 个产品文件一致性、安装态八 Hook 自检、lifecycle smoke、禁留检查，以及 147 文件全量 manifest 不变的严格重复 no-op。
-- macOS 默认 home 已应用精确候选 `540c59e`，保留历史 live 状态，并通过第二次严格 no-op、15 个产品文件一致性、安装态自检、lifecycle smoke 和禁留检查。全新 Codex CLI 0.149.0 任务以显式激活运行了已安装的 `UserPromptSubmit` 与 Stop 路径，使用 classifier 2.3.1 并返回预期的精确回复。
-- PR #15 已通过 Ubuntu/macOS/Windows 上 Python 3.10–3.13 的完整 12 项矩阵、HOL Plugin Scanner 和 plugin scanner。Windows 原生默认 home 安装与可信 Hook 行为仍待完成，不能由 Windows CI 推断。
-- tag、GitHub Release 和下游 consumer pin 证据仍待完成。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
+- macOS 原生源码验证已通过仓库与 tracked-tree 隐私审计、214 项测试（含 3 项能力 skip）、Python 3.12.2 八 Hook 自检、Ruff 0.16.1、外部 cache 编译、未变化公开基线的提交身份审计和 diff 检查。新增定向回归覆盖钉住根优先、最新存活目录回退、诱饵命名与符号链接拒绝、fail-closed 修复提示、只读诊断宿主启动清理，以及下一次 apply 从 archive 恢复；Windows 解析回归在 Windows CI 上执行。
+- 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、严格重复 no-op、15 个产品文件 source/staging/live/archive 一致性、安装态自检、lifecycle smoke 和禁留检查。macOS 默认 home 升级在单次受管 apply 内完成 0.8.10 存档，并把被宿主清理的全部历史 live 版本（0.6.1–0.8.9）从可信 archive 恢复。
+- 在该默认 home 上，真实全新 `codex exec` 任务触发了已安装的 0.8.10 Hook；随后宿主再次把全部历史 live 版本真实清理。在被清空的钉住根下，已消费的 0.8.9 字节以 exit 127 失败，而已安装的 0.8.10 字节经回退返回 exit 0 并写入 schema-7 状态；下一次 apply 又从可信 archive 恢复了全部版本。
+- Windows 原生安装与可信 Hook 行为、tag、GitHub Release、下游 consumer pin 证据以及本候选的 PR CI 仍待完成，不能由既有运行推断。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
 
 ## 0.8.8 - 2026-08-25
 
