@@ -42,8 +42,14 @@ recap; upgrading it to 0.8.11 is part of the pending native re-acceptance and
 was not repeated this round to avoid further churn to the live machine state.
 Native Windows default-home installation, trusted-Hook behavior, tag, GitHub
 Release, and downstream consumer-pin evidence remain pending and are not
-inferred from CI. PR CI for this candidate is recorded at its green evidence
-head below.
+inferred from CI.
+
+PR #15 at exact evidence head `38079d5` passes the complete 14-check GitHub
+Actions matrix — `ubuntu-latest`, `macos-latest`, and `windows-latest` with
+Python 3.10, 3.11, 3.12, and 3.13 — plus the HOL Plugin Scanner and its
+uploaded plugin scanner check. Windows runner results remain CI evidence only;
+a native Windows default-home install, strict no-op, installed lifecycle smoke,
+and fresh trusted-Hook task are separate pending gates.
 
 ## 0.8.9 source-candidate acceptance (2026-08-26)
 

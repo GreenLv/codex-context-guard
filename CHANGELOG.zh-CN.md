@@ -32,7 +32,7 @@
 - macOS 原生源码验证已通过仓库与 tracked-tree 隐私审计、218 项测试（含 5 项能力 skip）、Python 3.12.2 八 Hook 自检、Ruff 0.16.1、外部 cache 编译、未变化公开基线的提交身份审计和 diff 检查。解析回归覆盖钉住根优先、最新存活目录回退、诱饵命名与符号链接拒绝、fail-closed 修复提示、`99.99`/`1`/`01.0.0`/`00.0.0`/`0.0.0.0`/`1.2.3-rc1` 的拒绝以及孤立 `0.0.0` 树的选中；PowerShell 形态在 Windows CI 上执行。
 - 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、严格重复 no-op、15 个产品文件 source/staging/live/archive 一致性、安装态自检、lifecycle smoke 和禁留检查。macOS 默认 home 仍保留此前的已消费 0.8.10 安装；升级到 0.8.11 属于待办的原生复验。
 - 已消费 0.8.10 的默认 home 证据留存：单次 apply 内完成存档并把被宿主清理的全部历史 live 版本（0.6.1–0.8.9）从可信 archive 恢复；真实全新 `codex exec` 任务触发安装态 Hook，宿主随后再次真实清理全部历史版本；已消费的 0.8.9 字节以 exit 127 失败，而已安装的 0.8.10 字节经回退返回 exit 0 并写入 schema-7 状态；下一次 apply 又从可信 archive 恢复全部版本。
-- Windows 原生安装与可信 Hook 行为、tag、GitHub Release、下游 consumer pin 证据以及 macOS 之外的原生平台复验仍待完成，不能由既有运行推断。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
+- Windows 原生安装与可信 Hook 行为、tag、GitHub Release、下游 consumer pin 证据以及 macOS 之外的原生平台复验仍待完成，不能由既有运行推断。PR #15 在证据头 `38079d5` 通过完整 14 项矩阵（Ubuntu/macOS/Windows × Python 3.10–3.13、HOL Plugin Scanner、plugin scanner）。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
 
 ## 0.8.8 - 2026-08-25
 
