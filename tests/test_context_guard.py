@@ -1155,12 +1155,13 @@ class ContextGuardTests(unittest.TestCase):
             )
         )
         self.assertEqual(result["decision"], "block")
-        self.assertIn("private checkpoint metadata", result["reason"])
+        self.assertIn("private control metadata", result["reason"])
         self.assertIsNone(self.state()["completion_checkpoint"])
 
     def test_stop_privacy_classifier_separates_explanation_control_and_ambiguity(
         self,
     ) -> None:
+        private_token_example = "A1" * 16
         explanatory = (
             "文档只说明 `checkpoint-status`、STAGE-CHECKPOINT 和 register-proof；"
             "另见 /tmp/stage-checkpoint.log、https://example.test/checkpoint-status "
@@ -1176,7 +1177,15 @@ class ContextGuardTests(unittest.TestCase):
             "`checkpoint-status`：--token redacted-token",
             "The private argument was --token redacted-token.",
             "CONTEXT_GUARD_DATA_DIR=/private/example checkpoint-status",
-            '{"token":"redacted"}',
+            '{"token":"actual-secret-value"}',
+            '{"data_dir":"/private/example"}',
+            '{"session_id":"turn-a"}',
+            f'{{"token":" {private_token_example} "}}',
+            f'{{"token":" [{private_token_example}] "}}',
+            (
+                f'{{"token":"{private_token_example[:16]} '
+                f'{private_token_example[16:]}"}}'
+            ),
             '{"command":"stage-checkpoint","token":"redacted","turn_id":"turn-a"}',
         )
         for text in sensitive_cases:
@@ -1184,6 +1193,18 @@ class ContextGuardTests(unittest.TestCase):
                 category, reasons = cg.classify_private_metadata(text)
                 self.assertEqual(category, "sensitive_control")
                 self.assertTrue(reasons)
+        safe_serialized_examples = (
+            "The redacted fixture is {'token':'alpha beta'}.",
+            '{"token":"<redacted>"}',
+            '{"token":"[REDACTED]"}',
+            '{"token":"***"}',
+        )
+        for text in safe_serialized_examples:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    cg.classify_private_metadata(text),
+                    ("explanatory_reference", []),
+                )
         category, reasons = cg.classify_private_metadata(
             "The fragment ends with stage-disposition --disposition"
         )
@@ -1208,6 +1229,48 @@ class ContextGuardTests(unittest.TestCase):
         self.assertTrue(
             all(item["status"] == "pass" for item in self.state()["requirements"])
         )
+
+    def test_stop_allows_human_readable_serialized_token_examples(self) -> None:
+        self.prompt("$context-guard\n审查本地实现并报告仍需下一轮修复的问题。")
+        staged, _ = self.stage_disposition("user_wait")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+
+        result = cg.dispatch(
+            self.payload(
+                "Stop",
+                last_assistant_message=(
+                    "本轮仍未完成。隐私回归覆盖 {'token':'alpha beta'} 与 "
+                    "{'token':'<redacted>'} 两类说明样本，请在下一轮修复。"
+                ),
+            )
+        )
+
+        self.assertEqual(result, {})
+        latest = self.state()["decision_log"][-1]
+        self.assertEqual(latest["decision_source"], "protocol_disposition")
+        self.assertEqual(latest["outcome"], "allow_user_handoff")
+
+    def test_stop_rejects_whitespace_obfuscated_private_token_shape(self) -> None:
+        self.prompt("$context-guard\n审查本地实现并报告仍需下一轮修复的问题。")
+        staged, _ = self.stage_disposition("user_wait")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        private_token_example = "A1" * 16
+
+        result = cg.dispatch(
+            self.payload(
+                "Stop",
+                last_assistant_message=(
+                    "本轮仍未完成。异常输出包含 "
+                    f"{{'token':' {private_token_example[:16]} "
+                    f"{private_token_example[16:]} '}}。"
+                ),
+            )
+        )
+
+        self.assertEqual(result["decision"], "block")
+        self.assertIn("private control metadata", result["reason"])
+        latest = self.state()["decision_log"][-1]
+        self.assertEqual(latest["outcome"], "fail_closed_integrity")
 
     def test_failed_or_unknown_evidence_cannot_be_staged(self) -> None:
         self.prompt(

@@ -6,18 +6,30 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.8`
-- Current source line: `0.8.8`
+- Current source line: `0.8.9` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
 - Execution protocol: `1.0.0`
-- Diagnostic classifier: `2.3.0`
+- Diagnostic classifier: `2.3.1`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.9 source-candidate status
+
+Version 0.8.9 narrows the Stop privacy classifier without weakening private
+control protection. Canonical redaction placeholders and short human-readable
+quoted token examples contain no private control value, so those explanatory
+forms no longer cause a continuation. Whitespace is removed before token-shape
+comparison; padding or splitting a private-token-shaped value therefore remains
+fail-closed. Private directory/session/turn bindings, control invocations,
+internal markers, and serialized control structures also remain fail-closed.
+Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0,
+and the eight-Hook wire are unchanged.
 
 ## 0.8.8 release status
 

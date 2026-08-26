@@ -12,6 +12,26 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.8.9 - Unreleased
+
+### Highlights
+
+- Stop no longer mistakes clearly redacted or human-readable serialized token examples for leaked private control metadata.
+- URL-safe token-shaped values, private directory/session/turn bindings, control invocations, internal markers, and serialized control structures remain fail-closed.
+- A rejected reply now identifies private control metadata or a credential-like binding instead of reporting every privacy-classifier failure as checkpoint metadata.
+
+### Changes
+
+- Classifier 2.3.1 inspects serialized private-field values instead of rejecting a quoted `token` key on sight. Canonical redaction placeholders and short human-readable token examples are explanatory; whitespace-padded or split values that collapse to the private-token shape remain sensitive.
+- Focused positive and negative regressions cover the observed review false positive, canonical placeholders, realistic token values, whitespace-obfuscated and wrapped token shapes, private paths and session identifiers, and control structures containing redacted values.
+- Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook wire are unchanged.
+
+### Validation
+
+- Native macOS source validation passes repository and tracked-tree privacy audits, 211 tests with two capability-aware skips, the eight-Hook self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation, commit-identity audit of the unchanged public baseline, and diff checks. Focused classifier and Stop-path regressions cover the observed false positive and retained fail-closed cases.
+- A disposable Codex CLI 0.149.0 home passes first managed install, source/staging/live/archive parity for all 15 product files, installed eight-Hook self-test, lifecycle smoke, forbidden-residue checks, and strict repeated no-op with an unchanged 147-file all-file manifest.
+- Native Windows, default-home installation, fresh trusted-Hook behavior, CI, tag, GitHub Release, and downstream consumer-pin evidence remain pending and are not inferred from isolated checks. Detailed evidence is recorded in `docs/LOCAL_ACCEPTANCE.md`.
+
 ## 0.8.8 - 2026-08-25
 
 ### Highlights

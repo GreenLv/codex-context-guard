@@ -228,7 +228,7 @@ Stop protocol 1.1.0 applies this fixed priority:
    safely and leaves every unresolved requirement pending.
 
 Completion and explicit-persistence corrections are capped at two turns.
-Classifier 2.2.1 records the
+Classifier 2.3.1 records the
 observed natural-language outcome, action facts, and anomalies for diagnosis;
 inferred action ownership no longer drives ordinary continuation. Only the
 narrow high-confidence whole-task-completion and explicit-persistence checks

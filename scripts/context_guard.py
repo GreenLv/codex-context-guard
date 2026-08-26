@@ -26,9 +26,11 @@ from typing import Any, Iterator
 
 SCHEMA_VERSION = 7
 STOP_PROTOCOL_VERSION = "1.1.0"
-CLASSIFIER_VERSION = "2.3.0"
+CLASSIFIER_VERSION = "2.3.1"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "1.0.0"
+PRIVATE_CONTROL_TOKEN_BYTES = 24
+PRIVATE_CONTROL_TOKEN_LENGTH = (PRIVATE_CONTROL_TOKEN_BYTES * 8 + 5) // 6
 DECISION_LOG_LIMIT = 32
 RECOVERY_CHAR_LIMIT = 15000
 RECOVERY_COMPLETION_RULE = (
@@ -528,9 +530,19 @@ SERIALIZED_CONTROL_KEY_RE = re.compile(
     r"requirements?|acceptance|manifest|disposition)[\"']\s*:",
     re.IGNORECASE,
 )
-SERIALIZED_SECRET_KEY_RE = re.compile(
-    r"[\"'](?:token|data[_-]dir|session[_-]id|turn[_-]id)[\"']\s*:",
+SERIALIZED_SECRET_BINDING_RE = re.compile(
+    r"(?P<key_quote>[\"'])"
+    r"(?P<key>token|data[_-]dir|session[_-]id|turn[_-]id)"
+    r"(?P=key_quote)\s*:\s*"
+    r"(?P<value>\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^,\s}\]]+)",
     re.IGNORECASE,
+)
+SAFE_SERIALIZED_PLACEHOLDER_RE = re.compile(
+    r"(?:<|\[)?(?:redacted|omitted)(?:>|\])?|\*{3,}",
+    re.IGNORECASE,
+)
+PRIVATE_CONTROL_TOKEN_SHAPE_RE = re.compile(
+    rf"[A-Za-z0-9_-]{{{PRIVATE_CONTROL_TOKEN_LENGTH}}}"
 )
 CONTROL_RUNTIME_RE = re.compile(
     r"(?:context_guard\.py|context-guard(?:/|\\)scripts(?:/|\\)context_guard\.py)"
@@ -554,7 +566,31 @@ def classify_private_metadata(text: str) -> tuple[str, list[str]]:
         sensitive_reasons.append("internal_marker_or_serialized_control")
     if PRIVATE_ENV_ASSIGNMENT_RE.search(text):
         sensitive_reasons.append("environment_binding")
-    if SECRET_OPTION_BINDING_RE.search(text) or SERIALIZED_SECRET_KEY_RE.search(text):
+    serialized_secret_bindings = list(SERIALIZED_SECRET_BINDING_RE.finditer(text))
+    sensitive_serialized_binding = False
+    for binding in serialized_secret_bindings:
+        raw_value = binding.group("value")
+        quoted = (
+            len(raw_value) >= 2
+            and raw_value[0] == raw_value[-1]
+            and raw_value[0] in "\"'"
+        )
+        value = raw_value[1:-1] if quoted else raw_value
+        if SAFE_SERIALIZED_PLACEHOLDER_RE.fullmatch(value.strip()):
+            continue
+        if binding.group("key").lower() == "token" and quoted and any(
+            character.isspace() for character in value
+        ):
+            collapsed = "".join(value.split())
+            if not PRIVATE_CONTROL_TOKEN_SHAPE_RE.search(collapsed):
+                # Human-readable quoted examples such as "alpha beta" cannot
+                # contain the current URL-safe private token after whitespace
+                # is removed, so they are safe to explain. Padding, wrapping,
+                # or splitting a token-shaped value remains sensitive.
+                continue
+        sensitive_serialized_binding = True
+        break
+    if SECRET_OPTION_BINDING_RE.search(text) or sensitive_serialized_binding:
         sensitive_reasons.append("private_parameter_binding")
     if CONTROL_RUNTIME_RE.search(text):
         sensitive_reasons.append("full_command_invocation")
@@ -4029,7 +4065,7 @@ def begin_completion_attempt(
     state: dict[str, Any], payload: dict[str, Any], fallback_turn_id: str
 ) -> tuple[str, str]:
     turn_id = str(payload.get("turn_id") or fallback_turn_id)
-    token = secrets.token_urlsafe(24)
+    token = secrets.token_urlsafe(PRIVATE_CONTROL_TOKEN_BYTES)
     state["completion_attempt"] = {
         "protocol_version": STOP_PROTOCOL_VERSION,
         "turn_id": turn_id,
@@ -6046,7 +6082,10 @@ def handle_stop(
             "legacy inline checkpoint metadata is not accepted; stage it privately"
         )
     elif leaked_private_metadata:
-        issues.append("user-facing reply contains private checkpoint metadata")
+        issues.append(
+            "user-facing reply contains private control metadata or a "
+            "credential-like binding"
+        )
     if issues:
         decision.update(
             {

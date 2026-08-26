@@ -12,6 +12,26 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
+## 0.8.9 - 未发布
+
+### 重点
+
+- Stop 不再把明确脱敏或供人阅读的序列化 token 示例误判为私有控制元数据泄露。
+- URL-safe 的 token 形态值、私有目录/会话/turn 绑定、控制命令、内部标记和序列化控制结构继续 fail-closed。
+- 回复被拒绝时会指出私有控制元数据或凭证形态绑定，不再把所有隐私分类失败都笼统称为 checkpoint 元数据。
+
+### 变更
+
+- Classifier 2.3.1 会检查序列化私有字段的值，不再只要看到带引号的 `token` 键就拒绝。标准脱敏占位值和较短的可读 token 示例属于说明文本；加空格或分段后折叠回私有 token 形态的值仍视为敏感。
+- 正反向定向回归覆盖本次真实审查误报、标准占位值、真实 token 形态、空白混淆与包裹 token、私有路径与会话标识，以及包含脱敏值的控制结构。
+- Schema 7、Proof protocol 1.0.0、Stop protocol 1.1.0、Execution protocol 1.0.0、Python 3.10+ 和八 Hook wire 均不变。
+
+### 验证
+
+- macOS 原生源码验证已通过仓库与 tracked-tree 隐私审计、211 项测试（含 2 项能力 skip）、Python 3.12.2 八 Hook 自检、Ruff 0.16.1、外部 cache 编译、未变化公开基线的提交身份审计和 diff 检查；定向 classifier 与 Stop 路径回归覆盖本次误报及保留的 fail-closed 情形。
+- 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、source/staging/live/archive 的全部 15 个产品文件一致性、安装态八 Hook 自检、lifecycle smoke、禁留检查，以及 147 文件全量 manifest 不变的严格重复 no-op。
+- Windows 原生、默认 home 安装、全新可信 Hook、CI、tag、GitHub Release 和下游 consumer pin 证据仍待完成，不能由隔离检查推断。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
+
 ## 0.8.8 - 2026-08-25
 
 ### 重点

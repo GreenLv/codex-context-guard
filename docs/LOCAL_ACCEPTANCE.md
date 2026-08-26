@@ -4,6 +4,34 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.8`; accepted `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.9 source-candidate acceptance (2026-08-26)
+
+The macOS source candidate passes repository validation, the tracked-tree
+privacy audit, 211 tests with two capability-aware symbolic-link skips, the
+eight-Hook self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation,
+commit-identity audit of the unchanged public baseline, and `git diff --check`.
+
+Focused classifier and Stop-path regressions reproduce the review reply that
+previously caused a privacy continuation. Short human-readable token examples
+and canonical redaction placeholders now yield normally, including with an
+authenticated `user_wait` disposition. Whitespace-padded or split values that
+collapse to the private-token shape, private directory/session bindings,
+private option bindings, and serialized control structures remain sensitive
+and fail closed.
+
+An isolated Codex CLI 0.149.0 home passes first managed installation of the
+0.8.9 versioned cache and archive. Source, sanitized marketplace staging, live
+cache, and trusted archive match across all 15 product files; the installed
+eight-Hook self-test and lifecycle smoke pass on Python 3.12.2, with no Git or
+bytecode residue. The second and a repeated managed apply both report the
+current version and skip cache refresh. Before and after the repeated apply,
+the isolated home's 147-file all-file manifest has the same SHA-256 digest.
+
+The candidate has not been installed into the default Codex home. Native
+Windows, fresh trusted-Hook behavior, CI, tag, GitHub Release, and downstream
+consumer-pin evidence remain pending and are not inferred from the isolated
+installation.
+
 ## 0.8.8 release acceptance (2026-08-25)
 
 The real macOS default home applied final 0.8.7 release commit

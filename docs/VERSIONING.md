@@ -164,6 +164,15 @@ not as a measure of code volume.
   closed with an actionable stderr message when no supported interpreter is
   available. Schema, protocols, classifier, and private-state contracts remain
   unchanged; the Hook command bytes and installed package identity advance.
+- `0.8.9` is an unreleased privacy-classifier compatibility patch. Classifier
+  2.3.1 recognizes canonical redaction placeholders and short human-readable
+  quoted examples that cannot match Context Guard's URL-safe private token.
+  Whitespace is removed before token-shape comparison, so padded or split
+  token-shaped values, private directory/session/turn bindings, control
+  invocations, internal markers, and serialized control structures remain
+  fail-closed. Schema 7, Proof protocol 1.0.0, Stop protocol 1.1.0, Execution
+  protocol 1.0.0, and the eight-Hook wire are unchanged; observable runtime
+  bytes and the installed package identity advance.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
