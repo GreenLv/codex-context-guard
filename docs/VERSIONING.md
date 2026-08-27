@@ -224,7 +224,7 @@ not as a measure of code volume.
   then failed closed on native Windows because `Set-Acl` requested
   `SeSecurityPrivilege` from a standard user token. It was never published and
   its installed caches remain immutable.
-- `0.9.2` is the unreleased protocol-authority candidate. Stop protocol 2.0.0
+- `0.9.2` is a consumed intermediate protocol-authority candidate. Stop protocol 2.0.0
   makes an authenticated full-coverage checkpoint the sole completion
   transition; classifier 2.3.2 remains diagnostic-only and cannot alter final
   outcome, pending state, or continuation count. Schema 7, Proof protocol
@@ -234,6 +234,15 @@ not as a measure of code volume.
   The patch retains exact `0700`/`0600` incident-corpus permissions on POSIX and
   applies a protected, read-back-verified DACL on Windows through a native call
   that passes null owner, group, and SACL pointers.
+- `0.9.3` keeps Stop protocol 2.0.0, schema 7, classifier 2.3.2, Proof and
+  Execution protocols 1.0.0, Python 3.10+, and the eight-Hook wire unchanged.
+  Native Windows diagnosis confirmed that 0.9.2 wrote the exact protected
+  three-entry DACL, but PowerShell's `.Access` adapter did not reliably
+  enumerate the access-rule collection. The new candidate validates the exact
+  user/`SYSTEM`/Administrators FullControl contract through both
+  `GetAccessRules` and `RawSecurityDescriptor`, including counts, allow-only
+  qualifiers, inheritance flags, masks, unique principals, and protected-DACL
+  state. The consumed 0.9.2 cache remains immutable.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

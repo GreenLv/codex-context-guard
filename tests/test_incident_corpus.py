@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,150 @@ TOOL = ROOT / "scripts" / "incident_corpus.py"
 FIXTURES = ROOT / "tests" / "fixtures" / "incidents" / "public_incidents.json"
 RUNTIME = ROOT / "scripts" / "context_guard.py"
 
+WINDOWS_ACL_READBACK_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$path = $env:CONTEXT_GUARD_TEST_PATH
+$isDirectory = $env:CONTEXT_GUARD_TEST_KIND -eq 'directory'
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$required = @($current, $system, $administrators)
+function Get-Label([System.Security.Principal.SecurityIdentifier]$sid) {
+    for ($index = 0; $index -lt $required.Count; $index++) {
+        if ($sid -eq $required[$index]) {
+            return @('current', 'system', 'administrators')[$index]
+        }
+    }
+    return 'unexpected'
+}
+if ($isDirectory) {
+    $item = [System.IO.DirectoryInfo]::new($path)
+} else {
+    $item = [System.IO.FileInfo]::new($path)
+}
+$observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
+    $item,
+    [System.Security.AccessControl.AccessControlSections]::Access
+)
+$rules = $observed.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+)
+$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new(
+    $observed.GetSecurityDescriptorBinaryForm(),
+    0
+)
+$rulePrincipals = @($rules | ForEach-Object {
+    Get-Label ([System.Security.Principal.SecurityIdentifier]$_.IdentityReference)
+} | Sort-Object)
+$rawPrincipals = @($descriptor.DiscretionaryAcl | ForEach-Object {
+    Get-Label $_.SecurityIdentifier
+} | Sort-Object)
+[ordered]@{
+    protected = $observed.AreAccessRulesProtected
+    raw_protected = $descriptor.ControlFlags.HasFlag(
+        [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected
+    )
+    rules_count = $rules.Count
+    raw_count = $descriptor.DiscretionaryAcl.Count
+    rule_principals = $rulePrincipals
+    raw_principals = $rawPrincipals
+    rule_types = @($rules | ForEach-Object { $_.AccessControlType.ToString() })
+    rule_rights = @($rules | ForEach-Object { [int]$_.FileSystemRights })
+    rule_inheritance = @($rules | ForEach-Object { $_.InheritanceFlags.ToString() })
+    rule_propagation = @($rules | ForEach-Object { $_.PropagationFlags.ToString() })
+    rule_inherited = @($rules | ForEach-Object { $_.IsInherited })
+    raw_qualifiers = @($descriptor.DiscretionaryAcl | ForEach-Object {
+        $_.AceQualifier.ToString()
+    })
+    raw_masks = @($descriptor.DiscretionaryAcl | ForEach-Object { $_.AccessMask })
+    raw_flags = @($descriptor.DiscretionaryAcl | ForEach-Object {
+        $_.AceFlags.ToString()
+    })
+} | ConvertTo-Json -Compress
+"""
+
+WINDOWS_ACL_MUTATE_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ContextGuardAclTestMutation {
+    public const int SeFileObject = 1;
+    public const uint DaclSecurityInformation = 0x00000004;
+    public const uint ProtectedDaclSecurityInformation = 0x80000000;
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint SetNamedSecurityInfoW(
+        string objectName, int objectType, uint securityInfo,
+        IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl
+    );
+}
+'@
+$path = $env:CONTEXT_GUARD_TEST_PATH
+$isDirectory = $env:CONTEXT_GUARD_TEST_KIND -eq 'directory'
+$scenario = $env:CONTEXT_GUARD_TEST_SCENARIO
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$localService = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-19')
+$principals = @($current, $system, $administrators)
+if ($scenario -eq 'missing') {
+    $principals = @($current, $administrators)
+} elseif ($scenario -eq 'extra') {
+    $principals = @($current, $system, $administrators, $localService)
+}
+$flags = [System.Security.AccessControl.AceFlags]::None
+if ($isDirectory) {
+    $flags = [System.Security.AccessControl.AceFlags](
+        [int][System.Security.AccessControl.AceFlags]::ContainerInherit -bor
+        [int][System.Security.AccessControl.AceFlags]::ObjectInherit
+    )
+}
+$extra = if ($scenario -eq 'deny') { 1 } else { 0 }
+$acl = [System.Security.AccessControl.RawAcl]::new(2, $principals.Count + $extra)
+if ($scenario -eq 'deny') {
+    $acl.InsertAce(0, [System.Security.AccessControl.CommonAce]::new(
+        $flags,
+        [System.Security.AccessControl.AceQualifier]::AccessDenied,
+        [int][System.Security.AccessControl.FileSystemRights]::ReadData,
+        $localService,
+        $false,
+        $null
+    ))
+}
+foreach ($sid in $principals) {
+    $acl.InsertAce($acl.Count, [System.Security.AccessControl.CommonAce]::new(
+        $flags,
+        [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+        [int][System.Security.AccessControl.FileSystemRights]::FullControl,
+        $sid,
+        $false,
+        $null
+    ))
+}
+$bytes = [byte[]]::new($acl.BinaryLength)
+$acl.GetBinaryForm($bytes, 0)
+$pointer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+try {
+    [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $pointer, $bytes.Length)
+    $result = [ContextGuardAclTestMutation]::SetNamedSecurityInfoW(
+        $path,
+        [ContextGuardAclTestMutation]::SeFileObject,
+        [ContextGuardAclTestMutation]::DaclSecurityInformation -bor
+            [ContextGuardAclTestMutation]::ProtectedDaclSecurityInformation,
+        [IntPtr]::Zero,
+        [IntPtr]::Zero,
+        $pointer,
+        [IntPtr]::Zero
+    )
+    if ($result -ne 0) { throw "ACL mutation failed with code $result" }
+} finally {
+    [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pointer)
+}
+'CONTEXT_GUARD_TEST_ACL_MUTATED'
+"""
+
 
 def load_tool():
     spec = importlib.util.spec_from_file_location("incident_corpus", TOOL)
@@ -24,6 +170,40 @@ def load_tool():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def run_windows_acl_script(
+    script: str, path: Path, *, directory: bool, scenario: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    shell = next(
+        (
+            candidate
+            for name in ("pwsh.exe", "pwsh", "powershell.exe", "powershell")
+            if (candidate := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if shell is None:
+        raise unittest.SkipTest("Windows ACL tests require PowerShell")
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CONTEXT_GUARD_TEST_PATH": str(path),
+            "CONTEXT_GUARD_TEST_KIND": "directory" if directory else "file",
+        }
+    )
+    if scenario is not None:
+        environment["CONTEXT_GUARD_TEST_SCENARIO"] = scenario
+    return subprocess.run(
+        [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+        text=True,
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=30,
+        env=environment,
+    )
 
 
 class IncidentCorpusTests(unittest.TestCase):
@@ -149,10 +329,93 @@ class IncidentCorpusTests(unittest.TestCase):
         self.assertIn("SetNamedSecurityInfoW", script)
         self.assertIn("DaclSecurityInformation", script)
         self.assertIn("ProtectedDaclSecurityInformation", script)
+        self.assertIn("GetAccessRules", script)
+        self.assertIn("RawSecurityDescriptor", script)
         self.assertIn("[IntPtr]::Zero", script)
+        self.assertNotIn("$observed.Access", script)
         self.assertNotIn("Set-Acl", script)
         self.assertNotIn("SetOwner", script)
         self.assertNotIn("SaclSecurityInformation", script)
+        self.assertNotIn("SACL_SECURITY_INFORMATION", script)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows ACL regression")
+    def test_windows_native_acl_round_trip_has_exact_rules(self) -> None:
+        tool = load_tool()
+        expected_principals = ["administrators", "current", "system"]
+        full_control = 2032127
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / "private-directory"
+            file_path = root / "private-file.dat"
+            directory.mkdir()
+            file_path.write_bytes(b"")
+            for path, is_directory, inheritance, raw_flags in (
+                (
+                    directory,
+                    True,
+                    "ContainerInherit, ObjectInherit",
+                    "ObjectInherit, ContainerInherit",
+                ),
+                (file_path, False, "None", "None"),
+            ):
+                tool.restrict_private_path(path, directory=is_directory)
+                self.assertIsNone(
+                    tool.private_path_permission_error(
+                        path, directory=is_directory
+                    )
+                )
+                result = run_windows_acl_script(
+                    WINDOWS_ACL_READBACK_SCRIPT,
+                    path,
+                    directory=is_directory,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+                observed = json.loads(result.stdout)
+                self.assertTrue(observed["protected"])
+                self.assertTrue(observed["raw_protected"])
+                self.assertEqual(observed["rules_count"], 3)
+                self.assertEqual(observed["raw_count"], 3)
+                self.assertEqual(observed["rule_principals"], expected_principals)
+                self.assertEqual(observed["raw_principals"], expected_principals)
+                self.assertEqual(observed["rule_types"], ["Allow"] * 3)
+                self.assertEqual(observed["rule_rights"], [full_control] * 3)
+                self.assertEqual(observed["rule_inheritance"], [inheritance] * 3)
+                self.assertEqual(observed["rule_propagation"], ["None"] * 3)
+                self.assertEqual(observed["rule_inherited"], [False] * 3)
+                self.assertEqual(observed["raw_qualifiers"], ["AccessAllowed"] * 3)
+                self.assertEqual(observed["raw_masks"], [full_control] * 3)
+                self.assertEqual(observed["raw_flags"], [raw_flags] * 3)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows ACL regression")
+    def test_windows_native_acl_rejects_missing_extra_and_deny_aces(self) -> None:
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "private-file.dat"
+            path.write_bytes(b"")
+            for scenario in ("missing", "extra", "deny"):
+                tool.restrict_private_path(path, directory=False)
+                result = run_windows_acl_script(
+                    WINDOWS_ACL_MUTATE_SCRIPT,
+                    path,
+                    directory=False,
+                    scenario=scenario,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+                self.assertEqual(
+                    result.stdout.strip(), "CONTEXT_GUARD_TEST_ACL_MUTATED"
+                )
+                self.assertIsNotNone(
+                    tool.private_path_permission_error(path, directory=False)
+                )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows ACL regression")
+    def test_windows_native_acl_readback_failure_is_fail_closed(self) -> None:
+        tool = load_tool()
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = Path(temporary) / "missing-file.dat"
+            self.assertIsNotNone(
+                tool.private_path_permission_error(missing, directory=False)
+            )
 
 
 if __name__ == "__main__":

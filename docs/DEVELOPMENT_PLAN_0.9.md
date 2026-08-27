@@ -2,7 +2,7 @@
 
 Status: **In progress**
 
-Target: plugin `0.9.2`, Stop protocol `2.0.0`
+Target: plugin `0.9.3`, Stop protocol `2.0.0`
 
 Latest published release: `0.8.12`
 
@@ -21,7 +21,8 @@ append-only incident corpus and a reviewed public regression set.
 This release does not broaden Context Guard into a security sandbox, an
 arbitrary semantic verifier, or a visual-understanding system. It does not
 change schema 7, classifier 2.3.2, Proof protocol 1.0.0, Execution protocol
-1.0.0, or the eight-Hook wire. It does not mutate consumed 0.8.12 caches.
+1.0.0, or the eight-Hook wire. It does not mutate consumed 0.8.12, 0.9.0,
+  0.9.1, or 0.9.2 caches.
 
 ## Protocol decisions
 
@@ -45,11 +46,11 @@ an unauthenticated in-flight legacy control.
 | Phase | State | Exit condition |
 | --- | --- | --- |
 | Contract and history audit | Completed | 0.8.12 behavior, incident families, and immutable-cache boundary identified |
-| Incident infrastructure | In progress (POSIX passed; Windows 0.9.2 rerun pending) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
+| Incident infrastructure | In progress (POSIX passed; Windows 0.9.3 focused ACL gate passed) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
-| Source acceptance | In progress (macOS 0.9.2 passed; Windows rerun pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Source acceptance | In progress (Windows 0.9.3 passed; macOS 0.9.3 pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
+| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows 0.9.3 pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -106,8 +107,20 @@ diagnostic `gate_completion_claim` but authoritative
 zero continuations, and persisted SessionEnd. The host's fresh-task cleanup
 removed historical live trees; the safe installer restored them from their
 trusted archives, their pre-run content digests remained identical, and the
-next apply was a strict no-op. Windows has not yet rerun this correction; CI,
-tag, and Release acceptance also remain open.
+next apply was a strict no-op. Native Windows diagnosis at clean public head
+`2314e2d` confirmed that 0.9.2 constructed and wrote the exact protected
+three-entry DACL: the binary header, ACL size, non-null pointer, and successful
+native result were consistent, and both `GetAccessRules` and
+`RawSecurityDescriptor` read back all three ACEs. The failure was isolated to
+PowerShell `.Access` collection enumeration. The current uncommitted 0.9.3
+worktree retains the native write, uses both supported readback paths as one
+strict contract, and passes nine focused Windows tests under a standard user
+token with `SeSecurityPrivilege` unavailable. Its fixed public benchmark passes
+8/8 with zero false continuations, diagnostic accuracy 1.0, and the reviewed
+manifest hash. Repository validation, tracked-tree privacy audit, 229 tests with
+six capability-aware skips, eight-Hook self-test, Ruff 0.16.1, external-cache
+compilation, and diff checks pass with Python 3.12.10. Install and fresh-Hook
+gates remain open; CI, tag, and Release acceptance also remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -116,9 +129,8 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Rerun the six focused ACL tests and complete source suites on native Windows
-  with implementation `37612bf`, then complete install/no-op/parity/recovery
-  and fresh-Hook evidence on the same branch head.
+- Freeze the reviewed 0.9.3 implementation commit, then complete install/no-op/
+  parity/recovery and fresh-Hook evidence on that exact branch head.
 - Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
   GitHub Release, and public readback.
 
@@ -139,9 +151,7 @@ evidence are never recorded here.
 From the Windows repository root, run:
 
 ```powershell
-git pull --ff-only origin codex/0.9-protocol-authority
-git merge-base --is-ancestor 37612bf HEAD
-py -3.10 -m unittest tests.test_incident_corpus
+git diff -- .
 ```
 
 At the next phase boundary, replace this entrypoint with the first unrun gate

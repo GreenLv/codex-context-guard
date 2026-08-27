@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.9.2 - Unreleased
+## 0.9.3 - Unreleased
 
 ### 重点
 
@@ -25,14 +25,14 @@
 - Classifier 2.3.2 保持不变，只把 `observed_outcome` 写入诊断。新的权威 decision source 为 `protocol_default` 和 `protocol_user_persistence`；历史 `nlp_hard_gate` 记录仍可读取，但 0.9 不再生成。
 - 加载 Stop 1.1 状态时丢弃进行中的旧 control，同时保留 requirements、evidence、proof 和有界 decision history。Schema 7、Proof protocol 1.0.0、Execution protocol 1.0.0、Python 3.10+ 和八 Hook wire 均不变。
 - `scripts/incident_corpus.py` 仅使用标准库，提供 `ingest`、`validate`、`summarize`、`benchmark` 和 `export-public`；CI 只读取人工复核的脱敏 fixture，不访问私有事故库。
-- 事故库目录和文件在 POSIX 上继续使用精确的 `0700`/`0600` 权限；Windows 上通过 `SetNamedSecurityInfoW` 只写入受保护 DACL，限定为当前用户、`SYSTEM` 和内置 Administrators 组，然后独立回读 access rules。该路径不请求 owner 或 SACL 变更，标准用户令牌不需要 `SeSecurityPrivilege`；写入或验证失败仍 fail closed。
-- 未发布的 0.9.0 候选引入 Stop protocol 2.0.0，但把 POSIX mode bits 当作 Windows 隐私测试；已消费的 0.9.1 候选改用 `Set-Acl`，原生 Windows 证明该路径请求 `SeSecurityPrivilege`。其已安装缓存均保持不可变；0.9.2 继承协议并修正为 DACL-only 路径，不原地覆盖旧字节。
+- 事故库目录和文件在 POSIX 上继续使用精确的 `0700`/`0600` 权限；Windows 上通过 `SetNamedSecurityInfoW` 只写入受保护 DACL，限定为当前用户、`SYSTEM` 和内置 Administrators 组，再通过 `GetAccessRules` 与原始 security descriptor 双重验证精确三条 ACE。该路径不请求 owner 或 SACL 变更，标准用户令牌不需要 `SeSecurityPrivilege`；写入或验证失败仍 fail closed。
+- 未发布的 0.9.0 候选把 POSIX mode bits 当作 Windows 隐私测试；已消费的 0.9.1 候选改用会请求 `SeSecurityPrivilege` 的 `Set-Acl`；0.9.2 已正确写入原生 DACL，但 PowerShell `.Access` 回读不能可靠枚举返回的规则集合。其已安装缓存均保持不可变；0.9.3 只修改验证路径和 package identity。
 - 受管 marketplace staging 会排除本地环境、测试/lint 缓存和构建输出目录，避免生成文件进入版本化插件缓存。
 
 ### 验证
 
 - 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计。
-- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。精确 0.9.2 实现 `37612bf` 已通过完整 macOS 源码、隔离/默认安装、parity、smoke、恢复、历史缓存恢复和全新可信 Hook 门禁。原生 Windows 此前在 0.9.1 的标准用户 `Set-Acl` 失败处停止，仍须重跑 DACL-only 修正；CI、tag 和 Release 证据也仍待完成，统一记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
+- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。0.9.3 Windows 源码候选已在标准用户令牌下通过九项聚焦事故库测试，覆盖真实目录/文件 DACL 写入、双重回读和畸形 ACL 拒绝；repository validator、tracked-tree 隐私审计、229 项测试（六项 capability-aware skip）、八 Hook self-test、Ruff 0.16.1、外部缓存编译和 diff 检查也全部通过。安装态和 fresh-Hook 验收继续记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中；CI、tag 和 Release 仍待完成，也不属于本次候选任务。
 
 ## 0.8.12 - 2026-08-27
 

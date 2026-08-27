@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.9.2 - Unreleased
+## 0.9.3 - Unreleased
 
 ### Highlights
 
@@ -25,14 +25,14 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - Classifier 2.3.2 remains unchanged and records `observed_outcome` for diagnosis only. New authoritative decision sources are `protocol_default` and `protocol_user_persistence`; historical `nlp_hard_gate` records remain readable but are not generated.
 - Stop 1.1 in-flight controls are discarded during load, while requirements, evidence, proofs, and bounded decision history remain intact. Schema 7, Proof protocol 1.0.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook wire remain unchanged.
 - `scripts/incident_corpus.py` provides standard-library-only `ingest`, `validate`, `summarize`, `benchmark`, and `export-public` commands. CI reads only manually reviewed, sanitized fixtures and never the private corpus.
-- Incident-corpus directories and files retain exact `0700`/`0600` modes on POSIX. On Windows, the tool writes only a protected DACL limited to the current user, `SYSTEM`, and the built-in Administrators group through `SetNamedSecurityInfoW`, then independently reads back access rules. It does not request owner or SACL changes, so a standard user token does not need `SeSecurityPrivilege`; any write or verification failure remains fail closed.
-- The unpublished 0.9.0 candidate introduced Stop protocol 2.0.0 and used POSIX mode bits as a Windows privacy test. The consumed 0.9.1 candidate replaced that test with `Set-Acl`, but native Windows showed that path requested `SeSecurityPrivilege`. Their installed caches remain immutable; 0.9.2 carries the protocol forward with the DACL-only correction instead of replacing prior bytes in place.
+- Incident-corpus directories and files retain exact `0700`/`0600` modes on POSIX. On Windows, the tool writes only a protected DACL limited to the current user, `SYSTEM`, and the built-in Administrators group through `SetNamedSecurityInfoW`, then verifies the exact three-entry contract through both `GetAccessRules` and the raw security descriptor. It does not request owner or SACL changes, so a standard user token does not need `SeSecurityPrivilege`; any write or verification failure remains fail closed.
+- The unpublished 0.9.0 candidate used POSIX mode bits as a Windows privacy test. The consumed 0.9.1 candidate replaced that test with `Set-Acl`, which requested `SeSecurityPrivilege`. Version 0.9.2 wrote the correct native DACL, but its PowerShell `.Access` readback did not reliably enumerate the returned rule collection. Their installed caches remain immutable; 0.9.3 changes only the verification path and package identity.
 - Managed marketplace staging excludes local environment, test/lint cache, and build-output directories so generated files cannot leak into a versioned plugin cache.
 
 ### Validation
 
 - The fixed public incident manifest contains eight reviewed fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero and passes all eight authority expectations while reporting diagnostic accuracy separately.
-- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Exact 0.9.2 implementation `37612bf` passes the complete macOS source, isolated/default install, parity, smoke, recovery, historical-cache restoration, and fresh trusted-Hook gates. Native Windows previously stopped at 0.9.1's standard-user `Set-Acl` failure and must rerun the DACL-only correction; CI, tag, and Release evidence also remains pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
+- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. The 0.9.3 Windows source candidate passes nine focused incident-corpus tests under a standard user token, including real directory/file DACL writes, dual readback, and malformed-ACL rejection. Repository validation, tracked-tree privacy audit, 229 tests with six capability-aware skips, eight-Hook self-test, Ruff 0.16.1, external-cache compilation, and diff checks also pass. Installed and fresh-Hook acceptance remains tracked in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md); CI, tag, and Release are still pending and are not part of this candidate task.
 
 ## 0.8.12 - 2026-08-27
 

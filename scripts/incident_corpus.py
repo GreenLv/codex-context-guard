@@ -114,31 +114,69 @@ $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
 $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
 $required = @($current, $system, $administrators)
+$fullControlMask = [int][System.Security.AccessControl.FileSystemRights]::FullControl
+$expectedAceFlags = [System.Security.AccessControl.AceFlags]::None
+$expectedInheritanceFlags = [System.Security.AccessControl.InheritanceFlags]::None
+if ($isDirectory) {
+    $expectedAceFlags = [System.Security.AccessControl.AceFlags](
+        [int][System.Security.AccessControl.AceFlags]::ContainerInherit -bor
+        [int][System.Security.AccessControl.AceFlags]::ObjectInherit
+    )
+    $expectedInheritanceFlags = [System.Security.AccessControl.InheritanceFlags](
+        [int][System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [int][System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    )
+}
+$allowed = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($sid in $required) {
+    [void]$allowed.Add($sid.Value)
+}
 
 if ($apply) {
-    $aceFlags = [System.Security.AccessControl.AceFlags]::None
-    if ($isDirectory) {
-        $aceFlags = [System.Security.AccessControl.AceFlags](
-            [int][System.Security.AccessControl.AceFlags]::ContainerInherit -bor
-            [int][System.Security.AccessControl.AceFlags]::ObjectInherit
-        )
-    }
     $rawAcl = [System.Security.AccessControl.RawAcl]::new(2, $required.Count)
     foreach ($sid in $required) {
         $ace = [System.Security.AccessControl.CommonAce]::new(
-            $aceFlags,
+            $expectedAceFlags,
             [System.Security.AccessControl.AceQualifier]::AccessAllowed,
-            [int][System.Security.AccessControl.FileSystemRights]::FullControl,
+            $fullControlMask,
             $sid,
             $false,
             $null
         )
         $rawAcl.InsertAce($rawAcl.Count, $ace)
     }
+    if ($rawAcl.Count -ne $required.Count) {
+        throw 'private ACL construction produced the wrong ACE count'
+    }
+    $constructed = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($ace in $rawAcl) {
+        if ($ace -isnot [System.Security.AccessControl.CommonAce] -or
+            $ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed -or
+            $ace.AccessMask -ne $fullControlMask -or
+            $ace.AceFlags -ne $expectedAceFlags -or
+            -not $allowed.Contains($ace.SecurityIdentifier.Value) -or
+            -not $constructed.Add($ace.SecurityIdentifier.Value)) {
+            throw 'private ACL construction produced an invalid ACE'
+        }
+    }
     $bytes = [byte[]]::new($rawAcl.BinaryLength)
     $rawAcl.GetBinaryForm($bytes, 0)
+    $binarySize = [BitConverter]::ToUInt16($bytes, 2)
+    $binaryAceCount = [BitConverter]::ToUInt16($bytes, 4)
+    if ($bytes.Length -ne $rawAcl.BinaryLength -or
+        $binarySize -ne $bytes.Length -or
+        $binaryAceCount -ne $required.Count) {
+        throw 'private ACL binary form is inconsistent'
+    }
     $dacl = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
     try {
+        if ($dacl -eq [IntPtr]::Zero) {
+            throw 'private ACL native pointer is null'
+        }
         [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $dacl, $bytes.Length)
         $securityInfo = [ContextGuardNativeAcl]::DaclSecurityInformation -bor
             [ContextGuardNativeAcl]::ProtectedDaclSecurityInformation
@@ -171,34 +209,67 @@ $observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
 if (-not $observed.AreAccessRulesProtected) {
     throw 'private ACL still inherits access rules'
 }
-$allowed = [System.Collections.Generic.HashSet[string]]::new(
+$rules = $observed.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+)
+if ($rules.Count -ne $required.Count) {
+    throw 'private ACL has the wrong access-rule count'
+}
+$ruleSids = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
-foreach ($sid in $required) {
-    [void]$allowed.Add($sid.Value)
-}
-$seen = [System.Collections.Generic.HashSet[string]]::new(
-    [System.StringComparer]::OrdinalIgnoreCase
-)
-foreach ($rule in $observed.Access) {
-    $sid = $rule.IdentityReference.Translate(
-        [System.Security.Principal.SecurityIdentifier]
-    ).Value
-    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
-        throw 'private ACL contains a non-allow rule'
+foreach ($rule in $rules) {
+    $sid = ([System.Security.Principal.SecurityIdentifier]$rule.IdentityReference).Value
+    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+        [int]$rule.FileSystemRights -ne $fullControlMask -or
+        $rule.InheritanceFlags -ne $expectedInheritanceFlags -or
+        $rule.PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or
+        $rule.IsInherited -or
+        -not $allowed.Contains($sid) -or
+        -not $ruleSids.Add($sid)) {
+        throw 'private ACL access-rule contract failed'
     }
-    if (-not $allowed.Contains($sid)) {
-        throw 'private ACL grants an unexpected principal'
-    }
-    if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) `
-        -ne [System.Security.AccessControl.FileSystemRights]::FullControl) {
-        throw 'private ACL does not grant required full control'
-    }
-    [void]$seen.Add($sid)
 }
 foreach ($sid in $required) {
-    if (-not $seen.Contains($sid.Value)) {
+    if (-not $ruleSids.Contains($sid.Value)) {
         throw 'private ACL omits a required principal'
+    }
+}
+
+$descriptorBytes = $observed.GetSecurityDescriptorBinaryForm()
+$descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new(
+    $descriptorBytes,
+    0
+)
+if ($null -eq $descriptor.DiscretionaryAcl) {
+    throw 'private ACL raw descriptor omits the DACL'
+}
+if (-not $descriptor.ControlFlags.HasFlag(
+    [System.Security.AccessControl.ControlFlags]::DiscretionaryAclProtected
+)) {
+    throw 'private ACL raw descriptor still inherits access rules'
+}
+if ($descriptor.DiscretionaryAcl.Count -ne $required.Count) {
+    throw 'private ACL raw descriptor has the wrong ACE count'
+}
+$rawSids = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($ace in $descriptor.DiscretionaryAcl) {
+    if ($ace -isnot [System.Security.AccessControl.CommonAce] -or
+        $ace.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed -or
+        $ace.AccessMask -ne $fullControlMask -or
+        $ace.AceFlags -ne $expectedAceFlags -or
+        -not $allowed.Contains($ace.SecurityIdentifier.Value) -or
+        -not $rawSids.Add($ace.SecurityIdentifier.Value)) {
+        throw 'private ACL raw-descriptor contract failed'
+    }
+}
+foreach ($sid in $required) {
+    if (-not $rawSids.Contains($sid.Value)) {
+        throw 'private ACL raw descriptor omits a required principal'
     }
 }
 Write-Output 'CONTEXT_GUARD_PRIVATE_ACL_OK'

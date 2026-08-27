@@ -182,8 +182,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.8.11 - 2026-08-27", changelog_zh)
         self.assertIn("## 0.8.12 - 2026-08-27", changelog)
         self.assertIn("## 0.8.12 - 2026-08-27", changelog_zh)
-        self.assertIn("## 0.9.2 - Unreleased", changelog)
-        self.assertIn("## 0.9.2 - Unreleased", changelog_zh)
+        self.assertIn("## 0.9.3 - Unreleased", changelog)
+        self.assertIn("## 0.9.3 - Unreleased", changelog_zh)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -194,7 +194,7 @@ class PublicContractTests(unittest.TestCase):
             "Current published Context Guard release: `0.8.12`", compatibility
         )
         self.assertIn(
-            "Current source line: `0.9.2` (`Unreleased` source candidate)", compatibility
+            "Current source line: `0.9.3` (`Unreleased` source candidate)", compatibility
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
@@ -237,7 +237,11 @@ class PublicContractTests(unittest.TestCase):
             versioning,
         )
         self.assertIn(
-            "`0.9.2` is the unreleased protocol-authority candidate",
+            "`0.9.2` is a consumed intermediate protocol-authority candidate",
+            versioning,
+        )
+        self.assertIn(
+            "`0.9.3` keeps Stop protocol 2.0.0",
             versioning,
         )
         for stale in (

@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.12`
-- Current source line: `0.9.2` (`Unreleased` source candidate)
+- Current source line: `0.9.3` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`
@@ -19,11 +19,11 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.9.2 source-candidate status
+## 0.9.3 source-candidate status
 
-Version 0.9.2 carries forward the Stop protocol introduced by the consumed,
-unpublished 0.9.0 and 0.9.1 candidates and corrects their incident-corpus
-permission paths. Under Stop
+Version 0.9.3 carries forward the Stop protocol introduced by the consumed,
+unpublished 0.9.0 through 0.9.2 candidates and corrects the final
+incident-corpus ACL verification path. Under Stop
 protocol 2.0.0, an authenticated full-coverage checkpoint is the sole authority
 for completion. Classifier 2.3.2 remains diagnostic-only; privacy, integrity,
 invalid control, and explicit user-persistence failures remain hard gates.
@@ -38,11 +38,14 @@ and public-readback gates remain independent and pending until recorded in the
 [development plan](DEVELOPMENT_PLAN_0.9.md) and acceptance record.
 
 The private incident-corpus tool uses exact `0700`/`0600` modes on POSIX and a
-protected, read-back-verified DACL on Windows. It calls
+protected, dual-read-back-verified DACL on Windows. It calls
 `SetNamedSecurityInfoW` with only DACL and protected-DACL flags, null owner,
 group, and SACL pointers, and access entries for the current user, `SYSTEM`, and
-the built-in Administrators group. A missing PowerShell host or a DACL that
-cannot be written and verified is a fail-closed corpus-tool failure; it does
+the built-in Administrators group. Verification uses both the supported
+`GetAccessRules` API and `RawSecurityDescriptor`; each path requires exactly
+those three unique Allow FullControl ACEs, the correct directory/file
+inheritance flags, and protected-DACL state. A missing PowerShell host or a DACL
+that cannot be written and verified is a fail-closed corpus-tool failure; it does
 not weaken the independent public-fixture benchmark or Hook runtime privacy
 gates.
 
@@ -51,8 +54,12 @@ found during native Windows source testing. The 0.9.1 candidate introduced a
 protected ACL, passed macOS acceptance, and then failed closed on native Windows
 because `Set-Acl` requested `SeSecurityPrivilege` from a standard user token.
 Both candidates were installed and consumed, so their caches are immutable.
-Version 0.9.2 advances the package identity and writes only the DACL rather than
-repairing either candidate in place.
+Version 0.9.2 advanced the package identity and wrote only the DACL rather than
+repairing either candidate in place. Native Windows then confirmed that the
+write succeeded and both supported readback paths contained the exact three
+ACEs, while the PowerShell `.Access` adapter did not reliably enumerate the
+collection. Version 0.9.3 therefore changes the verification path and package
+identity without rewriting any consumed cache.
 
 Exact 0.9.1 candidate `02e7f57` passes the complete macOS source suite with 225
 tests and five capability-aware skips, isolated and default-home installation,
@@ -63,12 +70,20 @@ the ACL-focused and complete source suites before installation; this macOS
 evidence does not substitute for that gate. Native Windows 0.9.1 passes three
 of five focused incident-corpus tests and then stops at the `Set-Acl`
 `SeSecurityPrivilege` failure; benchmark report absence is downstream of that
-failure. The 0.9.2 DACL-only correction remains pending native Windows rerun.
+failure. The consumed 0.9.2 DACL-only correction exposed the readback-
+enumeration defect on native Windows.
 On macOS, exact 0.9.2 source, isolated/default installation, strict no-op,
 four-way parity, installed smoke/recovery, and fresh trusted-Hook evidence pass;
 historical 0.8.12, 0.9.0, and 0.9.1 live trees were restored from immutable
 archives after host cleanup without changing their content digests. This does
-not substitute for native Windows execution of the new DACL call.
+not substitute for native Windows execution of the corrected 0.9.3 verification
+contract. The 0.9.3 Windows source candidate passes nine focused incident-corpus
+tests under a standard user token with `SeSecurityPrivilege` unavailable,
+including real directory/file writes, independent dual readback, and malformed-
+ACL rejection. Repository validation, tracked-tree privacy audit, 229 tests with
+six capability-aware skips, eight-Hook self-test, Ruff 0.16.1, external-cache
+compilation, and diff checks also pass. Installed and fresh-Hook gates remain
+separate and pending.
 
 ## 0.8.12 release status
 
