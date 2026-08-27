@@ -11,9 +11,9 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 发布状态：`0.8.12` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 发布状态：`0.9.4` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-当前检出内容为尚未发布的 `0.9.4` 源码候选；已发布的 `0.8.12` 和已消费的 `0.9.0`/`0.9.1`/`0.9.2`/`0.9.3` 候选缓存保持不可变。
+当前检出内容为 `0.9.4` 正式版本；已发布的 `0.8.12` 和已消费的 `0.9.0`/`0.9.1`/`0.9.2`/`0.9.3` 候选缓存保持不可变。
 
 ## 安装
 
@@ -23,7 +23,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 0.8.11 进一步保证：即使宿主在新任务启动时清理了历史版本缓存，Hook 仍可继续工作。命令优先使用任务信任的插件根目录，在其缺失时回退到受管插件缓存中最新的存活目录，全部缺失时按提示给出可操作的修复指引并失败关闭。
 
-0.9.4 源码候选升级到 Stop protocol 2.0.0：只有经过认证、覆盖完整的 checkpoint 才能把任务标为完成。完成措辞仍会写入诊断，但不能改变权威 Stop 结果、pending 状态或续跑次数；隐私、完整性、无效 control 和用户明确持续执行要求仍是硬门禁。它还把已消费候选中的事故库权限路径替换为 fail-closed 的原生 Windows DACL-only 合约，不请求 SACL 或 owner 特权。Windows 验证同时使用 `GetAccessRules` 和原始 security descriptor，因为 PowerShell `.Access` adapter 不能可靠枚举该集合。Hook payload 现在显式按 UTF-8 解码，requirements 和完成措辞在沿用旧 ANSI 代码页、此前会把非 ASCII 文本在入账前损坏的 Windows 主机上也能完整保留。
+0.9.4 升级到 Stop protocol 2.0.0：只有经过认证、覆盖完整的 checkpoint 才能把任务标为完成。完成措辞仍会写入诊断，但不能改变权威 Stop 结果、pending 状态或续跑次数；隐私、完整性、无效 control 和用户明确持续执行要求仍是硬门禁。它还把已消费候选中的事故库权限路径替换为 fail-closed 的原生 Windows DACL-only 合约，不请求 SACL 或 owner 特权。Windows 验证同时使用 `GetAccessRules` 和原始 security descriptor，因为 PowerShell `.Access` adapter 不能可靠枚举该集合。Hook payload 现在显式按 UTF-8 解码，requirements 和完成措辞在沿用旧 ANSI 代码页、此前会把非 ASCII 文本在入账前损坏的 Windows 主机上也能完整保留。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

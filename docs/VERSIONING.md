@@ -1,6 +1,6 @@
 # Versioning policy
 
-The active 0.9 source-candidate work is tracked in the authoritative
+The completed 0.9 release work is recorded in the authoritative
 [Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md), linked to the
 [protocol-authoritative completion design](PROTOCOL_AUTHORITATIVE_COMPLETION.md).
 
@@ -247,12 +247,13 @@ not as a measure of code volume.
   immutable.
 - `0.9.4` keeps Stop protocol 2.0.0, schema 7, classifier 2.3.2, Proof and
   Execution protocols 1.0.0, Python 3.10+, and the eight-Hook wire unchanged.
+  It is the 2026-08-28 protocol-authoritative completion release.
   The consumed 0.9.3 candidate's first native Windows fresh-Hook run exposed a
   hook-transport defect: the runtime decoded stdin with the host ANSI code
   page, so on a legacy-code-page Windows host every non-ASCII prompt and reply
   byte was corrupted before journaling, the classifier could not observe
   completion wording, and invalid payload bytes crashed the hook instead of
-  failing visibly. The new candidate reads raw stdin bytes, decodes them as
+  failing visibly. The release reads raw stdin bytes, decodes them as
   UTF-8 explicitly, rejects invalid bytes with a visible message, and adds
   subprocess regressions for byte-exact Chinese journaling, the UTF-8 Stop
   decision contract, and invalid-byte rejection. The consumed 0.9.3 cache
@@ -266,11 +267,11 @@ evidence across at least two minor series; this public repository is the sole
 implementation upstream and downstream consumers pin immutable public commits;
 and rollback behavior lets already-open tasks finish safely.
 
-The active `0.9` source candidate implements
+The `0.9.4` release implements
 [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md): only
 an authenticated full-coverage checkpoint may transition a task to complete,
-while natural-language classification is diagnostic-only. Publication remains
-gated on accepted native and adversarial evidence for that exact source.
+while natural-language classification is diagnostic-only. Publication is
+gated on accepted native and adversarial evidence for the exact source.
 
 Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
 for an `enforced` item. It does not claim arbitrary pixel understanding,

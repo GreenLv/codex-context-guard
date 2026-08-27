@@ -1,10 +1,10 @@
 # Context Guard 0.9 development plan
 
-Status: **In progress**
+Status: **Publication in progress**
 
 Target: plugin `0.9.4`, Stop protocol `2.0.0`
 
-Latest published release: `0.8.12`
+Latest published release: `0.9.4`
 
 This is the authoritative continuation plan for the 0.9 line. It is updated at
 phase boundaries, not as a command transcript. The protocol rationale is in
@@ -51,7 +51,7 @@ an unauthenticated in-flight legacy control.
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
 | Source acceptance | Completed (native macOS and Windows 0.9.4 passed independently) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
 | Installed and native acceptance | Completed (native macOS and Windows 0.9.4 passed independently) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
-| Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
+| Publication | In progress | PR/main CI and HOL pass; tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
 
@@ -140,9 +140,9 @@ the pinned PowerShell 5.1 regression, the benchmark with 8/8 authority
 outcomes, zero false continuations, diagnostic accuracy 1.0, and the unchanged
 fixture manifest hash, plus the eight-Hook self-test, Ruff 0.16.4,
 external-cache compilation, and diff checks with Python 3.12.10. A fresh
-isolated home passes installation, strict second no-op, 47-file three-way
+isolated home passes installation, strict second no-op, 46-file three-way
 parity, installed self-test, and lifecycle smoke. The default home run
-repaired all eight historical live trees strictly from trusted archives after
+repaired all historical live trees strictly from trusted archives after
 host pruning, preserved every archive digest and every live/archive parity
 pair including consumed 0.9.3, and passed a strict second no-op, parity,
 self-test, and smoke. A fresh no-bypass non-interactive Windows task on Codex
@@ -170,8 +170,10 @@ prompt byte-exactly with zero Unicode repairs, and record integrity ok,
 `observed_outcome=gate_completion_claim`, authoritative
 `protocol_default/allow_neutral`, one pending requirement, and zero
 continuations. Final managed apply/no-op/read-only checks preserve every
-live/archive pair and current staging/live/archive parity. CI, tag, and Release
-acceptance remain open.
+live/archive pair and current staging/live/archive parity. PR #17 and all 12
+OS/Python CI jobs plus HOL pass on acceptance successor `81c2df8`; after its
+ordinary fast-forward to main, the same exact commit passes all 12 main jobs
+and HOL. Tag and Release acceptance remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -180,8 +182,7 @@ evidence are never recorded here.
 
 ## Open gates
 
-- PR and main CI/HOL on the exact release-documentation successor.
-- Then annotated tag, tag CI, bilingual GitHub Release, and public readback.
+- Annotated tag, tag CI, bilingual GitHub Release, and public readback.
 
 ## Risks
 
@@ -197,12 +198,11 @@ evidence are never recorded here.
 
 ## Exact next entrypoint
 
-From the clean candidate branch after recording native macOS evidence, run the
-documentation contract gates, commit the exact successor, and open the PR. The
-first gate is:
+From the clean release-status successor after main CI/HOL, create and push the
+annotated tag. The first unrun gate is:
 
 ```shell
-python3 -m unittest tests.test_public_contract
+git tag -a v0.9.4 <release-commit>
 ```
 
 At the next phase boundary, replace this entrypoint with the first unrun gate

@@ -1,12 +1,12 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.12`; accepted `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.9.4`; accepted `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.9.4 source-candidate acceptance (in progress)
+## 0.9.4 release acceptance (2026-08-28)
 
-The candidate advances the plugin identity to 0.9.4 and retains Stop protocol
+The release advances the plugin identity to 0.9.4 and retains Stop protocol
 2.0.0, schema 7, classifier 2.3.2, Proof protocol 1.0.0,
 Execution protocol 1.0.0, Python 3.10+, and the exact eight-Hook wire.
 The consumed, unpublished 0.9.0, 0.9.1, 0.9.2, and 0.9.3 candidates remain
@@ -217,10 +217,11 @@ the three consumed-version content digests above, and then passed another
 strict no-op.
 
 Native macOS evidence above does not substitute for native Windows, and the
-independent Windows evidence does not substitute for macOS. The remaining open
-gates for the 0.9.4 candidate are PR and main CI/HOL, the annotated tag, tag CI,
-the bilingual GitHub Release, and public readback. The exact continuation
-boundary is maintained in
+independent Windows evidence does not substitute for macOS. PR #17 and all 12
+OS/Python jobs plus HOL pass on acceptance successor `81c2df8`; the same exact
+commit then passes all 12 jobs and HOL after an ordinary fast-forward to main.
+The annotated tag, tag CI, bilingual GitHub Release, and public readback remain
+separate publication gates. The exact continuation boundary is maintained in
 [the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 release acceptance (2026-08-27)

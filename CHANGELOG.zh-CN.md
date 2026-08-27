@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.12` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.9.4` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.9.4 - Unreleased
+## 0.9.4 - 2026-08-28
 
 ### 重点
 
@@ -35,7 +35,7 @@
 
 - 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计为 1.0，fixture manifest 哈希保持不变。
 - 冻结实现提交上的原生 Windows 已通过 repository validator、tracked-tree 隐私审计、233 项测试（六项 capability-aware skip）、十项聚焦事故库测试（含新增的 Windows PowerShell 5.1 ACL 回归）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查（Python 3.12.10），全程使用无 `SeSecurityPrivilege` 的标准用户令牌。全新隔离 home 与默认 home 均通过安装、严格二次 no-op、staging/live/archive parity、安装态 self-test 与 lifecycle smoke；安全安装器严格从可信 archive 修复了全部历史 live 树，并保留包括已消费 0.9.3 在内的所有 archive 摘要。一个无 trust bypass 的 Windows fresh 任务从安装态 0.9.4 树触发了 UserPromptSubmit、PostToolUse 和 Stop Hook，中文 prompt 按字节精确入账（零 Unicode repair），并记录了 Stop protocol 2.0.0、`observed_outcome=gate_completion_claim`、权威 `protocol_default/allow_neutral`、一条保留 pending、零续跑和 SessionEnd。
-- 原生 macOS 独立通过 repository/privacy 门禁、十项聚焦事故测试（含四项 Windows-only skip）、8/8 benchmark（零错误续跑、diagnostic accuracy 1.0）、233 项完整测试（九项 capability-aware skip）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查。全新隔离 home 与默认 home 通过受管安装、严格 no-op/只读审计、46 文件 parity、安装态 self-test 和 lifecycle smoke；默认 home 的 16 个已索引 live/archive 对均保持一致。无 trust bypass 的 fresh 任务从安装态 0.9.4 触发 UserPromptSubmit、PostToolUse、Stop 和 SessionEnd，中文 prompt 按字节精确入账、零 Unicode repair，记录权威 `protocol_default/allow_neutral`、一条保留 pending 和零续跑。CI、tag 和 Release 验收仍在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中保持独立待验。
+- 原生 macOS 独立通过 repository/privacy 门禁、十项聚焦事故测试（含四项 Windows-only skip）、8/8 benchmark（零错误续跑、diagnostic accuracy 1.0）、233 项完整测试（九项 capability-aware skip）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查。全新隔离 home 与默认 home 通过受管安装、严格 no-op/只读审计、46 文件 parity、安装态 self-test 和 lifecycle smoke；默认 home 的 16 个已索引 live/archive 对均保持一致。无 trust bypass 的 fresh 任务从安装态 0.9.4 触发 UserPromptSubmit、PostToolUse、Stop 和 SessionEnd，中文 prompt 按字节精确入账、零 Unicode repair，记录权威 `protocol_default/allow_neutral`、一条保留 pending 和零续跑。PR 与验收 successor 的精确 main CI/HOL 已通过；tag CI 与 GitHub Release 验收仍作为独立发布门禁。
 
 ## 0.8.12 - 2026-08-27
 

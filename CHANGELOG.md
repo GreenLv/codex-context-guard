@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.12` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.9.4` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.9.4 - Unreleased
+## 0.9.4 - 2026-08-28
 
 ### Highlights
 
@@ -35,7 +35,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - The fixed public incident manifest contains eight reviewed fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero and passes all eight authority expectations while reporting diagnostic accuracy separately as 1.0, with the reviewed fixture manifest hash unchanged.
 - Native Windows on the frozen implementation commit passes repository validation, tracked-tree privacy audit, 233 tests with six capability-aware skips, ten focused incident-corpus tests including a new Windows PowerShell 5.1 ACL regression, the eight-Hook self-test, Ruff, external-cache compilation, and diff checks with Python 3.12.10, under a standard user token without `SeSecurityPrivilege`. A fresh isolated home and the default home pass installation, strict second no-op, staging/live/archive parity, installed self-test, and lifecycle smoke; the safe installer repaired every historical live tree strictly from trusted archives and preserved every archive digest, including consumed 0.9.3. A fresh no-bypass Windows task fired the UserPromptSubmit, PostToolUse, and Stop hooks from the installed 0.9.4 tree, journaled the Chinese prompt byte-exactly with zero Unicode repairs, and recorded Stop protocol 2.0.0, `observed_outcome=gate_completion_claim`, authoritative `protocol_default/allow_neutral`, one preserved pending requirement, zero continuations, and SessionEnd.
-- Native macOS independently passes the repository/privacy gates, ten focused incident tests with four Windows-only skips, the benchmark at 8/8 with zero false continuations and diagnostic accuracy 1.0, 233 tests with nine capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks. Fresh isolated and default homes pass managed installation, strict no-op/read-only audits, 46-file parity, installed self-test, and lifecycle smoke; all 16 indexed default-home live/archive pairs remain equal. Fresh no-bypass tasks fire UserPromptSubmit, PostToolUse, Stop, and SessionEnd from installed 0.9.4 with byte-exact Chinese journaling, zero Unicode repairs, authoritative `protocol_default/allow_neutral`, one preserved pending requirement, and zero continuations. CI, tag, and Release acceptance remain pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
+- Native macOS independently passes the repository/privacy gates, ten focused incident tests with four Windows-only skips, the benchmark at 8/8 with zero false continuations and diagnostic accuracy 1.0, 233 tests with nine capability-aware skips, eight-Hook self-test, Ruff, external-cache compilation, and diff checks. Fresh isolated and default homes pass managed installation, strict no-op/read-only audits, 46-file parity, installed self-test, and lifecycle smoke; all 16 indexed default-home live/archive pairs remain equal. Fresh no-bypass tasks fire UserPromptSubmit, PostToolUse, Stop, and SessionEnd from installed 0.9.4 with byte-exact Chinese journaling, zero Unicode repairs, authoritative `protocol_default/allow_neutral`, one preserved pending requirement, and zero continuations. PR and exact-main CI/HOL pass on the acceptance successor; tag CI and GitHub Release acceptance remain separate publication gates.
 
 ## 0.8.12 - 2026-08-27
 
