@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.8`; accepted `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.11`; accepted `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.11 source-candidate acceptance (2026-08-26–2026-08-27)
+## 0.8.11 release acceptance (2026-08-26–2026-08-27)
 
 Consumed 0.8.10 recap (recorded, not a release): that candidate introduced the
 Hook command fallback after an observed macOS Codex CLI 0.149.0 host pruned
@@ -18,7 +18,7 @@ every version. Review then found the 0.8.10 fallback version gate was looser
 than the documented strict-semver contract, so 0.8.10 stays a consumed
 intermediate and 0.8.11 narrows the gate.
 
-The 0.8.11 source candidate passes repository validation, the tracked-tree
+The 0.8.11 release source passes repository validation, the tracked-tree
 privacy audit, 218 unittests with five capability-aware skips, the eight-Hook
 self-test on Python 3.12.2, Ruff 0.16.1, external-cache compilation, the
 commit-identity audit of the unchanged public baseline, and `git diff --check`.
@@ -76,12 +76,13 @@ failures, and persisted schema-7 state with `integrity=ok`, active mode, and
 did not prune any historical live cache; that native result does not broaden
 the macOS pruning observation into a cross-platform guarantee.
 
-PR #15 at exact evidence head `d7c9b0b` passes the final 14-check GitHub
-Actions set: `ubuntu-latest`, `macos-latest`, and `windows-latest` with Python
-3.10, 3.11, 3.12, and 3.13, plus the HOL Plugin Scanner and plugin scanner.
-The PR remains open. Main and tag automation, the annotated tag, GitHub
-Release, public release readback, and downstream consumer-pin evidence remain
-separate pending gates.
+PR #15 passes its final 14-check GitHub Actions set: `ubuntu-latest`,
+`macos-latest`, and `windows-latest` with Python 3.10, 3.11, 3.12, and 3.13,
+plus the HOL Plugin Scanner and plugin scanner. It was fast-forward merged at
+exact documentation head `b3637748e858ed5c0f91643f3d3708fd99bc0035` after
+the native acceptance evidence was recorded. Main CI and HOL pass at that same
+head. The release-status commit, tag automation, annotated tag, GitHub Release,
+public release readback, and downstream consumer pin remain separate gates.
 
 ## 0.8.9 source-candidate acceptance (2026-08-26)
 
@@ -134,7 +135,7 @@ pruned 0.8.8 path lost its later Hook invocations until a safe-installer apply
 restored that tree from the archive, and starting another fresh task can prune
 it again. Historical live-cache retention therefore does not survive host task
 starts, PR #15 must not merge or publish this candidate as-is, and the
-lifecycle fix is handled as the 0.8.11 source candidate below.
+lifecycle fix is handled by the 0.8.11 release recorded above.
 
 PR #15 at evidence head `fe24aec` passes the complete 12-job GitHub Actions
 matrix on `ubuntu-latest`, `macos-latest`, and `windows-latest` with Python

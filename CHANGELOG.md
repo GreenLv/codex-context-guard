@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.8` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.11` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.11 - Unreleased
+## 0.8.11 - 2026-08-27
 
 ### Highlights
 
@@ -30,7 +30,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Repository and privacy checks, 218 tests, lint, compilation, installed self-tests, lifecycle smoke tests, strict reinstall no-ops, and source/cache/archive parity pass. macOS and Windows also pass fresh interactive Hook trust on Codex CLI 0.149.0.
 - macOS reproduced the host cache cleanup and restored every indexed version from the trusted archive. The Windows fresh task did not remove its historical caches, so this cleanup is not claimed as universal behavior.
-- PR automation passes the 12-job OS/Python matrix, HOL Plugin Scanner, and plugin scanner. Main/tag automation, the annotated tag, GitHub Release, and downstream consumer pin remain separate pending gates. See [the acceptance record](docs/LOCAL_ACCEPTANCE.md) for exact environments, skips, commits, and hashes.
+- PR automation passes the 12-job OS/Python matrix, HOL Plugin Scanner, and plugin scanner. Main and tag automation, the annotated tag, GitHub Release, and downstream consumer pin are checked as separate release gates. See [the acceptance record](docs/LOCAL_ACCEPTANCE.md) for exact environments, skips, commits, and hashes.
 
 ## 0.8.8 - 2026-08-25
 

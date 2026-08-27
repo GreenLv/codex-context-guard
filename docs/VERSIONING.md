@@ -186,7 +186,7 @@ not as a measure of code volume.
   a real task before a review found that its fallback version gate was looser
   than the documented strict-semver contract; its installed cache bytes remain
   immutable and the version number stays consumed.
-- `0.8.11` is an unreleased Hook-lifecycle availability patch that folds in the
+- `0.8.11` is the 2026-08-27 Hook-lifecycle availability patch that folds in the
   consumed 0.8.9 and 0.8.10 work. Its fallback resolves the newest surviving
   strictly semver-named (exactly three dot-separated numeric components, no
   leading zeros), non-symlink Context Guard tree, with both command forms

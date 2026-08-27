@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.8`
-- Current source line: `0.8.11` (`Unreleased` source candidate)
+- Current published Context Guard release: `0.8.11`
+- Current source line: `0.8.11`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,7 +19,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.11 source-candidate status
+## 0.8.11 release status
 
 Version 0.8.11 folds in the consumed 0.8.9 and 0.8.10 candidates (schema 7,
 classifier 2.3.1, Proof/Stop/Execution protocols) and changes only Hook

@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.8.8` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.8.11` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -12,7 +12,7 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.8.11 - 未发布
+## 0.8.11 - 2026-08-27
 
 ### 重点
 
@@ -30,7 +30,7 @@
 
 - 仓库与隐私检查、218 项测试、lint、编译、安装态自检、lifecycle smoke、严格重复安装 no-op，以及 source/cache/archive 一致性均已通过。macOS 和 Windows 还分别在 Codex CLI 0.149.0 上完成了全新交互 Hook 信任。
 - macOS 复现了宿主清理缓存，并从可信 archive 恢复全部已索引版本；Windows fresh task 没有删除历史缓存，因此不能把该清理行为泛化到所有平台。
-- PR 自动化已通过 12 项 OS/Python 矩阵、HOL Plugin Scanner 和 plugin scanner。Main/tag 自动化、注释 tag、GitHub Release 和下游 consumer pin 仍是独立待办。精确环境、skip、提交和哈希见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- PR 自动化已通过 12 项 OS/Python 矩阵、HOL Plugin Scanner 和 plugin scanner。Main/tag 自动化、注释 tag、GitHub Release 和下游 consumer pin 作为独立发布门禁分别检查。精确环境、skip、提交和哈希见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.8.8 - 2026-08-25
 
