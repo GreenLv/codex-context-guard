@@ -33,8 +33,8 @@
 
 ### 验证
 
-- 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计。
-- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。Windows 源码线已在标准用户令牌下通过九项聚焦事故库测试（覆盖真实目录/文件 DACL 写入、双重回读和畸形 ACL 拒绝）以及新增的 UTF-8 Hook 传输回归；repository validator、tracked-tree 隐私审计、完整测试套件（含 capability-aware skip）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查也全部通过。安装态和 fresh-Hook 验收继续记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中；CI、tag 和 Release 仍待完成，也不属于本次候选任务。
+- 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计为 1.0，fixture manifest 哈希保持不变。
+- 冻结实现提交上的原生 Windows 已通过 repository validator、tracked-tree 隐私审计、233 项测试（六项 capability-aware skip）、十项聚焦事故库测试（含新增的 Windows PowerShell 5.1 ACL 回归）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查（Python 3.12.10），全程使用无 `SeSecurityPrivilege` 的标准用户令牌。全新隔离 home 与默认 home 均通过安装、严格二次 no-op、staging/live/archive parity、安装态 self-test 与生命周期 smoke；安全安装器严格从可信 archive 修复了全部历史 live 树，并保留包括已消费 0.9.3 在内的所有 archive 摘要。一个无 trust bypass 的 Windows fresh 任务从安装态 0.9.4 树触发了 UserPromptSubmit、PostToolUse 和 Stop Hook，中文 prompt 按字节精确入账（零 unicode repair），并记录了 Stop protocol 2.0.0、`observed_outcome=gate_completion_claim`、权威 `protocol_default/allow_neutral`、一条保留 pending、零续跑和 SessionEnd。同一提交的原生 macOS、CI、tag 和 Release 验收仍待完成，继续记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
 
 ## 0.8.12 - 2026-08-27
 

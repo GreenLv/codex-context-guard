@@ -46,11 +46,11 @@ an unauthenticated in-flight legacy control.
 | Phase | State | Exit condition |
 | --- | --- | --- |
 | Contract and history audit | Completed | 0.8.12 behavior, incident families, and immutable-cache boundary identified |
-| Incident infrastructure | In progress (POSIX passed; Windows 0.9.4 focused ACL gate passed) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
+| Incident infrastructure | Completed (POSIX passed; Windows 0.9.4 focused ACL gate passes including PowerShell 5.1) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
-| Source acceptance | In progress (Windows 0.9.4 gate running; macOS pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows 0.9.4 pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Source acceptance | In progress (Windows 0.9.4 passed; macOS 0.9.4 pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
+| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows 0.9.4 passed) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -70,8 +70,8 @@ an unauthenticated in-flight legacy control.
 
 ## Verified evidence boundary
 
-The last verified implementation commit is `37612bf`; documentation successor
-`d8fbc97` records the current public evidence boundary and passes the affected
+The last verified implementation commit is `56cb70a`; the 0.9.2-line boundary
+below is retained as history (`37612bf`, documentation successor `d8fbc97`) and passes the affected
 contract, repository, privacy, identity, and diff gates. The 0.9.2 source tree
 passes repository validation, the tracked-tree privacy audit, 226 tests with
 five capability-aware skips, the eight-Hook self-test, Ruff, external-cache
@@ -126,11 +126,34 @@ recovery, and its first native fresh-Hook run exposed two facts now recorded in
 the acceptance document: the bare meta-discussion prompt left the guard
 inactive by design, and an isolated byte-level replay proved the runtime
 decoded hook stdin with the host ANSI code page, corrupting non-ASCII payload
-text before journaling. The 0.9.4 worktree fixes only that transport, adds
-subprocess regressions for byte-exact UTF-8 journaling, the UTF-8 Stop decision
-contract, and invalid-byte rejection, and leaves every protocol constant
-unchanged. Install and fresh-Hook gates remain open for the frozen 0.9.4
-commit; CI, tag, and Release acceptance also remain open.
+text before journaling. The diagnosis also showed that this host has no
+PowerShell 7, so the 0.9.3 focused ACL suite failed closed under Windows
+PowerShell 5.1 at the .NET Core `FileSystemAclExtensions` class.
+
+Frozen implementation `56cb70a` advances to 0.9.4. It reads hook stdin as raw
+bytes, decodes UTF-8 explicitly, and rejects invalid bytes with a visible
+message, and it branches the ACL readback on the PowerShell major version so
+both Windows PowerShell 5.1 and PowerShell 7+ pass natively. The exact 0.9.4
+tree passes repository validation, the tracked-tree privacy audit, 233 tests
+with six capability-aware skips, ten focused incident-corpus tests including
+the pinned PowerShell 5.1 regression, the benchmark with 8/8 authority
+outcomes, zero false continuations, diagnostic accuracy 1.0, and the unchanged
+fixture manifest hash, plus the eight-Hook self-test, Ruff 0.16.4,
+external-cache compilation, and diff checks with Python 3.12.10. A fresh
+isolated home passes installation, strict second no-op, 47-file three-way
+parity, installed self-test, and lifecycle smoke. The default home run
+repaired all eight historical live trees strictly from trusted archives after
+host pruning, preserved every archive digest and every live/archive parity
+pair including consumed 0.9.3, and passed a strict second no-op, parity,
+self-test, and smoke. A fresh no-bypass non-interactive Windows task on Codex
+CLI 0.150.1, with the explicit activation word prefixing the bounded Chinese
+meta-discussion reply contract, fired the UserPromptSubmit, PostToolUse, and
+Stop hooks from the installed 0.9.4 tree, journaled the prompt byte-exactly
+with zero unicode repairs, and persisted schema 7, Stop protocol 2.0.0,
+`observed_outcome=gate_completion_claim`, authoritative
+`protocol_default/allow_neutral`, one pending requirement, zero continuations,
+and a completed SessionEnd. Native macOS on exact `56cb70a`, CI, tag, and
+Release acceptance remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -139,9 +162,7 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Freeze the reviewed 0.9.4 implementation commit, then complete install/no-op/
-  parity/recovery and fresh-Hook evidence on that exact branch head, with the
-  fresh-task prompt explicitly activating the guard.
+- Native macOS source, installation, and fresh-Hook gates on exact `56cb70a`.
 - Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
   GitHub Release, and public readback.
 
@@ -159,10 +180,11 @@ evidence are never recorded here.
 
 ## Exact next entrypoint
 
-From the Windows repository root, run:
+From a native macOS checkout of exact `56cb70a` (or its documented successor),
+run:
 
-```powershell
-git diff -- .
+```shell
+python3 scripts/validate_public_repo.py .
 ```
 
 At the next phase boundary, replace this entrypoint with the first unrun gate

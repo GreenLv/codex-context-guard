@@ -93,13 +93,15 @@ four-way parity, installed smoke/recovery, and fresh trusted-Hook evidence pass;
 historical 0.8.12, 0.9.0, and 0.9.1 live trees were restored from immutable
 archives after host cleanup without changing their content digests. This does
 not substitute for native Windows execution of the corrected verification
-contract. The Windows source line passes nine focused incident-corpus
-tests under a standard user token with `SeSecurityPrivilege` unavailable,
-including real directory/file writes, independent dual readback, and malformed-
-ACL rejection. Repository validation, tracked-tree privacy audit, the complete
-test suite with capability-aware skips, eight-Hook self-test, Ruff, external-
-cache compilation, and diff checks also pass on the 0.9.4 source. Installed and
-fresh-Hook gates remain separate and pending.
+contract. Native Windows on exact `56cb70a` passes the complete source gate
+(233 tests with six capability-aware skips, ten focused incident-corpus tests
+including a pinned Windows PowerShell 5.1 ACL regression), the benchmark with
+8/8 authority outcomes and the unchanged fixture manifest hash, isolated and
+default-home installation with strict second no-op and staging/live/archive
+parity, installed self-test and lifecycle smoke, and a fresh no-bypass
+non-interactive task whose persisted state records the full Stop decision
+contract with byte-exact Chinese journaling. The remaining independent gates
+are the native macOS rerun on this exact commit, CI, HOL, tag, and Release.
 
 ## 0.8.12 release status
 

@@ -23,13 +23,52 @@ persisted mojibake-prefixed, which explains why journaling and the classifier
 could not observe completion wording on this host. Version 0.9.4 fixes the
 transport and adds subprocess regressions; it does not change any protocol.
 
-The same fresh-Hook run also reconfirmed the historical-cache invariant. The
-host cleanup removed historical live trees, the safe installer restored them
-only from their trusted archives, every archive file matched the archive index
-digests, every restored live tree matched its archive exactly, and the next
-apply was a strict no-op. A pre-existing four-file drift between one historical
-live tree and its archive was therefore repaired to archive parity; archive
-parity, not the drifted live bytes, is the invariant the restore gate checks.
+Native Windows source acceptance for exact 0.9.4 implementation `56cb70a`
+passes repository validation, the tracked-tree privacy audit, 233 tests with
+six capability-aware skips, the eight-Hook self-test, Ruff 0.16.4,
+external-cache compilation, and `git diff --check` with Python 3.12.10. The
+focused incident-corpus suite reports ten passing tests: the nine 0.9.3 ACL
+tests plus a new regression that drives the ACL script through Windows
+PowerShell 5.1. This host has no PowerShell 7 install, so the 0.9.3 focused
+suite failed closed at `FileSystemAclExtensions`, a .NET Core class absent
+from the .NET Framework runtime that Windows PowerShell 5.1 embeds; the 0.9.4
+script branches on the PowerShell major version and passes natively under
+5.1, which is a stronger boundary than the previous pwsh-dependent run. The
+new hook-transport regressions cover byte-exact Chinese journaling, the full
+UTF-8 Stop decision contract, and visible invalid-byte rejection, and each
+fails on the 0.9.3 runtime. The reviewed public benchmark passes 8/8 authority
+outcomes with zero false continuations and diagnostic accuracy 1.0; the
+`fixture_manifest_sha256` remains
+`ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54` while the
+benchmark report files hash differently from 0.9.3 because the runtime bytes
+changed, and repeated runs are deterministic.
+
+A fresh isolated home passes installation, strict second no-op, 47-file
+source/staging/live/archive parity, installed eight-Hook self-test, and the
+lifecycle smoke including compaction recovery. The default home run recorded
+pre-install digests for every archived version, applied the safe installer,
+repaired all eight historical live trees strictly from their trusted archives
+after the host removed them again, and passed a strict second no-op. Every
+archive matched its pre-install digest, every restored live tree matched its
+archive exactly, and the consumed 0.9.3 live/archive pair stayed untouched at
+46 files. The 0.9.4 staging/live/archive trees share one 47-file digest, and
+the installed self-test and smoke pass against the live tree.
+
+A fresh no-bypass native Windows 0.9.4 task then ran non-interactively on
+Codex CLI 0.150.1 with the bounded Chinese meta-discussion sentence as its
+reply contract, prefixed with the explicit `$context-guard` activation word.
+The assistant echoed the sentence once with the curly quotes intact, and the
+UserPromptSubmit, PostToolUse, and Stop hooks fired from the installed 0.9.4
+tree. Persisted schema-7 state recorded integrity ok, activation through the
+explicit control, Stop protocol 2.0.0, classifier 2.3.2,
+`observed_outcome=gate_completion_claim`, authoritative
+`protocol_default/allow_neutral`, one pending requirement preserved, zero
+continuations, a completed SessionEnd, and a byte-exact prompt journal with
+zero unicode repairs. Configuration-level trust shows all eight product hook
+events registered and trusted for `context-guard@codex-context-guard`; the
+equivalent `/hooks` UI display was verified on the same wire in the previous
+round. After the fresh task, every archive digest still matched its pre-install
+value and every live tree still matched its archive.
 
 The reviewed public incident manifest SHA-256 is
 `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`.
@@ -147,10 +186,11 @@ the safe installer restored all of them only from trusted archives, preserved
 the three consumed-version content digests above, and then passed another
 strict no-op.
 
-Native macOS fresh-Hook evidence above does not substitute for native Windows.
-Native Windows fresh-Hook evidence for the 0.9.4 candidate, CI, HOL, tag,
-Release, and public readback remain pending; none is implied by the macOS
-evidence above. The exact continuation boundary is maintained in
+Native macOS evidence above does not substitute for native Windows. The
+remaining open gates for the 0.9.4 candidate are the native macOS rerun of the
+source, installation, and fresh-Hook suites on exact `56cb70a`, then CI, HOL,
+annotated tag, tag CI, bilingual GitHub Release, and public readback. The exact
+continuation boundary is maintained in
 [the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 release acceptance (2026-08-27)
