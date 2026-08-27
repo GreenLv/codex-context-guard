@@ -12,6 +12,23 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.8.12 - Unreleased
+
+### Highlights
+
+- Stop no longer treats a quoted completion phrase labeled as a kind of statement, such as `“任务已完成”类声明`, as the assistant's own whole-task completion claim.
+- Direct completion assertions remain gated, including standalone quoted assertions and explicit first-person confirmations.
+- Schema 7, the Proof, Stop, and Execution protocols, Python 3.10+, and the eight Hook events are unchanged.
+
+### Changes
+
+- Classifier 2.3.2 recognizes a bounded Chinese meta-discussion suffix after a quoted completion phrase instead of weakening all quoted completion handling.
+- The plugin version advances because installed Hook runtime bytes are immutable; published 0.8.11 caches remain unchanged.
+
+### Validation
+
+- Focused source regressions replay the reported Stop decision and preserve direct Chinese completion claims. Repository and privacy checks, 219 tests with five capability-aware skips, the eight-Hook self-test, Ruff, external-cache compilation, and `git diff --check` pass on macOS. Installation, fresh trusted-Hook behavior, native Windows, CI, tagging, publication, and downstream adoption remain separate gates.
+
 ## 0.8.11 - 2026-08-27
 
 ### Highlights

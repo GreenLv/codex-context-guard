@@ -1403,6 +1403,45 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertTrue(cg.claims_whole_completion(message))
 
+    def test_quoted_completion_category_label_is_not_a_completion_claim(
+        self,
+    ) -> None:
+        prompt = "$context-guard\n解释插件为什么默认采用 opt-in。"
+        self.prompt(prompt)
+        staged, _ = self.stage_disposition("deferred")
+        self.assertEqual(staged.returncode, 0, staged.stderr)
+        message = (
+            "启用后不只是记录上下文：它会在缺少当前证据证书时拦截 "
+            "Goal 完成和“任务已完成”类声明。"
+        )
+
+        self.assertFalse(cg.claims_whole_completion(message))
+        for meta_discussion in (
+            "插件会拦截“任务已完成”类说法。",
+            "这里讨论“整个任务已全部完成”这种表述。",
+            "该规则识别“任务已完成”这样的提示。",
+        ):
+            with self.subTest(meta_discussion=meta_discussion):
+                self.assertFalse(cg.claims_whole_completion(meta_discussion))
+        observed = cg.classify_stop_decision(message, prompt)
+        self.assertEqual(observed["outcome"], "gate_completion_claim")
+        self.assertEqual(
+            cg.dispatch(self.payload("Stop", last_assistant_message=message)),
+            {},
+        )
+        decision = self.state()["decision_log"][-1]
+        self.assertEqual(decision["outcome"], "allow_out_of_scope_deferred")
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+
+        for direct_claim in (
+            "“任务已完成”。",
+            "我声明：“任务已完成”。",
+            "我确认：“任务已完成”这种表述就是当前结论。",
+            "整个任务已全部完成，所有要求均已满足。",
+        ):
+            with self.subTest(direct_claim=direct_claim):
+                self.assertTrue(cg.claims_whole_completion(direct_claim))
+
     def test_real_session_blog_example_does_not_trigger_completion_gate(self) -> None:
         self.prompt(
             "$context-guard\n继续查看补充材料并给出建议，但不要修改仓库或博客。"

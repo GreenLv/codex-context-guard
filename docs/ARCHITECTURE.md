@@ -228,7 +228,7 @@ Stop protocol 1.1.0 applies this fixed priority:
    safely and leaves every unresolved requirement pending.
 
 Completion and explicit-persistence corrections are capped at two turns.
-Classifier 2.3.1 records the
+Classifier 2.3.2 records the
 observed natural-language outcome, action facts, and anomalies for diagnosis;
 inferred action ownership no longer drives ordinary continuation. Only the
 narrow high-confidence whole-task-completion and explicit-persistence checks
@@ -236,9 +236,12 @@ participate in the fixed priority above. Classification reads the full
 hash-verified prompt record; an ambiguous prompt boundary fails closed. A
 completion match is ignored when it is framed as a quotation, hypothetical, or
 example, question, or trailing negation, while an explicit assistant assertion
-remains actionable. Plural and quantified completion claims such as “all tasks
-are complete” are recognized. Negation is bounded to the latest explicit future
-segment so a later authorized action is not hidden by an earlier denial.
+remains actionable. A completion phrase inside a bounded quotation followed by
+a category label such as `类声明` or `这种表述` is meta-discussion rather than a
+current completion assertion. Plural and quantified completion claims such as
+“all tasks are complete” are recognized. Negation is bounded to the latest
+explicit future segment so a later authorized action is not hidden by an
+earlier denial.
 
 ## Hook lifecycle
 

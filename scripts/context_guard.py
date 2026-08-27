@@ -26,7 +26,7 @@ from typing import Any, Iterator
 
 SCHEMA_VERSION = 7
 STOP_PROTOCOL_VERSION = "1.1.0"
-CLASSIFIER_VERSION = "2.3.1"
+CLASSIFIER_VERSION = "2.3.2"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "1.0.0"
 PRIVATE_CONTROL_TOKEN_BYTES = 24
@@ -232,6 +232,12 @@ COMPLETION_DISCUSSION_RE = re.compile(
     r"\b(?:article|case|docs?|documentation|example|hypothetical|phrase|"
     r"quotation?|quoted|scenario|text|wording)\b|"
     r"(?:文章|案例|文档|示例|反例|假设|场景|引文|引用|措辞|表述|说法|文案)",
+    re.IGNORECASE,
+)
+QUOTED_COMPLETION_DISCUSSION_SUFFIX_RE = re.compile(
+    r"^\s*(?:[”’」』\"`]\s*)?"
+    r"(?:(?:这|此|同)?类|这种|这样的|上述)"
+    r"(?:声明|说法|表述|措辞|文案|文本|字样|提示|消息)",
     re.IGNORECASE,
 )
 USER_PERSISTENCE_RE = re.compile(
@@ -2841,10 +2847,13 @@ def _completion_match_is_nonassertive(
     if NONASSERTIVE_COMPLETION_CONTEXT_RE.search(prefix):
         return True
     framing = text[max(0, lower - 160) : upper]
-    if _inside_bounded_quotation(
-        text, match.start(), match.end(), lower, upper
-    ) and COMPLETION_DISCUSSION_RE.search(framing):
-        return True
+    if _inside_bounded_quotation(text, match.start(), match.end(), lower, upper):
+        quoted_tail = text[match.end() : upper]
+        if (
+            COMPLETION_DISCUSSION_RE.search(framing)
+            or QUOTED_COMPLETION_DISCUSSION_SUFFIX_RE.search(quoted_tail)
+        ):
+            return True
     line_start = text.rfind("\n", 0, match.start()) + 1
     return bool(
         text[line_start : match.start()].lstrip().startswith(">")

@@ -180,6 +180,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.8.8 - 2026-08-25", changelog_zh)
         self.assertIn("## 0.8.11 - 2026-08-27", changelog)
         self.assertIn("## 0.8.11 - 2026-08-27", changelog_zh)
+        self.assertIn("## 0.8.12 - Unreleased", changelog)
+        self.assertIn("## 0.8.12 - Unreleased", changelog_zh)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -189,10 +191,12 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "Current published Context Guard release: `0.8.11`", compatibility
         )
-        self.assertIn("Current source line: `0.8.11`", compatibility)
+        self.assertIn(
+            "Current source line: `0.8.12` (unreleased candidate)", compatibility
+        )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
-        self.assertIn("Diagnostic classifier: `2.3.1`", compatibility)
+        self.assertIn("Diagnostic classifier: `2.3.2`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"
         )
@@ -215,6 +219,10 @@ class PublicContractTests(unittest.TestCase):
         )
         self.assertIn(
             "`0.8.11` is the 2026-08-27 Hook-lifecycle availability patch",
+            versioning,
+        )
+        self.assertIn(
+            "`0.8.12` is an unreleased compatible Stop-classifier patch",
             versioning,
         )
         for stale in (

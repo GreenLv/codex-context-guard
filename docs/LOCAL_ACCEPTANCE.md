@@ -4,6 +4,27 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.11`; accepted `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.8.12 source-candidate acceptance (2026-08-27)
+
+The macOS source candidate advances the plugin identity to 0.8.12 and the
+completion classifier to 2.3.2. A focused Stop regression replays the reported
+reply in which `“任务已完成”类声明` is a quoted category label, not the
+assistant's own completion assertion. The corrected path yields the staged
+deferred boundary with zero continuations, while standalone quoted completion,
+first-person confirmation, and quantified whole-task completion remain direct
+claims.
+
+The candidate passes repository validation, the tracked-tree privacy audit,
+219 tests with five capability-aware skips, the eight-Hook self-test on Python
+3.12.2, Ruff 0.16.1 without a repository cache, external-cache compilation,
+and `git diff --check`. A separate focused run passed 16 classifier, Stop, and
+public-contract tests plus repository validation.
+
+This is source-candidate evidence only. The candidate has not been installed
+into a default or isolated Codex home, exercised through a fresh trusted Hook,
+validated natively on Windows, committed, pushed, run through CI/HOL, tagged,
+published, or adopted by a downstream consumer.
+
 ## 0.8.11 release acceptance (2026-08-26–2026-08-27)
 
 Consumed 0.8.10 recap (recorded, not a release): that candidate introduced the

@@ -6,18 +6,34 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.11`
-- Current source line: `0.8.11`
+- Current source line: `0.8.12` (unreleased candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
 - Execution protocol: `1.0.0`
-- Diagnostic classifier: `2.3.1`
+- Diagnostic classifier: `2.3.2`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.8.12 source candidate status
+
+Version 0.8.12 advances only the completion classifier and package identity.
+Classifier 2.3.2 treats a completion phrase inside a bounded quotation followed
+by a Chinese category label such as `类声明` or `这种表述` as meta-discussion,
+while standalone quoted assertions and explicit first-person confirmations
+remain whole-task completion claims. Schema 7, the Proof, Stop, and Execution
+protocols, Python baseline, and eight-Hook wire are unchanged.
+
+Focused source regressions replay the reported Stop decision and retain direct
+completion controls. The macOS source candidate passes repository and privacy
+validation, 219 tests with five capability-aware skips, the eight-Hook
+self-test, Ruff, external-cache compilation, and diff checks. Installation,
+fresh trusted-Hook behavior, native Windows acceptance, CI, tagging,
+publication, and downstream consumer pinning remain separate evidence surfaces.
 
 ## 0.8.11 release status
 
