@@ -143,6 +143,17 @@ class IncidentCorpusTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "could not be verified"):
                 tool.restrict_private_path(path, directory=False)
 
+    def test_windows_acl_script_writes_only_a_protected_dacl(self) -> None:
+        tool = load_tool()
+        script = tool.WINDOWS_ACL_SCRIPT
+        self.assertIn("SetNamedSecurityInfoW", script)
+        self.assertIn("DaclSecurityInformation", script)
+        self.assertIn("ProtectedDaclSecurityInformation", script)
+        self.assertIn("[IntPtr]::Zero", script)
+        self.assertNotIn("Set-Acl", script)
+        self.assertNotIn("SetOwner", script)
+        self.assertNotIn("SaclSecurityInformation", script)
+
 
 if __name__ == "__main__":
     unittest.main()

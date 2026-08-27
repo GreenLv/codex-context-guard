@@ -86,6 +86,27 @@ IS_WINDOWS = os.name == "nt"
 WINDOWS_ACL_MARKER = "CONTEXT_GUARD_PRIVATE_ACL_OK"
 WINDOWS_ACL_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class ContextGuardNativeAcl {
+    public const int SeFileObject = 1;
+    public const uint DaclSecurityInformation = 0x00000004;
+    public const uint ProtectedDaclSecurityInformation = 0x80000000;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint SetNamedSecurityInfoW(
+        string objectName,
+        int objectType,
+        uint securityInfo,
+        IntPtr owner,
+        IntPtr group,
+        IntPtr dacl,
+        IntPtr sacl
+    );
+}
+'@
 $path = $env:CONTEXT_GUARD_PRIVATE_PATH
 $isDirectory = $env:CONTEXT_GUARD_PRIVATE_KIND -eq 'directory'
 $apply = $env:CONTEXT_GUARD_PRIVATE_ACL_ACTION -eq 'apply'
@@ -95,29 +116,58 @@ $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-
 $required = @($current, $system, $administrators)
 
 if ($apply) {
+    $aceFlags = [System.Security.AccessControl.AceFlags]::None
     if ($isDirectory) {
-        $acl = [System.Security.AccessControl.DirectorySecurity]::new()
-        $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-    } else {
-        $acl = [System.Security.AccessControl.FileSecurity]::new()
-        $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
-    }
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner($current)
-    foreach ($sid in $required) {
-        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-            $sid,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            $inheritance,
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Allow
+        $aceFlags = [System.Security.AccessControl.AceFlags](
+            [int][System.Security.AccessControl.AceFlags]::ContainerInherit -bor
+            [int][System.Security.AccessControl.AceFlags]::ObjectInherit
         )
-        [void]$acl.AddAccessRule($rule)
     }
-    Set-Acl -LiteralPath $path -AclObject $acl
+    $rawAcl = [System.Security.AccessControl.RawAcl]::new(2, $required.Count)
+    foreach ($sid in $required) {
+        $ace = [System.Security.AccessControl.CommonAce]::new(
+            $aceFlags,
+            [System.Security.AccessControl.AceQualifier]::AccessAllowed,
+            [int][System.Security.AccessControl.FileSystemRights]::FullControl,
+            $sid,
+            $false,
+            $null
+        )
+        $rawAcl.InsertAce($rawAcl.Count, $ace)
+    }
+    $bytes = [byte[]]::new($rawAcl.BinaryLength)
+    $rawAcl.GetBinaryForm($bytes, 0)
+    $dacl = [System.Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
+    try {
+        [System.Runtime.InteropServices.Marshal]::Copy($bytes, 0, $dacl, $bytes.Length)
+        $securityInfo = [ContextGuardNativeAcl]::DaclSecurityInformation -bor
+            [ContextGuardNativeAcl]::ProtectedDaclSecurityInformation
+        $result = [ContextGuardNativeAcl]::SetNamedSecurityInfoW(
+            $path,
+            [ContextGuardNativeAcl]::SeFileObject,
+            $securityInfo,
+            [IntPtr]::Zero,
+            [IntPtr]::Zero,
+            $dacl,
+            [IntPtr]::Zero
+        )
+        if ($result -ne 0) {
+            throw [System.ComponentModel.Win32Exception]::new([int]$result)
+        }
+    } finally {
+        [System.Runtime.InteropServices.Marshal]::FreeHGlobal($dacl)
+    }
 }
 
-$observed = Get-Acl -LiteralPath $path
+if ($isDirectory) {
+    $item = [System.IO.DirectoryInfo]::new($path)
+} else {
+    $item = [System.IO.FileInfo]::new($path)
+}
+$observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
+    $item,
+    [System.Security.AccessControl.AccessControlSections]::Access
+)
 if (-not $observed.AreAccessRulesProtected) {
     throw 'private ACL still inherits access rules'
 }

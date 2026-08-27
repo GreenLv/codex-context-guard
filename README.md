@@ -13,8 +13,8 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Release status: `0.8.12` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-The current checkout contains the unreleased `0.9.1` source candidate. The
-published `0.8.12` release and consumed `0.9.0` candidate caches remain
+The current checkout contains the unreleased `0.9.2` source candidate. The
+published `0.8.12` release and consumed `0.9.0`/`0.9.1` candidate caches remain
 immutable.
 
 ## Install
@@ -30,13 +30,14 @@ versioned caches while a fresh task starts: each command prefers the task's
 trusted plugin root and falls back to the newest surviving Context Guard tree
 under the managed plugin cache, failing closed with a reinstall hint otherwise.
 
-The 0.9.1 source candidate advances to Stop protocol 2.0.0: only an
+The 0.9.2 source candidate advances to Stop protocol 2.0.0: only an
 authenticated full-coverage checkpoint can mark a task complete. Completion
 wording remains visible in diagnostics but cannot alter the authoritative Stop
 outcome, pending state, or continuation count. Privacy, integrity, invalid
 control, and explicit user-persistence failures remain hard gates. It also
-replaces the consumed 0.9.0 candidate's POSIX-only incident-corpus permission
-check with a fail-closed native Windows ACL contract.
+replaces the consumed candidates' incident-corpus permission paths with a
+fail-closed native Windows DACL-only contract that does not request SACL or
+owner privileges.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

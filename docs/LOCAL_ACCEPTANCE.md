@@ -4,12 +4,12 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.12`; accepted `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.9.1 source-candidate acceptance (in progress)
+## 0.9.2 source-candidate acceptance (in progress)
 
-The candidate advances the plugin identity to 0.9.1 and retains Stop protocol
+The candidate advances the plugin identity to 0.9.2 and retains Stop protocol
 2.0.0, schema 7, classifier 2.3.2, Proof protocol 1.0.0,
 Execution protocol 1.0.0, Python 3.10+, and the exact eight-Hook wire.
-The consumed, unpublished 0.9.0 candidate remains immutable.
+The consumed, unpublished 0.9.0 and 0.9.1 candidates remain immutable.
 
 The reviewed public incident manifest SHA-256 is
 `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`.
@@ -63,6 +63,23 @@ once. Its persisted schema-7 state recorded Stop protocol 2.0.0,
 `observed_outcome=gate_completion_claim`, authoritative
 `protocol_default/allow_neutral`, one pending item, zero continuations, and a
 completed `SessionEnd`.
+
+Native Windows then fast-forwarded cleanly to 0.9.1 documentation head
+`360fad2`, confirmed ACL implementation commit `02e7f57` as an ancestor, and
+verified plugin 0.9.1 with Stop protocol 2.0.0. The focused incident-corpus
+suite reported three passes, one failure, and one error before downstream
+benchmark-report creation. The first root failure occurred at `Set-Acl` under
+a standard user token because that path requested `SeSecurityPrivilege`.
+Fail-closed behavior held: no POSIX fallback, skip, install, cache mutation, or
+fresh-Hook run occurred.
+
+The 0.9.2 source candidate removes `Set-Acl` and owner mutation. Its native call
+sets only `DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION`,
+passes null owner, group, and SACL pointers, and independently reads back only
+access-control sections. This matches the Windows requirement that an owner or
+caller with `WRITE_DAC` may set a DACL without the `SeSecurityPrivilege` needed
+for SACL changes. Native Windows must rerun all six focused tests before the
+complete source and installation gates resume.
 
 Native Windows fresh-Hook evidence, CI, HOL, tag, Release, and public readback
 remain pending; none is implied by the macOS evidence above. The exact

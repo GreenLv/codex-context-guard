@@ -219,7 +219,12 @@ not as a measure of code volume.
   found that the incident-corpus tool and tests treated POSIX mode bits as a
   Windows privacy boundary. It was never published. Its installed caches remain
   immutable and are not repaired in place.
-- `0.9.1` is the unreleased protocol-authority candidate. Stop protocol 2.0.0
+- `0.9.1` is a consumed intermediate candidate. It replaced the POSIX-mode
+  assertion with a protected Windows ACL, passed native macOS acceptance, and
+  then failed closed on native Windows because `Set-Acl` requested
+  `SeSecurityPrivilege` from a standard user token. It was never published and
+  its installed caches remain immutable.
+- `0.9.2` is the unreleased protocol-authority candidate. Stop protocol 2.0.0
   makes an authenticated full-coverage checkpoint the sole completion
   transition; classifier 2.3.2 remains diagnostic-only and cannot alter final
   outcome, pending state, or continuation count. Schema 7, Proof protocol
@@ -227,7 +232,8 @@ not as a measure of code volume.
   remain unchanged. Stop 1.1 in-flight controls are invalidated on load while
   durable requirements, evidence, proofs, and bounded decision history remain.
   The patch retains exact `0700`/`0600` incident-corpus permissions on POSIX and
-  applies a protected, read-back-verified private ACL on Windows.
+  applies a protected, read-back-verified DACL on Windows through a native call
+  that passes null owner, group, and SACL pointers.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
