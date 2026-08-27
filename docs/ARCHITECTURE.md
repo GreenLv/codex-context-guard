@@ -166,6 +166,12 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
+The proposed 0.9 transition to authenticated protocol state as the sole
+completion authority is specified in
+[Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md). The
+0.8.x behavior described below remains current until that protocol change is
+implemented and accepted.
+
 Proof protocol 1.0.0 derives only deterministic contracts from immutable prompt
 signals. Its obligation types cover input-asset inspection, distinct visual
 result readback, named path/URL subject readback, and complete-scope coverage.

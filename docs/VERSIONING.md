@@ -219,6 +219,13 @@ evidence across at least two minor series; this public repository is the sole
 implementation upstream and downstream consumers pin immutable public commits;
 and rollback behavior lets already-open tasks finish safely.
 
+The proposed `0.9` line targets
+[Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md): only
+an authenticated full-coverage checkpoint may transition a task to complete,
+while natural-language classification becomes diagnostic-only. This is a
+protocol design target, not a claim about the current 0.8.x runtime. Accepted
+native and adversarial evidence for that contract is a prerequisite for 1.0.
+
 Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
 for an `enforced` item. It does not claim arbitrary pixel understanding,
 official-source validity, or semantic completeness for `legacy_fallback` items.
