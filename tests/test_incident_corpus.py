@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "scripts" / "incident_corpus.py"
@@ -62,8 +62,12 @@ class IncidentCorpusTests(unittest.TestCase):
                     "stop-2-0-0.md",
                 ],
             )
+            tool = load_tool()
             self.assertTrue(
-                all((os.stat(item).st_mode & 0o777) == 0o600 for item in generated)
+                all(
+                    tool.private_path_permission_error(item, directory=False) is None
+                    for item in generated
+                )
             )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         report = json.loads(result.stdout)
@@ -82,9 +86,11 @@ class IncidentCorpusTests(unittest.TestCase):
             source.write_text(json.dumps(fixture), encoding="utf-8")
             args = type("Args", (), {"root": str(root), "record": str(source)})()
             self.assertEqual(tool.command_ingest(args), 0)
-            self.assertEqual(os.stat(root).st_mode & 0o777, 0o700)
+            self.assertIsNone(tool.private_path_permission_error(root, directory=True))
             record_path = root / "records" / "CGI-2026-001.json"
-            self.assertEqual(os.stat(record_path).st_mode & 0o777, 0o600)
+            self.assertIsNone(
+                tool.private_path_permission_error(record_path, directory=False)
+            )
             records, errors = tool.load_records(root)
             self.assertEqual(errors, [])
             report = tool.summarize(records)
@@ -95,12 +101,47 @@ class IncidentCorpusTests(unittest.TestCase):
                 "Args", (), {"root": str(root), "output": str(exported)}
             )()
             self.assertEqual(tool.command_export_public(export_args), 0)
-            self.assertEqual(os.stat(exported).st_mode & 0o777, 0o600)
+            self.assertIsNone(
+                tool.private_path_permission_error(exported, directory=False)
+            )
             public = json.loads(exported.read_text(encoding="utf-8"))
             self.assertEqual(len(public), 1)
             self.assertNotIn("public_reviewed", public[0])
             with self.assertRaises(ValueError):
                 tool.command_ingest(args)
+
+    def test_windows_private_paths_use_acl_instead_of_posix_mode_bits(self) -> None:
+        tool = load_tool()
+        path = Path("private-artifact")
+        with (
+            mock.patch.object(tool, "IS_WINDOWS", True),
+            mock.patch.object(tool, "_windows_acl_error", return_value=None) as acl,
+            mock.patch.object(tool.os, "chmod") as chmod,
+        ):
+            tool.restrict_private_path(path, directory=True)
+            self.assertIsNone(tool.private_path_permission_error(path, directory=True))
+        chmod.assert_not_called()
+        self.assertEqual(
+            acl.call_args_list,
+            [
+                mock.call(path, directory=True, apply=True),
+                mock.call(path, directory=True, apply=False),
+            ],
+        )
+
+    def test_windows_acl_failure_is_fail_closed(self) -> None:
+        tool = load_tool()
+        path = Path("private-artifact")
+        with (
+            mock.patch.object(tool, "IS_WINDOWS", True),
+            mock.patch.object(
+                tool,
+                "_windows_acl_error",
+                return_value="Windows private ACL could not be verified",
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "could not be verified"):
+                tool.restrict_private_path(path, directory=False)
 
 
 if __name__ == "__main__":

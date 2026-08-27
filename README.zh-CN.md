@@ -13,7 +13,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > 发布状态：`0.8.12` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-当前检出内容为尚未发布的 `0.9.0` 源码候选；已发布的 `0.8.12` 及其已消费缓存保持不可变。
+当前检出内容为尚未发布的 `0.9.1` 源码候选；已发布的 `0.8.12` 和已消费的 `0.9.0` 候选缓存保持不可变。
 
 ## 安装
 
@@ -23,7 +23,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 0.8.11 进一步保证：即使宿主在新任务启动时清理了历史版本缓存，Hook 仍可继续工作。命令优先使用任务信任的插件根目录，在其缺失时回退到受管插件缓存中最新的存活目录，全部缺失时按提示给出可操作的修复指引并失败关闭。
 
-0.9.0 源码候选升级到 Stop protocol 2.0.0：只有经过认证、覆盖完整的 checkpoint 才能把任务标为完成。完成措辞仍会写入诊断，但不能改变权威 Stop 结果、pending 状态或续跑次数；隐私、完整性、无效 control 和用户明确持续执行要求仍是硬门禁。
+0.9.1 源码候选升级到 Stop protocol 2.0.0：只有经过认证、覆盖完整的 checkpoint 才能把任务标为完成。完成措辞仍会写入诊断，但不能改变权威 Stop 结果、pending 状态或续跑次数；隐私、完整性、无效 control 和用户明确持续执行要求仍是硬门禁。它还把已消费 0.9.0 候选中的 POSIX-only 事故库权限检查替换为 fail-closed 的原生 Windows ACL 合约。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

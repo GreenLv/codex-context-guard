@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.12`
-- Current source line: `0.9.0` (`Unreleased` source candidate)
+- Current source line: `0.9.1` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`
@@ -19,9 +19,11 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.9.0 source-candidate status
+## 0.9.1 source-candidate status
 
-Version 0.9.0 advances only the plugin identity and Stop protocol. Under Stop
+Version 0.9.1 carries forward the Stop protocol introduced by the consumed,
+unpublished 0.9.0 candidate and corrects its incident-corpus permission
+contract. Under Stop
 protocol 2.0.0, an authenticated full-coverage checkpoint is the sole authority
 for completion. Classifier 2.3.2 remains diagnostic-only; privacy, integrity,
 invalid control, and explicit user-persistence failures remain hard gates.
@@ -34,6 +36,19 @@ continuations, while the current 0.9 source produces zero. This evidence is
 source-only: installed, native macOS, native Windows, CI, HOL, tag, Release,
 and public-readback gates remain independent and pending until recorded in the
 [development plan](DEVELOPMENT_PLAN_0.9.md) and acceptance record.
+
+The private incident-corpus tool uses exact `0700`/`0600` modes on POSIX and a
+protected, read-back-verified ACL on Windows. The Windows ACL permits only the
+current user, `SYSTEM`, and the built-in Administrators group and requires a
+native PowerShell host. A missing PowerShell host or an ACL that cannot be
+restricted and verified is a fail-closed corpus-tool failure; it does not
+weaken the independent public-fixture benchmark or Hook runtime privacy gates.
+
+The 0.9.0 candidate passed native macOS acceptance before the Windows ACL gap
+was found during native source testing. Because that candidate was installed
+and consumed, its cache is immutable. Version 0.9.1 advances the package
+identity rather than repairing 0.9.0 in place; all 0.9.1 installed and native
+evidence remains independent until recorded below.
 
 ## 0.8.12 release status
 

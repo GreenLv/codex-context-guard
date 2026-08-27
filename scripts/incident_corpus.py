@@ -14,7 +14,9 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -80,6 +82,77 @@ PUBLIC_FIELDS = {
     "expected_by_stop_protocol",
     "public_fixture_id",
 }
+IS_WINDOWS = os.name == "nt"
+WINDOWS_ACL_MARKER = "CONTEXT_GUARD_PRIVATE_ACL_OK"
+WINDOWS_ACL_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+$path = $env:CONTEXT_GUARD_PRIVATE_PATH
+$isDirectory = $env:CONTEXT_GUARD_PRIVATE_KIND -eq 'directory'
+$apply = $env:CONTEXT_GUARD_PRIVATE_ACL_ACTION -eq 'apply'
+$current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+$required = @($current, $system, $administrators)
+
+if ($apply) {
+    if ($isDirectory) {
+        $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+        $inheritance = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    } else {
+        $acl = [System.Security.AccessControl.FileSecurity]::new()
+        $inheritance = [System.Security.AccessControl.InheritanceFlags]::None
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($current)
+    foreach ($sid in $required) {
+        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl
+}
+
+$observed = Get-Acl -LiteralPath $path
+if (-not $observed.AreAccessRulesProtected) {
+    throw 'private ACL still inherits access rules'
+}
+$allowed = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($sid in $required) {
+    [void]$allowed.Add($sid.Value)
+}
+$seen = [System.Collections.Generic.HashSet[string]]::new(
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($rule in $observed.Access) {
+    $sid = $rule.IdentityReference.Translate(
+        [System.Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
+        throw 'private ACL contains a non-allow rule'
+    }
+    if (-not $allowed.Contains($sid)) {
+        throw 'private ACL grants an unexpected principal'
+    }
+    if (($rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) `
+        -ne [System.Security.AccessControl.FileSystemRights]::FullControl) {
+        throw 'private ACL does not grant required full control'
+    }
+    [void]$seen.Add($sid)
+}
+foreach ($sid in $required) {
+    if (-not $seen.Contains($sid.Value)) {
+        throw 'private ACL omits a required principal'
+    }
+}
+Write-Output 'CONTEXT_GUARD_PRIVATE_ACL_OK'
+"""
 
 
 def canonical_json(value: Any) -> str:
@@ -98,6 +171,63 @@ def records_dir(root: Path) -> Path:
     return root / "records"
 
 
+def _windows_acl_error(path: Path, *, directory: bool, apply: bool) -> str | None:
+    shell = next(
+        (
+            candidate
+            for name in ("pwsh.exe", "pwsh", "powershell.exe", "powershell")
+            if (candidate := shutil.which(name)) is not None
+        ),
+        None,
+    )
+    if shell is None:
+        return "Windows private ACL requires PowerShell"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CONTEXT_GUARD_PRIVATE_PATH": str(path),
+            "CONTEXT_GUARD_PRIVATE_KIND": "directory" if directory else "file",
+            "CONTEXT_GUARD_PRIVATE_ACL_ACTION": "apply" if apply else "verify",
+        }
+    )
+    try:
+        result = subprocess.run(
+            [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL_SCRIPT],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "Windows private ACL command could not run"
+    if result.returncode != 0 or result.stdout.strip() != WINDOWS_ACL_MARKER:
+        return "Windows private ACL is not restricted to the current user and system principals"
+    return None
+
+
+def private_path_permission_error(path: Path, *, directory: bool) -> str | None:
+    if IS_WINDOWS:
+        return _windows_acl_error(path, directory=directory, apply=False)
+    expected = 0o700 if directory else 0o600
+    observed = stat.S_IMODE(path.stat().st_mode)
+    if observed != expected:
+        return f"mode must be {expected:04o}"
+    return None
+
+
+def restrict_private_path(path: Path, *, directory: bool) -> None:
+    if IS_WINDOWS:
+        error = _windows_acl_error(path, directory=directory, apply=True)
+    else:
+        os.chmod(path, 0o700 if directory else 0o600)
+        error = private_path_permission_error(path, directory=directory)
+    if error:
+        raise ValueError(error)
+
+
 def ensure_private_root(root: Path, *, create: bool) -> None:
     if create:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -106,9 +236,9 @@ def ensure_private_root(root: Path, *, create: bool) -> None:
         raise ValueError(f"corpus root is not a directory: {root}")
     if (root / ".git").exists():
         raise ValueError("incident corpus must not be a Git repository")
-    os.chmod(root, 0o700)
+    restrict_private_path(root, directory=True)
     if records_dir(root).exists():
-        os.chmod(records_dir(root), 0o700)
+        restrict_private_path(records_dir(root), directory=True)
 
 
 def validate_record(record: Any, *, public: bool = False) -> list[str]:
@@ -173,8 +303,9 @@ def load_records(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
                 errors.append(f"{path.name}: filename does not match incident_id")
         if isinstance(record, dict):
             records.append(record)
-        if stat.S_IMODE(path.stat().st_mode) != 0o600:
-            errors.append(f"{path.name}: mode must be 0600")
+        permission_error = private_path_permission_error(path, directory=False)
+        if permission_error:
+            errors.append(f"{path.name}: {permission_error}")
     by_id = {str(item.get("incident_id")): item for item in records}
     for item in records:
         supersedes = item.get("supersedes")
@@ -335,7 +466,7 @@ def command_ingest(args: argparse.Namespace) -> int:
     for record in pending:
         target = records_dir(root) / f"{record['incident_id']}.json"
         target.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.chmod(target, 0o600)
+        restrict_private_path(target, directory=False)
         digests[str(record["incident_id"])] = sha256_bytes(target.read_bytes())
     print(canonical_json({"ingested": identifiers, "sha256": digests}))
     return 0
@@ -395,7 +526,7 @@ def command_benchmark(args: argparse.Namespace) -> int:
     if args.report_dir:
         report_dir = Path(args.report_dir).expanduser().resolve()
         report_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(report_dir, 0o700)
+        restrict_private_path(report_dir, directory=True)
         stem = "stop-" + str(runtime.STOP_PROTOCOL_VERSION).replace(".", "-")
         json_path = report_dir / f"{stem}.json"
         markdown_path = report_dir / f"{stem}.md"
@@ -435,7 +566,7 @@ def command_benchmark(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         for path in (json_path, markdown_path, manifest_path):
-            os.chmod(path, 0o600)
+            restrict_private_path(path, directory=False)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if all(item["pass"] for item in results) else 1
 
@@ -457,7 +588,7 @@ def command_export_public(args: argparse.Namespace) -> int:
         exported.append(public)
     output = Path(args.output).resolve()
     output.write_text(json.dumps(exported, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.chmod(output, 0o600)
+    restrict_private_path(output, directory=False)
     print(canonical_json({"exported": len(exported), "sha256": sha256_bytes(output.read_bytes())}))
     return 0
 

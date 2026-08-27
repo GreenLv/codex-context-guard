@@ -214,13 +214,20 @@ not as a measure of code volume.
   Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0, Python
   3.10+, and the eight-Hook event set are unchanged. The published 0.8.11 cache
   remains immutable.
-- `0.9.0` is the unreleased protocol-authority candidate. Stop protocol 2.0.0
+- `0.9.0` is a consumed intermediate candidate. It introduced Stop protocol
+  2.0.0 and passed native macOS acceptance, but native Windows source testing
+  found that the incident-corpus tool and tests treated POSIX mode bits as a
+  Windows privacy boundary. It was never published. Its installed caches remain
+  immutable and are not repaired in place.
+- `0.9.1` is the unreleased protocol-authority candidate. Stop protocol 2.0.0
   makes an authenticated full-coverage checkpoint the sole completion
   transition; classifier 2.3.2 remains diagnostic-only and cannot alter final
   outcome, pending state, or continuation count. Schema 7, Proof protocol
   1.0.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook event set
   remain unchanged. Stop 1.1 in-flight controls are invalidated on load while
   durable requirements, evidence, proofs, and bounded decision history remain.
+  The patch retains exact `0700`/`0600` incident-corpus permissions on POSIX and
+  applies a protected, read-back-verified private ACL on Windows.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;

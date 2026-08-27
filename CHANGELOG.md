@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.9.0 - Unreleased
+## 0.9.1 - Unreleased
 
 ### Highlights
 
@@ -25,12 +25,14 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - Classifier 2.3.2 remains unchanged and records `observed_outcome` for diagnosis only. New authoritative decision sources are `protocol_default` and `protocol_user_persistence`; historical `nlp_hard_gate` records remain readable but are not generated.
 - Stop 1.1 in-flight controls are discarded during load, while requirements, evidence, proofs, and bounded decision history remain intact. Schema 7, Proof protocol 1.0.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook wire remain unchanged.
 - `scripts/incident_corpus.py` provides standard-library-only `ingest`, `validate`, `summarize`, `benchmark`, and `export-public` commands. CI reads only manually reviewed, sanitized fixtures and never the private corpus.
+- Incident-corpus directories and files retain exact `0700`/`0600` modes on POSIX. On Windows, the tool applies and verifies a protected ACL limited to the current user, `SYSTEM`, and the built-in Administrators group; inability to establish that boundary fails closed instead of treating POSIX mode bits as Windows privacy evidence.
+- The unpublished 0.9.0 candidate introduced Stop protocol 2.0.0 and was consumed during native macOS acceptance. Its installed caches remain immutable; 0.9.1 carries the protocol forward with the Windows ACL correction instead of replacing 0.9.0 bytes in place.
 - Managed marketplace staging excludes local environment, test/lint cache, and build-output directories so generated files cannot leak into a versioned plugin cache.
 
 ### Validation
 
 - The fixed public incident manifest contains eight reviewed fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero and passes all eight authority expectations while reporting diagnostic accuracy separately.
-- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Exact commit `429825f` passes source, isolated installation, parity, smoke, recovery, and native macOS fresh-Hook gates; native Windows, CI, tag, and Release remain pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
+- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Consumed 0.9.0 candidate `429825f` passes source, isolated installation, parity, smoke, recovery, and native macOS fresh-Hook gates; the 0.9.1 ACL correction passes the complete macOS source suite. Native Windows, exact 0.9.1 installation, CI, tag, and Release remain pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 - 2026-08-27
 

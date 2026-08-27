@@ -4,11 +4,12 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.12`; accepted `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.9.0 source-candidate acceptance (in progress)
+## 0.9.1 source-candidate acceptance (in progress)
 
-The candidate advances the plugin identity to 0.9.0 and Stop protocol to
-2.0.0 while retaining schema 7, classifier 2.3.2, Proof protocol 1.0.0,
+The candidate advances the plugin identity to 0.9.1 and retains Stop protocol
+2.0.0, schema 7, classifier 2.3.2, Proof protocol 1.0.0,
 Execution protocol 1.0.0, Python 3.10+, and the exact eight-Hook wire.
+The consumed, unpublished 0.9.0 candidate remains immutable.
 
 The reviewed public incident manifest SHA-256 is
 `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`.
@@ -21,16 +22,17 @@ zero false continuations and diagnostic accuracy reported separately as 1.0.
 
 A fixed-seed unit gate exercises 10,000 staged-control transitions across
 English, Chinese, quotation, code, hypothetical, negated, first-person, and
-attributed speech. Repository validation, the tracked-tree privacy audit, 223
+attributed speech. Repository validation, the tracked-tree privacy audit, 225
 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
 external-cache compilation, and `git diff --check` pass on macOS.
 
-Exact candidate `429825f` passes a fresh isolated install, strict second
+Consumed 0.9.0 candidate `429825f` passes a fresh isolated install, strict second
 install no-op, read-only diagnosis, full source/staging/live/archive parity,
 installed self-test, lifecycle smoke, and a focused installed Stop 1.1 state
 migration. The default macOS installation preserved and verified the immutable
 0.8.12 live/archive pair, then passed the same 0.9 no-op, parity, and smoke
-chain on Codex CLI 0.150.1.
+chain on Codex CLI 0.150.1. These installed and native results do not substitute
+for an exact 0.9.1 rerun after the Windows ACL correction.
 
 A fresh no-bypass native macOS task displayed exactly eight installed and
 active Context Guard Hooks; the inspected PostToolUse definition reported

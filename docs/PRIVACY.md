@@ -17,6 +17,14 @@ execution should use the Codex-provided data directory.
 
 No plugin runtime state belongs in this Git repository.
 
+The optional maintainer incident corpus is also outside this repository and is
+not plugin runtime state. Its command-line tool keeps directories at `0700`
+and files at `0600` on POSIX. On Windows it uses the native PowerShell ACL
+surface to remove inherited access and grant full control only to the current
+user, `SYSTEM`, and the built-in Administrators group, then reads the ACL back.
+Failure to apply or verify that boundary stops the operation. CI consumes only
+reviewed public fixtures and never reads a maintainer's private corpus.
+
 ## Data categories
 
 The private store may contain:

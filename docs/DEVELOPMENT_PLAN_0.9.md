@@ -2,7 +2,7 @@
 
 Status: **In progress**
 
-Target: plugin `0.9.0`, Stop protocol `2.0.0`
+Target: plugin `0.9.1`, Stop protocol `2.0.0`
 
 Latest published release: `0.8.12`
 
