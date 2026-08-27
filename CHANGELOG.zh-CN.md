@@ -32,7 +32,7 @@
 ### 验证
 
 - 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计。
-- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。已消费的 0.9.1 候选 `02e7f57` 通过完整 macOS 源码、安装、parity、smoke、恢复和 fresh-Hook 门禁；原生 Windows 在标准用户 `Set-Acl` 失败处停止。0.9.2 DACL-only 修正通过聚焦 macOS 源码回归；精确原生 Windows、安装、CI、tag 和 Release 证据仍待完成，统一记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
+- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。精确 0.9.2 实现 `37612bf` 已通过完整 macOS 源码、隔离/默认安装、parity、smoke、恢复、历史缓存恢复和全新可信 Hook 门禁。原生 Windows 此前在 0.9.1 的标准用户 `Set-Acl` 失败处停止，仍须重跑 DACL-only 修正；CI、tag 和 Release 证据也仍待完成，统一记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
 
 ## 0.8.12 - 2026-08-27
 

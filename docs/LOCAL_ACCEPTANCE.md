@@ -82,6 +82,26 @@ caller with `WRITE_DAC` may set a DACL without the `SeSecurityPrivilege` needed
 for SACL changes. Native Windows must rerun all six focused tests before the
 complete source and installation gates resume.
 
+Exact 0.9.2 implementation `37612bf` and its documentation successor pass the
+complete 226-test macOS source gate with five capability-aware skips. A fresh
+isolated home and the default home both pass installation, strict second no-op,
+16-file source/staging/live/archive parity, installed eight-Hook self-test,
+lifecycle smoke, and focused installed Stop 1.1 recovery. Content digests for
+consumed 0.8.12, 0.9.0, and 0.9.1 live/archive trees are identical before and
+after the default-home run.
+
+A fresh no-bypass native macOS 0.9.2 task displayed all eight product events as
+installed and active. Its PostToolUse detail identified
+`context-guard@codex-context-guard` as the source and displayed trusted status.
+The bounded Chinese meta-discussion reply appeared once and produced no
+continuation. Persisted schema-7 state recorded Stop protocol 2.0.0,
+`observed_outcome=gate_completion_claim`, authoritative
+`protocol_default/allow_neutral`, one pending requirement, zero continuations,
+and SessionEnd. Starting the fresh task removed historical live-cache trees;
+the safe installer restored all of them only from trusted archives, preserved
+the three consumed-version content digests above, and then passed another
+strict no-op.
+
 Native Windows fresh-Hook evidence, CI, HOL, tag, Release, and public readback
 remain pending; none is implied by the macOS evidence above. The exact
 continuation boundary is maintained in

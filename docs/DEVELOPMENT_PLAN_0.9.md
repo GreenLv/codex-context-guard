@@ -49,7 +49,7 @@ an unauthenticated in-flight legacy control.
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
 | Source acceptance | In progress (macOS 0.9.2 passed; Windows rerun pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (consumed 0.9.1 macOS passed; exact 0.9.2 pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -93,8 +93,19 @@ documentation head `360fad2` stopped when a standard user token lacked
 `SeSecurityPrivilege`. No fallback, skip, install, or cache mutation occurred.
 Implementation `37612bf` advances to 0.9.2 and replaces `Set-Acl` with a native
 DACL-only call that passes null owner, group, and SACL pointers, then performs
-an independent access-rule readback. Windows has not yet rerun this correction;
-CI, tag, and Release acceptance also remain open.
+an independent access-rule readback. The exact 0.9.2 tree passes isolated and
+default-home installation, strict second no-op, 16-file source/staging/live/
+archive parity, installed self-test and lifecycle smoke, and focused installed
+Stop 1.1 recovery on macOS. A fresh no-bypass task displayed all eight product
+Hooks as installed and active and displayed the PostToolUse source as this
+plugin with trusted status. Its bounded meta-discussion reply produced
+diagnostic `gate_completion_claim` but authoritative
+`protocol_default/allow_neutral`, preserved one pending requirement, recorded
+zero continuations, and persisted SessionEnd. The host's fresh-task cleanup
+removed historical live trees; the safe installer restored them from their
+trusted archives, their pre-run content digests remained identical, and the
+next apply was a strict no-op. Windows has not yet rerun this correction; CI,
+tag, and Release acceptance also remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -103,8 +114,6 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Complete exact 0.9.2 macOS isolated/default install, no-op, parity, recovery,
-  smoke, and fresh-Hook evidence without mutating consumed candidate caches.
 - Rerun the six focused ACL tests and complete source suites on native Windows
   with implementation `37612bf`, then complete install/no-op/parity/recovery
   and fresh-Hook evidence on the same branch head.

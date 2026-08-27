@@ -64,6 +64,11 @@ evidence does not substitute for that gate. Native Windows 0.9.1 passes three
 of five focused incident-corpus tests and then stops at the `Set-Acl`
 `SeSecurityPrivilege` failure; benchmark report absence is downstream of that
 failure. The 0.9.2 DACL-only correction remains pending native Windows rerun.
+On macOS, exact 0.9.2 source, isolated/default installation, strict no-op,
+four-way parity, installed smoke/recovery, and fresh trusted-Hook evidence pass;
+historical 0.8.12, 0.9.0, and 0.9.1 live trees were restored from immutable
+archives after host cleanup without changing their content digests. This does
+not substitute for native Windows execution of the new DACL call.
 
 ## 0.8.12 release status
 
