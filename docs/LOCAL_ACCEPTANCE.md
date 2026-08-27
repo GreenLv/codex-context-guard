@@ -43,7 +43,7 @@ outcomes with zero false continuations and diagnostic accuracy 1.0; the
 benchmark report files hash differently from 0.9.3 because the runtime bytes
 changed, and repeated runs are deterministic.
 
-A fresh isolated home passes installation, strict second no-op, 47-file
+A fresh isolated home passes installation, strict second no-op, 46-file
 source/staging/live/archive parity, installed eight-Hook self-test, and the
 lifecycle smoke including compaction recovery. The default home run recorded
 pre-install digests for every archived version, applied the safe installer,
@@ -51,7 +51,7 @@ repaired all eight historical live trees strictly from their trusted archives
 after the host removed them again, and passed a strict second no-op. Every
 archive matched its pre-install digest, every restored live tree matched its
 archive exactly, and the consumed 0.9.3 live/archive pair stayed untouched at
-46 files. The 0.9.4 staging/live/archive trees share one 47-file digest, and
+46 files. The 0.9.4 staging/live/archive trees share one 46-file digest, and
 the installed self-test and smoke pass against the live tree.
 
 A fresh no-bypass native Windows 0.9.4 task then ran non-interactively on
@@ -69,6 +69,36 @@ events registered and trusted for `context-guard@codex-context-guard`; the
 equivalent `/hooks` UI display was verified on the same wire in the previous
 round. After the fresh task, every archive digest still matched its pre-install
 value and every live tree still matched its archive.
+
+Native macOS acceptance then used clean documentation successor `fcfbfc7` for
+frozen implementation `56cb70a` with macOS 26.6.2, Python 3.12.2, Ruff 0.16.1,
+and Codex CLI 0.150.1 under a standard user account. Repository validation,
+the tracked-tree privacy audit, ten focused incident-corpus tests with four
+capability-aware Windows skips, the reviewed benchmark, 233 tests with nine
+capability-aware skips, the eight-Hook self-test, Ruff, external-cache
+compilation, and `git diff --check` passed. The benchmark retained the reviewed
+manifest hash above, passed all eight authority outcomes, produced zero false
+continuations, and reported diagnostic accuracy 1.0.
+
+A fresh isolated macOS home passed managed installation, strict second no-op,
+read-only audit, 46-file source/staging/live/archive parity, installed
+eight-Hook self-test, lifecycle smoke, and forbidden-residue checks. The
+default home then installed 0.9.4 through the same manager, restored 15
+historical live trees only from trusted archives, and passed a strict second
+no-op, read-only audit, installed self-test, lifecycle smoke, and parity for
+all 16 indexed live/archive versions. The 0.9.4 staging/live/archive trees
+remained identical at 46 files.
+
+Two fresh no-bypass macOS tasks exercised the installed 0.9.4 tree. The first
+proved exact fixed-response, byte-exact UTF-8 journaling, Stop, and normal
+SessionEnd. The second added a read-only tool call and therefore fired
+UserPromptSubmit, PostToolUse, Stop, and SessionEnd. Persisted schema-7 state
+reported integrity ok, explicit activation, classifier 2.3.2, Stop protocol
+2.0.0, `observed_outcome=gate_completion_claim`, authoritative
+`protocol_default/allow_neutral`, one preserved pending requirement, zero
+continuations, and zero Unicode repairs. A final managed apply, repeat apply,
+and read-only audit were strict no-ops; all 16 live/archive pairs and the
+current three-way parity remained intact.
 
 The reviewed public incident manifest SHA-256 is
 `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`.
@@ -186,11 +216,11 @@ the safe installer restored all of them only from trusted archives, preserved
 the three consumed-version content digests above, and then passed another
 strict no-op.
 
-Native macOS evidence above does not substitute for native Windows. The
-remaining open gates for the 0.9.4 candidate are the native macOS rerun of the
-source, installation, and fresh-Hook suites on exact `56cb70a`, then CI, HOL,
-annotated tag, tag CI, bilingual GitHub Release, and public readback. The exact
-continuation boundary is maintained in
+Native macOS evidence above does not substitute for native Windows, and the
+independent Windows evidence does not substitute for macOS. The remaining open
+gates for the 0.9.4 candidate are PR and main CI/HOL, the annotated tag, tag CI,
+the bilingual GitHub Release, and public readback. The exact continuation
+boundary is maintained in
 [the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 release acceptance (2026-08-27)

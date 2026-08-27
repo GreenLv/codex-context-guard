@@ -45,10 +45,10 @@ are unaffected except for the added invalid-byte visibility.
 
 The public incident manifest contains eight reviewed fixtures across eight
 root-cause families. The immutable 0.8.12 runtime reproduces two target false
-continuations, while the current 0.9 source produces zero. This evidence is
-source-only: installed, native macOS, native Windows, CI, HOL, tag, Release,
-and public-readback gates remain independent and pending until recorded in the
-[development plan](DEVELOPMENT_PLAN_0.9.md) and acceptance record.
+continuations, while the current 0.9 source produces zero. Source, installed,
+native macOS, and native Windows evidence is recorded independently in the
+[development plan](DEVELOPMENT_PLAN_0.9.md) and acceptance record. CI, HOL,
+tag, Release, and public-readback gates remain separate and pending.
 
 The private incident-corpus tool uses exact `0700`/`0600` modes on POSIX and a
 protected, dual-read-back-verified DACL on Windows. It calls
@@ -100,8 +100,19 @@ including a pinned Windows PowerShell 5.1 ACL regression), the benchmark with
 default-home installation with strict second no-op and staging/live/archive
 parity, installed self-test and lifecycle smoke, and a fresh no-bypass
 non-interactive task whose persisted state records the full Stop decision
-contract with byte-exact Chinese journaling. The remaining independent gates
-are the native macOS rerun on this exact commit, CI, HOL, tag, and Release.
+contract with byte-exact Chinese journaling. Native macOS independently passes
+the repository and privacy gates, ten focused incident tests with four
+Windows-only skips, the benchmark at 8/8 with zero false continuations and
+diagnostic accuracy 1.0, 233 tests with nine capability-aware skips, the
+eight-Hook self-test, Ruff, external-cache compilation, and diff checks. Fresh
+isolated and default homes pass installation, strict no-op and read-only
+audits, 46-file source/staging/live/archive parity, installed self-test, and
+lifecycle smoke; all 16 indexed default-home live/archive pairs remain equal.
+Fresh no-bypass tasks exercise UserPromptSubmit, PostToolUse, Stop, and
+SessionEnd from installed 0.9.4 with byte-exact Chinese journaling, zero Unicode
+repairs, the authoritative `protocol_default/allow_neutral` outcome, one
+preserved pending requirement, and zero continuations. The remaining
+independent gates are CI, HOL, tag, and Release.
 
 ## 0.8.12 release status
 

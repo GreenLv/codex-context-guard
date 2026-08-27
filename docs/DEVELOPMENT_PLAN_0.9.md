@@ -49,8 +49,8 @@ an unauthenticated in-flight legacy control.
 | Incident infrastructure | Completed (POSIX passed; Windows 0.9.4 focused ACL gate passes including PowerShell 5.1) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
-| Source acceptance | In progress (Windows 0.9.4 passed; macOS 0.9.4 pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows 0.9.4 passed) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Source acceptance | Completed (native macOS and Windows 0.9.4 passed independently) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
+| Installed and native acceptance | Completed (native macOS and Windows 0.9.4 passed independently) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -152,8 +152,26 @@ Stop hooks from the installed 0.9.4 tree, journaled the prompt byte-exactly
 with zero unicode repairs, and persisted schema 7, Stop protocol 2.0.0,
 `observed_outcome=gate_completion_claim`, authoritative
 `protocol_default/allow_neutral`, one pending requirement, zero continuations,
-and a completed SessionEnd. Native macOS on exact `56cb70a`, CI, tag, and
-Release acceptance remain open.
+and a completed SessionEnd.
+
+Native macOS on documentation successor `fcfbfc7` independently validates the
+same frozen implementation `56cb70a` with Python 3.12.2, Ruff 0.16.1, and
+Codex CLI 0.150.1. Repository validation, the tracked-tree privacy audit, ten
+focused incident tests with four Windows-only skips, the benchmark at 8/8 with
+zero false continuations and diagnostic accuracy 1.0, 233 tests with nine
+capability-aware skips, the eight-Hook self-test, Ruff, external-cache
+compilation, and diff checks pass. Fresh isolated and default homes pass the
+managed installation, strict second no-op, read-only audit, 46-file parity,
+installed self-test, and lifecycle smoke. The default manager restores 15
+historical live trees only from trusted archives and verifies all 16 indexed
+live/archive pairs. Fresh no-bypass tasks exercise UserPromptSubmit,
+PostToolUse, Stop, and SessionEnd from installed 0.9.4, preserve the Chinese
+prompt byte-exactly with zero Unicode repairs, and record integrity ok,
+`observed_outcome=gate_completion_claim`, authoritative
+`protocol_default/allow_neutral`, one pending requirement, and zero
+continuations. Final managed apply/no-op/read-only checks preserve every
+live/archive pair and current staging/live/archive parity. CI, tag, and Release
+acceptance remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -162,9 +180,8 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Native macOS source, installation, and fresh-Hook gates on exact `56cb70a`.
-- Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
-  GitHub Release, and public readback.
+- PR and main CI/HOL on the exact release-documentation successor.
+- Then annotated tag, tag CI, bilingual GitHub Release, and public readback.
 
 ## Risks
 
@@ -180,11 +197,12 @@ evidence are never recorded here.
 
 ## Exact next entrypoint
 
-From a native macOS checkout of exact `56cb70a` (or its documented successor),
-run:
+From the clean candidate branch after recording native macOS evidence, run the
+documentation contract gates, commit the exact successor, and open the PR. The
+first gate is:
 
 ```shell
-python3 scripts/validate_public_repo.py .
+python3 -m unittest tests.test_public_contract
 ```
 
 At the next phase boundary, replace this entrypoint with the first unrun gate
