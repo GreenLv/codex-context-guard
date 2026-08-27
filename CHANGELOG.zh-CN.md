@@ -30,9 +30,10 @@
 ### 验证
 
 - macOS 原生源码验证已通过仓库与 tracked-tree 隐私审计、218 项测试（含 5 项能力 skip）、Python 3.12.2 八 Hook 自检、Ruff 0.16.1、外部 cache 编译、未变化公开基线的提交身份审计和 diff 检查。解析回归覆盖钉住根优先、最新存活目录回退、诱饵命名与符号链接拒绝、fail-closed 修复提示、`99.99`/`1`/`01.0.0`/`00.0.0`/`0.0.0.0`/`1.2.3-rc1` 的拒绝以及孤立 `0.0.0` 树的选中；PowerShell 形态在 Windows CI 上执行。
-- 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、严格重复 no-op、15 个产品文件 source/staging/live/archive 一致性、安装态自检、lifecycle smoke 和禁留检查。macOS 默认 home 仍保留此前的已消费 0.8.10 安装；升级到 0.8.11 属于待办的原生复验。
+- 一次性 Codex CLI 0.149.0 home 已通过首次受管安装、严格重复 no-op、15 个产品文件 source/staging/live/archive 一致性、安装态自检、lifecycle smoke 和禁留检查。macOS 默认 home 随后把已消费的 0.8.10 安装升级到精确候选 `d7c9b0b`，通过同一组 no-op/parity/self-test/smoke 门禁，在不绕过信任的前提下审阅并信任全部八个 Hook，并在可信 prompt 与正常 `SessionEnd` 后写入完整性有效的 schema-7 状态。
 - 已消费 0.8.10 的默认 home 证据留存：单次 apply 内完成存档并把被宿主清理的全部历史 live 版本（0.6.1–0.8.9）从可信 archive 恢复；真实全新 `codex exec` 任务触发安装态 Hook，宿主随后再次真实清理全部历史版本；已消费的 0.8.9 字节以 exit 127 失败，而已安装的 0.8.10 字节经回退返回 exit 0 并写入 schema-7 状态；下一次 apply 又从可信 archive 恢复全部版本。
-- Windows 原生安装与可信 Hook 行为、tag、GitHub Release、下游 consumer pin 证据以及 macOS 之外的原生平台复验仍待完成，不能由既有运行推断。PR #15 在证据头 `38079d5` 通过完整 14 项矩阵（Ubuntu/macOS/Windows × Python 3.10–3.13、HOL Plugin Scanner、plugin scanner）。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
+- 在 macOS 上，fresh task 启动和 `codex plugin list` 都再次清理了历史 live cache；管理器准确诊断缺失树，从完整 archive 恢复全部 11 个已索引版本，并再次通过严格 no-op。Windows 10.0.26200.9168 原生环境则针对同一精确候选 `d7c9b0b` 独立通过 218 项测试（6 项能力 skip 如实保留）、完整 PowerShell resolver 门禁、默认-home 升级/no-op/parity、安装态自检与 lifecycle smoke、八 Hook fresh trust 和 schema-7 状态读回。Windows fresh task 没有清理历史 live cache，因此已观察到的宿主清理仍是平台特定事实，不能泛化为所有平台行为。
+- PR #15 的精确 head `d7c9b0b` 已通过最终 14 项矩阵（Ubuntu/macOS/Windows × Python 3.10–3.13、HOL Plugin Scanner、plugin scanner）。Main/tag 自动化、注释 tag、GitHub Release 与公开读回，以及下游 consumer pin 证据仍待完成。详细证据见 `docs/LOCAL_ACCEPTANCE.md`。
 
 ## 0.8.8 - 2026-08-25
 

@@ -4,7 +4,7 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.8`; accepted `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.11 source-candidate acceptance (2026-08-26)
+## 0.8.11 source-candidate acceptance (2026-08-26–2026-08-27)
 
 Consumed 0.8.10 recap (recorded, not a release): that candidate introduced the
 Hook command fallback after an observed macOS Codex CLI 0.149.0 host pruned
@@ -37,19 +37,51 @@ archive index bound to the same manifest, the installed eight-Hook self-test,
 `SMOKE_PASS` lifecycle smoke, and no `.git`, `__pycache__`, `.pyc`, or `.pyo`
 residue in the new cache or staging trees.
 
-The macOS default home still holds the consumed 0.8.10 install from the earlier
-recap; upgrading it to 0.8.11 is part of the pending native re-acceptance and
-was not repeated this round to avoid further churn to the live machine state.
-Native Windows default-home installation, trusted-Hook behavior, tag, GitHub
-Release, and downstream consumer-pin evidence remain pending and are not
-inferred from CI.
+The macOS default home then upgraded the consumed 0.8.10 install to exact
+candidate `d7c9b0b5769c110c743f2a20a487ac40078d7713`. The managed upgrade,
+strict second apply no-op, read-only audit, 15-product-file
+source/staging/live/archive parity, installed eight-Hook self-test, and
+`SMOKE_PASS` lifecycle smoke passed. A fresh interactive Codex CLI 0.149.0
+task reviewed and trusted exactly eight Hooks without a trust bypass. A second
+prompt after trust fired `UserPromptSubmit`, returned
+`MACOS_0811_TRUSTED_HOOK_OK`, and persisted schema-7 state with
+`integrity=ok`, `R001`, `A001`, and `P0001`; normal exit produced a
+`SessionEnd` recovery record, and the private JSON files were mode `0600`.
+Fresh task startup and a later `codex plugin list` each pruned historical live
+caches to 0.8.11 on this host. The read-only manager named every missing tree,
+and managed applies restored all 11 indexed versions from 0.6.1 through
+0.8.11 from the intact trusted archive. The final repeated apply was a strict
+no-op, and the repository worktree stayed clean.
 
-PR #15 at exact evidence head `38079d5` passes the complete 14-check GitHub
-Actions matrix — `ubuntu-latest`, `macos-latest`, and `windows-latest` with
-Python 3.10, 3.11, 3.12, and 3.13 — plus the HOL Plugin Scanner and its
-uploaded plugin scanner check. Windows runner results remain CI evidence only;
-a native Windows default-home install, strict no-op, installed lifecycle smoke,
-and fresh trusted-Hook task are separate pending gates.
+Native Windows acceptance independently used Windows 10.0.26200.9168,
+PowerShell 7.6.4, Python 3.12.10, Git 2.53.0.windows.2, and Codex CLI 0.149.0
+against the same exact candidate. Repository/privacy validation, 218 tests,
+Ruff, compilation, diff checks, the eight-Hook self-test, and four native
+PowerShell resolver groups passed. Six capability-aware skips remained
+explicit: three POSIX resolver cases, one POSIX launcher case, and two
+symbolic-link cases. The complete invalid-version set was rejected and a lone
+`0.0.0` tree was selected correctly.
+
+The Windows default-home upgrade preserved and indexed 0.8.3, 0.8.5, 0.8.6,
+0.8.7, and 0.8.8 while adding 0.8.11. The second apply and read-only audit were
+no-ops; complete staging/live/archive snapshots were unchanged; all 15 product
+files matched source with aggregate SHA-256
+`b323df999cb8915dbd24cdbacc0ac337f060604209806aba2365f2ee9864cd82`;
+and the installed self-test, lifecycle smoke, archive index, and forbidden-
+residue checks passed. A fresh interactive task reviewed and trusted the exact
+eight-Hook set without bypass, returned `WINDOWS_0811_TRUSTED_HOOK_OK`, ran
+`UserPromptSubmit`, `Stop`, and `SessionEnd` without launcher or code-2
+failures, and persisted schema-7 state with `integrity=ok`, active mode, and
+`R001`/`A001`/`P0001`. Windows ACLs remained private. This Windows fresh task
+did not prune any historical live cache; that native result does not broaden
+the macOS pruning observation into a cross-platform guarantee.
+
+PR #15 at exact evidence head `d7c9b0b` passes the final 14-check GitHub
+Actions set: `ubuntu-latest`, `macos-latest`, and `windows-latest` with Python
+3.10, 3.11, 3.12, and 3.13, plus the HOL Plugin Scanner and plugin scanner.
+The PR remains open. Main and tag automation, the annotated tag, GitHub
+Release, public release readback, and downstream consumer-pin evidence remain
+separate pending gates.
 
 ## 0.8.9 source-candidate acceptance (2026-08-26)
 

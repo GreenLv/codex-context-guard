@@ -35,8 +35,10 @@ versioned live cache when a fresh task started on 2026-08-26, keeping only the
 installed 0.8.9 tree. The hash-indexed archive stayed intact, but an open task
 that still referenced its pruned `$PLUGIN_ROOT` path lost later Hook
 invocations until a safe-installer apply restored the exact bytes. Managed-apply
-preservation therefore does not extend to host task-startup cleanup. This
-observation is recorded for macOS only; other platforms remain unverified.
+preservation therefore does not extend to host task-startup cleanup. Native
+Windows acceptance on Windows 10.0.26200.9168 did not reproduce the pruning
+during its fresh task, so cleanup remains an observed macOS host behavior, not
+a universal cross-platform claim.
 
 Both Hook command forms now prefer the pinned plugin root and otherwise resolve
 the newest surviving strictly semver-named (exactly three dot-separated numeric
@@ -54,6 +56,17 @@ rescued task originally trusted, it does not verify per-file hashes at spawn
 time, and it never mutates consumed caches. The hash-indexed archive remains
 the only authority for restoring exact historical trees. Read-only installer
 runs now name host startup pruning and the `--apply` restore action directly.
+
+Exact candidate `d7c9b0b5769c110c743f2a20a487ac40078d7713` has independent
+native acceptance on macOS and Windows with Codex CLI 0.149.0 and Python 3.12.
+Both platforms passed default-home managed installation, strict second no-op,
+read-only audit, 15-product-file source/staging/live/archive parity, installed
+eight-Hook self-test, lifecycle smoke, and fresh interactive trust without a
+bypass. The Windows run additionally executed the native PowerShell resolver
+gate and preserved its historical live-cache set across fresh task startup;
+the macOS run observed pruning and verified manager restoration from the
+trusted archive. CI, main/tag state, GitHub Release publication, and downstream
+consumer pins remain separate evidence surfaces.
 
 ## 0.8.8 release status
 
