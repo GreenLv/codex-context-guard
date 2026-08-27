@@ -75,7 +75,7 @@ repository validation, the tracked-tree privacy audit,
 external-cache compilation, and `git diff --check`. Its reviewed fixture
 manifest is `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`;
 0.8.12 reproduces two target false continuations and 0.9 produces zero. The
-The exact commit also passes isolated install, strict second no-op,
+exact commit also passes isolated install, strict second no-op,
 source/staging/live/archive parity, installed self-test and lifecycle smoke,
 Stop 1.1 recovery migration, and a native macOS fresh-Hook replay on Codex CLI
 0.150.1. The real replay recorded `observed_outcome=gate_completion_claim` but
