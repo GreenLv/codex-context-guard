@@ -19,11 +19,9 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 需要 Python 3.10 或更高版本、Codex CLI `0.146.0` 或更高版本作为当前已测试下限，以及能够加载插件和生命周期 Hook 的 Codex 界面。
 
-0.8.8 会为 Hook 选择符合要求的 Python 解释器，不再假定 `PATH` 中排在最前面的 `python3` 一定足够新。这对 `/usr/bin/python3` 仍为 3.9 的 macOS 宿主尤其重要。
+当前 Hook 兼容性包含两项保护：Context Guard 会为 Hook 选择符合要求的 Python 解释器，不假定 `PATH` 中排在最前面的 `python3` 足够新；宿主清理历史版本缓存时，Hook 会回退到受管缓存中最新的存活目录。若没有可用的解释器或版本树，流程会失败关闭并给出可操作的重装提示；版本差异见[兼容性说明](docs/COMPATIBILITY.md)。
 
-0.8.11 进一步保证：即使宿主在新任务启动时清理了历史版本缓存，Hook 仍可继续工作。命令优先使用任务信任的插件根目录，在其缺失时回退到受管插件缓存中最新的存活目录，全部缺失时按提示给出可操作的修复指引并失败关闭。
-
-0.9.4 升级到 Stop protocol 2.0.0：只有经过认证、覆盖完整的 checkpoint 才能把任务标为完成。完成措辞仍会写入诊断，但不能改变权威 Stop 结果、pending 状态或续跑次数；隐私、完整性、无效 control 和用户明确持续执行要求仍是硬门禁。它还把已消费候选中的事故库权限路径替换为 fail-closed 的原生 Windows DACL-only 合约，不请求 SACL 或 owner 特权。Windows 验证同时使用 `GetAccessRules` 和原始 security descriptor，因为 PowerShell `.Access` adapter 不能可靠枚举该集合。Hook payload 现在显式按 UTF-8 解码，requirements 和完成措辞在沿用旧 ANSI 代码页、此前会把非 ASCII 文本在入账前损坏的 Windows 主机上也能完整保留。
+0.9.4 规定：只有经过认证且覆盖完整的 checkpoint 才能把任务标为完成，并显式按 UTF-8 解码 Hook stdin，使中文等非 ASCII prompt 与回复在入账前保持完整。自然语言完成措辞只用于诊断；详细的 Windows 权限和平台验收证据见[兼容性说明](docs/COMPATIBILITY.md)与[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

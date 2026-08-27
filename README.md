@@ -21,27 +21,19 @@ immutable.
 
 Requirements: Python 3.10 or newer, Codex CLI `0.146.0` or newer as the tested minimum, and a Codex surface that loads plugins and lifecycle Hooks.
 
-Version 0.8.8 selects a supported Python interpreter for Hook execution instead
-of assuming the first `python3` on `PATH` is new enough. This matters on macOS
-hosts where `/usr/bin/python3` can still be 3.9.
+Current Hook compatibility includes two safeguards: Context Guard selects a
+supported Python interpreter instead of assuming the first `python3` on `PATH`
+is new enough, and falls back to the newest surviving managed cache tree when a
+host prunes historical versions. If no supported interpreter or tree remains,
+it fails closed with an actionable reinstall hint; see the [compatibility
+matrix](docs/COMPATIBILITY.md) for version-specific details.
 
-Version 0.8.11 additionally keeps Hooks working when a host prunes historical
-versioned caches while a fresh task starts: each command prefers the task's
-trusted plugin root and falls back to the newest surviving Context Guard tree
-under the managed plugin cache, failing closed with a reinstall hint otherwise.
-
-Version 0.9.4 advances to Stop protocol 2.0.0: only an
-authenticated full-coverage checkpoint can mark a task complete. Completion
-wording remains visible in diagnostics but cannot alter the authoritative Stop
-outcome, pending state, or continuation count. Privacy, integrity, invalid
-control, and explicit user-persistence failures remain hard gates. It also
-replaces the consumed candidates' incident-corpus permission paths with a
-fail-closed native Windows DACL-only contract that does not request SACL or
-owner privileges. Windows verification uses both `GetAccessRules` and the raw
-security descriptor because the PowerShell `.Access` adapter does not reliably
-enumerate that collection. Hook payloads are now decoded as UTF-8 explicitly,
-so requirements and completion wording survive on Windows hosts whose legacy
-ANSI code page previously corrupted non-ASCII text before journaling.
+Version 0.9.4 makes an authenticated full-coverage checkpoint the only
+authority that can mark a task complete and decodes Hook stdin as UTF-8
+explicitly, preserving non-ASCII prompt and reply text before journaling.
+Natural-language completion wording remains diagnostic only. Detailed Windows
+permission and platform-acceptance evidence is in the [compatibility
+matrix](docs/COMPATIBILITY.md) and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

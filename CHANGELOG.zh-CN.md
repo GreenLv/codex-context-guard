@@ -16,26 +16,21 @@
 
 ### 重点
 
-- Hook payload 传输现在显式按 UTF-8 解码 stdin。在沿用旧 ANSI 代码页的 Windows 主机上，非 ASCII 的 prompt 与回复文本会在入账前被静默损坏，导致分类器看不到完成声明措辞、记录的 requirements 出现乱码；现在 payload 按字节精确入账，非 UTF-8 字节会以可见消息拒绝而不是崩溃。
-- Stop protocol 2.0.0 规定：只有经过认证且覆盖完整的 checkpoint 才能把任务标为完成；完成措辞不能再强制续跑或改写 pending 状态。
-- 隐私、状态完整性、无效或过期 control，以及用户明确持续执行要求仍按 fail-closed 硬门禁处理；typed wait 与默认安全结束会保留未解决事项。
-- 维护者本地 append-only 事故库和人工复核的公开 fixture，用可复现的协议回归替代持续增加措辞补丁。
+- Hook payload 现在显式按 UTF-8 解码 stdin，中文等非 ASCII prompt 与回复可在日志中按字节精确保存，非法字节会被可见地拒绝。
+- Stop protocol 2.0.0 规定：只有经过认证且覆盖完整的 checkpoint 才能把任务标为完成；fail-closed 门禁和 typed wait 继续保护未解决事项。
+- 标准库事故库和人工复核的公开 fixture，为协议回归（包括 Windows ACL 行为）提供可复现证据。
 
 ### 变更
 
-- `Stop`/`UserPromptSubmit` Hook 入口读取原始 stdin 字节并按 UTF-8 解码，不受主机 locale 影响，再分发给未改变的 payload 处理逻辑。新增子进程回归覆盖中文字节精确入账、完整 UTF-8 Stop 决策合同和非 UTF-8 字节的可见拒绝。八 Hook wire、schema 7、classifier 2.3.2、Proof protocol 1.0.0、Execution protocol 1.0.0 和 Python 3.10+ 支持均不变。
-- Classifier 2.3.2 只把 `observed_outcome` 写入诊断。权威 decision source 为 `protocol_default` 和 `protocol_user_persistence`；历史 `nlp_hard_gate` 记录仍可读取，但 0.9 不再生成。
-- 加载 Stop 1.1 状态时丢弃进行中的旧 control，同时保留 requirements、evidence、proof 和有界 decision history。
-- `scripts/incident_corpus.py` 仅使用标准库，提供 `ingest`、`validate`、`summarize`、`benchmark` 和 `export-public`；CI 只读取人工复核的脱敏 fixture，不访问私有事故库。
-- 事故库目录和文件在 POSIX 上继续使用精确的 `0700`/`0600` 权限；Windows 上通过 `SetNamedSecurityInfoW` 只写入受保护 DACL，限定为当前用户、`SYSTEM` 和内置 Administrators 组，再通过 `GetAccessRules` 与原始 security descriptor 双重验证精确三条 ACE。该路径不请求 owner 或 SACL 变更，标准用户令牌不需要 `SeSecurityPrivilege`；写入或验证失败仍 fail closed。
-- 未发布的 0.9.0 候选把 POSIX mode bits 当作 Windows 隐私测试；已消费的 0.9.1 候选改用会请求 `SeSecurityPrivilege` 的 `Set-Acl`；0.9.2 已正确写入原生 DACL，但 PowerShell `.Access` 回读不能可靠枚举返回的规则集合；已消费的 0.9.3 候选修正了该验证路径并通过 Windows 源码门禁，其首次原生 fresh-Hook 运行暴露了本版的 stdin 传输缺陷。四个已安装缓存均保持不可变；0.9.4 只修改 Hook 传输和 package identity。
-- 受管 marketplace staging 会排除本地环境、测试/lint 缓存和构建输出目录，避免生成文件进入版本化插件缓存。
+- `Stop`/`UserPromptSubmit` 入口读取原始 stdin 字节并独立按 UTF-8 解码。八 Hook wire、schema 7、classifier 2.3.2、Proof/Execution protocol 1.0.0 和 Python 3.10+ 支持均不变；已安装缓存保持不可变。
+- Classifier 2.3.2 只把 `observed_outcome` 写入诊断；`protocol_default` 和 `protocol_user_persistence` 才是权威来源。加载 Stop 1.1 状态时丢弃进行中的旧 control，同时保留 requirements、evidence、proof 和 decision history。
+- `scripts/incident_corpus.py` 仅使用标准库，提供 `ingest`、`validate`、`summarize`、`benchmark` 和 `export-public`；公开 CI 只读取人工复核的脱敏 fixture，不访问私有事故库。
+- 受管 staging 排除本地环境、测试/lint 缓存和构建输出。事故数据继续使用精确的 POSIX 权限或受保护的 Windows DACL（仅当前用户、`SYSTEM` 和 Administrators），写入与验证失败仍 fail closed，标准用户不需要 `SeSecurityPrivilege`。
 
 ### 验证
 
-- 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计为 1.0，fixture manifest 哈希保持不变。
-- 冻结实现提交上的原生 Windows 已通过 repository validator、tracked-tree 隐私审计、233 项测试（六项 capability-aware skip）、十项聚焦事故库测试（含新增的 Windows PowerShell 5.1 ACL 回归）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查（Python 3.12.10），全程使用无 `SeSecurityPrivilege` 的标准用户令牌。全新隔离 home 与默认 home 均通过安装、严格二次 no-op、staging/live/archive parity、安装态 self-test 与 lifecycle smoke；安全安装器严格从可信 archive 修复了全部历史 live 树，并保留包括已消费 0.9.3 在内的所有 archive 摘要。一个无 trust bypass 的 Windows fresh 任务从安装态 0.9.4 树触发了 UserPromptSubmit、PostToolUse 和 Stop Hook，中文 prompt 按字节精确入账（零 Unicode repair），并记录了 Stop protocol 2.0.0、`observed_outcome=gate_completion_claim`、权威 `protocol_default/allow_neutral`、一条保留 pending、零续跑和 SessionEnd。
-- 原生 macOS 独立通过 repository/privacy 门禁、十项聚焦事故测试（含四项 Windows-only skip）、8/8 benchmark（零错误续跑、diagnostic accuracy 1.0）、233 项完整测试（九项 capability-aware skip）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查。全新隔离 home 与默认 home 通过受管安装、严格 no-op/只读审计、46 文件 parity、安装态 self-test 和 lifecycle smoke；默认 home 的 16 个已索引 live/archive 对均保持一致。无 trust bypass 的 fresh 任务从安装态 0.9.4 触发 UserPromptSubmit、PostToolUse、Stop 和 SessionEnd，中文 prompt 按字节精确入账、零 Unicode repair，记录权威 `protocol_default/allow_neutral`、一条保留 pending 和零续跑。PR、精确 main CI/HOL、annotated tag CI、双语 GitHub Release 和未认证公开回读均在已审计发布历史上通过。
+- 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计为 1.0。
+- 原生 Windows 和 macOS 分别通过源码/隐私门禁、233 项测试、Hook self-test、受管安装/no-op/parity/lifecycle 检查和 fresh-Hook 运行；各平台 skip 与详细证据保留在[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。CI、tag CI、双语 GitHub Release 和未认证公开回读均已通过。
 
 ## 0.8.12 - 2026-08-27
 
