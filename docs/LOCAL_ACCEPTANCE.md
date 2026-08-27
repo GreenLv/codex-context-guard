@@ -1,12 +1,12 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.8.11`; accepted `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.8.12`; accepted `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.8.12 source-candidate acceptance (2026-08-27)
+## 0.8.12 release acceptance (2026-08-27)
 
-The macOS source candidate advances the plugin identity to 0.8.12 and the
+The release source advances the plugin identity to 0.8.12 and the
 completion classifier to 2.3.2. A focused Stop regression replays the reported
 reply in which `“任务已完成”类声明` is a quoted category label, not the
 assistant's own completion assertion. The corrected path yields the staged
@@ -20,10 +20,31 @@ The candidate passes repository validation, the tracked-tree privacy audit,
 and `git diff --check`. A separate focused run passed 16 classifier, Stop, and
 public-contract tests plus repository validation.
 
-This is source-candidate evidence only. The candidate has not been installed
-into a default or isolated Codex home, exercised through a fresh trusted Hook,
-validated natively on Windows, committed, pushed, run through CI/HOL, tagged,
-published, or adopted by a downstream consumer.
+Exact candidate `c66ac824f0d9d2015f1725417a2e50f5a96f31da` was then
+installed through the managed entry point on the macOS and Windows default
+Codex homes. Both platforms passed the strict repeated apply, read-only
+readback, installed eight-Hook self-test, and lifecycle smoke. Windows also
+passed the PowerShell launcher self-test under Python 3.14.6 after the direct
+Python 3.12.10 self-test and full installed smoke.
+
+Fresh interactive tasks on both native platforms displayed exactly eight
+installed and active Context Guard Hooks. `SessionStart` was enabled from
+`context-guard@codex-context-guard` with `Trust: Trusted`; no trust bypass was
+used. `UserPromptSubmit`, `PostToolUse`, and `Stop` exercised the private
+completion control, the requested fixed reply returned, and status readback
+reported `integrity=ok`, classifier 2.3.2, Stop protocol 1.1.0, Proof protocol
+1.0.0, one closed requirement, and no open items. Normal exit persisted
+`SessionEnd` and both recovery files on macOS and Windows. A malformed Windows
+private-control attempt was rejected fail-closed before a corrected invocation
+succeeded; the unrelated `chrome-devtools` and Zotero MCP startup warnings did
+not affect the Hook lifecycle.
+
+PR #16 at candidate documentation head `c66ac82` passes the 12-job
+`ubuntu-latest`, `macos-latest`, and `windows-latest` Python 3.10-3.13 matrix,
+the HOL Plugin Scanner, and plugin scanner. The release-status successor changes
+only public documentation and contract tests; main CI/HOL, tag CI, the annotated
+tag, GitHub Release, public release readback, and downstream consumer pin remain
+separate publication evidence.
 
 ## 0.8.11 release acceptance (2026-08-26–2026-08-27)
 

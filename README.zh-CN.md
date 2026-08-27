@@ -11,9 +11,9 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 发布状态：`0.8.11` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 发布状态：`0.8.12` 是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-当前检出内容为尚未发布的 `0.8.12` 源码候选。
+当前检出内容为 `0.8.12` 正式版源码。
 
 ## 安装
 
@@ -22,6 +22,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 0.8.8 会为 Hook 选择符合要求的 Python 解释器，不再假定 `PATH` 中排在最前面的 `python3` 一定足够新。这对 `/usr/bin/python3` 仍为 3.9 的 macOS 宿主尤其重要。
 
 0.8.11 进一步保证：即使宿主在新任务启动时清理了历史版本缓存，Hook 仍可继续工作。命令优先使用任务信任的插件根目录，在其缺失时回退到受管插件缓存中最新的存活目录，全部缺失时按提示给出可操作的修复指引并失败关闭。
+
+0.8.12 不再把后接受限中文类别标签的引号内完成短语（例如 `“任务已完成”类声明`）误当成助手自己的完成声明；直接完成断言仍然受门禁保护。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

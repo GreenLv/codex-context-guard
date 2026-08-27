@@ -5,8 +5,8 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.8.11`
-- Current source line: `0.8.12` (unreleased candidate)
+- Current published Context Guard release: `0.8.12`
+- Current source line: `0.8.12`
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `1.1.0`
@@ -19,7 +19,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.8.12 source candidate status
+## 0.8.12 release status
 
 Version 0.8.12 advances only the completion classifier and package identity.
 Classifier 2.3.2 treats a completion phrase inside a bounded quotation followed
@@ -29,11 +29,15 @@ remain whole-task completion claims. Schema 7, the Proof, Stop, and Execution
 protocols, Python baseline, and eight-Hook wire are unchanged.
 
 Focused source regressions replay the reported Stop decision and retain direct
-completion controls. The macOS source candidate passes repository and privacy
-validation, 219 tests with five capability-aware skips, the eight-Hook
-self-test, Ruff, external-cache compilation, and diff checks. Installation,
-fresh trusted-Hook behavior, native Windows acceptance, CI, tagging,
-publication, and downstream consumer pinning remain separate evidence surfaces.
+completion controls. Repository and privacy validation, 219 tests with five
+capability-aware skips, the eight-Hook self-test, Ruff, external-cache
+compilation, and diff checks pass on macOS. Exact candidate
+`c66ac824f0d9d2015f1725417a2e50f5a96f31da` passes managed installation,
+strict repeat/no-op readback, installed self-test, lifecycle smoke, and fresh
+trusted eight-Hook tasks on native macOS and Windows. Both native tasks persist
+clean schema-7 state and `SessionEnd` recovery after normal exit. CI, HOL, the
+annotated tag, GitHub Release, public readback, and downstream consumer pinning
+remain independently verified evidence surfaces.
 
 ## 0.8.11 release status
 

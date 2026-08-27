@@ -202,7 +202,7 @@ not as a measure of code volume.
   Stop protocol 1.1.0, Execution protocol 1.0.0, classifier 2.3.1,
   Python 3.10+, and the eight-Hook event set are unchanged; observable Hook
   command bytes and the installed package identity advance.
-- `0.8.12` is an unreleased compatible Stop-classifier patch. Classifier 2.3.2
+- `0.8.12` is the 2026-08-27 compatible Stop-classifier patch. Classifier 2.3.2
   recognizes a completion phrase inside a bounded quotation followed by a
   Chinese category label such as `类声明` or `这种表述` as meta-discussion rather
   than the assistant's own whole-task completion claim. Standalone quoted

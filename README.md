@@ -11,9 +11,9 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Release status: `0.8.11` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Release status: `0.8.12` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-The current checkout is the unreleased `0.8.12` source candidate.
+The current checkout contains the `0.8.12` release source.
 
 ## Install
 
@@ -27,6 +27,10 @@ Version 0.8.11 additionally keeps Hooks working when a host prunes historical
 versioned caches while a fresh task starts: each command prefers the task's
 trusted plugin root and falls back to the newest surviving Context Guard tree
 under the managed plugin cache, failing closed with a reinstall hint otherwise.
+
+Version 0.8.12 stops treating a quoted completion phrase followed by a bounded
+Chinese category label, such as `“任务已完成”类声明`, as the assistant's own
+completion claim. Direct completion assertions remain gated.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git

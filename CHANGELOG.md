@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.11` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.8.12` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.8.12 - Unreleased
+## 0.8.12 - 2026-08-27
 
 ### Highlights
 
@@ -27,7 +27,9 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- Focused source regressions replay the reported Stop decision and preserve direct Chinese completion claims. Repository and privacy checks, 219 tests with five capability-aware skips, the eight-Hook self-test, Ruff, external-cache compilation, and `git diff --check` pass on macOS. Installation, fresh trusted-Hook behavior, native Windows, CI, tagging, publication, and downstream adoption remain separate gates.
+- Focused source regressions replay the reported Stop decision and preserve direct Chinese completion claims. Repository and privacy checks, 219 tests with five capability-aware skips, the eight-Hook self-test, Ruff, external-cache compilation, and `git diff --check` pass on macOS.
+- Exact candidate `c66ac824f0d9d2015f1725417a2e50f5a96f31da` passes managed installation, strict repeat/no-op readback, installed self-test, lifecycle smoke, and fresh trusted eight-Hook tasks on native macOS and Windows. Both tasks persisted clean schema-7 state and `SessionEnd` recovery after normal exit. The release-status successor changes documentation and public-contract tests only.
+- PR automation passes the 12-job OS/Python matrix, HOL Plugin Scanner, and plugin scanner. Main and tag automation, the annotated tag, GitHub Release, public readback, and downstream adoption are verified as separate release surfaces.
 
 ## 0.8.11 - 2026-08-27
 
