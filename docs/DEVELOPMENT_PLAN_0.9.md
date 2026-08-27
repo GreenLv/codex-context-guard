@@ -1,6 +1,6 @@
 # Context Guard 0.9 development plan
 
-Status: **Publication in progress**
+Status: **Completed**
 
 Target: plugin `0.9.4`, Stop protocol `2.0.0`
 
@@ -51,7 +51,7 @@ an unauthenticated in-flight legacy control.
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
 | Source acceptance | Completed (native macOS and Windows 0.9.4 passed independently) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
 | Installed and native acceptance | Completed (native macOS and Windows 0.9.4 passed independently) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
-| Publication | In progress | PR/main CI and HOL pass; tag CI, bilingual Release, and public readback pass in order |
+| Publication | Completed | PR/main CI and HOL, annotated-tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
 
@@ -173,7 +173,9 @@ continuations. Final managed apply/no-op/read-only checks preserve every
 live/archive pair and current staging/live/archive parity. PR #17 and all 12
 OS/Python CI jobs plus HOL pass on acceptance successor `81c2df8`; after its
 ordinary fast-forward to main, the same exact commit passes all 12 main jobs
-and HOL. Tag and Release acceptance remain open.
+and HOL. Annotated tag `v0.9.4` points to release commit `7b829eb`; all 12 tag
+CI jobs pass, and the non-draft, non-prerelease bilingual GitHub Release plus
+unauthenticated public readback pass.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -182,7 +184,7 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Annotated tag, tag CI, bilingual GitHub Release, and public readback.
+None for the 0.9.4 release.
 
 ## Risks
 
@@ -198,14 +200,10 @@ evidence are never recorded here.
 
 ## Exact next entrypoint
 
-From the clean release-status successor after main CI/HOL, create and push the
-annotated tag. The first unrun gate is:
+The 0.9.4 publication sequence is complete. Future changes start from the
+current `main`; do not move or rewrite `v0.9.4` or its Release.
 
-```shell
-git tag -a v0.9.4 <release-commit>
-```
-
-At the next phase boundary, replace this entrypoint with the first unrun gate
-and record the last verified public commit or tree. After publication, keep this
-file at the same path, change the status to `Completed`, and link the final
-changelog entry, acceptance record, annotated tag, and GitHub Release.
+Final release evidence is linked from the [changelog](../CHANGELOG.md),
+[acceptance record](LOCAL_ACCEPTANCE.md), annotated tag
+[`v0.9.4`](https://github.com/GreenLv/codex-context-guard/tree/v0.9.4), and
+[GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.9.4).

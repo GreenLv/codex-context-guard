@@ -220,9 +220,13 @@ Native macOS evidence above does not substitute for native Windows, and the
 independent Windows evidence does not substitute for macOS. PR #17 and all 12
 OS/Python jobs plus HOL pass on acceptance successor `81c2df8`; the same exact
 commit then passes all 12 jobs and HOL after an ordinary fast-forward to main.
-The annotated tag, tag CI, bilingual GitHub Release, and public readback remain
-separate publication gates. The exact continuation boundary is maintained in
-[the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md).
+Annotated tag `v0.9.4` points to release commit `7b829eb`; all 12 tag CI jobs
+pass. The non-draft, non-prerelease bilingual GitHub Release is the latest
+release, its English and Chinese sections link their matching changelogs, and
+unauthenticated public API, release-page, latest-redirect, and raw-changelog
+readback pass. The completed boundary is recorded in
+[the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md) and the
+[GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.9.4).
 
 ## 0.8.12 release acceptance (2026-08-27)
 
