@@ -30,7 +30,7 @@
 ### 验证
 
 - 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计。
-- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。完整源码、安装态、原生平台、CI、tag 和 Release 门禁仍待完成，统一记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
+- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。精确 commit `429825f` 已通过源码、隔离安装、parity、smoke、恢复和原生 macOS fresh-Hook 门禁；原生 Windows、CI、tag 和 Release 仍待完成，统一记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
 
 ## 0.8.12 - 2026-08-27
 

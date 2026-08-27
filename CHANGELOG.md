@@ -30,7 +30,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Validation
 
 - The fixed public incident manifest contains eight reviewed fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero and passes all eight authority expectations while reporting diagnostic accuracy separately.
-- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Full source, installed, native-platform, CI, tag, and Release gates remain pending and are tracked in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
+- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Exact commit `429825f` passes source, isolated installation, parity, smoke, recovery, and native macOS fresh-Hook gates; native Windows, CI, tag, and Release remain pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 - 2026-08-27
 

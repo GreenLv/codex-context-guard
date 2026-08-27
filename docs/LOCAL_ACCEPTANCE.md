@@ -23,10 +23,27 @@ A fixed-seed unit gate exercises 10,000 staged-control transitions across
 English, Chinese, quotation, code, hypothetical, negated, first-person, and
 attributed speech. Repository validation, the tracked-tree privacy audit, 223
 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
-external-cache compilation, and `git diff --check` pass on macOS. Isolated
-installation, native macOS/Windows fresh-Hook evidence, CI, HOL, tag, Release,
-and public readback remain pending; none is implied by the source evidence
-above. The exact continuation boundary is maintained in
+external-cache compilation, and `git diff --check` pass on macOS.
+
+Exact candidate `429825f` passes a fresh isolated install, strict second
+install no-op, read-only diagnosis, full source/staging/live/archive parity,
+installed self-test, lifecycle smoke, and a focused installed Stop 1.1 state
+migration. The default macOS installation preserved and verified the immutable
+0.8.12 live/archive pair, then passed the same 0.9 no-op, parity, and smoke
+chain on Codex CLI 0.150.1.
+
+A fresh no-bypass native macOS task displayed exactly eight installed and
+active Context Guard Hooks; the inspected PostToolUse definition reported
+`Plugin - context-guard@codex-context-guard` and `Trust: Trusted`. A separate
+fresh real-model replay returned the bounded Chinese meta-discussion sentence
+once. Its persisted schema-7 state recorded Stop protocol 2.0.0,
+`observed_outcome=gate_completion_claim`, authoritative
+`protocol_default/allow_neutral`, one pending item, zero continuations, and a
+completed `SessionEnd`.
+
+Native Windows fresh-Hook evidence, CI, HOL, tag, Release, and public readback
+remain pending; none is implied by the macOS evidence above. The exact
+continuation boundary is maintained in
 [the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 release acceptance (2026-08-27)

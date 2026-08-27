@@ -49,7 +49,7 @@ an unauthenticated in-flight legacy control.
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
 | Source acceptance | Completed | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | Pending | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Installed and native acceptance | In progress (macOS passed) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -69,14 +69,19 @@ an unauthenticated in-flight legacy control.
 
 ## Verified evidence boundary
 
-The last verified public base commit is `13d6d18` (`0.8.12`). The current 0.9
-candidate tree passes repository validation, the tracked-tree privacy audit,
+The last verified candidate commit is `429825f`. Its 0.9 source tree passes
+repository validation, the tracked-tree privacy audit,
 223 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
 external-cache compilation, and `git diff --check`. Its reviewed fixture
 manifest is `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`;
 0.8.12 reproduces two target false continuations and 0.9 produces zero. The
-candidate has not yet completed final isolated, native-platform, CI, tag, or
-Release acceptance.
+The exact commit also passes isolated install, strict second no-op,
+source/staging/live/archive parity, installed self-test and lifecycle smoke,
+Stop 1.1 recovery migration, and a native macOS fresh-Hook replay on Codex CLI
+0.150.1. The real replay recorded `observed_outcome=gate_completion_claim` but
+the authoritative `protocol_default/allow_neutral` outcome, zero continuations,
+preserved pending state, and a completed `SessionEnd`. Native Windows, CI, tag,
+and Release acceptance remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -85,8 +90,7 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Run all isolated installed acceptance gates against the frozen candidate tree.
-- Obtain independent native macOS and Windows fresh-Hook evidence.
+- Obtain independent native Windows fresh-Hook evidence for exact commit `429825f`.
 - Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
   GitHub Release, and public readback.
 
@@ -106,8 +110,8 @@ evidence are never recorded here.
 
 From the repository root, run:
 
-```shell
-/opt/anaconda3/bin/python scripts/manage_plugin.py --repo-root . --codex-home /path/to/fresh-codex-home --apply
+```powershell
+py -3.10 scripts\manage_plugin.py --repo-root . --apply
 ```
 
 At the next phase boundary, replace this entrypoint with the first unrun gate
