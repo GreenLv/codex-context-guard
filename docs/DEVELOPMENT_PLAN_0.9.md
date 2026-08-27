@@ -69,7 +69,9 @@ an unauthenticated in-flight legacy control.
 
 ## Verified evidence boundary
 
-The last verified implementation commit is `37612bf`. Its 0.9.2 source tree
+The last verified implementation commit is `37612bf`; documentation successor
+`d8fbc97` records the current public evidence boundary and passes the affected
+contract, repository, privacy, identity, and diff gates. The 0.9.2 source tree
 passes repository validation, the tracked-tree privacy audit, 226 tests with
 five capability-aware skips, the eight-Hook self-test, Ruff, external-cache
 compilation, and `git diff --check` on macOS. Its reviewed fixture
