@@ -633,6 +633,10 @@ class SafePluginInstallTests(unittest.TestCase):
         )
         (self.repo_root / "__pycache__").mkdir()
         (self.repo_root / "__pycache__" / "x.pyc").write_bytes(b"pyc\n")
+        (self.repo_root / ".ruff_cache").mkdir()
+        (self.repo_root / ".ruff_cache" / "cache.bin").write_bytes(b"cache\n")
+        (self.repo_root / "dist").mkdir()
+        (self.repo_root / "dist" / "candidate.whl").write_bytes(b"wheel\n")
 
         staged = manager.marketplace_staging(self.codex_home, self.repo_root)
 
@@ -641,6 +645,8 @@ class SafePluginInstallTests(unittest.TestCase):
         )
         self.assertFalse((staged / ".git").exists())
         self.assertFalse((staged / "__pycache__").exists())
+        self.assertFalse((staged / ".ruff_cache").exists())
+        self.assertFalse((staged / "dist").exists())
         self.assertEqual(
             manager.marketplace_staging(self.codex_home, self.repo_root), staged
         )

@@ -12,6 +12,26 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
+## 0.9.0 - Unreleased
+
+### 重点
+
+- Stop protocol 2.0.0 规定：只有经过认证且覆盖完整的 checkpoint 才能把任务标为完成；完成措辞不能再强制续跑或改写 pending 状态。
+- 隐私、状态完整性、无效或过期 control，以及用户明确持续执行要求仍按 fail-closed 硬门禁处理；typed wait 与默认安全结束会保留未解决事项。
+- 维护者本地 append-only 事故库和人工复核的公开 fixture，用可复现的协议回归替代持续增加措辞补丁。
+
+### 变更
+
+- Classifier 2.3.2 保持不变，只把 `observed_outcome` 写入诊断。新的权威 decision source 为 `protocol_default` 和 `protocol_user_persistence`；历史 `nlp_hard_gate` 记录仍可读取，但 0.9 不再生成。
+- 加载 Stop 1.1 状态时丢弃进行中的旧 control，同时保留 requirements、evidence、proof 和有界 decision history。Schema 7、Proof protocol 1.0.0、Execution protocol 1.0.0、Python 3.10+ 和八 Hook wire 均不变。
+- `scripts/incident_corpus.py` 仅使用标准库，提供 `ingest`、`validate`、`summarize`、`benchmark` 和 `export-public`；CI 只读取人工复核的脱敏 fixture，不访问私有事故库。
+- 受管 marketplace staging 会排除本地环境、测试/lint 缓存和构建输出目录，避免生成文件进入版本化插件缓存。
+
+### 验证
+
+- 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计。
+- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。完整源码、安装态、原生平台、CI、tag 和 Release 门禁仍待完成，统一记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中。
+
 ## 0.8.12 - 2026-08-27
 
 ### 重点

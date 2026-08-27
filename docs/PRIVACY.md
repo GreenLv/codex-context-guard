@@ -65,7 +65,7 @@ or delegated-agent transcripts.
   compaction and resume may retry to recover late metadata.
 - Disposition requests accept only a fixed disposition enum and derive a fixed
   reason enum; there is no free-form disposition reason field.
-- The legacy `continue` enum is compatibility-only under Stop protocol 1.1.0;
+- The legacy `continue` enum is compatibility-only under Stop protocol 2.0.0;
   it is retained in bounded diagnostics but cannot force another model turn.
 - Protocol and decision diagnostics retain hashes and bounded enums, never raw
   reply text, chain-of-thought, local paths, credentials, or plaintext private

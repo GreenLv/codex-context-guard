@@ -4,6 +4,31 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.8.12`; accepted `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.9.0 source-candidate acceptance (in progress)
+
+The candidate advances the plugin identity to 0.9.0 and Stop protocol to
+2.0.0 while retaining schema 7, classifier 2.3.2, Proof protocol 1.0.0,
+Execution protocol 1.0.0, Python 3.10+, and the exact eight-Hook wire.
+
+The reviewed public incident manifest SHA-256 is
+`ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`.
+It contains eight fixtures across completion semantics, action handoff, privacy
+metadata, receipt adaptation, proof/scope/visual, compaction/recovery,
+Hook/cache lifecycle, and cross-platform compatibility. The immutable 0.8.12
+runtime passes its historical expectations and reproduces two target false
+continuations; the 0.9 source passes all eight target authority outcomes with
+zero false continuations and diagnostic accuracy reported separately as 1.0.
+
+A fixed-seed unit gate exercises 10,000 staged-control transitions across
+English, Chinese, quotation, code, hypothetical, negated, first-person, and
+attributed speech. Repository validation, the tracked-tree privacy audit, 223
+tests with five capability-aware skips, the eight-Hook self-test, Ruff,
+external-cache compilation, and `git diff --check` pass on macOS. Isolated
+installation, native macOS/Windows fresh-Hook evidence, CI, HOL, tag, Release,
+and public readback remain pending; none is implied by the source evidence
+above. The exact continuation boundary is maintained in
+[the 0.9 development plan](DEVELOPMENT_PLAN_0.9.md).
+
 ## 0.8.12 release acceptance (2026-08-27)
 
 The release source advances the plugin identity to 0.8.12 and the

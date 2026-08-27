@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 SCHEMA_VERSION = 7
-STOP_PROTOCOL_VERSION = "1.1.0"
+STOP_PROTOCOL_VERSION = "2.0.0"
 CLASSIFIER_VERSION = "2.3.2"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "1.0.0"
@@ -5985,14 +5985,11 @@ def apply_checkpoint(
 
 def terminal_stop_policy(
     *,
-    whole_completion: bool,
     explicit_persistence: bool,
     persistence_allows_deferred: bool,
     declared_disposition: str | None,
 ) -> str:
-    """Return a one-way-safe terminal action for a verified Stop request."""
-    if whole_completion:
-        return "gate_completion_claim"
+    """Return the protocol-authoritative terminal action for a Stop request."""
     if (
         explicit_persistence
         and not persistence_allows_deferred
@@ -6075,16 +6072,10 @@ def handle_stop(
         if turn_matches and isinstance(attempt, dict)
         else None
     )
-    whole_completion = claims_whole_completion(text)
     explicit_persistence = bool(
         authoritative_prompt
         and USER_PERSISTENCE_RE.search(authoritative_prompt)
     )
-    tracked_items = any(
-        item.get("status") != "superseded"
-        for item in state["requirements"] + state["acceptance_items"]
-    )
-
     issues: list[str] = []
     if legacy_checkpoint:
         issues.append(
@@ -6133,6 +6124,14 @@ def handle_stop(
         checkpoint_problems = checkpoint_issues(state, checkpoint)
         if checkpoint_problems:
             issues.extend(checkpoint_problems)
+            decision.update(
+                {
+                    "outcome": "fail_closed_integrity",
+                    "reason_codes": ["checkpoint_validation_failed"],
+                    "decision_source": "protocol_checkpoint",
+                    "declared_disposition": "complete",
+                }
+            )
         else:
             apply_checkpoint(state, checkpoint, turn_id)
             state["continuation_attempts"] = 0
@@ -6148,20 +6147,6 @@ def handle_stop(
             save_state(session_dir, state)
             return {}
 
-    if whole_completion and not tracked_items and not state["open_items"] and not issues:
-        state["completion_attempt"] = None
-        state["continuation_attempts"] = 0
-        decision.update(
-            {
-                "outcome": "allow_neutral",
-                "reason_codes": ["no_tracked_completion_contract"],
-                "decision_source": "nlp_hard_gate",
-            }
-        )
-        append_decision_log(state, decision, turn_id)
-        save_state(session_dir, state)
-        return {}
-
     prompt_scope = prompt_action_scope(authoritative_prompt)
     deferred_bindings = deferred_action_bindings(text, prompt_scope)
     persistence_allows_deferred = bool(
@@ -6173,29 +6158,18 @@ def handle_stop(
         None
         if issues
         else terminal_stop_policy(
-            whole_completion=whole_completion,
             explicit_persistence=explicit_persistence,
             persistence_allows_deferred=persistence_allows_deferred,
             declared_disposition=declared_disposition,
         )
     )
-    if policy == "gate_completion_claim":
-        issues.append("whole-task completion requires a staged private checkpoint")
-        decision.update(
-            {
-                "outcome": "gate_completion_claim",
-                "reason_codes": ["whole_completion_without_checkpoint"],
-                "decision_source": "nlp_hard_gate",
-                "declared_disposition": declared_disposition,
-            }
-        )
-    elif policy == "gate_explicit_persistence":
+    if policy == "gate_explicit_persistence":
         issues.append("authoritative user prompt requires persistence")
         decision.update(
             {
                 "outcome": "gate_authorized_remaining_work",
                 "reason_codes": ["explicit_user_persistence"],
-                "decision_source": "nlp_hard_gate",
+                "decision_source": "protocol_user_persistence",
                 "declared_disposition": declared_disposition,
             }
         )
@@ -6265,7 +6239,7 @@ def handle_stop(
             {
                 "outcome": "allow_neutral",
                 "reason_codes": ["protocol_default_yield"],
-                "decision_source": "nlp_diagnostic",
+                "decision_source": "protocol_default",
             }
         )
         append_decision_log(state, decision, turn_id)
@@ -6300,7 +6274,7 @@ def handle_stop(
     ]
     append_decision_log(state, decision, turn_id)
     save_state(session_dir, state)
-    if decision["outcome"] == "gate_authorized_remaining_work" and not whole_completion:
+    if decision["outcome"] == "gate_authorized_remaining_work":
         correction = (
             "Continue the authorized work, or stage an exact user_wait/external_wait "
             "disposition only when that boundary is actually reached."

@@ -6,10 +6,10 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.12`
-- Current source line: `0.8.12`
+- Current source line: `0.9.0` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
-- Stop protocol: `1.1.0`
+- Stop protocol: `2.0.0`
 - Execution protocol: `1.0.0`
 - Diagnostic classifier: `2.3.2`
 - Python: `3.10+`
@@ -18,6 +18,22 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.9.0 source-candidate status
+
+Version 0.9.0 advances only the plugin identity and Stop protocol. Under Stop
+protocol 2.0.0, an authenticated full-coverage checkpoint is the sole authority
+for completion. Classifier 2.3.2 remains diagnostic-only; privacy, integrity,
+invalid control, and explicit user-persistence failures remain hard gates.
+Schema 7, Proof protocol 1.0.0, Execution protocol 1.0.0, Python 3.10+, and the
+eight-Hook wire are unchanged.
+
+The public incident manifest contains eight reviewed fixtures across eight
+root-cause families. The immutable 0.8.12 runtime reproduces two target false
+continuations, while the current 0.9 source produces zero. This evidence is
+source-only: installed, native macOS, native Windows, CI, HOL, tag, Release,
+and public-readback gates remain independent and pending until recorded in the
+[development plan](DEVELOPMENT_PLAN_0.9.md) and acceptance record.
 
 ## 0.8.12 release status
 

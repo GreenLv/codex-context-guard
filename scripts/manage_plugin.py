@@ -22,7 +22,18 @@ MARKETPLACE = "codex-context-guard"
 PLUGIN_NAME = "context-guard"
 PLUGIN_ID = "context-guard@codex-context-guard"
 MINIMUM_CODEX = (0, 146, 0)
-IGNORED_TREE_NAMES = {".DS_Store", ".git", "Thumbs.db", "__pycache__"}
+IGNORED_TREE_NAMES = {
+    ".DS_Store",
+    ".codex",
+    ".git",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "Thumbs.db",
+    "__pycache__",
+    "build",
+    "dist",
+}
 PLUGIN_TREE_ROOTS: set[str] | None = {".codex-plugin", "assets", "hooks", "scripts", "skills"}
 ARCHIVE_INDEX_NAME = "archive-index.json"
 ARCHIVE_SCHEMA_VERSION = 1

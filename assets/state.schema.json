@@ -371,7 +371,7 @@
             "staged_at"
           ],
           "properties": {
-            "protocol_version": {"const": "1.1.0"},
+            "protocol_version": {"const": "2.0.0"},
             "turn_id": {"type": "string"},
             "token_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "created_at": {"type": "string"},
@@ -444,6 +444,8 @@
             "enum": [
               "protocol_checkpoint",
               "protocol_disposition",
+              "protocol_default",
+              "protocol_user_persistence",
               "nlp_hard_gate",
               "nlp_diagnostic",
               "legacy_classifier",

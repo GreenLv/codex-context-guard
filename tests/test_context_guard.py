@@ -602,49 +602,43 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("no Stop decisions", context)
         self.assertEqual(len(self.state()["requirements"]), before)
 
-    def test_stop_is_bounded_and_fails_closed_after_two_retries(self) -> None:
+    def test_completion_prose_is_diagnostic_and_never_forces_retry(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         first = cg.dispatch(
             self.payload("Stop", last_assistant_message="任务已经完成。")
         )
-        self.assertEqual(first["decision"], "block")
-        self.assertIn(cg.INTERNAL_CONTINUATION_PREFIX, first["reason"])
-        self.assertIn("requirements=R001", first["reason"])
-        self.assertIn("acceptance=A001", first["reason"])
-        self.prompt(first["reason"])
-        second = cg.dispatch(
-            self.payload("Stop", last_assistant_message="任务已经完成。")
-        )
-        self.assertEqual(second["decision"], "block")
-        self.assertEqual(self.state()["continuation_attempts"], 2)
-        self.prompt(second["reason"])
-        terminal = cg.dispatch(
-            self.payload("Stop", last_assistant_message="任务已经完成。")
-        )
-        self.assertFalse(terminal["continue"])
-        self.assertIn("stopped an unverified completion", terminal["stopReason"])
+        self.assertEqual(first, {})
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+        decision = self.state()["decision_log"][-1]
+        self.assertEqual(decision["observed_outcome"], "gate_completion_claim")
+        self.assertEqual(decision["outcome"], "allow_neutral")
+        self.assertEqual(decision["decision_source"], "protocol_default")
         self.assertEqual(len(self.state()["requirements"]), 1)
 
-    def test_new_user_turn_resets_bounded_completion_gate(self) -> None:
+    def test_completion_wording_cannot_change_authoritative_state(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
-        first = cg.dispatch(
-            self.payload("Stop", last_assistant_message="任务已经完成。")
-        )
-        self.assertEqual(first["decision"], "block")
-        self.assertEqual(self.state()["continuation_attempts"], 1)
-        self.prompt("继续处理缺失项并重新验收。")
-        self.assertEqual(self.state()["continuation_attempts"], 0)
-        next_attempt = cg.dispatch(
-            self.payload("Stop", last_assistant_message="任务已经完成。")
-        )
-        self.assertEqual(next_attempt["decision"], "block")
-        self.assertEqual(self.state()["continuation_attempts"], 1)
+        before = self.state()["open_items"]
+        for message in (
+            "任务已经完成。",
+            "任务尚未完成。",
+            "The entire task is complete.",
+            "A quoted report said: ‘the task is complete.’",
+        ):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    cg.dispatch(self.payload("Stop", last_assistant_message=message)),
+                    {},
+                )
+                state = self.state()
+                self.assertEqual(state["continuation_attempts"], 0)
+                self.assertEqual(state["open_items"], before)
+                self.assertIsNone(state["completion_checkpoint"])
 
-    def test_protocol_default_yield_preserves_pending_but_completion_claim_gates(
+    def test_protocol_default_yield_preserves_pending_for_all_completion_prose(
         self,
     ) -> None:
         self.prompt(
@@ -673,8 +667,12 @@ class ContextGuardTests(unittest.TestCase):
                 last_assistant_message="The entire requested task is complete.",
             )
         )
-        self.assertEqual(completed["decision"], "block")
-        self.assertEqual(self.state()["continuation_attempts"], 1)
+        self.assertEqual(completed, {})
+        self.assertEqual(self.state()["continuation_attempts"], 0)
+        self.assertEqual(
+            self.state()["decision_log"][-1]["observed_outcome"],
+            "gate_completion_claim",
+        )
 
     def test_protocol_dispositions_drive_stop_without_marking_waits_complete(
         self,
@@ -718,6 +716,56 @@ class ContextGuardTests(unittest.TestCase):
                         state["decision_log"][-1]["reason_codes"][0],
                         "protocol_continue_advisory",
                     )
+
+    def test_structured_control_is_authoritative_across_completion_wording(self) -> None:
+        messages = (
+            "The entire task is complete.",
+            "The task is not complete.",
+            "整个任务已经全部完成。",
+            "整个任务尚未完成。",
+            "The reviewer said ‘the entire task is complete’.",
+            "`status = whole task complete`",
+            "If the task were complete, this would be the final answer.",
+            "I completed the entire requested task.",
+        )
+        expected = {
+            None: "allow_neutral",
+            "user_wait": "allow_user_handoff",
+            "external_wait": "allow_external_wait",
+            "deferred": "allow_out_of_scope_deferred",
+            "continue": "allow_neutral",
+        }
+        for disposition, authoritative_outcome in expected.items():
+            outcomes: set[tuple[str, int, bool]] = set()
+            for index, message in enumerate(messages):
+                session = f"metamorphic-{disposition or 'default'}-{index}"
+                self.prompt(
+                    "$context-guard\n完成复杂任务并保留未完成要求。",
+                    session=session,
+                )
+                if disposition is not None:
+                    staged, _ = self.stage_disposition(disposition, session=session)
+                    self.assertEqual(staged.returncode, 0, staged.stderr)
+                self.assertEqual(
+                    cg.dispatch(
+                        self.payload(
+                            "Stop",
+                            session=session,
+                            last_assistant_message=message,
+                        )
+                    ),
+                    {},
+                )
+                state = self.state(session)
+                outcomes.add(
+                    (
+                        state["decision_log"][-1]["outcome"],
+                        state["continuation_attempts"],
+                        state["completion_checkpoint"] is not None,
+                    )
+                )
+                self.assertTrue(state["open_items"])
+            self.assertEqual(outcomes, {(authoritative_outcome, 0, False)})
 
     def test_private_disposition_api_derives_fixed_reason(self) -> None:
         for disposition, reason in self.DISPOSITION_REASONS.items():
@@ -978,13 +1026,24 @@ class ContextGuardTests(unittest.TestCase):
     ) -> None:
         rng = random.Random(602)
         dispositions = tuple(self.DISPOSITION_REASONS)
+        wording_families = (
+            ("english", "The entire task is complete."),
+            ("chinese", "整个任务已经全部完成。"),
+            ("quotation", "The reviewer said ‘the entire task is complete’."),
+            ("code", "`status = 'the entire task is complete'`"),
+            ("hypothetical", "If the entire task were complete, we could publish."),
+            ("negation", "The entire task is not complete."),
+            ("first_person", "I completed the entire requested task."),
+            ("attributed_speech", "Alice reported that the entire task is complete."),
+        )
+        observed_families: set[str] = set()
         attempt: dict[str, object] = {
             "staged_control": None,
             "staged_at": None,
         }
         conflicts = 0
         replacements = 0
-        for _ in range(10_000):
+        for transition_index in range(10_000):
             if rng.randrange(13) == 0:
                 attempt["staged_control"] = None
                 attempt["staged_at"] = None
@@ -1022,20 +1081,19 @@ class ContextGuardTests(unittest.TestCase):
                 if isinstance(staged, dict)
                 else None
             )
-            whole_completion = bool(rng.getrandbits(1))
             explicit_persistence = bool(rng.getrandbits(1))
             persistence_allows_deferred = bool(
                 declared == "deferred" and rng.getrandbits(1)
             )
+            family, wording = wording_families[transition_index % len(wording_families)]
+            observed_families.add(family)
+            diagnostic = cg.claims_whole_completion(wording)
             policy = cg.terminal_stop_policy(
-                whole_completion=whole_completion,
                 explicit_persistence=explicit_persistence,
                 persistence_allows_deferred=persistence_allows_deferred,
                 declared_disposition=declared,
             )
-            if whole_completion:
-                self.assertEqual(policy, "gate_completion_claim")
-            elif (
+            if (
                 explicit_persistence
                 and not persistence_allows_deferred
                 and declared not in {"user_wait", "external_wait"}
@@ -1045,11 +1103,15 @@ class ContextGuardTests(unittest.TestCase):
                 self.assertTrue(policy.startswith("yield_"), policy)
                 if declared == "continue":
                     self.assertEqual(policy, "yield_continue_advisory")
+            # The diagnostic may vary with wording, but it has no input to the
+            # protocol policy and therefore cannot change this transition.
+            self.assertIsInstance(diagnostic, bool)
 
         self.assertGreater(conflicts, 1_000)
         self.assertGreater(replacements, 100)
+        self.assertEqual(observed_families, {item[0] for item in wording_families})
 
-    def test_staged_wait_cannot_hide_uncheckpointed_whole_completion(self) -> None:
+    def test_staged_wait_outranks_completion_diagnostic(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -1058,10 +1120,14 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="整个任务已经全部完成。")
         )
-        self.assertEqual(result["decision"], "block")
+        self.assertEqual(result, {})
+        self.assertEqual(
+            self.state()["decision_log"][-1]["outcome"],
+            "allow_user_handoff",
+        )
         self.assertIsNone(self.state()["completion_checkpoint"])
 
-    def test_staged_deferred_cannot_hide_direct_whole_completion(self) -> None:
+    def test_staged_deferred_outranks_completion_diagnostic(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -1070,10 +1136,10 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="The task is complete.")
         )
-        self.assertEqual(result["decision"], "block")
+        self.assertEqual(result, {})
         self.assertEqual(
             self.state()["decision_log"][-1]["outcome"],
-            "gate_completion_claim",
+            "allow_out_of_scope_deferred",
         )
         self.assertIsNone(self.state()["completion_checkpoint"])
 
@@ -2126,7 +2192,7 @@ class ContextGuardTests(unittest.TestCase):
                 self.assertEqual(self.state()["continuation_attempts"], 0)
                 self.assertTrue(self.state()["open_items"])
 
-    def test_synthetic_forgotten_boundary_cannot_complete(self) -> None:
+    def test_synthetic_forgotten_boundary_prose_cannot_write_completion(self) -> None:
         self.prompt(
             "\n".join(
                 [
@@ -2141,9 +2207,17 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="全部完成。")
         )
-        self.assertEqual(result["decision"], "block")
-        for item in self.state()["acceptance_items"]:
-            self.assertIn(item["id"], result["reason"])
+        self.assertEqual(result, {})
+        state = self.state()
+        self.assertIsNone(state["completion_checkpoint"])
+        self.assertEqual(state["continuation_attempts"], 0)
+        self.assertTrue(
+            all(item["status"] == "pending" for item in state["acceptance_items"])
+        )
+        self.assertEqual(
+            state["decision_log"][-1]["observed_outcome"],
+            "gate_completion_claim",
+        )
 
     def test_redacted_export_is_project_bounded(self) -> None:
         secret = "sk-" + "1234567890abcdefghijkl"
@@ -2604,7 +2678,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertIsNone(current["completion_attempt"]["staged_control"])
 
-    def test_schema5_migrates_to_schema7_and_invalidates_only_inflight_control(
+    def test_stop_1_1_state_migrates_and_invalidates_only_inflight_control(
         self,
     ) -> None:
         self.prompt(
@@ -2613,7 +2687,7 @@ class ContextGuardTests(unittest.TestCase):
         evidence_id = self.record_tool()
         session_dir = self.root / "private" / "sessions" / "session-a"
         previous = self.state()
-        previous["completion_attempt"]["protocol_version"] = "1.0.0"
+        previous["completion_attempt"]["protocol_version"] = "1.1.0"
         previous["completion_attempt"]["staged_control"] = (
             cg.disposition_control("continue")
         )
@@ -4180,6 +4254,10 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn(
             "explicit_user_persistence",
             self.state(session)["decision_log"][-1]["reason_codes"],
+        )
+        self.assertEqual(
+            self.state(session)["decision_log"][-1]["decision_source"],
+            "protocol_user_persistence",
         )
 
     def test_anonymized_historical_terminal_replays_never_loop_on_continue(

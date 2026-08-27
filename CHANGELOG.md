@@ -12,6 +12,26 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.9.0 - Unreleased
+
+### Highlights
+
+- Stop protocol 2.0.0 makes an authenticated, full-coverage checkpoint the only authority that can mark a task complete; completion wording can no longer force a continuation or mutate pending state.
+- Privacy, state integrity, invalid or stale control, and explicit user-persistence failures remain fail-closed hard gates, while typed waits and safe default yields preserve unresolved work.
+- A maintainer-local append-only incident corpus and reviewed public fixtures replace repeated wording patches with reproducible protocol and regression evidence.
+
+### Changes
+
+- Classifier 2.3.2 remains unchanged and records `observed_outcome` for diagnosis only. New authoritative decision sources are `protocol_default` and `protocol_user_persistence`; historical `nlp_hard_gate` records remain readable but are not generated.
+- Stop 1.1 in-flight controls are discarded during load, while requirements, evidence, proofs, and bounded decision history remain intact. Schema 7, Proof protocol 1.0.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook wire remain unchanged.
+- `scripts/incident_corpus.py` provides standard-library-only `ingest`, `validate`, `summarize`, `benchmark`, and `export-public` commands. CI reads only manually reviewed, sanitized fixtures and never the private corpus.
+- Managed marketplace staging excludes local environment, test/lint cache, and build-output directories so generated files cannot leak into a versioned plugin cache.
+
+### Validation
+
+- The fixed public incident manifest contains eight reviewed fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero and passes all eight authority expectations while reporting diagnostic accuracy separately.
+- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Full source, installed, native-platform, CI, tag, and Release gates remain pending and are tracked in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
+
 ## 0.8.12 - 2026-08-27
 
 ### Highlights

@@ -13,7 +13,8 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Release status: `0.8.12` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-The current checkout contains the `0.8.12` release source.
+The current checkout contains the unreleased `0.9.0` source candidate. The
+published `0.8.12` release and its consumed caches remain immutable.
 
 ## Install
 
@@ -28,9 +29,11 @@ versioned caches while a fresh task starts: each command prefers the task's
 trusted plugin root and falls back to the newest surviving Context Guard tree
 under the managed plugin cache, failing closed with a reinstall hint otherwise.
 
-Version 0.8.12 stops treating a quoted completion phrase followed by a bounded
-Chinese category label, such as `“任务已完成”类声明`, as the assistant's own
-completion claim. Direct completion assertions remain gated.
+The 0.9.0 source candidate advances to Stop protocol 2.0.0: only an
+authenticated full-coverage checkpoint can mark a task complete. Completion
+wording remains visible in diagnostics but cannot alter the authoritative Stop
+outcome, pending state, or continuation count. Privacy, integrity, invalid
+control, and explicit user-persistence failures remain hard gates.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -74,7 +77,7 @@ For a recovery check, use it on a non-trivial synthetic task, run `/compact`, an
 - Ambiguous output remains `unknown`; damaged or unverifiable private state fails closed.
 - Exports are explicit and redacted. Image bytes, credentials, and raw transcript content are not copied into the requirement ledger.
 
-Proof protocol 1.0.0 checks only obligations that follow clearly from the user's request: for example, whether evidence belongs to the named file or URL, whether an edited image was inspected, or whether every explicitly listed object was covered. Cases without that kind of deterministic check use the earlier completion behavior (internally named `legacy_fallback`) rather than pretending to understand arbitrary semantics or pixels. Stop protocol 1.1.0 keeps completion control turn-bound: an unfinished disposition is advisory only and cannot force a new turn.
+Proof protocol 1.0.0 checks only obligations that follow clearly from the user's request: for example, whether evidence belongs to the named file or URL, whether an edited image was inspected, or whether every explicitly listed object was covered. Cases without that kind of deterministic check use the earlier completion behavior (internally named `legacy_fallback`) rather than pretending to understand arbitrary semantics or pixels. Stop protocol 2.0.0 keeps completion checkpoint-authoritative and turn-bound: natural-language completion classification is diagnostic only, and an unfinished disposition is advisory only and cannot force a new turn.
 
 ## How 0.8.3 separates different sources
 

@@ -1,5 +1,9 @@
 # Architecture
 
+The authoritative continuation plan for the 0.9 protocol transition is
+[Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md); its protocol
+rationale is [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md).
+
 Context Guard is a correctness sidecar for Codex. It observes lifecycle events,
 maintains private local task state, compiles a bounded recovery packet, and
 gates completion claims against successful, contract-compatible evidence. It does not replace or
@@ -199,7 +203,7 @@ checkpoint covering every non-superseded requirement and acceptance item.
 Staging the same control is idempotent, a different control conflicts, and an
 intentional change requires `--replace`.
 
-Stop protocol 1.1.0 treats terminal controls as a one-way safety lattice.
+Stop protocol 2.0.0 treats terminal controls as a protocol-authoritative safety lattice.
 `user_wait`, `external_wait`, and `deferred` describe safe handoff boundaries.
 The legacy `continue` value remains accepted for protocol compatibility but is
 advisory only: assistant work continues through tool calls before a terminal
@@ -217,37 +221,30 @@ priority over the receipt. A request observed only in assistant text, tool
 input, or an unsuccessful/unmatched tool result cannot stage anything, and no
 control command is recorded as requirement-closing evidence.
 
-Stop protocol 1.1.0 applies this fixed priority:
+Stop protocol 2.0.0 applies this fixed priority:
 
-1. private-state or prompt-boundary integrity failure, leaked private
-   checkpoint/disposition metadata, and malformed staged control fail closed;
-2. a hash-verified staged checkpoint is validated first; a valid checkpoint is
-   consumed as `complete`, while an invalid checkpoint blocks;
-3. a high-confidence whole-task completion claim without a valid checkpoint
-   blocks even if a wait or deferred disposition was staged;
-4. explicit user persistence blocks a terminal yield unless the next priority
+1. private-state and prompt-boundary integrity are verified first;
+2. leaked private checkpoint/disposition metadata fails closed;
+3. a staged control is authenticated and structurally validated; malformed,
+   stale, replayed, or conflicting control fails closed;
+4. a complete hash-verified checkpoint is consumed as `complete`, while a
+   partial or invalid checkpoint blocks;
+5. explicit user persistence blocks a terminal yield unless the next priority
    establishes a genuine unavailable boundary;
-5. `user_wait` and `external_wait` yield with requirements still pending;
+6. `user_wait` and `external_wait` yield with requirements still pending;
    `deferred` also yields when persistence is absent, or when the hash-verified
    prompt denies or excludes the specific action identified as deferred; and
-6. legacy `continue`, no staged control, or a terminal-control mismatch yields
+7. legacy `continue`, no staged control, or a terminal-control mismatch yields
    safely and leaves every unresolved requirement pending.
 
-Completion and explicit-persistence corrections are capped at two turns.
-Classifier 2.3.2 records the
-observed natural-language outcome, action facts, and anomalies for diagnosis;
-inferred action ownership no longer drives ordinary continuation. Only the
-narrow high-confidence whole-task-completion and explicit-persistence checks
-participate in the fixed priority above. Classification reads the full
-hash-verified prompt record; an ambiguous prompt boundary fails closed. A
-completion match is ignored when it is framed as a quotation, hypothetical, or
-example, question, or trailing negation, while an explicit assistant assertion
-remains actionable. A completion phrase inside a bounded quotation followed by
-a category label such as `类声明` or `这种表述` is meta-discussion rather than a
-current completion assertion. Plural and quantified completion claims such as
-“all tasks are complete” are recognized. Negation is bounded to the latest
-explicit future segment so a later authorized action is not hidden by an
-earlier denial.
+Rejected control and explicit-persistence corrections are capped at two turns.
+Classifier 2.3.2 records the observed natural-language outcome, action facts,
+and anomalies for diagnosis only. No completion wording, classifier result, or
+inferred action ownership can change the protocol outcome, pending state, or
+continuation count. `protocol_default` and `protocol_user_persistence` identify
+the new authoritative paths; `nlp_hard_gate` remains readable only in legacy
+decision history. Classification still reads the full hash-verified prompt
+record, and an ambiguous prompt boundary remains an integrity failure.
 
 ## Hook lifecycle
 

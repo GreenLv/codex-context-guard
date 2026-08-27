@@ -104,8 +104,8 @@ class PublicContractTests(unittest.TestCase):
             "> 发布状态：`0.8.12` 是最近一次已发布版本。",
             chinese,
         )
-        self.assertIn("Stop protocol 1.1.0", english)
-        self.assertIn("Stop protocol 1.1.0", chinese)
+        self.assertIn("Stop protocol 2.0.0", english)
+        self.assertIn("Stop protocol 2.0.0", chinese)
         self.assertIn("advisory only and cannot force a new turn", english)
         self.assertIn("它只是一个需要检查的信号，并不能单独证明存在 bug", chinese)
         self.assertIn("The message is normal when requested work is still open.", english)
@@ -182,6 +182,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.8.11 - 2026-08-27", changelog_zh)
         self.assertIn("## 0.8.12 - 2026-08-27", changelog)
         self.assertIn("## 0.8.12 - 2026-08-27", changelog_zh)
+        self.assertIn("## 0.9.0 - Unreleased", changelog)
+        self.assertIn("## 0.9.0 - Unreleased", changelog_zh)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -192,11 +194,12 @@ class PublicContractTests(unittest.TestCase):
             "Current published Context Guard release: `0.8.12`", compatibility
         )
         self.assertIn(
-            "Current source line: `0.8.12`", compatibility
+            "Current source line: `0.9.0` (`Unreleased` source candidate)", compatibility
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.3.2`", compatibility)
+        self.assertIn("Stop protocol: `2.0.0`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"
         )
@@ -223,6 +226,10 @@ class PublicContractTests(unittest.TestCase):
         )
         self.assertIn(
             "`0.8.12` is the 2026-08-27 compatible Stop-classifier patch",
+            versioning,
+        )
+        self.assertIn(
+            "`0.9.0` is the unreleased protocol-authority candidate",
             versioning,
         )
         for stale in (

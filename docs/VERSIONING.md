@@ -1,5 +1,9 @@
 # Versioning policy
 
+The active 0.9 source-candidate work is tracked in the authoritative
+[Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md), linked to the
+[protocol-authoritative completion design](PROTOCOL_AUTHORITATIVE_COMPLETION.md).
+
 Context Guard uses pre-1.0 semantic versioning as a product-contract signal,
 not as a measure of code volume.
 
@@ -210,6 +214,13 @@ not as a measure of code volume.
   Proof protocol 1.0.0, Stop protocol 1.1.0, Execution protocol 1.0.0, Python
   3.10+, and the eight-Hook event set are unchanged. The published 0.8.11 cache
   remains immutable.
+- `0.9.0` is the unreleased protocol-authority candidate. Stop protocol 2.0.0
+  makes an authenticated full-coverage checkpoint the sole completion
+  transition; classifier 2.3.2 remains diagnostic-only and cannot alter final
+  outcome, pending state, or continuation count. Schema 7, Proof protocol
+  1.0.0, Execution protocol 1.0.0, Python 3.10+, and the eight-Hook event set
+  remain unchanged. Stop 1.1 in-flight controls are invalidated on load while
+  durable requirements, evidence, proofs, and bounded decision history remain.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
@@ -219,12 +230,11 @@ evidence across at least two minor series; this public repository is the sole
 implementation upstream and downstream consumers pin immutable public commits;
 and rollback behavior lets already-open tasks finish safely.
 
-The proposed `0.9` line targets
+The active `0.9` source candidate implements
 [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md): only
 an authenticated full-coverage checkpoint may transition a task to complete,
-while natural-language classification becomes diagnostic-only. This is a
-protocol design target, not a claim about the current 0.8.x runtime. Accepted
-native and adversarial evidence for that contract is a prerequisite for 1.0.
+while natural-language classification is diagnostic-only. Publication remains
+gated on accepted native and adversarial evidence for that exact source.
 
 Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
 for an `enforced` item. It does not claim arbitrary pixel understanding,

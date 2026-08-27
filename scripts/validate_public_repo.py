@@ -8,9 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.8.12"
+VERSION = "0.9.0"
 SCHEMA_VERSION = 7
-STOP_PROTOCOL_VERSION = "1.1.0"
+STOP_PROTOCOL_VERSION = "2.0.0"
 CLASSIFIER_VERSION = "2.3.2"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
@@ -57,15 +57,18 @@ REQUIRED_FILES = {
     "docs/ARCHITECTURE.md",
     "docs/PRIVACY.md",
     "docs/COMPATIBILITY.md",
+    "docs/DEVELOPMENT_PLAN_0.9.md",
     "docs/LOCAL_ACCEPTANCE.md",
     "docs/VERSIONING.md",
     "hooks/hooks.json",
     "scripts/audit_commit_identity.py",
     "scripts/context_guard.py",
+    "scripts/incident_corpus.py",
     "scripts/run_context_guard.sh",
     "scripts/run-context-guard.ps1",
     "scripts/manage_plugin.py",
     "scripts/smoke_installed.py",
+    "tests/fixtures/incidents/public_incidents.json",
     "skills/context-guard/SKILL.md",
     "skills/context-guard/agents/openai.yaml",
     "skills/context-guard/references/successor-pack.md",
