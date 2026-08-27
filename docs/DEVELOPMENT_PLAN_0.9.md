@@ -2,7 +2,7 @@
 
 Status: **In progress**
 
-Target: plugin `0.9.1`, Stop protocol `2.0.0`
+Target: plugin `0.9.2`, Stop protocol `2.0.0`
 
 Latest published release: `0.8.12`
 
@@ -45,11 +45,11 @@ an unauthenticated in-flight legacy control.
 | Phase | State | Exit condition |
 | --- | --- | --- |
 | Contract and history audit | Completed | 0.8.12 behavior, incident families, and immutable-cache boundary identified |
-| Incident infrastructure | In progress (POSIX passed; Windows rerun pending) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
+| Incident infrastructure | In progress (POSIX passed; Windows 0.9.2 rerun pending) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
-| Source acceptance | In progress (macOS passed; Windows rerun pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (macOS 0.9.1 passed) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Source acceptance | In progress (macOS 0.9.2 passed; Windows rerun pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
+| Installed and native acceptance | In progress (consumed 0.9.1 macOS passed; exact 0.9.2 pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -69,13 +69,14 @@ an unauthenticated in-flight legacy control.
 
 ## Verified evidence boundary
 
-The last verified candidate commit is `02e7f57`. Its 0.9.1 source tree passes
-repository validation, the tracked-tree privacy audit,
-225 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
-external-cache compilation, and `git diff --check`. Its reviewed fixture
+The last verified implementation commit is `37612bf`. Its 0.9.2 source tree
+passes repository validation, the tracked-tree privacy audit, 226 tests with
+five capability-aware skips, the eight-Hook self-test, Ruff, external-cache
+compilation, and `git diff --check` on macOS. Its reviewed fixture
 manifest is `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`;
-0.8.12 reproduces two target false continuations and 0.9.1 produces zero. The
-exact commit also passes isolated install, strict second no-op,
+0.8.12 reproduces two target false continuations and the 0.9 line produces
+zero. The consumed 0.9.1 implementation commit `02e7f57` also passes isolated
+install, strict second no-op,
 source/staging/live/archive parity, installed self-test and lifecycle smoke,
 Stop 1.1 recovery migration, and a native macOS fresh-Hook replay on Codex CLI
 0.150.1. The real replay recorded `observed_outcome=gate_completion_claim` but
@@ -87,8 +88,13 @@ trusted archive parity.
 Native Windows at predecessor head `111cb7f` passed the eight-fixture benchmark,
 repository validation, and privacy audit, then stopped at two source failures
 that treated POSIX `0600`/`0700` bits as Windows privacy evidence. Candidate
-`02e7f57` implements and tests the native protected-ACL equivalent. Windows has
-not yet rerun that correction; CI, tag, and Release acceptance also remain open.
+`02e7f57` replaced that contract with `Set-Acl`, but the native Windows rerun at
+documentation head `360fad2` stopped when a standard user token lacked
+`SeSecurityPrivilege`. No fallback, skip, install, or cache mutation occurred.
+Implementation `37612bf` advances to 0.9.2 and replaces `Set-Acl` with a native
+DACL-only call that passes null owner, group, and SACL pointers, then performs
+an independent access-rule readback. Windows has not yet rerun this correction;
+CI, tag, and Release acceptance also remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -97,9 +103,11 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Rerun the focused ACL and complete source suites on native Windows for exact
-  candidate `02e7f57`, then complete install/no-op/parity/recovery and fresh-Hook
-  evidence on that same candidate.
+- Complete exact 0.9.2 macOS isolated/default install, no-op, parity, recovery,
+  smoke, and fresh-Hook evidence without mutating consumed candidate caches.
+- Rerun the six focused ACL tests and complete source suites on native Windows
+  with implementation `37612bf`, then complete install/no-op/parity/recovery
+  and fresh-Hook evidence on the same branch head.
 - Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
   GitHub Release, and public readback.
 
@@ -121,7 +129,7 @@ From the Windows repository root, run:
 
 ```powershell
 git pull --ff-only origin codex/0.9-protocol-authority
-git merge-base --is-ancestor 02e7f57 HEAD
+git merge-base --is-ancestor 37612bf HEAD
 py -3.10 -m unittest tests.test_incident_corpus
 ```
 

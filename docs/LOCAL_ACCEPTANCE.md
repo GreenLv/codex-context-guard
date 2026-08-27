@@ -22,9 +22,10 @@ zero false continuations and diagnostic accuracy reported separately as 1.0.
 
 A fixed-seed unit gate exercises 10,000 staged-control transitions across
 English, Chinese, quotation, code, hypothetical, negated, first-person, and
-attributed speech. Repository validation, the tracked-tree privacy audit, 225
+attributed speech. Repository validation, the tracked-tree privacy audit, 226
 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
-external-cache compilation, and `git diff --check` pass on macOS.
+external-cache compilation, and `git diff --check` pass for the 0.9.2 source on
+macOS.
 
 Consumed 0.9.0 candidate `429825f` passes a fresh isolated install, strict second
 install no-op, read-only diagnosis, full source/staging/live/archive parity,
@@ -32,7 +33,7 @@ installed self-test, lifecycle smoke, and a focused installed Stop 1.1 state
 migration. The default macOS installation preserved and verified the immutable
 0.8.12 live/archive pair, then passed the same 0.9 no-op, parity, and smoke
 chain on Codex CLI 0.150.1. These installed and native results do not substitute
-for an exact 0.9.1 rerun after the Windows ACL correction.
+for exact 0.9.2 installed and native reruns after the DACL-only correction.
 
 Native Windows first checked branch head `111cb7f` with Python 3.12.10,
 PowerShell 7.6.4, and Codex CLI 0.150.1. The public incident benchmark passed
