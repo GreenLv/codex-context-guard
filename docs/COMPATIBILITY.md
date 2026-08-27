@@ -50,6 +50,14 @@ and consumed, its cache is immutable. Version 0.9.1 advances the package
 identity rather than repairing 0.9.0 in place; all 0.9.1 installed and native
 evidence remains independent until recorded below.
 
+Exact 0.9.1 candidate `02e7f57` passes the complete macOS source suite with 225
+tests and five capability-aware skips, isolated and default-home installation,
+strict second no-op, source/staging/live/archive parity, installed self-test and
+lifecycle smoke, restoration of archived 0.8.12 and 0.9.0 live trees, and a
+fresh trusted Stop replay with zero continuations. Native Windows must rerun
+the ACL-focused and complete source suites before installation; this macOS
+evidence does not substitute for that gate.
+
 ## 0.8.12 release status
 
 Version 0.8.12 advances only the completion classifier and package identity.

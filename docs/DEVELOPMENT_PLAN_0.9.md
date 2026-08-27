@@ -45,11 +45,11 @@ an unauthenticated in-flight legacy control.
 | Phase | State | Exit condition |
 | --- | --- | --- |
 | Contract and history audit | Completed | 0.8.12 behavior, incident families, and immutable-cache boundary identified |
-| Incident infrastructure | Completed | private corpus validates; reviewed public fixtures and manifest benchmark pass |
+| Incident infrastructure | In progress (POSIX passed; Windows rerun pending) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
-| Source acceptance | Completed | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (macOS passed) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Source acceptance | In progress (macOS passed; Windows rerun pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
+| Installed and native acceptance | In progress (macOS 0.9.1 passed) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -69,19 +69,26 @@ an unauthenticated in-flight legacy control.
 
 ## Verified evidence boundary
 
-The last verified candidate commit is `429825f`. Its 0.9 source tree passes
+The last verified candidate commit is `02e7f57`. Its 0.9.1 source tree passes
 repository validation, the tracked-tree privacy audit,
-223 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
+225 tests with five capability-aware skips, the eight-Hook self-test, Ruff,
 external-cache compilation, and `git diff --check`. Its reviewed fixture
 manifest is `ec6dc9fdc4b63b8f4e18b4f4ca2335d86665e6e39be4444e829262811569af54`;
-0.8.12 reproduces two target false continuations and 0.9 produces zero. The
+0.8.12 reproduces two target false continuations and 0.9.1 produces zero. The
 exact commit also passes isolated install, strict second no-op,
 source/staging/live/archive parity, installed self-test and lifecycle smoke,
 Stop 1.1 recovery migration, and a native macOS fresh-Hook replay on Codex CLI
 0.150.1. The real replay recorded `observed_outcome=gate_completion_claim` but
 the authoritative `protocol_default/allow_neutral` outcome, zero continuations,
-preserved pending state, and a completed `SessionEnd`. Native Windows, CI, tag,
-and Release acceptance remain open.
+preserved pending state, and a completed `SessionEnd`. The default-home upgrade
+restored archived 0.8.12 and consumed 0.9.0 live trees without changing their
+trusted archive parity.
+
+Native Windows at predecessor head `111cb7f` passed the eight-fixture benchmark,
+repository validation, and privacy audit, then stopped at two source failures
+that treated POSIX `0600`/`0700` bits as Windows privacy evidence. Candidate
+`02e7f57` implements and tests the native protected-ACL equivalent. Windows has
+not yet rerun that correction; CI, tag, and Release acceptance also remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -90,7 +97,9 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Obtain independent native Windows fresh-Hook evidence for exact commit `429825f`.
+- Rerun the focused ACL and complete source suites on native Windows for exact
+  candidate `02e7f57`, then complete install/no-op/parity/recovery and fresh-Hook
+  evidence on that same candidate.
 - Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
   GitHub Release, and public readback.
 
@@ -108,10 +117,12 @@ evidence are never recorded here.
 
 ## Exact next entrypoint
 
-From the repository root, run:
+From the Windows repository root, run:
 
 ```powershell
-py -3.10 scripts\manage_plugin.py --repo-root . --apply
+git pull --ff-only origin codex/0.9-protocol-authority
+git merge-base --is-ancestor 02e7f57 HEAD
+py -3.10 -m unittest tests.test_incident_corpus
 ```
 
 At the next phase boundary, replace this entrypoint with the first unrun gate

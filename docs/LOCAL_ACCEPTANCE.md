@@ -34,7 +34,28 @@ migration. The default macOS installation preserved and verified the immutable
 chain on Codex CLI 0.150.1. These installed and native results do not substitute
 for an exact 0.9.1 rerun after the Windows ACL correction.
 
-A fresh no-bypass native macOS task displayed exactly eight installed and
+Native Windows first checked branch head `111cb7f` with Python 3.12.10,
+PowerShell 7.6.4, and Codex CLI 0.150.1. The public incident benchmark passed
+all eight fixtures with zero false continuations, diagnostic accuracy 1.0, and
+the reviewed manifest hash above. Repository and privacy validation passed.
+The complete source suite then stopped at two real failures: report-file tests
+required POSIX `0600` mode bits and private-root tests required POSIX `0700`
+mode bits. Native reruns reproduced both outside the sandbox. Installation and
+fresh-Hook gates were not started, and no 0.8.12 cache was touched.
+
+Exact 0.9.1 correction `02e7f57` replaces that false Windows contract with a
+protected ACL that grants full control only to the current user, `SYSTEM`, and
+the built-in Administrators group, removes inheritance, and reads the ACL back.
+Failure to apply or verify it is fail closed. On macOS, this exact commit passes
+repository and privacy validation, 225 tests with five capability-aware skips,
+the eight-Hook self-test, Ruff, external-cache compilation, and diff checks. A
+fresh isolated home passes installation, strict second no-op,
+source/staging/live/archive parity, installed self-test, lifecycle smoke, and
+Stop 1.1 recovery. The default home passes the same install/no-op/parity/smoke
+chain; its repair restored archived 0.8.12 and 0.9.0 live trees without changing
+their trusted archive parity.
+
+A fresh no-bypass native macOS 0.9.1 task displayed exactly eight installed and
 active Context Guard Hooks; the inspected PostToolUse definition reported
 `Plugin - context-guard@codex-context-guard` and `Trust: Trusted`. A separate
 fresh real-model replay returned the bounded Chinese meta-discussion sentence

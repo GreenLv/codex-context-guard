@@ -32,7 +32,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Validation
 
 - The fixed public incident manifest contains eight reviewed fixtures across eight root-cause families. The immutable 0.8.12 runtime reproduces two false continuations; the 0.9 candidate produces zero and passes all eight authority expectations while reporting diagnostic accuracy separately.
-- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Consumed 0.9.0 candidate `429825f` passes source, isolated installation, parity, smoke, recovery, and native macOS fresh-Hook gates; the 0.9.1 ACL correction passes the complete macOS source suite. Native Windows, exact 0.9.1 installation, CI, tag, and Release remain pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
+- A fixed seed exercises 10,000 control transitions across English, Chinese, quotation, code, hypothetical, negated, first-person, and attributed speech. Exact 0.9.1 candidate `02e7f57` passes the complete macOS source suite, isolated and default-home installation, strict no-op, parity, smoke, historical-cache recovery, and native fresh-Hook gates. Native Windows, CI, tag, and Release remain pending in the [0.9 development plan](docs/DEVELOPMENT_PLAN_0.9.md).
 
 ## 0.8.12 - 2026-08-27
 
