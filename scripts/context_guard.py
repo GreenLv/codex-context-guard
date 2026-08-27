@@ -6995,7 +6995,24 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
 
 def command_hook() -> int:
     try:
-        payload = json.load(sys.stdin)
+        raw = sys.stdin.buffer.read()
+    except AttributeError:
+        raw = sys.stdin.read().encode("utf-8", errors="strict")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        console_write(
+            json.dumps(
+                {
+                    "systemMessage": (
+                        "Context Guard received hook payload bytes that are not "
+                        "valid UTF-8; the event was not journaled"
+                    )
+                },
+                ensure_ascii=True,
+            )
+        )
+        return 0
     except json.JSONDecodeError as exc:
         console_write(
             json.dumps(

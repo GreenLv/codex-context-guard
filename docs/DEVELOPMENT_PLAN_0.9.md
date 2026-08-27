@@ -2,7 +2,7 @@
 
 Status: **In progress**
 
-Target: plugin `0.9.3`, Stop protocol `2.0.0`
+Target: plugin `0.9.4`, Stop protocol `2.0.0`
 
 Latest published release: `0.8.12`
 
@@ -22,7 +22,7 @@ This release does not broaden Context Guard into a security sandbox, an
 arbitrary semantic verifier, or a visual-understanding system. It does not
 change schema 7, classifier 2.3.2, Proof protocol 1.0.0, Execution protocol
 1.0.0, or the eight-Hook wire. It does not mutate consumed 0.8.12, 0.9.0,
-  0.9.1, or 0.9.2 caches.
+  0.9.1, 0.9.2, or 0.9.3 caches.
 
 ## Protocol decisions
 
@@ -46,11 +46,11 @@ an unauthenticated in-flight legacy control.
 | Phase | State | Exit condition |
 | --- | --- | --- |
 | Contract and history audit | Completed | 0.8.12 behavior, incident families, and immutable-cache boundary identified |
-| Incident infrastructure | In progress (POSIX passed; Windows 0.9.3 focused ACL gate passed) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
+| Incident infrastructure | In progress (POSIX passed; Windows 0.9.4 focused ACL gate passed) | private corpus validates; reviewed public fixtures, manifest benchmark, and native permission boundary pass |
 | Stop 2.0 implementation | Completed | classifier has no authoritative influence; migration and decision sources pass |
 | Regression and documentation | Completed | 10,000 seeded transitions plus subsystem regressions and bilingual adopter docs pass |
-| Source acceptance | In progress (Windows 0.9.3 passed; macOS 0.9.3 pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
-| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows 0.9.3 pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
+| Source acceptance | In progress (Windows 0.9.4 gate running; macOS pending) | validator, privacy audit, tests, self-test, Ruff, compile, and diff gates pass |
+| Installed and native acceptance | In progress (macOS 0.9.2 passed; Windows 0.9.4 pending) | isolated install/no-op/parity/smoke/recovery plus independent fresh-Hook evidence pass |
 | Publication | Pending | PR/main CI, HOL, tag CI, bilingual Release, and public readback pass in order |
 
 ## Exit conditions
@@ -112,15 +112,25 @@ next apply was a strict no-op. Native Windows diagnosis at clean public head
 three-entry DACL: the binary header, ACL size, non-null pointer, and successful
 native result were consistent, and both `GetAccessRules` and
 `RawSecurityDescriptor` read back all three ACEs. The failure was isolated to
-PowerShell `.Access` collection enumeration. The current uncommitted 0.9.3
-worktree retains the native write, uses both supported readback paths as one
-strict contract, and passes nine focused Windows tests under a standard user
-token with `SeSecurityPrivilege` unavailable. Its fixed public benchmark passes
-8/8 with zero false continuations, diagnostic accuracy 1.0, and the reviewed
-manifest hash. Repository validation, tracked-tree privacy audit, 229 tests with
-six capability-aware skips, eight-Hook self-test, Ruff 0.16.1, external-cache
-compilation, and diff checks pass with Python 3.12.10. Install and fresh-Hook
-gates remain open; CI, tag, and Release acceptance also remain open.
+PowerShell `.Access` collection enumeration. The consumed 0.9.3 candidate
+retained the native write, used both supported readback paths as one strict
+contract, passed nine focused Windows tests under a standard user token with
+`SeSecurityPrivilege` unavailable, passed its fixed public benchmark 8/8 with
+zero false continuations, diagnostic accuracy 1.0, and the reviewed manifest
+hash, and passed repository validation, tracked-tree privacy audit, 229 tests
+with six capability-aware skips, eight-Hook self-test, Ruff 0.16.1,
+external-cache compilation, and diff checks with Python 3.12.10. Its frozen
+implementation commit was installed into isolated and default homes, passed
+strict second no-op, four-way parity, installed self-test, smoke, and Stop 1.1
+recovery, and its first native fresh-Hook run exposed two facts now recorded in
+the acceptance document: the bare meta-discussion prompt left the guard
+inactive by design, and an isolated byte-level replay proved the runtime
+decoded hook stdin with the host ANSI code page, corrupting non-ASCII payload
+text before journaling. The 0.9.4 worktree fixes only that transport, adds
+subprocess regressions for byte-exact UTF-8 journaling, the UTF-8 Stop decision
+contract, and invalid-byte rejection, and leaves every protocol constant
+unchanged. Install and fresh-Hook gates remain open for the frozen 0.9.4
+commit; CI, tag, and Release acceptance also remain open.
 
 The repository records only sanitized incident IDs, aggregate counts, and the
 reviewed public fixture manifest hash. Local corpus location, user identity,
@@ -129,8 +139,9 @@ evidence are never recorded here.
 
 ## Open gates
 
-- Freeze the reviewed 0.9.3 implementation commit, then complete install/no-op/
-  parity/recovery and fresh-Hook evidence on that exact branch head.
+- Freeze the reviewed 0.9.4 implementation commit, then complete install/no-op/
+  parity/recovery and fresh-Hook evidence on that exact branch head, with the
+  fresh-task prompt explicitly activating the guard.
 - Only then proceed through PR/main CI, HOL, annotated tag, tag CI, bilingual
   GitHub Release, and public readback.
 

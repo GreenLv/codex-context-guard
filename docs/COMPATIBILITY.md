@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.8.12`
-- Current source line: `0.9.3` (`Unreleased` source candidate)
+- Current source line: `0.9.4` (`Unreleased` source candidate)
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`
@@ -19,16 +19,29 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.9.3 source-candidate status
+## 0.9.4 source-candidate status
 
-Version 0.9.3 carries forward the Stop protocol introduced by the consumed,
-unpublished 0.9.0 through 0.9.2 candidates and corrects the final
-incident-corpus ACL verification path. Under Stop
-protocol 2.0.0, an authenticated full-coverage checkpoint is the sole authority
-for completion. Classifier 2.3.2 remains diagnostic-only; privacy, integrity,
-invalid control, and explicit user-persistence failures remain hard gates.
-Schema 7, Proof protocol 1.0.0, Execution protocol 1.0.0, Python 3.10+, and the
-eight-Hook wire are unchanged.
+Version 0.9.4 carries forward the Stop protocol introduced by the consumed,
+unpublished 0.9.0 through 0.9.3 candidates and fixes the Hook payload
+transport. Under Stop protocol 2.0.0, an authenticated full-coverage
+checkpoint is the sole authority for completion. Classifier 2.3.2 remains
+diagnostic-only; privacy, integrity, invalid control, and explicit
+user-persistence failures remain hard gates. Schema 7, Proof protocol 1.0.0,
+Execution protocol 1.0.0, Python 3.10+, and the eight-Hook wire are unchanged.
+
+The `Stop` and `UserPromptSubmit` hook entrypoint now reads raw stdin bytes and
+decodes them as UTF-8 explicitly instead of accepting the host locale codec.
+On Windows hosts whose ANSI code page is a legacy multibyte code page, the
+previous behavior corrupted every non-ASCII payload byte before journaling:
+requirements and completion wording were stored mojibake-prefixed, the
+classifier could not observe completion-claim text, and payload bytes that were
+invalid in that codec crashed the hook process instead of producing a visible
+result. The corrected transport journals payload text byte-exactly and rejects
+bytes that are not valid UTF-8 with a visible one-line message while exiting
+cleanly, matching the established invalid-JSON contract. Subprocess
+regressions cover byte-exact Chinese journaling, the full UTF-8 Stop decision
+contract, and invalid-byte rejection. Hosts that already deliver UTF-8 pipes
+are unaffected except for the added invalid-byte visibility.
 
 The public incident manifest contains eight reviewed fixtures across eight
 root-cause families. The immutable 0.8.12 runtime reproduces two target false
@@ -58,8 +71,11 @@ Version 0.9.2 advanced the package identity and wrote only the DACL rather than
 repairing either candidate in place. Native Windows then confirmed that the
 write succeeded and both supported readback paths contained the exact three
 ACEs, while the PowerShell `.Access` adapter did not reliably enumerate the
-collection. Version 0.9.3 therefore changes the verification path and package
-identity without rewriting any consumed cache.
+collection. Version 0.9.3 changed the verification path and package identity
+without rewriting any consumed cache, passed the Windows source gates, and was
+installed; its first native fresh-Hook run then exposed the stdin transport
+defect corrected by 0.9.4, which advances the package identity without
+rewriting any consumed cache.
 
 Exact 0.9.1 candidate `02e7f57` passes the complete macOS source suite with 225
 tests and five capability-aware skips, isolated and default-home installation,
@@ -76,14 +92,14 @@ On macOS, exact 0.9.2 source, isolated/default installation, strict no-op,
 four-way parity, installed smoke/recovery, and fresh trusted-Hook evidence pass;
 historical 0.8.12, 0.9.0, and 0.9.1 live trees were restored from immutable
 archives after host cleanup without changing their content digests. This does
-not substitute for native Windows execution of the corrected 0.9.3 verification
-contract. The 0.9.3 Windows source candidate passes nine focused incident-corpus
+not substitute for native Windows execution of the corrected verification
+contract. The Windows source line passes nine focused incident-corpus
 tests under a standard user token with `SeSecurityPrivilege` unavailable,
 including real directory/file writes, independent dual readback, and malformed-
-ACL rejection. Repository validation, tracked-tree privacy audit, 229 tests with
-six capability-aware skips, eight-Hook self-test, Ruff 0.16.1, external-cache
-compilation, and diff checks also pass. Installed and fresh-Hook gates remain
-separate and pending.
+ACL rejection. Repository validation, tracked-tree privacy audit, the complete
+test suite with capability-aware skips, eight-Hook self-test, Ruff, external-
+cache compilation, and diff checks also pass on the 0.9.4 source. Installed and
+fresh-Hook gates remain separate and pending.
 
 ## 0.8.12 release status
 

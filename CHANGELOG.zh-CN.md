@@ -12,27 +12,29 @@
 - **0.5.x——说明为什么拦截，并让升级可恢复：** 用户和维护者可以查看一次回复为什么被允许或阻止；旧版 Hook 会按原始内容存档，缓存损坏时可以从可信副本恢复。
 - **0.4.x——记住用户交代的任务：** 在上下文压缩和恢复后保留用户输入、需求、后续修正、委派工作和未完成的验收项；只要用户要求的工作仍未完成，就不能报告整个任务已经结束。
 
-## 0.9.3 - Unreleased
+## 0.9.4 - Unreleased
 
 ### 重点
 
+- Hook payload 传输现在显式按 UTF-8 解码 stdin。在沿用旧 ANSI 代码页的 Windows 主机上，非 ASCII 的 prompt 与回复文本会在入账前被静默损坏，导致分类器看不到完成声明措辞、记录的 requirements 出现乱码；现在 payload 按字节精确入账，非 UTF-8 字节会以可见消息拒绝而不是崩溃。
 - Stop protocol 2.0.0 规定：只有经过认证且覆盖完整的 checkpoint 才能把任务标为完成；完成措辞不能再强制续跑或改写 pending 状态。
 - 隐私、状态完整性、无效或过期 control，以及用户明确持续执行要求仍按 fail-closed 硬门禁处理；typed wait 与默认安全结束会保留未解决事项。
 - 维护者本地 append-only 事故库和人工复核的公开 fixture，用可复现的协议回归替代持续增加措辞补丁。
 
 ### 变更
 
-- Classifier 2.3.2 保持不变，只把 `observed_outcome` 写入诊断。新的权威 decision source 为 `protocol_default` 和 `protocol_user_persistence`；历史 `nlp_hard_gate` 记录仍可读取，但 0.9 不再生成。
-- 加载 Stop 1.1 状态时丢弃进行中的旧 control，同时保留 requirements、evidence、proof 和有界 decision history。Schema 7、Proof protocol 1.0.0、Execution protocol 1.0.0、Python 3.10+ 和八 Hook wire 均不变。
+- `Stop`/`UserPromptSubmit` Hook 入口读取原始 stdin 字节并按 UTF-8 解码，不受主机 locale 影响，再分发给未改变的 payload 处理逻辑。新增子进程回归覆盖中文字节精确入账、完整 UTF-8 Stop 决策合同和非 UTF-8 字节的可见拒绝。八 Hook wire、schema 7、classifier 2.3.2、Proof protocol 1.0.0、Execution protocol 1.0.0 和 Python 3.10+ 支持均不变。
+- Classifier 2.3.2 只把 `observed_outcome` 写入诊断。权威 decision source 为 `protocol_default` 和 `protocol_user_persistence`；历史 `nlp_hard_gate` 记录仍可读取，但 0.9 不再生成。
+- 加载 Stop 1.1 状态时丢弃进行中的旧 control，同时保留 requirements、evidence、proof 和有界 decision history。
 - `scripts/incident_corpus.py` 仅使用标准库，提供 `ingest`、`validate`、`summarize`、`benchmark` 和 `export-public`；CI 只读取人工复核的脱敏 fixture，不访问私有事故库。
 - 事故库目录和文件在 POSIX 上继续使用精确的 `0700`/`0600` 权限；Windows 上通过 `SetNamedSecurityInfoW` 只写入受保护 DACL，限定为当前用户、`SYSTEM` 和内置 Administrators 组，再通过 `GetAccessRules` 与原始 security descriptor 双重验证精确三条 ACE。该路径不请求 owner 或 SACL 变更，标准用户令牌不需要 `SeSecurityPrivilege`；写入或验证失败仍 fail closed。
-- 未发布的 0.9.0 候选把 POSIX mode bits 当作 Windows 隐私测试；已消费的 0.9.1 候选改用会请求 `SeSecurityPrivilege` 的 `Set-Acl`；0.9.2 已正确写入原生 DACL，但 PowerShell `.Access` 回读不能可靠枚举返回的规则集合。其已安装缓存均保持不可变；0.9.3 只修改验证路径和 package identity。
+- 未发布的 0.9.0 候选把 POSIX mode bits 当作 Windows 隐私测试；已消费的 0.9.1 候选改用会请求 `SeSecurityPrivilege` 的 `Set-Acl`；0.9.2 已正确写入原生 DACL，但 PowerShell `.Access` 回读不能可靠枚举返回的规则集合；已消费的 0.9.3 候选修正了该验证路径并通过 Windows 源码门禁，其首次原生 fresh-Hook 运行暴露了本版的 stdin 传输缺陷。四个已安装缓存均保持不可变；0.9.4 只修改 Hook 传输和 package identity。
 - 受管 marketplace staging 会排除本地环境、测试/lint 缓存和构建输出目录，避免生成文件进入版本化插件缓存。
 
 ### 验证
 
 - 固定公开 manifest 包含八类根因的八条复核 fixture。不可变的 0.8.12 runtime 复现两次错误续跑；0.9 候选为零，并通过八条权威结果预期，diagnostic accuracy 单独统计。
-- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。0.9.3 Windows 源码候选已在标准用户令牌下通过九项聚焦事故库测试，覆盖真实目录/文件 DACL 写入、双重回读和畸形 ACL 拒绝；repository validator、tracked-tree 隐私审计、229 项测试（六项 capability-aware skip）、八 Hook self-test、Ruff 0.16.1、外部缓存编译和 diff 检查也全部通过。安装态和 fresh-Hook 验收继续记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中；CI、tag 和 Release 仍待完成，也不属于本次候选任务。
+- 固定 seed 覆盖 10,000 组 control 转换以及中英文、引用、代码、假设、否定、第一人称和 attributed speech。Windows 源码线已在标准用户令牌下通过九项聚焦事故库测试（覆盖真实目录/文件 DACL 写入、双重回读和畸形 ACL 拒绝）以及新增的 UTF-8 Hook 传输回归；repository validator、tracked-tree 隐私审计、完整测试套件（含 capability-aware skip）、八 Hook self-test、Ruff、外部缓存编译和 diff 检查也全部通过。安装态和 fresh-Hook 验收继续记录在 [0.9 开发计划](docs/DEVELOPMENT_PLAN_0.9.md)中；CI、tag 和 Release 仍待完成，也不属于本次候选任务。
 
 ## 0.8.12 - 2026-08-27
 

@@ -178,6 +178,91 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(result.stderr, "")
 
+    def run_hook_subprocess(self, payload_bytes: bytes, session: str) -> subprocess.CompletedProcess:
+        data_dir = self.root / "hook-cli" / session
+        data_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["CONTEXT_GUARD_DATA_DIR"] = str(data_dir)
+        return subprocess.run(
+            [sys.executable, str(MODULE_PATH), "hook"],
+            input=payload_bytes,
+            capture_output=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+
+    def hook_session_state(self, session: str) -> dict:
+        state_path = (
+            self.root / "hook-cli" / session / "sessions" / session / "state.json"
+        )
+        return json.loads(state_path.read_text(encoding="utf-8"))
+
+    def test_hook_stdin_persists_utf8_payload_bytes_exactly(self) -> None:
+        prompt = "$context-guard 只回复一次：这里讨论的是“任务已完成”类声明。"
+        payload = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "utf8-stdin",
+            "cwd": str(self.project),
+            "prompt": prompt,
+        }
+        result = self.run_hook_subprocess(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"), "utf8-stdin"
+        )
+        stderr = result.stderr.decode("utf-8", "replace")
+        self.assertEqual(result.returncode, 0, stderr)
+        self.assertEqual(stderr, "")
+        session_dir = self.root / "hook-cli" / "utf8-stdin" / "sessions" / "utf8-stdin"
+        state = self.hook_session_state("utf8-stdin")
+        self.assertTrue(state["mode"]["active"])
+        record = json.loads(
+            (session_dir / "prompts" / "P0001.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(record["text"], prompt)
+        self.assertEqual(record["unicode_repairs"], 0)
+
+    def test_hook_stdin_records_utf8_stop_decision_contract(self) -> None:
+        reply = "这里讨论的是“任务已完成”类声明，而不是宣称当前验收任务已经完成。"
+        submit = {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "utf8-stop",
+            "cwd": str(self.project),
+            "prompt": "$context-guard 只回复一次：" + reply,
+        }
+        first = self.run_hook_subprocess(
+            json.dumps(submit, ensure_ascii=False).encode("utf-8"), "utf8-stop"
+        )
+        self.assertEqual(first.returncode, 0, first.stderr.decode("utf-8", "replace"))
+        stop = {
+            "hook_event_name": "Stop",
+            "session_id": "utf8-stop",
+            "cwd": str(self.project),
+            "last_assistant_message": reply,
+        }
+        second = self.run_hook_subprocess(
+            json.dumps(stop, ensure_ascii=False).encode("utf-8"), "utf8-stop"
+        )
+        self.assertEqual(second.returncode, 0, second.stderr.decode("utf-8", "replace"))
+        state = self.hook_session_state("utf8-stop")
+        latest = state["decision_log"][-1]
+        self.assertEqual(latest["observed_outcome"], "gate_completion_claim")
+        self.assertEqual(latest["decision_source"], "protocol_default")
+        self.assertEqual(latest["outcome"], "allow_neutral")
+        self.assertEqual(state["continuation_attempts"], 0)
+        self.assertEqual(
+            [r["id"] for r in state["requirements"] if r["status"] == "pending"],
+            ["R001"],
+        )
+
+    def test_hook_stdin_rejects_non_utf8_bytes_visibly(self) -> None:
+        result = self.run_hook_subprocess(b"\xff\xfe{\"hook_event_name\":", "bad-bytes")
+        stderr = result.stderr.decode("utf-8", "replace")
+        self.assertEqual(result.returncode, 0, stderr)
+        self.assertIn("not valid UTF-8", result.stdout.decode("utf-8", "replace"))
+        self.assertEqual(stderr, "")
+        session_dir = self.root / "hook-cli" / "bad-bytes" / "sessions" / "bad-bytes"
+        self.assertFalse(session_dir.exists())
+
     def record_tool(
         self,
         *,

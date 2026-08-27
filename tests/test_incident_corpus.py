@@ -40,10 +40,15 @@ if ($isDirectory) {
 } else {
     $item = [System.IO.FileInfo]::new($path)
 }
-$observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
-    $item,
-    [System.Security.AccessControl.AccessControlSections]::Access
-)
+$accessSections = [System.Security.AccessControl.AccessControlSections]::Access
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    $observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
+        $item,
+        $accessSections
+    )
+} else {
+    $observed = $item.GetAccessControl($accessSections)
+}
 $rules = $observed.GetAccessRules(
     $true,
     $true,
@@ -322,6 +327,59 @@ class IncidentCorpusTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "could not be verified"):
                 tool.restrict_private_path(path, directory=False)
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and shutil.which("powershell.exe"),
+        "Windows PowerShell 5.1 ACL regression",
+    )
+    def test_windows_acl_script_supports_windows_powershell_51(self) -> None:
+        tool = load_tool()
+        shell = shutil.which("powershell.exe")
+        assert shell is not None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cases = (
+                (root / "legacy-directory", True),
+                (root / "legacy-file.dat", False),
+            )
+            for path, is_directory in cases:
+                if is_directory:
+                    path.mkdir()
+                else:
+                    path.write_bytes(b"")
+                for action in ("apply", "verify"):
+                    environment = os.environ.copy()
+                    environment.update(
+                        {
+                            "CONTEXT_GUARD_PRIVATE_PATH": str(path),
+                            "CONTEXT_GUARD_PRIVATE_KIND": (
+                                "directory" if is_directory else "file"
+                            ),
+                            "CONTEXT_GUARD_PRIVATE_ACL_ACTION": action,
+                        }
+                    )
+                    result = subprocess.run(
+                        [
+                            shell,
+                            "-NoLogo",
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            tool.WINDOWS_ACL_SCRIPT,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=30,
+                        env=environment,
+                    )
+                    self.assertEqual(
+                        result.returncode,
+                        0,
+                        result.stderr,
+                    )
+                    self.assertEqual(result.stdout.strip(), tool.WINDOWS_ACL_MARKER)
 
     def test_windows_acl_script_writes_only_a_protected_dacl(self) -> None:
         tool = load_tool()

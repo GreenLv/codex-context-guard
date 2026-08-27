@@ -202,10 +202,15 @@ if ($isDirectory) {
 } else {
     $item = [System.IO.FileInfo]::new($path)
 }
-$observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
-    $item,
-    [System.Security.AccessControl.AccessControlSections]::Access
-)
+$accessSections = [System.Security.AccessControl.AccessControlSections]::Access
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    $observed = [System.IO.FileSystemAclExtensions]::GetAccessControl(
+        $item,
+        $accessSections
+    )
+} else {
+    $observed = $item.GetAccessControl($accessSections)
+}
 if (-not $observed.AreAccessRulesProtected) {
     throw 'private ACL still inherits access rules'
 }
@@ -325,7 +330,16 @@ def _windows_acl_error(path: Path, *, directory: bool, apply: bool) -> str | Non
     except (OSError, subprocess.TimeoutExpired):
         return "Windows private ACL command could not run"
     if result.returncode != 0 or result.stdout.strip() != WINDOWS_ACL_MARKER:
-        return "Windows private ACL is not restricted to the current user and system principals"
+        detail = ""
+        for line in reversed((result.stderr or "").strip().splitlines()):
+            if line.strip():
+                detail = line.strip()[:200]
+                break
+        generic = (
+            "Windows private ACL is not restricted to the current user "
+            "and system principals"
+        )
+        return f"{generic}: {detail}" if detail else generic
     return None
 
 
