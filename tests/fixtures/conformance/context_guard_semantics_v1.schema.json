@@ -1,0 +1,593 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Context Guard portable conformance fixture v1",
+  "description": "Platform-neutral conformance cases shared by codex-context-guard (canonical) and dsh-completion-guard (byte mirror). Only the JSON Schema keywords used by the repository's stdlib validator are employed: type, const, enum, required, properties, additionalProperties, items, minItems, maxItems, pattern, oneOf, $ref, $defs.",
+  "type": "object",
+  "required": [
+    "fixture",
+    "fixtureVersion",
+    "reasonCodeVocabulary",
+    "cases"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "fixture": {
+      "const": "context_guard_semantics_v1"
+    },
+    "fixtureVersion": {
+      "const": "1"
+    },
+    "description": {
+      "type": "string"
+    },
+    "reasonCodeVocabulary": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9_]{3,64}(?!\\n)$"
+      },
+      "minItems": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "events",
+        "expect"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{3,80}(?!\\n)$"
+        },
+        "category": {
+          "enum": [
+            "authority",
+            "capture",
+            "stop",
+            "boundary",
+            "evidence-binding",
+            "state-verification",
+            "replay",
+            "recovery",
+            "observability",
+            "unicode-paths",
+            "goal"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        },
+        "expect": {
+          "$ref": "#/$defs/expectation"
+        }
+      }
+    },
+    "event": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/rootMessage"
+        },
+        {
+          "$ref": "#/$defs/delegatedMessage"
+        },
+        {
+          "$ref": "#/$defs/toolResult"
+        },
+        {
+          "$ref": "#/$defs/checkpointRequest"
+        },
+        {
+          "$ref": "#/$defs/boundaryRequest"
+        },
+        {
+          "$ref": "#/$defs/completionRequest"
+        },
+        {
+          "$ref": "#/$defs/compact"
+        },
+        {
+          "$ref": "#/$defs/resume"
+        },
+        {
+          "$ref": "#/$defs/goalChange"
+        }
+      ]
+    },
+    "rootMessage": {
+      "type": "object",
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "root_message"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "delegatedMessage": {
+      "type": "object",
+      "required": [
+        "type",
+        "text",
+        "lineage"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "delegated_message"
+        },
+        "text": {
+          "type": "string"
+        },
+        "lineage": {
+          "enum": [
+            "subagent",
+            "goal",
+            "plugin"
+          ]
+        }
+      }
+    },
+    "typedValue": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "required": [
+            "k",
+            "v"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "k": {
+              "const": "b"
+            },
+            "v": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "k",
+            "v"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "k": {
+              "const": "i"
+            },
+            "v": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "k",
+            "v"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "k": {
+              "const": "s"
+            },
+            "v": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "k",
+            "v"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "k": {
+              "const": "e"
+            },
+            "v": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9_-]*(?!\\n)$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "k",
+            "v"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "k": {
+              "const": "x"
+            },
+            "v": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{2})+(?!\\n)$"
+            }
+          }
+        }
+      ]
+    },
+    "toolResult": {
+      "type": "object",
+      "required": [
+        "type",
+        "evidenceId",
+        "tool",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "tool_result"
+        },
+        "evidenceId": {
+          "type": "string",
+          "pattern": "^E[a-z0-9-]{1,40}(?!\\n)$"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "unknown",
+            "durability-unknown"
+          ]
+        },
+        "semanticAction": {
+          "type": "string",
+          "pattern": "^[a-z_]{3,40}(?!\\n)$"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "executables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subjects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "surfaces": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "enum": [
+              "artifact",
+              "ui",
+              "visual",
+              "scope"
+            ]
+          }
+        },
+        "resolvedTarget": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/typedValue"
+          }
+        },
+        "observedState": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/typedValue"
+          }
+        },
+        "parseStatus": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{1,64}(?!\\n)$"
+        },
+        "externalOperationRef": {
+          "type": "object",
+          "required": [
+            "id",
+            "status"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z0-9_-]{3,64}(?!\\n)$"
+            },
+            "status": {
+              "enum": [
+                "running",
+                "pending",
+                "succeeded",
+                "failed"
+              ]
+            }
+          }
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "checkpointRequest": {
+      "type": "object",
+      "required": [
+        "type",
+        "evidenceIds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "checkpoint_request"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "replayedCertificate": {
+          "type": "object",
+          "required": [
+            "epoch",
+            "contractRevision"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "epoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "contractRevision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "digestMatchesCurrentInputs": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "boundaryRequest": {
+      "type": "object",
+      "required": [
+        "type",
+        "disposition"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "boundary_request"
+        },
+        "disposition": {
+          "enum": [
+            "user_wait",
+            "external_wait",
+            "deferred"
+          ]
+        }
+      }
+    },
+    "completionRequest": {
+      "type": "object",
+      "required": [
+        "type",
+        "claim"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "completion_request"
+        },
+        "claim": {
+          "type": "string"
+        }
+      }
+    },
+    "compact": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "compact"
+        }
+      }
+    },
+    "resume": {
+      "type": "object",
+      "required": [
+        "type",
+        "generation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "resume"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "recoveryBody": {
+          "const": "duplicate"
+        },
+        "integrity": {
+          "enum": [
+            "ok",
+            "corrupt",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "goalChange": {
+      "type": "object",
+      "required": [
+        "type",
+        "action",
+        "revision"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "goal_change"
+        },
+        "action": {
+          "enum": [
+            "resume",
+            "pause",
+            "complete",
+            "clear"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "producer": {
+          "enum": [
+            "model_tool",
+            "direct_service"
+          ]
+        }
+      }
+    },
+    "expectation": {
+      "type": "object",
+      "required": [
+        "completed",
+        "completion_allowed",
+        "force_continue",
+        "pending_preserved",
+        "integrity",
+        "reason_codes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "completed": {
+          "type": "boolean"
+        },
+        "completion_allowed": {
+          "type": "boolean"
+        },
+        "force_continue": {
+          "type": "boolean"
+        },
+        "pending_preserved": {
+          "type": "boolean"
+        },
+        "boundary": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "disposition",
+                "persistedResult"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "disposition": {
+                  "enum": [
+                    "user_wait",
+                    "external_wait",
+                    "deferred"
+                  ]
+                },
+                "persistedResult": {
+                  "enum": [
+                    "accepted",
+                    "rejected",
+                    "unknown"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "integrity": {
+          "enum": [
+            "ok",
+            "violation",
+            "unknown"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{3,64}(?!\\n)$"
+          }
+        },
+        "offendingEvidenceIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

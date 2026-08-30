@@ -1,0 +1,207 @@
+{
+  "ledgerVersion": "1",
+  "description": "Delta ledger tracking how dsh-completion-guard adapts codex-context-guard protocol capabilities. Each entry separates the source fact from plan status, implementation status, deterministic tests, native platform acceptance, and release readback. A disposition of adapted/adopted with implementationStatus not-implemented is a planned alignment, not a shipped one.",
+  "source": {
+    "product": "codex-context-guard",
+    "version": "v0.9.4",
+    "head": "0921dcd",
+    "stopProtocol": "2.0.0",
+    "proofProtocol": "1.0.0",
+    "executionProtocol": "1.0.0",
+    "stateSchema": 7
+  },
+  "target": {
+    "product": "dsh-completion-guard",
+    "codeBaseline": "v0.2.1",
+    "sourceHead": "0c37192",
+    "host": "dsh 0.1.1-rc.2 / cordis 4.0.1",
+    "nextRelease": "v0.3.0"
+  },
+  "dispositions": [
+    "adopted",
+    "adapted",
+    "already-equivalent",
+    "not-applicable",
+    "deferred",
+    "rejected"
+  ],
+  "entries": [
+    {
+      "capability": "stop-protocol-2",
+      "sourceFact": "Stop protocol 2.0.0 (published v0.9.4): only an authenticated, current-turn, full-coverage checkpoint can mark a task complete; assistant completion prose is diagnostic and never a control source.",
+      "disposition": "adapted",
+      "targetRelease": "dsh-completion-guard v0.3.0",
+      "rationale": "DSH keeps its native Goal Round Driver scheduling; the stop decision table is rebuilt so prose classification only produces diagnostics and uncontrolled turns safe-yield with pending items preserved.",
+      "planStatus": "planned in DSH v0.3.0 stop policy split (observeAssistantOutcome / decideTurnBoundary)",
+      "implementationStatus": "not-implemented",
+      "tests": [],
+      "plannedTests": [
+        "stop-prose-is-diagnostic",
+        "no-control-safe-yield",
+        "stop-metamorphic-equivalence",
+        "active-armed-goal-round-driver-only"
+      ],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "proof-protocol-1",
+      "sourceFact": "Proof protocol 1.0.0 (published v0.9.4): deterministic proof contracts bind obligations to evidence with hash-bound manifests.",
+      "disposition": "adapted",
+      "targetRelease": "dsh-completion-guard v0.3.0 (minimal state verification) and v0.4.0 (full proof manifest)",
+      "rationale": "v0.3 introduces effect plus independent state readback for the stateful action set with semantic action and target binding; the full versioned proof manifest (subject readback, scope coverage) follows in v0.4.",
+      "planStatus": "planned; minimal state_verification set is a v0.3.0 release gate",
+      "implementationStatus": "not-implemented",
+      "tests": [],
+      "plannedTests": [
+        "stateful-actions-require-independent-readback",
+        "effect-only-certification-rejected",
+        "binding-state-closure-role-matrix"
+      ],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "certificate-manifest-digest-v3",
+      "sourceFact": "Digest v3 canonical manifests (this repository, introduced with the semantic compatibility assets): session/host/evidence/binding/certification digests with golden vectors and a cross-language gate.",
+      "disposition": "adopted",
+      "targetRelease": "dsh-completion-guard v0.3.0",
+      "rationale": "DSH byte-mirrors tests/fixtures/conformance/digest_v3 and re-derives all 29 vectors with its own runner; digest identity inputs exclude telemetry refs by contract.",
+      "planStatus": "fixture gate frozen; DSH runner implemented against the byte mirror",
+      "implementationStatus": "codex-encoder-and-fixture-complete; dsh-runner-implemented (vitest re-derives all 29 vectors from the byte mirror)",
+      "tests": [
+        "codex-context-guard tests/test_reference_digest_encoder.py (29/29 golden vectors, fail-closed negatives, --check gate)",
+        "dsh-completion-guard tests/domain/digest-v3.test.ts (byte-mirror pin and 29/29 cross-language vectors)"
+      ],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "execution-protocol-1",
+      "sourceFact": "Execution protocol 1.0.0 exists in Codex v0.9.4; not all surfaces are enabled through PreToolUse in Codex itself.",
+      "disposition": "deferred",
+      "targetRelease": "unassigned",
+      "rationale": "DSH first needs a host coverage matrix (tools guard, permissions, sandbox, tool input digest, agent lineage, Goal CAS, high-risk write surfaces); an execution contract is only built against confirmed gaps.",
+      "planStatus": "deferred pending host coverage matrix",
+      "implementationStatus": "not-implemented",
+      "tests": [],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "classifier-2.3.2-quoted-completion",
+      "sourceFact": "Classifier 2.3.2 (v0.8.12/0.9.4) keeps quoted completion phrases and meta-discussion diagnostic; direct completion assertions stay gated.",
+      "disposition": "adapted",
+      "targetRelease": "dsh-completion-guard v0.3.0",
+      "rationale": "The DSH stop policy rebuild keeps whole-completion and quote/assumption classification as diagnostic outcome codes only.",
+      "planStatus": "planned with stop-protocol-2",
+      "implementationStatus": "not-implemented",
+      "tests": [],
+      "plannedTests": [
+        "quoted-completion-diagnostic-only"
+      ],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "utf8-stdin-decoding",
+      "sourceFact": "v0.9.4 decodes Hook stdin as UTF-8 explicitly, independent of host locale, rejecting invalid bytes fail-closed.",
+      "disposition": "already-equivalent",
+      "targetRelease": "none",
+      "rationale": "DSH has no Hook stdin surface; it reads persisted structured session logs, so non-ASCII prompt text is preserved natively.",
+      "planStatus": "satisfied by native host design",
+      "implementationStatus": "already-equivalent",
+      "tests": [],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "managed-cache-fallback",
+      "sourceFact": "v0.8.11 Hooks fall back to the newest valid managed plugin cache when the original cache directory is removed, with strict version validation and a repair hint when nothing valid survives.",
+      "disposition": "not-applicable",
+      "targetRelease": "none",
+      "rationale": "DSH has no installed Hook cache lifecycle; plugin loading and lifecycle belong to the Cordis host.",
+      "planStatus": "not applicable to the DSH host model",
+      "implementationStatus": "not-applicable",
+      "tests": [],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "installer-missing-cache-messaging",
+      "sourceFact": "v0.8.11 installer explains missing historical caches and how to restore them instead of failing silently.",
+      "disposition": "not-applicable",
+      "targetRelease": "none",
+      "rationale": "Same host-model boundary as managed-cache-fallback.",
+      "planStatus": "not applicable to the DSH host model",
+      "implementationStatus": "not-applicable",
+      "tests": [],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "privacy-token-value-classifier",
+      "sourceFact": "v0.8.11 privacy classification inspects serialized token field values, allowing redaction placeholders and readable examples while blocking real-looking values.",
+      "disposition": "already-equivalent",
+      "targetRelease": "none",
+      "rationale": "DSH sanitizes clause text by value patterns (bearer tokens, header values, quoted and bare secret assignments) before items are stored; value-based redaction is the existing behavior.",
+      "planStatus": "satisfied by existing DSH sanitization",
+      "implementationStatus": "already-equivalent",
+      "tests": [
+        "tests/domain/core.test.ts sanitizeClauseText coverage (existing DSH suite)"
+      ],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "incident-corpus",
+      "sourceFact": "v0.9.4 adds a standard-library incident corpus tool with reviewed, sanitized public fixtures used by CI.",
+      "disposition": "adapted",
+      "targetRelease": "dsh-completion-guard v0.3.0 (fixture layer only)",
+      "rationale": "Cross-platform protocol regressions are expressed as portable conformance cases in the shared fixture; the corpus tooling itself stays Codex-only.",
+      "planStatus": "portable fixture layer established; case growth is continuous",
+      "implementationStatus": "fixture-schema-and-first-batch-present",
+      "tests": [
+        "tests/test_conformance_fixtures.py (schema validation and privacy hygiene)"
+      ],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "schema-7-private-ledger",
+      "sourceFact": "Codex persists a private schema-7 state ledger across the eight-Hook lifecycle.",
+      "disposition": "not-applicable",
+      "targetRelease": "none",
+      "rationale": "DSH persists in the native session log by design; the plan explicitly excludes porting the Codex private ledger.",
+      "planStatus": "not applicable; shared semantics carried by fixtures instead",
+      "implementationStatus": "not-applicable",
+      "tests": [],
+      "plannedTests": [],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    },
+    {
+      "capability": "surface-intent-and-capability-binding",
+      "sourceFact": "Codex v0.9.4 carries the deterministic proof contract surface classifier whose substring misclassification and capability adaptation gaps are scheduled for repair in v0.9.5/v0.10.0 (canonical locator, capability trust root, clause-level surface intent).",
+      "disposition": "deferred",
+      "targetRelease": "dsh-completion-guard v0.4.0",
+      "rationale": "DSH Layer B reuses the Codex canonical locator, capability priority, and clause-derived surface tuple semantics via portable fixtures after the Codex repair lands; DSH must not fork its own binding rules.",
+      "planStatus": "deferred until Codex v0.9.5/v0.10.0 semantics freeze",
+      "implementationStatus": "not-implemented",
+      "tests": [],
+      "plannedTests": [
+        "canonical-locator-subject-identity",
+        "capability-trust-root-priority"
+      ],
+      "nativeAcceptance": "none",
+      "releaseReadback": "none"
+    }
+  ]
+}
