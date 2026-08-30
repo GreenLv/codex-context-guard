@@ -4,6 +4,22 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.9.4`; accepted `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## Post-release semantic conformance gate acceptance (Windows, 2026-08-30)
+
+Native Windows 11 source acceptance used a fresh isolated checkout of exact
+commit `b59fcfe1aaf8ead3f0438bc67dc7f725c869a473` with Python 3.12.10,
+Windows PowerShell 5.1, and Ruff 0.16.1. Repository validation, the tracked-tree
+privacy audit, 313 tests with six capability-aware skips, the eight-Hook
+self-test, Ruff, compilation, `git diff --check`, the native PowerShell launcher,
+and both reference digest encoder gates passed. The digest fixture contained 29
+byte-identical golden vectors, and its raw `cases.json` SHA-256 matched the DSH
+mirror under the host's effective `core.autocrlf=true` setting.
+
+This result accepts the post-release portable digest and conformance assets on
+native Windows. It does not claim that the planned stop-policy, boundary,
+semantic-action, or Goal integration is implemented, and it is not a new
+installed-plugin, tag, package, or release acceptance result.
+
 ## 0.9.4 release acceptance (2026-08-28)
 
 The release advances the plugin identity to 0.9.4 and retains Stop protocol
