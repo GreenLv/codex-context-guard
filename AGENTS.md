@@ -127,6 +127,17 @@ authoritative.
   POSIX shell, `bash`, PowerShell, or another runtime.
 - For documentation-only changes, run the affected contract tests, repository
   validator, privacy audit, and `git diff --check`.
+- During conformance, schema, or digest repair loops, first replay the focused
+  reproducer and close the affected input family across the reference encoder,
+  shared fixtures, validators, and mirrors. Run the complete repository matrix
+  after that acceptance domain is closed, not after each individual
+  counterexample, unless a cross-cutting edit makes focused evidence
+  insufficient.
+- Reuse an earlier result only when its exact commit or artifact subject and all
+  inputs that affect it are unchanged. A mirrored fixture edit invalidates its
+  pin and cross-repository conformance evidence; a changed packaged byte
+  invalidates exact-artifact, install, native artifact, and release-identity
+  evidence.
 - For runtime or release changes, run at least:
 
 ```shell
