@@ -92,6 +92,53 @@ PROOF_ID_RE = re.compile(r"V\d{4,}")
 EXECUTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# Windows drive-path lexically supported by subject capture (v1 set): drive
+# absolute paths with either separator, including Markdown link targets. An
+# ASCII colon inside the body is captured on purpose so alternate data
+# streams classify as the unsupported ``ads`` form instead of silently
+# truncating the locator; full-width CJK punctuation ends the match.
+WINDOWS_DRIVE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_:\\/])(?:[A-Za-z]):[\\/][^\s<>\"|?*\[\]：；，。！？]*",
+)
+# UNC and device-path forms are captured only to classify them as
+# unsupported; they never become bindable subjects.
+WINDOWS_UNC_PATH_RE = re.compile(r"\\\\[^\s<>:\"|?*\[\]：；，。！？]*")
+# Word-boundary-disciplined physical-identity capture signal. The English
+# tokens use explicit ASCII boundaries (never Unicode \b); the Chinese tokens
+# are exact phrases.
+PHYSICAL_IDENTITY_SIGNAL_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])anti-junction(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])junction(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])reparse(?![A-Za-z0-9_-])"
+    r"|(?<![A-Za-z0-9_-])physical identity(?![A-Za-z0-9_-])"
+    r"|物理身份"
+    r"|无\s*reparse",
+    re.IGNORECASE,
+)
+# Opaque subjects for lexically unsupported Windows locator forms. The opaque
+# string is the final subject id; it is never re-wrapped and never bindable.
+UNSUPPORTED_SUBJECT_PREFIX = "codex:unsupported/"
+UNSUPPORTED_LOCATOR_DOMAIN = "ccg.locator.v1\n"
+UNSUPPORTED_REASON_TOKENS = (
+    "unc",
+    "device_path",
+    "ads",
+    "beyond_root",
+    "reserved_name",
+    "trailing_dots_spaces",
+    "physical_identity",
+)
+WINDOWS_RESERVED_COMPONENT_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+THREAD_URI_PREFIX = "codex://threads/"
+THREAD_ID_RE = re.compile(r"^[0-9a-f][0-9a-f-]{15,}", re.IGNORECASE)
+# Exact, versioned thread-read tool names. Only these tools give a bare
+# threadId argument its codex://threads/<uuid> subject semantics; no other
+# tool output may bind a thread subject.
+THREAD_READ_TOOL_ALIASES = {"read_thread"}
 CONTRACT_STATES = {
     "absent", "candidate", "inactive", "active", "stale", "conflicted",
     "rejected", "superseded",
@@ -168,8 +215,20 @@ SCOPE_CARDINALITY_PATTERNS = (
     ),
 )
 COMPLETE_RATIO_RE = re.compile(r"(?<!\d)(\d{1,5})\s*/\s*\1(?!\d)")
+# UI surface signals with lexical discipline (v0.9.5, CG-1a): English tokens
+# use explicit ASCII boundaries via lookarounds (never Unicode \b), the
+# standalone Chinese noun 列 is gone, and the ambiguous 页面/可见 words match
+# only inside context phrases. Explicit UI requests must still produce an
+# enforced UI obligation; proof strictness is not relaxed.
 UI_SURFACE_RE = re.compile(
-    r"(?:界面|页面|窗口|可见|列|浏览器|应用(?:界面|页面|窗口)|GUI|UI|screen|browser|window|visible)",
+    r"(?<![A-Za-z0-9_])GUI(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])UI(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])(?:screen|browser|window)s?(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])visible(?![A-Za-z0-9_])"
+    r"|界面|窗口|浏览器|网页|应用(?:界面|页面|窗口)"
+    r"|(?:GUI|UI|界面|网页|应用)[\s]{0,2}页面"
+    r"|可见(?!性)[^。；;.\n]{0,6}(?:结果|界面|窗口|浏览器)"
+    r"|(?:界面|窗口|浏览器|结果)[^。；;.\n]{0,6}可见(?!性)",
     re.IGNORECASE,
 )
 CHECKPOINT_RE = re.compile(
@@ -2335,11 +2394,145 @@ def discover_assets(
     return list(dict.fromkeys(found))
 
 
-def prompt_subjects(text: str) -> list[dict[str, str]]:
+def unsupported_locator_digest(raw_locator: str) -> str:
+    return sha256_text(UNSUPPORTED_LOCATOR_DOMAIN + raw_locator)
+
+
+def unsupported_subject(reason_token: str, raw_locator: str) -> str:
+    """Build the final opaque subject id for an unsupported locator form."""
+    if reason_token not in UNSUPPORTED_REASON_TOKENS:
+        raise ValueError(f"unsupported reason token {reason_token!r}")
+    return f"{UNSUPPORTED_SUBJECT_PREFIX}{reason_token}/{unsupported_locator_digest(raw_locator)}"
+
+
+def canonical_windows_locator(raw: str) -> tuple[str | None, str | None]:
+    """Lexically canonicalize one Windows drive locator.
+
+    Returns ``(canonical_text, None)`` for the supported v1 set, or
+    ``(None, reason_token)`` for a deterministic unsupported form. Case is
+    never folded: spellings that differ in component case stay distinct
+    subjects. Junction/reparse questions are physical properties that prompt
+    text cannot answer, so the lexical layer never resolves them.
+    """
+    text = raw.rstrip(")]}>.,")
+    body = text
+    if body[:2].upper() in {"\\\\", "//"}:
+        if body[:4].upper() in {"\\\\.\\", "\\\\?\\", "//./", "//?/"}:
+            return None, "device_path"
+        return None, "unc"
+    match = re.fullmatch(r"([A-Za-z]):[\\/](.*)", body)
+    if match is None:
+        return None, "physical_identity"
+    drive = match.group(1).upper()
+    rest = match.group(2)
+    if ":" in rest:
+        # A second colon beyond the drive separator is an alternate data
+        # stream or otherwise not a plain filesystem locator.
+        return None, "ads"
+    raw_components = re.split(r"[\\/]+", rest)
+    if raw_components and raw_components[-1] == "":
+        raw_components = raw_components[:-1]
+    for component in raw_components:
+        if component in {".", ".."}:
+            continue
+        if component != component.rstrip(" "):
+            return None, "trailing_dots_spaces"
+        if component.endswith("."):
+            return None, "trailing_dots_spaces"
+        if component.upper() in WINDOWS_RESERVED_COMPONENT_NAMES:
+            return None, "reserved_name"
+    resolved: list[str] = []
+    for component in raw_components:
+        if component == ".":
+            continue
+        if component == "..":
+            if not resolved:
+                return None, "beyond_root"
+            resolved.pop()
+            continue
+        resolved.append(component)
+    if not resolved:
+        return f"{drive}:\\", None
+    return f"{drive}:\\" + "\\".join(resolved), None
+
+
+def canonical_thread_uri(text: str) -> str | None:
+    """Return the normalized ``codex://threads/<uuid>`` text for a locator."""
+    candidate = text.strip().rstrip(")]}>.,")
+    if not candidate.lower().startswith(THREAD_URI_PREFIX):
+        return None
+    identifier = candidate[len(THREAD_URI_PREFIX):]
+    if not THREAD_ID_RE.fullmatch(identifier):
+        return None
+    return THREAD_URI_PREFIX + identifier.lower()
+
+
+def thread_subject_item(uri_text: str) -> dict[str, str]:
+    normalized = canonical_thread_uri(uri_text)
+    if normalized is None:
+        raise ValueError(f"invalid thread locator {uri_text!r}")
+    return {
+        "id": f"subject:{sha256_text(normalized)[:20]}",
+        "kind": "thread",
+        "display": normalized,
+        "locator_sha256": sha256_text(normalized),
+    }
+
+
+def thread_subject_id_from_thread_id(value: str) -> str | None:
+    stripped = str(value).strip().strip("\"'")
+    if not THREAD_ID_RE.fullmatch(stripped):
+        return None
+    normalized = THREAD_URI_PREFIX + stripped.lower()
+    return f"subject:{sha256_text(normalized)[:20]}"
+
+
+def windows_locator_display(locator: str) -> str:
+    return re.split(r"[\\/]+", locator.rstrip(")]}>.,:"))[-1] or locator[:60]
+
+
+def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, str]]:
     subjects: list[dict[str, str]] = []
+    for value in WINDOWS_UNC_PATH_RE.findall(text):
+        canonical, unsupported = canonical_windows_locator(value)
+        reason = unsupported or "unc"
+        subjects.append(
+            {
+                "id": unsupported_subject(reason, value),
+                "kind": "path",
+                "display": windows_locator_display(value),
+                "locator_sha256": unsupported_locator_digest(value),
+            }
+        )
+    for value in WINDOWS_DRIVE_PATH_RE.findall(text):
+        canonical, unsupported = canonical_windows_locator(value)
+        if unsupported is not None:
+            subjects.append(
+                {
+                    "id": unsupported_subject(unsupported, value),
+                    "kind": "path",
+                    "display": windows_locator_display(value),
+                    "locator_sha256": unsupported_locator_digest(value),
+                }
+            )
+            continue
+        subjects.append(
+            {
+                "id": f"subject:{sha256_text(canonical)[:20]}",
+                "kind": "path",
+                "display": windows_locator_display(canonical),
+                "locator_sha256": sha256_text(canonical),
+            }
+        )
     for kind, pattern in (("path", ABSOLUTE_PATH_RE), ("url", URL_RE)):
         for value in pattern.findall(text):
             cleaned = value.rstrip(")]}>.,")
+            if kind == "url":
+                normalized_thread = canonical_thread_uri(cleaned)
+                if normalized_thread is not None:
+                    if include_threads:
+                        subjects.append(thread_subject_item(normalized_thread))
+                    continue
             if (
                 kind == "path"
                 and "/" not in cleaned[1:]
@@ -2363,10 +2556,25 @@ def prompt_subjects(text: str) -> list[dict[str, str]]:
     return list({item["id"]: item for item in subjects}.values())
 
 
-def discovered_subject_ids(value: Any) -> list[str]:
+def windows_drive_subject_ids(text: str) -> list[str]:
+    """Return opaque/canonical subject ids for the drive paths in ``text``."""
+    result: list[str] = []
+    for value in WINDOWS_DRIVE_PATH_RE.findall(text):
+        canonical, unsupported = canonical_windows_locator(value)
+        if unsupported is not None:
+            result.append(unsupported_subject(unsupported, value))
+        else:
+            result.append(f"subject:{sha256_text(canonical)[:20]}")
+    return list(dict.fromkeys(result))
+
+
+def discovered_subject_ids(value: Any, include_threads: bool = True) -> list[str]:
     result: list[str] = []
     for text in recursive_strings(value):
-        result.extend(item["id"] for item in prompt_subjects(text))
+        result.extend(
+            item["id"]
+            for item in prompt_subjects(text, include_threads=include_threads)
+        )
     return list(dict.fromkeys(result))
 
 
@@ -2494,6 +2702,20 @@ def verification_contract(
             "ui" if UI_SURFACE_RE.search(text) else "artifact",
             [item["id"] for item in subjects],
         )
+    # Restricted physical-identity capture (v0.9.5): when the prompt asks for
+    # anti-junction/physical-identity proof and contains Windows drive-path
+    # subjects, every such subject gets an explicit unbindable obligation.
+    # Conservative over-generation is deliberate: the obligation cannot be
+    # satisfied, so over-generation only keeps the task incomplete (fail
+    # closed); it never invents completion. Negations and quoted signals also
+    # trigger until the v0.10 clause model replaces this lexical rule.
+    if PHYSICAL_IDENTITY_SIGNAL_RE.search(text):
+        physical_subjects = [
+            unsupported_subject("physical_identity", locator)
+            for locator in WINDOWS_DRIVE_PATH_RE.findall(text)
+        ]
+        if physical_subjects:
+            add("subject_readback", "artifact", physical_subjects)
     if scope_spec is not None:
         add(
             "scope_coverage",
@@ -3751,17 +3973,191 @@ def tool_actor(state: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str
     return "runtime_unattributed", None
 
 
-def evidence_capabilities(tool_name: str) -> list[str]:
+# Registered read adapters (CG-CODEX-001): the only evidence surfaces whose
+# *input* binds an artifact readback subject. A path that is merely echoed in
+# a tool response, command output, or unrelated payload text stays inert for
+# readback derivation — the same rule the thread-read adapter already enforces
+# for thread subjects (exact name membership, never a name substring).
+FILE_READ_TOOL_ALIASES = {
+    "read",
+    "read_file",
+    "readfile",
+    "read_text_file",
+    "view",
+    "view_file",
+    "open_file",
+    "cat_file",
+    "show_file",
+}
+FILE_READ_TOOL_SUFFIXES = ("_read_file", "_read_text_file")
+# Read-shaped shell commands: their path arguments are read targets. Anything
+# else (echo, grep, ls, redirects, in-place edits) is not a readback.
+READ_COMMAND_NAMES = {"cat", "head", "tail", "nl", "stat", "wc", "file", "sha256sum", "shasum", "md5"}
+READ_COMMAND_REDIRECT_RE = re.compile(r"(?:^|[>\s])>{1,2}\s*\S|\btee\b")
+
+
+def read_input_subject_ids(tool_name: str, tool_input: Any) -> list[str]:
+    """Subject ids actually read by this tool call's input, [] when ambiguous.
+
+    Only registered read adapters contribute. Shell reads bind from read-shaped
+    command segments; every other tool response text is inert. Ambiguous forms
+    (redirections, in-place edits, non-``-n`` sed) fail closed to no binding.
+    """
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(tool_name).lower()).strip("_")
+    if tool_is_shell_execution(tool_name):
+        if not isinstance(tool_input, dict):
+            return []
+        command = tool_input.get("command")
+        if not isinstance(command, str) or not command:
+            return []
+        return _read_command_subject_ids(command)
+    is_registered = normalized in FILE_READ_TOOL_ALIASES or normalized.endswith(
+        FILE_READ_TOOL_SUFFIXES
+    )
+    if not is_registered or not isinstance(tool_input, dict):
+        return []
+    subjects: list[str] = []
+    for key in ("file_path", "path", "filename", "file", "notebook_path", "target_file"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            subjects.extend(
+                item["id"]
+                for item in prompt_subjects(value, include_threads=False)
+                if item.get("kind") == "path"
+            )
+    return list(dict.fromkeys(subjects))
+
+
+def _read_command_subject_ids(command: str) -> list[str]:
+    subjects: list[str] = []
+    for segment in re.split(r"&&|\|\||;|\n", command):
+        segment = segment.strip()
+        if not segment or READ_COMMAND_REDIRECT_RE.search(segment):
+            # A redirect makes the read shape ambiguous: fail closed.
+            continue
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            tokens = segment.split()
+        if not tokens:
+            continue
+        name = re.sub(r"[^a-z0-9]+", "_", Path(tokens[0]).name.lower()).strip("_")
+        if name == "sed":
+            if "-n" not in tokens or any(
+                token == "-i" or token.startswith("--in-place") for token in tokens
+            ):
+                continue
+        elif name not in READ_COMMAND_NAMES:
+            continue
+        skip_value = False
+        for token in tokens[1:]:
+            if skip_value:
+                skip_value = False
+                continue
+            if token.startswith("-"):
+                # head -n / tail -n / wc -l style flag values are not paths.
+                skip_value = token in {"-n", "-c", "-m", "-l", "-w", "-b"}
+                continue
+            subjects.extend(
+                item["id"]
+                for item in prompt_subjects(token, include_threads=False)
+                if item.get("kind") == "path"
+            )
+    return list(dict.fromkeys(subjects))
+
+
+def evidence_capabilities(tool_name: str, payload: dict[str, Any] | None = None) -> list[str]:
+    """Capability trust root (v0.9.5, CG-3a).
+
+    Fixed priority: host envelope metadata → exact versioned registered tool
+    allowlist (name membership, never a name substring) → default ``artifact``.
+    Tool response bodies, stdout, and recursive JSON content can never upgrade
+    a capability; a plain text mention of a capability name is inert.
+    """
+    del payload  # envelope metadata is evaluated by host_tool_surface_disposition
     normalized = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
     capabilities = {"artifact"}
     if _is_registered_visual_tool(tool_name):
         capabilities.add("visual")
         capabilities.add("ui")
-    if any(token in normalized for token in ("computer", "browser", "chrome")):
+    elif normalized in REGISTERED_UI_TOOL_ALIASES:
         capabilities.add("ui")
     if tool_is_shell_execution(tool_name):
         capabilities.add("scope")
     return sorted(capabilities)
+
+
+REGISTERED_UI_TOOL_ALIASES = {
+    "computer_use",
+    "computeruse",
+    "browser_use",
+    "browseruse",
+}
+
+# Frozen field-equality contract for reading ``codex/toolSurface`` metadata
+# from a host envelope: every equality must hold on a completed event, else
+# the capability stays ``artifact``.
+HOST_TOOL_SURFACE_REQUIRED_EQUALITIES = (
+    ("hook.session_id", "event.thread_id"),
+    ("hook.turn_id", "event.turn_id"),
+    ("hook.tool_use_id", "event.item.id"),
+)
+
+
+def host_tool_surface_disposition(
+    state: dict[str, Any], payload: dict[str, Any], requested_surface: str = "ui"
+) -> tuple[bool, str | None]:
+    """Return ``(upgraded, transient_disposition)`` for one tool event.
+
+    ``codex/toolSurface`` structured metadata is read only from the host
+    envelope (the hook payload's top-level key). A tool response that embeds
+    the same key is not the host envelope and is ignored. Missing, duplicate,
+    out-of-order, or uncorrelatable metadata keeps the ``artifact`` capability
+    and reports the transient ``unavailable`` adapter disposition for
+    diagnostics only; the disposition never persists and is never a
+    capability member.
+    """
+    metadata = payload.get("codex/toolSurface")
+    if metadata is None:
+        return False, "unavailable" if _is_ui_surface_candidate_tool(str(payload.get("tool_name") or "")) else None
+    if not isinstance(metadata, dict):
+        return False, "unavailable" if _is_ui_surface_candidate_tool(str(payload.get("tool_name") or "")) else None
+    events = metadata.get("events") if isinstance(metadata.get("events"), list) else [metadata.get("event")]
+    events = [event for event in events if isinstance(event, dict)]
+    if len(events) != 1:
+        return False, "unavailable"
+    event = events[0]
+    hook = metadata.get("hook") if isinstance(metadata.get("hook"), dict) else {}
+    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+    if str(item.get("status") or "") != "completed":
+        return False, "unavailable"
+    hook_values = (
+        hook.get("session_id"),
+        hook.get("turn_id"),
+        hook.get("tool_use_id"),
+    )
+    event_values = (
+        event.get("thread_id"),
+        event.get("turn_id"),
+        item.get("id"),
+    )
+    for left, right in zip(hook_values, event_values):
+        if not isinstance(left, str) or not isinstance(right, str) or left != right:
+            return False, "unavailable"
+    if hook.get("session_id") != str(state["session"]["id"]):
+        return False, "unavailable"
+    if str(hook.get("turn_id") or "") != str(payload.get("turn_id") or ""):
+        return False, "unavailable"
+    surface = metadata.get("surface")
+    if surface == requested_surface:
+        return True, None
+    return False, "unavailable"
+
+
+def _is_ui_surface_candidate_tool(tool_name: str) -> bool:
+    """True when the exact tool name is a registered UI-surface candidate."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
+    return normalized in REGISTERED_UI_TOOL_ALIASES
 
 
 def private_metadata_free_text(value: str) -> str:
@@ -4295,6 +4691,18 @@ def normalize_proof_manifest(state: dict[str, Any], data: Any) -> dict[str, Any]
     ):
         raise ValueError("subject_ids must be a bounded string list")
     required_subjects = set(obligation.get("subject_ids", []))
+    unsupported_required = sorted(
+        subject for subject in required_subjects
+        if str(subject).startswith(UNSUPPORTED_SUBJECT_PREFIX)
+    )
+    if unsupported_required:
+        # The codex:unsupported/ namespace is explicitly unbindable: no
+        # evidence adapter may satisfy it, and tool output that echoes an
+        # opaque id cannot fake a binding.
+        raise ValueError(
+            "obligation subjects in the unsupported namespace are not bindable: "
+            + ", ".join(unsupported_required)
+        )
     if not required_subjects.issubset(set(subject_ids)):
         missing = sorted(required_subjects.difference(subject_ids))
         raise ValueError("proof omits required subjects: " + ", ".join(missing))
@@ -4311,7 +4719,27 @@ def normalize_proof_manifest(state: dict[str, Any], data: Any) -> dict[str, Any]
     }
     if kind == "input_asset_inspection" and not required_subjects.issubset(evidence_assets):
         raise ValueError("input asset proof evidence does not reference every required asset")
-    if kind == "subject_readback" and not required_subjects.issubset(evidence_subjects):
+    if kind == "subject_readback" and str(surface) == "artifact":
+        # CG-CODEX-001: an artifact readback — explicit or derived — binds
+        # only through registered read adapters' actual read *inputs*. A path
+        # echoed in tool output or any other payload text is not a readback;
+        # the manifest may neither expand the subjects, nor rely on evidence
+        # whose reads are a superset of the required subjects.
+        evidence_readbacks = {
+            subject_id
+            for evidence_id in evidence_ids
+            for subject_id in evidence_by_id[evidence_id].get("readback_subjects", [])
+        }
+        if set(subject_ids) != required_subjects:
+            raise ValueError(
+                "artifact readback proof must bind exactly the required subjects"
+            )
+        if evidence_readbacks != required_subjects:
+            raise ValueError(
+                "artifact readback proof evidence does not read exactly the "
+                "required subjects through a registered read adapter"
+            )
+    elif kind == "subject_readback" and not required_subjects.issubset(evidence_subjects):
         raise ValueError("subject proof evidence does not reference every required subject")
     visual_facts: list[dict[str, str]] = []
     raw_facts = data.get("visual_facts", [])
@@ -4485,6 +4913,174 @@ def unresolved_proof_obligations(state: dict[str, Any]) -> dict[str, list[str]]:
     return unresolved
 
 
+def _proof_capable_evidence(
+    state: dict[str, Any], item: dict[str, Any], capability: str
+) -> list[dict[str, Any]]:
+    """Successful, item-current evidence carrying one capability, in ledger order."""
+    prompt_created_at = next(
+        (
+            prompt.get("created_at")
+            for prompt in state.get("prompts", [])
+            if prompt.get("id") == item.get("prompt_id")
+        ),
+        None,
+    )
+    eligible: list[dict[str, Any]] = []
+    for evidence in state.get("evidence", []):
+        if evidence.get("outcome") != "success":
+            continue
+        if capability not in evidence.get("capabilities", []):
+            continue
+        if (
+            isinstance(prompt_created_at, str)
+            and isinstance(evidence.get("created_at"), str)
+            and evidence["created_at"] < prompt_created_at
+        ):
+            # Evidence predating the item's prompt is stale for this item.
+            continue
+        eligible.append(evidence)
+    return eligible
+
+
+def _minimal_subject_cover(
+    evidence_list: list[dict[str, Any]],
+    required_subjects: set[str],
+    *,
+    field: str = "subject_ids",
+) -> tuple[list[str], bool]:
+    """Deterministic first-fit cover in ledger order; no caller input.
+
+    With ``field="readback_subjects"`` (readback derivation) evidence whose
+    binding is a *superset* of the required subjects is skipped: a read that
+    covers more than the obligation's subjects is not a unique derivation and
+    fails closed instead of covering it.
+    """
+    cover: list[str] = []
+    covered: set[str] = set()
+    for evidence in evidence_list:
+        if required_subjects <= covered:
+            break
+        binding = set(evidence.get(field, []))
+        if field != "subject_ids" and binding - required_subjects:
+            # Superset binding: the read covers more than the obligation's
+            # subjects, so it is not a unique derivation — skip it and let
+            # the obligation stay unresolved (fail closed).
+            continue
+        subjects = binding & required_subjects
+        if subjects - covered:
+            cover.append(str(evidence["id"]))
+            covered |= subjects
+    return cover, required_subjects <= covered
+
+
+def derive_ordinary_proofs(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Derive ordinary non-visual proofs from the ledger and bound evidence.
+
+    Only ``subject_readback`` obligations on the ``artifact`` surface and
+    exactly verifiable ``scope_coverage`` obligations are derived. Every
+    binding — item, obligation, surface, and subjects — comes from the
+    obligation and the private ledger; the caller cannot pass or expand a
+    subject or scope. Visual, qualitative, UI-surface, unsupported-namespace,
+    and not-uniquely-derivable obligations are left to the explicit
+    ``register-proof`` path. Derivation never mutates state.
+    """
+    derived: list[dict[str, Any]] = []
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            if item.get("status") == "superseded":
+                continue
+            contract = item.get("verification_contract")
+            if not isinstance(contract, dict) or contract.get("mode") != "enforced":
+                continue
+            fulfilled = fulfilled_obligation_ids(state, item["id"])
+            for obligation in contract.get("obligations", []):
+                if not isinstance(obligation, dict):
+                    continue
+                obligation_id = str(obligation.get("id"))
+                if not obligation_id or obligation_id in fulfilled:
+                    continue
+                kind = str(obligation.get("kind"))
+                surface = str(obligation.get("surface"))
+                required = sorted(
+                    {
+                        str(subject)
+                        for subject in obligation.get("subject_ids", [])
+                        if isinstance(subject, str) and subject
+                    }
+                )
+                if not required or any(
+                    subject.startswith(UNSUPPORTED_SUBJECT_PREFIX)
+                    for subject in required
+                ):
+                    continue
+                manifest: dict[str, Any]
+                if kind == "subject_readback" and surface == "artifact":
+                    # CG-CODEX-001: a readback is derived only from evidence
+                    # whose *input* actually read the required subjects via a
+                    # registered read adapter. A path echoed by any successful
+                    # tool response never binds a readback subject; evidence
+                    # reading beyond the required subjects is a superset and
+                    # fails closed.
+                    eligible = _proof_capable_evidence(state, item, "artifact")
+                    cover, complete = _minimal_subject_cover(
+                        eligible, set(required), field="readback_subjects"
+                    )
+                    if not complete or not cover:
+                        continue
+                    manifest = {
+                        "protocol_version": PROOF_PROTOCOL_VERSION,
+                        "item_id": item["id"],
+                        "obligation_id": obligation_id,
+                        "evidence_ids": cover,
+                        "surface": surface,
+                        "subject_ids": required,
+                    }
+                elif kind == "scope_coverage":
+                    required_count = obligation.get("expected_scope_count")
+                    required_sha256 = obligation.get("expected_scope_sha256")
+                    if (
+                        not isinstance(required_count, int)
+                        or required_count <= 0
+                        or not isinstance(required_sha256, str)
+                    ):
+                        # Without a prompt-derived count and digest the exact
+                        # equality cannot be verified, so derivation fails
+                        # closed instead of guessing the set.
+                        continue
+                    eligible = _proof_capable_evidence(state, item, "scope")
+                    observed: set[str] = set()
+                    for evidence in eligible:
+                        observed |= {
+                            str(subject)
+                            for subject in evidence.get("subject_ids", [])
+                        }
+                    observed_sorted = sorted(observed)
+                    if len(observed_sorted) != required_count:
+                        continue
+                    if not hmac.compare_digest(
+                        required_sha256,
+                        sha256_text(canonical_json(observed_sorted)),
+                    ):
+                        continue
+                    cover, complete = _minimal_subject_cover(eligible, observed)
+                    if not complete or not cover:
+                        continue
+                    manifest = {
+                        "protocol_version": PROOF_PROTOCOL_VERSION,
+                        "item_id": item["id"],
+                        "obligation_id": obligation_id,
+                        "evidence_ids": cover,
+                        "surface": surface,
+                        "subject_ids": required,
+                        "expected_scope": observed_sorted,
+                        "observed_scope": observed_sorted,
+                    }
+                else:
+                    continue
+                derived.append(normalize_proof_manifest(state, manifest))
+    return derived
+
+
 def checkpoint_status_snapshot(state: dict[str, Any], turn_id: str) -> dict[str, Any]:
     successful = [
         {
@@ -4655,8 +5251,16 @@ def validate_checkpoint_request(
     acceptance = parse_evidence_assignments(
         acceptance_values, "acceptance"
     )
+    # Precheck mirrors the staging transaction in memory: ordinary proofs are
+    # derived before validation, and the mutation is never persisted here.
+    proof_mark = len(state.get("proofs", []))
+    sequence_mark = int(state.get("proof_sequence", 0))
+    for normalized in derive_ordinary_proofs(state):
+        append_normalized_proof(state, normalized)
     checkpoint = private_checkpoint(state, requirements, acceptance)
     issues = checkpoint_issues(state, checkpoint)
+    del state["proofs"][proof_mark:]
+    state["proof_sequence"] = sequence_mark
     if issues:
         raise ValueError("; ".join(issues))
     control = checkpoint_control(checkpoint)
@@ -4781,12 +5385,24 @@ def stage_private_checkpoint(
         acceptance = parse_evidence_assignments(
             acceptance_values, "acceptance"
         )
-        checkpoint = private_checkpoint(state, requirements, acceptance)
-        issues = checkpoint_issues(state, checkpoint)
-        if issues:
-            raise ValueError("; ".join(issues))
-        control = checkpoint_control(checkpoint)
-        idempotent = stage_control(attempt, control, replace=replace)
+        # One idempotent transaction: derived ordinary proofs and the staged
+        # checkpoint are written together or not at all. A failed staging
+        # never leaves half a proof behind and never advances state.
+        proof_mark = len(state.get("proofs", []))
+        sequence_mark = int(state.get("proof_sequence", 0))
+        try:
+            for normalized in derive_ordinary_proofs(state):
+                append_normalized_proof(state, normalized)
+            checkpoint = private_checkpoint(state, requirements, acceptance)
+            issues = checkpoint_issues(state, checkpoint)
+            if issues:
+                raise ValueError("; ".join(issues))
+            control = checkpoint_control(checkpoint)
+            idempotent = stage_control(attempt, control, replace=replace)
+        except Exception:
+            del state["proofs"][proof_mark:]
+            state["proof_sequence"] = sequence_mark
+            raise
         receipt = {
             "turn_id": turn_id,
             "checkpoint_sha256": sha256_text(canonical_json(checkpoint)),
@@ -5575,8 +6191,21 @@ def parse_stage_request_from_tool(
         acceptance = parse_evidence_assignments(
             option_values["--acceptance"], "acceptance"
         )
-        checkpoint = private_checkpoint(state, requirements, acceptance)
-        issues = checkpoint_issues(state, checkpoint)
+        # Dry-run the derivation transaction: ordinary proofs are derived and
+        # validated, then rolled back because parsing never mutates state.
+        # The authoritative staging path re-appends the same normalized
+        # proofs and writes them together with the staged control.
+        proof_mark = len(state.get("proofs", []))
+        sequence_mark = int(state.get("proof_sequence", 0))
+        derived_proofs = derive_ordinary_proofs(state)
+        try:
+            for normalized in derived_proofs:
+                append_normalized_proof(state, normalized)
+            checkpoint = private_checkpoint(state, requirements, acceptance)
+            issues = checkpoint_issues(state, checkpoint)
+        finally:
+            del state["proofs"][proof_mark:]
+            state["proof_sequence"] = sequence_mark
         if issues:
             raise ValueError("; ".join(issues))
         control = checkpoint_control(checkpoint)
@@ -5615,6 +6244,7 @@ def parse_stage_request_from_tool(
         "token": token,
         "control": control,
         "replace": replace,
+        "derived_proofs": derived_proofs if private_command == "stage-checkpoint" else [],
     }
 
 
@@ -5654,11 +6284,20 @@ def handle_post_tool(
                     attempt = completion_attempt_for(
                         state, stage_request["turn_id"], stage_request["token"]
                     )
-                    idempotent = stage_control(
-                        attempt,
-                        stage_request["control"],
-                        replace=stage_request["replace"],
-                    )
+                    proof_mark = len(state.get("proofs", []))
+                    sequence_mark = int(state.get("proof_sequence", 0))
+                    try:
+                        for normalized in stage_request.get("derived_proofs", []):
+                            append_normalized_proof(state, normalized)
+                        idempotent = stage_control(
+                            attempt,
+                            stage_request["control"],
+                            replace=stage_request["replace"],
+                        )
+                    except Exception:
+                        del state["proofs"][proof_mark:]
+                        state["proof_sequence"] = sequence_mark
+                        raise
                     save_state(session_dir, state)
                     suffix = " (idempotent)" if idempotent else ""
                     return hook_output(
@@ -5693,7 +6332,36 @@ def handle_post_tool(
             state, payload, prompt_id=None, source="tool_event"
         )
         evidence_origin, evidence_actor_id = tool_actor(state, payload)
+        capabilities = set(evidence_capabilities(tool_name))
+        upgraded, _transient = host_tool_surface_disposition(state, payload)
+        if upgraded:
+            capabilities.add("ui")
+        normalized_tool = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
+        is_thread_reader = normalized_tool in THREAD_READ_TOOL_ALIASES
+        # Navigation/open tools and arbitrary output text produce at most
+        # navigation facts: a codex://threads/ URI echoed by any other tool
+        # can never satisfy a thread-subject readback (same thread, wrong
+        # tool stays rejected). Only the registered thread-read adapter binds
+        # thread subjects, from its bare threadId argument or its own URI.
+        evidence_subject_ids = discovered_subject_ids(
+            payload, include_threads=is_thread_reader
+        )
+        if is_thread_reader:
+            tool_input_raw = payload.get("tool_input")
+            thread_values: list[Any] = []
+            if isinstance(tool_input_raw, dict):
+                for key in ("threadId", "thread_id", "thread-id"):
+                    value = tool_input_raw.get(key)
+                    if isinstance(value, str):
+                        thread_values.append(value)
+            for value in thread_values:
+                subject_id = thread_subject_id_from_thread_id(value)
+                if subject_id is not None:
+                    evidence_subject_ids.append(subject_id)
         state["evidence_sequence"] += 1
+        # CG-CODEX-001: a readback subject is bound only by a registered read
+        # adapter's *input*; response echoes and payload mentions stay inert.
+        readback_subjects = read_input_subject_ids(tool_name, payload.get("tool_input"))
         evidence = {
             "id": f"E{state['evidence_sequence']:04d}",
             "created_at": utc_now(),
@@ -5707,8 +6375,9 @@ def handle_post_tool(
                 payload.get("_context_guard_unicode_repairs") or 0
             ),
             "asset_ids": evidence_asset_ids,
-            "subject_ids": discovered_subject_ids(payload),
-            "capabilities": evidence_capabilities(tool_name),
+            "subject_ids": list(dict.fromkeys(evidence_subject_ids)),
+            "readback_subjects": readback_subjects,
+            "capabilities": sorted(capabilities),
         }
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
@@ -5859,6 +6528,64 @@ def handle_subagent_stop(
     return {}
 
 
+def obligation_binding_diagnostic(
+    state: dict[str, Any], item_id: str, obligation_id: str
+) -> str:
+    """Bounded transient diagnostic for one unresolved obligation (CG-5a).
+
+    Reports the obligation's required surface, the capabilities available on
+    current successful evidence, and whether the required subjects are
+    covered. A UI obligation whose only related tool events are registered
+    UI-surface candidates without trusted envelope metadata additionally
+    reports the transient ``adapter_disposition=unavailable``. The output
+    exists only in the current diagnostic message: it is never persisted and
+    contains only rule facts, never prompt text.
+    """
+    item = proof_item(state, item_id)
+    obligation = proof_obligation(item, obligation_id)
+    kind = str(obligation.get("kind"))
+    surface = str(obligation.get("surface"))
+    required = sorted(
+        {
+            str(subject)
+            for subject in obligation.get("subject_ids", [])
+            if isinstance(subject, str) and subject
+        }
+    )
+    if any(subject.startswith(UNSUPPORTED_SUBJECT_PREFIX) for subject in required):
+        return f"required_surface={surface};subject_binding=unbindable"
+    capability = "scope" if kind == "scope_coverage" else surface
+    eligible = _proof_capable_evidence(state, item, capability)
+    covered: set[str] = set()
+    available: set[str] = set()
+    for evidence in eligible:
+        covered |= {
+            str(subject) for subject in evidence.get("subject_ids", [])
+        }
+        available |= {
+            str(capability) for capability in evidence.get("capabilities", [])
+        }
+    if kind == "scope_coverage":
+        binding = "covered" if eligible else "missing"
+    else:
+        binding = "matched" if set(required) <= covered else "missing"
+    parts = [
+        f"required_surface={surface}",
+        f"available_capabilities={','.join(sorted(available)) or 'none'}",
+        f"subject_binding={binding}",
+    ]
+    if (
+        surface == "ui"
+        and binding == "missing"
+        and any(
+            _is_ui_surface_candidate_tool(str(evidence.get("tool") or ""))
+            for evidence in state.get("evidence", [])
+        )
+    ):
+        parts.append("adapter_disposition=unavailable")
+    return ";".join(parts)
+
+
 def checkpoint_issues(
     state: dict[str, Any], checkpoint: dict[str, Any]
 ) -> list[str]:
@@ -5928,8 +6655,18 @@ def checkpoint_issues(
             if isinstance(contract, dict) and contract.get("mode") == "enforced":
                 missing = unresolved_proof_obligations(state).get(item_id, [])
                 if missing:
+                    details = []
+                    for obligation_id in missing[:4]:
+                        try:
+                            details.append(
+                                f"{obligation_id}"
+                                f"[{obligation_binding_diagnostic(state, item_id, obligation_id)}]"
+                            )
+                        except ValueError:
+                            details.append(obligation_id)
                     issues.append(
-                        f"{item_id} has unresolved proof obligations: {','.join(missing)}"
+                        f"{item_id} has unresolved proof obligations: "
+                        + ",".join(details)
                     )
                 proof_evidence = {
                     evidence_id

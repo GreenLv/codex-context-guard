@@ -4,6 +4,14 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.9.4`; accepted `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.9.5 source candidate gates (2026-08-31)
+
+The 0.9.5 source candidate was checked locally on macOS from a working tree based on `abbdcee5260865ba80caa00139310367c74e9068`. These results cover the current source candidate only; they do not establish a release identity.
+
+- The repository passes 343 tests with 9 capability skips, `validate_public_repo`, `audit_public_tree`, the eight-Hook self-test, Ruff, and `git diff --check`.
+- A temporary Codex home installed version 0.9.5 from this source tree. The installed plugin then passed `smoke_installed`, including checkpoint, recovery, delegated-work, and completion-gate paths. The daily Codex installation was not changed.
+- Native macOS and Windows fresh-Hook acceptance, candidate CI, tag, GitHub Release, public readback, downstream pinning, and daily installation remain separate pending gates.
+
 ## Post-release semantic conformance gate acceptance (Windows, 2026-08-30)
 
 Native Windows 11 source acceptance used a fresh isolated checkout of exact

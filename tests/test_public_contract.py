@@ -97,11 +97,12 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Release status: `0.9.4` is the latest published release.",
+            "> Release status: `0.9.4` is the latest published release."
+            " The current checkout is the unreleased `0.9.5` source candidate.",
             english,
         )
         self.assertIn(
-            "> 发布状态：`0.9.4` 是最近一次已发布版本。",
+            "> 发布状态：`0.9.4` 是最近一次已发布版本；当前检出内容为未发布的 `0.9.5` 源码候选。",
             chinese,
         )
         self.assertIn("Stop protocol 2.0.0", english)

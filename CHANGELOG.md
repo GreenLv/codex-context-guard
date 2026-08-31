@@ -12,6 +12,27 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
+## 0.9.5 - Unreleased (source candidate)
+
+### Highlights
+
+- Context Guard now builds routine non-visual proof records from its private checklist when a checkpoint is staged. An Agent no longer writes a separate proof JSON for ordinary file or text results. Image inspection, UI readback, and cases that cannot be checked exactly still use the explicit `register-proof` path.
+- UI-related words are classified more narrowly, so ordinary mentions of lists or visible text no longer create unrelated UI checks. A direct request to inspect or operate the UI still does.
+- Evidence for Codex tasks, files, and Windows paths is tied to the exact item that was read. Opening or echoing a path is not enough, and unsupported Windows path forms are rejected rather than ignored.
+
+### Changes
+
+- Only an actual read of the required item counts. Registered read tools and simple read-only shell commands can provide that evidence; echoed paths, unrelated output, and reads that include extra items are rejected.
+- Proof creation and checkpoint staging are saved together. A failed checkpoint leaves no partial proof, and callers cannot add subjects or widen the requested scope.
+- UI capability now comes from verified host metadata or an exact tool list, not from a tool name or its output text.
+- Rejection messages identify the required result type, available evidence, and binding problem. Schema 7, the existing protocols, Python 3.10 support, saved session state, and privacy rules are unchanged.
+
+### Validation
+
+- A 30-test 0.9.5 suite covers UI lexical negatives and positives, Windows canonical/unsupported/case-sensitive/markdown/physical-identity capture, thread locator unification, the capability trust root and its field-equality negatives, auto-derivation with rollback and idempotent replay, response-echo and superset-read readback negatives on both the derived and the explicit register-proof path, ambiguous read shapes, unbindable-namespace rejection, and the privacy grammar boundary. The full repository suite passes 343 tests with 9 capability skips on macOS, plus `validate_public_repo`, `audit_public_tree`, the self-test, and `ruff check`.
+- A temporary Codex home accepted the source candidate, and the installed plugin passed the isolated lifecycle smoke. This did not change the daily Codex installation.
+- Still pending: native macOS and Windows fresh-Hook acceptance, CI for the candidate commit, tag, GitHub Release, public readback, and any daily installation. This candidate is not released.
+
 ## 0.9.4 - 2026-08-28
 
 ### Highlights

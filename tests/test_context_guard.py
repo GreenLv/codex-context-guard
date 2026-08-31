@@ -4422,7 +4422,7 @@ class ContextGuardTests(unittest.TestCase):
             [
                 {
                     "id": f"subject:{cg.sha256_text(thread_uri)[:20]}",
-                    "kind": "url",
+                    "kind": "thread",
                     "display": thread_uri,
                     "locator_sha256": cg.sha256_text(thread_uri),
                 }
