@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Release status: `0.9.5` is the latest published release. Native macOS and Windows acceptance, main and tag CI, the annotated tag, and the bilingual GitHub Release have all been read back. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Release status: `0.10.0` is the current source candidate; `0.9.5` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 

@@ -2,7 +2,23 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.9.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the current source candidate; `0.9.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+
+## 0.10.0 - Unreleased
+
+### Highlights
+
+- Schema 8 makes the clause-derived `(operation, subjectId, requestedSurface)` triple the source of the enforced verification contract: readback obligations derive their subjects, surface, and operation from non-negated clauses, and certification rejects proof evidence stamped under a different concrete operation.
+- The 0.9.5 lexical over-generation is replaced: negated or quoted physical-identity signals no longer create unbindable obligations, while genuinely requested physical-identity proof still fails closed.
+- Schema 7 remains read-only compatible and upgrades deterministically with fresh private control state; prompt journals stay hash-only and bounded, ambiguous pending operations are recorded instead of dropped, and `clear-pending` is a real turn-verified control entry that never touches requirements or evidence.
+
+### Changes
+
+- Existing prompt, compaction, resume, fork, subagent, supersession, and evidence replay paths retain their authoritative ordering and exact subject binding. Evidence records carry the adapter manifest version, and proofs fail closed on manifest drift.
+
+### Validation
+
+- Local source validation passed on the repaired candidate bytes: the full repository suite (363 passed, 9 skipped), ruff, repository validation, public-tree audit, self-test, and a clean `git diff --check`. CI, native install, artifact, tag, and release evidence remain pending and are not claimed by this candidate. The repository's 12 CI jobs remain unchanged.
 
 ## How protection evolved
 

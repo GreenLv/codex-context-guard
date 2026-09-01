@@ -51,6 +51,10 @@
         "id": {"type": "string"},
         "prompt_id": {"type": "string"},
         "text": {"type": "string"},
+        "operation": {"type": "string"},
+        "subjectId": {"type": "array", "items": {"type": "string"}},
+        "requestedSurface": {"type": "array", "items": {"type": "string"}},
+        "clause_metadata": {"type": "object"},
         "sha256": {"type": "string"},
         "status": {"enum": ["pending", "pass", "superseded"]},
         "evidence": {"type": "array", "items": {"type": "string"}},
@@ -256,11 +260,15 @@
     "continuation_attempts",
     "decision_log",
     "execution",
+    "adapter_manifest",
+    "classifier_metadata",
+    "pending",
+    "prompt_journal",
     "integrity",
     "content_hash"
   ],
   "properties": {
-    "schema_version": {"const": 7},
+    "schema_version": {"const": 8},
     "session": {
       "type": "object",
       "required": ["id", "cwd", "created_at", "updated_at", "ended_at"]
@@ -503,6 +511,27 @@
       }
     },
     "execution": {"$ref": "#/$defs/executionState"},
+    "adapter_manifest": {
+      "type": "object",
+      "required": ["version", "adapters"],
+      "properties": {
+        "version": {"type": "string"},
+        "adapters": {"type": "object", "additionalProperties": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "classifier_metadata": {
+      "type": "object",
+      "required": ["version", "clause_derivation_version", "fail_closed"],
+      "properties": {
+        "version": {"type": "string"},
+        "clause_derivation_version": {"type": "string"},
+        "fail_closed": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "pending": {"type": "object"},
+    "prompt_journal": {"type": "object"},
     "integrity": {
       "type": "object",
       "required": ["status", "issue", "recovered_at", "backup_file"],

@@ -38,7 +38,7 @@ The private store may contain:
   availability;
 - deterministic verification contracts and immutable proof bindings, including
   bounded redacted visual facts and normalized scope counts/digests;
-- schema-7 execution metadata: bounded instruction-source identifiers and
+- schema-8 execution metadata, versioned adapter manifest, clause-derived bindings, and classifier metadata: bounded instruction-source identifiers and
   origins, canonical contract hashes, phase/gate/candidate states, drift and
   exact-host coverage, dormant ticket namespaces, unified-exec metadata, and
   delegated actor bindings;

@@ -6,12 +6,12 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.9.5`
-- Current source line: `0.9.5`
-- Private state schema: `7`
+- Current source candidate (not yet released): `0.10.0`
+- Private state schema: `8` (schema 7 read-only compatibility)
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`
 - Execution protocol: `1.0.0`
-- Diagnostic classifier: `2.3.2`
+- Diagnostic classifier: `2.4.0`
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only

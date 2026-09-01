@@ -467,6 +467,292 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(len(state["prompts"]), 1)
         self.assertEqual(len(state["requirements"]), 1)
 
+    def test_schema8_clause_metadata_and_prompt_journal_are_bounded(self) -> None:
+        self.prompt("读取 /tmp/example.py 并验证全部范围。")
+        state = self.state()
+        self.assertEqual(state["schema_version"], 8)
+        self.assertEqual(state["adapter_manifest"]["version"], cg.ADAPTER_MANIFEST_VERSION)
+        self.assertEqual(state["classifier_metadata"]["version"], cg.CLASSIFIER_VERSION)
+        self.assertEqual(len(state["prompt_journal"]["entries"]), 1)
+        requirement = state["requirements"][0]
+        self.assertIsInstance(requirement["operation"], str)
+        self.assertNotEqual(requirement["operation"], "")
+        self.assertIsInstance(requirement["subjectId"], list)
+        self.assertIsInstance(requirement["requestedSurface"], list)
+
+    def test_schema7_is_read_only_compatibility_input_and_upgrades(self) -> None:
+        self.prompt("实现复杂系统并验证。")
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        legacy = self.state()
+        legacy.pop("adapter_manifest")
+        legacy.pop("classifier_metadata")
+        legacy.pop("pending")
+        legacy.pop("prompt_journal")
+        legacy["schema_version"] = 7
+        legacy["content_hash"] = cg.state_content_hash(legacy)
+        cg.atomic_write_json(session_dir / "state.json", legacy)
+        loaded = cg.load_state(session_dir, self.payload("SessionStart", source="resume"))
+        self.assertEqual(loaded["schema_version"], 8)
+        self.assertIsNone(loaded["completion_attempt"])
+        self.assertEqual(loaded["pending"]["operations"], [])
+
+    def test_pending_operation_clear_does_not_change_requirements(self) -> None:
+        self.prompt("实现并验证。")
+        state = self.state()
+        before = json.loads(json.dumps(state["requirements"]))
+        cg.pending_operation(state, "write", subject_id="path:test.py", requested_surface="artifact")
+        self.assertEqual(cg.clear_pending(state, operation="write"), 1)
+        self.assertEqual(state["requirements"], before)
+
+    def test_schema8_negated_clauses_never_bind_subjects_or_physical_identity(self) -> None:
+        table = (
+            ("negated-subject", "不要修改 /tmp/private.py，读取 /tmp/public.py 并验证。", {"/tmp/private.py"}),
+            ("negated-physical", "无需提供 anti-junction 物理身份验证。读取 /tmp/public.py 并验证。", set()),
+            ("quoted-physical", "文档提到 \"anti-junction 物理身份\"。读取 /tmp/public.py 并验证。", set()),
+        )
+        for index, (label, text, forbidden_paths) in enumerate(table):
+            with self.subTest(case=label):
+                session = f"neg-{index}"
+                self.prompt(text, session=session)
+                requirement = self.state(session)["requirements"][0]
+                contract = requirement["verification_contract"]
+                self.assertEqual(contract["mode"], "enforced")
+                bound_subjects = {
+                    subject
+                    for obligation in contract["obligations"]
+                    for subject in obligation["subject_ids"]
+                }
+                # Positive-clause subjects bind; negated-clause subjects and
+                # negated/quoted physical-identity signals never do.
+                for path in ("/tmp/public.py", "/tmp/private.py", *forbidden_paths):
+                    derived = {item["id"] for item in cg.prompt_subjects(path)}
+                    if path == "/tmp/public.py":
+                        self.assertTrue(derived & bound_subjects, path)
+                    else:
+                        self.assertFalse(derived & bound_subjects, path)
+                self.assertFalse(
+                    any(
+                        subject.startswith(cg.UNSUPPORTED_SUBJECT_PREFIX)
+                        for obligation in contract["obligations"]
+                        for subject in obligation["subject_ids"]
+                    )
+                )
+                private_ids = {item["id"] for item in cg.prompt_subjects("/tmp/private.py")}
+                self.assertFalse(private_ids & set(requirement["subjectId"]))
+
+    def test_schema8_positive_physical_identity_still_fails_closed(self) -> None:
+        self.prompt("验证 C:\\repos\\x 的 anti-junction 物理身份。")
+        contract = self.state()["requirements"][0]["verification_contract"]
+        physical = [
+            obligation
+            for obligation in contract["obligations"]
+            if any(
+                subject.startswith(cg.UNSUPPORTED_SUBJECT_PREFIX)
+                for subject in obligation["subject_ids"]
+            )
+        ]
+        self.assertTrue(physical)
+        self.assertEqual(physical[0]["kind"], "subject_readback")
+
+    def test_schema8_ambiguous_pending_operation_is_recorded_and_clearable(self) -> None:
+        self.prompt("检查并验证 /tmp/shared.py。")
+        state = self.state()
+        # A fully ambiguous clause leaves the contract unconstrained while the
+        # ambiguous derivation is preserved in the pending ledger.
+        self.assertEqual(state["requirements"][0]["operation"], "unspecified")
+        operations = [entry["operation"] for entry in state["pending"]["operations"]]
+        self.assertIn("ambiguous", operations)
+        self.assertEqual(cg.clear_pending(state, operation="ambiguous"), 1)
+
+    def test_schema8_contract_keeps_first_concrete_clause_operation(self) -> None:
+        self.prompt("修改 /tmp/a.py，检查并验证 /tmp/b.py。")
+        requirement = self.state()["requirements"][0]["verification_contract"]
+        self.assertEqual(requirement["clause_operation"], "local_edit")
+        readbacks = [
+            obligation
+            for obligation in requirement["obligations"]
+            if obligation["kind"] == "subject_readback"
+        ]
+        self.assertTrue(readbacks)
+        self.assertEqual(readbacks[0]["operation"], "local_edit")
+
+    def test_schema8_clause_polarity_is_consistent_through_proof(self) -> None:
+        table = (
+            ("zh-push", "不要推送；修改 /tmp/plan.py 并验证", "remote_push"),
+            ("en-push", "Do not push; edit /tmp/plan.py and verify it", "remote_push"),
+            (
+                "zh-review",
+                "不要在 UI 检查 /tmp/review.py；修改 /tmp/plan.py 并验证",
+                "local_review",
+            ),
+            (
+                "en-review",
+                "Do not review /tmp/review.py in the UI; edit /tmp/plan.py and verify it",
+                "local_review",
+            ),
+        )
+        plan_subjects = {item["id"] for item in cg.prompt_subjects("/tmp/plan.py")}
+        review_subjects = {item["id"] for item in cg.prompt_subjects("/tmp/review.py")}
+        for index, (label, prompt, negated_operation) in enumerate(table):
+            with self.subTest(case=label):
+                session = f"polarity-{index}"
+                self.prompt(prompt, session=session)
+                state = self.state(session)
+                requirement = state["requirements"][0]
+                contract = requirement["verification_contract"]
+                obligation = next(
+                    item
+                    for item in contract["obligations"]
+                    if item["kind"] == "subject_readback"
+                )
+
+                self.assertEqual(requirement["operation"], "local_edit")
+                self.assertEqual(cg.primary_clause_operation(prompt), "local_edit")
+                self.assertEqual(requirement["subjectId"], sorted(plan_subjects))
+                self.assertFalse(review_subjects & set(requirement["subjectId"]))
+                self.assertEqual(requirement["requestedSurface"], ["artifact"])
+                self.assertEqual(contract["clause_operation"], "local_edit")
+                self.assertEqual(obligation["operation"], "local_edit")
+                self.assertEqual(set(obligation["subject_ids"]), plan_subjects)
+                pending = state["pending"]["operations"]
+                self.assertEqual([item["operation"] for item in pending], ["local_edit"])
+                self.assertNotIn(
+                    negated_operation,
+                    {item["operation"] for item in pending},
+                )
+
+                evidence_id = f"E{9100 + index}"
+                state["evidence"].append(
+                    {
+                        "id": evidence_id,
+                        "adapter_manifest_version": cg.ADAPTER_MANIFEST_VERSION,
+                        "operation": negated_operation,
+                        "subjectId": list(obligation["subject_ids"]),
+                        "requestedSurface": obligation["requested_surface"],
+                        "outcome": "success",
+                        "capabilities": ["artifact", "filesystem-read"],
+                        "subject_ids": list(obligation["subject_ids"]),
+                        "readback_subjects": list(obligation["subject_ids"]),
+                        "created_at": state["prompts"][-1]["created_at"],
+                    }
+                )
+                manifest = {
+                    "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                    "item_id": requirement["id"],
+                    "obligation_id": obligation["id"],
+                    "evidence_ids": [evidence_id],
+                    "surface": obligation["surface"],
+                    "subject_ids": list(obligation["subject_ids"]),
+                }
+                with self.assertRaisesRegex(ValueError, "operation"):
+                    cg.normalize_proof_manifest(state, manifest)
+
+    def test_clear_pending_runtime_entry_leaves_requirements_immutable(self) -> None:
+        self.prompt("实现复杂系统。修改 /tmp/plan.py 并验证。")
+        state = self.state()
+        requirements_before = json.loads(json.dumps(state["requirements"]))
+        self.assertTrue(state["pending"]["operations"])
+        cleared = cg.clear_pending_request(
+            self.root / "private",
+            "session-a",
+            self.current_turn,
+            "test-token",
+        )
+        self.assertGreaterEqual(cleared, 1)
+        state = self.state()
+        self.assertEqual(state["pending"]["operations"], [])
+        self.assertEqual(state["requirements"], requirements_before)
+
+    def _proof_state_fixture(self, prompt: str) -> tuple[dict, dict, dict]:
+        """Prompt once and return (state, subject_readback obligation, evidence template)."""
+        self.prompt(prompt)
+        state = self.state()
+        requirement = state["requirements"][0]
+        obligation = next(
+            obligation
+            for obligation in requirement["verification_contract"]["obligations"]
+            if obligation["kind"] == "subject_readback"
+        )
+        evidence = {
+            "id": "E9001",
+            "adapter_manifest_version": cg.ADAPTER_MANIFEST_VERSION,
+            "operation": obligation.get("operation"),
+            "subjectId": list(obligation["subject_ids"]),
+            "requestedSurface": obligation.get("requested_surface"),
+            "outcome": "success",
+            "capabilities": ["artifact", "filesystem-read"],
+            "subject_ids": list(obligation["subject_ids"]),
+            "readback_subjects": list(obligation["subject_ids"]),
+            "created_at": state["prompts"][-1]["created_at"],
+        }
+        manifest = {
+            "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+            "item_id": requirement["id"],
+            "obligation_id": obligation["id"],
+            "evidence_ids": [evidence["id"]],
+            "surface": obligation["surface"],
+            "subject_ids": list(obligation["subject_ids"]),
+        }
+        return state, evidence, manifest
+
+    def test_schema8_operation_binding_on_proof_evidence(self) -> None:
+        state, evidence, manifest = self._proof_state_fixture("修改 /tmp/plan.py 的实现。")
+        obligation = next(
+            obligation
+            for obligation in state["requirements"][0]["verification_contract"]["obligations"]
+            if obligation["kind"] == "subject_readback"
+        )
+        self.assertEqual(obligation["operation"], "local_edit")
+        # Matching concrete operation binds.
+        state["evidence"].append(evidence)
+        cg.normalize_proof_manifest(state, manifest)
+        # A foreign concrete operation on the same evidence is rejected.
+        foreign = dict(evidence, id="E9002", operation="read")
+        state["evidence"][-1] = foreign
+        with self.assertRaises(ValueError) as caught:
+            cg.normalize_proof_manifest(state, dict(manifest, evidence_ids=["E9002"]))
+        self.assertIn("operation", str(caught.exception))
+        # A record without a concrete operation stays unconstrained.
+        legacy = {key: value for key, value in foreign.items() if key != "operation"}
+        state["evidence"][-1] = legacy
+        cg.normalize_proof_manifest(state, dict(manifest, evidence_ids=["E9002"]))
+
+    def test_schema8_adapter_manifest_drift_rejects_proof(self) -> None:
+        state, evidence, manifest = self._proof_state_fixture("修改 /tmp/plan.py 的实现。")
+        drifted = dict(evidence, id="E9003", adapter_manifest_version="0.0.9")
+        state["evidence"].append(drifted)
+        with self.assertRaises(ValueError) as caught:
+            cg.normalize_proof_manifest(state, dict(manifest, evidence_ids=["E9003"]))
+        self.assertIn("adapter manifest", str(caught.exception))
+
+    def test_schema8_adapter_manifest_checks_only_selected_evidence(self) -> None:
+        table = (
+            ("selected-current", cg.ADAPTER_MANIFEST_VERSION, "0.0.9", False),
+            ("selected-stale", "0.0.9", cg.ADAPTER_MANIFEST_VERSION, True),
+            ("selected-schema7-unstamped", None, "0.0.9", False),
+        )
+        for index, (label, selected_stamp, unselected_stamp, rejects) in enumerate(table):
+            with self.subTest(case=label):
+                state, evidence, manifest = self._proof_state_fixture(
+                    "修改 /tmp/plan.py 的实现。"
+                )
+                selected_id = f"E{9200 + index * 2}"
+                unselected_id = f"E{9201 + index * 2}"
+                selected = dict(evidence, id=selected_id)
+                unselected = dict(evidence, id=unselected_id)
+                if selected_stamp is None:
+                    selected.pop("adapter_manifest_version")
+                else:
+                    selected["adapter_manifest_version"] = selected_stamp
+                unselected["adapter_manifest_version"] = unselected_stamp
+                state["evidence"].extend([selected, unselected])
+                selected_manifest = dict(manifest, evidence_ids=[selected_id])
+                if rejects:
+                    with self.assertRaisesRegex(ValueError, "adapter manifest"):
+                        cg.normalize_proof_manifest(state, selected_manifest)
+                else:
+                    cg.normalize_proof_manifest(state, selected_manifest)
+
     def test_complex_prompt_activates_and_preserves_hash_and_acceptance(self) -> None:
         text = "\n".join(
             [
@@ -2628,7 +2914,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 7)
+        self.assertEqual(cg.SCHEMA_VERSION, 8)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
@@ -2741,7 +3027,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
@@ -2785,7 +3071,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["evidence"][-1]["id"], evidence_id)
@@ -2819,7 +3105,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("SessionStart", source="resume"),
         )
 
-        self.assertEqual(migrated["schema_version"], 7)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["requirements"], original_requirements)
         self.assertEqual(migrated["evidence"], original_evidence)
         self.assertEqual(migrated["assets"], original_assets)
@@ -3053,7 +3339,7 @@ class ContextGuardTests(unittest.TestCase):
         evidence_id = self.record_tool()
         state = self.state()
 
-        self.assertEqual(state["schema_version"], 7)
+        self.assertEqual(state["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(state["execution"]["contract"]["state"], "absent")
         self.assertEqual(state["execution"]["action_tickets"], [])
         self.assertEqual(state["execution"]["denials"], [])
@@ -3305,7 +3591,7 @@ class ContextGuardTests(unittest.TestCase):
             restored["hookSpecificOutput"]["additionalContext"],
         )
         rebuilt = self.state()
-        self.assertEqual(rebuilt["schema_version"], 7)
+        self.assertEqual(rebuilt["schema_version"], cg.SCHEMA_VERSION)
         self.assertTrue(cg.execution_state_is_dormant(rebuilt["execution"]))
         self.assertIn(original, rebuilt["requirements"][0]["text"])
 
@@ -5486,7 +5772,7 @@ class ContextGuardTests(unittest.TestCase):
                 )
             )
         state = self.state()
-        self.assertEqual(state["schema_version"], 7)
+        self.assertEqual(state["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(len(state["assets"]), 1)
         asset = state["assets"][0]
         self.assertEqual((asset["width"], asset["height"]), (640, 480))

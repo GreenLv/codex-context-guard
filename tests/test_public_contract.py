@@ -128,11 +128,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Release status: `0.9.5` is the latest published release.",
+            "> Release status: `0.10.0` is the current source candidate; `0.9.5` is the latest published release.",
             english,
         )
         self.assertIn(
-            "> 发布状态：`0.9.5` 是最新正式版本。",
+            "> 发布状态：`0.10.0` 是当前源码候选，`0.9.5` 是最新正式版本。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -230,12 +230,12 @@ class PublicContractTests(unittest.TestCase):
             "Current published Context Guard release: `0.9.5`", compatibility
         )
         self.assertIn(
-            "Current source line: `0.9.5`",
+            "Current source candidate (not yet released): `0.10.0`",
             compatibility,
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
-        self.assertIn("Diagnostic classifier: `2.3.2`", compatibility)
+        self.assertIn("Diagnostic classifier: `2.4.0`", compatibility)
         self.assertIn("Stop protocol: `2.0.0`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"

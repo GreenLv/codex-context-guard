@@ -24,11 +24,24 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
+READ_ONLY_COMPATIBILITY_SCHEMA = 7
 STOP_PROTOCOL_VERSION = "2.0.0"
-CLASSIFIER_VERSION = "2.3.2"
+CLASSIFIER_VERSION = "2.4.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "1.0.0"
+ADAPTER_MANIFEST_VERSION = "1.0.0"
+CLAUSE_DERIVATION_VERSION = "1.0.0"
+ADAPTER_MANIFEST = {
+    "version": ADAPTER_MANIFEST_VERSION,
+    "adapters": {
+        "file_read": "1.0.0",
+        "thread_read": "1.0.0",
+        "shell_read": "1.0.0",
+        "visual_read": "1.0.0",
+    },
+}
+
 PRIVATE_CONTROL_TOKEN_BYTES = 24
 PRIVATE_CONTROL_TOKEN_LENGTH = (PRIVATE_CONTROL_TOKEN_BYTES * 8 + 5) // 6
 DECISION_LOG_LIMIT = 32
@@ -84,6 +97,10 @@ STATE_REQUIRED_KEYS = {
     "continuation_attempts",
     "decision_log",
     "execution",
+    "adapter_manifest",
+    "classifier_metadata",
+    "pending",
+    "prompt_journal",
     "integrity",
     "content_hash",
 }
@@ -183,6 +200,14 @@ URL_RE = re.compile(
 )
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 IMAGE_REFERENCE_RE = re.compile(r"(?:截图|图片|图像|image|screenshot|visual)", re.IGNORECASE)
+# Schema-8 clause polarity: a clause matching this pattern is negative
+# (prohibition / non-goal) and never derives protection subjects, physical
+# identity obligations, or surface escalation.
+CLAUSE_NEGATION_RE = re.compile(
+    r"\b(?:do\s+not|don't|must\s+not|should\s+not|no|without)\b|"
+    r"(?:不要|不得|无需|不需要|暂不|不再|别|切勿|勿|不跑|不执行)",
+    re.IGNORECASE,
+)
 VISUAL_MUTATION_RE = re.compile(
     r"(?:修改|修复|调整|更新|替换|编辑|生成|渲染|展示|显示|改成|"
     r"edit|fix|change|update|replace|generate|render|display)",
@@ -199,8 +224,7 @@ FULL_SCOPE_NEGATION_RE = re.compile(
     r"\bno\s+(?:scope\s+|full\s+)?verification\s+is\s+requested\b)",
     re.IGNORECASE,
 )
-SCOPE_CARDINALITY_PATTERNS = (
-    re.compile(
+SCOPE_CARDINALITY_PATTERNS = (    re.compile(
         r"(?:全部|所有|全量|每(?:个|一))\s*(\d{1,5})\s*"
         r"(?:个|项|条|张|份|套|组)?\s*"
         r"[\u4e00-\u9fffA-Za-z_-]{0,8}?"
@@ -527,6 +551,17 @@ ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("test_verify", re.compile(r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)", re.I)),
     ("artifact_work", re.compile(r"\b(?:import|download|configure|configuration)\w*\b|(?:导入|下载|配置|打开页面|处理PDF|PDF\s*阶段)", re.I)),
 )
+# A trailing test/verify signal certifies a concrete action rather than
+# replacing it. Review/CI signals remain verification operations themselves,
+# so combinations such as "check and verify" stay deliberately ambiguous.
+PRIMARY_CLAUSE_ACTIONS = {
+    "local_edit",
+    "local_commit",
+    "remote_create",
+    "remote_push",
+    "remote_publish",
+    "artifact_work",
+}
 REPLY_ACTION_NEGATION_PREFIX_RE = re.compile(
     r"\b(?:do\s+not|don't|does\s+not|doesn't|will\s+not|won't|never|"
     r"without|avoid(?:s|ed|ing)?)\b.{0,48}$|"
@@ -1845,7 +1880,7 @@ def project_state_to_schema6(state: dict[str, Any]) -> dict[str, Any]:
 
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, 3, 4, 5, 6, SCHEMA_VERSION}:
+    if version not in {1, 2, 3, 4, 5, 6, READ_ONLY_COMPATIBILITY_SCHEMA, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -1874,8 +1909,8 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
             "proof_sequence",
             "execution",
         }
-    elif version in {4, 6}:
-        required = STATE_REQUIRED_KEYS - {"execution"}
+    elif version in {4, 6, READ_ONLY_COMPATIBILITY_SCHEMA}:
+        required = STATE_REQUIRED_KEYS - {"execution", "adapter_manifest", "classifier_metadata", "pending", "prompt_journal"}
     else:
         required = STATE_REQUIRED_KEYS
     missing = sorted(required - set(state))
@@ -2057,6 +2092,14 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "continuation_attempts": 0,
         "decision_log": [],
         "execution": dormant_execution_state(),
+        "adapter_manifest": json.loads(canonical_json(ADAPTER_MANIFEST)),
+        "classifier_metadata": {
+            "version": CLASSIFIER_VERSION,
+            "clause_derivation_version": CLAUSE_DERIVATION_VERSION,
+            "fail_closed": True,
+        },
+        "pending": {"operations": [], "recovery": None, "clear_token": None},
+        "prompt_journal": {"version": 1, "entries": []},
         "integrity": {
             "status": "ok",
             "issue": None,
@@ -2090,7 +2133,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["status"] = "pending"
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
-    elif version not in {2, 3, 4, 5, 6, SCHEMA_VERSION}:
+    elif version not in {2, 3, 4, 5, 6, READ_ONLY_COMPATIBILITY_SCHEMA, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
@@ -2119,7 +2162,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             item.setdefault("observed_outcome", outcome)
             migrated_decisions.append(item)
         state["decision_log"] = migrated_decisions[-DECISION_LOG_LIMIT:]
-    if version in {1, 2, 3, 4, 5, 6}:
+    if version in {1, 2, 3, 4, 5, 6, READ_ONLY_COMPATIBILITY_SCHEMA}:
         # Turn tokens and partially staged controls are intentionally ephemeral.
         # Preserve the durable ledger/history while requiring a fresh protocol
         # token after a schema upgrade.
@@ -2169,6 +2212,14 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     state.setdefault("continuation_attempts", 0)
     state.setdefault("decision_log", [])
     state.setdefault("execution", dormant_execution_state())
+    state.setdefault("adapter_manifest", json.loads(canonical_json(ADAPTER_MANIFEST)))
+    state.setdefault("classifier_metadata", {
+        "version": CLASSIFIER_VERSION,
+        "clause_derivation_version": CLAUSE_DERIVATION_VERSION,
+        "fail_closed": True,
+    })
+    state.setdefault("pending", {"operations": [], "recovery": None, "clear_token": None})
+    state.setdefault("prompt_journal", {"version": 1, "entries": []})
     session = state.setdefault("session", {})
     reconciliation = session.setdefault("asset_reconciliation", {})
     if isinstance(reconciliation, dict):
@@ -2241,6 +2292,40 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
             session[key] = payload[key]
     state["open_items"] = open_item_ids(state)
     return state
+
+
+def pending_operation(state: dict[str, Any], operation: str, *, subject_id: str | None = None, requested_surface: str | None = None) -> dict[str, Any]:
+    """Return a deterministic pending operation record without granting authority.
+
+    Ambiguous operations are recorded too: they are exactly the records that
+    need explicit resolution or an explicit clear, never silent drops.
+    """
+    if not operation:
+        operation = "unspecified"
+    record = {
+        "operation": operation,
+        "subjectId": subject_id,
+        "requestedSurface": requested_surface,
+        "state": "pending",
+    }
+    pending = state.setdefault("pending", {"operations": [], "recovery": None, "clear_token": None})
+    operations = pending.setdefault("operations", [])
+    operations[:] = [item for item in operations if item != record]
+    operations.append(record)
+    operations[:] = operations[-64:]
+    return record
+
+
+def clear_pending(state: dict[str, Any], *, operation: str | None = None) -> int:
+    """Clear only pending records; completed evidence and requirements are immutable."""
+    pending = state.setdefault("pending", {"operations": [], "recovery": None, "clear_token": None})
+    operations = pending.setdefault("operations", [])
+    before = len(operations)
+    if operation is None:
+        operations.clear()
+    else:
+        operations[:] = [item for item in operations if item.get("operation") != operation]
+    return before - len(operations)
 
 
 def save_state(session_dir: Path, state: dict[str, Any]) -> None:
@@ -2640,11 +2725,37 @@ def visual_mutation_requested(text: str) -> bool:
 
 
 def verification_contract(
-    item_id: str, text: str, state: dict[str, Any], asset_ids: list[str]
+    item_id: str,
+    text: str,
+    state: dict[str, Any],
+    asset_ids: list[str],
+    clauses: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Derive the enforced contract from the schema-8 clause model.
+
+    The clause-derived ``(operation, subjectId, requestedSurface)`` triple is
+    the source of the subject set, the readback surface, and the operation
+    stamped on each subject_readback obligation. Negated clauses never derive
+    protection subjects or physical-identity obligations, and the derivation
+    version is sealed into the contract so certification can detect drift.
+    """
+    if clauses is None:
+        clauses = clause_metadata(text)
+    positive_clauses = _positive_clause_texts(clauses)
+    positive_text = "\n".join(positive_clauses)
+    contract_operation = "unspecified"
+    primary_clause = _primary_positive_clause(clauses)
+    if primary_clause is not None:
+        operation = primary_clause.get("operation")
+        if isinstance(operation, str) and operation not in {
+            "",
+            "unspecified",
+            "ambiguous",
+        }:
+            contract_operation = operation
     assets = [item for item in state.get("assets", []) if item.get("id") in asset_ids]
-    subjects = prompt_subjects(text)
-    if IMAGE_REFERENCE_RE.search(text) and not assets:
+    subjects = prompt_subjects(positive_text) if positive_text else []
+    if IMAGE_REFERENCE_RE.search(positive_text) and not assets:
         return {
             "protocol_version": PROOF_PROTOCOL_VERSION,
             "mode": "legacy_fallback",
@@ -2659,10 +2770,11 @@ def verification_contract(
             "obligations": [],
         }
     full_scope_requested = bool(
-        FULL_SCOPE_RE.search(text) and not FULL_SCOPE_NEGATION_RE.search(text)
+        FULL_SCOPE_RE.search(positive_text)
+        and not FULL_SCOPE_NEGATION_RE.search(positive_text)
     )
     scope_spec = (
-        deterministic_scope_spec(text, subjects, assets)
+        deterministic_scope_spec(positive_text or text, subjects, assets)
         if full_scope_requested
         else None
     )
@@ -2693,26 +2805,33 @@ def verification_contract(
 
     for asset in assets:
         add("input_asset_inspection", "visual", [str(asset["id"])])
-    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(text))
-    if visual_signal and visual_mutation_requested(text):
+    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(positive_text))
+    if visual_signal and visual_mutation_requested(positive_text or text):
         add("result_visual_readback", "ui", [str(item["id"]) for item in assets])
     if subjects:
-        add(
-            "subject_readback",
-            "ui" if UI_SURFACE_RE.search(text) else "artifact",
-            [item["id"] for item in subjects],
-        )
-    # Restricted physical-identity capture (v0.9.5): when the prompt asks for
-    # anti-junction/physical-identity proof and contains Windows drive-path
-    # subjects, every such subject gets an explicit unbindable obligation.
-    # Conservative over-generation is deliberate: the obligation cannot be
-    # satisfied, so over-generation only keeps the task incomplete (fail
-    # closed); it never invents completion. Negations and quoted signals also
-    # trigger until the v0.10 clause model replaces this lexical rule.
-    if PHYSICAL_IDENTITY_SIGNAL_RE.search(text):
+        readback_surface = "ui" if UI_SURFACE_RE.search(positive_text) else "artifact"
+        readback = {
+            "id": f"O-{item_id}-{len(obligations) + 1:03d}",
+            "kind": "subject_readback",
+            "surface": readback_surface,
+            "subject_ids": [item["id"] for item in subjects],
+            "operation": contract_operation,
+            "requested_surface": readback_surface,
+        }
+        obligations.append(readback)
+    # Restricted physical-identity capture: the schema-8 clause model replaced
+    # the 0.9.5 lexical rule. The unbindable subject_readback derives only when
+    # some non-negated clause carries the physical-identity signal outside
+    # quoted spans; the drive-path subjects then come from every positive
+    # clause, so paths named in negated clauses are never captured.
+    if any(
+        _signal_outside_quotes(clause)
+        and PHYSICAL_IDENTITY_SIGNAL_RE.search(clause)
+        for clause in positive_clauses
+    ):
         physical_subjects = [
             unsupported_subject("physical_identity", locator)
-            for locator in WINDOWS_DRIVE_PATH_RE.findall(text)
+            for locator in WINDOWS_DRIVE_PATH_RE.findall(positive_text)
         ]
         if physical_subjects:
             add("subject_readback", "artifact", physical_subjects)
@@ -2734,6 +2853,8 @@ def verification_contract(
         "protocol_version": PROOF_PROTOCOL_VERSION,
         "mode": "enforced",
         "reason": "deterministic_prompt_contract",
+        "clause_derivation_version": CLAUSE_DERIVATION_VERSION,
+        "clause_operation": contract_operation,
         "obligations": obligations,
     }
 
@@ -3550,6 +3671,17 @@ def append_prompt(
         "record_sha256": record["record_sha256"],
     }
     state["prompts"].append(metadata)
+    journal = state.setdefault("prompt_journal", {"version": 1, "entries": []})
+    entries = journal.setdefault("entries", []) if isinstance(journal, dict) else []
+    if isinstance(entries, list):
+        entries.append({
+            "id": prompt_id,
+            "sha256": record["sha256"],
+            "record_sha256": record["record_sha256"],
+            "origin": origin,
+            "authority": authority,
+        })
+        journal["entries"] = entries[-128:]
     if origin == "human":
         tracker = reconciliation_tracker(state)
         tracker["pending_prompt_ids"] = list(
@@ -3563,11 +3695,108 @@ def append_prompt(
     return metadata
 
 
+def clause_metadata(text: str) -> dict[str, Any]:
+    """Derive bounded, diagnostic bindings from each protected prompt clause."""
+    clauses: list[dict[str, Any]] = []
+    for clause in _protected_prompt_clauses(text):
+        operations = [category for category, pattern in ACTION_PATTERNS if pattern.search(clause)]
+        primary_actions = [
+            operation for operation in operations if operation in PRIMARY_CLAUSE_ACTIONS
+        ]
+        if len(primary_actions) == 1 and set(operations).issubset(
+            {primary_actions[0], "test_verify"}
+        ):
+            operation = primary_actions[0]
+        else:
+            operation = (
+                operations[0]
+                if len(operations) == 1
+                else ("ambiguous" if operations else "unspecified")
+            )
+        subjects = [item["id"] for item in prompt_subjects(clause, include_threads=True)]
+        lowered = clause.casefold()
+        if re.search(r"视觉|图片|图像|image|visual|截图|ui|界面|页面", lowered):
+            surface = "visual" if re.search(r"视觉|图片|图像|image|visual|截图", lowered) else "ui"
+        elif re.search(r"全部|所有|范围|scope|each|every", lowered):
+            surface = "scope"
+        else:
+            surface = "artifact"
+        clauses.append({
+            "clause": bounded(clause, 400),
+            "operation": operation,
+            "subjectId": subjects,
+            "requestedSurface": surface,
+        })
+    return {"version": CLAUSE_DERIVATION_VERSION, "clauses": clauses}
+
+
+def primary_clause_operation(text: str) -> str:
+    """Return the same affirmative operation selected by the contract.
+
+    Empty or wholly negated prompts stay ``unspecified``; denied operations
+    therefore never become evidence stamps for affirmative work.
+    """
+    clause = _primary_positive_clause(clause_metadata(text))
+    if clause is None:
+        return "unspecified"
+    operation = clause.get("operation")
+    return operation if isinstance(operation, str) and operation else "unspecified"
+
+
+def _positive_clause_texts(metadata: dict[str, Any]) -> list[str]:
+    """Return the non-negated clause texts from precomputed clause metadata."""
+    return [
+        str(clause.get("clause"))
+        for clause in _positive_clause_records(metadata)
+    ]
+
+
+def _positive_clause_records(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return only affirmative clause records for contract and pending state."""
+    return [
+        clause
+        for clause in metadata.get("clauses") or []
+        if isinstance(clause, dict)
+        and not CLAUSE_NEGATION_RE.search(str(clause.get("clause") or ""))
+    ]
+
+
+def _primary_positive_clause(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Select the first concrete affirmative clause, then a safe fallback."""
+    clauses = _positive_clause_records(metadata)
+    for clause in clauses:
+        if clause.get("operation") not in {None, "", "unspecified", "ambiguous"}:
+            return clause
+    return clauses[0] if clauses else None
+
+
+_QUOTED_SPAN_RE = re.compile(
+    r'"[^"]*"|\'[^\']*\'|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|`[^`]*`'
+)
+
+
+def _signal_outside_quotes(clause: str) -> bool:
+    """True when the physical-identity signal appears outside quoted spans, so
+    quoted prose such as “不要提 anti-junction” stays a negated mention."""
+    stripped = _QUOTED_SPAN_RE.sub(" ", clause)
+    return bool(PHYSICAL_IDENTITY_SIGNAL_RE.search(stripped))
+
+
 def append_requirement(
     state: dict[str, Any], prompt: dict[str, Any], text: str, asset_ids: list[str] | None = None
 ) -> str:
     requirement_id = f"R{len(state['requirements']) + 1:03d}"
-    contract = verification_contract(requirement_id, text, state, asset_ids or [])
+    # One clause derivation feeds both the requirement record and the enforced
+    # contract, so the stored triple cannot drift from what certification uses.
+    metadata = clause_metadata(text)
+    contract = verification_contract(requirement_id, text, state, asset_ids or [], clauses=metadata)
+    positive_subjects = sorted(
+        {
+            item["id"]
+            for item in prompt_subjects("\n".join(_positive_clause_texts(metadata)), include_threads=True)
+        }
+    )
+    positive_clause_records = _positive_clause_records(metadata)
     state["requirements"].append(
         {
             "id": requirement_id,
@@ -3576,9 +3805,23 @@ def append_requirement(
             "sha256": prompt["sha256"],
             "status": "pending",
             "evidence": [],
+            "operation": contract.get("clause_operation", "unspecified"),
+            "subjectId": positive_subjects,
+            "requestedSurface": sorted(
+                {clause["requestedSurface"] for clause in positive_clause_records}
+            ),
+            "clause_metadata": metadata,
             "verification_contract": contract,
         }
     )
+    primary = _primary_positive_clause(metadata)
+    if primary is not None:
+        pending_operation(
+            state,
+            str(primary.get("operation") or "unspecified"),
+            subject_id=(primary.get("subjectId") or [None])[0],
+            requested_surface=primary.get("requestedSurface"),
+        )
     return requirement_id
 
 
@@ -4670,6 +4913,15 @@ def normalize_proof_manifest(state: dict[str, Any], data: Any) -> dict[str, Any]
         evidence = evidence_by_id.get(evidence_id)
         if evidence is None or evidence.get("outcome") != "success":
             raise ValueError(f"proof requires successful existing evidence {evidence_id}")
+        # The adapter manifest constrains only evidence selected by this proof.
+        # Unselected history is irrelevant, while a missing stamp remains
+        # eligible under the read-only schema-7 compatibility rule.
+        stamped = evidence.get("adapter_manifest_version")
+        if stamped is not None and stamped != ADAPTER_MANIFEST_VERSION:
+            raise ValueError(
+                f"evidence {evidence_id} was read under adapter manifest "
+                f"{stamped!r}, not {ADAPTER_MANIFEST_VERSION!r}"
+            )
         if (
             isinstance(prompt_created_at, str)
             and isinstance(evidence.get("created_at"), str)
@@ -4741,6 +4993,22 @@ def normalize_proof_manifest(state: dict[str, Any], data: Any) -> dict[str, Any]
             )
     elif kind == "subject_readback" and not required_subjects.issubset(evidence_subjects):
         raise ValueError("subject proof evidence does not reference every required subject")
+    # The clause-derived operation binds certification: evidence stamped under
+    # a different concrete operation cannot satisfy this obligation. Records
+    # without a concrete operation on either side stay unconstrained.
+    required_operation = obligation.get("operation")
+    if isinstance(required_operation, str) and required_operation not in {"", "unspecified", "ambiguous"}:
+        for evidence_id in evidence_ids:
+            stamped_operation = evidence_by_id[evidence_id].get("operation")
+            if (
+                isinstance(stamped_operation, str)
+                and stamped_operation not in {"", "unspecified", "ambiguous"}
+                and stamped_operation != required_operation
+            ):
+                raise ValueError(
+                    f"proof evidence {evidence_id} records operation "
+                    f"{stamped_operation!r}, not required operation {required_operation!r}"
+                )
     visual_facts: list[dict[str, str]] = []
     raw_facts = data.get("visual_facts", [])
     if raw_facts is not None:
@@ -5230,6 +5498,21 @@ def checkpoint_status(
     require_usable_state(state)
     completion_attempt_for(state, turn_id, token)
     return checkpoint_status_snapshot(state, turn_id)
+
+
+def clear_pending_request(
+    root: Path, session_id: str, turn_id: str, token: str
+) -> int:
+    """Runtime entry for clear-pending: verify the turn, then clear only the
+    pending operation ledger. Requirements, evidence, and checkpoints are
+    immutable here, and the state is persisted in the same transaction."""
+    session_dir = root / "sessions" / safe_session_id(session_id)
+    state = load_state(session_dir, {"session_id": session_id})
+    require_usable_state(state)
+    completion_attempt_for(state, turn_id, token)
+    cleared = clear_pending(state)
+    save_state(session_dir, state)
+    return cleared
 
 
 def validate_checkpoint_request(
@@ -5902,6 +6185,7 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
         return False
     control_commands = (
         "checkpoint-status",
+        "clear-pending",
         "register-proof",
         "stage-checkpoint",
         "stage-disposition",
@@ -6364,6 +6648,10 @@ def handle_post_tool(
         readback_subjects = read_input_subject_ids(tool_name, payload.get("tool_input"))
         evidence = {
             "id": f"E{state['evidence_sequence']:04d}",
+            "adapter_manifest_version": ADAPTER_MANIFEST_VERSION,
+            "operation": primary_clause_operation(latest_requirement_text(session_dir, state)),
+            "subjectId": list(dict.fromkeys(readback_subjects or evidence_subject_ids)),
+            "requestedSurface": "ui" if "ui" in capabilities else ("visual" if "visual" in capabilities else "artifact"),
             "created_at": utc_now(),
             "tool": tool_name,
             "origin": evidence_origin,
@@ -6403,8 +6691,12 @@ def handle_pre_compact(
             "trigger": payload.get("trigger") or payload.get("source") or "unknown",
         }
     )
+    pending = state.setdefault("pending", {"operations": [], "recovery": None, "clear_token": None})
+    pending["recovery"] = {"state": "pending", "trigger": "PreCompact", "sequence": len(state["compactions"])}
     save_state(session_dir, state)
     write_recovery(session_dir, state, "PreCompact")
+    pending["recovery"]["state"] = "ready"
+    save_state(session_dir, state)
     return {"continue": True}
 
 
@@ -6428,6 +6720,10 @@ def handle_session_start(
     turn_id, token = begin_completion_attempt(state, payload, fallback_turn_id)
     save_state(session_dir, state)
     packet = write_recovery(session_dir, state, f"SessionStart:{source}")
+    pending = state.setdefault("pending", {"operations": [], "recovery": None, "clear_token": None})
+    if isinstance(pending.get("recovery"), dict):
+        pending["recovery"]["state"] = "consumed"
+    save_state(session_dir, state)
     private_context = completion_command_context(state, turn_id, token)
     combined = f"{packet}\n\n{private_context}"
     if len(combined) > RECOVERY_CHAR_LIMIT:
@@ -7848,6 +8144,21 @@ def command_checkpoint_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_clear_pending(args: argparse.Namespace) -> int:
+    try:
+        cleared = clear_pending_request(
+            args.data_dir.expanduser().resolve(),
+            args.session_id,
+            args.turn_id,
+            args.token,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
+        return 1
+    console_write(json.dumps({"cleared": cleared}, ensure_ascii=True))
+    return 0
+
+
 def command_stage_checkpoint(args: argparse.Namespace) -> int:
     try:
         checkpoint_sha256 = validate_checkpoint_request(
@@ -7964,6 +8275,10 @@ def main() -> int:
             "stage-disposition",
             "Stage a typed incomplete-turn disposition before the final response",
         ),
+        (
+            "clear-pending",
+            "Clear deterministic pending operation records; requirements and evidence stay immutable",
+        ),
     ):
         command = subparsers.add_parser(name, help=help_text)
         command.add_argument("--data-dir", type=Path, required=True)
@@ -7995,6 +8310,8 @@ def main() -> int:
         return command_register_proof(args)
     if args.command == "checkpoint-status":
         return command_checkpoint_status(args)
+    if args.command == "clear-pending":
+        return command_clear_pending(args)
     if args.command == "stage-checkpoint":
         return command_stage_checkpoint(args)
     if args.command == "stage-disposition":
