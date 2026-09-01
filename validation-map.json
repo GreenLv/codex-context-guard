@@ -1,0 +1,82 @@
+{
+  "schema": "change-scoped-validation-map/v1",
+  "full_gate": "full_candidate",
+  "default": {
+    "gates": ["full_candidate"],
+    "invalidates": ["artifact", "candidate_matrix", "native_artifact", "native_runtime"]
+  },
+  "rules": [
+    {
+      "id": "non_packaged_docs",
+      "paths": ["AGENTS.md", "CHANGELOG*.md", "CONTRIBUTING.md", "README*.md", "SECURITY.md", "docs/**"],
+      "gates": ["docs_contract"],
+      "invalidates": ["documentation"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "tests",
+      "paths": ["tests/**"],
+      "gates": ["focused_tests", "repo_contract"],
+      "invalidates": ["candidate_matrix"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "shared_conformance",
+      "paths": ["docs/SEMANTIC_COMPATIBILITY.md", "docs/upstream-deltas.json", "scripts/reference_digest_encoder.py", "tests/fixtures/conformance/**"],
+      "gates": ["contract_tests", "focused_tests"],
+      "invalidates": ["candidate_matrix", "cross_repository_contract"],
+      "contracts": ["context_guard_semantics_v1", "digest_v3"],
+      "peer_gates": {"dsh_context_guard": ["contract_tests"]}
+    },
+    {
+      "id": "runtime",
+      "paths": ["assets/state.schema.json", "hooks/**", "scripts/context_guard.py", "skills/context-guard/**"],
+      "gates": ["lint_compile", "repo_contract", "runtime_tests", "self_test"],
+      "invalidates": ["artifact", "candidate_matrix", "native_runtime"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "installer_packaging",
+      "paths": [".agents/**", ".codex-plugin/**", ".codexignore", "LICENSE", "assets/icon.svg", "pyproject.toml", "requirements-lock.txt", "scripts/manage_plugin.py", "scripts/run-context-guard.ps1", "scripts/run_context_guard.sh", "scripts/smoke_installed.py"],
+      "gates": ["artifact_identity", "install_lifecycle", "repo_contract"],
+      "invalidates": ["artifact", "native_artifact", "publication_identity"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "repository_tools",
+      "paths": ["scripts/audit_commit_identity.py", "scripts/audit_public_tree.py", "scripts/incident_corpus.py", "scripts/validate_public_repo.py", "tests/fixtures/incidents/**"],
+      "gates": ["focused_tests", "lint_compile", "repo_contract"],
+      "invalidates": ["candidate_matrix"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "repository_identity",
+      "paths": [".gitattributes"],
+      "gates": ["full_candidate"],
+      "invalidates": ["artifact", "candidate_matrix", "cross_repository_contract", "native_artifact"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "repository_metadata",
+      "paths": [".gitignore"],
+      "gates": ["repo_contract"],
+      "invalidates": [],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "validation_infrastructure",
+      "paths": [".github/**", "scripts/select_validation.py", "scripts/verify_required_jobs.py", "tests/test_required_jobs.py", "tests/test_validation_selection.py", "validation-map.json"],
+      "gates": ["full_candidate"],
+      "invalidates": ["candidate_matrix"],
+      "contracts": [],
+      "peer_gates": {}
+    }
+  ]
+}

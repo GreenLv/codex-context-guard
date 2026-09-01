@@ -1,0 +1,66 @@
+name: Validation selection shadow
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-shadow-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  classify:
+    name: Validation selection (shadow, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Test selection and summary contracts
+        id: contract_tests
+        run: python -m unittest tests.test_validation_selection tests.test_required_jobs
+      - name: Classify exact diff
+        id: select
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$EVENT_BASE_SHA"
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$(git hash-object -t tree /dev/null)"
+          fi
+          python scripts/select_validation.py \
+            --repo-root . \
+            --base "$base_sha" \
+            --head "$EVENT_HEAD_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Record non-authoritative shadow result
+        if: always()
+        env:
+          CONTRACT_OUTCOME: ${{ steps.contract_tests.outcome }}
+          SELECT_OUTCOME: ${{ steps.select.outcome }}
+          SELECTED_GATES: ${{ steps.select.outputs.gates }}
+          INVALIDATES: ${{ steps.select.outputs.invalidates }}
+          FULL_REQUIRED: ${{ steps.select.outputs.full_required }}
+        run: |
+          {
+            echo "### Validation selection shadow"
+            echo
+            echo "This result is observational only; the existing CI remains authoritative."
+            echo
+            echo "- contract tests: \`$CONTRACT_OUTCOME\`"
+            echo "- selector: \`$SELECT_OUTCOME\`"
+            echo "- selected gates: \`${SELECTED_GATES:-unavailable}\`"
+            echo "- invalidated evidence: \`${INVALIDATES:-unavailable}\`"
+            echo "- full candidate required: \`${FULL_REQUIRED:-true}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
