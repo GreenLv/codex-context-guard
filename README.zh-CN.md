@@ -35,8 +35,7 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 版本与兼容性说明
 
-- 0.9.4 要求任务通过 checkpoint 检查后才能标记完成，并能完整保留中文等非 ASCII 文本。
-- 0.9.5 会自动为普通文件和文字结果准备完成证据。它还减少了 UI 相关措辞的误判，并拒绝来自错误文件、任务或 Windows 路径的证据。图片和 UI 仍需显式检查；已有状态和隐私规则不变。
+- 0.9.5 要求覆盖全部任务的 checkpoint 通过验证后才能标记完成。它会自动准备常规文件和文字证据，完整保留中文等非 ASCII Hook 输入，减少 UI 措辞误判，并拒绝来自错误文件、任务或 Windows 路径的证据。图片和 UI 仍需显式检查。
 - Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
 
 详细版本与平台证据见[兼容性说明](docs/COMPATIBILITY.md)、[更新日志](CHANGELOG.zh-CN.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。

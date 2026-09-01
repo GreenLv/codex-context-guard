@@ -135,6 +135,10 @@ class PublicContractTests(unittest.TestCase):
             "**0.7.x — bind evidence to the thing being verified:**", changelog
         )
         self.assertIn(
+            "**0.9.x — require complete, current evidence before finishing:**",
+            changelog,
+        )
+        self.assertIn(
             "**0.8.x — separate what user instructions, Skills, and the model plan may decide:**",
             changelog,
         )
@@ -143,14 +147,18 @@ class PublicContractTests(unittest.TestCase):
             "**0.7.x——把证据绑定到需要验证的对象：**", changelog_zh
         )
         self.assertIn(
+            "**0.9.x——结束任务前必须有完整且当前有效的证据：**",
+            changelog_zh,
+        )
+        self.assertIn(
             "**0.8.x——分清用户要求、Skill 和模型计划各自能决定什么：**",
             changelog_zh,
         )
         english_line_order = [
-            changelog.index(f"**0.{minor}.x") for minor in range(8, 3, -1)
+            changelog.index(f"**0.{minor}.x") for minor in range(9, 3, -1)
         ]
         chinese_line_order = [
-            changelog_zh.index(f"**0.{minor}.x") for minor in range(8, 3, -1)
+            changelog_zh.index(f"**0.{minor}.x") for minor in range(9, 3, -1)
         ]
         self.assertEqual(english_line_order, sorted(english_line_order))
         self.assertEqual(chinese_line_order, sorted(chinese_line_order))
@@ -235,6 +243,10 @@ class PublicContractTests(unittest.TestCase):
         )
         self.assertIn(
             "`0.9.4` keeps Stop protocol 2.0.0",
+            versioning,
+        )
+        self.assertIn(
+            "`0.9.5` keeps the same public protocols",
             versioning,
         )
         for stale in (

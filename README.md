@@ -35,8 +35,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
-- Version 0.9.4 requires a verified checkpoint before a task can be marked complete and preserves non-ASCII text such as Chinese prompts.
-- Version 0.9.5 prepares routine completion evidence automatically for ordinary file and text results. It also reduces false UI matches and rejects evidence from the wrong file, task, or Windows path. Visual and UI cases still require explicit inspection; saved state and privacy rules do not change.
+- Version 0.9.5 requires a verified, full-coverage checkpoint before a task can be marked complete. It prepares routine file and text evidence automatically, preserves non-ASCII Hook input, reduces false UI matches, and rejects evidence from the wrong file, task, or Windows path. Visual and UI cases still require explicit inspection.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
 Detailed version and platform evidence is in the [compatibility matrix](docs/COMPATIBILITY.md), [changelog](CHANGELOG.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).

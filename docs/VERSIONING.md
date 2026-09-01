@@ -258,6 +258,11 @@ not as a measure of code volume.
   subprocess regressions for byte-exact Chinese journaling, the UTF-8 Stop
   decision contract, and invalid-byte rejection. The consumed 0.9.3 cache
   remains immutable.
+- `0.9.5` keeps the same public protocols, schema, classifier, Python floor,
+  and eight-Hook wire. It automatically creates routine non-visual proof at
+  checkpoint time, narrows UI wording detection, and binds task, file, and
+  Windows-path evidence to the exact item read. Visual or otherwise
+  non-deterministic checks still require explicit proof registration.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
@@ -267,7 +272,7 @@ evidence across at least two minor series; this public repository is the sole
 implementation upstream and downstream consumers pin immutable public commits;
 and rollback behavior lets already-open tasks finish safely.
 
-The `0.9.4` release implements
+The `0.9.x` release line implements
 [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md): only
 an authenticated full-coverage checkpoint may transition a task to complete,
 while natural-language classification is diagnostic-only. Publication is
