@@ -41,6 +41,7 @@ REQUIRED_FILES = {
     ".codex-plugin/plugin.json",
     ".agents/plugins/marketplace.json",
     ".github/workflows/ci.yml",
+    ".github/workflows/ci-lane.yml",
     ".github/workflows/hol-plugin-scanner.yml",
     ".github/dependabot.yml",
     ".codexignore",
@@ -76,6 +77,20 @@ REQUIRED_FILES = {
 FORBIDDEN_FILES = {
     "docs/BLOG.zh-CN.md",
 }
+CI_LANES = (
+    ("ubuntu_py310", "Ubuntu / Python 3.10", "ubuntu-latest", "3.10"),
+    ("ubuntu_py311", "Ubuntu / Python 3.11", "ubuntu-latest", "3.11"),
+    ("ubuntu_py312", "Ubuntu / Python 3.12", "ubuntu-latest", "3.12"),
+    ("ubuntu_py313", "Ubuntu / Python 3.13", "ubuntu-latest", "3.13"),
+    ("macos_py310", "macOS / Python 3.10", "macos-latest", "3.10"),
+    ("macos_py311", "macOS / Python 3.11", "macos-latest", "3.11"),
+    ("macos_py312", "macOS / Python 3.12", "macos-latest", "3.12"),
+    ("macos_py313", "macOS / Python 3.13", "macos-latest", "3.13"),
+    ("windows_py310", "Windows / Python 3.10", "windows-latest", "3.10"),
+    ("windows_py311", "Windows / Python 3.11", "windows-latest", "3.11"),
+    ("windows_py312", "Windows / Python 3.12", "windows-latest", "3.12"),
+    ("windows_py313", "Windows / Python 3.13", "windows-latest", "3.13"),
+)
 
 
 def assigned_literal(tree: ast.Module, name: str) -> object:
@@ -137,6 +152,66 @@ def enum_sets(value: object) -> list[set[str]]:
         for child in value:
             found.extend(enum_sets(child))
     return found
+
+
+def validate_ci_workflow(root: Path) -> list[str]:
+    """Require independently rerunnable OS/Python jobs with one shared gate body."""
+
+    errors: list[str] = []
+    try:
+        caller = (root / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        lane = (root / ".github" / "workflows" / "ci-lane.yml").read_text(
+            encoding="utf-8"
+        )
+    except OSError as exc:
+        return [f"invalid CI workflow: {exc}"]
+
+    if "strategy:" in caller or "matrix:" in caller:
+        errors.append(
+            "CI lanes must remain independent jobs so one failed lane can be rerun alone"
+        )
+    reusable_call = "uses: ./.github/workflows/ci-lane.yml"
+    if caller.count(reusable_call) != len(CI_LANES):
+        errors.append(
+            f"CI must call the reusable lane exactly {len(CI_LANES)} times"
+        )
+    for job_id, display_name, runner, python_version in CI_LANES:
+        expected = (
+            f"  {job_id}:\n"
+            f"    name: {display_name}\n"
+            f"    {reusable_call}\n"
+            "    with:\n"
+            f"      runner: {runner}\n"
+            f'      python-version: "{python_version}"'
+        )
+        if expected not in caller:
+            errors.append(
+                f"CI independent lane is missing or malformed: {job_id}"
+            )
+
+    required_lane_contract = (
+        "workflow_call:",
+        "runner:",
+        "python-version:",
+        "runs-on: ${{ inputs.runner }}",
+        "python-version: ${{ inputs.python-version }}",
+        "fetch-depth: 0",
+        "CONTEXT_GUARD_IDENTITY_BASE:",
+        "CONTEXT_GUARD_IDENTITY_HEAD:",
+        "python scripts/audit_commit_identity.py .",
+        "python scripts/validate_public_repo.py .",
+        "python scripts/audit_public_tree.py .",
+        'python -m unittest discover -s tests -p "test_*.py"',
+        "python scripts/context_guard.py self-test",
+        "ruff check .",
+        "python -m compileall -q scripts tests",
+    )
+    for fragment in required_lane_contract:
+        if fragment not in lane:
+            errors.append(f"CI reusable lane contract is missing: {fragment}")
+    return errors
 
 
 def validate(root: Path) -> list[str]:
@@ -362,21 +437,7 @@ def validate(root: Path) -> list[str]:
     except (OSError, SyntaxError) as exc:
         errors.append(f"invalid Context Guard runtime protocol: {exc}")
 
-    try:
-        workflow = (root / ".github" / "workflows" / "ci.yml").read_text(
-            encoding="utf-8"
-        )
-        required_identity_gate = (
-            "fetch-depth: 0",
-            "CONTEXT_GUARD_IDENTITY_BASE:",
-            "CONTEXT_GUARD_IDENTITY_HEAD:",
-            "python scripts/audit_commit_identity.py .",
-        )
-        for fragment in required_identity_gate:
-            if fragment not in workflow:
-                errors.append(f"CI commit-identity gate is missing: {fragment}")
-    except OSError as exc:
-        errors.append(f"invalid CI workflow: {exc}")
+    errors.extend(validate_ci_workflow(root))
 
     try:
         icon = root / "assets" / "icon.svg"

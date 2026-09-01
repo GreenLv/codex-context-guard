@@ -37,6 +37,42 @@ class PublicContractTests(unittest.TestCase):
     def test_repository_contract(self) -> None:
         self.assertEqual(contract.validate(ROOT), [])
 
+    def test_ci_lanes_are_independent_and_share_one_gate_body(self) -> None:
+        caller = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("strategy:", caller)
+        self.assertNotIn("matrix:", caller)
+        self.assertEqual(
+            caller.count("uses: ./.github/workflows/ci-lane.yml"),
+            len(contract.CI_LANES),
+        )
+        self.assertEqual(contract.validate_ci_workflow(ROOT), [])
+
+    def test_ci_contract_rejects_a_missing_independent_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workflows = root / ".github" / "workflows"
+            workflows.mkdir(parents=True)
+            caller = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+                encoding="utf-8"
+            )
+            (workflows / "ci.yml").write_text(
+                caller.replace("  macos_py311:\n", "  macos_py311_missing:\n"),
+                encoding="utf-8",
+            )
+            (workflows / "ci-lane.yml").write_text(
+                (ROOT / ".github" / "workflows" / "ci-lane.yml").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            findings = contract.validate_ci_workflow(root)
+            self.assertIn(
+                "CI independent lane is missing or malformed: macos_py311",
+                findings,
+            )
+
     def test_public_tree_has_no_private_material(self) -> None:
         self.assertEqual(audit.findings(ROOT), [])
 
