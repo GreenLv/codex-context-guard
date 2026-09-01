@@ -92,12 +92,12 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Release status: `0.9.4` is the latest published release."
-            " The current checkout is the unreleased `0.9.5` source candidate.",
+            "> Release status: version `0.9.5` is frozen for publication after"
+            " native macOS and Windows acceptance.",
             english,
         )
         self.assertIn(
-            "> 发布状态：`0.9.4` 是最近一次已发布版本；当前检出内容为未发布的 `0.9.5` 源码候选。",
+            "> 发布状态：`0.9.5` 已完成 macOS 和 Windows 原生验收，现已冻结并准备发布。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -187,7 +187,8 @@ class PublicContractTests(unittest.TestCase):
             "Current published Context Guard release: `0.9.4`", compatibility
         )
         self.assertIn(
-            "Current source line: unreleased `0.9.5` candidate", compatibility
+            "Current source line: `0.9.5`, frozen for publication after native acceptance",
+            compatibility,
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)

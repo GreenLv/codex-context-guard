@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Release status: `0.9.4` is the latest published release. The current checkout is the unreleased `0.9.5` source candidate. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Release status: version `0.9.5` is frozen for publication after native macOS and Windows acceptance. `0.9.4` remains the latest published release until the `v0.9.5` tag and GitHub Release are read back. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -36,7 +36,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 ### Version and compatibility notes
 
 - Version 0.9.4 requires a verified checkpoint before a task can be marked complete and preserves non-ASCII text such as Chinese prompts.
-- The 0.9.5 source candidate prepares routine completion evidence automatically for ordinary file and text results. It also reduces false UI matches and rejects evidence from the wrong file, task, or Windows path. Visual and UI cases still require explicit inspection; saved state and privacy rules do not change.
+- Version 0.9.5 prepares routine completion evidence automatically for ordinary file and text results. It also reduces false UI matches and rejects evidence from the wrong file, task, or Windows path. Visual and UI cases still require explicit inspection; saved state and privacy rules do not change.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
 Detailed version and platform evidence is in the [compatibility matrix](docs/COMPATIBILITY.md), [changelog](CHANGELOG.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).

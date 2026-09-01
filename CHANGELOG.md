@@ -12,7 +12,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - **0.5.x — explain stop decisions and make upgrades recoverable:** show why Context Guard allowed or stopped a response, and preserve immutable installed Hook versions so a damaged cache can be repaired safely.
 - **0.4.x — remember the user's task:** preserve prompts, requirements, corrections, delegated work, and open acceptance items across compaction and resume; do not report the whole task complete while requested work remains.
 
-## 0.9.5 - Unreleased (source candidate)
+## 0.9.5 - 2026-09-01
 
 ### Highlights
 
@@ -29,9 +29,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- macOS source validation passes 343 tests with 9 capability skips, plus the repository, public-tree, self-test, and Ruff checks. Focused cases cover UI wording, Windows paths, task identity, evidence readback, rollback and replay, and privacy boundaries; exact details remain in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
-- A temporary Codex home accepted the source candidate, and the installed plugin passed the isolated lifecycle smoke. This did not change the daily Codex installation.
-- Still pending: native macOS and Windows fresh-Hook acceptance, CI for the candidate commit, tag, GitHub Release, public readback, and any daily installation. This candidate is not released.
+- macOS passes the 343-test source matrix with 9 capability skips, isolated and daily managed installation, strict repeat/no-op checks, installed lifecycle smoke, 17-file product parity, and a fresh trusted-Hook task. Windows independently passes its native source, isolated install/no-op/parity, and fresh trusted-Hook gates.
+- The pre-publication source commit passes main CI and HOL scanning. The release commit, annotated tag, tag automation, GitHub Release, public readback, and downstream adoption remain separate publication gates recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.9.4 - 2026-08-28
 

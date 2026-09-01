@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.9.4`
-- Current source line: unreleased `0.9.5` candidate
+- Current source line: `0.9.5`, frozen for publication after native acceptance
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`
@@ -18,6 +18,22 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.9.5 pre-publication status
+
+Version 0.9.5 keeps schema 7, Stop protocol 2.0.0, Proof and Execution protocol
+1.0.0, classifier 2.3.2, Python 3.10+, and the eight-Hook wire. It automatically
+derives ordinary non-visual proof records from successful reads when a
+checkpoint is staged, narrows UI-wording classification, and binds task, file,
+and Windows-path evidence to the exact item that was read. Images, UI results,
+and scopes that cannot be checked exactly still require explicit proof.
+
+Native macOS and Windows independently pass source, installation, strict
+repeat/no-op, product-parity, installed lifecycle, and fresh trusted-Hook
+gates for the 0.9.5 product bytes. The pre-publication main commit also passes
+CI and HOL scanning. The final release commit, annotated tag, tag automation,
+GitHub Release, public readback, and downstream consumer updates remain
+separate publication surfaces until each is read back.
 
 ## 0.9.4 release status
 

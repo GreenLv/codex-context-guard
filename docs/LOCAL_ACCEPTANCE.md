@@ -4,13 +4,33 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.9.4`; accepted `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.9.5 source candidate gates (2026-08-31)
+## 0.9.5 pre-publication release acceptance (2026-09-01)
 
-The 0.9.5 source candidate was checked locally on macOS from a working tree based on `abbdcee5260865ba80caa00139310367c74e9068`. These results cover the current source candidate only; they do not establish a release identity.
+The 0.9.5 product candidate is exact commit
+`745b7fb5bf0127cc38e649ec56f3f1f7b5fa8fa5`. Its product tree contains 17
+files under the plugin-owned roots. Documentation-only release successors do
+not change those runtime/install bytes, but they still require their own
+repository checks and exact-main automation before tagging.
 
-- The repository passes 343 tests with 9 capability skips, `validate_public_repo`, `audit_public_tree`, the eight-Hook self-test, Ruff, and `git diff --check`.
-- A temporary Codex home installed version 0.9.5 from this source tree. The installed plugin then passed `smoke_installed`, including checkpoint, recovery, delegated-work, and completion-gate paths. The daily Codex installation was not changed.
-- Native macOS and Windows fresh-Hook acceptance, candidate CI, tag, GitHub Release, public readback, downstream pinning, and daily installation remain separate pending gates.
+- Native macOS passes `validate_public_repo`, `audit_public_tree`, 343 tests
+  with 9 capability skips, the eight-Hook self-test, Ruff, external-cache
+  compilation, and `git diff --check`. An isolated home and the daily home both
+  pass managed 0.9.5 installation, strict second apply/no-op, read-only audit,
+  installed self-test, lifecycle smoke, and 17-file source/cache parity. The
+  daily upgrade preserves the immutable 0.9.4 cache and archive.
+- A fresh macOS Codex CLI 0.150.1 task, without Hook-trust bypass, loads the
+  installed 0.9.5 Skill and reads the requested source file. Persisted schema-7
+  state records integrity `ok`, a complete turn-bound checkpoint, zero open
+  items, zero continuations, and a normal `SessionEnd`.
+- Native Windows independently accepts the same exact 0.9.5 commit through its
+  source, isolated install/no-op/parity, and fresh trusted-Hook lifecycle. Its
+  standard 24-gate annex validates as `native_source/passed`; this isolated
+  acceptance does not claim a Windows daily-home upgrade.
+- Exact pre-publication main commit `745b7fb5bf0127cc38e649ec56f3f1f7b5fa8fa5`
+  passes CI run `33461874654` and HOL Plugin Scanner run `33461874644`.
+  Exact-main automation for the documentation release commit, the annotated
+  tag, tag automation, GitHub Release, public readback, downstream pinning, and
+  Windows daily installation remain separate pending gates.
 
 ## Post-release semantic conformance gate acceptance (Windows, 2026-08-30)
 
