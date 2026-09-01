@@ -29,7 +29,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- A 30-test 0.9.5 suite covers UI lexical negatives and positives, Windows canonical/unsupported/case-sensitive/markdown/physical-identity capture, thread locator unification, the capability trust root and its field-equality negatives, auto-derivation with rollback and idempotent replay, response-echo and superset-read readback negatives on both the derived and the explicit register-proof path, ambiguous read shapes, unbindable-namespace rejection, and the privacy grammar boundary. The full repository suite passes 343 tests with 9 capability skips on macOS, plus `validate_public_repo`, `audit_public_tree`, the self-test, and `ruff check`.
+- macOS source validation passes 343 tests with 9 capability skips, plus the repository, public-tree, self-test, and Ruff checks. Focused cases cover UI wording, Windows paths, task identity, evidence readback, rollback and replay, and privacy boundaries; exact details remain in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 - A temporary Codex home accepted the source candidate, and the installed plugin passed the isolated lifecycle smoke. This did not change the daily Codex installation.
 - Still pending: native macOS and Windows fresh-Hook acceptance, CI for the candidate commit, tag, GitHub Release, public readback, and any daily installation. This candidate is not released.
 

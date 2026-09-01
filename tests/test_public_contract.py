@@ -75,25 +75,20 @@ class PublicContractTests(unittest.TestCase):
         for term in ("docs/design/checkout-v2.md", "RFC 模板"):
             self.assertIn(term, chinese)
 
-        self.assertIn("## Observed token overhead", english)
-        self.assertIn("about 1%–2%", english)
-        self.assertIn("## 实测 token 开销", chinese)
-        self.assertIn("约 1%–2%", chinese)
         self.assertIn("## What you may see in a guarded task", english)
         self.assertIn("## 在受保护任务中可能看到什么", chinese)
-        self.assertIn("## How 0.8.3 separates different sources", english)
-        self.assertIn("## 0.8.3 如何区分不同来源", chinese)
-        for term in ("selected Skills", "Codex Plan", "image", "public-readback"):
+        self.assertIn("## Who decides what", english)
+        self.assertIn("## 谁决定什么", chinese)
+        for term in ("selected Skills", "Codex Plan", "image", "public-page readbacks"):
             self.assertIn(term, english)
-        for term in ("已选择的 Skill", "Codex Plan", "图片", "公开读回"):
+        for term in ("已选择的 Skill", "Codex Plan", "图片", "公开页面"):
             self.assertIn(term, chinese)
         for readme in (english, chinese):
             for term in (
                 "R001",
                 "A003",
-                "whole_completion_without_checkpoint",
                 "[Context Guard continuation] The task is not yet safely complete.",
-                "can't open file '.../context-guard/0.7.3/scripts/context_guard.py'",
+                "context-guard diagnose",
             ):
                 self.assertIn(term, readme)
         self.assertIn(
@@ -105,12 +100,9 @@ class PublicContractTests(unittest.TestCase):
             "> 发布状态：`0.9.4` 是最近一次已发布版本；当前检出内容为未发布的 `0.9.5` 源码候选。",
             chinese,
         )
-        self.assertIn("Stop protocol 2.0.0", english)
-        self.assertIn("Stop protocol 2.0.0", chinese)
-        self.assertIn("advisory only and cannot force a new turn", english)
-        self.assertIn("它只是一个需要检查的信号，并不能单独证明存在 bug", chinese)
+        self.assertIn("Waiting for the user, an external result", english)
+        self.assertIn("等待用户、外部结果或明确延期", chinese)
         self.assertIn("The message is normal when requested work is still open.", english)
-        self.assertIn("context-guard diagnose", english)
 
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         changelog_zh = (ROOT / "CHANGELOG.zh-CN.md").read_text(encoding="utf-8")
@@ -195,7 +187,7 @@ class PublicContractTests(unittest.TestCase):
             "Current published Context Guard release: `0.9.4`", compatibility
         )
         self.assertIn(
-            "Current source line: `0.9.4`", compatibility
+            "Current source line: unreleased `0.9.5` candidate", compatibility
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)

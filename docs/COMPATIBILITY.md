@@ -6,7 +6,7 @@ platform does not prove a fresh installed runtime on another platform.
 ## Baselines
 
 - Current published Context Guard release: `0.9.4`
-- Current source line: `0.9.4`
+- Current source line: unreleased `0.9.5` candidate
 - Private state schema: `7`
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`

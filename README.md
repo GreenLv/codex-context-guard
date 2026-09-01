@@ -29,14 +29,14 @@ On Windows:
 py -3.10 scripts\manage_plugin.py --apply
 ```
 
-The installer registers the repository marketplace, installs `context-guard@codex-context-guard`, checks source/cache parity, and keeps hash-indexed archives for tasks that still use an older Hook path.
+The installer adds this repository as a marketplace, installs `context-guard@codex-context-guard`, and verifies the installed copy. It also keeps versioned copies needed by tasks that started before an upgrade.
 
-Installing a plugin does not trust its Hooks automatically. Start a fresh Codex task, open `/hooks`, inspect all eight definitions, and trust them only when they match this repository. Start another fresh task after installation or Hook changes.
+Installing a plugin does not trust its Hooks automatically. Start a fresh Codex task, open `/hooks`, review and trust all eight definitions, then start another fresh task so it loads the current version.
 
 ### Version and compatibility notes
 
 - Version 0.9.4 requires a verified checkpoint before a task can be marked complete and preserves non-ASCII text such as Chinese prompts.
-- The 0.9.5 source candidate builds routine completion checks from its private checklist, so an Agent no longer creates a separate proof JSON for ordinary file or text results. It also reduces false UI matches and rejects evidence tied to the wrong file, thread, or Windows path. Existing saved state and privacy rules do not change.
+- The 0.9.5 source candidate prepares routine completion evidence automatically for ordinary file and text results. It also reduces false UI matches and rejects evidence from the wrong file, task, or Windows path. Visual and UI cases still require explicit inspection; saved state and privacy rules do not change.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
 Detailed version and platform evidence is in the [compatibility matrix](docs/COMPATIBILITY.md), [changelog](CHANGELOG.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
@@ -67,25 +67,16 @@ For a recovery check, use it on a non-trivial synthetic task, run `/compact`, an
 - Ambiguous output remains `unknown`; damaged or unverifiable private state fails closed.
 - Exports are explicit and redacted. Image bytes, credentials, and raw transcript content are not copied into the requirement ledger.
 
-Strict automatic checks are used only when the user's request gives a clear target, such as a named file or URL, an edited image that must be inspected, or a list of objects that must all be covered. Other cases use the existing completion check rather than claiming to understand arbitrary meaning or image quality. A verified checkpoint controls completion; natural-language wording is only diagnostic, and waiting or deferring work can end the current turn without closing open requirements.
+Automatic checks are used only when the request names a concrete target, such as a file, URL, edited image, or complete object list. If Context Guard cannot verify a result exactly, it leaves the item open instead of guessing. Waiting for the user, an external result, or a later turn does not close unfinished requirements.
 
-The technical completion rule remains Stop protocol 2.0.0: completion wording is diagnostic, and an unfinished disposition is advisory only and cannot force a new turn.
+## Who decides what
 
-## How 0.8.3 separates different sources
+- The user decides the task and which changes are allowed.
+- Repository instructions and selected Skills define the adopted workflow, but cannot grant new authority.
+- Codex Plan describes the model's current steps; Context Guard can keep a read-only reference but does not edit the plan.
+- Tool, file, image, UI, and public-page readbacks establish facts. A successful result cannot authorize a push, release, installation, or other change by itself.
 
-Version 0.8.3 no longer treats user instructions, repository guidance, Skills, Codex Plan, and tool results as interchangeable text. After a project execution contract is adopted, it records what each source is allowed to decide in this order:
-
-| Source | What it decides in a task |
-| --- | --- |
-| System, sandbox, platform permissions, and Hook trust | These are hard boundaries; lower sources cannot override them. |
-| The user who started the task | Defines the goal and which writes are allowed or prohibited. A Skill or Codex Plan cannot expand this authority. |
-| Repository `AGENTS.md` and selected Skills | Define the adopted workflow and safety checks, but cannot authorize a push, release, or installation by themselves. |
-| Codex Plan | Describes the model's current, revisable execution steps. Context Guard keeps only a read-only mirror and optional binding; it does not edit the plan. |
-| Tool, file, image, UI, and public-readback evidence | Establishes facts such as whether a file changed, an image was inspected, or a page is public. A successful result cannot create user authority. |
-
-For example, suppose the user asks Codex to follow a publishing Skill and update an article with a cover image. Context Guard can record which Skill was adopted, the current execution phase, and an optional Codex Plan binding; image protection can bind the cover image and its edited readback to the exact object. If the Skill or Plan later changes, the old binding is marked for review. Merely installing the Skill, adding “publish” to the model plan, or receiving a successful tool result does not replace user authorization.
-
-Version 0.8.3 records and restores these relationships and reports drift during completion checks. It does not add a `PreToolUse` Hook or intercept an operation before the tool runs.
+Context Guard records these boundaries when the project opts in and asks for review if the adopted instructions or plan change. It does not intercept tools or grant permissions.
 
 ## How it works
 
@@ -104,7 +95,7 @@ flowchart TB
   E -->|Yes| G
 ```
 
-Codex still owns the work and its native planning state. Context Guard carries the bounded correctness checklist across context boundaries; after an explicit 0.8.3 project adoption, it also restores the adopted instruction sources, unfinished phases, and plan-drift state before checking a completion claim.
+Codex still owns the work and its native planning state. Context Guard carries the checklist across context boundaries and, when project instructions have been adopted explicitly, restores their unfinished phases and plan reference before checking completion.
 
 ## Everyday example: write a technical design document without losing decisions
 
@@ -141,15 +132,9 @@ When an open requirement still lacks matching evidence, Context Guard may ask Co
 [Context Guard continuation] The task is not yet safely complete.
 ```
 
-The message is normal when requested work is still open. It is a warning sign, not proof of a bug: if the task appears complete, ask Codex what remains and run `context-guard status` or `context-guard diagnose` to see which bounded condition triggered it. Earlier versions did sometimes misread quoted completion text as `whole_completion_without_checkpoint` or confuse a user handoff with assistant-owned work; reports of surprising continuation messages led to several classifier fixes. The current protocol yields safely when work is waiting for the user, an external result, or an explicit deferral.
+The message is normal when requested work is still open. If it is unexpected, ask Codex what remains and run `context-guard status` or `context-guard diagnose`. Waiting for the user, an external result, or an explicitly deferred step can end the current turn without closing the task.
 
-An active task can also keep an old immutable Hook path after an upgrade. That is a separate installation-lifecycle problem; its diagnostic form is:
-
-```text
-python3: can't open file '.../context-guard/0.7.3/scripts/context_guard.py'
-```
-
-Start a fresh task after upgrades; do not overwrite a consumed versioned cache. See [Versioning](docs/VERSIONING.md) for the lifecycle contract.
+Existing tasks may keep the Hook version they started with. Start a fresh task after an upgrade; if an old Hook path is missing, see [Versioning](docs/VERSIONING.md) for recovery guidance.
 
 ## User controls
 
@@ -169,10 +154,6 @@ Read [Successor Pack Input](skills/context-guard/references/successor-pack.md) b
 Runtime data is stored under Codex-managed `PLUGIN_DATA`. Prompt bodies, task state, evidence summaries, and recovery files remain local runtime data and are not part of this repository.
 
 Ended sessions are eligible for cleanup after 30 days. Redacted exports are created only when requested and omit raw prompts, transcripts, credentials, authorization headers, URL query values, and plugin-private paths. See [Privacy](docs/PRIVACY.md).
-
-## Observed token overhead
-
-In a small anonymized sample of five completed tool-heavy desktop tasks on 0.6.1, direct Hook/recovery context was about 1.4% of total tokens; including plugin-triggered checks brought the observation to about 1.5%. Treat about 1%–2% as an order-of-magnitude estimate for similar tasks, not a guarantee.
 
 ## Update and uninstall
 
@@ -214,7 +195,7 @@ The Hook runtime uses only the Python standard library. CI covers Ubuntu, macOS,
 
 Context Guard is not a semantic proof system, security sandbox, transcript backup, cloud sync service, second Plan/Goal controller, agent scheduler, or replacement for tests and human review.
 
-Version 0.8.3 adopts project instructions and plan bindings only after the user who started the root task successfully runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in ordinary prose does not activate it. This release adds no `PreToolUse` Hook, does not block tools, does not modify Codex Plan state, and does not grant authority.
+Project instructions and plan references are adopted only after the user who started the root task runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in prose does not activate this behavior. Context Guard does not block tools, modify Codex Plan state, or grant authority.
 
 ## Contributing and security
 
