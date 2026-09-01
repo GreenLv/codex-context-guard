@@ -2,7 +2,7 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.9.4` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.9.5` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 各版本主要保护什么
 
@@ -30,7 +30,7 @@
 ### 验证
 
 - macOS 通过 343 项源码测试（9 项按能力跳过）、隔离与日常受管安装、严格重复安装/no-op、安装态 lifecycle smoke、17 文件产品一致性和全新可信 Hook 任务。Windows 独立通过原生源码、隔离安装/no-op/一致性和全新可信 Hook 门禁。
-- 发布前源码提交已通过 main CI 和 HOL 扫描。发布提交、注释 tag、tag 自动化、GitHub Release、公开读回和下游采用仍是相互独立的发布门禁，详见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- 只改文档的发布提交已通过 main 与 tag 的 12 项 CI 矩阵，同一提交也通过 main 分支 HOL 扫描。注释 tag `v0.9.5` 和非预发布的双语 GitHub Release 均已完成公开读回；下游采用仍是独立的 consumer 门禁，详见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.9.4 - 2026-08-28
 

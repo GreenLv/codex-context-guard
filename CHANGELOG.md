@@ -2,7 +2,7 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.9.4` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.9.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## How protection evolved
 
@@ -30,7 +30,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Validation
 
 - macOS passes the 343-test source matrix with 9 capability skips, isolated and daily managed installation, strict repeat/no-op checks, installed lifecycle smoke, 17-file product parity, and a fresh trusted-Hook task. Windows independently passes its native source, isolated install/no-op/parity, and fresh trusted-Hook gates.
-- The pre-publication source commit passes main CI and HOL scanning. The release commit, annotated tag, tag automation, GitHub Release, public readback, and downstream adoption remain separate publication gates recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- The documentation-only release commit passes the 12-job main and tag CI matrices, and the same commit passes the main-branch HOL scan. Annotated tag `v0.9.5` and the bilingual, non-prerelease GitHub Release were read back publicly. Downstream adoption remains a separate consumer gate recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.9.4 - 2026-08-28
 

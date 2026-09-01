@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.9.4`; accepted `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current published release is `0.9.5`; accepted `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.9.5 pre-publication release acceptance (2026-09-01)
+## 0.9.5 release acceptance (2026-09-01)
 
 The 0.9.5 product candidate is exact commit
 `745b7fb5bf0127cc38e649ec56f3f1f7b5fa8fa5`. Its product tree contains 17
@@ -26,11 +26,15 @@ repository checks and exact-main automation before tagging.
   source, isolated install/no-op/parity, and fresh trusted-Hook lifecycle. Its
   standard 24-gate annex validates as `native_source/passed`; this isolated
   acceptance does not claim a Windows daily-home upgrade.
-- Exact pre-publication main commit `745b7fb5bf0127cc38e649ec56f3f1f7b5fa8fa5`
+- Exact product commit `745b7fb5bf0127cc38e649ec56f3f1f7b5fa8fa5`
   passes CI run `33461874654` and HOL Plugin Scanner run `33461874644`.
-  Exact-main automation for the documentation release commit, the annotated
-  tag, tag automation, GitHub Release, public readback, downstream pinning, and
-  Windows daily installation remain separate pending gates.
+  Documentation-only release commit
+  `e0aed2d7bdbd88643ae2559dc8cd655aa369e049` passes main CI run
+  `33485553819`, HOL run `33485554097`, and tag CI run `33486033348`.
+  Annotated tag `v0.9.5` peels to that exact commit. The bilingual,
+  non-draft, non-prerelease GitHub Release is the latest release and was read
+  back through the public repository API. Downstream pinning and a Windows
+  daily-home upgrade remain separate consumer gates.
 
 ## Post-release semantic conformance gate acceptance (Windows, 2026-08-30)
 

@@ -11,7 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 发布状态：`0.9.5` 已完成 macOS 和 Windows 原生验收，现已冻结并准备发布。在 `v0.9.5` tag 和 GitHub Release 完成公开读回前，`0.9.4` 仍是最近一次已发布版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 发布状态：`0.9.5` 是最新正式版本。macOS 和 Windows 原生验收、main 与 tag CI、注释 tag 和双语 GitHub Release 均已完成读回。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
