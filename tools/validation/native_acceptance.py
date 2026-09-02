@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,14 @@ def run(root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess
     return result
 
 
+def resolve_executable(command: str) -> str:
+    """Resolve platform launchers such as Windows ``codex.cmd`` exactly once."""
+    resolved = shutil.which(command)
+    if resolved is None:
+        raise NativeRunError(f"executable not found: {command}")
+    return resolved
+
+
 def normalize_repository_url(raw: str) -> str:
     value = raw.strip()
     match = re.fullmatch(r"git@github\.com:([^/]+)/([^/]+?)(?:\.git)?", value)
@@ -66,7 +74,7 @@ def runtime_digest(manager: Any, root: Path) -> str:
 
 
 def timestamp() -> str:
-    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def gate(gate_id: str, digest: str, *, passed: bool, note: str | None = None) -> dict[str, Any]:
@@ -186,8 +194,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
+    try:
+        codex = resolve_executable(args.codex)
+    except NativeRunError as exc:
+        parser.error(str(exc))
     result = portable_acceptance(
-        args.repo_root.resolve(), args.source_commit, args.codex, args.run_url
+        args.repo_root.resolve(), args.source_commit, codex, args.run_url
     )
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"native_acceptance={result['status']}")

@@ -52,6 +52,18 @@ class NativeAcceptanceEntrypointTests(unittest.TestCase):
         self.assertEqual(value["subject"], {"kind": "runtime_tree", "id": "a" * 64})
         self.assertEqual(value["evidence"]["mode"], "executed")
 
+    def test_resolves_platform_launcher(self) -> None:
+        with mock.patch.object(NATIVE.shutil, "which", return_value=r"C:\\npm\\codex.cmd"):
+            self.assertEqual(
+                NATIVE.resolve_executable("codex"),
+                r"C:\\npm\\codex.cmd",
+            )
+
+    def test_rejects_missing_launcher(self) -> None:
+        with mock.patch.object(NATIVE.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(NATIVE.NativeRunError, "executable not found"):
+                NATIVE.resolve_executable("codex")
+
     def test_exact_source_rejects_untracked_files(self) -> None:
         source_commit = "a" * 40
         results = [
