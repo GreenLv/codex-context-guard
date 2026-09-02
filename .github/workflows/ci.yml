@@ -1,15 +1,59 @@
-name: CI
+name: Candidate CI
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  classify:
+    name: Classify candidate bytes
+    runs-on: ubuntu-latest
+    outputs:
+      invalidates: ${{ steps.select.outputs.invalidates }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: select
+        env:
+          EVENT_BASE_SHA: ${{ github.event.before }}
+          EVENT_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          base_sha="$EVENT_BASE_SHA"
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$(git hash-object -t tree /dev/null)"
+          fi
+          python tools/validation/select_validation.py --repo-root . --base "$base_sha" --head "$EVENT_HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+
+  static:
+    name: Identity, repository, privacy, lint, and compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Audit candidate commit identities
+        env:
+          CONTEXT_GUARD_IDENTITY_BASE: ${{ github.event.before }}
+          CONTEXT_GUARD_IDENTITY_HEAD: ${{ github.sha }}
+        run: python scripts/audit_commit_identity.py .
+      - run: python -m pip install --disable-pip-version-check "ruff==0.16.1"
+      - run: python scripts/validate_public_repo.py .
+      - run: python tools/validation/validate_workflows.py .
+      - run: python scripts/audit_public_tree.py .
+      - run: ruff check .
+      - run: python -m compileall -q scripts tests tools
+      - name: Check candidate commit whitespace
+        run: git diff-tree --check --root -r HEAD
+
   ubuntu_py310:
     name: Ubuntu / Python 3.10
     uses: ./.github/workflows/ci-lane.yml
@@ -93,3 +137,84 @@ jobs:
     with:
       runner: windows-latest
       python-version: "3.13"
+
+  portable_windows:
+    name: Windows portable installed-runtime acceptance
+    needs: [classify, static]
+    if: github.event_name == 'workflow_dispatch' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - run: npm install --global @openai/codex@0.150.1
+      - name: Run versioned portable acceptance entrypoint
+        shell: pwsh
+        run: |
+          python tools/validation/native_acceptance.py `
+            --source-commit "${{ github.sha }}" `
+            --output "$env:RUNNER_TEMP/native-acceptance-windows.json" `
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-acceptance-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/native-acceptance-windows.json
+          if-no-files-found: error
+          retention-days: 30
+
+  required:
+    name: Candidate CI required
+    if: always()
+    needs:
+      - static
+      - classify
+      - ubuntu_py310
+      - ubuntu_py311
+      - ubuntu_py312
+      - ubuntu_py313
+      - macos_py310
+      - macos_py311
+      - macos_py312
+      - macos_py313
+      - windows_py310
+      - windows_py311
+      - windows_py312
+      - windows_py313
+      - portable_windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Fail closed over every required lane
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          U310: ${{ needs.ubuntu_py310.result }}
+          U311: ${{ needs.ubuntu_py311.result }}
+          U312: ${{ needs.ubuntu_py312.result }}
+          U313: ${{ needs.ubuntu_py313.result }}
+          M310: ${{ needs.macos_py310.result }}
+          M311: ${{ needs.macos_py311.result }}
+          M312: ${{ needs.macos_py312.result }}
+          M313: ${{ needs.macos_py313.result }}
+          W310: ${{ needs.windows_py310.result }}
+          W311: ${{ needs.windows_py311.result }}
+          W312: ${{ needs.windows_py312.result }}
+          W313: ${{ needs.windows_py313.result }}
+          PORTABLE_RESULT: ${{ needs.portable_windows.result }}
+          PORTABLE_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime') }}
+        run: |
+          set -euo pipefail
+          if [[ "$PORTABLE_REQUIRED" == "true" ]]; then
+            printf '%s\n' '["classify","static","ubuntu_py310","ubuntu_py311","ubuntu_py312","ubuntu_py313","macos_py310","macos_py311","macos_py312","macos_py313","windows_py310","windows_py311","windows_py312","windows_py313","portable_windows"]' > "$RUNNER_TEMP/required.json"
+          else
+            printf '%s\n' '["classify","static","ubuntu_py310","ubuntu_py311","ubuntu_py312","ubuntu_py313","macos_py310","macos_py311","macos_py312","macos_py313","windows_py310","windows_py311","windows_py312","windows_py313"]' > "$RUNNER_TEMP/required.json"
+          fi
+          printf '{"classify":"%s","static":"%s","ubuntu_py310":"%s","ubuntu_py311":"%s","ubuntu_py312":"%s","ubuntu_py313":"%s","macos_py310":"%s","macos_py311":"%s","macos_py312":"%s","macos_py313":"%s","windows_py310":"%s","windows_py311":"%s","windows_py312":"%s","windows_py313":"%s","portable_windows":"%s"}\n' \
+            "$CLASSIFY_RESULT" "$STATIC_RESULT" "$U310" "$U311" "$U312" "$U313" "$M310" "$M311" "$M312" "$M313" "$W310" "$W311" "$W312" "$W313" "$PORTABLE_RESULT" > "$RUNNER_TEMP/observed.json"
+          python tools/validation/verify_required_jobs.py --required "$RUNNER_TEMP/required.json" --observed "$RUNNER_TEMP/observed.json"

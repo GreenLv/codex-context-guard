@@ -34,7 +34,7 @@
       "id": "runtime",
       "paths": ["assets/state.schema.json", "hooks/**", "scripts/context_guard.py", "skills/context-guard/**"],
       "gates": ["lint_compile", "repo_contract", "runtime_tests", "self_test"],
-      "invalidates": ["artifact", "candidate_matrix", "native_runtime"],
+      "invalidates": ["artifact", "candidate_matrix", "native_artifact", "native_runtime", "publication_identity"],
       "contracts": [],
       "peer_gates": {}
     },
@@ -42,7 +42,7 @@
       "id": "installer_packaging",
       "paths": [".agents/**", ".codex-plugin/**", ".codexignore", "LICENSE", "assets/icon.svg", "pyproject.toml", "requirements-lock.txt", "scripts/manage_plugin.py", "scripts/run-context-guard.ps1", "scripts/run_context_guard.sh", "scripts/smoke_installed.py"],
       "gates": ["artifact_identity", "install_lifecycle", "repo_contract"],
-      "invalidates": ["artifact", "native_artifact", "publication_identity"],
+      "invalidates": ["artifact", "native_artifact", "native_runtime", "publication_identity"],
       "contracts": [],
       "peer_gates": {}
     },
@@ -50,7 +50,7 @@
       "id": "repository_tools",
       "paths": ["scripts/audit_commit_identity.py", "scripts/audit_public_tree.py", "scripts/incident_corpus.py", "scripts/validate_public_repo.py", "tests/fixtures/incidents/**"],
       "gates": ["focused_tests", "lint_compile", "repo_contract"],
-      "invalidates": ["candidate_matrix"],
+      "invalidates": ["artifact", "candidate_matrix", "native_artifact", "native_runtime", "publication_identity"],
       "contracts": [],
       "peer_gates": {}
     },
@@ -71,8 +71,24 @@
       "peer_gates": {}
     },
     {
+      "id": "native_acceptance_infrastructure",
+      "paths": ["tools/validation/native_acceptance.py", "tests/test_native_acceptance.py"],
+      "gates": ["full_candidate"],
+      "invalidates": ["native_runtime"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "legacy_packaged_validation_tools",
+      "paths": ["scripts/select_validation.py", "scripts/verify_required_jobs.py"],
+      "gates": ["full_candidate"],
+      "invalidates": ["artifact", "candidate_matrix", "native_artifact", "native_runtime", "publication_identity"],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
       "id": "validation_infrastructure",
-      "paths": [".github/**", "scripts/select_validation.py", "scripts/verify_required_jobs.py", "tests/test_required_jobs.py", "tests/test_validation_selection.py", "validation-map.json"],
+      "paths": [".github/**", "tools/validation/**", "tests/test_public_contract.py", "tests/test_required_jobs.py", "tests/test_selected_validation.py", "tests/test_validation_selection.py", "validation-map.json"],
       "gates": ["full_candidate"],
       "invalidates": ["candidate_matrix"],
       "contracts": [],

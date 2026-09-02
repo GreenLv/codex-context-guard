@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-SPEC = importlib.util.spec_from_file_location("select_validation", ROOT / "scripts" / "select_validation.py")
+SPEC = importlib.util.spec_from_file_location(
+    "select_validation", ROOT / "tools" / "validation" / "select_validation.py"
+)
 assert SPEC and SPEC.loader
 SELECTOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SELECTOR)
@@ -41,7 +43,24 @@ class ValidationSelectionTests(unittest.TestCase):
 
     def test_packaging_invalidates_artifact_and_downstream_evidence(self) -> None:
         plan = self.classify("pyproject.toml")
-        self.assertEqual(plan["invalidates"], ["artifact", "native_artifact", "publication_identity"])
+        self.assertEqual(
+            plan["invalidates"],
+            ["artifact", "native_artifact", "native_runtime", "publication_identity"],
+        )
+
+    def test_packaged_repository_tool_invalidates_runtime_tree_evidence(self) -> None:
+        plan = self.classify("scripts/validate_public_repo.py")
+        for evidence in ("artifact", "native_artifact", "native_runtime", "publication_identity"):
+            self.assertIn(evidence, plan["invalidates"])
+
+    def test_ci_tool_does_not_invalidate_plugin_runtime_tree(self) -> None:
+        plan = self.classify("tools/validation/validate_workflows.py")
+        self.assertEqual(plan["invalidates"], ["candidate_matrix"])
+
+    def test_removing_legacy_packaged_ci_tool_invalidates_old_runtime_tree(self) -> None:
+        plan = self.classify("scripts/select_validation.py")
+        self.assertIn("artifact", plan["invalidates"])
+        self.assertIn("native_runtime", plan["invalidates"])
 
     def test_shared_contract_selects_peer_gate(self) -> None:
         plan = self.classify("tests/fixtures/conformance/digest_v3/cases.json")

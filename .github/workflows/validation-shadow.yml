@@ -1,66 +1,78 @@
-name: Validation selection shadow
+name: PR validation
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: validation-shadow-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   classify:
-    name: Validation selection (shadow, non-blocking)
+    name: Classify exact diff
     runs-on: ubuntu-latest
-    continue-on-error: true
+    outputs:
+      plan: ${{ steps.select.outputs.plan }}
+      gates: ${{ steps.select.outputs.gates }}
+      invalidates: ${{ steps.select.outputs.invalidates }}
+      full_required: ${{ steps.select.outputs.full_required }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       - name: Test selection and summary contracts
-        id: contract_tests
-        run: python -m unittest tests.test_validation_selection tests.test_required_jobs
+        run: python -m unittest tests.test_validation_selection tests.test_required_jobs tests.test_selected_validation
       - name: Classify exact diff
         id: select
         env:
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          base_sha="$EVENT_BASE_SHA"
-          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
-            base_sha="$(git hash-object -t tree /dev/null)"
-          fi
-          python scripts/select_validation.py \
+          python tools/validation/select_validation.py \
             --repo-root . \
-            --base "$base_sha" \
+            --base "$EVENT_BASE_SHA" \
             --head "$EVENT_HEAD_SHA" \
             --github-output "$GITHUB_OUTPUT"
-      - name: Record non-authoritative shadow result
-        if: always()
+
+  selected_validation:
+    name: Selected validation
+    needs: classify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --disable-pip-version-check "ruff==0.16.1"
+      - name: Run repository-owned selected gates
         env:
-          CONTRACT_OUTCOME: ${{ steps.contract_tests.outcome }}
-          SELECT_OUTCOME: ${{ steps.select.outcome }}
-          SELECTED_GATES: ${{ steps.select.outputs.gates }}
-          INVALIDATES: ${{ steps.select.outputs.invalidates }}
-          FULL_REQUIRED: ${{ steps.select.outputs.full_required }}
+          VALIDATION_PLAN: ${{ needs.classify.outputs.plan }}
+        run: python tools/validation/run_selected_validation.py --plan-json "$VALIDATION_PLAN" --repo-root .
+
+  required:
+    name: PR validation required
+    if: always()
+    needs: [classify, selected_validation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Fail closed over required jobs
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          VALIDATION_RESULT: ${{ needs.selected_validation.result }}
         run: |
-          {
-            echo "### Validation selection shadow"
-            echo
-            echo "This result is observational only; the existing CI remains authoritative."
-            echo
-            echo "- contract tests: \`$CONTRACT_OUTCOME\`"
-            echo "- selector: \`$SELECT_OUTCOME\`"
-            echo "- selected gates: \`${SELECTED_GATES:-unavailable}\`"
-            echo "- invalidated evidence: \`${INVALIDATES:-unavailable}\`"
-            echo "- full candidate required: \`${FULL_REQUIRED:-true}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          printf '%s\n' '["classify","selected_validation"]' > "$RUNNER_TEMP/required.json"
+          printf '{"classify":"%s","selected_validation":"%s"}\n' "$CLASSIFY_RESULT" "$VALIDATION_RESULT" > "$RUNNER_TEMP/observed.json"
+          python tools/validation/verify_required_jobs.py --required "$RUNNER_TEMP/required.json" --observed "$RUNNER_TEMP/observed.json"

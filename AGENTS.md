@@ -127,6 +127,11 @@ authoritative.
   POSIX shell, `bash`, PowerShell, or another runtime.
 - For documentation-only changes, run the affected contract tests, repository
   validator, privacy audit, and `git diff --check`.
+- Use the required PR validation summary for mapped fast checks. Candidate CI
+  runs the Ubuntu/macOS/Windows and Python 3.10-3.13 portability screen once on
+  exact `main` candidates or manual dispatch; tags do not rerun that matrix.
+  Identity, repository, privacy, Ruff, and compile checks run once outside the
+  twelve independent test lanes.
 - During conformance, schema, or digest repair loops, first replay the focused
   reproducer and close the affected input family across the reference encoder,
   shared fixtures, validators, and mirrors. Run the complete repository matrix
@@ -138,6 +143,12 @@ authoritative.
   pin and cross-repository conformance evidence; a changed packaged byte
   invalidates exact-artifact, install, native artifact, and release-identity
   evidence.
+- The plugin runtime-tree digest covers only `.codex-plugin/`, `assets/`,
+  `hooks/`, `scripts/`, and `skills/` as defined by `scripts/manage_plugin.py`.
+  Changes under `.github/`, `tools/validation/`, `tests/`, `AGENTS.md`, or
+  `validation-map.json` are repository/CI changes and do not by themselves
+  invalidate installed-runtime evidence. A changed file under a covered root,
+  including a product validator under `scripts/`, does change the digest.
 - For runtime or release changes, run at least:
 
 ```shell
@@ -146,7 +157,7 @@ python scripts/audit_public_tree.py .
 python -m unittest discover -s tests -p "test_*.py"
 python scripts/context_guard.py self-test
 ruff check .
-python -m compileall -q scripts tests
+python -m compileall -q scripts tests tools
 git diff --check
 ```
 
@@ -155,6 +166,9 @@ git diff --check
   `scripts/smoke_installed.py` against the installed plugin root. Use a fresh
   Codex task without trust bypass when the observable trusted-Hook lifecycle is
   in scope.
+- Invoke the repository-owned versioned native-acceptance entrypoint for
+  portable or host-bound runs. It emits a redacted result bound to the source
+  commit or runtime-tree digest; a handwritten transcript is not equivalent.
 - Validate the standalone public product and any consumer pin independently.
   Record capability-aware platform skips precisely; never turn a skip into a
   pass.
@@ -182,8 +196,9 @@ git diff --check
 2. Pass local source, test, lint, compile, audit, isolated install/lifecycle,
    and required native-platform gates for that exact source.
 3. Push `main`, then require green main CI and HOL for the release commit.
-4. Create and push an annotated `vX.Y.Z` tag pointing to that same commit.
-5. Require green tag CI, create a non-draft, non-prerelease GitHub Release, and
+4. Create and push an annotated `vX.Y.Z` tag pointing to that same commit. Do
+   not rebuild or rerun candidate CI only because the tag was created.
+5. Create a non-draft, non-prerelease GitHub Release from the accepted commit, and
    read back the tag target, release metadata, published notes, and clean local
    state.
 

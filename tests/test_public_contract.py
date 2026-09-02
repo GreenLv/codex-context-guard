@@ -28,6 +28,9 @@ def load(name: str, path: Path):
 
 audit = load("audit_public_tree", ROOT / "scripts" / "audit_public_tree.py")
 contract = load("validate_public_repo", ROOT / "scripts" / "validate_public_repo.py")
+workflow = load(
+    "validate_workflows", ROOT / "tools" / "validation" / "validate_workflows.py"
+)
 identity = load(
     "audit_commit_identity", ROOT / "scripts" / "audit_commit_identity.py"
 )
@@ -37,7 +40,7 @@ class PublicContractTests(unittest.TestCase):
     def test_repository_contract(self) -> None:
         self.assertEqual(contract.validate(ROOT), [])
 
-    def test_ci_lanes_are_independent_and_share_one_gate_body(self) -> None:
+    def test_ci_lanes_are_independent_with_one_static_gate_and_summary(self) -> None:
         caller = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
@@ -45,9 +48,14 @@ class PublicContractTests(unittest.TestCase):
         self.assertNotIn("matrix:", caller)
         self.assertEqual(
             caller.count("uses: ./.github/workflows/ci-lane.yml"),
-            len(contract.CI_LANES),
+            len(workflow.CI_LANES),
         )
-        self.assertEqual(contract.validate_ci_workflow(ROOT), [])
+        self.assertEqual(caller.count("python scripts/audit_public_tree.py ."), 1)
+        self.assertEqual(caller.count("ruff check ."), 1)
+        self.assertIn("if: always()", caller)
+        self.assertNotIn('tags: ["v*"]', caller)
+        self.assertNotIn("pull_request:", caller)
+        self.assertEqual(workflow.validate(ROOT), [])
 
     def test_ci_contract_rejects_a_missing_independent_lane(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -67,11 +75,42 @@ class PublicContractTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            findings = contract.validate_ci_workflow(root)
+            (workflows / "validation-shadow.yml").write_text(
+                (ROOT / ".github" / "workflows" / "validation-shadow.yml").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            findings = workflow.validate(root)
             self.assertIn(
-                "CI independent lane is missing or malformed: macos_py311",
+                "candidate lane is missing or malformed: macos_py311",
                 findings,
             )
+
+    def test_workflow_contract_rejects_floating_external_action(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workflows = Path(temporary)
+            (workflows / "bad.yml").write_text(
+                "steps:\n  - uses: actions/setup-node@v4\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                workflow.validate_action_pins(workflows),
+                ["bad.yml: external action actions/setup-node@v4 must use a full commit"],
+            )
+
+    def test_pr_gate_is_blocking_and_portable_windows_is_conditional(self) -> None:
+        pr = (ROOT / ".github" / "workflows" / "validation-shadow.yml").read_text(
+            encoding="utf-8"
+        )
+        candidate = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("continue-on-error", pr)
+        self.assertIn("name: PR validation required", pr)
+        self.assertIn("if: always()", pr)
+        self.assertIn("Windows portable installed-runtime acceptance", candidate)
+        self.assertIn("contains(needs.classify.outputs.invalidates, 'native_runtime')", candidate)
+        self.assertIn("tools/validation/native_acceptance.py", candidate)
 
     def test_public_tree_has_no_private_material(self) -> None:
         self.assertEqual(audit.findings(ROOT), [])

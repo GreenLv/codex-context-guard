@@ -7,7 +7,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "verify_required_jobs.py"
+SCRIPT = Path(__file__).parents[1] / "tools" / "validation" / "verify_required_jobs.py"
 SPEC = importlib.util.spec_from_file_location("verify_required_jobs", SCRIPT)
 assert SPEC and SPEC.loader
 SUMMARY = importlib.util.module_from_spec(SPEC)
