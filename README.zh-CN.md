@@ -11,7 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 发布状态：`0.10.0` 是当前源码候选，`0.9.5` 是最新正式版本。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 当前正式版本：`0.10.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -35,7 +35,7 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 版本与兼容性说明
 
-- 0.9.5 要求覆盖全部任务的 checkpoint 通过验证后才能标记完成。它会自动准备常规文件和文字证据，完整保留中文等非 ASCII Hook 输入，减少 UI 措辞误判，并拒绝来自错误文件、任务或 Windows 路径的证据。图片和 UI 仍需显式检查。
+- 0.10.0 会检查证据是否证明了用户要求的操作。否定句或引文中的对象描述不再被误记为要求；无法确定具体操作的请求会继续保留为待办，不会直接消失。
 - Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
 
 详细版本与平台证据见[兼容性说明](docs/COMPATIBILITY.md)、[更新日志](CHANGELOG.zh-CN.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。

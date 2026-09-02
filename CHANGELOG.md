@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the current unreleased line, and commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` is its implementation baseline. The release workflow records the exact commit that includes this documentation after commit. `0.9.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the latest published release, built from implementation baseline `e4fccf690bcbc2be79d0b8d42a1a269f87072120`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.10.0 - Unreleased
+## 0.10.0 - 2026-09-03
 
 ### Highlights
 
@@ -19,8 +19,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- Implementation baseline commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` passed local source validation: the full repository suite (363 passed, 9 skipped), Ruff, repository validation, public-tree audit, self-test, and `git diff --check`. That commit is on `origin/main`, and its main CI run `33540903256` passed all 12 jobs.
-- This documentation revision passed its local documentation and shared-contract checks. CI and later installation, artifact, and release evidence must be tied to the exact release-candidate commit that includes it.
+- The exact candidate passed the complete local source suite and the 12-job Ubuntu, macOS, and Windows CI matrix. Exact identities and counts are recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- macOS and Windows independently passed native installation, repeat/no-op, byte-parity, self-test, and lifecycle checks for the same runtime tree. Context Guard ships from the source tag rather than a separate package artifact; publication readback remains a separate check.
 
 ## How protection evolved
 

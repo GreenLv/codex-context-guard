@@ -5,8 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current published Context Guard release: `0.9.5`
-- Current source candidate (not yet released): `0.10.0`
+- Current published Context Guard release: `0.10.0`
 - Private state schema: `8` (schema 7 read-only compatibility)
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.0.0`
@@ -19,11 +18,11 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.10.0 implementation baseline and prepared-document status
+## 0.10.0 release status
 
-Commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` on `origin/main` is the unreleased 0.10.0 implementation baseline. Its main CI run `33540903256` passed all 12 Ubuntu, macOS, and Windows Python jobs. This source and CI evidence applies only to that baseline; it does not identify or validate the later release-candidate commit that contains this documentation.
+Version 0.10.0 advances private state to schema 8 and the diagnostic classifier to 2.4.0. It derives the required operation, subject, and requested surface from non-negated clauses; evidence for a different operation or adapter manifest cannot close the item. Schema 7 remains a read-only compatible input and upgrades deterministically.
 
-This documentation revision passed its local documentation auditor, link, public-tree, repository-validation, self-test, diff, and shared-contract gates. The post-commit candidate or handoff binds the exact release-candidate commit and its CI; this document deliberately does not hard-code the SHA of the commit that contains itself. Native macOS and Windows installation, exact-artifact acceptance, tag, GitHub Release, public readback, and downstream adoption remain separate later gates. DSH Completion Guard has its own artifact and native-platform evidence; none of it substitutes for a Codex gate.
+Implementation baseline `e4fccf690bcbc2be79d0b8d42a1a269f87072120` and documentation candidate `8178569634190df37ed0c342f8604e63e283082f` share the same 19-file runtime tree, with SHA-256 `aee9a33d40855ddf5efdbd1fec7f327945a273f15eb5f64ff53fefed2a40f6b7`. Candidate `8178569` passed the complete local source matrix and main CI run `33592448790` across 12 Ubuntu, macOS, and Windows Python jobs. macOS passed isolated and managed installation, strict no-op, four-way byte parity, installed lifecycle smoke, and a fresh trusted-Hook task. Windows independently passed source, isolated install/no-op/parity, self-test, and lifecycle smoke for the implementation baseline. Context Guard has no separate package artifact; the source tag is its release identity. DSH Completion Guard has its own artifact and native-platform evidence, which does not substitute for a Codex gate.
 
 ## 0.9.5 release status
 

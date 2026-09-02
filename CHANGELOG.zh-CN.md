@@ -2,9 +2,9 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.10.0` 是当前未发布版本线，提交 `e4fccf690bcbc2be79d0b8d42a1a269f87072120` 是它的实现基线。包含这次文档的精确提交由发布流程在提交后另行记录。`0.9.5` 是最新正式版本。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.10.0` 是当前最新正式版本，实现基线为提交 `e4fccf690bcbc2be79d0b8d42a1a269f87072120`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.10.0 - 未发布
+## 0.10.0 - 2026-09-03
 
 ### 重点
 
@@ -19,8 +19,8 @@
 
 ### 验证
 
-- 实现基线提交 `e4fccf690bcbc2be79d0b8d42a1a269f87072120` 已通过本地源码验证：仓库完整套件（363 通过、9 跳过）、Ruff、仓库校验、公开树审计、self-test 和 `git diff --check`。该提交已在 `origin/main`，它的 main CI run `33540903256` 的 12 项任务全部通过。
-- 这次文档修订已通过本地文档和共享合同检查。CI 以及后续安装、工件和发布证据都必须绑定包含这次修订的精确 release-candidate commit。
+- 精确候选已通过本地完整源码套件，以及包含 12 项 Ubuntu、macOS 和 Windows 任务的 CI 矩阵；具体身份和测试数量见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- macOS 和 Windows 分别对同一运行时树通过了原生安装、重复安装/no-op、字节一致性、自检和 lifecycle 检查。Context Guard 从源码 tag 安装，不另行发布独立软件包；公开读回仍是独立门禁。
 
 ## 各版本主要保护什么
 

@@ -128,11 +128,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Release status: `0.10.0` is the current source candidate; `0.9.5` is the latest published release.",
+            "> Current release: `0.10.0`.",
             english,
         )
         self.assertIn(
-            "> 发布状态：`0.10.0` 是当前源码候选，`0.9.5` 是最新正式版本。",
+            "> 当前正式版本：`0.10.0`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -227,11 +227,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current published Context Guard release: `0.9.5`", compatibility
-        )
-        self.assertIn(
-            "Current source candidate (not yet released): `0.10.0`",
-            compatibility,
+            "Current published Context Guard release: `0.10.0`", compatibility
         )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `1.0.0`", compatibility)
@@ -243,6 +239,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.4` keeps schema 6", versioning)
         self.assertIn("`0.7.5` keeps the 0.7.4 protocol", versioning)
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
+        self.assertIn("`0.10.0` advances private state to schema 8", versioning)
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)

@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Release status: `0.10.0` is the current source candidate; `0.9.5` is the latest published release. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Current release: `0.10.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -35,7 +35,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
-- Version 0.9.5 requires a verified, full-coverage checkpoint before a task can be marked complete. It prepares routine file and text evidence automatically, preserves non-ASCII Hook input, reduces false UI matches, and rejects evidence from the wrong file, task, or Windows path. Visual and UI cases still require explicit inspection.
+- Version 0.10.0 checks that evidence proves the operation the user requested. Negated or quoted object descriptions no longer become requirements by mistake, and requests whose operation cannot be determined remain pending instead of disappearing.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
 Detailed version and platform evidence is in the [compatibility matrix](docs/COMPATIBILITY.md), [changelog](CHANGELOG.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).

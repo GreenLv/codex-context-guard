@@ -263,6 +263,13 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.10.0` advances private state to schema 8 and the diagnostic classifier to
+  2.4.0. It derives the required operation, subject, and requested surface from
+  non-negated clauses, then rejects evidence for a different operation or
+  adapter manifest. Ambiguous operations remain pending and can be cleared
+  without deleting requirements or evidence. Schema 7 remains a read-only
+  compatible input; the public protocols, Python floor, and eight-Hook wire are
+  unchanged.
 
 The project may declare 1.0 only after the public Hook, state, diagnostics,
 installer, recovery, compatibility, and deprecation policies are stable;
