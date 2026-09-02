@@ -2,23 +2,25 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the current source candidate; `0.9.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the current unreleased line, and commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` is its implementation baseline. The release workflow records the exact commit that includes this documentation after commit. `0.9.5` is the latest published release. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.10.0 - Unreleased
 
 ### Highlights
 
-- Schema 8 makes the clause-derived `(operation, subjectId, requestedSurface)` triple the source of the enforced verification contract: readback obligations derive their subjects, surface, and operation from non-negated clauses, and certification rejects proof evidence stamped under a different concrete operation.
-- The 0.9.5 lexical over-generation is replaced: negated or quoted physical-identity signals no longer create unbindable obligations, while genuinely requested physical-identity proof still fails closed.
-- Schema 7 remains read-only compatible and upgrades deterministically with fresh private control state; prompt journals stay hash-only and bounded, ambiguous pending operations are recorded instead of dropped, and `clear-pending` is a real turn-verified control entry that never touches requirements or evidence.
+- Descriptions of physical objects inside a negation or quotation no longer become requirements by mistake. When the user really asks to verify an object's physical identity, Context Guard still requires matching evidence.
+- Evidence must prove the operation the user actually requested. A successful read cannot stand in for a requested write, and proof for one concrete operation cannot close another.
+- If Context Guard cannot determine the requested operation, it keeps the item pending instead of dropping it. `clear-pending` clears only those unresolved operation guesses; it does not delete requirements or evidence.
 
 ### Changes
 
-- Existing prompt, compaction, resume, fork, subagent, supersession, and evidence replay paths retain their authoritative ordering and exact subject binding. Evidence records carry the adapter manifest version, and proofs fail closed on manifest drift.
+- Schema 8 derives the enforced `(operation, subjectId, requestedSurface)` contract from non-negated clauses. Evidence records carry the adapter-manifest version, and proofs fail closed when the concrete operation or manifest does not match.
+- Schema 7 remains a read-only compatible input and upgrades deterministically with fresh private control state. Existing prompt, compaction, resume, fork, subagent, supersession, and evidence-replay ordering is unchanged.
 
 ### Validation
 
-- Local source validation passed on the repaired candidate bytes: the full repository suite (363 passed, 9 skipped), ruff, repository validation, public-tree audit, self-test, and a clean `git diff --check`. CI, native install, artifact, tag, and release evidence remain pending and are not claimed by this candidate. The repository's 12 CI jobs remain unchanged.
+- Implementation baseline commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` passed local source validation: the full repository suite (363 passed, 9 skipped), Ruff, repository validation, public-tree audit, self-test, and `git diff --check`. That commit is on `origin/main`, and its main CI run `33540903256` passed all 12 jobs.
+- This documentation revision passed its local documentation and shared-contract checks. CI and later installation, artifact, and release evidence must be tied to the exact release-candidate commit that includes it.
 
 ## How protection evolved
 

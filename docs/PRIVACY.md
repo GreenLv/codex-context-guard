@@ -25,35 +25,21 @@ user, `SYSTEM`, and the built-in Administrators group, then reads the ACL back.
 Failure to apply or verify that boundary stops the operation. CI consumes only
 reviewed public fixtures and never reads a maintainer's private corpus.
 
-## Data categories
+## What the private store saves
 
-The private store may contain:
+Context Guard saves the user's prompt text in immutable per-prompt files so that requirements can be recovered after compaction or resume. It also saves the requirements and acceptance items derived from those prompts, together with their revisions and the session or turn identifiers needed to keep records in the right task.
 
-- raw prompt bodies in immutable per-prompt files;
-- session and turn identifiers;
-- extracted requirements, acceptance items, and revisions;
-- bounded tool input/output summaries and outcome metadata;
-- hash-only multimodal asset metadata: source kind, redacted basename/type,
-  locator hash, content hash, byte count, media type, dimensions, and
-  availability;
-- deterministic verification contracts and immutable proof bindings, including
-  bounded redacted visual facts and normalized scope counts/digests;
-- schema-8 execution metadata, versioned adapter manifest, clause-derived bindings, and classifier metadata: bounded instruction-source identifiers and
-  origins, canonical contract hashes, phase/gate/candidate states, drift and
-  exact-host coverage, dormant ticket namespaces, unified-exec metadata, and
-  delegated actor bindings;
-- the latest bounded native-plan mirror;
-- bounded delegated-agent metadata and final result summaries;
-- recovery snapshots and private completion checkpoints;
-- a turn-bound protocol attempt containing a token hash and at most one staged
-  checkpoint or typed disposition (`continue`, `user_wait`, `external_wait`, or
-  `deferred`); and
-- at most 32 recent Stop decisions containing timestamps, turn IDs,
-  protocol/classifier versions, decision-source/disposition/outcome enums,
-  bounded reason/action enums, and prompt/reply SHA-256.
+Tool activity is stored as a bounded, redacted summary and outcome, not as complete stdout or file contents. Proofs keep the operation, object, result type, normalized counts, and hashes needed to check that evidence belongs to the user's actual requirement.
 
-The plugin intentionally does not store chain-of-thought or copy complete root
-or delegated-agent transcripts.
+For images and other binary inputs, the store keeps a redacted basename or type, media facts such as byte count and dimensions, and hashes of the locator and content. It does not keep the image bytes or data-URL body.
+
+Recovery and diagnosis keep compact checkpoints, delegated-result summaries, protocol versions, bounded status and reason values, and prompt or reply hashes. Schema 8 also keeps bounded identifiers and hashes for the selected instruction source, plan, host coverage, adapter version, and delegated actor when those values affect verification.
+
+## What it does not save
+
+Context Guard does not copy complete root or delegated-agent transcripts, chain-of-thought, full tool output, file contents, image bytes, credentials, authorization headers, plaintext private tokens, or URL query values into its ledger. Diagnostic Stop records keep hashes and bounded enums rather than raw assistant replies.
+
+This distinction is important: user prompt bodies are saved privately for recovery, but the surrounding transcript and the model's hidden reasoning are not duplicated into plugin state.
 
 ## Minimization
 

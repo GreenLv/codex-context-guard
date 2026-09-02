@@ -19,6 +19,12 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
+## 0.10.0 implementation baseline and prepared-document status
+
+Commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` on `origin/main` is the unreleased 0.10.0 implementation baseline. Its main CI run `33540903256` passed all 12 Ubuntu, macOS, and Windows Python jobs. This source and CI evidence applies only to that baseline; it does not identify or validate the later release-candidate commit that contains this documentation.
+
+This documentation revision passed its local documentation auditor, link, public-tree, repository-validation, self-test, diff, and shared-contract gates. The post-commit candidate or handoff binds the exact release-candidate commit and its CI; this document deliberately does not hard-code the SHA of the commit that contains itself. Native macOS and Windows installation, exact-artifact acceptance, tag, GitHub Release, public readback, and downstream adoption remain separate later gates. DSH Completion Guard has its own artifact and native-platform evidence; none of it substitutes for a Codex gate.
+
 ## 0.9.5 release status
 
 Version 0.9.5 keeps schema 7, Stop protocol 2.0.0, Proof and Execution protocol

@@ -4,6 +4,26 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current published release is `0.9.5`; accepted `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.10.0 implementation baseline and prepared documentation (unreleased)
+
+Commit `e4fccf690bcbc2be79d0b8d42a1a269f87072120` on `origin/main` is the 0.10.0 implementation baseline. This five-file documentation revision is built on that baseline and passed its local gates. The post-commit candidate or handoff binds the exact release-candidate commit that contains these words; this document deliberately does not hard-code its own containing commit SHA.
+
+| Gate | Current evidence | Status |
+| --- | --- | --- |
+| Implementation baseline | Exact baseline commit above is on `origin/main` and passed its local source gates | passed |
+| Baseline CI | Main run `33540903256`; all 12 Ubuntu, macOS, and Windows Python jobs | passed |
+| Documentation revision | `CHANGELOG.md`, `CHANGELOG.zh-CN.md`, `docs/COMPATIBILITY.md`, `docs/LOCAL_ACCEPTANCE.md`, and `docs/PRIVACY.md` passed the local documentation auditor, link, public-tree, repository-validation, self-test, diff, and 80-test shared-contract gates | passed |
+| Release-candidate identity | Bound to the exact commit by the post-commit candidate or handoff; the containing SHA is not self-recorded here | post-commit gate |
+| Release-candidate CI | Evidence is accepted only from a run against the exact commit bound by that candidate or handoff; baseline run `33540903256` is not reused for it | post-commit gate |
+| Exact artifact | No 0.10.0 artifact acceptance evidence recorded here | pending |
+| Native macOS | No 0.10.0 installed lifecycle acceptance recorded here | pending |
+| Native Windows | No 0.10.0 installed lifecycle acceptance recorded here | pending |
+| Tag and GitHub Release | No mutation authorized or performed | pending |
+| Public readback | No 0.10.0 tag or Release exists to read back | pending |
+| Downstream adoption | No 0.10.0 consumer acceptance recorded here | pending |
+
+The green CI run proves the implementation baseline's automated source matrix; it is not evidence for the later documentation-inclusive release-candidate commit or for a fresh installed Hook lifecycle on either native platform. The candidate handoff and each later gate must attach evidence to their own exact commit, artifact, or environment. The frozen DSH 0.4.0 artifact and its macOS native result belong to a different repository and runtime and do not close any Codex gate.
+
 ## 0.9.5 release acceptance (2026-09-01)
 
 The 0.9.5 product candidate is exact commit
