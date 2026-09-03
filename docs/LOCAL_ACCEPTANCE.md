@@ -12,7 +12,7 @@ commit-addressed staging copy. Public schema and protocol identifiers remain
 unchanged. Focused and full source checks are recorded when run; native macOS
 and Windows installation acceptance remain open and no tag, Release, or runtime installation is implied.
 On macOS/Python 3.12.2, the focused legacy-staging regression passed, followed
-by all 414 source tests with 9 capability-aware skips, repository validation,
+by all 415 source tests with 9 capability-aware skips, repository validation,
 the public-tree audit, Ruff, and `git diff --check`.
 
 ## 0.11.0 release acceptance (2026-09-03)

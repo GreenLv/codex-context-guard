@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -2912,6 +2913,34 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(
             len({item["id"] for item in state["prompts"]}), 20
         )
+
+    def test_process_queue_wait_does_not_consume_filesystem_lock_timeout(self) -> None:
+        session_dir = self.root / "private" / "sessions" / "queued-session"
+        session_dir.mkdir(parents=True)
+        lock_path = session_dir / ".lock"
+        local_lock = cg.process_session_lock(lock_path)
+        waiter_started = threading.Event()
+        waiter_acquired = threading.Event()
+
+        def wait_for_lock() -> None:
+            waiter_started.set()
+            with cg.session_lock(session_dir, timeout=0):
+                waiter_acquired.set()
+
+        local_lock.acquire()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(wait_for_lock)
+                self.assertTrue(waiter_started.wait(timeout=1))
+                self.assertFalse(waiter_acquired.is_set())
+                local_lock.release()
+                self.assertTrue(waiter_acquired.wait(timeout=1))
+                future.result()
+        finally:
+            if local_lock.locked():
+                local_lock.release()
+
+        self.assertFalse(lock_path.exists())
 
     def test_session_lock_treats_windows_access_denied_as_contention(self) -> None:
         session_dir = self.root / "private" / "sessions" / "lock-session"

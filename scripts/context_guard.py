@@ -20,6 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -75,6 +76,8 @@ MAX_EXECUTION_DEPTH = 8
 MAX_EXECUTION_STRING = 512
 MAX_EXECUTION_RECORDS = 64
 MAX_EXECUTION_TICKETS = 128
+PROCESS_SESSION_LOCKS_GUARD = threading.Lock()
+PROCESS_SESSION_LOCKS: dict[str, threading.Lock] = {}
 STATE_REQUIRED_KEYS = {
     "schema_version",
     "session",
@@ -2727,10 +2730,14 @@ def preserve_corrupt_state(path: Path) -> Path | None:
         return None
 
 
+def process_session_lock(lock_path: Path) -> threading.Lock:
+    key = os.path.normcase(os.path.abspath(lock_path))
+    with PROCESS_SESSION_LOCKS_GUARD:
+        return PROCESS_SESSION_LOCKS.setdefault(key, threading.Lock())
+
+
 @contextlib.contextmanager
-def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[None]:
-    secure_directory(session_dir)
-    lock_path = session_dir / ".lock"
+def filesystem_session_lock(lock_path: Path, timeout: float) -> Iterator[None]:
     deadline = time.monotonic() + timeout
     descriptor: int | None = None
     while descriptor is None:
@@ -2766,6 +2773,15 @@ def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[None]:
             os.close(descriptor)
         with contextlib.suppress(FileNotFoundError):
             lock_path.unlink()
+
+
+@contextlib.contextmanager
+def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[None]:
+    secure_directory(session_dir)
+    lock_path = session_dir / ".lock"
+    with process_session_lock(lock_path):
+        with filesystem_session_lock(lock_path, timeout):
+            yield
 
 
 def session_dir_for(payload: dict[str, Any]) -> Path:
