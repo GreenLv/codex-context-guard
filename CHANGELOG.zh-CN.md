@@ -8,13 +8,13 @@
 
 ### 重点
 
-- 同步 `PreToolUse` Hook 会在 A 级发布身份变更前核对精确、未过期、一次性的 `action-ticket/v1`。ticket 绑定仓库、commit、发布身份、候选闭包、readiness 结果和规范化工具输入；成功后消费，失败时只允许相同输入在过期前重试。
-- Stop 会把 `user_wait`、`external_wait` 和 `deferred` 与观察到的 owner、authorization 和依赖事实核对。引文、归因文本、代码和回复注释不能触发需求替代。
-- append-only `work-unit/v1` 把完成范围绑定到当前工作单元及其后代，并继续保留祖先约束。默认 checkpoint status 有严格边界；`--full`、`--item` 和基于 revision 的 unchanged 读回提供显式审计入口。
+- **已覆盖的发布动作在真正执行前就会被拦截，除非用户授权了这个精确候选。** 授权只对应指定仓库、提交、发布身份和工具输入，不能挪给另一个候选，也不能在候选变化后继续使用。
+- **一句“等待”或“延期”不再掩盖仍已获授权、可以继续完成的工作。** Context Guard 会核对这种状态是否符合事实；引用、示例代码和回复注释也不能改写用户的真实要求。
+- **完成或清理任务的一部分，不会再顺带关闭或扩张无关工作。** 完成范围限制在当前工作单元，祖先要求继续有效；大型任务默认只返回简短状态，需要审计时再查看完整内容。
 
 ### 变更
 
-- Schema 9 新增工作单元；Execution protocol 2.0.0 新增 ticket 绑定和生命周期；Stop protocol 2.1.0 校验声明的 disposition；Hook wire 新增 `PreToolUse`，共九个事件。
+- Schema 9 新增 `work-unit/v1`；Execution protocol 2.0.0 新增 `action-ticket/v1` 绑定和生命周期；Stop protocol 2.1.0 校验声明的 disposition；Hook wire 新增 `PreToolUse`，共九个事件。
 - 命令扫描会先规范化成对引号、Windows 可执行文件后缀和两种路径分隔符，再递归检查 shell 与 PowerShell 命令包装层。
 - 私有 incident schema 新增执行前授权、Stop disposition、需求替代归因和范围转换 taxonomy。benchmark 按协议面分派，并单独报告公开回归覆盖率，不再要求每个 private taxonomy 都有公开 fixture。
 - 修复前已在 Git 外分别建立四条脱敏 incident，并通过追加 successor 依次从 `documented_only` 晋级到源码确认、受控和 `fixed`。它们仍是未经公开审查的私有记录：不含原任务 ID、transcript、完整 prompt 或私有路径，也没有把真实事故复制成公开 fixture。
@@ -23,7 +23,7 @@
 
 - 源码回归覆盖 A/B/C 风险级别、ticket 重试/消费、Stop disposition 不匹配、引文误替代、cleanup 范围跳转、incident runner 分派、工作单元闭包，以及 100+ 条目下小于 4 KiB 的默认 status 和常数级 unchanged 响应。
 - 运行时基线 `ea73bed` 在 macOS 和 Windows 上分别通过 412 项源码测试、隔离安装/no-op、68 文件源码/安装态一致性、九 Hook 自检、lifecycle smoke、action-ticket 用例和 fresh-task `PreToolUse` 拒绝。Windows 结果采用经过明确授权的远端报告来源，不是本机签名 annex。
-- 发布文档提交必须先通过精确 main 的 CI 与 HOL，才能创建注释 tag。tag、GitHub Release 和公开读回是相互独立的发布身份，由 release receipt 记录，不能从本地或原生验收推断。
+- 发布提交 `558612b` 已通过精确 main CI `33719603758` 和 HOL `33719603393`。随后创建的注释 tag `v0.11.0` 与双语、非草稿、非预发布 GitHub Release 均已完成公开读回；这些发布身份仍与本地和原生验收相互独立。
 
 ## 0.10.0 - 2026-09-03
 

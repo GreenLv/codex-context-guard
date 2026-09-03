@@ -35,7 +35,9 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 版本与兼容性说明
 
-- 0.11.0 新增同步 `PreToolUse` 发布门禁、精确的一次性 action ticket、基于事实核对的 Stop disposition、去引文的需求替代、append-only 工作单元和紧凑 checkpoint status。运行时基线 `ea73bed` 已分别通过 macOS 与 Windows 的隔离安装和 fresh-task 验收；Windows 证据采用经过明确授权的远端报告来源。
+- 0.11.0 会在已覆盖的发布动作真正执行前拦截：只有用户明确授权了对应仓库、提交和发布身份，动作才能继续。
+- 它还会阻止引用或示例文字误改任务要求，核对“等待/延期”是否符合事实，避免把清理工作悄悄扩成产品开发，并让大型任务的默认状态保持简短。
+- 内部实现采用 `PreToolUse`、一次性 action ticket、经核对的 Stop disposition 和限定范围的工作单元。运行时基线 `ea73bed` 已分别通过 macOS 与 Windows 的隔离安装和 fresh-task 验收；Windows 证据采用经过明确授权的远端报告来源。
 - 0.10.0 会检查证据是否证明了用户要求的操作。
 - Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
 

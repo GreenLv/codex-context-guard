@@ -4,7 +4,7 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current source and published release is `0.11.0`. Accepted releases include `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.11.0 release-candidate acceptance (2026-09-03)
+## 0.11.0 release acceptance (2026-09-03)
 
 Implementation candidate `ea73bed7a387295e1f6475e743e623298413e710`
 is the 0.11.0 runtime subject. It adds schema 9, Execution protocol
@@ -12,10 +12,9 @@ is the 0.11.0 runtime subject. It adds schema 9, Execution protocol
 `PreToolUse`. Its source/install tree contains 68 files. The macOS and Windows
 results below are independent native evidence for that exact commit.
 
-Normal-user-home installation is intentionally outside this release scope. CI,
-tag, GitHub Release, and public readback are separate publication surfaces;
-this pre-publication record neither authorizes nor infers them from isolated
-native installation and testing.
+Normal-user-home installation remains separate from the isolated candidate
+checks below. CI, tag, GitHub Release, and public readback are also separate
+publication surfaces; none is inferred from native installation and testing.
 
 | Release-candidate gate | Evidence | Status |
 | --- | --- | --- |
@@ -27,6 +26,7 @@ native installation and testing.
 | Native macOS | Isolated managed install, strict second apply/no-op, 68/68 source/live byte parity, installed self-test and lifecycle smoke, and a fresh task; an unticketed `git tag v9.9.8` was denied by real `PreToolUse` and independent readback proved the tag absent | passed |
 | Native Windows | R2 ZIP SHA-256 `fa00295b7cb0b8630673b820cec609958984cc810c3d0c2a0051151ed8e40480`; isolated install/no-op, 68/68 relative-path and per-file SHA-256 parity, 9-Hook self-test, action-ticket lifecycle, and a fresh task; an unticketed `git tag v1.2.3` was denied and independent readback reported zero matching tags | passed, remote-reported provenance |
 | Windows wrapper regression | `/bin/zsh -lc 'git tag …'`, PowerShell-wrapped `gh release delete …`, and a quoted `pwsh.exe`-wrapped `npm publish` were all classified A-tier and denied without a ticket | passed, remote-reported provenance |
+| Release publication | Release commit `558612b` passed exact-main CI `33719603758` and HOL `33719603393`; annotated tag `v0.11.0` and the bilingual, non-draft, non-prerelease GitHub Release were read back publicly | passed |
 
 The Windows result is explicitly recorded with remote-reported provenance. The
 root user authorized that provenance after disclosure that the native task did

@@ -35,7 +35,9 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
-- Version 0.11.0 adds a synchronous `PreToolUse` release gate, exact one-shot action tickets, fact-checked Stop dispositions, quote-safe supersession, append-only work units, and compact checkpoint status. Runtime baseline `ea73bed` passed independent isolated installation and fresh-task acceptance on macOS and Windows; the Windows evidence has explicitly authorized remote-reported provenance.
+- Version 0.11.0 stops covered release actions before they run unless the user authorized that exact repository, commit, and release identity.
+- It also prevents quoted examples from changing the task, checks whether a claimed wait or deferral is real, keeps cleanup from silently turning into product development, and keeps large task summaries short.
+- Internally, these protections use `PreToolUse`, one-shot action tickets, checked Stop dispositions, and scoped work units. Runtime baseline `ea73bed` passed independent isolated installation and fresh-task acceptance on macOS and Windows; the Windows evidence has explicitly authorized remote-reported provenance.
 - Version 0.10.0 checks that evidence proves the operation the user requested.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 

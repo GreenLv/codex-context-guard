@@ -8,13 +8,13 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Highlights
 
-- A synchronous `PreToolUse` Hook denies A-tier release identity mutations unless an exact, unexpired, one-shot `action-ticket/v1` matches the repository, commit, release identity, candidate closure, readiness result, and normalized tool input. Successful calls consume the ticket; failed identical calls may retry before expiry.
-- Stop now checks `user_wait`, `external_wait`, and `deferred` against observed ownership and authorization facts. Quoted, attributed, code, and reply-annotation text cannot supersede requirements.
-- Append-only `work-unit/v1` records bound completion to the current unit and its descendants while preserving ancestor constraints. Default checkpoint status is bounded; `--full`, `--item`, and revision-based unchanged reads provide explicit audit paths.
+- **Covered release actions are stopped before they run unless the user authorized that exact candidate.** The authorization is valid only for the named repository, commit, release identity, and tool input; it cannot be reused for a different or changed candidate.
+- **Saying “waiting” or “deferred” no longer hides work that is still authorized and ready to do.** Context Guard checks the facts behind the claimed state, and quoted examples, code, or reply annotations cannot rewrite the user's requirements.
+- **Finishing or cleaning up one part of a task no longer closes or expands unrelated work.** Completion stays within the current work unit, ancestor constraints remain active, and large task status stays short unless a maintainer requests the full audit view.
 
 ### Changes
 
-- Schema 9 adds work units; Execution protocol 2.0.0 adds ticket bindings and lifecycle states; Stop protocol 2.1.0 validates declared dispositions; the Hook wire now contains nine events including `PreToolUse`.
+- Schema 9 adds `work-unit/v1`; Execution protocol 2.0.0 adds `action-ticket/v1` bindings and lifecycle states; Stop protocol 2.1.0 validates declared dispositions; the Hook wire now contains nine events including `PreToolUse`.
 - Command scanning normalizes quote pairs, Windows executable suffixes, and both path-separator styles before recursively inspecting shell and PowerShell command wrappers.
 - The private incident schema adds pre-action authorization, Stop-disposition, supersession-attribution, and scope-transition taxonomies. Benchmarks dispatch by protocol surface and report public regression coverage without requiring every private taxonomy to have a public fixture.
 - Four separate sanitized incidents were created outside Git before the fixes, then advanced append-only from `documented_only` through source confirmation and containment to `fixed`. They remain private and unreviewed for public export: no raw task identifier, transcript, complete prompt, or private path is stored, and no real incident has been copied into a public fixture.
@@ -23,7 +23,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Source regressions cover A/B/C risk tiers, ticket retry/consumption, Stop-disposition mismatch, quoted supersession, cleanup scope transition, incident runner dispatch, work-unit closure, and a 100+ item status ledger below 4 KiB with constant-size unchanged replies.
 - Runtime baseline `ea73bed` passed 412 source tests, isolated install/no-op, 68-file source/install parity, the nine-Hook self-test, lifecycle smoke, action-ticket cases, and fresh-task `PreToolUse` denial on both macOS and Windows. The Windows result has explicitly authorized remote-reported provenance; it is not a locally signed annex.
-- The release-document commit must pass exact-main CI and HOL before the annotated tag. Tag, GitHub Release, and public readback remain separate publication identities recorded by the release receipt rather than inferred from local or native acceptance.
+- Release commit `558612b` passed exact-main CI run `33719603758` and HOL run `33719603393`. Annotated tag `v0.11.0` and the bilingual, non-draft, non-prerelease GitHub Release were then read back publicly; these publication identities remain separate from local and native acceptance.
 
 ## 0.10.0 - 2026-09-03
 
