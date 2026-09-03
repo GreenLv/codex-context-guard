@@ -2215,6 +2215,10 @@ class ContextGuardTests(unittest.TestCase):
                 "allow_user_handoff",
             ),
             (
+                "请直接回复精确授权。收到后我会立即推送到 origin/main。",
+                "allow_user_handoff",
+            ),
+            (
                 "Please unlock the keychain; once you confirm, I will continue tests and push.",
                 "allow_user_handoff",
             ),
@@ -3791,6 +3795,41 @@ class ContextGuardTests(unittest.TestCase):
             ),
             {},
         )
+
+    def test_pre_tool_b_tier_accepts_https_destination_refspec_authority(self) -> None:
+        self.prompt(
+            "提交候选，并将生成的精确提交推送到 "
+            "https://github.com/GreenLv/codex-context-guard.git 的 refs/heads/main。"
+        )
+        allowed = cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={
+                    "cmd": (
+                        "git push https://github.com/GreenLv/codex-context-guard.git "
+                        "7b1a302212063408c5e9760744652e920747dfda:refs/heads/main"
+                    )
+                },
+                tool_use_id="push-refspec",
+            )
+        )
+        self.assertEqual(allowed["hookSpecificOutput"]["permissionDecision"], "allow")
+
+        denied = cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={
+                    "cmd": (
+                        "git push https://github.com/GreenLv/codex-context-guard.git "
+                        "7b1a302212063408c5e9760744652e920747dfda:refs/heads/other"
+                    )
+                },
+                tool_use_id="push-wrong-refspec",
+            )
+        )
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_pre_tool_b_tier_denies_unresolved_remote_target(self) -> None:
         self.prompt("明确 push main，但没有指定 remote。")

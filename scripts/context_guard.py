@@ -508,6 +508,8 @@ USER_DEPENDENT_ASSISTANT_RE = re.compile(
     r"(?:你|您|用户).{0,24}(?:完成|确认|批准|授权|登录|重新登录|解锁|回复).{0,12}(?:后|之后)|"
     r"(?:完成|确认|批准|授权|登录|重新登录|解锁|回复).{0,12}(?:后|之后).{0,20}"
     r"(?:我会|我将|我需|需要我)|"
+    r"(?:收到|得到|获得).{0,20}(?:后|之后).{0,20}"
+    r"(?:我会|我将|我需|需要我)|"
     r"\b(?:when|once|after)\s+(?:that(?:'s|\s+is)?\s+)?done.{0,48}"
     r"(?:then|afterwards?)?\s*I(?:'ll|\s+will)\b|"
     r"\b(?:tell\s+me|let\s+me\s+know|reply|respond).{0,40}"
@@ -2247,7 +2249,8 @@ def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, str] | None:
                 else:
                     positional = [value for value in git_args if not value.startswith("-")]
                     remote = positional[0] if positional else "unknown"
-                    ref = positional[1] if len(positional) > 1 else current_branch(payload.get("cwd"))
+                    refspec = positional[1] if len(positional) > 1 else current_branch(payload.get("cwd"))
+                    ref = refspec.rsplit(":", 1)[-1]
                     semantic = "remote_push"
                     if any(value in {"--force", "--force-with-lease", "-f"} or value.startswith("+") for value in git_args):
                         semantic = "force_push"
@@ -2346,6 +2349,7 @@ def _pre_tool_decision(permission: str, reason: str | None = None) -> dict[str, 
 
 def _prompt_authorizes_b_action(prompt_text_value: str, action: dict[str, str]) -> bool:
     text = authoritative_supersession_text(prompt_text_value)
+    text = re.sub(r"[,，](?=\s*(?:and\b|并(?:且|将)?))", " ", text, flags=re.I)
     patterns = {
         "remote_push": re.compile(r"\bpush\b|推送", re.I),
         "force_push": re.compile(r"\bforce[- ]?push\b|强制推送", re.I),
@@ -2360,7 +2364,7 @@ def _prompt_authorizes_b_action(prompt_text_value: str, action: dict[str, str]) 
     ):
         return False
     target_parts = raw_target_parts
-    for clause in re.split(r"[\n.!?。！？;；,，]", text):
+    for clause in re.split(r"[\n!?。！？;；,，]|\.(?=\s|$)", text):
         if not pattern.search(clause) or CLAUSE_NEGATION_RE.search(clause):
             continue
         if target_parts and all(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(part)}(?![A-Za-z0-9_.-])", clause) for part in target_parts):

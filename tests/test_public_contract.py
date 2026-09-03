@@ -285,7 +285,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         self.assertIn("`0.10.0` advances private state to schema 8", versioning)
         self.assertIn("`0.11.0` is the 2026-09-03 execution-authority release", versioning)
-        self.assertIn("`0.11.1` is an unreleased installer-only candidate", versioning)
+        self.assertIn("`0.11.1` is an unreleased maintenance candidate", versioning)
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)

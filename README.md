@@ -13,7 +13,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.11.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-> The source tree is preparing an unreleased `0.11.1` installer fix: upgrades can now recognize and migrate the older managed marketplace staging directory instead of leaving it registered. It does not change task semantics or the published `0.11.0` runtime.
+> The source tree is preparing an unreleased `0.11.1` maintenance patch: upgrades can now recognize and migrate the older managed marketplace staging directory instead of leaving it registered. It does not alter the published `0.11.0` runtime.
 
 ## Install
 

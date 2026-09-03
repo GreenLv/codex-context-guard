@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current source candidate: `0.11.1` (unreleased installer-only patch)
+- Current source candidate: `0.11.1` (unreleased maintenance patch)
 - Current published Context Guard release: `0.11.0`
 - Private state schema: `9` (schema 7 and 8 read-only compatibility)
 - Proof protocol: `1.0.0`
@@ -21,12 +21,12 @@ behavior may change in future Codex releases and must be revalidated.
 
 ## 0.11.1 candidate status
 
-Version 0.11.1 changes only managed marketplace migration. It recognizes the
+Version 0.11.1 includes managed marketplace migration. It recognizes the
 exact historical fixed-name staging directory when its manifest still binds to
 this repository, then re-registers the current commit-addressed staging copy.
-Task-state schema, Hook behavior, protocols, classifier, and Python baseline are
-unchanged. Source and native candidate validation are still required before
-release.
+The public state schema, Hook event set, protocol identifiers, diagnostic
+classifier version, and Python baseline are unchanged. Source and native
+candidate validation are still required before release.
 
 ## 0.11.0 release status
 

@@ -6,13 +6,13 @@ Context Guard. The current source candidate is unreleased `0.11.1`; the current 
 
 ## 0.11.1 candidate acceptance
 
-This unreleased patch fixes migration from the historical managed
+This unreleased maintenance patch includes migration from the historical managed
 `codex-context-guard.marketplace` staging directory to the current
-commit-addressed staging copy. It does not change task semantics. Focused and
-full source checks are recorded when run; native macOS and Windows installation
-acceptance remain open and no tag, Release, or runtime installation is implied.
+commit-addressed staging copy. Public schema and protocol identifiers remain
+unchanged. Focused and full source checks are recorded when run; native macOS
+and Windows installation acceptance remain open and no tag, Release, or runtime installation is implied.
 On macOS/Python 3.12.2, the focused legacy-staging regression passed, followed
-by all 413 source tests with 9 capability-aware skips, repository validation,
+by all 414 source tests with 9 capability-aware skips, repository validation,
 the public-tree audit, Ruff, and `git diff --check`.
 
 ## 0.11.0 release acceptance (2026-09-03)
