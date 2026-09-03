@@ -9,11 +9,28 @@ Context Guard. The current source candidate is unreleased `0.11.1`; the current 
 This unreleased maintenance patch includes migration from the historical managed
 `codex-context-guard.marketplace` staging directory to the current
 commit-addressed staging copy. Public schema and protocol identifiers remain
-unchanged. Focused and full source checks are recorded when run; native macOS
-and Windows installation acceptance remain open and no tag, Release, or runtime installation is implied.
-On macOS/Python 3.12.2, the focused legacy-staging regression passed, followed
-by all 415 source tests with 9 capability-aware skips, repository validation,
-the public-tree audit, Ruff, and `git diff --check`.
+unchanged. Validated runtime candidate
+`1bda76d299698482e42bbb84168a90321c2f2874` is contained in `main` and
+`origin/main`. Source automation and independent native macOS and Windows
+acceptance have passed for that commit. The normal user runtime has
+not been upgraded, and no `v0.11.1` tag, GitHub Release, or public readback exists
+yet.
+
+| Release-candidate gate | Evidence | Status |
+| --- | --- | --- |
+| Source checks | All 415 source tests with capability-aware platform skips, repository validation, the public-tree audit, Ruff, compilation, and candidate identity checks | passed |
+| Exact-main automation | Candidate CI run `33759032413` passed the Ubuntu, macOS, and Windows Python 3.10-3.13 matrix, Windows portable installed-runtime check, and summary gate; HOL run `33759032136` also passed | passed |
+| Native macOS | Result SHA-256 `724482da10a45e83054f50ae7c980dea9ef690fc890457bd8aa1880fe1597503`; Python 3.12.2 and Codex CLI 0.150.1; source identity, isolated install, strict second no-op, platform-local runtime parity, installed lifecycle smoke, and cleanup all passed; runtime-tree SHA-256 `f8eb51910de65571425142d16139389b2b72320f95021f20232f9053f5f10876` | passed, locally read back |
+| Native Windows | Result SHA-256 `71de8d61d8c23d8b524358bfe0970eaddd971d7e4fcd061f649d53ca887eb426`; Python 3.12.10 and Codex CLI 0.149.0; the same five gates and cleanup passed with `remaining_ids=[]`; runtime-tree SHA-256 `db2c45928eb0de56954bf3dadd8df1a170a01a4bbc55ffc0cef9020d2078e9e6` | passed, remote task report |
+| Release publication | Tag, GitHub Release, and anonymous public readback | pending |
+| Normal runtime upgrade | Managed installation into the normal macOS and Windows user runtimes | not performed |
+
+The two runtime-tree digests are platform-local parity subjects: each native run
+compared its own source, staging, and installed bytes. They are not presented as
+a cross-platform byte-identity claim. The Windows row records a read-only report
+from the native task; this macOS task did not rerun or directly open the Windows
+result file. The separate historical DSH acceptance task is outside this release
+candidate and remains independently tracked.
 
 ## 0.11.0 release acceptance (2026-09-03)
 
