@@ -6,25 +6,33 @@ Context Guard. The current source candidate is unreleased `0.11.0`; the current 
 
 ## 0.11.0 source-candidate validation (2026-09-03)
 
-The 0.11.0 working tree is an unreleased source candidate. It adds schema 9,
-Execution protocol 2.0.0, Stop protocol 2.1.0, `work-unit/v1`, and the ninth
-Hook event, `PreToolUse`. Focused and complete source-suite results are recorded
-only after the commands complete successfully; they do not establish installed
-or native-platform acceptance.
+Implementation candidate `ea73bed7a387295e1f6475e743e623298413e710`
+is the unreleased 0.11.0 runtime subject. It adds schema 9, Execution protocol
+2.0.0, Stop protocol 2.1.0, `work-unit/v1`, and the ninth Hook event,
+`PreToolUse`. Its source/install tree contains 68 files. The macOS and Windows
+results below are independent native evidence for that exact commit.
 
-The following gates remain explicitly unperformed: managed installation,
-installed-byte parity, fresh-task `PreToolUse` and action-ticket validation,
-native macOS Hook acceptance, native Windows Hook acceptance, CI, tag,
-GitHub Release, and public readback. The source-validation phase does not
-authorize or perform any of those actions.
+The following gates remain explicitly unperformed: normal-user-home
+installation, CI, tag, GitHub Release, and public readback. Isolated native
+installation and testing do not authorize or perform any of those actions.
 
 | Source-candidate gate | Evidence | Status |
 | --- | --- | --- |
-| Complete source suite | 411 tests with 9 capability-aware platform skips on Python 3.12.2 | passed |
+| Complete source suite | 412 tests with 9 capability-aware platform skips on macOS/Python 3.12.2; 412 tests with 6 explicit platform skips on Windows/Python 3.12.10 | passed independently |
 | Repository and public-tree contracts | `validate_public_repo.py`, `audit_public_tree.py`, JSON schema parsing, external-cache compilation, and `git diff --check` | passed |
 | Hook bundle and lint | source self-test reports exactly 9 Hook events; Ruff 0.16.1 passes with cache disabled | passed |
 | Public incident benchmark | Stop 2.1.0 / Execution 2.0.0 passes 8/8 reviewed fixtures with zero false continuations and diagnostic accuracy 1.0 | passed |
 | Public taxonomy coverage | 8 of 12 taxonomy roots have reviewed public fixtures; the four new roots remain intentionally private-only pending human review | bounded, not a failure |
+| Native macOS | Isolated managed install, strict second apply/no-op, 68/68 source/live byte parity, installed self-test and lifecycle smoke, and a fresh task; an unticketed `git tag v9.9.8` was denied by real `PreToolUse` and independent readback proved the tag absent | passed |
+| Native Windows | R2 ZIP SHA-256 `fa00295b7cb0b8630673b820cec609958984cc810c3d0c2a0051151ed8e40480`; isolated install/no-op, 68/68 relative-path and per-file SHA-256 parity, 9-Hook self-test, action-ticket lifecycle, and a fresh task; an unticketed `git tag v1.2.3` was denied and independent readback reported zero matching tags | passed, remote-reported provenance |
+| Windows wrapper regression | `/bin/zsh -lc 'git tag …'`, PowerShell-wrapped `gh release delete …`, and a quoted `pwsh.exe`-wrapped `npm publish` were all classified A-tier and denied without a ticket | passed, remote-reported provenance |
+
+The Windows result is explicitly recorded with remote-reported provenance. The
+root user authorized that provenance after disclosure that the native task did
+not return a locally signed machine annex. Its private, redacted evidence hash
+is retained outside Git. The normal Windows checkout remained clean at its
+original base commit, and no normal installation, commit, push, tag, GitHub
+Release, registry mutation, or publication occurred.
 
 ## 0.10.0 release acceptance (2026-09-03)
 

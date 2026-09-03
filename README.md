@@ -35,7 +35,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
-- The unreleased 0.11.0 candidate adds a synchronous `PreToolUse` release gate, exact one-shot action tickets, fact-checked Stop dispositions, quote-safe supersession, append-only work units, and compact checkpoint status. Native installation and fresh-task acceptance remain separate pending gates.
+- The unreleased 0.11.0 candidate adds a synchronous `PreToolUse` release gate, exact one-shot action tickets, fact-checked Stop dispositions, quote-safe supersession, append-only work units, and compact checkpoint status. Exact implementation candidate `ea73bed` has passed independent isolated installation and fresh-task acceptance on macOS and Windows; CI, normal-home installation, tagging, and release remain separate and unperformed.
 - Version 0.10.0 checks that evidence proves the operation the user requested.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
