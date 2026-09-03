@@ -15,6 +15,7 @@
 ### 变更
 
 - Schema 9 新增工作单元；Execution protocol 2.0.0 新增 ticket 绑定和生命周期；Stop protocol 2.1.0 校验声明的 disposition；Hook wire 新增 `PreToolUse`，共九个事件。
+- 命令扫描会先规范化成对引号、Windows 可执行文件后缀和两种路径分隔符，再递归检查 shell 与 PowerShell 命令包装层。
 - 私有 incident schema 新增执行前授权、Stop disposition、需求替代归因和范围转换 taxonomy。benchmark 按协议面分派，并单独报告公开回归覆盖率，不再要求每个 private taxonomy 都有公开 fixture。
 - 修复前已在 Git 外建立四条脱敏的私有 `documented_only` 记录。记录不含原任务 ID、transcript、完整 prompt 或私有路径，也没有把真实事故直接导出为公开 fixture。
 

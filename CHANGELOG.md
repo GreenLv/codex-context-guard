@@ -15,6 +15,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Changes
 
 - Schema 9 adds work units; Execution protocol 2.0.0 adds ticket bindings and lifecycle states; Stop protocol 2.1.0 validates declared dispositions; the Hook wire now contains nine events including `PreToolUse`.
+- Command scanning normalizes quote pairs, Windows executable suffixes, and both path-separator styles before recursively inspecting shell and PowerShell command wrappers.
 - The private incident schema adds pre-action authorization, Stop-disposition, supersession-attribution, and scope-transition taxonomies. Benchmarks dispatch by protocol surface and report public regression coverage without requiring every private taxonomy to have a public fixture.
 - Four sanitized, private, Git-external `documented_only` incident records were created before the fixes. No raw task identifier, transcript, complete prompt, or private path is stored in the records, and no real incident has been exported as a public fixture.
 

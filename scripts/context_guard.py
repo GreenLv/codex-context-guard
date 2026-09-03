@@ -2103,16 +2103,29 @@ def _shell_command(tool_input: Any) -> str | None:
     return None
 
 
-def _command_tokens(command: str) -> list[str]:
+def _unquote_command_token(token: str) -> str:
+    """Remove quote pairs retained by non-POSIX ``shlex`` tokenization."""
+    while len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}:
+        token = token[1:-1]
+    return token
+
+
+def _command_basename(token: str) -> str:
+    """Return a shell executable basename for either path separator style."""
+    name = _unquote_command_token(token).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.removesuffix(".exe")
+
+
+def _command_tokens(command: str, *, posix: bool | None = None) -> list[str]:
     try:
         lexer = shlex.shlex(
             command,
-            posix=os.name != "nt",
+            posix=os.name != "nt" if posix is None else posix,
             punctuation_chars=";&|()",
         )
         lexer.whitespace_split = True
         lexer.commenters = ""
-        return list(lexer)
+        return [_unquote_command_token(token) for token in lexer]
     except ValueError:
         return []
 
@@ -2127,7 +2140,7 @@ def _subcommands(tokens: list[str], executable: str) -> list[tuple[str, list[str
     indices = [
         index
         for index, token in enumerate(tokens)
-        if Path(token).name.lower() == executable
+        if _command_basename(token) == executable
     ]
     for position, start in enumerate(indices):
         end = indices[position + 1] if position + 1 < len(indices) else len(tokens)
@@ -2146,14 +2159,16 @@ def _subcommands(tokens: list[str], executable: str) -> list[tuple[str, list[str
     return invocations
 
 
-def _expanded_command_tokens(command: str, *, depth: int = 0) -> list[str]:
+def _expanded_command_tokens(
+    command: str, *, depth: int = 0, posix: bool | None = None
+) -> list[str]:
     """Tokenize a command and boundedly inspect explicit shell ``-c`` wrappers."""
-    tokens = _command_tokens(command)
+    tokens = _command_tokens(command, posix=posix)
     if depth >= 3:
         return tokens
     expanded = list(tokens)
     for index, token in enumerate(tokens):
-        wrapper = Path(token).name.lower()
+        wrapper = _command_basename(token)
         if wrapper not in SHELL_WRAPPERS:
             continue
         for option_index in range(index + 1, min(len(tokens), index + 5)):
@@ -2166,7 +2181,9 @@ def _expanded_command_tokens(command: str, *, depth: int = 0) -> list[str]:
             )
             if is_command_option and option_index + 1 < len(tokens):
                 expanded.extend(
-                    _expanded_command_tokens(tokens[option_index + 1], depth=depth + 1)
+                    _expanded_command_tokens(
+                        tokens[option_index + 1], depth=depth + 1, posix=posix
+                    )
                 )
                 break
     return expanded
@@ -2256,7 +2273,7 @@ def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, str] | None:
                     "write_surface_id": "github_release",
                 })
         lowered = [
-            token if token in SHELL_CONTROL_TOKENS else Path(token).name.lower()
+            token if token in SHELL_CONTROL_TOKENS else _command_basename(token)
             for token in tokens
         ]
         registry_pairs = {

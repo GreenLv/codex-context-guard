@@ -3833,6 +3833,21 @@ class ContextGuardTests(unittest.TestCase):
                     "deny",
                 )
 
+    def test_windows_lexing_scans_quoted_shell_wrapper_payloads(self) -> None:
+        commands = (
+            "/bin/zsh -lc 'git tag v1.2.3'",
+            'powershell -NoProfile -Command "gh release delete v1.2.3"',
+            '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command "npm publish"',
+        )
+        expected = (("git", "tag"), ("gh", "release"), ("npm", "publish"))
+        for command, pair in zip(commands, expected, strict=True):
+            with self.subTest(command=command):
+                tokens = cg._expanded_command_tokens(command, posix=False)
+                self.assertTrue(
+                    any(left == pair[0] and right == pair[1] for left, right in zip(tokens, tokens[1:])),
+                    tokens,
+                )
+
     def test_pre_tool_rejects_multiple_remote_mutations_in_one_tool_call(self) -> None:
         self.prompt("推送 origin 的 main 分支，但不授权 tag 或 Release。")
         commands = (
