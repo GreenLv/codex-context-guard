@@ -263,14 +263,17 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
-- `0.11.0` is the unreleased execution-authority candidate. It advances private
+- `0.11.0` is the 2026-09-03 execution-authority release. It advances private
   state to schema 9, Stop protocol to 2.1.0, and Execution protocol to 2.0.0.
   The ninth Hook, `PreToolUse`, enforces exact one-shot action tickets for
   A-tier publication identity mutations and exact current root-user authority
   for B-tier remote mutations. Append-only work units scope completion and
   cleanup transitions, while schema 7 and schema 8 remain read-only migration
-  inputs. This source candidate is not installed, tagged, or published and has
-  no native macOS, native Windows, fresh-task, CI, or public-readback claim.
+  inputs. Runtime baseline `ea73bed` passed independent macOS and Windows
+  isolated installation, source/install parity, lifecycle, ticket, and
+  fresh-task Hook acceptance. The Windows evidence has authorized
+  remote-reported provenance; release identities and public readback remain
+  separately recorded publication facts.
 - `0.10.0` advances private state to schema 8 and the diagnostic classifier to
   2.4.0. It derives the required operation, subject, and requested surface from
   non-negated clauses, then rejects evidence for a different operation or

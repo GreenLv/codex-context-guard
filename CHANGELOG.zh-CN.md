@@ -2,9 +2,9 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.10.0` 是当前最新正式版本，实现基线为提交 `e4fccf690bcbc2be79d0b8d42a1a269f87072120`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.11.0` 是当前最新正式版本，运行时基线为提交 `ea73bed7a387295e1f6475e743e623298413e710`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.11.0 - 未发布源码候选
+## 0.11.0 - 2026-09-03
 
 ### 重点
 
@@ -17,12 +17,13 @@
 - Schema 9 新增工作单元；Execution protocol 2.0.0 新增 ticket 绑定和生命周期；Stop protocol 2.1.0 校验声明的 disposition；Hook wire 新增 `PreToolUse`，共九个事件。
 - 命令扫描会先规范化成对引号、Windows 可执行文件后缀和两种路径分隔符，再递归检查 shell 与 PowerShell 命令包装层。
 - 私有 incident schema 新增执行前授权、Stop disposition、需求替代归因和范围转换 taxonomy。benchmark 按协议面分派，并单独报告公开回归覆盖率，不再要求每个 private taxonomy 都有公开 fixture。
-- 修复前已在 Git 外建立四条脱敏的私有 `documented_only` 记录。记录不含原任务 ID、transcript、完整 prompt 或私有路径，也没有把真实事故直接导出为公开 fixture。
+- 修复前已在 Git 外分别建立四条脱敏 incident，并通过追加 successor 依次从 `documented_only` 晋级到源码确认、受控和 `fixed`。它们仍是未经公开审查的私有记录：不含原任务 ID、transcript、完整 prompt 或私有路径，也没有把真实事故复制成公开 fixture。
 
 ### 验证
 
 - 源码回归覆盖 A/B/C 风险级别、ticket 重试/消费、Stop disposition 不匹配、引文误替代、cleanup 范围跳转、incident runner 分派、工作单元闭包，以及 100+ 条目下小于 4 KiB 的默认 status 和常数级 unchanged 响应。
-- 这不是发布验收声明。0.11.0 的受管安装、fresh-task Hook/ticket 验收、macOS 原生验收、Windows 原生验收、CI、tag、GitHub Release 和公开读回均未执行。
+- 运行时基线 `ea73bed` 在 macOS 和 Windows 上分别通过 412 项源码测试、隔离安装/no-op、68 文件源码/安装态一致性、九 Hook 自检、lifecycle smoke、action-ticket 用例和 fresh-task `PreToolUse` 拒绝。Windows 结果采用经过明确授权的远端报告来源，不是本机签名 annex。
+- 发布文档提交必须先通过精确 main 的 CI 与 HOL，才能创建注释 tag。tag、GitHub Release 和公开读回是相互独立的发布身份，由 release receipt 记录，不能从本地或原生验收推断。
 
 ## 0.10.0 - 2026-09-03
 
@@ -44,6 +45,8 @@
 
 ## 各版本主要保护什么
 
+- **0.11.x——高风险发布动作必须先有授权凭据：** 已覆盖的发布变更需要绑定精确候选的一次性 ticket；普通远端变更则需要当前 root user 明确写出动作和目标。Stop disposition、引文中的修正和 cleanup 跳转到产品修复分别核对。
+- **0.10.x——证据必须对应用户要求的操作：** 读取、写入、UI 操作或公开读回的证明只能关闭绑定对象上的同一种操作；操作不明确时继续保持 pending。
 - **0.9.x——结束任务前必须有完整且当前有效的证据：** 0.9.4 规定只有覆盖全部要求且通过验证的 checkpoint 才能确认完成，并保证中文等非 ASCII Hook 输入不被破坏。0.9.5 会自动准备常规文件和文字证据，减少 UI 措辞误判，并拒绝绑定到错误任务或路径的证据。
 - **0.8.x——分清用户要求、Skill 和模型计划各自能决定什么：** 用户决定任务目标和写入授权；已采用的 `AGENTS.md` 或 Skill 规定工作流程；Codex Plan 只是可以调整的执行安排；工具、文件、图片和公开读回提供事实证据。0.8.3 会记录这些来源和可选计划绑定，来源变化时要求重新确认，但不会因此增加授权或拦截工具。
 - **0.7.x——把证据绑定到需要验证的对象：** 检查证据是否对应正确的需求、文件或页面以及完整范围；同时加入图片等多模态输入保护，只保存哈希和必要元数据。用户要求修改图片时，还要检查修改后的图片，不能只凭“工具运行成功”判定完成。

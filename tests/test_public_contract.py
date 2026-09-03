@@ -167,11 +167,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Source candidate: `0.11.0` (unreleased). Current published release: `0.10.0`.",
+            "> Current release: `0.11.0`.",
             english,
         )
         self.assertIn(
-            "> 当前源码候选：`0.11.0`（未发布）；当前正式版本：`0.10.0`。",
+            "> 当前正式版本：`0.11.0`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -230,10 +230,10 @@ class PublicContractTests(unittest.TestCase):
             changelog_zh,
         )
         english_line_order = [
-            changelog.index(f"**0.{minor}.x") for minor in range(9, 3, -1)
+            changelog.index(f"**0.{minor}.x") for minor in range(11, 3, -1)
         ]
         chinese_line_order = [
-            changelog_zh.index(f"**0.{minor}.x") for minor in range(9, 3, -1)
+            changelog_zh.index(f"**0.{minor}.x") for minor in range(11, 3, -1)
         ]
         self.assertEqual(english_line_order, sorted(english_line_order))
         self.assertEqual(chinese_line_order, sorted(chinese_line_order))
@@ -259,8 +259,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.8.12 - 2026-08-27", changelog_zh)
         self.assertIn("## 0.9.4 - 2026-08-28", changelog)
         self.assertIn("## 0.9.4 - 2026-08-28", changelog_zh)
-        self.assertIn("## 0.11.0 - Unreleased source candidate", changelog)
-        self.assertIn("## 0.11.0 - 未发布源码候选", changelog_zh)
+        self.assertIn("## 0.11.0 - 2026-09-03", changelog)
+        self.assertIn("## 0.11.0 - 2026-09-03", changelog_zh)
         self.assertIn("action-ticket/v1", changelog)
         self.assertIn("work-unit/v1", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
@@ -270,9 +270,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current published Context Guard release: `0.10.0`", compatibility
+            "Current source and published Context Guard release: `0.11.0`", compatibility
         )
-        self.assertIn("Current source candidate: `0.11.0` (unreleased)", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `2.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.4.0`", compatibility)
@@ -284,7 +283,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.5` keeps the 0.7.4 protocol", versioning)
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         self.assertIn("`0.10.0` advances private state to schema 8", versioning)
-        self.assertIn("`0.11.0` is the unreleased execution-authority candidate", versioning)
+        self.assertIn("`0.11.0` is the 2026-09-03 execution-authority release", versioning)
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)

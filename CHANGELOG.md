@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the latest published release, built from implementation baseline `e4fccf690bcbc2be79d0b8d42a1a269f87072120`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.11.0` is the latest published release, built from runtime baseline `ea73bed7a387295e1f6475e743e623298413e710`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.11.0 - Unreleased source candidate
+## 0.11.0 - 2026-09-03
 
 ### Highlights
 
@@ -17,12 +17,13 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - Schema 9 adds work units; Execution protocol 2.0.0 adds ticket bindings and lifecycle states; Stop protocol 2.1.0 validates declared dispositions; the Hook wire now contains nine events including `PreToolUse`.
 - Command scanning normalizes quote pairs, Windows executable suffixes, and both path-separator styles before recursively inspecting shell and PowerShell command wrappers.
 - The private incident schema adds pre-action authorization, Stop-disposition, supersession-attribution, and scope-transition taxonomies. Benchmarks dispatch by protocol surface and report public regression coverage without requiring every private taxonomy to have a public fixture.
-- Four sanitized, private, Git-external `documented_only` incident records were created before the fixes. No raw task identifier, transcript, complete prompt, or private path is stored in the records, and no real incident has been exported as a public fixture.
+- Four separate sanitized incidents were created outside Git before the fixes, then advanced append-only from `documented_only` through source confirmation and containment to `fixed`. They remain private and unreviewed for public export: no raw task identifier, transcript, complete prompt, or private path is stored, and no real incident has been copied into a public fixture.
 
 ### Validation
 
 - Source regressions cover A/B/C risk tiers, ticket retry/consumption, Stop-disposition mismatch, quoted supersession, cleanup scope transition, incident runner dispatch, work-unit closure, and a 100+ item status ledger below 4 KiB with constant-size unchanged replies.
-- This is not a release acceptance claim. Managed installation, fresh-task Hook/ticket acceptance, macOS native acceptance, Windows native acceptance, CI, tag, GitHub Release, and public readback remain unperformed for 0.11.0.
+- Runtime baseline `ea73bed` passed 412 source tests, isolated install/no-op, 68-file source/install parity, the nine-Hook self-test, lifecycle smoke, action-ticket cases, and fresh-task `PreToolUse` denial on both macOS and Windows. The Windows result has explicitly authorized remote-reported provenance; it is not a locally signed annex.
+- The release-document commit must pass exact-main CI and HOL before the annotated tag. Tag, GitHub Release, and public readback remain separate publication identities recorded by the release receipt rather than inferred from local or native acceptance.
 
 ## 0.10.0 - 2026-09-03
 
@@ -44,6 +45,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ## How protection evolved
 
+- **0.11.x — require authority before high-risk release actions:** covered publication mutations need a one-shot ticket bound to the exact candidate, while ordinary remote mutations need a current root-user instruction naming the action and target. Stop dispositions, quoted corrections, and cleanup-to-product scope changes are checked independently.
+- **0.10.x — require evidence for the requested operation:** proof for a read, write, UI action, or public readback closes only that operation on the bound subject; ambiguous operations remain pending.
 - **0.9.x — require complete, current evidence before finishing:** 0.9.4 makes a verified full-coverage checkpoint the only completion authority and preserves non-ASCII Hook input. 0.9.5 prepares routine file and text evidence automatically, narrows UI wording detection, and rejects evidence tied to the wrong task or path.
 - **0.8.x — separate what user instructions, Skills, and the model plan may decide:** the user defines the task and write authority; adopted `AGENTS.md` or Skills define the workflow; Codex Plan is a revisable execution arrangement; and tool, file, image, or public-readback results provide factual evidence. Version 0.8.3 records these sources and an optional plan binding, requests review after drift, and does not turn them into new authority or tool interception.
 - **0.7.x — bind evidence to the thing being verified:** check that evidence belongs to the required item, file or page, and complete requested scope. This line also added privacy-preserving protection for images and other multimodal inputs. It stores hashes and bounded metadata, and an image-editing task requires inspection of the changed image rather than only a successful tool call.

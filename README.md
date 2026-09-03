@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Source candidate: `0.11.0` (unreleased). Current published release: `0.10.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Current release: `0.11.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -35,7 +35,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
-- The unreleased 0.11.0 candidate adds a synchronous `PreToolUse` release gate, exact one-shot action tickets, fact-checked Stop dispositions, quote-safe supersession, append-only work units, and compact checkpoint status. Exact implementation candidate `ea73bed` has passed independent isolated installation and fresh-task acceptance on macOS and Windows; CI, normal-home installation, tagging, and release remain separate and unperformed.
+- Version 0.11.0 adds a synchronous `PreToolUse` release gate, exact one-shot action tickets, fact-checked Stop dispositions, quote-safe supersession, append-only work units, and compact checkpoint status. Runtime baseline `ea73bed` passed independent isolated installation and fresh-task acceptance on macOS and Windows; the Windows evidence has explicitly authorized remote-reported provenance.
 - Version 0.10.0 checks that evidence proves the operation the user requested.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
@@ -76,7 +76,7 @@ Automatic checks are used only when the request names a concrete target, such as
 - Codex Plan describes the model's current steps; Context Guard can keep a read-only reference but does not edit the plan.
 - Tool, file, image, UI, and public-page readbacks establish facts. A successful result cannot authorize a push, release, installation, or other change by itself.
 
-Context Guard records these boundaries when the project opts in and asks for review if the adopted instructions or plan change. It does not intercept tools or grant permissions.
+Context Guard records these boundaries when the project opts in and asks for review if the adopted instructions or plan change. Its `PreToolUse` Hook can deny covered release and remote-mutation calls, but it does not grant permissions or replace platform approval, and specialized tools outside Hook coverage remain an explicit gap.
 
 ## How it works
 

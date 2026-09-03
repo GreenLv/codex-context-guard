@@ -5,8 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current source candidate: `0.11.0` (unreleased)
-- Current published Context Guard release: `0.10.0`
+- Current source and published Context Guard release: `0.11.0`
 - Private state schema: `9` (schema 7 and 8 read-only compatibility)
 - Proof protocol: `1.0.0`
 - Stop protocol: `2.1.0`
@@ -19,7 +18,7 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.11.0 source-candidate status
+## 0.11.0 release status
 
 Version 0.11.0 adds the synchronous `PreToolUse` event, exact
 `action-ticket/v1` enforcement for A-tier publication identity mutations,
@@ -28,12 +27,14 @@ root-user target matching for B-tier remote mutations, and append-only
 observed ownership, authorization, and dependency facts. Quoted, attributed,
 code, and reply-annotation text is excluded before supersession attribution.
 
-This entry records source compatibility only. Managed installation, a fresh
-task using the nine-Hook wire, native macOS and Windows Hook acceptance, CI,
-tagging, publication, and public readback remain pending. Hook enforcement is a
-strong guardrail, not a complete security boundary: platform approval remains
-in force and specialized tools that do not participate in Codex Hooks remain
-an explicit coverage gap.
+Runtime baseline `ea73bed7a387295e1f6475e743e623298413e710`
+passed the complete source suite, isolated installation/no-op, 68-file parity,
+the nine-Hook self-test, lifecycle smoke, action-ticket cases, and fresh-task
+Hook acceptance independently on macOS and Windows. The Windows result has
+explicitly authorized remote-reported provenance rather than a locally signed
+machine annex. Hook enforcement is a strong guardrail, not a complete security
+boundary: platform approval remains in force and specialized tools that do not
+participate in Codex Hooks remain an explicit coverage gap.
 
 ## 0.10.0 release status
 

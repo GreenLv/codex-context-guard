@@ -1,22 +1,23 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source candidate is unreleased `0.11.0`; the current published release is `0.10.0`. Accepted releases include `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current source and published release is `0.11.0`. Accepted releases include `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.11.0 source-candidate validation (2026-09-03)
+## 0.11.0 release-candidate acceptance (2026-09-03)
 
 Implementation candidate `ea73bed7a387295e1f6475e743e623298413e710`
-is the unreleased 0.11.0 runtime subject. It adds schema 9, Execution protocol
+is the 0.11.0 runtime subject. It adds schema 9, Execution protocol
 2.0.0, Stop protocol 2.1.0, `work-unit/v1`, and the ninth Hook event,
 `PreToolUse`. Its source/install tree contains 68 files. The macOS and Windows
 results below are independent native evidence for that exact commit.
 
-The following gates remain explicitly unperformed: normal-user-home
-installation, CI, tag, GitHub Release, and public readback. Isolated native
-installation and testing do not authorize or perform any of those actions.
+Normal-user-home installation is intentionally outside this release scope. CI,
+tag, GitHub Release, and public readback are separate publication surfaces;
+this pre-publication record neither authorizes nor infers them from isolated
+native installation and testing.
 
-| Source-candidate gate | Evidence | Status |
+| Release-candidate gate | Evidence | Status |
 | --- | --- | --- |
 | Complete source suite | 412 tests with 9 capability-aware platform skips on macOS/Python 3.12.2; 412 tests with 6 explicit platform skips on Windows/Python 3.12.10 | passed independently |
 | Repository and public-tree contracts | `validate_public_repo.py`, `audit_public_tree.py`, JSON schema parsing, external-cache compilation, and `git diff --check` | passed |

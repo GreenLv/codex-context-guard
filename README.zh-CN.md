@@ -11,7 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前源码候选：`0.11.0`（未发布）；当前正式版本：`0.10.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 当前正式版本：`0.11.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -35,7 +35,7 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 版本与兼容性说明
 
-- 未发布的 0.11.0 候选新增同步 `PreToolUse` 发布门禁、精确的一次性 action ticket、基于事实核对的 Stop disposition、去引文的需求替代、append-only 工作单元和紧凑 checkpoint status。精确实现候选 `ea73bed` 已分别通过 macOS 与 Windows 的隔离安装和 fresh-task 验收；CI、正常用户目录安装、打标和发布仍是独立且未执行的阶段。
+- 0.11.0 新增同步 `PreToolUse` 发布门禁、精确的一次性 action ticket、基于事实核对的 Stop disposition、去引文的需求替代、append-only 工作单元和紧凑 checkpoint status。运行时基线 `ea73bed` 已分别通过 macOS 与 Windows 的隔离安装和 fresh-task 验收；Windows 证据采用经过明确授权的远端报告来源。
 - 0.10.0 会检查证据是否证明了用户要求的操作。
 - Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
 
@@ -76,7 +76,7 @@ context-guard diagnose
 - Codex Plan 记录模型当前的执行步骤；Context Guard 可以保留只读引用，但不会修改计划。
 - 工具、文件、图片、UI 和公开页面的读回只说明事实。工具成功不能自行授权推送、发布、安装或其他变更。
 
-项目显式采用这些规则后，Context Guard 会记录边界，并在说明或计划发生变化时要求重新确认。它不会拦截工具，也不会授予权限。
+项目显式采用这些规则后，Context Guard 会记录边界，并在说明或计划发生变化时要求重新确认。它的 `PreToolUse` Hook 可以拒绝已覆盖的发布和远端变更调用，但不会授予权限或替代平台审批；未接入 Hook 的专用工具仍是明确的覆盖缺口。
 
 ## 工作流程
 
