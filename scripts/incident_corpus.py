@@ -544,7 +544,11 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         item for item in eligible if item.get("reproduction_status") in {"reproduced", "contained", "fixed"}
     ]
     recurrent = [item for item in eligible if len(item.get("regression_versions", [])) > 1]
-    covered = [item for item in eligible if item.get("public_fixture_id")]
+    covered = [
+        item
+        for item in eligible
+        if item.get("public_reviewed") is True and item.get("public_fixture_id")
+    ]
     wording_debt = [item for item in active if item.get("wording_patch") is True]
     return {
         "records_total": len(records),
@@ -675,7 +679,6 @@ def command_ingest(args: argparse.Namespace) -> int:
             item = dict(source)
             item["incident_id"] = f"CGI-{year}-{supersede_start + offset:03d}"
             item["supersedes"] = old_id
-            item.setdefault("public_fixture_id", old_id)
             revised.append(item)
         pending = revised
     identifiers: list[str] = []

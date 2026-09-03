@@ -20,7 +20,7 @@ authorize or perform any of those actions.
 
 | Source-candidate gate | Evidence | Status |
 | --- | --- | --- |
-| Complete source suite | 410 tests with 9 capability-aware platform skips on Python 3.12.2 | passed |
+| Complete source suite | 411 tests with 9 capability-aware platform skips on Python 3.12.2 | passed |
 | Repository and public-tree contracts | `validate_public_repo.py`, `audit_public_tree.py`, JSON schema parsing, external-cache compilation, and `git diff --check` | passed |
 | Hook bundle and lint | source self-test reports exactly 9 Hook events; Ruff 0.16.1 passes with cache disabled | passed |
 | Public incident benchmark | Stop 2.1.0 / Execution 2.0.0 passes 8/8 reviewed fixtures with zero false continuations and diagnostic accuracy 1.0 | passed |

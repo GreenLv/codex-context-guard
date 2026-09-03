@@ -375,6 +375,7 @@ class IncidentCorpusTests(unittest.TestCase):
         tool = load_tool()
         fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))[0]
         fixture["reproduction_status"] = "documented_only"
+        fixture.pop("public_fixture_id", None)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "corpus"
             source = Path(temporary) / "record.json"
@@ -388,7 +389,10 @@ class IncidentCorpusTests(unittest.TestCase):
             self.assertEqual(tool.command_ingest(second), 0)
             records, errors = tool.load_records(root)
             self.assertEqual(errors, [])
-            self.assertEqual(tool.active_records(records)[0]["incident_id"], "CGI-2026-101")
+            active = tool.active_records(records)[0]
+            self.assertEqual(active["incident_id"], "CGI-2026-101")
+            self.assertNotIn("public_fixture_id", active)
+            self.assertEqual(tool.summarize(records)["public_regression_coverage"], 0.0)
             invalid = dict(successor)
             invalid["reproduction_status"] = "documented_only"
             invalid["incident_id"] = "CGI-2026-102"
@@ -398,6 +402,14 @@ class IncidentCorpusTests(unittest.TestCase):
             tool.restrict_private_path(target, directory=False)
             _records, errors = tool.load_records(root)
             self.assertTrue(any("invalid append-only status transition" in error for error in errors))
+
+    def test_private_fixture_id_does_not_count_as_public_coverage(self) -> None:
+        tool = load_tool()
+        fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))[0]
+        fixture["public_reviewed"] = False
+        report = tool.summarize([fixture])
+        self.assertEqual(report["eligible_denominator"], 1)
+        self.assertEqual(report["public_regression_coverage"], 0.0)
 
     def test_windows_private_paths_use_acl_instead_of_posix_mode_bits(self) -> None:
         tool = load_tool()
