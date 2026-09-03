@@ -55,7 +55,7 @@ authoritative.
 
 - Add focused positive, negative, and adversarial regression coverage for every
   behavior change or bug fix. Prefer a regression that fails on the old code.
-- Keep all eight Hook events and both POSIX and Windows command forms aligned
+- Keep all nine Hook events and both POSIX and Windows command forms aligned
   unless an intentional versioned contract change says otherwise.
 - A Hook definition, state schema, observable behavior, runtime byte, or
   installed lifecycle change requires a new plugin version and release-note
@@ -180,6 +180,10 @@ git diff --check
 - Preserve unrelated worktree changes. Keep commits narrow, review staged paths,
   run `git diff --cached --check`, and verify the exact author and committer
   identity before pushing.
+- Treat release-tag creation/push, package publish/yank, and GitHub Release
+  create/update/delete as A-tier publication mutations. Route them through the
+  `repository-release` publication contract with an exact one-shot
+  `action-ticket/v1`; a bare command cannot bypass that contract.
 - Do not use GitHub rebase, squash, or merge operations when they would rewrite
   or create commits with a platform-owned committer identity that fails this
   repository's identity audit. When the verified PR head is a direct descendant

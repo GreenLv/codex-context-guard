@@ -33,7 +33,7 @@ Tool activity is stored as a bounded, redacted summary and outcome, not as compl
 
 For images and other binary inputs, the store keeps a redacted basename or type, media facts such as byte count and dimensions, and hashes of the locator and content. It does not keep the image bytes or data-URL body.
 
-Recovery and diagnosis keep compact checkpoints, delegated-result summaries, protocol versions, bounded status and reason values, and prompt or reply hashes. Schema 8 also keeps bounded identifiers and hashes for the selected instruction source, plan, host coverage, adapter version, and delegated actor when those values affect verification.
+Recovery and diagnosis keep compact checkpoints, delegated-result summaries, protocol versions, bounded status and reason values, and prompt or reply hashes. Schema 9 also keeps bounded work-unit identifiers, candidate-closure and readiness digests, ticket lifecycle state, normalized tool-input hashes, and exact release identity fields when those values affect authorization or verification. It does not store raw tool input, private paths, or action-bearing tokens.
 
 ## What it does not save
 
@@ -59,7 +59,7 @@ This distinction is important: user prompt bodies are saved privately for recove
   compaction and resume may retry to recover late metadata.
 - Disposition requests accept only a fixed disposition enum and derive a fixed
   reason enum; there is no free-form disposition reason field.
-- The legacy `continue` enum is compatibility-only under Stop protocol 2.0.0;
+- The legacy `continue` enum is compatibility-only under Stop protocol 2.1.0;
   it is retained in bounded diagnostics but cannot force another model turn.
 - Protocol and decision diagnostics retain hashes and bounded enums, never raw
   reply text, chain-of-thought, local paths, credentials, or plaintext private
@@ -74,6 +74,13 @@ This distinction is important: user prompt bodies are saved privately for recove
   absolute source paths, prompt text, authority-bearing tokens, or Plan text.
 - Native-plan binding persists a semantic digest and stale markers rather than
   a second editable plan.
+- Action tickets retain bounded repository and release identities plus hashes
+  for candidate closure, readiness, execution contract, and normalized tool
+  input. They never retain raw commands, complete tool arguments, credentials,
+  or private absolute paths.
+- Work units retain bounded identifiers, parent relationships, kinds, and
+  prompt bindings. Default status output exposes only current-unit counts and
+  bounded summaries; full or item audit output must be requested explicitly.
 - Ended sessions become eligible for cleanup after 30 days.
 
 ## Redaction

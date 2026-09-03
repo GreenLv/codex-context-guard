@@ -46,10 +46,11 @@
     },
     "trackedItem": {
       "type": "object",
-      "required": ["id", "prompt_id", "text", "status", "evidence", "verification_contract"],
+      "required": ["id", "prompt_id", "work_unit_id", "text", "status", "evidence", "verification_contract"],
       "properties": {
         "id": {"type": "string"},
         "prompt_id": {"type": "string"},
+        "work_unit_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/executionId"}]},
         "text": {"type": "string"},
         "operation": {"type": "string"},
         "subjectId": {"type": "array", "items": {"type": "string"}},
@@ -97,7 +98,31 @@
         "write_surface_id": {"$ref": "#/$defs/executionId"},
         "binding": {"enum": ["deterministic", "natural_language"]},
         "state": {"enum": ["candidate", "active", "rejected", "superseded"]},
-        "activation": {"type": ["object", "null"]}
+        "activation": {"type": ["object", "null"]},
+        "ticket_binding": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["ticket_schema", "repository_id", "candidate_commit", "release_version", "closure_sha256", "readiness_sha256", "closure_status", "readiness_schema", "readiness_kind", "readiness_status", "action_ticket_eligible", "input_sha256", "expires_at"],
+              "properties": {
+                "ticket_schema": {"const": "action-ticket/v1"},
+                "repository_id": {"$ref": "#/$defs/executionId"},
+                "candidate_commit": {"$ref": "#/$defs/executionId"},
+                "release_version": {"$ref": "#/$defs/executionId"},
+                "closure_sha256": {"$ref": "#/$defs/sha256"},
+                "readiness_sha256": {"$ref": "#/$defs/sha256"},
+                "closure_status": {"const": "passed"},
+                "readiness_schema": {"const": "release-readiness/v2"},
+                "readiness_kind": {"const": "publication"},
+                "readiness_status": {"const": "passed"},
+                "action_ticket_eligible": {"const": true},
+                "input_sha256": {"$ref": "#/$defs/sha256"},
+                "expires_at": {"type": "string", "format": "date-time"}
+              }
+            }
+          ]
+        }
       },
       "additionalProperties": false
     },
@@ -105,8 +130,13 @@
       "type": "object",
       "required": [
         "id", "session_id", "turn_id", "actor_id", "tool_use_id",
+        "authorization_prompt_id", "authorization_prompt_sha256",
         "contract_revision", "semantic_action_id", "canonical_target_id",
-        "write_surface_id", "input_sha256", "state", "reserved_at", "expires_at", "settled_at"
+        "write_surface_id", "input_sha256", "state", "reserved_at", "expires_at", "settled_at",
+        "ticket_schema", "repository_id", "candidate_commit", "release_version",
+        "contract_sha256", "closure_sha256", "readiness_sha256", "closure_status",
+        "readiness_schema", "readiness_kind", "readiness_status",
+        "action_ticket_eligible", "attempt_count"
       ],
       "properties": {
         "id": {"$ref": "#/$defs/executionId"},
@@ -114,12 +144,27 @@
         "turn_id": {"$ref": "#/$defs/executionId"},
         "actor_id": {"$ref": "#/$defs/executionId"},
         "tool_use_id": {"$ref": "#/$defs/executionId"},
+        "authorization_prompt_id": {"$ref": "#/$defs/executionId"},
+        "authorization_prompt_sha256": {"$ref": "#/$defs/sha256"},
         "contract_revision": {"type": "integer", "minimum": 1},
         "semantic_action_id": {"$ref": "#/$defs/executionId"},
         "canonical_target_id": {"$ref": "#/$defs/executionId"},
         "write_surface_id": {"$ref": "#/$defs/executionId"},
+        "ticket_schema": {"const": "action-ticket/v1"},
+        "repository_id": {"$ref": "#/$defs/executionId"},
+        "candidate_commit": {"$ref": "#/$defs/executionId"},
+        "release_version": {"$ref": "#/$defs/executionId"},
+        "contract_sha256": {"$ref": "#/$defs/sha256"},
+        "closure_sha256": {"$ref": "#/$defs/sha256"},
+        "readiness_sha256": {"$ref": "#/$defs/sha256"},
+        "closure_status": {"enum": ["passed", "legacy_unverified"]},
+        "readiness_schema": {"enum": ["release-readiness/v2", "legacy"]},
+        "readiness_kind": {"enum": ["publication", "legacy"]},
+        "readiness_status": {"enum": ["passed", "legacy_unverified"]},
+        "action_ticket_eligible": {"type": "boolean"},
         "input_sha256": {"$ref": "#/$defs/sha256"},
-        "state": {"enum": ["reserved", "consumed", "failed", "expired_unsettled"]},
+        "state": {"enum": ["reserved", "in_flight", "consumed", "invalidated", "expired"]},
+        "attempt_count": {"type": "integer", "minimum": 0},
         "reserved_at": {"type": "string", "format": "date-time"},
         "expires_at": {"type": "string", "format": "date-time"},
         "settled_at": {"type": ["string", "null"], "format": "date-time"}
@@ -151,7 +196,7 @@
         "action_tickets", "denials", "unified_exec_sessions", "delegations"
       ],
       "properties": {
-        "protocol_version": {"const": "1.0.0"},
+        "protocol_version": {"const": "2.0.0"},
         "instruction_sources": {
           "type": "array",
           "maxItems": 64,
@@ -252,6 +297,8 @@
     "proofs",
     "proof_sequence",
     "work_state",
+    "work_units",
+    "work_unit_sequence",
     "agents",
     "open_items",
     "compactions",
@@ -268,7 +315,7 @@
     "content_hash"
   ],
   "properties": {
-    "schema_version": {"const": 8},
+    "schema_version": {"const": 9},
     "session": {
       "type": "object",
       "required": ["id", "cwd", "created_at", "updated_at", "ended_at"]
@@ -356,12 +403,32 @@
     "proof_sequence": {"type": "integer", "minimum": 0},
     "work_state": {
       "type": "object",
-      "required": ["plan_snapshot"],
+      "required": ["plan_snapshot", "active_work_unit_id"],
       "properties": {
-        "plan_snapshot": {"type": ["object", "null"]}
+        "plan_snapshot": {"type": ["object", "null"]},
+        "active_work_unit_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/executionId"}]}
       },
       "additionalProperties": false
     },
+    "work_units": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "protocol_version", "prompt_id", "parent_id", "kind", "status", "created_at", "closed_at", "scope_sha256"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^WU[0-9]{4,}$"},
+          "protocol_version": {"const": "1.0.0"},
+          "prompt_id": {"$ref": "#/$defs/executionId"},
+          "parent_id": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/executionId"}]},
+          "kind": {"enum": ["legacy", "general", "planning", "implementation", "cleanup", "release"]},
+          "status": {"enum": ["active", "passed", "superseded"]},
+          "created_at": {"type": "string", "format": "date-time"},
+          "closed_at": {"type": ["string", "null"], "format": "date-time"},
+          "scope_sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "work_unit_sequence": {"type": "integer", "minimum": 0},
     "agents": {"type": "array"},
     "open_items": {"type": "array"},
     "compactions": {"type": "array"},
@@ -379,7 +446,7 @@
             "staged_at"
           ],
           "properties": {
-            "protocol_version": {"const": "2.0.0"},
+            "protocol_version": {"const": "2.1.0"},
             "turn_id": {"type": "string"},
             "token_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "created_at": {"type": "string"},
@@ -452,6 +519,7 @@
             "enum": [
               "protocol_checkpoint",
               "protocol_disposition",
+              "protocol_disposition_validation",
               "protocol_default",
               "protocol_user_persistence",
               "nlp_hard_gate",

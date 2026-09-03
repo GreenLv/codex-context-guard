@@ -11,7 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前正式版本：`0.10.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 当前源码候选：`0.11.0`（未发布）；当前正式版本：`0.10.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -31,11 +31,12 @@ py -3.10 scripts\manage_plugin.py --apply
 
 安装器会把本仓库添加为 marketplace，安装 `context-guard@codex-context-guard`，并检查安装结果。它也会保留升级前任务仍需要的版本化副本。
 
-安装插件不会自动信任 Hook。请启动新的 Codex 任务，打开 `/hooks`，检查并信任全部八个定义，然后再启动一个新任务，让它加载当前版本。
+安装插件不会自动信任 Hook。请启动新的 Codex 任务，打开 `/hooks`，检查并信任全部九个定义，然后再启动一个新任务，让它加载当前版本。
 
 ### 版本与兼容性说明
 
-- 0.10.0 会检查证据是否证明了用户要求的操作。否定句或引文中的对象描述不再被误记为要求；无法确定具体操作的请求会继续保留为待办，不会直接消失。
+- 未发布的 0.11.0 候选新增同步 `PreToolUse` 发布门禁、精确的一次性 action ticket、基于事实核对的 Stop disposition、去引文的需求替代、append-only 工作单元和紧凑 checkpoint status。原生安装与 fresh-task 验收仍是独立的待完成门禁。
+- 0.10.0 会检查证据是否证明了用户要求的操作。
 - Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
 
 详细版本与平台证据见[兼容性说明](docs/COMPATIBILITY.md)、[更新日志](CHANGELOG.zh-CN.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。

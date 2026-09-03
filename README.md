@@ -11,7 +11,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Current release: `0.10.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Source candidate: `0.11.0` (unreleased). Current published release: `0.10.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -31,11 +31,12 @@ py -3.10 scripts\manage_plugin.py --apply
 
 The installer adds this repository as a marketplace, installs `context-guard@codex-context-guard`, and verifies the installed copy. It also keeps versioned copies needed by tasks that started before an upgrade.
 
-Installing a plugin does not trust its Hooks automatically. Start a fresh Codex task, open `/hooks`, review and trust all eight definitions, then start another fresh task so it loads the current version.
+Installing a plugin does not trust its Hooks automatically. Start a fresh Codex task, open `/hooks`, review and trust all nine definitions, then start another fresh task so it loads the current version.
 
 ### Version and compatibility notes
 
-- Version 0.10.0 checks that evidence proves the operation the user requested. Negated or quoted object descriptions no longer become requirements by mistake, and requests whose operation cannot be determined remain pending instead of disappearing.
+- The unreleased 0.11.0 candidate adds a synchronous `PreToolUse` release gate, exact one-shot action tickets, fact-checked Stop dispositions, quote-safe supersession, append-only work units, and compact checkpoint status. Native installation and fresh-task acceptance remain separate pending gates.
+- Version 0.10.0 checks that evidence proves the operation the user requested.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
 Detailed version and platform evidence is in the [compatibility matrix](docs/COMPATIBILITY.md), [changelog](CHANGELOG.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).

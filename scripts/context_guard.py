@@ -24,12 +24,13 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 8
-READ_ONLY_COMPATIBILITY_SCHEMA = 7
-STOP_PROTOCOL_VERSION = "2.0.0"
+SCHEMA_VERSION = 9
+READ_ONLY_COMPATIBILITY_SCHEMAS = {7, 8}
+STOP_PROTOCOL_VERSION = "2.1.0"
 CLASSIFIER_VERSION = "2.4.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
-EXECUTION_PROTOCOL_VERSION = "1.0.0"
+EXECUTION_PROTOCOL_VERSION = "2.0.0"
+WORK_UNIT_PROTOCOL_VERSION = "1.0.0"
 ADAPTER_MANIFEST_VERSION = "1.0.0"
 CLAUSE_DERIVATION_VERSION = "1.0.0"
 ADAPTER_MANIFEST = {
@@ -89,6 +90,8 @@ STATE_REQUIRED_KEYS = {
     "proofs",
     "proof_sequence",
     "work_state",
+    "work_units",
+    "work_unit_sequence",
     "agents",
     "open_items",
     "compactions",
@@ -180,12 +183,13 @@ PHASE_TRANSITIONS = {
     "conflicted": {"pending", "waived", "superseded"},
     "superseded": set(),
 }
-TICKET_STATES = {"reserved", "consumed", "failed", "expired_unsettled"}
+TICKET_STATES = {"reserved", "in_flight", "consumed", "invalidated", "expired"}
 TICKET_TRANSITIONS = {
-    "reserved": {"consumed", "failed", "expired_unsettled"},
+    "reserved": {"in_flight", "invalidated", "expired"},
+    "in_flight": {"reserved", "consumed", "invalidated", "expired"},
     "consumed": set(),
-    "failed": set(),
-    "expired_unsettled": set(),
+    "invalidated": set(),
+    "expired": set(),
 }
 FORBIDDEN_EXECUTION_KEYS = {
     "command", "content", "cwd", "path", "prompt", "raw_prompt", "secret",
@@ -748,6 +752,24 @@ SUPERSESSION_NEGATION_PREFIX_RE = re.compile(
     r"(?:(?:再|擅自|直接|随意|轻易|ever|again|silently|automatically)\s*)*$",
     re.I,
 )
+EXPLICIT_PREVIOUS_REQUIREMENT_RE = re.compile(
+    r"(?:上一条(?:需求|要求)?|前一条(?:需求|要求)?|"
+    r"\b(?:previous|prior|last)\s+(?:requirement|instruction)\b)",
+    re.I,
+)
+ATTRIBUTED_SUPERSESSION_LINE_RE = re.compile(
+    r"^\s*(?:>|(?:assistant|system|developer)\s*:|assistant\s+said\s*:|"
+    r"(?:助手|系统|开发者)\s*[：:]|你(?:之前)?说\s*[：:]|"
+    r"\[(?:assistant|system|developer)(?:/[^\]]+)?\]).*$",
+    re.I | re.M,
+)
+ATTRIBUTED_SUPERSESSION_BLOCK_RE = re.compile(
+    r"<(?:assistant|quote|response|quoted-response|system|developer|"
+    r"system-reminder|app-context|context-guard-recovery)\b[^>]*>.*?"
+    r"</(?:assistant|quote|response|quoted-response|system|developer|"
+    r"system-reminder|app-context|context-guard-recovery)>",
+    re.I | re.S,
+)
 DATA_URL_RE = re.compile(
     r"^data:(?P<mime>[^;,]+)?(?P<parameters>(?:;[^,]*)*?),(?P<body>.*)$",
     re.IGNORECASE | re.DOTALL,
@@ -1137,7 +1159,7 @@ def _require_record_keys(
     if not isinstance(record, dict):
         raise StateIntegrityError(f"execution field {field} must contain objects")
     allowed = required | (optional or set())
-    if set(record) != allowed:
+    if not required.issubset(record) or not set(record).issubset(allowed):
         raise StateIntegrityError(f"execution field {field} has invalid record keys")
     return record
 
@@ -1266,6 +1288,7 @@ def validate_execution_state(execution: Any) -> None:
                 "id", "prompt_id", "prompt_sha256", "semantic_action_id",
                 "canonical_target_id", "write_surface_id", "binding", "state", "activation",
             },
+            optional={"ticket_binding"},
         )
         candidate_id = _execution_id(record["id"], "authorization_candidates.id")
         for key in ("prompt_id", "semantic_action_id", "canonical_target_id", "write_surface_id"):
@@ -1291,6 +1314,47 @@ def validate_execution_state(execution: Any) -> None:
             raise StateIntegrityError("authorization activation requires deterministic binding and record")
         if record.get("state") != "active" and activation is not None:
             raise StateIntegrityError("inactive authorization candidate cannot retain activation")
+        ticket_binding = record.get("ticket_binding")
+        if ticket_binding is not None:
+            ticket_binding = _require_record_keys(
+                ticket_binding,
+                field="authorization_candidates.ticket_binding",
+                required={
+                    "ticket_schema", "repository_id", "candidate_commit",
+                    "release_version", "closure_sha256", "readiness_sha256",
+                    "closure_status", "readiness_schema", "readiness_kind",
+                    "readiness_status", "action_ticket_eligible",
+                    "input_sha256", "expires_at",
+                },
+            )
+            if ticket_binding.get("ticket_schema") != "action-ticket/v1":
+                raise StateIntegrityError("authorization ticket binding schema is invalid")
+            if (
+                ticket_binding.get("closure_status") != "passed"
+                or ticket_binding.get("readiness_schema") != "release-readiness/v2"
+                or ticket_binding.get("readiness_kind") != "publication"
+                or ticket_binding.get("readiness_status") != "passed"
+                or ticket_binding.get("action_ticket_eligible") is not True
+            ):
+                raise StateIntegrityError(
+                    "action ticket requires passed candidate closure and publication readiness"
+                )
+            for key in ("repository_id", "release_version"):
+                _execution_id(
+                    ticket_binding.get(key),
+                    f"authorization_candidates.ticket_binding.{key}",
+                )
+            if not re.fullmatch(
+                r"[0-9a-f]{40}", str(ticket_binding.get("candidate_commit") or "")
+            ):
+                raise StateIntegrityError(
+                    "authorization ticket binding requires an exact candidate commit"
+                )
+            for key in ("closure_sha256", "readiness_sha256", "input_sha256"):
+                _execution_sha(ticket_binding.get(key), f"authorization_candidates.ticket_binding.{key}")
+            _execution_time(ticket_binding.get("expires_at"), "authorization_candidates.ticket_binding.expires_at")
+            if record.get("binding") != "deterministic":
+                raise StateIntegrityError("only deterministic authorization may carry an action ticket")
         candidate_ids.add(candidate_id)
 
     coverage = execution.get("coverage_manifest")
@@ -1387,16 +1451,20 @@ def validate_execution_state(execution: Any) -> None:
     if not isinstance(tickets, list) or len(tickets) > MAX_EXECUTION_TICKETS:
         raise StateIntegrityError("execution ticket limit exceeded")
     ticket_ids: set[str] = set()
-    namespaces: set[tuple[str, str, str, str, int]] = set()
     for raw in tickets:
         record = _require_record_keys(
             raw,
             field="action_tickets",
             required={
                 "id", "session_id", "turn_id", "actor_id", "tool_use_id",
+                "authorization_prompt_id", "authorization_prompt_sha256",
                 "contract_revision", "semantic_action_id", "canonical_target_id",
                 "write_surface_id", "input_sha256", "state", "reserved_at",
-                "expires_at", "settled_at",
+                "expires_at", "settled_at", "ticket_schema", "repository_id",
+                "candidate_commit", "release_version", "contract_sha256",
+                "closure_sha256", "readiness_sha256", "attempt_count",
+                "closure_status", "readiness_schema", "readiness_kind",
+                "readiness_status", "action_ticket_eligible",
             },
         )
         ticket_id = _execution_id(record["id"], "action_tickets.id")
@@ -1404,35 +1472,72 @@ def validate_execution_state(execution: Any) -> None:
             _execution_id(record[key], f"action_tickets.{key}")
             for key in (
                 "session_id", "turn_id", "actor_id", "tool_use_id", "semantic_action_id",
-                "canonical_target_id", "write_surface_id",
+                "canonical_target_id", "write_surface_id", "authorization_prompt_id",
             )
         ]
-        _execution_sha(record["input_sha256"], "action_tickets.input_sha256")
+        _execution_sha(
+            record["authorization_prompt_sha256"],
+            "action_tickets.authorization_prompt_sha256",
+        )
+        if record.get("ticket_schema") != "action-ticket/v1":
+            raise StateIntegrityError("execution ticket schema is invalid")
+        readiness_passed = (
+            record.get("closure_status") == "passed"
+            and record.get("readiness_schema") == "release-readiness/v2"
+            and record.get("readiness_kind") == "publication"
+            and record.get("readiness_status") == "passed"
+            and record.get("action_ticket_eligible") is True
+        )
+        legacy_terminal = (
+            record.get("state") in {"consumed", "invalidated", "expired"}
+            and record.get("closure_status") == "legacy_unverified"
+            and record.get("readiness_schema") == "legacy"
+            and record.get("readiness_kind") == "legacy"
+            and record.get("readiness_status") == "legacy_unverified"
+            and record.get("action_ticket_eligible") is False
+        )
+        if not readiness_passed and not legacy_terminal:
+            raise StateIntegrityError(
+                "execution ticket requires passed candidate closure and publication readiness"
+            )
+        for key in ("repository_id", "release_version"):
+            _execution_id(record[key], f"action_tickets.{key}")
+        if not legacy_terminal and not re.fullmatch(
+            r"[0-9a-f]{40}", str(record.get("candidate_commit") or "")
+        ):
+            raise StateIntegrityError(
+                "execution ticket requires an exact candidate commit"
+            )
+        for key in ("input_sha256", "contract_sha256", "closure_sha256", "readiness_sha256"):
+            _execution_sha(record[key], f"action_tickets.{key}")
         reserved_at = _execution_time(record["reserved_at"], "action_tickets.reserved_at")
         expires_at = _execution_time(record["expires_at"], "action_tickets.expires_at")
         settled_at = _execution_time(
             record["settled_at"], "action_tickets.settled_at", nullable=True
         )
         ticket_revision = record.get("contract_revision")
-        namespace = (ids[0], ids[1], ids[2], ids[3], ticket_revision)
         if (
             ticket_id in ticket_ids
-            or namespace in namespaces
             or not isinstance(ticket_revision, int)
             or ticket_revision < 1
             or record.get("state") not in TICKET_STATES
+            or not isinstance(record.get("attempt_count"), int)
+            or record["attempt_count"] < 0
         ):
             raise StateIntegrityError("execution ticket identity, namespace, revision, or state is invalid")
         if parse_time(expires_at) <= parse_time(reserved_at):
             raise StateIntegrityError("execution ticket lease must expire after reservation")
-        if record["state"] == "reserved" and record.get("settled_at") is not None:
-            raise StateIntegrityError("reserved execution ticket cannot be settled")
-        if record["state"] != "reserved" and record.get("settled_at") is None:
+        if record["state"] in {"reserved", "in_flight"} and record.get("settled_at") is not None:
+            raise StateIntegrityError("active execution ticket cannot be settled")
+        if record["state"] in {"consumed", "invalidated", "expired"} and record.get("settled_at") is None:
             raise StateIntegrityError("settled execution ticket needs a settlement timestamp")
+        if record["state"] == "reserved" and record.get("tool_use_id") != "unclaimed":
+            raise StateIntegrityError("reserved execution ticket must be unclaimed")
+        if record["state"] == "in_flight" and record.get("tool_use_id") == "unclaimed":
+            raise StateIntegrityError("in-flight execution ticket must bind a tool use")
         if settled_at is not None and parse_time(settled_at) < parse_time(reserved_at):
             raise StateIntegrityError("execution ticket cannot settle before reservation")
         ticket_ids.add(ticket_id)
-        namespaces.add(namespace)
 
     bounded_collections = {
         "denials": MAX_EXECUTION_TICKETS,
@@ -1665,20 +1770,48 @@ def adopt_execution_contract(
             for item in records
         ]
 
-    candidates = _manifest_records(
-        manifest.get("authorization_candidates"),
-        field="authorization_candidates",
-        required={
-            "id", "prompt_id", "prompt_sha256", "semantic_action_id",
-            "canonical_target_id", "write_surface_id", "binding",
-        },
-    )
+    raw_candidates = manifest.get("authorization_candidates")
+    if not isinstance(raw_candidates, list) or len(raw_candidates) > MAX_EXECUTION_RECORDS:
+        raise ValueError("execution contract manifest field authorization_candidates is invalid")
+    candidate_keys = {
+        "id", "prompt_id", "prompt_sha256", "semantic_action_id",
+        "canonical_target_id", "write_surface_id", "binding",
+    }
+    candidates: list[dict[str, Any]] = []
+    for raw_candidate in raw_candidates:
+        if (
+            not isinstance(raw_candidate, dict)
+            or not candidate_keys.issubset(raw_candidate)
+            or set(raw_candidate).difference(candidate_keys | {"ticket_binding"})
+        ):
+            raise ValueError(
+                "execution contract manifest field authorization_candidates has invalid keys"
+            )
+        candidates.append(dict(raw_candidate))
     normalized_candidates: list[dict[str, Any]] = []
     for item in candidates:
         binding = item.get("binding")
         if binding not in {"deterministic", "natural_language"}:
             raise ValueError("authorization candidate binding is invalid")
         active = binding == "deterministic"
+        ticket_binding = item.get("ticket_binding")
+        if ticket_binding is not None:
+            source_prompt = next(
+                (
+                    candidate_prompt
+                    for candidate_prompt in state.get("prompts", [])
+                    if isinstance(candidate_prompt, dict)
+                    and candidate_prompt.get("id") == item.get("prompt_id")
+                    and candidate_prompt.get("sha256") == item.get("prompt_sha256")
+                    and candidate_prompt.get("origin", "human") == "human"
+                    and candidate_prompt.get("authority", "user") == "user"
+                ),
+                None,
+            )
+            if source_prompt is None:
+                raise ValueError("action ticket authorization must bind an existing root-user prompt")
+            if not isinstance(ticket_binding, dict):
+                raise ValueError("action ticket binding must be an object")
         normalized_candidates.append(
             {
                 **item,
@@ -1755,6 +1888,49 @@ def adopt_execution_contract(
         "adopted_at": utc_now(),
     }
     transition_execution_contract(candidate_execution, "active", adoption=adoption)
+    contract_sha256 = str(candidate_execution["contract"]["canonical_sha256"])
+    for item in normalized_candidates:
+        binding = item.get("ticket_binding")
+        if item.get("state") != "active" or not isinstance(binding, dict):
+            continue
+        reserved_at = utc_now()
+        expires_at = str(binding.get("expires_at") or "")
+        if parse_time(expires_at) is None or parse_time(expires_at) <= parse_time(reserved_at):
+            raise ValueError("action ticket expiry must be in the future")
+        candidate_execution["action_tickets"].append(
+            {
+                "id": f"ticket-{item['id']}",
+                "ticket_schema": "action-ticket/v1",
+                "session_id": str(state["session"]["id"]),
+                "turn_id": str(item["prompt_id"]),
+                "actor_id": "root-user",
+                "authorization_prompt_id": str(item["prompt_id"]),
+                "authorization_prompt_sha256": str(item["prompt_sha256"]),
+                "tool_use_id": "unclaimed",
+                "contract_revision": revision,
+                "semantic_action_id": item["semantic_action_id"],
+                "canonical_target_id": item["canonical_target_id"],
+                "write_surface_id": item["write_surface_id"],
+                "repository_id": binding["repository_id"],
+                "candidate_commit": binding["candidate_commit"],
+                "release_version": binding["release_version"],
+                "contract_sha256": contract_sha256,
+                "closure_sha256": binding["closure_sha256"],
+                "readiness_sha256": binding["readiness_sha256"],
+                "closure_status": binding["closure_status"],
+                "readiness_schema": binding["readiness_schema"],
+                "readiness_kind": binding["readiness_kind"],
+                "readiness_status": binding["readiness_status"],
+                "action_ticket_eligible": binding["action_ticket_eligible"],
+                "input_sha256": binding["input_sha256"],
+                "state": "reserved",
+                "attempt_count": 0,
+                "reserved_at": reserved_at,
+                "expires_at": expires_at,
+                "settled_at": None,
+            }
+        )
+    validate_execution_state(candidate_execution)
     state["execution"] = candidate_execution
     return (
         f"Execution contract {contract_id} revision {revision} adopted explicitly; "
@@ -1817,7 +1993,11 @@ def transition_execution_ticket(
         raise ValueError(f"invalid execution ticket transition: {current} -> {next_state}")
     _execution_time(settled_at, "action_tickets.settled_at")
     ticket["state"] = next_state
-    ticket["settled_at"] = settled_at
+    if next_state == "reserved":
+        ticket["tool_use_id"] = "unclaimed"
+        ticket["settled_at"] = None
+    else:
+        ticket["settled_at"] = settled_at
     validate_execution_state(execution)
 
 
@@ -1830,8 +2010,8 @@ def expire_execution_tickets(execution: dict[str, Any], *, observed_at: str) -> 
     expired: list[str] = []
     for ticket in execution["action_tickets"]:
         expires_at = parse_time(ticket.get("expires_at"))
-        if ticket.get("state") == "reserved" and expires_at is not None and expires_at <= now:
-            ticket["state"] = "expired_unsettled"
+        if ticket.get("state") in {"reserved", "in_flight"} and expires_at is not None and expires_at <= now:
+            ticket["state"] = "expired"
             ticket["settled_at"] = observed_at
             expired.append(str(ticket["id"]))
     validate_execution_state(execution)
@@ -1839,7 +2019,7 @@ def expire_execution_tickets(execution: dict[str, Any], *, observed_at: str) -> 
 
 
 def validate_pre_tool_decision(decision: Any) -> None:
-    """Validate the future Phase-4 output subset without activating a Hook."""
+    """Validate the synchronous PreToolUse allow/deny output subset."""
     if not isinstance(decision, dict) or set(decision) != {"hookSpecificOutput"}:
         raise ValueError("PreToolUse decision must contain only hookSpecificOutput")
     output = decision.get("hookSpecificOutput")
@@ -1860,6 +2040,466 @@ def validate_pre_tool_decision(decision: Any) -> None:
         raise ValueError("PreToolUse allow reason is invalid")
 
 
+SHELL_TOOL_NAMES = {
+    "bash", "shell", "exec_command", "mcp_exec_command", "unified_exec",
+}
+APPLY_PATCH_TOOL_NAMES = {"apply_patch", "mcp_apply_patch"}
+
+
+def normalized_tool_name(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").lower()).strip("_")
+
+
+def pre_tool_input_sha256(tool_name: str, tool_input: Any) -> str:
+    return sha256_text(
+        canonical_json({"tool_name": tool_name, "tool_input": tool_input})
+    )
+
+
+def repository_identity(cwd: Any) -> str:
+    try:
+        resolved = str(Path(str(cwd or os.getcwd())).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        resolved = str(cwd or "unresolved")
+    return "repo-" + sha256_text(resolved)
+
+
+def repository_commit(cwd: Any) -> str:
+    root = str(cwd or os.getcwd())
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+        status = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain=v1", "--untracked-files=all"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unresolved"
+    value = result.stdout.strip().lower()
+    clean = status.returncode == 0 and not status.stdout.strip()
+    return (
+        value
+        if clean and result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", value)
+        else "unresolved"
+    )
+
+
+def _shell_command(tool_input: Any) -> str | None:
+    if isinstance(tool_input, str):
+        return tool_input
+    if isinstance(tool_input, dict):
+        for key in ("cmd", "command"):
+            value = tool_input.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def _command_tokens(command: str) -> list[str]:
+    try:
+        lexer = shlex.shlex(
+            command,
+            posix=os.name != "nt",
+            punctuation_chars=";&|()",
+        )
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        return list(lexer)
+    except ValueError:
+        return []
+
+
+SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", "&", "(", ")"}
+SHELL_WRAPPERS = {"bash", "dash", "ksh", "pwsh", "powershell", "sh", "zsh"}
+
+
+def _subcommands(tokens: list[str], executable: str) -> list[tuple[str, list[str]]]:
+    """Return every executable invocation instead of trusting the first one."""
+    invocations: list[tuple[str, list[str]]] = []
+    indices = [
+        index
+        for index, token in enumerate(tokens)
+        if Path(token).name.lower() == executable
+    ]
+    for position, start in enumerate(indices):
+        end = indices[position + 1] if position + 1 < len(indices) else len(tokens)
+        segment = tokens[start + 1 : end]
+        boundary = next(
+            (index for index, token in enumerate(segment) if token in SHELL_CONTROL_TOKENS),
+            len(segment),
+        )
+        segment = segment[:boundary]
+        index = 0
+        while index < len(segment) and segment[index].startswith("-"):
+            option = segment[index]
+            index += 2 if option in {"-C", "-c", "--git-dir", "--work-tree"} else 1
+        if index < len(segment):
+            invocations.append((segment[index].lower(), segment[index + 1 :]))
+    return invocations
+
+
+def _expanded_command_tokens(command: str, *, depth: int = 0) -> list[str]:
+    """Tokenize a command and boundedly inspect explicit shell ``-c`` wrappers."""
+    tokens = _command_tokens(command)
+    if depth >= 3:
+        return tokens
+    expanded = list(tokens)
+    for index, token in enumerate(tokens):
+        wrapper = Path(token).name.lower()
+        if wrapper not in SHELL_WRAPPERS:
+            continue
+        for option_index in range(index + 1, min(len(tokens), index + 5)):
+            option = tokens[option_index].lower()
+            if option in SHELL_CONTROL_TOKENS:
+                break
+            is_command_option = (
+                option in {"-c", "--command", "-command"}
+                or (option.startswith("-") and "c" in option[1:] and wrapper not in {"pwsh", "powershell"})
+            )
+            if is_command_option and option_index + 1 < len(tokens):
+                expanded.extend(
+                    _expanded_command_tokens(tokens[option_index + 1], depth=depth + 1)
+                )
+                break
+    return expanded
+
+
+def _first_version_token(values: list[str]) -> str | None:
+    for value in values:
+        candidate = value.removeprefix("refs/tags/")
+        if re.fullmatch(r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][A-Za-z0-9._-]+)?", candidate):
+            return candidate
+    return None
+
+
+def current_branch(cwd: Any) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd or os.getcwd()), "branch", "--show-current"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and EXECUTION_ID_RE.fullmatch(value) else "unknown"
+
+
+def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, str] | None:
+    tool_name = str(payload.get("tool_name") or "")
+    normalized = normalized_tool_name(tool_name)
+    tool_input = payload.get("tool_input")
+    input_sha = pre_tool_input_sha256(tool_name, tool_input)
+    action: dict[str, str] | None = None
+    if normalized in SHELL_TOOL_NAMES or normalized.endswith("_exec_command"):
+        command = _shell_command(tool_input)
+        if command is None:
+            return None
+        tokens = _expanded_command_tokens(command)
+        actions: list[dict[str, str]] = []
+        for git_command, git_args in _subcommands(tokens, "git"):
+            if git_command == "tag" and not any(
+                value in {"-d", "--delete", "-l", "--list", "-v", "--verify", "--contains", "--points-at"}
+                for value in git_args
+            ):
+                positional_tags = [value for value in git_args if not value.startswith("-")]
+                if positional_tags:
+                    tag = _first_version_token(git_args) or "unknown"
+                    actions.append({
+                        "tier": "A", "semantic_action_id": "release_tag_mutation",
+                        "canonical_target_id": f"tag:{tag}", "write_surface_id": "git_release_tag",
+                    })
+            elif git_command == "push":
+                version = _first_version_token(git_args)
+                if version is not None or "--tags" in git_args or any("refs/tags/" in value for value in git_args):
+                    tag = version or "all"
+                    actions.append({
+                        "tier": "A", "semantic_action_id": "release_tag_push",
+                        "canonical_target_id": f"tag:{tag}", "write_surface_id": "git_remote_tag",
+                    })
+                else:
+                    positional = [value for value in git_args if not value.startswith("-")]
+                    remote = positional[0] if positional else "unknown"
+                    ref = positional[1] if len(positional) > 1 else current_branch(payload.get("cwd"))
+                    semantic = "remote_push"
+                    if any(value in {"--force", "--force-with-lease", "-f"} or value.startswith("+") for value in git_args):
+                        semantic = "force_push"
+                    elif "--delete" in git_args or any(value.startswith(":") for value in git_args):
+                        semantic = "remote_branch_delete"
+                    actions.append({
+                        "tier": "B", "semantic_action_id": semantic,
+                        "canonical_target_id": f"remote:{remote}:{ref.lstrip(':')}",
+                        "write_surface_id": "git_remote_branch",
+                    })
+        for gh_command, gh_args in _subcommands(tokens, "gh"):
+            if gh_command != "release" or not gh_args:
+                continue
+            verb = gh_args[0].lower()
+            if verb in {"create", "edit", "delete", "upload"}:
+                target = _first_version_token(gh_args[1:]) or next(
+                    (value for value in gh_args[1:] if not value.startswith("-")),
+                    "unknown",
+                )
+                actions.append({
+                    "tier": "A", "semantic_action_id": f"github_release_{verb}",
+                    "canonical_target_id": f"release:{target}",
+                    "write_surface_id": "github_release",
+                })
+        lowered = [
+            token if token in SHELL_CONTROL_TOKENS else Path(token).name.lower()
+            for token in tokens
+        ]
+        registry_pairs = {
+            ("npm", "publish"), ("npm", "unpublish"),
+            ("cargo", "publish"), ("cargo", "yank"),
+            ("gem", "push"), ("gem", "yank"),
+            ("docker", "push"), ("twine", "upload"),
+        }
+        for left, right in zip(lowered, lowered[1:]):
+            if (left, right) in registry_pairs:
+                semantic = f"{left}_{right}"
+                actions.append({
+                    "tier": "A", "semantic_action_id": f"registry_{semantic}",
+                    "canonical_target_id": f"registry:{semantic}",
+                    "write_surface_id": "package_registry",
+                    "release_version": "unresolved",
+                })
+        if len(actions) == 1:
+            action = actions[0]
+        elif len(actions) > 1:
+            action = {
+                "tier": "A" if any(item["tier"] == "A" for item in actions) else "B",
+                "semantic_action_id": "compound_remote_mutation",
+                "canonical_target_id": f"compound:{sha256_text(canonical_json(actions))}",
+                "write_surface_id": "multiple_remote_surfaces",
+                "release_version": "unresolved",
+            }
+    if action is None:
+        joined = normalized
+        mcp_actions = {
+            "create_release": "github_release_create",
+            "update_release": "github_release_edit",
+            "delete_release": "github_release_delete",
+            "publish_package": "registry_publish_package",
+            "yank_package": "registry_yank_package",
+        }
+        for marker, semantic in mcp_actions.items():
+            if joined == marker or joined.endswith("_" + marker):
+                action = {
+                    "tier": "A", "semantic_action_id": semantic,
+                    "canonical_target_id": f"tool-target:{sha256_text(canonical_json(tool_input))}",
+                    "write_surface_id": "remote_release_api",
+                    "release_version": "unresolved",
+                }
+                break
+    if action is None:
+        return None
+    if "release_version" not in action:
+        target_value = action["canonical_target_id"].split(":", 1)[-1]
+        action["release_version"] = target_value if target_value != "unknown" else "unresolved"
+    return {
+        **action,
+        "input_sha256": input_sha,
+        "repository_id": repository_identity(payload.get("cwd")),
+        "candidate_commit": repository_commit(payload.get("cwd")),
+    }
+
+
+def _pre_tool_decision(permission: str, reason: str | None = None) -> dict[str, Any]:
+    output: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": permission,
+    }
+    if reason:
+        output["permissionDecisionReason"] = bounded(reason, 500)
+    decision = {"hookSpecificOutput": output}
+    validate_pre_tool_decision(decision)
+    return decision
+
+
+def _prompt_authorizes_b_action(prompt_text_value: str, action: dict[str, str]) -> bool:
+    text = authoritative_supersession_text(prompt_text_value)
+    patterns = {
+        "remote_push": re.compile(r"\bpush\b|推送", re.I),
+        "force_push": re.compile(r"\bforce[- ]?push\b|强制推送", re.I),
+        "remote_branch_delete": re.compile(r"(?:delete|remove).{0,24}(?:remote\s+branch)|删除.{0,12}远程分支", re.I),
+    }
+    pattern = patterns.get(action["semantic_action_id"])
+    if pattern is None:
+        return False
+    raw_target_parts = action["canonical_target_id"].split(":")[1:]
+    if not raw_target_parts or any(
+        part in {"", "unknown", "HEAD"} for part in raw_target_parts
+    ):
+        return False
+    target_parts = raw_target_parts
+    for clause in re.split(r"[\n.!?。！？;；,，]", text):
+        if not pattern.search(clause) or CLAUSE_NEGATION_RE.search(clause):
+            continue
+        if target_parts and all(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(part)}(?![A-Za-z0-9_.-])", clause) for part in target_parts):
+            return True
+    return False
+
+
+def _active_work_unit_kind(state: dict[str, Any]) -> str | None:
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    for unit in state.get("work_units", []):
+        if isinstance(unit, dict) and unit.get("id") == active:
+            return str(unit.get("kind") or "")
+    return None
+
+
+def _matching_action_ticket(
+    state: dict[str, Any], action: dict[str, str]
+) -> dict[str, Any] | None:
+    if not re.fullmatch(r"[0-9a-f]{40}", action.get("candidate_commit", "")):
+        return None
+    execution = state.get("execution", {})
+    contract = execution.get("contract", {}) if isinstance(execution, dict) else {}
+    if contract.get("state") != "active":
+        return None
+    now = utc_now()
+    expire_execution_tickets(execution, observed_at=now)
+    for ticket in execution.get("action_tickets", []):
+        if not isinstance(ticket, dict) or ticket.get("state") != "reserved":
+            continue
+        if (
+            ticket.get("repository_id") == action["repository_id"]
+            and (
+                ticket.get("candidate_commit") != action["candidate_commit"]
+                or ticket.get("contract_revision") != contract.get("revision")
+                or ticket.get("contract_sha256") != contract.get("canonical_sha256")
+            )
+        ):
+            ticket["state"] = "invalidated"
+            ticket["settled_at"] = now
+            continue
+        exact = (
+            ticket.get("ticket_schema") == "action-ticket/v1"
+            and ticket.get("contract_revision") == contract.get("revision")
+            and ticket.get("contract_sha256") == contract.get("canonical_sha256")
+            and ticket.get("semantic_action_id") == action["semantic_action_id"]
+            and ticket.get("canonical_target_id") == action["canonical_target_id"]
+            and ticket.get("write_surface_id") == action["write_surface_id"]
+            and ticket.get("repository_id") == action["repository_id"]
+            and ticket.get("candidate_commit") == action["candidate_commit"]
+            and (
+                action["release_version"] == "unresolved"
+                or ticket.get("release_version") == action["release_version"]
+            )
+            and ticket.get("input_sha256") == action["input_sha256"]
+        )
+        if exact:
+            return ticket
+    return None
+
+
+def handle_pre_tool(
+    session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
+    if state.get("mode", {}).get("manual_off"):
+        return {}
+    require_usable_state(state)
+    normalized = normalized_tool_name(payload.get("tool_name"))
+    if _active_work_unit_kind(state) == "cleanup" and (
+        normalized in APPLY_PATCH_TOOL_NAMES or normalized.endswith("_apply_patch")
+    ):
+        return _pre_tool_decision(
+            "deny",
+            "The active work unit is cleanup-only; product edits require a separate root-user authorization.",
+        )
+    effective_payload = dict(payload)
+    effective_payload.setdefault("cwd", state.get("session", {}).get("cwd"))
+    action = classify_pre_tool_action(effective_payload)
+    if action is None:
+        return {}
+    if action["tier"] == "B":
+        prompt_value = latest_requirement_text(session_dir, state)
+        if _prompt_authorizes_b_action(prompt_value, action):
+            return _pre_tool_decision("allow", "Exact root-user remote target authorization matched.")
+        return _pre_tool_decision(
+            "deny",
+            "Shared remote mutation requires an explicit root-user action and exact remote/ref target.",
+        )
+    ticket = _matching_action_ticket(state, action)
+    if ticket is None:
+        save_state(session_dir, state)
+        return _pre_tool_decision(
+            "deny",
+            "Release/public identity mutation requires an exact unexpired action-ticket/v1 bound to the active candidate.",
+        )
+    tool_use_id = str(payload.get("tool_use_id") or payload.get("toolUseId") or "")
+    if not EXECUTION_ID_RE.fullmatch(tool_use_id):
+        return _pre_tool_decision("deny", "High-risk tool use has no valid tool-use identity.")
+    ticket["state"] = "in_flight"
+    ticket["tool_use_id"] = tool_use_id
+    ticket["attempt_count"] += 1
+    save_state(session_dir, state)
+    return _pre_tool_decision("allow", "Exact one-shot action ticket matched this release mutation.")
+
+
+def settle_pre_tool_ticket(state: dict[str, Any], payload: dict[str, Any], outcome: str) -> None:
+    tool_use_id = str(payload.get("tool_use_id") or payload.get("toolUseId") or "")
+    if not tool_use_id:
+        return
+    execution = state.get("execution")
+    if not isinstance(execution, dict):
+        return
+    for ticket in execution.get("action_tickets", []):
+        if not isinstance(ticket, dict) or ticket.get("state") != "in_flight":
+            continue
+        if ticket.get("tool_use_id") != tool_use_id:
+            continue
+        if outcome == "success":
+            ticket["state"] = "consumed"
+            ticket["settled_at"] = utc_now()
+        elif outcome == "failed":
+            ticket["state"] = "reserved"
+            ticket["tool_use_id"] = "unclaimed"
+            ticket["settled_at"] = None
+        else:
+            # An ambiguous result may already have produced the external side
+            # effect. Never make that uncertainty replayable.
+            ticket["state"] = "invalidated"
+            ticket["settled_at"] = utc_now()
+        validate_execution_state(execution)
+        return
+
+
+def benchmark_pre_action_authorization(event: dict[str, Any]) -> str:
+    if event.get("risk_tier") != "A":
+        return "allow_neutral"
+    if (
+        event.get("execution_contract_state") == "active"
+        and event.get("action_ticket_state") == "valid"
+        and event.get("input_matches") is True
+    ):
+        return "allow_exact_ticket"
+    return "deny_high_risk_action_without_ticket"
+
+
+def benchmark_supersession_attribution(event: dict[str, Any]) -> str:
+    if event.get("supersession_phrase_origin") in {"quoted", "quoted_or_annotated", "attributed"}:
+        return "preserve_prior_requirement"
+    return "supersede_explicit_target" if event.get("explicit_target_count") == 1 else "preserve_prior_requirement"
+
+
+def benchmark_scope_transition_authority(event: dict[str, Any]) -> str:
+    if event.get("authorized_work_unit") == "merge_cleanup" and event.get("attempted_transition") == "new_product_repair" and not event.get("separate_authorization"):
+        return "deny_unapproved_scope_transition"
+    return "allow_neutral"
+
+
 def execution_state_is_dormant(execution: Any) -> bool:
     return isinstance(execution, dict) and canonical_json(execution) == canonical_json(dormant_execution_state())
 
@@ -1878,9 +2518,52 @@ def project_state_to_schema6(state: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def validate_work_units(state: dict[str, Any]) -> None:
+    units = state.get("work_units")
+    sequence = state.get("work_unit_sequence")
+    if not isinstance(units, list) or len(units) > MAX_EXECUTION_RECORDS:
+        raise StateIntegrityError("private work-unit ledger exceeds its record limit")
+    if not isinstance(sequence, int) or sequence < 0:
+        raise StateIntegrityError("private work-unit sequence is invalid")
+    ids: set[str] = set()
+    for raw in units:
+        record = _require_record_keys(
+            raw,
+            field="work_units",
+            required={
+                "id", "protocol_version", "prompt_id", "parent_id", "kind",
+                "status", "created_at", "closed_at", "scope_sha256",
+            },
+        )
+        unit_id = str(record.get("id") or "")
+        if not re.fullmatch(r"WU\d{4,}", unit_id) or unit_id in ids:
+            raise StateIntegrityError("private work-unit identity is invalid")
+        if record.get("protocol_version") != WORK_UNIT_PROTOCOL_VERSION:
+            raise StateIntegrityError("private work-unit protocol is invalid")
+        _execution_id(record.get("prompt_id"), "work_units.prompt_id")
+        parent = record.get("parent_id")
+        if parent is not None and parent not in ids:
+            raise StateIntegrityError("private work-unit parent must precede its child")
+        if record.get("kind") not in {"legacy", "general", "planning", "implementation", "cleanup", "release"}:
+            raise StateIntegrityError("private work-unit kind is invalid")
+        if record.get("status") not in {"active", "passed", "superseded"}:
+            raise StateIntegrityError("private work-unit status is invalid")
+        _execution_time(record.get("created_at"), "work_units.created_at")
+        _execution_time(record.get("closed_at"), "work_units.closed_at", nullable=True)
+        _execution_sha(record.get("scope_sha256"), "work_units.scope_sha256")
+        if record.get("status") == "passed" and record.get("closed_at") is None:
+            raise StateIntegrityError("passed work unit requires closed_at")
+        ids.add(unit_id)
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    if active is not None and active not in ids:
+        raise StateIntegrityError("active work-unit id is unknown")
+    if sequence < len(ids):
+        raise StateIntegrityError("private work-unit sequence trails its records")
+
+
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, 3, 4, 5, 6, READ_ONLY_COMPATIBILITY_SCHEMA, SCHEMA_VERSION}:
+    if version not in {1, 2, 3, 4, 5, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -1894,13 +2577,19 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
             "evidence_sequence",
             "completion_attempt",
             "work_state",
+            "work_units",
+            "work_unit_sequence",
             "agents",
             "execution",
         }
     elif version == 2:
-        required = STATE_REQUIRED_KEYS - {"integrity", "work_state", "agents", "execution"}
+        required = STATE_REQUIRED_KEYS - {
+            "integrity", "work_state", "work_units", "work_unit_sequence", "agents", "execution"
+        }
     elif version == 3:
-        required = STATE_REQUIRED_KEYS - {"decision_log", "execution"}
+        required = STATE_REQUIRED_KEYS - {
+            "decision_log", "execution", "work_units", "work_unit_sequence"
+        }
     elif version == 5:
         required = STATE_REQUIRED_KEYS - {
             "assets",
@@ -1908,9 +2597,14 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
             "proofs",
             "proof_sequence",
             "execution",
+            "work_units",
+            "work_unit_sequence",
         }
-    elif version in {4, 6, READ_ONLY_COMPATIBILITY_SCHEMA}:
-        required = STATE_REQUIRED_KEYS - {"execution", "adapter_manifest", "classifier_metadata", "pending", "prompt_journal"}
+    elif version in {4, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS}:
+        required = STATE_REQUIRED_KEYS - {
+            "execution", "adapter_manifest", "classifier_metadata", "pending",
+            "prompt_journal", "work_units", "work_unit_sequence",
+        }
     else:
         required = STATE_REQUIRED_KEYS
     missing = sorted(required - set(state))
@@ -1938,11 +2632,18 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         "open_items",
         "compactions",
         "decision_log",
+        "work_units",
     ):
         if key in state and not isinstance(state.get(key), list):
             raise StateIntegrityError(f"private state field {key} must be a list")
     if version == SCHEMA_VERSION:
         validate_execution_state(state.get("execution"))
+        validate_work_units(state)
+        work_unit_ids = {
+            str(item.get("id"))
+            for item in state.get("work_units", [])
+            if isinstance(item, dict)
+        }
         asset_ids: set[str] = set()
         for asset in state.get("assets", []):
             if (
@@ -1963,6 +2664,9 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
             for item in state.get(collection, []):
                 contract = item.get("verification_contract") if isinstance(item, dict) else None
                 if (
+                    not isinstance(item, dict)
+                    or item.get("work_unit_id") not in work_unit_ids
+                    or
                     not isinstance(contract, dict)
                     or contract.get("protocol_version") != PROOF_PROTOCOL_VERSION
                     or contract.get("mode") not in {"enforced", "legacy_fallback"}
@@ -2083,7 +2787,10 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "proof_sequence": 0,
         "work_state": {
             "plan_snapshot": None,
+            "active_work_unit_id": None,
         },
+        "work_units": [],
+        "work_unit_sequence": 0,
         "agents": [],
         "open_items": [],
         "compactions": [],
@@ -2110,6 +2817,61 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def migrate_execution_state(execution: Any) -> dict[str, Any]:
+    if not isinstance(execution, dict):
+        return dormant_execution_state()
+    protocol = execution.get("protocol_version")
+    if protocol == EXECUTION_PROTOCOL_VERSION:
+        return execution
+    if protocol != "1.0.0":
+        raise StateIntegrityError("unsupported execution protocol during schema migration")
+    migrated = json.loads(canonical_json(execution))
+    migrated["protocol_version"] = EXECUTION_PROTOCOL_VERSION
+    contract = migrated.get("contract", {})
+    for candidate in contract.get("authorization_candidates", []):
+        if isinstance(candidate, dict):
+            candidate.setdefault("ticket_binding", None)
+    contract_sha = str(contract.get("canonical_sha256") or ("0" * 64))
+    state_map = {
+        "reserved": "invalidated",
+        "consumed": "consumed",
+        "failed": "invalidated",
+        "expired_unsettled": "expired",
+    }
+    migrated_tickets: list[dict[str, Any]] = []
+    for ticket in migrated.get("action_tickets", []):
+        if not isinstance(ticket, dict):
+            continue
+        item = dict(ticket)
+        item.update(
+            {
+                "ticket_schema": "action-ticket/v1",
+                "repository_id": "legacy-unbound",
+                "candidate_commit": "legacy-unbound",
+                "release_version": "legacy-unbound",
+                "authorization_prompt_id": str(item.get("turn_id") or "legacy-turn"),
+                "authorization_prompt_sha256": "0" * 64,
+                "contract_sha256": contract_sha,
+                "closure_sha256": "0" * 64,
+                "readiness_sha256": "0" * 64,
+                "closure_status": "legacy_unverified",
+                "readiness_schema": "legacy",
+                "readiness_kind": "legacy",
+                "readiness_status": "legacy_unverified",
+                "action_ticket_eligible": False,
+                "attempt_count": 0,
+                "state": state_map.get(str(ticket.get("state")), "invalidated"),
+            }
+        )
+        if item["state"] in {"invalidated", "expired"} and item.get("settled_at") is None:
+            item["settled_at"] = utc_now()
+        migrated_tickets.append(item)
+    migrated["action_tickets"] = migrated_tickets
+    if isinstance(contract, dict):
+        contract["canonical_sha256"] = contract_content_hash(contract)
+    return migrated
+
+
 def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     version = state.get("schema_version")
     if version == 1:
@@ -2133,7 +2895,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["status"] = "pending"
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
-    elif version not in {2, 3, 4, 5, 6, READ_ONLY_COMPATIBILITY_SCHEMA, SCHEMA_VERSION}:
+    elif version not in {2, 3, 4, 5, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS, SCHEMA_VERSION}:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
@@ -2162,7 +2924,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             item.setdefault("observed_outcome", outcome)
             migrated_decisions.append(item)
         state["decision_log"] = migrated_decisions[-DECISION_LOG_LIMIT:]
-    if version in {1, 2, 3, 4, 5, 6, READ_ONLY_COMPATIBILITY_SCHEMA}:
+    if version in {1, 2, 3, 4, 5, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS}:
         # Turn tokens and partially staged controls are intentionally ephemeral.
         # Preserve the durable ledger/history while requiring a fresh protocol
         # token after a schema upgrade.
@@ -2193,9 +2955,35 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     state.setdefault("asset_sequence", 0)
     state.setdefault("proofs", [])
     state.setdefault("proof_sequence", 0)
-    work_state = state.setdefault("work_state", {"plan_snapshot": None})
+    work_state = state.setdefault(
+        "work_state", {"plan_snapshot": None, "active_work_unit_id": None}
+    )
     if isinstance(work_state, dict):
         work_state.setdefault("plan_snapshot", None)
+        work_state.setdefault("active_work_unit_id", None)
+    state.setdefault("work_units", [])
+    state.setdefault("work_unit_sequence", 0)
+    if version in {1, 2, 3, 4, 5, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS}:
+        if state["requirements"] or state["acceptance_items"]:
+            state["work_unit_sequence"] = 1
+            state["work_units"] = [
+                {
+                    "id": "WU0001",
+                    "protocol_version": WORK_UNIT_PROTOCOL_VERSION,
+                    "prompt_id": state["prompts"][-1]["id"] if state["prompts"] else "P0001",
+                    "parent_id": None,
+                    "kind": "legacy",
+                    "status": "active",
+                    "created_at": state.get("session", {}).get("created_at") or utc_now(),
+                    "closed_at": None,
+                    "scope_sha256": sha256_text("legacy-migrated-work-unit"),
+                }
+            ]
+            work_state["active_work_unit_id"] = "WU0001"
+            for collection in ("requirements", "acceptance_items"):
+                for item in state[collection]:
+                    if isinstance(item, dict):
+                        item.setdefault("work_unit_id", "WU0001")
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
     attempt = state.get("completion_attempt")
@@ -2211,7 +2999,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             attempt.setdefault("staged_at", None)
     state.setdefault("continuation_attempts", 0)
     state.setdefault("decision_log", [])
-    state.setdefault("execution", dormant_execution_state())
+    state["execution"] = migrate_execution_state(state.get("execution"))
     state.setdefault("adapter_manifest", json.loads(canonical_json(ADAPTER_MANIFEST)))
     state.setdefault("classifier_metadata", {
         "version": CLASSIFIER_VERSION,
@@ -3783,7 +4571,8 @@ def _signal_outside_quotes(clause: str) -> bool:
 
 
 def append_requirement(
-    state: dict[str, Any], prompt: dict[str, Any], text: str, asset_ids: list[str] | None = None
+    state: dict[str, Any], prompt: dict[str, Any], text: str,
+    asset_ids: list[str] | None = None, *, work_unit_id: str | None = None,
 ) -> str:
     requirement_id = f"R{len(state['requirements']) + 1:03d}"
     # One clause derivation feeds both the requirement record and the enforced
@@ -3801,6 +4590,7 @@ def append_requirement(
         {
             "id": requirement_id,
             "prompt_id": prompt["id"],
+            "work_unit_id": work_unit_id,
             "text": bounded(text, 900),
             "sha256": prompt["sha256"],
             "status": "pending",
@@ -3826,7 +4616,8 @@ def append_requirement(
 
 
 def append_acceptance(
-    state: dict[str, Any], prompt_id: str, text: str, asset_ids: list[str] | None = None
+    state: dict[str, Any], prompt_id: str, text: str,
+    asset_ids: list[str] | None = None, *, work_unit_id: str | None = None,
 ) -> None:
     existing = {item["text"] for item in state["acceptance_items"]}
     for candidate in extract_acceptance(text):
@@ -3837,6 +4628,7 @@ def append_acceptance(
             {
                 "id": acceptance_id,
                 "prompt_id": prompt_id,
+                "work_unit_id": work_unit_id,
                 "text": candidate,
                 "status": "pending",
                 "evidence": [],
@@ -3848,7 +4640,110 @@ def append_acceptance(
         existing.add(candidate)
 
 
+def work_unit_kind(text: str) -> str:
+    """Classify only the root user's stated unit; this never expands scope."""
+    authoritative = authoritative_supersession_text(text)
+    cleanup = bool(re.search(r"\b(?:cleanup|clean up|tidy|prune)\b|(?:清理|收尾|整理)", authoritative, re.I))
+    product_change = bool(
+        re.search(r"\b(?:implement|fix|repair|build|change)\b|(?:实现|修复|改动|开发)", authoritative, re.I)
+    )
+    if cleanup and not product_change:
+        return "cleanup"
+    if re.search(r"\b(?:release|publish|tag)\b|(?:发布|发版|打\s*tag)", authoritative, re.I):
+        return "release"
+    if product_change:
+        return "implementation"
+    if re.search(r"\b(?:plan|design|spec)\b|(?:计划|设计|方案)", authoritative, re.I):
+        return "planning"
+    return "general"
+
+
+def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -> str:
+    state["work_unit_sequence"] = int(state.get("work_unit_sequence", 0)) + 1
+    unit_id = f"WU{state['work_unit_sequence']:04d}"
+    parent_id = state.get("work_state", {}).get("active_work_unit_id")
+    kind = work_unit_kind(text)
+    scope = {
+        "prompt_sha256": prompt["sha256"],
+        "parent_id": parent_id,
+        "kind": kind,
+    }
+    state.setdefault("work_units", []).append(
+        {
+            "id": unit_id,
+            "protocol_version": WORK_UNIT_PROTOCOL_VERSION,
+            "prompt_id": prompt["id"],
+            "parent_id": parent_id,
+            "kind": kind,
+            "status": "active",
+            "created_at": utc_now(),
+            "closed_at": None,
+            "scope_sha256": sha256_text(canonical_json(scope)),
+        }
+    )
+    state.setdefault("work_state", {})["active_work_unit_id"] = unit_id
+    return unit_id
+
+
+def work_unit_relations(state: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
+    """Return current unit, its descendants, and its ancestor constraints."""
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    if not isinstance(active, str):
+        return set(), set(), set()
+    units = {
+        str(item.get("id")): item
+        for item in state.get("work_units", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if active not in units:
+        return set(), set(), set()
+    descendants = {active}
+    changed = True
+    while changed:
+        changed = False
+        for unit_id, item in units.items():
+            if item.get("parent_id") in descendants and unit_id not in descendants:
+                descendants.add(unit_id)
+                changed = True
+    ancestors: set[str] = set()
+    parent = units[active].get("parent_id")
+    while isinstance(parent, str) and parent in units and parent not in ancestors:
+        ancestors.add(parent)
+        parent = units[parent].get("parent_id")
+    return {active}, descendants, ancestors
+
+
+def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]]:
+    _current, descendants, ancestors = work_unit_relations(state)
+    if not descendants:
+        all_ids = {
+            str(item["id"])
+            for collection in ("requirements", "acceptance_items")
+            for item in state.get(collection, [])
+            if isinstance(item, dict) and item.get("status") != "superseded"
+        }
+        return all_ids, set()
+    scoped = {
+        str(item["id"])
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict)
+        and item.get("status") != "superseded"
+        and item.get("work_unit_id") in descendants
+    }
+    ancestor_constraints = {
+        str(item["id"])
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict)
+        and item.get("status") != "superseded"
+        and item.get("work_unit_id") in ancestors
+    }
+    return scoped, ancestor_constraints
+
+
 def has_positive_supersession_intent(text: str) -> bool:
+    text = authoritative_supersession_text(text)
     positive = False
     negated = False
     for match in SUPERSESSION_INTENT_RE.finditer(text):
@@ -3860,37 +4755,69 @@ def has_positive_supersession_intent(text: str) -> bool:
     return positive and not negated
 
 
-def record_supersession(state: dict[str, Any], text: str, new_requirement_id: str) -> None:
-    if len(state["requirements"]) < 2:
-        return
-    if not has_positive_supersession_intent(text):
-        return
-    known_ids = {item["id"] for item in state["requirements"]}
+def authoritative_supersession_text(text: str) -> str:
+    """Remove quoted, attributed, and code material before authority parsing."""
+    stripped = re.sub(r"```.*?```", " ", text, flags=re.S)
+    stripped = re.sub(r"`[^`\n]*`", " ", stripped)
+    stripped = ATTRIBUTED_SUPERSESSION_BLOCK_RE.sub(" ", stripped)
+    stripped = ATTRIBUTED_SUPERSESSION_LINE_RE.sub(" ", stripped)
+    stripped = _QUOTED_SPAN_RE.sub(" ", stripped)
+    return stripped
+
+
+def supersession_target(
+    text: str, known_ids: set[str], new_requirement_id: str
+) -> str | None:
+    authoritative = authoritative_supersession_text(text)
+    if not has_positive_supersession_intent(authoritative):
+        return None
     explicit = list(
         dict.fromkeys(
             item.upper()
-            for item in re.findall(r"\bR\d{3}\b", text, re.I)
+            for item in re.findall(r"\bR\d{3}\b", authoritative, re.I)
             if item.upper() in known_ids and item.upper() != new_requirement_id
         )
     )
-    if len(explicit) > 1:
-        return
-    target = explicit[0] if explicit else state["requirements"][-2]["id"]
+    if len(explicit) == 1:
+        return explicit[0]
+    if explicit or not EXPLICIT_PREVIOUS_REQUIREMENT_RE.search(authoritative):
+        return None
+    candidates = sorted(
+        (item for item in known_ids if item != new_requirement_id),
+        key=lambda item: int(item[1:]),
+    )
+    return candidates[-1] if candidates else None
+
+
+def record_supersession(
+    state: dict[str, Any], text: str, new_requirement_id: str
+) -> str | None:
+    if len(state["requirements"]) < 2:
+        return None
+    known_ids = {item["id"] for item in state["requirements"]}
+    target = supersession_target(text, known_ids, new_requirement_id)
+    if target is None:
+        return (
+            "ambiguous"
+            if has_positive_supersession_intent(text)
+            else None
+        )
     if target == new_requirement_id:
-        return
+        return "ambiguous"
     if target not in known_ids:
-        return
+        return "ambiguous"
     state["supersedes"].append(
         {
             "old_id": target,
             "new_id": new_requirement_id,
             "created_at": utc_now(),
-            "reason": bounded(text, 400),
+            "reason": bounded(authoritative_supersession_text(text), 400),
         }
     )
     for item in state["requirements"]:
         if item["id"] == target:
             item["status"] = "superseded"
+    return "superseded"
 
 
 def prompt_records_from_disk(session_dir: Path) -> list[dict[str, Any]]:
@@ -3982,8 +4909,13 @@ def replay_prompt_record(
         state["mode"]["manual_off"] = True
     if is_control_prompt(text):
         return
-    requirement_id = append_requirement(state, metadata, text, [])
-    append_acceptance(state, metadata["id"], text, [])
+    work_unit_id = append_work_unit(state, metadata, text)
+    requirement_id = append_requirement(
+        state, metadata, text, [], work_unit_id=work_unit_id
+    )
+    append_acceptance(
+        state, metadata["id"], text, [], work_unit_id=work_unit_id
+    )
     record_supersession(state, text, requirement_id)
     score, reasons = score_complexity(text)
     goal_requested = bool(re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE))
@@ -4750,15 +5682,16 @@ def completion_command_context(
     proof_command = shell_join(
         [sys.executable, script, "register-proof", *common, "--manifest", "/path/to/proof.json"]
     )
+    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
     requirement_ids = [
         item["id"]
         for item in state["requirements"]
-        if item.get("status") != "superseded"
+        if item.get("status") != "superseded" and item["id"] in scoped_ids
     ]
     acceptance_ids = [
         item["id"]
         for item in state["acceptance_items"]
-        if item.get("status") != "superseded"
+        if item.get("status") != "superseded" and item["id"] in scoped_ids
     ]
     return (
         "Context Guard is active. Keep completion metadata private: never append "
@@ -4781,9 +5714,11 @@ def completion_command_context(
         "For an enforced verification contract, register each immutable proof "
         "manifest before staging the checkpoint with this command:\n"
         f"{proof_command}\n"
-        "Previously passed items are carried forward automatically. "
+        "Previously passed items in the current work-unit closure are carried "
+        "forward automatically; ancestor requirements remain constraints. "
         f"Tracked requirements: {','.join(requirement_ids) or 'none'}; "
-        f"acceptance: {','.join(acceptance_ids) or 'none'}."
+        f"acceptance: {','.join(acceptance_ids) or 'none'}; "
+        f"ancestor constraints: {','.join(sorted(ancestor_ids)) or 'none'}."
     )
 
 
@@ -5349,7 +6284,7 @@ def derive_ordinary_proofs(state: dict[str, Any]) -> list[dict[str, Any]]:
     return derived
 
 
-def checkpoint_status_snapshot(state: dict[str, Any], turn_id: str) -> dict[str, Any]:
+def checkpoint_status_snapshot_full(state: dict[str, Any], turn_id: str) -> dict[str, Any]:
     successful = [
         {
             "id": item["id"],
@@ -5445,13 +6380,113 @@ def checkpoint_status_snapshot(state: dict[str, Any], turn_id: str) -> dict[str,
     }
 
 
+def checkpoint_status_snapshot(
+    state: dict[str, Any], turn_id: str, *, full: bool = False,
+    item_id: str | None = None, after_revision: str | None = None,
+) -> dict[str, Any]:
+    """Return a bounded work-unit view; full/item modes are explicit audits."""
+    revision = str(state.get("content_hash") or state_content_hash(state))
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    if after_revision is not None and hmac.compare_digest(after_revision, revision):
+        return {
+            "unchanged": True,
+            "revision": revision,
+            "active_work_unit_id": active,
+        }
+    detailed = checkpoint_status_snapshot_full(state, turn_id)
+    detailed.update(
+        {
+            "revision": revision,
+            "work_unit_protocol_version": WORK_UNIT_PROTOCOL_VERSION,
+            "active_work_unit_id": active,
+        }
+    )
+    if item_id is not None:
+        normalized = item_id.upper()
+        matches = [
+            item
+            for key in ("requirements", "acceptance")
+            for item in detailed[key]
+            if item.get("id") == normalized
+        ]
+        if not matches:
+            raise ValueError(f"unknown checkpoint item {normalized}")
+        return {
+            "turn_id": turn_id,
+            "revision": revision,
+            "active_work_unit_id": active,
+            "item": matches[0],
+        }
+    if full:
+        detailed["mode"] = "full"
+        return detailed
+
+    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
+    items = [
+        item
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict)
+        and item.get("status") != "superseded"
+        and item.get("id") in scoped_ids
+    ]
+    successful = [
+        {
+            "id": item["id"],
+            "tool": bounded(item.get("tool", "unknown"), 80),
+            "summary": bounded(item.get("summary", ""), 160),
+        }
+        for item in state.get("evidence", [])
+        if isinstance(item, dict) and item.get("outcome") == "success"
+    ][-8:]
+    counts = {
+        "requirements": sum(str(item.get("id", "")).startswith("R") for item in items),
+        "acceptance": sum(str(item.get("id", "")).startswith("A") for item in items),
+        "pending": sum(item.get("status") not in {"pass", "superseded"} for item in items),
+        "passed": sum(item.get("status") == "pass" for item in items),
+        "ancestor_constraints": len(ancestor_ids),
+    }
+    return {
+        "turn_id": turn_id,
+        "revision": revision,
+        "mode": "current_work_unit",
+        "work_unit_protocol_version": WORK_UNIT_PROTOCOL_VERSION,
+        "active_work_unit_id": active,
+        "counts": counts,
+        "item_ids_sha256": sha256_text(
+            canonical_json(sorted(str(item["id"]) for item in items))
+        ),
+        "items": [
+            {
+                "id": item["id"],
+                "status": item.get("status", "pending"),
+                "summary": bounded(item.get("text", ""), 180),
+            }
+            for item in items[:12]
+        ],
+        "items_truncated": len(items) > 12,
+        "ancestor_constraint_ids": sorted(ancestor_ids),
+        "successful_evidence_count": sum(
+            item.get("outcome") == "success"
+            for item in state.get("evidence", [])
+            if isinstance(item, dict)
+        ),
+        "recent_successful_evidence": successful,
+    }
+
+
 def private_checkpoint(
     state: dict[str, Any],
     requirement_assignments: dict[str, list[str]],
     acceptance_assignments: dict[str, list[str]],
 ) -> dict[str, Any]:
+    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
+    _current, scope_units, _ancestors = work_unit_relations(state)
     checkpoint: dict[str, Any] = {
         "status": "complete",
+        "work_unit_id": state.get("work_state", {}).get("active_work_unit_id"),
+        "scope_unit_ids": sorted(scope_units),
+        "ancestor_constraints": sorted(ancestor_ids),
         "requirements": {},
         "acceptance": {},
         "open_items": [],
@@ -5465,10 +6500,11 @@ def private_checkpoint(
         "acceptance_items": "acceptance",
     }
     for collection in ("requirements", "acceptance_items"):
+        constrained_ids = scoped_ids | ancestor_ids
         known_ids = {
             item["id"]
             for item in state[collection]
-            if item.get("status") != "superseded"
+            if item.get("status") != "superseded" and item["id"] in constrained_ids
         }
         unknown = set(supplied[collection]).difference(known_ids)
         if unknown:
@@ -5477,7 +6513,7 @@ def private_checkpoint(
             )
         output = checkpoint[output_keys[collection]]
         for item in state[collection]:
-            if item.get("status") == "superseded":
+            if item.get("status") == "superseded" or item["id"] not in constrained_ids:
                 continue
             evidence_ids = supplied[collection].get(item["id"])
             if evidence_ids is None and item.get("status") == "pass":
@@ -5491,13 +6527,18 @@ def private_checkpoint(
 
 
 def checkpoint_status(
-    root: Path, session_id: str, turn_id: str, token: str
+    root: Path, session_id: str, turn_id: str, token: str, *,
+    full: bool = False, item_id: str | None = None,
+    after_revision: str | None = None,
 ) -> dict[str, Any]:
     session_dir = root / "sessions" / safe_session_id(session_id)
     state = load_state(session_dir, {"session_id": session_id})
     require_usable_state(state)
     completion_attempt_for(state, turn_id, token)
-    return checkpoint_status_snapshot(state, turn_id)
+    return checkpoint_status_snapshot(
+        state, turn_id, full=full, item_id=item_id,
+        after_revision=after_revision,
+    )
 
 
 def clear_pending_request(
@@ -5776,13 +6817,18 @@ def handle_user_prompt(
         export_requested = False
     if not is_control_prompt(text):
         state["continuation_attempts"] = 0
-        requirement_id = append_requirement(state, prompt, text, asset_ids)
+        work_unit_id = append_work_unit(state, prompt, text)
+        requirement_id = append_requirement(
+            state, prompt, text, asset_ids, work_unit_id=work_unit_id
+        )
         acceptance_count = len(state["acceptance_items"])
-        append_acceptance(state, prompt["id"], text, asset_ids)
+        append_acceptance(
+            state, prompt["id"], text, asset_ids, work_unit_id=work_unit_id
+        )
         new_acceptance_ids = [
             item["id"] for item in state["acceptance_items"][acceptance_count:]
         ]
-        record_supersession(state, text, requirement_id)
+        supersession_result = record_supersession(state, text, requirement_id)
         score, reasons = score_complexity(text)
         goal_requested = bool(
             re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE)
@@ -5811,6 +6857,11 @@ def handle_user_prompt(
                 f"Context Guard is active. This turn added requirement {requirement_id} "
                 f"and acceptance IDs {acceptance_note}. Preserve these IDs."
             )
+            if supersession_result == "ambiguous":
+                context += (
+                    " Supersession target is ambiguous; prior requirements remain "
+                    "active. Ask the root user to identify one exact requirement ID."
+                )
     needs_private_completion = (
         state["mode"]["active"]
         and not state["mode"]["manual_off"]
@@ -6535,6 +7586,8 @@ def parse_stage_request_from_tool(
 def handle_post_tool(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
+    outcome, outcome_basis = tool_outcome_details(payload)
+    settle_pre_tool_ticket(state, payload, outcome)
     if state["mode"]["active"]:
         require_usable_state(state)
         # Codex may persist attachment metadata only after UserPromptSubmit.
@@ -6542,7 +7595,6 @@ def handle_post_tool(
         # an available prompt asset cannot remain an accidental fallback.
         reconcile_transcript_assets(state, payload, trigger="post_tool")
         tool_name = str(payload.get("tool_name") or "unknown-tool")
-        outcome, outcome_basis = tool_outcome_details(payload)
         control_intent = private_control_command_intent(payload)
         if control_intent:
             try:
@@ -6670,6 +7722,8 @@ def handle_post_tool(
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
         trim_evidence(state)
+        save_state(session_dir, state)
+    else:
         save_state(session_dir, state)
     return {}
 
@@ -6889,6 +7943,14 @@ def checkpoint_issues(
     top_status = checkpoint.get("status")
     if top_status != "complete":
         issues.append(f"top-level status must be complete, got {top_status!r}")
+    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
+    _current, scope_units, _ancestors = work_unit_relations(state)
+    if checkpoint.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id"):
+        issues.append("checkpoint work-unit identity is stale")
+    if checkpoint.get("scope_unit_ids") != sorted(scope_units):
+        issues.append("checkpoint work-unit closure is stale")
+    if checkpoint.get("ancestor_constraints") != sorted(ancestor_ids):
+        issues.append("checkpoint ancestor constraints are stale")
     evidence_by_id = {
         item["id"]: item
         for item in state["evidence"]
@@ -6902,10 +7964,11 @@ def checkpoint_issues(
         if not isinstance(reported, dict):
             issues.append(f"missing {key} status map")
             continue
+        constrained_ids = scoped_ids | ancestor_ids
         expected_ids = {
             item["id"]
             for item in state[collection]
-            if item.get("status") != "superseded"
+            if item.get("status") != "superseded" and item["id"] in constrained_ids
         }
         unknown_ids = set(reported).difference(expected_ids)
         if unknown_ids:
@@ -6914,7 +7977,7 @@ def checkpoint_issues(
             )
         for item in state[collection]:
             item_id = item["id"]
-            if item.get("status") == "superseded":
+            if item.get("status") == "superseded" or item_id not in constrained_ids:
                 continue
             value = reported.get(item_id)
             if not isinstance(value, dict):
@@ -7005,12 +8068,18 @@ def apply_checkpoint(
                 continue
             item["status"] = "pass"
             item["evidence"] = list(value.get("evidence", []))
-    open_items = checkpoint.get("open_items")
-    state["open_items"] = [bounded(item, 500) for item in open_items] if isinstance(open_items, list) else []
+    scope_units = set(checkpoint.get("scope_unit_ids", []))
+    closed_at = utc_now()
+    for unit in state.get("work_units", []):
+        if isinstance(unit, dict) and unit.get("id") in scope_units:
+            unit["status"] = "passed"
+            unit["closed_at"] = closed_at
+    state["open_items"] = open_item_ids(state)
     state["completion_checkpoint"] = {
-        "created_at": utc_now(),
+        "created_at": closed_at,
         "turn_id": turn_id,
         "status": "complete",
+        "work_unit_id": checkpoint.get("work_unit_id"),
         "sha256": sha256_text(canonical_json(checkpoint)),
     }
     state["completion_attempt"] = None
@@ -7036,6 +8105,19 @@ def terminal_stop_policy(
         "continue": "yield_continue_advisory",
         None: "yield_default",
     }[declared_disposition]
+
+
+def disposition_matches_observed(
+    declared_disposition: str | None, observed_outcome: str
+) -> bool:
+    if declared_disposition in {None, "continue"}:
+        return True
+    expected = {
+        "user_wait": "allow_user_handoff",
+        "external_wait": "allow_external_wait",
+        "deferred": "allow_out_of_scope_deferred",
+    }
+    return expected.get(declared_disposition) == observed_outcome
 
 
 def handle_stop(
@@ -7187,6 +8269,26 @@ def handle_stop(
         and declared_disposition == "deferred"
         and deferred_bindings
     )
+    if (
+        not issues
+        and declared_disposition is not None
+        and not disposition_matches_observed(
+            declared_disposition, str(observed.get("outcome") or "")
+        )
+    ):
+        issues.append("declared disposition does not match the observed ownership boundary")
+        decision.update(
+            {
+                "outcome": observed["outcome"],
+                "reason_codes": [
+                    "disposition_observation_mismatch",
+                    f"declared_{declared_disposition}",
+                    f"observed_{observed['outcome']}",
+                ],
+                "decision_source": "protocol_disposition_validation",
+                "declared_disposition": declared_disposition,
+            }
+        )
     policy = (
         None
         if issues
@@ -7990,6 +9092,7 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         state = load_state(session_dir, payload)
         handlers = {
             "UserPromptSubmit": handle_user_prompt,
+            "PreToolUse": handle_pre_tool,
             "PostToolUse": handle_post_tool,
             "PreCompact": handle_pre_compact,
             "SessionStart": handle_session_start,
@@ -8023,6 +9126,11 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                     "private validation failed."
                 ),
             }
+        if event == "PreToolUse":
+            return _pre_tool_decision(
+                "deny",
+                "Context Guard failed closed while validating this pre-action authorization.",
+            )
         return {"systemMessage": f"Context Guard {event or 'hook'} warning: {message}"}
 
 
@@ -8136,6 +9244,9 @@ def command_checkpoint_status(args: argparse.Namespace) -> int:
             args.session_id,
             args.turn_id,
             args.token,
+            full=args.full,
+            item_id=args.item,
+            after_revision=args.after_revision,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
@@ -8218,6 +9329,7 @@ def command_self_test() -> int:
     config = read_json(hooks)
     expected = {
         "UserPromptSubmit",
+        "PreToolUse",
         "PostToolUse",
         "PreCompact",
         "SessionStart",
@@ -8296,6 +9408,11 @@ def main() -> int:
                 choices=tuple(DISPOSITION_REASONS),
             )
             command.add_argument("--replace", action="store_true")
+        elif name == "checkpoint-status":
+            mode = command.add_mutually_exclusive_group()
+            mode.add_argument("--full", action="store_true")
+            mode.add_argument("--item")
+            command.add_argument("--after-revision")
     args = parser.parse_args()
     if args.command == "hook":
         return command_hook()

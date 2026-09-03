@@ -159,6 +159,25 @@ def main() -> int:
         if "Context Guard is active" not in root_context:
             raise RuntimeError("complex root prompt did not activate protection")
 
+        pre_tool = hook(
+            runtime,
+            environment,
+            payload(
+                "PreToolUse",
+                "turn-root",
+                tool_name="exec_command",
+                tool_use_id="release-tool-without-ticket",
+                tool_input={"cmd": "git tag v9.9.9"},
+            ),
+        )
+        pre_tool_output = pre_tool.get("hookSpecificOutput", {})
+        if (
+            pre_tool_output.get("permissionDecision") != "deny"
+            or "action-ticket/v1"
+            not in str(pre_tool_output.get("permissionDecisionReason") or "")
+        ):
+            raise RuntimeError("PreToolUse did not fail closed without an action ticket")
+
         hook(
             runtime,
             environment,
@@ -310,7 +329,7 @@ def main() -> int:
                 "Stop",
                 "turn-root",
                 last_assistant_message=(
-                    "Please complete the required account step and then reply."
+                    "Please configure the required account publisher, then respond."
                 ),
             ),
         )
@@ -413,13 +432,35 @@ def main() -> int:
         ]
         stage_arguments.extend(
             argument
-            for item in snapshot["requirements"]
-            for argument in ("--requirement", f"{item['id']}={evidence_id}")
+            for item_id in (
+                [
+                    item["id"]
+                    for item in snapshot["items"]
+                    if item["id"].startswith("R")
+                ]
+                + [
+                    item_id
+                    for item_id in snapshot["ancestor_constraint_ids"]
+                    if item_id.startswith("R")
+                ]
+            )
+            for argument in ("--requirement", f"{item_id}={evidence_id}")
         )
         stage_arguments.extend(
             argument
-            for item in snapshot["acceptance"]
-            for argument in ("--acceptance", f"{item['id']}={evidence_id}")
+            for item_id in (
+                [
+                    item["id"]
+                    for item in snapshot["items"]
+                    if item["id"].startswith("A")
+                ]
+                + [
+                    item_id
+                    for item_id in snapshot["ancestor_constraint_ids"]
+                    if item_id.startswith("A")
+                ]
+            )
+            for argument in ("--acceptance", f"{item_id}={evidence_id}")
         )
         staged = run(stage_arguments, environment=environment)
         hook(
@@ -502,7 +543,7 @@ def main() -> int:
         "SMOKE_PASS context-guard installed lifecycle: "
         f"schema{expected_schema}/proof-1.0.0, private disposition consumption, plan mirror, delegated "
         "authority, bounded agent result, unknown-text exclusion, binary "
-        "omission, compaction recovery, and private completion gate"
+        "omission, pre-action denial, compaction recovery, and private completion gate"
     )
     return 0
 

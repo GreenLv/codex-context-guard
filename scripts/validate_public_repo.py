@@ -8,9 +8,10 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.10.0"
-SCHEMA_VERSION = 8
-STOP_PROTOCOL_VERSION = "2.0.0"
+VERSION = "0.11.0"
+SCHEMA_VERSION = 9
+STOP_PROTOCOL_VERSION = "2.1.0"
+EXECUTION_PROTOCOL_VERSION = "2.0.0"
 CLASSIFIER_VERSION = "2.4.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
@@ -23,6 +24,7 @@ DISPOSITION_REASONS = {
 REPOSITORY = "https://github.com/GreenLv/codex-context-guard"
 HOOK_EVENTS = {
     "UserPromptSubmit",
+    "PreToolUse",
     "PostToolUse",
     "PreCompact",
     "SessionStart",
@@ -219,7 +221,7 @@ def validate(root: Path) -> list[str]:
     try:
         hooks = json.loads((root / "hooks" / "hooks.json").read_text())["hooks"]
         if set(hooks) != HOOK_EVENTS:
-            errors.append("hooks.json must define the exact eight-event lifecycle")
+            errors.append("hooks.json must define the exact nine-event lifecycle")
         posix_commands: list[str] = []
         windows_commands: list[str] = []
         for event, groups in hooks.items():
@@ -261,7 +263,7 @@ def validate(root: Path) -> list[str]:
                         )
         if len(set(posix_commands)) != 1 or len(set(windows_commands)) != 1:
             errors.append(
-                "all eight Hook events must share one POSIX and one Windows "
+                "all nine Hook events must share one POSIX and one Windows "
                 "fallback command shape"
             )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -276,7 +278,7 @@ def validate(root: Path) -> list[str]:
             errors.append(f"private state schema must be version {SCHEMA_VERSION}")
         if "decision_log" not in schema.get("required", []):
             errors.append("private state schema must require the bounded decision log")
-        for field in ("assets", "asset_sequence", "proofs", "proof_sequence"):
+        for field in ("assets", "asset_sequence", "proofs", "proof_sequence", "work_units", "work_unit_sequence"):
             if field not in schema.get("required", []):
                 errors.append(f"private state schema must require {field}")
         completion_attempt = properties.get("completion_attempt", {})
@@ -330,6 +332,7 @@ def validate(root: Path) -> list[str]:
             "STOP_PROTOCOL_VERSION": STOP_PROTOCOL_VERSION,
             "CLASSIFIER_VERSION": CLASSIFIER_VERSION,
             "PROOF_PROTOCOL_VERSION": PROOF_PROTOCOL_VERSION,
+            "EXECUTION_PROTOCOL_VERSION": EXECUTION_PROTOCOL_VERSION,
             "DISPOSITION_REASONS": DISPOSITION_REASONS,
         }
         for name, expected in expected_literals.items():

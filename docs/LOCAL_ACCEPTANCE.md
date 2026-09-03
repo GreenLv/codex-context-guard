@@ -1,8 +1,30 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current published release is `0.10.0`; accepted `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current source candidate is unreleased `0.11.0`; the current published release is `0.10.0`. Accepted releases include `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
+
+## 0.11.0 source-candidate validation (2026-09-03)
+
+The 0.11.0 working tree is an unreleased source candidate. It adds schema 9,
+Execution protocol 2.0.0, Stop protocol 2.1.0, `work-unit/v1`, and the ninth
+Hook event, `PreToolUse`. Focused and complete source-suite results are recorded
+only after the commands complete successfully; they do not establish installed
+or native-platform acceptance.
+
+The following gates remain explicitly unperformed: managed installation,
+installed-byte parity, fresh-task `PreToolUse` and action-ticket validation,
+native macOS Hook acceptance, native Windows Hook acceptance, CI, tag,
+GitHub Release, and public readback. The source-validation phase does not
+authorize or perform any of those actions.
+
+| Source-candidate gate | Evidence | Status |
+| --- | --- | --- |
+| Complete source suite | 410 tests with 9 capability-aware platform skips on Python 3.12.2 | passed |
+| Repository and public-tree contracts | `validate_public_repo.py`, `audit_public_tree.py`, JSON schema parsing, external-cache compilation, and `git diff --check` | passed |
+| Hook bundle and lint | source self-test reports exactly 9 Hook events; Ruff 0.16.1 passes with cache disabled | passed |
+| Public incident benchmark | Stop 2.1.0 / Execution 2.0.0 passes 8/8 reviewed fixtures with zero false continuations and diagnostic accuracy 1.0 | passed |
+| Public taxonomy coverage | 8 of 12 taxonomy roots have reviewed public fixtures; the four new roots remain intentionally private-only pending human review | bounded, not a failure |
 
 ## 0.10.0 release acceptance (2026-09-03)
 

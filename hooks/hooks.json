@@ -14,6 +14,20 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'p=${PLUGIN_ROOT##*/}; f=\"$PLUGIN_ROOT/scripts/run_context_guard.sh\"; if [ ! -f \"$f\" ]; then b=\"${CODEX_HOME:-$HOME/.codex}/plugins/cache/codex-context-guard/context-guard\"; n=\"\"; nm=0; nn=0; nc=0; for d in \"$b\"/*/scripts/run_context_guard.sh; do [ -f \"$d\" ] || continue; r=${d%/scripts/run_context_guard.sh}; v=${r##*/}; case $v in \"\"|*[!0-9.]*) continue;; esac; case $v in .*|*.|*..*) continue;; esac; [ ${#v} -le 16 ] || continue; o=$IFS; IFS=.; set -- $v; IFS=$o; [ $# -eq 3 ] || continue; case $1 in \"\"|*[!0-9]*|0?*) continue;; esac; case $2 in \"\"|*[!0-9]*|0?*) continue;; esac; case $3 in \"\"|*[!0-9]*|0?*) continue;; esac; [ -L \"$r\" ] || [ -L \"$d\" ] && continue; if [ \"$v\" = \"$p\" ]; then f=\"$d\"; break; fi; if [ -z \"$n\" ] || [ \"$1\" -gt \"$nm\" ] || { [ \"$1\" -eq \"$nm\" ] && [ \"$2\" -gt \"$nn\" ]; } || { [ \"$1\" -eq \"$nm\" ] && [ \"$2\" -eq \"$nn\" ] && [ \"$3\" -gt \"$nc\" ]; }; then nm=$1; nn=$2; nc=$3; n=\"$d\"; fi; done; if [ ! -f \"$f\" ]; then f=\"$n\"; fi; fi; if [ ! -f \"$f\" ]; then printf \"%s\\n\" \"Context Guard Hook tree not found under PLUGIN_ROOT or the managed plugin cache; reinstall Context Guard with scripts/manage_plugin.py --apply.\" >&2; exit 2; fi; exec sh \"$f\" hook'",
+            "commandWindows": "$ErrorActionPreference='Stop'; $script='scripts\\run-context-guard.ps1'; $leaf=if($env:PLUGIN_ROOT){Split-Path -Leaf $env:PLUGIN_ROOT}; $f=if($env:PLUGIN_ROOT){Join-Path $env:PLUGIN_ROOT $script}; if(-not ($f -and (Test-Path -LiteralPath $f))){ $homes=@($env:CODEX_HOME); if($env:USERPROFILE){$homes+=(Join-Path $env:USERPROFILE '.codex')}; $rootHome=$homes|Where-Object{$_}|Select-Object -First 1; $dirs=@(); if($rootHome){ $base=Join-Path $rootHome 'plugins\\cache\\codex-context-guard\\context-guard'; $dirs=@(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$' -and -not $_.LinkType }) } $pick=$null; foreach($dir in $dirs){ if($dir.Name -eq $leaf){ $pick=$dir; break } } if(-not $pick){ $pick=$dirs|Sort-Object {[version]$_.Name}|Select-Object -Last 1 } $f=if($pick){Join-Path $pick.FullName $script} }; if(-not ($f -and (Test-Path -LiteralPath $f))){ [Console]::Error.WriteLine('Context Guard Hook tree not found under PLUGIN_ROOT or the managed plugin cache; reinstall Context Guard with scripts/manage_plugin.py --apply.'); exit 2 }; & $f hook",
+            "timeout": 10,
+            "statusMessage": "Context Guard is checking pre-action authorization"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "*",

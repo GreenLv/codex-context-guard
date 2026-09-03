@@ -94,8 +94,19 @@ cancel, or supersede root requirements.
 Supersession is append-only. A later instruction records which earlier item it
 replaces; it does not rewrite the earlier record. Negated or ambiguous
 supersession language fails closed and leaves the existing requirement active.
+Before attribution, quoted spans, blockquotes, code, reply annotations,
+attributed text, and system-added text are removed. Only an unquoted explicit
+root-user correction with one unique target can supersede an existing item; the
+runtime never falls back to “the previous requirement” when the target is
+ambiguous.
 
 ### L2: bounded work state and evidence
+
+Each non-control root-user prompt appends one `work-unit/v1` record. Completion
+closes only the current unit and its descendants, while related ancestor
+requirements remain constraints. A cleanup unit records its bounded purpose and
+cannot silently transition into product repair, expanded validation, or remote
+mutation.
 
 The latest successful native `update_plan` call is mirrored into
 `work_state.plan_snapshot`. Failed plan updates do not replace the last usable
@@ -126,8 +137,10 @@ prompt during `PostToolUse`; `PreCompact` and compact/resume `SessionStart`
 remain forced recovery opportunities. Only prompt IDs and bounded scan state
 are persisted.
 
-Schema 7 retains that completion and proof ledger and adds storage for adopted
-project instructions and execution plans. Until the root user explicitly adopts
+Schema 9 retains that completion and proof ledger, accepts schema 7 and 8 only
+as read-only migration inputs, and adds append-only work units plus active
+release-action ticket state. It also keeps storage for adopted project
+instructions and execution plans. Until the root user explicitly adopts
 a deterministic, project-relative manifest, that storage does not affect the
 task. It keeps bounded instruction-source metadata, contract hashes, phase/gate
 state, authorization candidates, drift markers, exact-host coverage, ticket
@@ -135,6 +148,28 @@ namespaces, unified-exec sessions, and delegated actor bindings. Natural-languag
 candidates cannot activate a contract or grant authority. Optional native-plan
 binding compares semantic digests and marks changed bindings for review; the
 plan mirror remains read-only.
+
+### L2.1: synchronous pre-action authorization
+
+`PreToolUse` classifies covered mutations into three tiers. A-tier release
+identity changes (release-tag creation or push, registry publish/yank, and
+GitHub Release create/update/delete/upload) require one exact, unexpired
+`action-ticket/v1`. The ticket binds repository, commit, tag/version,
+`candidate-closure/v1`, passing publication `release-readiness/v2`, normalized
+tool input, contract revision, authorization source, and expiry. It is reserved
+for one tool-use identity, consumed after success, returned to reserved only
+after a failed identical call, and invalidated by candidate or contract drift.
+
+B-tier ordinary remote push, force-push, and remote-branch deletion requires
+the latest root-user prompt to name both the action and exact remote/ref target;
+quoted or attributed text and delegated authority do not count. C-tier local
+edits, tests, ordinary commits, and proven-redundant local worktree cleanup are
+not hard-gated. A cleanup work unit still denies a product edit until a separate
+root-user work unit authorizes it.
+
+This Hook is a strong guardrail rather than a complete security boundary.
+Platform approvals remain authoritative, and specialized tools that do not
+emit Codex Hook events remain listed coverage gaps.
 
 ### L3: delegated-agent provenance
 
@@ -203,7 +238,7 @@ checkpoint covering every non-superseded requirement and acceptance item.
 Staging the same control is idempotent, a different control conflicts, and an
 intentional change requires `--replace`.
 
-Stop protocol 2.0.0 treats terminal controls as a protocol-authoritative safety lattice.
+Stop protocol 2.1.0 treats terminal controls as a protocol-authoritative safety lattice.
 `user_wait`, `external_wait`, and `deferred` describe safe handoff boundaries.
 The legacy `continue` value remains accepted for protocol compatibility but is
 advisory only: assistant work continues through tool calls before a terminal
@@ -221,7 +256,7 @@ priority over the receipt. A request observed only in assistant text, tool
 input, or an unsuccessful/unmatched tool result cannot stage anything, and no
 control command is recorded as requirement-closing evidence.
 
-Stop protocol 2.0.0 applies this fixed priority:
+Stop protocol 2.1.0 applies this fixed priority:
 
 1. private-state and prompt-boundary integrity are verified first;
 2. leaked private checkpoint/disposition metadata fails closed;
@@ -231,9 +266,10 @@ Stop protocol 2.0.0 applies this fixed priority:
    partial or invalid checkpoint blocks;
 5. explicit user persistence blocks a terminal yield unless the next priority
    establishes a genuine unavailable boundary;
-6. `user_wait` and `external_wait` yield with requirements still pending;
-   `deferred` also yields when persistence is absent, or when the hash-verified
-   prompt denies or excludes the specific action identified as deferred; and
+6. `user_wait`, `external_wait`, and `deferred` yield only when their declared
+   owner, authorization, and dependency type agrees with the observed facts;
+   an assistant declaration cannot erase authorized remaining work or a
+   high-risk drift; and
 7. legacy `continue`, no staged control, or a terminal-control mismatch yields
    safely and leaves every unresolved requirement pending.
 
@@ -251,6 +287,7 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | Event | Purpose | Visible context |
 | --- | --- | --- |
 | `UserPromptSubmit` | journal prompt, classify authority, capture prompt assets, and update requirements/contracts/revisions | activation/status and bounded completion instructions |
+| `PreToolUse` | classify A/B/C risk, deny unmatched release/public mutations, reserve exact one-shot tickets, and prevent cleanup-to-product-edit transitions | bounded allow/deny reason |
 | `PostToolUse` | record bounded evidence/assets/capabilities, observe successful `update_plan`, and authoritatively stage a verified private control request | none |
 | `PreCompact` | validate state and write recovery snapshot | continue/fail-closed result |
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
@@ -261,14 +298,14 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 
 ## Private state
 
-Schema 7 contains all schema-6 task, evidence, proof, and completion fields,
-plus:
+Schema 9 contains the prior task, evidence, proof, and completion fields, plus:
 
 - bounded instruction-source metadata and canonical contract digests;
 - contract, phase, gate, authorization-candidate, drift, and exact-host
   coverage records;
-- dormant ticket namespaces, unified-exec session metadata, and delegated actor
-  bindings; and
+- `work-unit/v1` parentage and prompt bindings; active `action-ticket/v1`
+  identities, candidate-closure/readiness/input digests, lifecycle state, and
+  expiry; unified-exec session metadata; and delegated actor bindings; and
 - optional semantic native-plan binding with stale-state propagation.
 
 The retained schema-6 task ledger contains:
@@ -292,12 +329,15 @@ The retained schema-6 task ledger contains:
   prompt/reply SHA-256, and no raw reply text;
 - integrity status and a canonical content hash.
 
-Writes are atomic. Session operations use a cross-platform lock. State is
+Default checkpoint status is scoped to the current work unit and its
+descendants and preserves ancestor requirements as constraints. Explicit
+`--full` and `--item` modes provide audit detail; a repeated revision returns a
+constant-size unchanged receipt. Writes are atomic. Session operations use a cross-platform lock. State is
 validated before use; corrupted state is preserved for diagnosis and rebuilt
 only from hash-verified prompt records. Reconstructed requirements return to
 pending because prior evidence cannot be silently re-trusted. Schema 1, 2, 3,
-and 4 migrate through schema 5 and schema 6 to schema 7 while preserving the
-durable ledger.
+and 4 migrate through schema 5 and schema 6 to schema 9 while preserving the
+durable ledger. Schema 7 and schema 8 are read-only compatible inputs.
 Existing schema-5 items are marked `legacy_fallback`; migration never invents
 retroactive proof obligations. Migration
 deliberately discards any in-flight completion attempt, token, or staged control

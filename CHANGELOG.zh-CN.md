@@ -4,6 +4,25 @@
 
 以下版本从新到旧排列，未发布候选会明确标注。`0.10.0` 是当前最新正式版本，实现基线为提交 `e4fccf690bcbc2be79d0b8d42a1a269f87072120`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 0.11.0 - 未发布源码候选
+
+### 重点
+
+- 同步 `PreToolUse` Hook 会在 A 级发布身份变更前核对精确、未过期、一次性的 `action-ticket/v1`。ticket 绑定仓库、commit、发布身份、候选闭包、readiness 结果和规范化工具输入；成功后消费，失败时只允许相同输入在过期前重试。
+- Stop 会把 `user_wait`、`external_wait` 和 `deferred` 与观察到的 owner、authorization 和依赖事实核对。引文、归因文本、代码和回复注释不能触发需求替代。
+- append-only `work-unit/v1` 把完成范围绑定到当前工作单元及其后代，并继续保留祖先约束。默认 checkpoint status 有严格边界；`--full`、`--item` 和基于 revision 的 unchanged 读回提供显式审计入口。
+
+### 变更
+
+- Schema 9 新增工作单元；Execution protocol 2.0.0 新增 ticket 绑定和生命周期；Stop protocol 2.1.0 校验声明的 disposition；Hook wire 新增 `PreToolUse`，共九个事件。
+- 私有 incident schema 新增执行前授权、Stop disposition、需求替代归因和范围转换 taxonomy。benchmark 按协议面分派，并单独报告公开回归覆盖率，不再要求每个 private taxonomy 都有公开 fixture。
+- 修复前已在 Git 外建立四条脱敏的私有 `documented_only` 记录。记录不含原任务 ID、transcript、完整 prompt 或私有路径，也没有把真实事故直接导出为公开 fixture。
+
+### 验证
+
+- 源码回归覆盖 A/B/C 风险级别、ticket 重试/消费、Stop disposition 不匹配、引文误替代、cleanup 范围跳转、incident runner 分派、工作单元闭包，以及 100+ 条目下小于 4 KiB 的默认 status 和常数级 unchanged 响应。
+- 这不是发布验收声明。0.11.0 的受管安装、fresh-task Hook/ticket 验收、macOS 原生验收、Windows 原生验收、CI、tag、GitHub Release 和公开读回均未执行。
+
 ## 0.10.0 - 2026-09-03
 
 ### 重点

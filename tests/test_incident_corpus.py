@@ -215,9 +215,73 @@ class IncidentCorpusTests(unittest.TestCase):
     def test_public_fixture_contract_and_taxonomy(self) -> None:
         tool = load_tool()
         fixtures = json.loads(FIXTURES.read_text(encoding="utf-8"))
-        self.assertEqual({item["root_cause"] for item in fixtures}, tool.ROOT_CAUSES)
+        self.assertTrue({item["root_cause"] for item in fixtures}.issubset(tool.ROOT_CAUSES))
+        self.assertIn("pre_action_authorization", tool.ROOT_CAUSES)
         for fixture in fixtures:
             self.assertEqual(tool.validate_record(fixture, public=True), [])
+
+    def test_v2_private_record_requires_bounded_authorization_metadata(self) -> None:
+        tool = load_tool()
+        fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))[0]
+        fixture.update(
+            {
+                "record_schema": "incident-corpus/v2",
+                "root_cause": "pre_action_authorization",
+                "protocol_surface": "pre_action_authorization",
+                "execution_contract_state": "absent",
+                "action_ticket_state": "absent",
+                "tool_input_sha256": "f" * 64,
+                "incident_group_sha256": "e" * 64,
+                "reproduction_status": "documented_only",
+            }
+        )
+        self.assertEqual(tool.validate_record(fixture), [])
+        public = {key: value for key, value in fixture.items() if key in tool.PUBLIC_FIELDS}
+        self.assertNotIn("incident_group_sha256", public)
+        self.assertEqual(tool.validate_record(public, public=True), [])
+
+    def test_v2_fields_without_schema_fail_closed(self) -> None:
+        tool = load_tool()
+        fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))[0]
+        fixture["protocol_surface"] = "stop"
+        self.assertIn(
+            "v2 incident fields require record_schema incident-corpus/v2",
+            tool.validate_record(fixture),
+        )
+
+    def test_benchmark_dispatches_non_stop_protocol_surfaces(self) -> None:
+        tool = load_tool()
+        runtime = tool.load_runtime(RUNTIME)
+        base = json.loads(FIXTURES.read_text(encoding="utf-8"))[0]
+        cases = (
+            (
+                "pre_action_authorization",
+                {"risk_tier": "A", "execution_contract_state": "absent", "action_ticket_state": "absent", "input_matches": False},
+                "deny_high_risk_action_without_ticket",
+            ),
+            (
+                "supersession_attribution",
+                {"supersession_phrase_origin": "quoted", "explicit_target_count": 1},
+                "preserve_prior_requirement",
+            ),
+            (
+                "scope_transition_authority",
+                {"authorized_work_unit": "merge_cleanup", "attempted_transition": "new_product_repair", "separate_authorization": False},
+                "deny_unapproved_scope_transition",
+            ),
+        )
+        for fixture_kind, event, expected in cases:
+            with self.subTest(fixture_kind=fixture_kind):
+                fixture = dict(base)
+                fixture.update(
+                    {
+                        "fixture_kind": fixture_kind,
+                        "minimal_event": event,
+                        "expected_authoritative_outcome": expected,
+                    }
+                )
+                result = tool.benchmark_fixture(runtime, fixture)
+                self.assertTrue(result["pass"], result)
 
     def test_current_runtime_passes_public_benchmark_without_false_continuation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -242,9 +306,9 @@ class IncidentCorpusTests(unittest.TestCase):
             self.assertEqual(
                 [item.name for item in generated],
                 [
-                    "stop-2-0-0.json",
-                    "stop-2-0-0.manifest.json",
-                    "stop-2-0-0.md",
+                    "stop-2-1-0.json",
+                    "stop-2-1-0.manifest.json",
+                    "stop-2-1-0.md",
                 ],
             )
             tool = load_tool()
@@ -256,10 +320,22 @@ class IncidentCorpusTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         report = json.loads(result.stdout)
-        self.assertEqual(report["plugin_stop_protocol"], "2.0.0")
+        self.assertEqual(report["plugin_stop_protocol"], "2.1.0")
+        self.assertEqual(report["plugin_execution_protocol"], "2.0.0")
         self.assertEqual(report["fixtures"], report["passed"])
         self.assertEqual(report["false_continuations"], 0)
         self.assertIsInstance(report["diagnostic_accuracy"], float)
+        self.assertEqual(report["taxonomy_coverage"]["covered"], report["fixtures"])
+        self.assertIn("pre_action_authorization", report["taxonomy_coverage"]["uncovered"])
+        self.assertEqual(
+            report["taxonomy_coverage"]["by_root_cause"]["pre_action_authorization"],
+            0,
+        )
+        self.assertAlmostEqual(
+            report["taxonomy_coverage"]["coverage_rate"],
+            report["taxonomy_coverage"]["covered"]
+            / report["taxonomy_coverage"]["total"],
+        )
 
     def test_append_only_ingest_validate_and_summary_excludes_documented_only(self) -> None:
         tool = load_tool()
@@ -294,6 +370,34 @@ class IncidentCorpusTests(unittest.TestCase):
             self.assertNotIn("public_reviewed", public[0])
             with self.assertRaises(ValueError):
                 tool.command_ingest(args)
+
+    def test_status_promotion_requires_append_only_successor(self) -> None:
+        tool = load_tool()
+        fixture = json.loads(FIXTURES.read_text(encoding="utf-8"))[0]
+        fixture["reproduction_status"] = "documented_only"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "corpus"
+            source = Path(temporary) / "record.json"
+            source.write_text(json.dumps(fixture), encoding="utf-8")
+            first = type("Args", (), {"root": str(root), "record": str(source), "supersede_start": None})()
+            self.assertEqual(tool.command_ingest(first), 0)
+            successor = dict(fixture)
+            successor["reproduction_status"] = "reproduced"
+            source.write_text(json.dumps(successor), encoding="utf-8")
+            second = type("Args", (), {"root": str(root), "record": str(source), "supersede_start": 101})()
+            self.assertEqual(tool.command_ingest(second), 0)
+            records, errors = tool.load_records(root)
+            self.assertEqual(errors, [])
+            self.assertEqual(tool.active_records(records)[0]["incident_id"], "CGI-2026-101")
+            invalid = dict(successor)
+            invalid["reproduction_status"] = "documented_only"
+            invalid["incident_id"] = "CGI-2026-102"
+            invalid["supersedes"] = "CGI-2026-101"
+            target = root / "records" / "CGI-2026-102.json"
+            target.write_text(json.dumps(invalid), encoding="utf-8")
+            tool.restrict_private_path(target, directory=False)
+            _records, errors = tool.load_records(root)
+            self.assertTrue(any("invalid append-only status transition" in error for error in errors))
 
     def test_windows_private_paths_use_acl_instead_of_posix_mode_bits(self) -> None:
         tool = load_tool()

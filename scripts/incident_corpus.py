@@ -39,6 +39,33 @@ ROOT_CAUSES = {
     "compaction_recovery",
     "hook_cache_lifecycle",
     "cross_platform",
+    "pre_action_authorization",
+    "stop_disposition_validation",
+    "supersession_attribution",
+    "scope_transition_authority",
+}
+RECORD_SCHEMA_V2 = "incident-corpus/v2"
+PROTOCOL_SURFACES = {
+    "stop",
+    "pre_action_authorization",
+    "requirement_supersession",
+    "scope_transition",
+}
+EXECUTION_CONTRACT_STATES = {
+    "absent",
+    "inactive",
+    "active",
+    "stale",
+    "conflicted",
+    "not_applicable",
+}
+ACTION_TICKET_STATES = {
+    "absent",
+    "mismatch",
+    "valid",
+    "consumed",
+    "invalidated",
+    "not_applicable",
 }
 REPRODUCTION_STATES = {
     "documented_only",
@@ -46,6 +73,13 @@ REPRODUCTION_STATES = {
     "reproduced",
     "contained",
     "fixed",
+}
+REPRODUCTION_TRANSITIONS = {
+    "documented_only": {"source_confirmed", "reproduced"},
+    "source_confirmed": {"reproduced", "contained"},
+    "reproduced": {"contained"},
+    "contained": {"fixed"},
+    "fixed": set(),
 }
 REQUIRED_FIELDS = {
     "incident_id",
@@ -63,6 +97,7 @@ REQUIRED_FIELDS = {
     "source_evidence_sha256",
 }
 PUBLIC_FIELDS = {
+    "record_schema",
     "incident_id",
     "observed_version",
     "hook_event",
@@ -81,6 +116,10 @@ PUBLIC_FIELDS = {
     "fixture_kind",
     "expected_by_stop_protocol",
     "public_fixture_id",
+    "protocol_surface",
+    "execution_contract_state",
+    "action_ticket_state",
+    "tool_input_sha256",
 }
 IS_WINDOWS = os.name == "nt"
 WINDOWS_ACL_MARKER = "CONTEXT_GUARD_PRIVATE_ACL_OK"
@@ -388,6 +427,35 @@ def validate_record(record: Any, *, public: bool = False) -> list[str]:
         errors.append("incident_id must match CGI-YYYY-NNN")
     if record.get("root_cause") not in ROOT_CAUSES:
         errors.append("root_cause is not in the public taxonomy")
+    v2_fields = {
+        "protocol_surface",
+        "execution_contract_state",
+        "action_ticket_state",
+        "tool_input_sha256",
+    }
+    is_v2 = record.get("record_schema") == RECORD_SCHEMA_V2
+    if record.get("record_schema") not in {None, RECORD_SCHEMA_V2}:
+        errors.append("record_schema is unsupported")
+    if is_v2:
+        missing_v2 = v2_fields.difference(record)
+        if missing_v2:
+            errors.append("missing v2 fields: " + ", ".join(sorted(missing_v2)))
+        if record.get("protocol_surface") not in PROTOCOL_SURFACES:
+            errors.append("protocol_surface is invalid")
+        if record.get("execution_contract_state") not in EXECUTION_CONTRACT_STATES:
+            errors.append("execution_contract_state is invalid")
+        if record.get("action_ticket_state") not in ACTION_TICKET_STATES:
+            errors.append("action_ticket_state is invalid")
+        tool_input_sha = record.get("tool_input_sha256")
+        if not isinstance(tool_input_sha, str) or not SHA256_RE.fullmatch(tool_input_sha):
+            errors.append("tool_input_sha256 must be a lowercase SHA-256")
+    elif v2_fields.intersection(record):
+        errors.append("v2 incident fields require record_schema incident-corpus/v2")
+    group_sha = record.get("incident_group_sha256")
+    if group_sha is not None and (
+        not isinstance(group_sha, str) or not SHA256_RE.fullmatch(group_sha)
+    ):
+        errors.append("incident_group_sha256 must be a lowercase SHA-256")
     if record.get("reproduction_status") not in REPRODUCTION_STATES:
         errors.append("invalid reproduction_status")
     reasons = record.get("reason_codes")
@@ -448,6 +516,19 @@ def load_records(root: Path) -> tuple[list[dict[str, Any]], list[str]]:
             errors.append(f"{item.get('incident_id')}: supersedes unknown record {supersedes}")
         if supersedes and supersedes >= str(item.get("incident_id")):
             errors.append(f"{item.get('incident_id')}: supersedes must point backward")
+        if supersedes and supersedes in by_id:
+            prior = by_id[supersedes]
+            previous_status = str(prior.get("reproduction_status"))
+            next_status = str(item.get("reproduction_status"))
+            if next_status not in REPRODUCTION_TRANSITIONS.get(previous_status, set()):
+                errors.append(
+                    f"{item.get('incident_id')}: invalid append-only status transition "
+                    f"{previous_status} -> {next_status}"
+                )
+            if item.get("root_cause") != prior.get("root_cause"):
+                errors.append(
+                    f"{item.get('incident_id')}: superseding record changes root_cause"
+                )
     return records, errors
 
 
@@ -478,6 +559,9 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         "wording_patch_debt": len(wording_debt),
         "versions": dict(sorted(Counter(str(item.get("observed_version")) for item in active).items())),
         "root_causes": dict(sorted(Counter(str(item.get("root_cause")) for item in active).items())),
+        "protocol_surfaces": dict(
+            sorted(Counter(str(item.get("protocol_surface", "legacy_stop")) for item in active).items())
+        ),
     }
 
 
@@ -495,7 +579,16 @@ def benchmark_fixture(runtime: Any, fixture: dict[str, Any]) -> dict[str, Any]:
     reply = str(event.get("assistant_reply", ""))
     diagnostic = "gate_completion_claim" if runtime.claims_whole_completion(reply) else "allow_neutral"
     fixture_kind = fixture.get("fixture_kind", "protocol_policy")
-    if fixture_kind == "privacy_metadata":
+    if fixture_kind == "pre_action_authorization":
+        outcome = runtime.benchmark_pre_action_authorization(event)
+        policy = "pre_action_authorization"
+    elif fixture_kind == "supersession_attribution":
+        outcome = runtime.benchmark_supersession_attribution(event)
+        policy = "supersession_attribution"
+    elif fixture_kind == "scope_transition_authority":
+        outcome = runtime.benchmark_scope_transition_authority(event)
+        policy = "scope_transition_authority"
+    elif fixture_kind == "privacy_metadata":
         classification, _ = runtime.classify_private_metadata(reply)
         outcome = (
             "allow_neutral"
@@ -646,8 +739,11 @@ def command_benchmark(args: argparse.Namespace) -> int:
     if errors:
         raise ValueError("; ".join(errors))
     results = [benchmark_fixture(runtime, fixture) for fixture in fixtures]
+    fixture_root_counts = Counter(str(item.get("root_cause")) for item in fixtures)
+    covered_root_causes = set(fixture_root_counts)
     report = {
         "plugin_stop_protocol": runtime.STOP_PROTOCOL_VERSION,
+        "plugin_execution_protocol": getattr(runtime, "EXECUTION_PROTOCOL_VERSION", None),
         "fixture_manifest_sha256": sha256_bytes(fixture_bytes),
         "fixtures": len(results),
         "passed": sum(item["pass"] for item in results),
@@ -656,6 +752,18 @@ def command_benchmark(args: argparse.Namespace) -> int:
             item["diagnostic"] == fixtures[index]["diagnostic_outcome"]
             for index, item in enumerate(results)
         ) / len(results) if results else None,
+        "taxonomy_coverage": {
+            "covered": len(covered_root_causes),
+            "total": len(ROOT_CAUSES),
+            "coverage_rate": len(covered_root_causes) / len(ROOT_CAUSES),
+            "by_root_cause": {
+                root_cause: fixture_root_counts.get(root_cause, 0)
+                for root_cause in sorted(ROOT_CAUSES)
+            },
+            "uncovered": sorted(
+                ROOT_CAUSES.difference(covered_root_causes)
+            ),
+        },
         "results": results,
     }
     if args.report_dir:

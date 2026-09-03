@@ -167,11 +167,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.10.0`.",
+            "> Source candidate: `0.11.0` (unreleased). Current published release: `0.10.0`.",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.10.0`。",
+            "> 当前源码候选：`0.11.0`（未发布）；当前正式版本：`0.10.0`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -259,6 +259,10 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.8.12 - 2026-08-27", changelog_zh)
         self.assertIn("## 0.9.4 - 2026-08-28", changelog)
         self.assertIn("## 0.9.4 - 2026-08-28", changelog_zh)
+        self.assertIn("## 0.11.0 - Unreleased source candidate", changelog)
+        self.assertIn("## 0.11.0 - 未发布源码候选", changelog_zh)
+        self.assertIn("action-ticket/v1", changelog)
+        self.assertIn("work-unit/v1", changelog)
         self.assertIn("## 0.7.6 - 2026-08-17", changelog)
         self.assertIn("## 0.7.3 - 2026-08-14", changelog)
         self.assertIn("0.7.4–0.7.6", changelog)
@@ -268,10 +272,11 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn(
             "Current published Context Guard release: `0.10.0`", compatibility
         )
+        self.assertIn("Current source candidate: `0.11.0` (unreleased)", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
-        self.assertIn("Execution protocol: `1.0.0`", compatibility)
+        self.assertIn("Execution protocol: `2.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.4.0`", compatibility)
-        self.assertIn("Stop protocol: `2.0.0`", compatibility)
+        self.assertIn("Stop protocol: `2.1.0`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"
         )
@@ -279,6 +284,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.5` keeps the 0.7.4 protocol", versioning)
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         self.assertIn("`0.10.0` advances private state to schema 8", versioning)
+        self.assertIn("`0.11.0` is the unreleased execution-authority candidate", versioning)
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)

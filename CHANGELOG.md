@@ -4,6 +4,25 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.10.0` is the latest published release, built from implementation baseline `e4fccf690bcbc2be79d0b8d42a1a269f87072120`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.11.0 - Unreleased source candidate
+
+### Highlights
+
+- A synchronous `PreToolUse` Hook denies A-tier release identity mutations unless an exact, unexpired, one-shot `action-ticket/v1` matches the repository, commit, release identity, candidate closure, readiness result, and normalized tool input. Successful calls consume the ticket; failed identical calls may retry before expiry.
+- Stop now checks `user_wait`, `external_wait`, and `deferred` against observed ownership and authorization facts. Quoted, attributed, code, and reply-annotation text cannot supersede requirements.
+- Append-only `work-unit/v1` records bound completion to the current unit and its descendants while preserving ancestor constraints. Default checkpoint status is bounded; `--full`, `--item`, and revision-based unchanged reads provide explicit audit paths.
+
+### Changes
+
+- Schema 9 adds work units; Execution protocol 2.0.0 adds ticket bindings and lifecycle states; Stop protocol 2.1.0 validates declared dispositions; the Hook wire now contains nine events including `PreToolUse`.
+- The private incident schema adds pre-action authorization, Stop-disposition, supersession-attribution, and scope-transition taxonomies. Benchmarks dispatch by protocol surface and report public regression coverage without requiring every private taxonomy to have a public fixture.
+- Four sanitized, private, Git-external `documented_only` incident records were created before the fixes. No raw task identifier, transcript, complete prompt, or private path is stored in the records, and no real incident has been exported as a public fixture.
+
+### Validation
+
+- Source regressions cover A/B/C risk tiers, ticket retry/consumption, Stop-disposition mismatch, quoted supersession, cleanup scope transition, incident runner dispatch, work-unit closure, and a 100+ item status ledger below 4 KiB with constant-size unchanged replies.
+- This is not a release acceptance claim. Managed installation, fresh-task Hook/ticket acceptance, macOS native acceptance, Windows native acceptance, CI, tag, GitHub Release, and public readback remain unperformed for 0.11.0.
+
 ## 0.10.0 - 2026-09-03
 
 ### Highlights

@@ -283,15 +283,22 @@ class ContextGuardTests(unittest.TestCase):
 
     def stage_all(self, evidence_id: str, session: str = "session-a") -> dict:
         state = self.state(session)
+        scoped, ancestor_constraints = cg.checkpoint_scope_item_ids(state)
         requirements = [
             f"{item['id']}={evidence_id}"
             for item in state["requirements"]
             if item["status"] not in {"pass", "superseded"}
+            and item["id"] in scoped | {
+                item_id for item_id in ancestor_constraints if item_id.startswith("R")
+            }
         ]
         acceptance = [
             f"{item['id']}={evidence_id}"
             for item in state["acceptance_items"]
             if item["status"] not in {"pass", "superseded"}
+            and item["id"] in scoped | {
+                item_id for item_id in ancestor_constraints if item_id.startswith("A")
+            }
         ]
         return cg.stage_private_checkpoint(
             self.root / "private",
@@ -467,10 +474,10 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(len(state["prompts"]), 1)
         self.assertEqual(len(state["requirements"]), 1)
 
-    def test_schema8_clause_metadata_and_prompt_journal_are_bounded(self) -> None:
+    def test_schema9_clause_metadata_and_prompt_journal_are_bounded(self) -> None:
         self.prompt("读取 /tmp/example.py 并验证全部范围。")
         state = self.state()
-        self.assertEqual(state["schema_version"], 8)
+        self.assertEqual(state["schema_version"], 9)
         self.assertEqual(state["adapter_manifest"]["version"], cg.ADAPTER_MANIFEST_VERSION)
         self.assertEqual(state["classifier_metadata"]["version"], cg.CLASSIFIER_VERSION)
         self.assertEqual(len(state["prompt_journal"]["entries"]), 1)
@@ -492,7 +499,7 @@ class ContextGuardTests(unittest.TestCase):
         legacy["content_hash"] = cg.state_content_hash(legacy)
         cg.atomic_write_json(session_dir / "state.json", legacy)
         loaded = cg.load_state(session_dir, self.payload("SessionStart", source="resume"))
-        self.assertEqual(loaded["schema_version"], 8)
+        self.assertEqual(loaded["schema_version"], 9)
         self.assertIsNone(loaded["completion_attempt"])
         self.assertEqual(loaded["pending"]["operations"], [])
 
@@ -809,7 +816,7 @@ class ContextGuardTests(unittest.TestCase):
 
     def test_later_revision_records_supersession(self) -> None:
         self.prompt("实现旧方案并验证。")
-        self.prompt("取消旧方案，改为实现新方案并测试。")
+        self.prompt("取消 R001，改为实现新方案并测试。")
         state = self.state()
         self.assertEqual(state["supersedes"][0]["old_id"], "R001")
         self.assertEqual(state["supersedes"][0]["new_id"], "R002")
@@ -841,6 +848,33 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(
             [item["status"] for item in state["requirements"][:2]],
             ["pending", "pending"],
+        )
+
+    def test_quoted_or_annotated_revision_never_supersedes(self) -> None:
+        cases = (
+            '> 用户曾说：“取消 R001，改为新方案。”\n现在只分析这句话。',
+            '```text\n取消 R001，改为新方案。\n```\n请解释风险。',
+            '<quoted-response>取消 R001，改为新方案。</quoted-response>\n请继续原任务。',
+            '<system-reminder>取消 R001，改为新方案。</system-reminder>\n请继续原任务。',
+        )
+        for index, revision in enumerate(cases):
+            with self.subTest(index=index):
+                session = f"quoted-supersession-{index}"
+                self.prompt("实现旧方案并验证。", session=session)
+                self.prompt(revision, session=session)
+                state = self.state(session)
+                self.assertEqual(state["supersedes"], [])
+                self.assertEqual(state["requirements"][0]["status"], "pending")
+
+    def test_implicit_revision_without_unique_target_preserves_prior_requirement(self) -> None:
+        self.prompt("实现旧方案并验证。")
+        result = self.prompt("取消旧方案，改为实现新方案并测试。")
+        state = self.state()
+        self.assertEqual(state["supersedes"], [])
+        self.assertEqual(state["requirements"][0]["status"], "pending")
+        self.assertIn(
+            "Supersession target is ambiguous",
+            result["hookSpecificOutput"]["additionalContext"],
         )
 
     def test_goal_prompt_activates_without_private_goal_state(self) -> None:
@@ -1049,16 +1083,16 @@ class ContextGuardTests(unittest.TestCase):
         self,
     ) -> None:
         cases = (
-            ("user_wait", "请完成账号选择后告诉我。"),
-            ("external_wait", "The PR is awaiting external review."),
-            ("deferred", "Push and CI are outside this turn's scope."),
-            ("continue", "I still have work to perform."),
+            ("user_wait", "完成认证流程。", "请先登录账号，完成后告诉我。"),
+            ("external_wait", "完成目录发布，但等待外部审核。", "The PR is awaiting external review; no work is running."),
+            ("deferred", "只审查并本地提交，不要推送或运行 CI。", "Local commit is complete; push and CI are deferred to a later turn."),
+            ("continue", "完成复杂任务。", "I still have work to perform."),
         )
-        for disposition, message in cases:
+        for disposition, prompt, message in cases:
             with self.subTest(disposition=disposition):
                 session = f"session-{disposition}"
                 self.prompt(
-                    "$context-guard\n完成复杂任务并保留所有未完成需求。",
+                    "$context-guard\n" + prompt,
                     session=session,
                 )
                 staged, hook_result = self.stage_disposition(
@@ -1099,15 +1133,7 @@ class ContextGuardTests(unittest.TestCase):
             "If the task were complete, this would be the final answer.",
             "I completed the entire requested task.",
         )
-        expected = {
-            None: "allow_neutral",
-            "user_wait": "allow_user_handoff",
-            "external_wait": "allow_external_wait",
-            "deferred": "allow_out_of_scope_deferred",
-            "continue": "allow_neutral",
-        }
-        for disposition, authoritative_outcome in expected.items():
-            outcomes: set[tuple[str, int, bool]] = set()
+        for disposition in (None, "user_wait", "external_wait", "deferred", "continue"):
             for index, message in enumerate(messages):
                 session = f"metamorphic-{disposition or 'default'}-{index}"
                 self.prompt(
@@ -1117,26 +1143,21 @@ class ContextGuardTests(unittest.TestCase):
                 if disposition is not None:
                     staged, _ = self.stage_disposition(disposition, session=session)
                     self.assertEqual(staged.returncode, 0, staged.stderr)
-                self.assertEqual(
-                    cg.dispatch(
-                        self.payload(
-                            "Stop",
-                            session=session,
-                            last_assistant_message=message,
-                        )
-                    ),
-                    {},
-                )
-                state = self.state(session)
-                outcomes.add(
-                    (
-                        state["decision_log"][-1]["outcome"],
-                        state["continuation_attempts"],
-                        state["completion_checkpoint"] is not None,
+                observed = cg.classify_stop_decision(
+                    message, "$context-guard\n完成复杂任务并保留未完成要求。"
+                )["outcome"]
+                result = cg.dispatch(
+                    self.payload(
+                        "Stop", session=session, last_assistant_message=message,
                     )
                 )
+                matches = cg.disposition_matches_observed(disposition, observed)
+                if disposition in {"user_wait", "external_wait", "deferred"} and not matches:
+                    self.assertEqual(result["decision"], "block")
+                else:
+                    self.assertEqual(result, {})
+                state = self.state(session)
                 self.assertTrue(state["open_items"])
-            self.assertEqual(outcomes, {(authoritative_outcome, 0, False)})
 
     def test_private_disposition_api_derives_fixed_reason(self) -> None:
         for disposition, reason in self.DISPOSITION_REASONS.items():
@@ -1215,7 +1236,7 @@ class ContextGuardTests(unittest.TestCase):
                 self.payload(
                     "Stop",
                     session=session,
-                    last_assistant_message="Please finish the required login step.",
+                    last_assistant_message="Please log in to the required account, then tell me when ready.",
                 )
             ),
             {},
@@ -1482,7 +1503,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertGreater(replacements, 100)
         self.assertEqual(observed_families, {item[0] for item in wording_families})
 
-    def test_staged_wait_outranks_completion_diagnostic(self) -> None:
+    def test_staged_wait_cannot_override_completion_diagnostic(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -1491,14 +1512,14 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="整个任务已经全部完成。")
         )
-        self.assertEqual(result, {})
+        self.assertEqual(result["decision"], "block")
         self.assertEqual(
             self.state()["decision_log"][-1]["outcome"],
-            "allow_user_handoff",
+            "gate_completion_claim",
         )
         self.assertIsNone(self.state()["completion_checkpoint"])
 
-    def test_staged_deferred_outranks_completion_diagnostic(self) -> None:
+    def test_staged_deferred_cannot_override_completion_diagnostic(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -1507,10 +1528,10 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="The task is complete.")
         )
-        self.assertEqual(result, {})
+        self.assertEqual(result["decision"], "block")
         self.assertEqual(
             self.state()["decision_log"][-1]["outcome"],
-            "allow_out_of_scope_deferred",
+            "gate_completion_claim",
         )
         self.assertIsNone(self.state()["completion_checkpoint"])
 
@@ -1668,9 +1689,72 @@ class ContextGuardTests(unittest.TestCase):
             all(item["status"] == "pass" for item in self.state()["requirements"])
         )
 
+    def test_work_unit_checkpoint_closes_current_unit_not_ancestor(self) -> None:
+        self.prompt("建立祖先约束并保留。")
+        self.prompt("修复当前问题。必须运行测试。")
+        evidence_id = self.record_tool()
+        state = self.state()
+        self.assertEqual(len(state["work_units"]), 2)
+        self.assertEqual(state["work_units"][1]["parent_id"], "WU0001")
+        receipt = self.stage_all(evidence_id)
+        self.assertRegex(receipt["checkpoint_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            cg.dispatch(
+                self.payload("Stop", last_assistant_message="当前工作单元已完成并验证。")
+            ),
+            {},
+        )
+        state = self.state()
+        self.assertEqual(state["work_units"][1]["status"], "passed")
+        self.assertEqual(state["work_units"][0]["status"], "active")
+        self.assertEqual(state["requirements"][0]["status"], "pass")
+        self.assertEqual(state["requirements"][1]["status"], "pass")
+        self.assertTrue(all(item["status"] == "pass" for item in state["acceptance_items"]))
+
+    def test_checkpoint_status_is_compact_and_revision_stable_with_many_items(self) -> None:
+        self.prompt("实现大规模验收。必须保存证据。")
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        state = self.state()
+        active = state["work_state"]["active_work_unit_id"]
+        template = state["acceptance_items"][0]
+        for index in range(2, 102):
+            item = json.loads(json.dumps(template))
+            item.update(
+                {
+                    "id": f"A{index:03d}",
+                    "text": f"bounded acceptance item {index}",
+                    "work_unit_id": active,
+                    "verification_contract": {
+                        "protocol_version": cg.PROOF_PROTOCOL_VERSION,
+                        "mode": "legacy_fallback",
+                        "reason": "status_scaling_fixture",
+                        "obligations": [],
+                    },
+                }
+            )
+            state["acceptance_items"].append(item)
+        cg.save_state(session_dir, state)
+        snapshot = cg.checkpoint_status(
+            self.root / "private", "session-a", self.current_turn, "test-token"
+        )
+        encoded = json.dumps(snapshot, ensure_ascii=True).encode("utf-8")
+        self.assertLess(len(encoded), 4096)
+        self.assertTrue(snapshot["items_truncated"])
+        unchanged = cg.checkpoint_status(
+            self.root / "private", "session-a", self.current_turn, "test-token",
+            after_revision=snapshot["revision"],
+        )
+        self.assertEqual(unchanged["unchanged"], True)
+        self.assertLess(len(json.dumps(unchanged)), 256)
+        item = cg.checkpoint_status(
+            self.root / "private", "session-a", self.current_turn, "test-token",
+            item_id="A090",
+        )
+        self.assertEqual(item["item"]["id"], "A090")
+
     def test_stop_allows_human_readable_serialized_token_examples(self) -> None:
         self.prompt("$context-guard\n审查本地实现并报告仍需下一轮修复的问题。")
-        staged, _ = self.stage_disposition("user_wait")
+        staged, _ = self.stage_disposition("deferred")
         self.assertEqual(staged.returncode, 0, staged.stderr)
 
         result = cg.dispatch(
@@ -1686,7 +1770,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result, {})
         latest = self.state()["decision_log"][-1]
         self.assertEqual(latest["decision_source"], "protocol_disposition")
-        self.assertEqual(latest["outcome"], "allow_user_handoff")
+        self.assertEqual(latest["outcome"], "allow_out_of_scope_deferred")
 
     def test_stop_rejects_whitespace_obfuscated_private_token_shape(self) -> None:
         self.prompt("$context-guard\n审查本地实现并报告仍需下一轮修复的问题。")
@@ -1862,13 +1946,10 @@ class ContextGuardTests(unittest.TestCase):
                 self.assertFalse(cg.claims_whole_completion(meta_discussion))
         observed = cg.classify_stop_decision(message, prompt)
         self.assertEqual(observed["outcome"], "gate_completion_claim")
-        self.assertEqual(
-            cg.dispatch(self.payload("Stop", last_assistant_message=message)),
-            {},
-        )
+        result = cg.dispatch(self.payload("Stop", last_assistant_message=message))
+        self.assertEqual(result["decision"], "block")
         decision = self.state()["decision_log"][-1]
-        self.assertEqual(decision["outcome"], "allow_out_of_scope_deferred")
-        self.assertEqual(self.state()["continuation_attempts"], 0)
+        self.assertEqual(decision["outcome"], "gate_completion_claim")
 
         for direct_claim in (
             "“任务已完成”。",
@@ -1883,7 +1964,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "$context-guard\n继续查看补充材料并给出建议，但不要修改仓库或博客。"
         )
-        staged, _ = self.stage_disposition("deferred")
+        staged, _ = self.stage_disposition("external_wait")
         self.assertEqual(staged.returncode, 0, staged.stderr)
         message = (
             "看完补充材料后，我会调整上一轮的判断：保留“1M 上下文”这个热点，"
@@ -1906,7 +1987,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         decision = self.state()["decision_log"][-1]
         self.assertEqual(decision["observed_outcome"], "allow_external_wait")
-        self.assertEqual(decision["outcome"], "allow_out_of_scope_deferred")
+        self.assertEqual(decision["outcome"], "allow_external_wait")
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
     def test_classifier_22_whole_completion_plurals_questions_and_attribution(
@@ -2914,10 +2995,11 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 8)
+        self.assertEqual(cg.SCHEMA_VERSION, 9)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
-        self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
+        self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
+        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0002")
         self.assertEqual(migrated["agents"], [])
         self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
@@ -2952,7 +3034,8 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(len(migrated["evidence"]), 1)
-        self.assertEqual(migrated["work_state"], {"plan_snapshot": None})
+        self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
+        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0002")
         self.assertEqual(migrated["agents"], [])
         self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(
@@ -3128,6 +3211,39 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(projected["assets"], current["assets"])
         self.assertEqual(projected["proofs"], current["proofs"])
 
+    def test_schema8_migrates_to_schema9_work_unit_and_execution_protocol(self) -> None:
+        self.prompt("实现复杂系统并测试。")
+        session_dir = self.root / "private" / "sessions" / "session-a"
+        legacy = self.state()
+        legacy["schema_version"] = 8
+        legacy.pop("work_units")
+        legacy.pop("work_unit_sequence")
+        legacy["work_state"].pop("active_work_unit_id")
+        for collection in ("requirements", "acceptance_items"):
+            for item in legacy[collection]:
+                item.pop("work_unit_id")
+        legacy["execution"]["protocol_version"] = "1.0.0"
+        legacy["content_hash"] = cg.state_content_hash(legacy)
+        cg.atomic_write_json(session_dir / "state.json", legacy)
+
+        migrated = cg.load_state(
+            session_dir,
+            self.payload("SessionStart", source="resume"),
+        )
+
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
+        self.assertEqual(migrated["execution"]["protocol_version"], "2.0.0")
+        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0001")
+        self.assertEqual(len(migrated["work_units"]), 1)
+        self.assertTrue(
+            all(
+                item["work_unit_id"] == "WU0001"
+                for collection in ("requirements", "acceptance_items")
+                for item in migrated[collection]
+            )
+        )
+        self.assertIsNone(migrated["completion_attempt"])
+
     def test_execution_contract_and_phase_transitions_are_bounded(self) -> None:
         execution = cg.dormant_execution_state()
 
@@ -3219,21 +3335,36 @@ class ContextGuardTests(unittest.TestCase):
         )
         ticket = {
             "id": "ticket-1",
+            "ticket_schema": "action-ticket/v1",
             "session_id": "session-a",
             "turn_id": "turn-1",
             "actor_id": "root",
-            "tool_use_id": "tool-1",
+            "authorization_prompt_id": "turn-1",
+            "authorization_prompt_sha256": "e" * 64,
+            "tool_use_id": "unclaimed",
             "contract_revision": 1,
             "semantic_action_id": "write-file",
             "canonical_target_id": "target-1",
             "write_surface_id": "workspace",
+            "repository_id": "repo-test",
+            "candidate_commit": "a" * 40,
+            "release_version": "1.0.0",
+            "contract_sha256": execution["contract"]["canonical_sha256"],
+            "closure_sha256": "c" * 64,
+            "readiness_sha256": "d" * 64,
+            "closure_status": "passed",
+            "readiness_schema": "release-readiness/v2",
+            "readiness_kind": "publication",
+            "readiness_status": "passed",
+            "action_ticket_eligible": True,
             "input_sha256": "b" * 64,
             "state": "reserved",
+            "attempt_count": 0,
             "reserved_at": "2026-08-24T00:00:00Z",
             "expires_at": "2026-08-24T00:01:00Z",
             "settled_at": None,
         }
-        execution["action_tickets"] = [ticket, {**ticket, "id": "ticket-2"}]
+        execution["action_tickets"] = [ticket, dict(ticket)]
         execution["contract"]["canonical_sha256"] = cg.contract_content_hash(
             execution["contract"]
         )
@@ -3256,16 +3387,31 @@ class ContextGuardTests(unittest.TestCase):
         execution["action_tickets"] = [
             {
                 "id": "ticket-1",
+                "ticket_schema": "action-ticket/v1",
                 "session_id": "session-a",
                 "turn_id": "turn-1",
                 "actor_id": "root",
-                "tool_use_id": "tool-1",
+                "authorization_prompt_id": "turn-1",
+                "authorization_prompt_sha256": "e" * 64,
+                "tool_use_id": "unclaimed",
                 "contract_revision": 1,
                 "semantic_action_id": "write-file",
                 "canonical_target_id": "target-1",
                 "write_surface_id": "workspace",
+                "repository_id": "repo-test",
+                "candidate_commit": "a" * 40,
+                "release_version": "1.0.0",
+                "contract_sha256": execution["contract"]["canonical_sha256"],
+                "closure_sha256": "c" * 64,
+                "readiness_sha256": "d" * 64,
+                "closure_status": "passed",
+                "readiness_schema": "release-readiness/v2",
+                "readiness_kind": "publication",
+                "readiness_status": "passed",
+                "action_ticket_eligible": True,
                 "input_sha256": "b" * 64,
                 "state": "reserved",
+                "attempt_count": 0,
                 "reserved_at": "2026-08-24T00:00:00Z",
                 "expires_at": "2026-08-24T00:01:00Z",
                 "settled_at": None,
@@ -3278,8 +3424,8 @@ class ContextGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(expired, ["ticket-1"])
-        self.assertEqual(execution["action_tickets"][0]["state"], "expired_unsettled")
-        with self.assertRaisesRegex(ValueError, "expired_unsettled -> consumed"):
+        self.assertEqual(execution["action_tickets"][0]["state"], "expired")
+        with self.assertRaisesRegex(ValueError, "expired -> consumed"):
             cg.transition_execution_ticket(
                 execution,
                 "ticket-1",
@@ -3331,6 +3477,417 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(decision=decision):
                 with self.assertRaises(ValueError):
                     cg.validate_pre_tool_decision(decision)
+
+    def test_pre_tool_a_tier_denies_without_exact_ticket(self) -> None:
+        self.prompt("准备 v1.2.3 发布候选，但不要发布。")
+        result = cg.dispatch(
+            self.payload(
+                "PreToolUse", tool_name="exec_command",
+                tool_input={"cmd": "git tag v1.2.3"},
+                tool_use_id="tool-release-1",
+            )
+        )
+        output = result["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn("action-ticket/v1", output["permissionDecisionReason"])
+
+    def test_release_candidate_commit_requires_a_clean_git_worktree(self) -> None:
+        self.assertEqual(cg.repository_commit(self.project), "unresolved")
+        subprocess.run(["git", "init", str(self.project)], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.name", "Context Guard Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.email", "test@example.invalid"],
+            check=True,
+        )
+        tracked = self.project / "candidate.txt"
+        tracked.write_text("accepted\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.project), "add", "candidate.txt"], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-m", "candidate"],
+            check=True,
+            capture_output=True,
+        )
+        self.assertRegex(cg.repository_commit(self.project), r"^[0-9a-f]{40}$")
+        tracked.write_text("drifted\n", encoding="utf-8")
+        self.assertEqual(cg.repository_commit(self.project), "unresolved")
+
+    @mock.patch.object(cg, "repository_commit", return_value="a" * 40)
+    def test_action_ticket_adoption_requires_passed_publication_readiness(
+        self, _commit: mock.Mock
+    ) -> None:
+        self.prompt("授权在精确候选上创建 v1.2.3 release tag。")
+        state = self.state()
+        source = state["prompts"][0]
+        pre_payload = self.payload(
+            "PreToolUse", tool_name="exec_command",
+            tool_input={"cmd": "git tag v1.2.3"},
+            tool_use_id="tool-release-1",
+        )
+        action = cg.classify_pre_tool_action(pre_payload)
+        self.assertIsNotNone(action)
+        manifest_value = self.execution_manifest()
+        manifest_value["authorization_candidates"] = [{
+            "id": "candidate-release-tag",
+            "prompt_id": source["id"],
+            "prompt_sha256": source["sha256"],
+            "semantic_action_id": action["semantic_action_id"],
+            "canonical_target_id": action["canonical_target_id"],
+            "write_surface_id": action["write_surface_id"],
+            "binding": "deterministic",
+            "ticket_binding": {
+                "ticket_schema": "action-ticket/v1",
+                "repository_id": action["repository_id"],
+                "candidate_commit": action["candidate_commit"],
+                "release_version": action["release_version"],
+                "closure_sha256": "a" * 64,
+                "readiness_sha256": "b" * 64,
+                "closure_status": "blocked",
+                "readiness_schema": "release-readiness/v2",
+                "readiness_kind": "publication",
+                "readiness_status": "failed",
+                "action_ticket_eligible": False,
+                "input_sha256": action["input_sha256"],
+                "expires_at": "2099-01-01T00:00:00Z",
+            },
+        }]
+        manifest = self.project / "blocked-release-contract.json"
+        manifest.write_text(json.dumps(manifest_value), encoding="utf-8")
+
+        rejected = self.prompt("context-guard adopt blocked-release-contract.json")
+
+        self.assertIn(
+            "passed candidate closure and publication readiness",
+            rejected["hookSpecificOutput"]["additionalContext"],
+        )
+        self.assertEqual(self.state()["execution"]["contract"]["state"], "absent")
+
+    @mock.patch.object(cg, "repository_commit", return_value="a" * 40)
+    def test_action_ticket_adoption_rejects_unresolved_candidate_commit(
+        self, _commit: mock.Mock
+    ) -> None:
+        self.prompt("授权在精确候选上创建 v1.2.3 release tag。")
+        state = self.state()
+        source = state["prompts"][0]
+        pre_payload = self.payload(
+            "PreToolUse",
+            tool_name="exec_command",
+            tool_input={"cmd": "git tag v1.2.3"},
+            tool_use_id="tool-release-unresolved",
+        )
+        action = cg.classify_pre_tool_action(pre_payload)
+        self.assertIsNotNone(action)
+        manifest_value = self.execution_manifest()
+        manifest_value["authorization_candidates"] = [{
+            "id": "candidate-release-tag",
+            "prompt_id": source["id"],
+            "prompt_sha256": source["sha256"],
+            "semantic_action_id": action["semantic_action_id"],
+            "canonical_target_id": action["canonical_target_id"],
+            "write_surface_id": action["write_surface_id"],
+            "binding": "deterministic",
+            "ticket_binding": {
+                "ticket_schema": "action-ticket/v1",
+                "repository_id": action["repository_id"],
+                "candidate_commit": "unresolved",
+                "release_version": action["release_version"],
+                "closure_sha256": "a" * 64,
+                "readiness_sha256": "b" * 64,
+                "closure_status": "passed",
+                "readiness_schema": "release-readiness/v2",
+                "readiness_kind": "publication",
+                "readiness_status": "passed",
+                "action_ticket_eligible": True,
+                "input_sha256": action["input_sha256"],
+                "expires_at": "2099-01-01T00:00:00Z",
+            },
+        }]
+        manifest = self.project / "unresolved-release-contract.json"
+        manifest.write_text(json.dumps(manifest_value), encoding="utf-8")
+
+        rejected = self.prompt("context-guard adopt unresolved-release-contract.json")
+
+        self.assertIn(
+            "exact candidate commit",
+            rejected["hookSpecificOutput"]["additionalContext"],
+        )
+        self.assertEqual(self.state()["execution"]["contract"]["state"], "absent")
+
+    @mock.patch.object(cg, "repository_commit", return_value="a" * 40)
+    def test_pre_tool_exact_ticket_is_consumed_only_after_success(
+        self, _commit: mock.Mock
+    ) -> None:
+        self.prompt("授权在精确候选上创建 v1.2.3 release tag。")
+        state = self.state()
+        source = state["prompts"][0]
+        pre_payload = self.payload(
+            "PreToolUse", tool_name="exec_command",
+            tool_input={"cmd": "git tag v1.2.3"},
+            tool_use_id="tool-release-1",
+        )
+        action = cg.classify_pre_tool_action(pre_payload)
+        self.assertIsNotNone(action)
+        manifest_value = self.execution_manifest()
+        manifest_value["authorization_candidates"] = [{
+            "id": "candidate-release-tag",
+            "prompt_id": source["id"],
+            "prompt_sha256": source["sha256"],
+            "semantic_action_id": action["semantic_action_id"],
+            "canonical_target_id": action["canonical_target_id"],
+            "write_surface_id": action["write_surface_id"],
+            "binding": "deterministic",
+            "ticket_binding": {
+                "ticket_schema": "action-ticket/v1",
+                "repository_id": action["repository_id"],
+                "candidate_commit": action["candidate_commit"],
+                "release_version": action["release_version"],
+                "closure_sha256": "a" * 64,
+                "readiness_sha256": "b" * 64,
+                "closure_status": "passed",
+                "readiness_schema": "release-readiness/v2",
+                "readiness_kind": "publication",
+                "readiness_status": "passed",
+                "action_ticket_eligible": True,
+                "input_sha256": action["input_sha256"],
+                "expires_at": "2099-01-01T00:00:00Z",
+            },
+        }]
+        manifest = self.project / "release-contract.json"
+        manifest.write_text(json.dumps(manifest_value), encoding="utf-8")
+        adopted = self.prompt("context-guard adopt release-contract.json")
+        self.assertIn("adopted explicitly", json.dumps(adopted))
+
+        allowed = cg.dispatch(pre_payload)
+        self.assertEqual(
+            allowed["hookSpecificOutput"]["permissionDecision"], "allow"
+        )
+        self.assertEqual(
+            self.state()["execution"]["action_tickets"][0]["state"], "in_flight"
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse", tool_name="exec_command",
+                tool_input=pre_payload["tool_input"],
+                tool_response={"exit_code": 1, "output": "failed"},
+                tool_use_id="tool-release-1", tool_error="failed",
+            )
+        )
+        self.assertEqual(
+            self.state()["execution"]["action_tickets"][0]["state"], "reserved"
+        )
+        allowed_retry = cg.dispatch(pre_payload)
+        self.assertEqual(
+            allowed_retry["hookSpecificOutput"]["permissionDecision"], "allow"
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse", tool_name="exec_command",
+                tool_input=pre_payload["tool_input"],
+                tool_response={"exit_code": 0, "output": "ok"},
+                tool_use_id="tool-release-1",
+            )
+        )
+        ticket = self.state()["execution"]["action_tickets"][0]
+        self.assertEqual(ticket["state"], "consumed")
+        self.assertEqual(ticket["attempt_count"], 2)
+        denied_reuse = cg.dispatch(pre_payload)
+        self.assertEqual(
+            denied_reuse["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+    @mock.patch.object(cg, "repository_commit", return_value="a" * 40)
+    def test_pre_tool_unknown_result_invalidates_ticket_without_retry(
+        self, _commit: mock.Mock
+    ) -> None:
+        self.prompt("授权在精确候选上创建 v1.2.3 release tag。")
+        state = self.state()
+        source = state["prompts"][0]
+        pre_payload = self.payload(
+            "PreToolUse",
+            tool_name="exec_command",
+            tool_input={"cmd": "git tag v1.2.3"},
+            tool_use_id="tool-release-unknown",
+        )
+        action = cg.classify_pre_tool_action(pre_payload)
+        self.assertIsNotNone(action)
+        manifest_value = self.execution_manifest()
+        manifest_value["authorization_candidates"] = [{
+            "id": "candidate-release-tag",
+            "prompt_id": source["id"],
+            "prompt_sha256": source["sha256"],
+            "semantic_action_id": action["semantic_action_id"],
+            "canonical_target_id": action["canonical_target_id"],
+            "write_surface_id": action["write_surface_id"],
+            "binding": "deterministic",
+            "ticket_binding": {
+                "ticket_schema": "action-ticket/v1",
+                "repository_id": action["repository_id"],
+                "candidate_commit": action["candidate_commit"],
+                "release_version": action["release_version"],
+                "closure_sha256": "a" * 64,
+                "readiness_sha256": "b" * 64,
+                "closure_status": "passed",
+                "readiness_schema": "release-readiness/v2",
+                "readiness_kind": "publication",
+                "readiness_status": "passed",
+                "action_ticket_eligible": True,
+                "input_sha256": action["input_sha256"],
+                "expires_at": "2099-01-01T00:00:00Z",
+            },
+        }]
+        manifest = self.project / "unknown-result-release-contract.json"
+        manifest.write_text(json.dumps(manifest_value), encoding="utf-8")
+        self.prompt("context-guard adopt unknown-result-release-contract.json")
+
+        allowed = cg.dispatch(pre_payload)
+        self.assertEqual(
+            allowed["hookSpecificOutput"]["permissionDecision"], "allow"
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="exec_command",
+                tool_input=pre_payload["tool_input"],
+                tool_response="external state was not confirmed",
+                tool_use_id="tool-release-unknown",
+            )
+        )
+
+        self.assertEqual(
+            self.state()["execution"]["action_tickets"][0]["state"],
+            "invalidated",
+        )
+        self.assertEqual(
+            cg.dispatch(pre_payload)["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+
+    def test_pre_tool_b_tier_requires_exact_root_target_and_c_is_neutral(self) -> None:
+        self.prompt("推送 origin 的 main 分支，但不要强制推送。")
+        allowed = cg.dispatch(
+            self.payload(
+                "PreToolUse", tool_name="exec_command",
+                tool_input={"cmd": "git push origin main"}, tool_use_id="push-1",
+            )
+        )
+        self.assertEqual(allowed["hookSpecificOutput"]["permissionDecision"], "allow")
+        denied = cg.dispatch(
+            self.payload(
+                "PreToolUse", tool_name="exec_command",
+                tool_input={"cmd": "git push upstream main"}, tool_use_id="push-2",
+            )
+        )
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(
+            cg.dispatch(
+                self.payload(
+                    "PreToolUse", tool_name="exec_command",
+                    tool_input={"cmd": "git commit -m local"}, tool_use_id="commit-1",
+                )
+            ),
+            {},
+        )
+
+    def test_pre_tool_b_tier_denies_unresolved_remote_target(self) -> None:
+        self.prompt("明确 push main，但没有指定 remote。")
+
+        result = cg.dispatch(
+            self.payload(
+                "PreToolUse", tool_name="exec_command",
+                tool_input={"cmd": "git push"}, tool_use_id="push-unresolved",
+            )
+        )
+
+        self.assertEqual(
+            result["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn(
+            "exact remote/ref target",
+            result["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+
+    def test_pre_tool_scans_chained_and_wrapped_high_risk_commands(self) -> None:
+        self.prompt("只运行本地检查，不创建 tag，不发布。")
+        commands = (
+            "git status --short && git tag v1.2.3",
+            "git status --short\ngh release create v1.2.3 --notes test",
+            "/bin/zsh -lc 'git tag v1.2.3'",
+            "powershell -NoProfile -Command \"gh release delete v1.2.3\"",
+        )
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                result = cg.dispatch(
+                    self.payload(
+                        "PreToolUse",
+                        tool_name="exec_command",
+                        tool_input={"cmd": command},
+                        tool_use_id=f"chained-{index}",
+                    )
+                )
+                self.assertEqual(
+                    result["hookSpecificOutput"]["permissionDecision"],
+                    "deny",
+                )
+
+    def test_pre_tool_rejects_multiple_remote_mutations_in_one_tool_call(self) -> None:
+        self.prompt("推送 origin 的 main 分支，但不授权 tag 或 Release。")
+        commands = (
+            "git push origin main && git tag v1.2.3",
+            "gh release edit v1.2.3 --notes one; gh release edit v1.2.3 --notes two",
+            "git push origin main && /usr/local/bin/npm publish",
+            "npm publish; npm unpublish package-name",
+        )
+        for index, command in enumerate(commands):
+            with self.subTest(command=command):
+                payload = self.payload(
+                    "PreToolUse",
+                    tool_name="exec_command",
+                    tool_input={"cmd": command},
+                    tool_use_id=f"compound-{index}",
+                )
+                action = cg.classify_pre_tool_action(payload)
+                self.assertIsNotNone(action)
+                self.assertEqual(action["tier"], "A")
+                self.assertEqual(
+                    action["semantic_action_id"],
+                    "compound_remote_mutation",
+                )
+                self.assertEqual(
+                    cg.dispatch(payload)["hookSpecificOutput"]["permissionDecision"],
+                    "deny",
+                )
+
+    def test_local_tag_delete_remains_c_tier_neutral(self) -> None:
+        self.prompt("只删除本地未推送的 v1.2.3 tag。")
+
+        self.assertEqual(
+            cg.dispatch(
+                self.payload(
+                    "PreToolUse",
+                    tool_name="exec_command",
+                    tool_input={"cmd": "git tag --delete v1.2.3"},
+                    tool_use_id="local-tag-delete",
+                )
+            ),
+            {},
+        )
+
+    def test_cleanup_work_unit_rejects_implicit_product_edit(self) -> None:
+        self.prompt("只做已审查字节的合并和清理。")
+        state = self.state()
+        self.assertEqual(state["work_units"][-1]["kind"], "cleanup")
+        denied = cg.dispatch(
+            self.payload(
+                "PreToolUse", tool_name="apply_patch",
+                tool_input={"patch": "change product behavior"},
+                tool_use_id="patch-1",
+            )
+        )
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_schema7_normal_lifecycle_creates_no_execution_ticket(self) -> None:
         self.prompt(
@@ -5246,6 +5803,7 @@ class ContextGuardTests(unittest.TestCase):
             set(hooks),
             {
                 "UserPromptSubmit",
+                "PreToolUse",
                 "PostToolUse",
                 "PreCompact",
                 "SessionStart",
