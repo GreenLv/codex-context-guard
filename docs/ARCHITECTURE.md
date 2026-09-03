@@ -155,10 +155,11 @@ plan mirror remains read-only.
 identity changes (release-tag creation or push, registry publish/yank, and
 GitHub Release create/update/delete/upload) require one exact, unexpired
 `action-ticket/v1`. The ticket binds repository, commit, tag/version,
-`candidate-closure/v1`, passing publication `release-readiness/v2`, normalized
-tool input, contract revision, authorization source, and expiry. It is reserved
-for one tool-use identity, consumed after success, returned to reserved only
-after a failed identical call, and invalidated by candidate or contract drift.
+`candidate-closure/v1`, passing publication `release-readiness/v3` or explicit
+legacy `v2`, normalized tool input, contract revision, authorization source,
+and expiry. Unknown readiness schemas fail closed. The ticket is reserved for
+one tool-use identity, consumed after success, returned to reserved only after
+a failed identical call, and invalidated by candidate or contract drift.
 
 B-tier ordinary remote push, force-push, and remote-branch deletion requires
 the latest root-user prompt to name both the action and exact remote/ref target;

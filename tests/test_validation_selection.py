@@ -67,6 +67,16 @@ class ValidationSelectionTests(unittest.TestCase):
         self.assertEqual(plan["contracts"], ["context_guard_semantics_v1", "digest_v3"])
         self.assertEqual(plan["peer_gates"], {"dsh_context_guard": ["contract_tests"]})
 
+    def test_release_authorization_contract_selects_codex_sync_peer_gate(self) -> None:
+        plan = self.classify("contracts/release-authorization-compatibility.json")
+        self.assertEqual(plan["contracts"], ["release_authorization_compatibility_v1"])
+        self.assertEqual(
+            plan["peer_gates"],
+            {"codex_sync": ["release_contract_tests"]},
+        )
+        self.assertIn("cross_repository_contract", plan["invalidates"])
+        self.assertIn("publication_identity", plan["invalidates"])
+
     def test_conformance_test_code_does_not_invalidate_peer_contract(self) -> None:
         plan = self.classify("tests/test_conformance_fixtures.py")
         self.assertEqual(plan["contracts"], [])

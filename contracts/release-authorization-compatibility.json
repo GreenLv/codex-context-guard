@@ -1,0 +1,15 @@
+{
+  "schema": "release-authorization-compatibility/v1",
+  "readiness_producer": {
+    "owner": "repository-release",
+    "current_schema": "release-readiness/v3"
+  },
+  "ticket_consumer": {
+    "contract": "action-ticket/v1",
+    "accepted_readiness_schemas": [
+      "release-readiness/v2",
+      "release-readiness/v3"
+    ],
+    "unknown_schema_policy": "reject"
+  }
+}

@@ -8,15 +8,18 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Highlights
 
+- **Release approval works with the current readiness receipt again.** Context Guard accepts the `release-readiness/v3` result produced by `repository-release`, preserves explicit `v2` compatibility, and still rejects every unknown version.
 - **Upgrades can cleanly leave the old managed marketplace staging path.** The installer recognizes the exact legacy `codex-context-guard.marketplace` directory only when its repository identity matches Context Guard, then moves registration to the current commit-addressed staging copy.
+- **A future readiness version cannot silently strand release authorization.** The producer and ticket-consumer allowlist now share a machine-readable compatibility bridge that must be revalidated as a cross-repository contract.
 
 ### Changes
 
 - The migration recognizer accepts the one historical fixed-name managed directory in addition to commit-addressed staging names. Unrelated paths and repositories remain rejected.
+- A machine-readable cross-repository bridge locks the readiness producer to `v3` and the `action-ticket/v1` consumer to the exact `v2`/`v3` allowlist.
 
 ### Validation
 
-- A focused regression recreates the legacy registration and requires one remove/add migration to the current sanitized staging root. Full source and native candidate acceptance remain release gates.
+- Focused regressions recreate the legacy registration, exercise a complete `v3` one-shot ticket, retain `v2`, and reject an unknown `v4`. Full source and native candidate acceptance remain release gates.
 
 ## 0.11.0 - 2026-09-03
 

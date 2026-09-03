@@ -266,8 +266,11 @@ not as a measure of code volume.
 - `0.11.1` is an unreleased maintenance candidate. It recognizes the exact
   historical fixed-name managed marketplace staging directory only when its
   manifest still binds to this repository, then migrates registration to the
-  current commit-addressed staging copy. Schema 9, all public protocol and
-  classifier identifiers, the nine-Hook wire, and the Python floor are unchanged.
+  current commit-addressed staging copy. It also accepts current publication
+  readiness `v3` in `action-ticket/v1` while retaining an exact legacy `v2`
+  allowlist and rejecting unknown readiness versions. Schema 9, all public
+  protocol and classifier identifiers, the nine-Hook wire, and the Python floor
+  are unchanged.
 - `0.11.0` is the 2026-09-03 execution-authority release. It advances private
   state to schema 9, Stop protocol to 2.1.0, and Execution protocol to 2.0.0.
   The ninth Hook, `PreToolUse`, enforces exact one-shot action tickets for

@@ -33,6 +33,10 @@ PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "2.0.0"
 WORK_UNIT_PROTOCOL_VERSION = "1.0.0"
 ADAPTER_MANIFEST_VERSION = "1.0.0"
+CURRENT_RELEASE_READINESS_SCHEMA = "release-readiness/v3"
+SUPPORTED_RELEASE_READINESS_SCHEMAS = frozenset(
+    {"release-readiness/v2", CURRENT_RELEASE_READINESS_SCHEMA}
+)
 CLAUSE_DERIVATION_VERSION = "1.0.0"
 ADAPTER_MANIFEST = {
     "version": ADAPTER_MANIFEST_VERSION,
@@ -1336,7 +1340,8 @@ def validate_execution_state(execution: Any) -> None:
                 raise StateIntegrityError("authorization ticket binding schema is invalid")
             if (
                 ticket_binding.get("closure_status") != "passed"
-                or ticket_binding.get("readiness_schema") != "release-readiness/v2"
+                or ticket_binding.get("readiness_schema")
+                not in SUPPORTED_RELEASE_READINESS_SCHEMAS
                 or ticket_binding.get("readiness_kind") != "publication"
                 or ticket_binding.get("readiness_status") != "passed"
                 or ticket_binding.get("action_ticket_eligible") is not True
@@ -1488,7 +1493,8 @@ def validate_execution_state(execution: Any) -> None:
             raise StateIntegrityError("execution ticket schema is invalid")
         readiness_passed = (
             record.get("closure_status") == "passed"
-            and record.get("readiness_schema") == "release-readiness/v2"
+            and record.get("readiness_schema")
+            in SUPPORTED_RELEASE_READINESS_SCHEMAS
             and record.get("readiness_kind") == "publication"
             and record.get("readiness_status") == "passed"
             and record.get("action_ticket_eligible") is True

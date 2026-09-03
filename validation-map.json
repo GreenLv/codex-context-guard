@@ -23,6 +23,14 @@
       "peer_gates": {}
     },
     {
+      "id": "release_authorization_contract",
+      "paths": ["contracts/release-authorization-compatibility.json"],
+      "gates": ["contract_tests", "repo_contract"],
+      "invalidates": ["candidate_matrix", "cross_repository_contract", "publication_identity"],
+      "contracts": ["release_authorization_compatibility_v1"],
+      "peer_gates": {"codex_sync": ["release_contract_tests"]}
+    },
+    {
       "id": "shared_conformance",
       "paths": ["docs/SEMANTIC_COMPATIBILITY.md", "docs/upstream-deltas.json", "scripts/reference_digest_encoder.py", "tests/fixtures/conformance/**"],
       "gates": ["contract_tests", "focused_tests"],

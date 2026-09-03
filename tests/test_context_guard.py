@@ -3524,6 +3524,106 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(output["permissionDecision"], "deny")
         self.assertIn("action-ticket/v1", output["permissionDecisionReason"])
 
+    def test_release_authorization_bridge_matches_runtime_allowlist(self) -> None:
+        bridge = json.loads(
+            (
+                MODULE_PATH.parents[1]
+                / "contracts"
+                / "release-authorization-compatibility.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            bridge["readiness_producer"]["current_schema"],
+            cg.CURRENT_RELEASE_READINESS_SCHEMA,
+        )
+        self.assertEqual(
+            frozenset(bridge["ticket_consumer"]["accepted_readiness_schemas"]),
+            cg.SUPPORTED_RELEASE_READINESS_SCHEMAS,
+        )
+        self.assertEqual(bridge["ticket_consumer"]["unknown_schema_policy"], "reject")
+
+    @mock.patch.object(cg, "repository_commit", return_value="a" * 40)
+    def test_action_ticket_adoption_accepts_v3_and_rejects_unknown_schema(
+        self, _commit: mock.Mock
+    ) -> None:
+        def exercise(session: str, readiness_schema: str) -> tuple[dict, dict]:
+            self.prompt("授权在精确候选上创建 v1.2.3 release tag。", session=session)
+            source = self.state(session)["prompts"][0]
+            pre_payload = self.payload(
+                "PreToolUse",
+                session=session,
+                tool_name="exec_command",
+                tool_input={"cmd": "git tag v1.2.3"},
+                tool_use_id=f"tool-{session}",
+            )
+            action = cg.classify_pre_tool_action(pre_payload)
+            self.assertIsNotNone(action)
+            assert action is not None
+            manifest_value = self.execution_manifest()
+            manifest_value["authorization_candidates"] = [{
+                "id": "candidate-release-tag",
+                "prompt_id": source["id"],
+                "prompt_sha256": source["sha256"],
+                "semantic_action_id": action["semantic_action_id"],
+                "canonical_target_id": action["canonical_target_id"],
+                "write_surface_id": action["write_surface_id"],
+                "binding": "deterministic",
+                "ticket_binding": {
+                    "ticket_schema": "action-ticket/v1",
+                    "repository_id": action["repository_id"],
+                    "candidate_commit": action["candidate_commit"],
+                    "release_version": action["release_version"],
+                    "closure_sha256": "a" * 64,
+                    "readiness_sha256": "b" * 64,
+                    "closure_status": "passed",
+                    "readiness_schema": readiness_schema,
+                    "readiness_kind": "publication",
+                    "readiness_status": "passed",
+                    "action_ticket_eligible": True,
+                    "input_sha256": action["input_sha256"],
+                    "expires_at": "2099-01-01T00:00:00Z",
+                },
+            }]
+            manifest = self.project / f"release-contract-{session}.json"
+            manifest.write_text(json.dumps(manifest_value), encoding="utf-8")
+            result = self.prompt(f"context-guard adopt {manifest.name}", session=session)
+            return result, pre_payload
+
+        accepted, pre_payload = exercise("session-v3", "release-readiness/v3")
+        self.assertIn("adopted explicitly", json.dumps(accepted))
+        allowed = cg.dispatch(pre_payload)
+        self.assertEqual(allowed["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(
+            self.state("session-v3")["execution"]["action_tickets"][0]["readiness_schema"],
+            "release-readiness/v3",
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                session="session-v3",
+                tool_name="exec_command",
+                tool_input=pre_payload["tool_input"],
+                tool_response={"exit_code": 0, "output": "ok"},
+                tool_use_id="tool-session-v3",
+            )
+        )
+        self.assertEqual(
+            self.state("session-v3")["execution"]["action_tickets"][0]["state"],
+            "consumed",
+        )
+        denied_reuse = cg.dispatch(pre_payload)
+        self.assertEqual(
+            denied_reuse["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+        )
+
+        rejected, _ = exercise("session-v4", "release-readiness/v4")
+        self.assertIn(
+            "passed candidate closure and publication readiness",
+            rejected["hookSpecificOutput"]["additionalContext"],
+        )
+        self.assertEqual(self.state("session-v4")["execution"]["contract"]["state"], "absent")
+
     def test_release_candidate_commit_requires_a_clean_git_worktree(self) -> None:
         self.assertEqual(cg.repository_commit(self.project), "unresolved")
         subprocess.run(["git", "init", str(self.project)], check=True, capture_output=True)

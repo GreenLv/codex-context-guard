@@ -95,7 +95,8 @@ turn invalidates any unstaged or unused completion attempt from the prior turn.
   unexpired, one-shot `action-ticket/v1`.
 - A ticket binds the repository, candidate commit, release tag/version,
   passing `candidate-closure/v1`, passing publication
-  `release-readiness/v2`, normalized tool-input hash, adopted contract
+  `release-readiness/v3` (with explicit `v2` compatibility), normalized
+  tool-input hash, adopted contract
   revision, root-user authorization source, and expiry. Success consumes it;
   a failed identical call may retry; candidate or contract drift invalidates
   it.

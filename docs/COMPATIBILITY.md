@@ -24,6 +24,9 @@ behavior may change in future Codex releases and must be revalidated.
 Version 0.11.1 includes managed marketplace migration. It recognizes the
 exact historical fixed-name staging directory when its manifest still binds to
 this repository, then re-registers the current commit-addressed staging copy.
+It also restores the release authorization bridge: `action-ticket/v1` accepts
+the current `release-readiness/v3` producer output and the explicit legacy `v2`
+value, while every unknown readiness schema fails closed.
 The public state schema, Hook event set, protocol identifiers, diagnostic
 classifier version, and Python baseline are unchanged. Source and native
 candidate validation are still required before release.
