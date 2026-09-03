@@ -270,8 +270,9 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current source and published Context Guard release: `0.11.0`", compatibility
+            "Current source candidate: `0.11.1`", compatibility
         )
+        self.assertIn("Current published Context Guard release: `0.11.0`", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `2.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `2.4.0`", compatibility)
@@ -284,6 +285,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         self.assertIn("`0.10.0` advances private state to schema 8", versioning)
         self.assertIn("`0.11.0` is the 2026-09-03 execution-authority release", versioning)
+        self.assertIn("`0.11.1` is an unreleased installer-only candidate", versioning)
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)

@@ -126,7 +126,10 @@ def prior_managed_marketplace_root(
     )
     if candidate.parent != managed_parent or not candidate.is_dir():
         return False
-    if not re.fullmatch(r"[0-9a-f]{40}(?:\.marketplace)?", candidate.name):
+    if not (
+        re.fullmatch(r"[0-9a-f]{40}(?:\.marketplace)?", candidate.name)
+        or candidate.name == f"{MARKETPLACE}.marketplace"
+    ):
         return False
     expected_repository = plugin_repository(repo_root)
     return bool(

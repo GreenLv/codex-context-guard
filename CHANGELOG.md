@@ -4,6 +4,20 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.11.0` is the latest published release, built from runtime baseline `ea73bed7a387295e1f6475e743e623298413e710`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.11.1 - Unreleased
+
+### Highlights
+
+- **Upgrades can cleanly leave the old managed marketplace staging path.** The installer recognizes the exact legacy `codex-context-guard.marketplace` directory only when its repository identity matches Context Guard, then moves registration to the current commit-addressed staging copy.
+
+### Changes
+
+- The migration recognizer accepts the one historical fixed-name managed directory in addition to commit-addressed staging names. Unrelated paths and repositories remain rejected.
+
+### Validation
+
+- A focused regression recreates the legacy registration and requires one remove/add migration to the current sanitized staging root. Full source and native candidate acceptance remain release gates.
+
 ## 0.11.0 - 2026-09-03
 
 ### Highlights

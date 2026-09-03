@@ -777,6 +777,41 @@ class SafePluginInstallTests(unittest.TestCase):
         staging = manager.marketplace_staging_root(self.codex_home, current)
         self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
 
+    def test_ensure_marketplace_migrates_legacy_named_managed_staging(self) -> None:
+        current = self.codex_home / "upstreams" / manager.PLUGIN_NAME / ("b" * 40)
+        self.repo_root = current
+        self.source_root = current
+        self.write_source("0.1.3")
+        previous = current.parent / f"{manager.MARKETPLACE}.marketplace"
+        previous_manifest = previous / ".codex-plugin" / "plugin.json"
+        previous_manifest.parent.mkdir(parents=True)
+        previous_manifest.write_text(
+            json.dumps(
+                {
+                    "name": manager.PLUGIN_NAME,
+                    "version": "0.1.2",
+                    "repository": "https://github.com/GreenLv/codex-context-guard",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.marketplace_state = {
+            "name": manager.MARKETPLACE,
+            "root": str(previous),
+            "marketplaceSource": {"source": str(previous)},
+        }
+
+        self.assertTrue(self.ensure_marketplace(apply=True))
+        staging = manager.marketplace_staging_root(self.codex_home, current)
+        self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
+        self.assertEqual(
+            [call[:3] for call in self.run_calls],
+            [
+                ("plugin", "marketplace", "remove"),
+                ("plugin", "marketplace", "add"),
+            ],
+        )
+
     def test_ensure_marketplace_rejects_unrelated_same_identity_checkout(self) -> None:
         self.write_source("0.1.3")
         unrelated = self.root / "unrelated" / ("a" * 40)

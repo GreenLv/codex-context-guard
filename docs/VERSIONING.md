@@ -263,6 +263,11 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.11.1` is an unreleased installer-only candidate. It recognizes the exact
+  historical fixed-name managed marketplace staging directory only when its
+  manifest still binds to this repository, then migrates registration to the
+  current commit-addressed staging copy. Schema 9, all protocol and classifier
+  versions, the nine-Hook wire, task semantics, and Python floor are unchanged.
 - `0.11.0` is the 2026-09-03 execution-authority release. It advances private
   state to schema 9, Stop protocol to 2.1.0, and Execution protocol to 2.0.0.
   The ninth Hook, `PreToolUse`, enforces exact one-shot action tickets for
