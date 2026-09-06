@@ -26,7 +26,7 @@
 
 - Phase 5 聚焦回归证明静默成功 wire 在旧字节上失败。冻结 benchmark 报告 1140 次分类调用、11 个类别零 false deny、无常驻状态文案事件；current-behavior 套件在 16 个模块上通过 684 个测试；冻结基线 transition 审计保持 24 fixed / 0 remaining / 1 superseded / 15 inverted；仓库校验、公开树隐私审计（身份字面量规则收窄为语义边界匹配，HOL 徽章的公开账号 slug 不再误报）、Ruff、编译和九事件 self-test 全部通过。最终字节上的热路径新鲜采样通过 p95 < 50 ms 门（记录运行 p95 36.292/35.943/35.441 ms；六个热路径输入字节与更早记录运行一致，两次受桌面负载影响的采样尝试作为历史披露）。
 - macOS Phase 6 子集只使用一次性隔离 Codex home：安装/no-op/一致性/生命周期与 fresh/resume 任务通过，observe 账本和授权 canary 未发现 false deny 或 continuation。Windows 原生 R11 对同一准备态运行时树摘要独立通过全部 7 组必需门禁和清理。详细数量、来源与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
-- 准备态源码尚未形成干净的发布提交；精确提交 CI、干净提交上的 macOS portable 门禁、tag、GitHub Release、公开 readback 与正常用户运行时升级仍未执行，macOS 与 Windows 继续作为相互独立的发布门禁。
+- 干净实现提交 `8e49604` 已对同一运行时树摘要通过 macOS portable 原生门禁；只改文档的后继提交保留两端原生运行时证据。精确 main CI、tag、GitHub Release、公开 readback 与正常用户运行时升级仍未执行。
 
 ## 0.11.1 - 未发布
 

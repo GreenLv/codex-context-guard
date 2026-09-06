@@ -79,10 +79,13 @@ including the 684-test suite, isolated installation/parity/lifecycle checks,
 fresh and schema-9-resume checks, observe/shadow thresholds, authorization
 canary, and nested wrapper regressions. Cleanup left no retained task IDs. This
 is explicitly authorized remote-reported provenance, not a claim that macOS
-executed the Windows report. The prepared source is not yet a clean release
-commit: exact-commit source automation and native macOS portable acceptance are
-still required before publication, and nothing in this section is a release
-claim.
+executed the Windows report. Implementation commit
+`8e49604f57ebdb4d9cee6ea14208b56d3f4e27d3` subsequently passed the macOS
+portable native profile on the same runtime-tree digest: exact clean source
+identity, isolated install/no-op/parity/lifecycle, and cleanup all passed.
+Documentation-only successors preserve both native runtime results, but still
+require their own exact-main automation and publication checks. Nothing in this
+section is a release claim.
 
 ## 0.11.0 release status
 
