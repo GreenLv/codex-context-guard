@@ -6209,8 +6209,9 @@ class ContextGuardTests(unittest.TestCase):
         )
         generic_python3.chmod(0o755)
         (fake_bin / "python3.12").symlink_to(sys.executable)
+        (fake_bin / "dirname").symlink_to(shutil.which("dirname"))
         environment = os.environ.copy()
-        environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+        environment["PATH"] = str(fake_bin)
         result = subprocess.run(
             ["/bin/sh", str(launcher), "self-test"],
             text=True,
@@ -6240,8 +6241,9 @@ class ContextGuardTests(unittest.TestCase):
             encoding="utf-8",
         )
         old_python3.chmod(0o755)
+        (fake_bin / "dirname").symlink_to(shutil.which("dirname"))
         environment = os.environ.copy()
-        environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+        environment["PATH"] = str(fake_bin)
         result = subprocess.run(
             ["/bin/sh", str(launcher), "self-test"],
             text=True,
