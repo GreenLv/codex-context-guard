@@ -134,6 +134,52 @@ class PublicContractTests(unittest.TestCase):
             self.assertTrue(any("macOS user-specific path" in item for item in issues))
             self.assertTrue(any("generated/private" in item for item in issues))
 
+    def test_identity_literals_match_on_semantic_boundaries_only(self) -> None:
+        """The built-in local-username literal fires on standalone names,
+        ``user=<name>`` bindings, email local parts, and local user paths,
+        but a longer public account slug that merely shares the prefix (the
+        HOL badge affiliate URL embeds such a slug) is not a private literal.
+        The real literal is constructed at runtime so this test's own bytes
+        never carry it."""
+        name = "lgr" + "59"
+        slug = name + "45"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            sources = {
+                "standalone.md": f"contact {name} about the release\n",
+                "user_param.md": f"see https://example.test/?user={name} for setup\n",
+                "email.md": f"mail {name}@example.test for access\n",
+                "mac_path.md": f"notes live under /Users/{name}/notes\n",
+                "windows_path.txt": "notes live under C:\\Users\\" + name + "\\notes\n",
+                "public_slug.md": f"badge https://hol.org/go/guard/{slug}\n",
+                "public_slug_param.md": f"promo {slug.upper()} is public\n",
+            }
+            for filename, text in sources.items():
+                (root / filename).write_text(text, encoding="utf-8")
+            issues = audit.findings(root)
+            flagged = {item.split(":")[0] for item in issues}
+            for filename in (
+                "standalone.md",
+                "user_param.md",
+                "email.md",
+                "mac_path.md",
+                "windows_path.txt",
+            ):
+                self.assertIn(
+                    filename,
+                    flagged,
+                    f"{filename} must stay a privacy finding",
+                )
+            self.assertNotIn("public_slug.md", flagged, str(issues))
+            self.assertNotIn("public_slug_param.md", flagged, str(issues))
+
+    def test_extra_forbidden_literals_stay_exact_substrings(self) -> None:
+        """The --forbid extension point keeps its flat substring semantics."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "note.md").write_text("token abc123x\n", encoding="utf-8")
+            self.assertEqual(audit.findings(root, ["abc123"]), ["note.md: forbidden private literal"])
+
     def test_readmes_keep_bilingual_diagram_and_example_parity(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
         chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
@@ -270,13 +316,14 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current source candidate: `0.11.1`", compatibility
+            "Current source candidate: `0.12.0`", compatibility
         )
         self.assertIn("Current published Context Guard release: `0.11.0`", compatibility)
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `2.0.0`", compatibility)
-        self.assertIn("Diagnostic classifier: `2.4.0`", compatibility)
-        self.assertIn("Stop protocol: `2.1.0`", compatibility)
+        self.assertIn("Diagnostic classifier: `3.2.1`", compatibility)
+        self.assertIn("Private state schema: `10`", compatibility)
+        self.assertIn("Stop protocol: `3.0.0`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"
         )
@@ -285,7 +332,9 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.7.6` keeps the 0.7.5 protocol", versioning)
         self.assertIn("`0.10.0` advances private state to schema 8", versioning)
         self.assertIn("`0.11.0` is the 2026-09-03 execution-authority release", versioning)
-        self.assertIn("`0.11.1` is an unreleased maintenance candidate", versioning)
+        self.assertIn(
+            "`0.12.0` is an unreleased behavior/protocol candidate", versioning
+        )
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
         self.assertIn("`0.8.5` corrects commit-addressed consumer upgrades", versioning)

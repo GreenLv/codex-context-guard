@@ -57,12 +57,15 @@ def commands_for(value: Any) -> list[list[str]]:
     validate_repo = [sys.executable, "scripts/validate_public_repo.py", "."]
     audit_tree = [sys.executable, "scripts/audit_public_tree.py", "."]
     public_contract = [sys.executable, "-m", "unittest", "tests.test_public_contract"]
+    current_behavior = [sys.executable, "scripts/run_current_behavior_suite.py"]
+    historical_transition = [sys.executable, "scripts/check_phase3_transition.py"]
     commands: list[list[str]] = []
     if "full_candidate" in gates:
         commands.extend([
             validate_repo,
             audit_tree,
-            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+            current_behavior,
+            historical_transition,
             [sys.executable, "scripts/context_guard.py", "self-test"],
             ["ruff", "check", "."],
             [sys.executable, "-m", "compileall", "-q", "scripts", "tests", "tools"],
@@ -83,9 +86,7 @@ def commands_for(value: Any) -> list[list[str]]:
                 "tests.test_context_guard", "tests.test_context_guard_v095",
             ])
         if "focused_tests" in gates:
-            commands.append([
-                sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"
-            ])
+            commands.extend([current_behavior, historical_transition])
         if "install_lifecycle" in gates:
             commands.append([
                 sys.executable, "-m", "unittest",

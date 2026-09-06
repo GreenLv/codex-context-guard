@@ -306,9 +306,9 @@ class IncidentCorpusTests(unittest.TestCase):
             self.assertEqual(
                 [item.name for item in generated],
                 [
-                    "stop-2-1-0.json",
-                    "stop-2-1-0.manifest.json",
-                    "stop-2-1-0.md",
+                    "stop-3-0-0.json",
+                    "stop-3-0-0.manifest.json",
+                    "stop-3-0-0.md",
                 ],
             )
             tool = load_tool()
@@ -320,7 +320,7 @@ class IncidentCorpusTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         report = json.loads(result.stdout)
-        self.assertEqual(report["plugin_stop_protocol"], "2.1.0")
+        self.assertEqual(report["plugin_stop_protocol"], "3.0.0")
         self.assertEqual(report["plugin_execution_protocol"], "2.0.0")
         self.assertEqual(report["fixtures"], report["passed"])
         self.assertEqual(report["false_continuations"], 0)

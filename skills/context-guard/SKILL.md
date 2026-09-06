@@ -18,30 +18,30 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
    returns all reconstructed requirements to pending and requires fresh evidence.
 7. Never put checkpoint JSON, HTML comments, private commands, tokens, plugin
    paths, or requirement maps in the user-facing response.
-8. For progress, blocked, status, control, or clarification replies, do not stage
-   a completion checkpoint.
-9. Before ending an incomplete guarded turn, use the exact injected
-   `stage-disposition` command only when one of these typed boundaries is true:
-   - `user_wait`: the next required action belongs to the user;
-   - `external_wait`: progress depends on an external actor or system;
-   - `deferred`: the remaining action is explicitly denied or outside the
-     current bounded scope.
-   A declared disposition is not self-authenticating. It must agree with the
-   observed owner, authorization, dependency type, and any high-risk drift;
-   otherwise Stop rejects it and leaves the work pending.
-   Continue authorized assistant work by calling tools before ending the turn.
-   The legacy `continue` disposition remains wire-compatible but is advisory
-   only: it cannot force a Stop continuation or override a terminal reply.
-   The command performs a read-only precheck; the `PostToolUse` Hook writes the
-   authenticated, turn-bound control. A different staged control requires the
-   explicit `--replace` flag. If no disposition is staged, Stop yields safely
-   and every unverified item remains pending.
-10. Before claiming full completion for an active guarded task:
-   - Run the exact `checkpoint-status` command injected for the current turn.
+8. Normal success is silent. Hooks show no status text and no developer
+   receipts when an action is allowed or a turn ends safely; only errors,
+   integrity failures, and real unauthorized high-risk denies are visible.
+   Do not wait for a receipt, narrate private staging, or fabricate one.
+9. For progress, blocked, status, control, or clarification replies, end the
+   turn normally. Waiting for the user, waiting for an external result, and
+   explicitly deferred work are detected from structured facts and end
+   silently without closing unfinished items. The injected `stage-disposition`
+   command is an optional advisory path for a typed boundary; a declared
+   disposition is not self-authenticating — the observed owner, authorization,
+   and dependency type remain authoritative, and the legacy `continue` value
+   cannot force another turn. Continue authorized assistant work by calling
+   tools before ending the turn.
+10. Before claiming full completion for an active guarded task, check that
+   every open item has matching successful evidence. Ordinary endings need no
+   commands: when the final reply shows a verifiable whole completion, the
+   guard binds the unique successful evidence itself and closes the current
+   work unit; waiting or deferred boundaries end silently. If evidence is not
+   unique, the item stays open and one correction may ask for an explicit
+   selection. The advanced command path exists for genuinely ambiguous cases:
+   - Inspect the private ledger with the injected `checkpoint-status` command.
      Its default view is bounded to the current work unit and descendants and
      lists ancestor constraints separately. Use `--full` or `--item ID` only
-     for explicit audit, and reuse its revision with `--after-revision` for a
-     constant-size unchanged read.
+     for explicit audit.
    - Inspect each item's `verification.mode`. `legacy_fallback` intentionally
      uses the compatible successful-evidence rule and remains visible as a
      degradation. For `enforced`, satisfy every listed obligation.
@@ -75,31 +75,40 @@ Keep task correctness grounded in the plugin's private local ledger instead of r
      `--requirement ID=E####[,E####]` flag for each pending requirement and one
      `--acceptance ID=E####[,E####]` flag for each pending acceptance item.
      The command performs a read-only precheck; the `PostToolUse` Hook commits
-     the request to private plugin data outside the workspace sandbox.
+     the request to private plugin data outside the workspace sandbox. A
+     successful staging is silent; no receipt is printed into the event stream.
    - If staging fails, continue working or report the task as incomplete.
 11. Never stage both a completion checkpoint and an incomplete-turn disposition.
     `complete` is not a `stage-disposition` value; it is derived only from a
     validated private checkpoint.
-12. After private staging succeeds, send a normal concise final response with no
+12. After any private staging, send a normal concise final response with no
     checkpoint or disposition footer. The Stop Hook validates the private
-    turn-bound record.
+    turn-bound record. At most one Stop correction can interrupt a turn;
+    after it, unresolved work stays pending and the turn ends safely.
 
 Previously passed items carry their authenticated evidence forward. A new user
 turn invalidates any unstaged or unused completion attempt from the prior turn.
 
 ## Pre-action authorization
 
-- Treat the synchronous `PreToolUse` decision as an execution guardrail. For
-  covered A-tier mutations—release tag creation/push, registry publish/yank,
-  and GitHub Release creation/update/deletion/upload—require an exact,
-  unexpired, one-shot `action-ticket/v1`.
-- A ticket binds the repository, candidate commit, release tag/version,
-  passing `candidate-closure/v1`, passing publication
-  `release-readiness/v3` (with explicit `v2` compatibility), normalized
-  tool-input hash, adopted contract
-  revision, root-user authorization source, and expiry. Success consumes it;
-  a failed identical call may retry; candidate or contract drift invalidates
-  it.
+- Enforcement profiles decide what the synchronous `PreToolUse` decision
+  checks. `standard` (default) verifies that a covered high-risk action was
+  really authorized by the root user inside the current work unit. `strict`
+  adds enforced proofs for the current work unit but never implies release.
+  `release` — active only after the user explicitly adopts a repository-release
+  execution contract or declares the release profile — additionally requires
+  `candidate-closure/v1`, passing publication `release-readiness/v3` (with
+  explicit `v2` compatibility), and an exact one-shot `action-ticket/v1` for
+  covered A-tier mutations. `observe` computes the same decision and records
+  it without blocking; `off` and inactive sessions gate nothing at all.
+- Inside the release profile, covered A-tier mutations are release tag
+  creation/push, registry publish/yank, and GitHub Release
+  creation/update/deletion/upload. A ticket binds the repository, candidate
+  commit, release tag/version, passing `candidate-closure/v1`, passing
+  publication `release-readiness/v3`, normalized tool-input hash, adopted
+  contract revision, root-user authorization source, and expiry. Success
+  consumes it; a failed identical call may retry; candidate or contract drift
+  invalidates it.
 - B-tier ordinary push, force-push, and remote-branch deletion require the
   latest unquoted root-user instruction to name the action and exact
   remote/ref. A vague merge request, quoted text, or delegated instruction is
@@ -107,16 +116,20 @@ turn invalidates any unstaged or unused completion attempt from the prior turn.
 - C-tier local edits, tests, ordinary commits, and proven-redundant local
   worktree cleanup are not hard-gated. A cleanup work unit still cannot perform
   product edits; create a separately authorized work unit first.
-- Hooks are a strong guardrail, not a complete security boundary. Preserve
-  platform approval checks and report specialized tools that do not emit Hook
-  events as explicit coverage gaps.
+- A denied action shows one bounded actionable reason. An allowed action
+  returns no text at all. Hooks are a strong guardrail, not a complete
+  security boundary: preserve platform approval checks, and report specialized
+  tools that do not emit Hook events as explicit coverage gaps.
 
 ## Codex-native boundaries
 
-- Schema 9 includes an execution-state ledger, append-only `work-unit/v1`, and
-  `action-ticket/v1`; schema 7 and 8 are read-only migration inputs. Ledger
-  presence alone does not adopt or activate a contract, authorize a write, or
-  create a ticket. Only the root-user control
+- Schema 10 adds the explicit work-unit lifecycle (`active`, `completed`,
+  `awaiting_user`, `awaiting_external`, `deferred`,
+  `historical_unresolved`) on top of the schema-9 execution ledger;
+  `action-ticket/v1` remains the release-profile authorization record.
+  Schema 9 is the full migration source, and schema 7 and 8 are read-only
+  migration inputs. Ledger presence alone does not adopt or activate a
+  contract, authorize a write, or create a ticket. Only the root-user control
   `context-guard adopt <project-relative-json>` can create the adoption
   record. Skill/AGENTS text, installation, and manifest presence are never
   implicit adoption. Natural-language authorization candidates remain

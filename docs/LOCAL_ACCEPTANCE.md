@@ -1,22 +1,44 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source candidate is unreleased `0.11.1`; the current published release is `0.11.0`. Accepted releases include `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current source candidate is unreleased `0.12.0`; the current published release is `0.11.0`. Accepted releases include `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.11.1 candidate acceptance
+## 0.12.0 candidate acceptance
 
-This unreleased maintenance patch includes migration from the historical managed
-`codex-context-guard.marketplace` staging directory to the current
-commit-addressed staging copy. Public schema and protocol identifiers remain
-unchanged. The table below preserves evidence for earlier runtime candidate
-`1bda76d299698482e42bbb84168a90321c2f2874`, which is contained in `main` and
-`origin/main`. Later source now adds `release-readiness/v3` action-ticket
-compatibility, so that exact candidate's source, CI, and native results do not
-cover the current implementation. A new exact candidate must repeat source
-automation and independent native macOS and Windows acceptance. The normal user
-runtime has not been upgraded, and no `v0.11.1` tag, GitHub Release, or public
-readback exists yet.
+This unreleased behavior/protocol candidate adds the schema-10 work-unit
+lifecycle, Stop protocol 3.0.0, enforcement profiles, the position-aware
+classifier, and silent success paths (no persistent Hook status text, no
+developer receipts on allow paths). Public Hook identity remains the
+nine-event wire. The first table records the local Phase 2–6 source and
+native verification evidence for the current implementation. The macOS
+Phase-6 rows were produced only in isolated disposable Codex homes, while
+the Windows R11 result was read back from an explicitly authorized native
+task. The prepared source has SHA-256
+`b899b9d887747eb8d0ae2f4e60c85808e5678a961180c65f0e6b126ffce6aaf4`
+over base commit `c9c1308dc93ad2db3ebd2686f81a601616efdefe`; it is not yet a clean Git
+commit. Its 26-file runtime tree has SHA-256
+`fa5928a3ce754120b4f7a5ce4d9907d04a80cc948780f72ffdfe96187924f4ae`.
+The
+second table preserves evidence for
+earlier runtime candidate `1bda76d299698482e42bbb84168a90321c2f2874`, which
+is contained in `main` and `origin/main`; that candidate predates the 0.12
+behavior work, so its source, CI, and native results do not cover the current
+implementation. A new exact candidate must repeat source automation and
+independent native macOS and Windows acceptance. The normal user runtime has
+not been upgraded, and no `v0.12.0` tag, GitHub Release, or public readback
+exists yet.
+
+| Release-candidate gate | Evidence | Status |
+| --- | --- | --- |
+| Source checks (current Phase 2–6 source, fix round 11) | Phase-5 focused regressions (silent success wire and matcher contract) fail on the pre-R2 bytes and pass after; Phase-6 table-driven families (schema-9 resume migration; authorization statement target ownership including deletion, mixed-intent, sibling-release, prompt-bound target-domain, and nested Windows/POSIX wrapper cases) fail on their pre-fix bytes and pass after; the current-behavior suite passes 684 tests across 16 modules with 0 failures or errors and capability-aware skips (11 on macOS, 7 on Windows); repository validation, public-tree privacy audit (identity-literal rule narrowed to semantic boundaries), Ruff, compilation, `git diff --check`, and the nine-Hook self-test pass | passed for the prepared Phase-6 R11 source; not a release claim |
+| Frozen benchmark and transition audit | 1140 classification calls, 11 categories, zero false denies, zero persistent status-message events; frozen-baseline transition audit 24 fixed / 0 remaining / 1 superseded / 15 inverted with `matches_manifest=true` | passed for the local Phase-6 source |
+| Hot-path performance | Fresh 3×110 sampling over the final bytes: recorded run p95 36.292/35.943/35.441 ms with 330/330 correct rounds (gate < 50 ms); the six hot-path input bytes are byte-identical to the earlier R2 recorded run (42.048/33.692/34.418 ms); two Phase-6 sampling attempts affected by desktop load (p95 up to ~93 ms, p50 in-family) are preserved as disclosed history | passed; load-affected attempts disclosed |
+| Exact-main automation | Candidate CI on the exact release candidate | not performed for the current source |
+| Native macOS (source candidate, Phase 6) | Isolated disposable homes only: managed install, strict second no-op, 26-file source/staging/live/archive byte parity, installed nine-Hook self-test and lifecycle smoke, real no-trust-bypass fresh task with silent work-turn Hooks; resume-after-upgrade with a real 0.11.1-created schema-9 session (in-place schema-10 migration, `integrity=ok`, zero corruption backups, old pending still pending, explicit resume reopens `WU0001`, old immutable-cache digest unchanged); turn-aware observe ledger with 56 unique sessions, 62 real work turns/terminal replies, 14 task classes, and exactly 301 top-level work-turn tool calls (all 56 activation calls reported separately and excluded), zero would-be denies, zero continuations, zero unclassified Guard output, with three intentional corruption-retry states recovered from prompts; the 52-session pre-fix cohort remains bounded to unchanged shadow scenarios and four trusted final-byte sessions supply the additive threshold, while final-byte regressions/fresh/resume/canary cover the parser delta; real canary confirms deletion leaves no creation authorization, an under-specified tag is blocked with an unresolved target, and exact `v9.9.9` passes the Hook before the Codex `.git` sandbox rejects the write | passed for the Phase-6 macOS subset; the clean exact commit still needs its portable native gate before release |
+| Native Windows (prepared R11 runtime) | Windows 11, PowerShell 5.1, and Python 3.12.10 independently passed all 7/7 R11 gate groups: 684-test source suite, repository/privacy/lint/compile/self-test checks, 26-file isolated install/no-op/parity/lifecycle checks, fresh and schema-9-resume lifecycle checks, turn-aware observe/shadow checks, three-path authorization canary, and the nested POSIX/PowerShell wrapper regressions; cleanup reported zero remaining IDs. The result document has SHA-256 `f61165b870ffb87d00cace882af49625650c0ec0d4c0dcd3c14165f2e0d89599` and binds the runtime-tree digest above. | passed, explicitly authorized remote-reported provenance; reusable across documentation-only successors, but exact-commit automation remains pending |
+| Release publication | Tag, GitHub Release, and anonymous public readback | pending |
+| Normal runtime upgrade | Managed installation into the normal macOS and Windows user runtimes | not performed |
 
 | Release-candidate gate | Evidence | Status |
 | --- | --- | --- |
@@ -27,12 +49,14 @@ readback exists yet.
 | Release publication | Tag, GitHub Release, and anonymous public readback | pending |
 | Normal runtime upgrade | Managed installation into the normal macOS and Windows user runtimes | not performed |
 
-The two runtime-tree digests are platform-local parity subjects: each native run
+Runtime-tree digests are platform-local parity subjects: each native run
 compared its own source, staging, and installed bytes. They are not presented as
 a cross-platform byte-identity claim. The Windows row records a read-only report
-from the native task; this macOS task did not rerun or directly open the Windows
-result file. The separate historical DSH acceptance task is outside this release
-candidate and remains independently tracked.
+from the native task; the macOS task did not execute that report. A documentation-
+only successor may retain the Windows runtime-tree evidence, but it must still
+pass its own source/documentation checks, exact-main automation, and exact-commit
+identity checks. The separate historical DSH acceptance task is outside this
+release candidate and remains independently tracked.
 
 ## 0.11.0 release acceptance (2026-09-03)
 

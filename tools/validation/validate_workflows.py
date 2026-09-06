@@ -88,7 +88,8 @@ def validate(root: Path) -> list[str]:
         "workflow_call:",
         "runs-on: ${{ inputs.runner }}",
         "python-version: ${{ inputs.python-version }}",
-        'python -m unittest discover -s tests -p "test_*.py"',
+        "python scripts/run_current_behavior_suite.py",
+        "python scripts/check_phase3_transition.py",
         "python scripts/context_guard.py self-test",
     ):
         if fragment not in lane:

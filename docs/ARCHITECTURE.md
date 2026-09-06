@@ -3,6 +3,12 @@
 The authoritative continuation plan for the 0.9 protocol transition is
 [Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md); its protocol
 rationale is [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md).
+That 0.9 transition shipped in the 0.9.x line; the current unreleased
+`0.12.0` candidate advances the same model with enforcement profiles, an
+explicit work-unit lifecycle (schema 10), Stop protocol 3.0.0, and silent
+success paths. Sections marked *0.12 candidate* describe candidate behavior
+that still requires release validation; unmarked sections describe the
+published releases.
 
 Context Guard is a correctness sidecar for Codex. It observes lifecycle events,
 maintains private local task state, compiles a bounded recovery packet, and
@@ -58,6 +64,63 @@ The arrows describe lifecycle observation and bounded context injection. Codex,
 not Context Guard, performs compaction, controls the task lifecycle, and runs
 tools or subagents. The private ledger never becomes a second transcript or
 editable plan.
+
+## Enforcement profiles (0.12 candidate)
+
+`PreToolUse` and Stop behavior follow the active enforcement profile. Skill
+text, repository instructions, plugin installation, or file presence can
+suggest a profile but never enable one implicitly.
+
+| Profile | How it becomes active | What it enforces | What it does not do |
+| --- | --- | --- | --- |
+| `standard` (default) | Skill selected normally or `context-guard on` | recovery, current-work-unit completion truthfulness, root-user authorization checks for real high-risk actions | no release readiness, candidate closure, or ticket requirements |
+| `strict` | the user explicitly asks for strict evidence protection | `standard` plus enforced proofs for the current work unit | never implies the release profile |
+| `release` | the user explicitly adopts a repository-release execution contract or declares the release profile | `standard` plus candidate-closure, publication-readiness, and one-shot `action-ticket/v1` facts through the versioned release adapter | never treats a tag, Release, or package publish as authorized by itself |
+| `observe` | maintainer or canary configuration | computes the identical would-be decision and records aggregate diagnostics | never blocks; not for real high-risk publication |
+| `off` / inactive | `context-guard off`, or no activation | prompt journaling only | no action or completion gating; corrupt private state cannot deny ordinary tools |
+
+A denied action shows one bounded, actionable reason. An allowed action
+returns the plain empty object with no text.
+
+## Model- and agent-agnostic baseline (0.12 candidate)
+
+0.12 does not assume that the model or agent host brings reliable long-context
+protection or recovery of its own. Context Guard provides the whole loop
+locally and deterministically — requirement recovery, work-unit lifecycle,
+evidence binding, completion verification, and authorization — regardless of
+which model or agent runtime consumes it.
+
+Protocol semantics are separated from platform adapters:
+
+- `scripts/cg_protocol.py` defines the model-agnostic event and record
+  vocabulary: normalized sessions, tool calls, tool results, prompts, and
+  lifecycle events.
+- `scripts/cg_codex_adapter.py` owns the Codex-specific payload translation
+  and is the only router-layer module that knows Codex wire names.
+- The production router (`scripts/cg_hook.py`) consumes that adapter pair on
+  the PreToolUse fast path. The heavy core still consumes the original Codex
+  wire JSON directly for wire compatibility; routing the full core through
+  the adapter is a later-phase target and is not current behavior.
+
+Three named baselines are preserved for cross-product alignment with DSH
+Completion Guard:
+
+1. **requirement recovery** — authoritative requirements, acceptance items,
+   and corrections survive compaction and resume without relying on
+   conversational summaries;
+2. **wrong completion** — a reply claiming whole-task completion while a
+   deterministic obligation of the current work unit is unmet is stopped,
+   with at most one visible correction per turn;
+3. **wrong evidence binding** — evidence that does not match the required
+   operation, subject, surface, scope, or adapter identity cannot close an
+   item; identity comes only from bounded structured fields, and the same
+   canonical input always yields the same matching result.
+
+Alignment covers the failure families and their deterministic constraints,
+not shared code. Context Guard does not guarantee arbitrary semantic
+correctness: it enforces only the deterministic obligations it can express,
+and it does not replace Codex's permission system, the `repository-release`
+publication contract, human review, or platform readbacks.
 
 ## Source authority in an adopted 0.8.3 contract
 
@@ -151,8 +214,9 @@ plan mirror remains read-only.
 
 ### L2.1: synchronous pre-action authorization
 
-`PreToolUse` classifies covered mutations into three tiers. A-tier release
-identity changes (release-tag creation or push, registry publish/yank, and
+`PreToolUse` classifies covered mutations into three tiers under the active
+enforcement profile. In the `release` profile, A-tier release identity
+changes (release-tag creation or push, registry publish/yank, and
 GitHub Release create/update/delete/upload) require one exact, unexpired
 `action-ticket/v1`. The ticket binds repository, commit, tag/version,
 `candidate-closure/v1`, passing publication `release-readiness/v3` or explicit
@@ -167,6 +231,16 @@ quoted or attributed text and delegated authority do not count. C-tier local
 edits, tests, ordinary commits, and proven-redundant local worktree cleanup are
 not hard-gated. A cleanup work unit still denies a product edit until a separate
 root-user work unit authorizes it.
+
+In the `standard` and `strict` profiles, covered high-risk actions are checked
+only against current root-user semantic authorization inside the active work
+unit; release-readiness and ticket facts are never consulted there. The
+`observe` profile computes the identical decision and records it without
+blocking, and `off` or inactive sessions gate nothing at all. The classifier
+resolves real executable positions and effects: command words inside echo,
+search, quoted, or documentation text are never actions, and `--dry-run`
+or read-only forms are simulation or read-only classes that consume neither
+authorization nor tickets.
 
 This Hook is a strong guardrail rather than a complete security boundary.
 Platform approvals remain authoritative, and specialized tools that do not
@@ -206,11 +280,41 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
-The proposed 0.9 transition to authenticated protocol state as the sole
-completion authority is specified in
-[Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md). The
-0.8.x behavior described below remains current until that protocol change is
-implemented and accepted.
+### Stop protocol 3.0.0 (0.12 candidate)
+
+The 0.9 protocol-authoritative completion change described below was
+implemented in the 0.9.x line, and 0.11.0 advanced it to Stop protocol
+2.1.0. The unreleased 0.12.0 candidate advances it to Stop protocol 3.0.0:
+
+- Stop derives intent from the final reply plus the current work unit's
+  structured state. Ordinary endings need no commands: when the reply shows a
+  verifiable whole completion and the unit holds exactly one determinable
+  successful evidence match, the guard binds it and closes the unit itself;
+  waiting, external-wait, and deferred boundaries are normalized from
+  structured facts and end silently.
+- Evidence that is not unique is never auto-selected: the obligation stays
+  pending, and only an explicit whole-completion claim can trigger one
+  Stop correction that asks for explicit selection or a registered proof.
+- The waiting-owner ladder reads only structured facts (authorized assistant
+  actions, missing user input, registered external waits, explicit deferrals);
+  natural-language classification stays diagnostic and cannot override it.
+- Each turn carries a `visible_interruption_budget` of one. A second
+  unmet correction ends the turn safely with pending work preserved and
+  diagnostics recorded. PreToolUse hard denies of real unauthorized
+  high-risk actions are exempt from this budget.
+- Default Stop feedback is capped at 240 characters and is anonymous by
+  contract: the current unit's pending-item count, one reason, and one next
+  step. Detailed IDs and reason codes appear only in `context-guard
+  diagnose` or explicit `--full` audits.
+- Work-unit lifecycle (schema 10): `active`, `completed`, `awaiting_user`,
+  `awaiting_external`, `deferred`, `historical_unresolved`. Migrations
+  isolate old active parent chains as `historical_unresolved` — they are
+  never silently marked passed — and only a unique explicit resume intent
+  reopens a waiting unit.
+
+The protocol history below describes the shipped 0.9.x and 2.1.0 behavior
+for released versions and remains the baseline that released runtimes
+implement.
 
 Proof protocol 1.0.0 derives only deterministic contracts from immutable prompt
 signals. Its obligation types cover input-asset inspection, distinct visual
@@ -288,19 +392,39 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | Event | Purpose | Visible context |
 | --- | --- | --- |
 | `UserPromptSubmit` | journal prompt, classify authority, capture prompt assets, and update requirements/contracts/revisions | activation/status and bounded completion instructions |
-| `PreToolUse` | classify A/B/C risk, deny unmatched release/public mutations, reserve exact one-shot tickets, and prevent cleanup-to-product-edit transitions | bounded allow/deny reason |
-| `PostToolUse` | record bounded evidence/assets/capabilities, observe successful `update_plan`, and authoritatively stage a verified private control request | none |
+| `PreToolUse` | classify actions under the active profile, deny unauthorized real high-risk mutations (release-profile tickets for A-tier identities), and prevent cleanup-to-product-edit transitions | one bounded deny reason; an allow returns no text |
+| `PostToolUse` | record bounded evidence/assets/capabilities, observe successful `update_plan`, and authoritatively stage a verified private control request | none — success paths return the empty object |
 | `PreCompact` | validate state and write recovery snapshot | continue/fail-closed result |
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
 | `SubagentStop` | record bounded result envelope | warnings only when needed |
-| `Stop` | apply integrity/checkpoint/completion/persistence and one-way-safe terminal-yield priority | correction only for verified hard gates |
+| `Stop` | apply work-unit completion truthfulness, waiting-owner facts, integrity, and one-visible-interruption priority | correction only for verified hard gates, at most once per turn |
 | `SessionEnd` | mark session ended, write final recovery, run retention cleanup | none |
+
+Normal success paths are invisible: the nine Hook definitions carry no
+persistent `statusMessage`, every allow path returns the plain empty object
+with no developer receipt, and the private staging and proof receipts do not
+enter the visible event stream. Errors, integrity failures, and real
+unauthorized high-risk denies remain visible. Under the official Codex matcher
+contract — a regex applied to the tool name and its aliases — the
+`PreToolUse` matcher is shrunk from `"*"` to exactly the surfaces the
+classifier can gate: the Bash shell/unified-exec alias, `apply_patch` with
+its `Edit`/`Write` aliases (the hook input still reports `apply_patch`), every
+`mcp__` name so near-miss or case-variant mutation methods cannot bypass, and
+the bare mutation-method function names. The required matcher is derived from
+the live classifier constants and pinned by a contract test, so the two can
+never drift. `PostToolUse` keeps the match-everything wire for broad evidence
+collection and stays silent on allow.
 
 ## Private state
 
-Schema 9 contains the prior task, evidence, proof, and completion fields, plus:
+Schema 10 adds the explicit work-unit lifecycle on top of the prior task,
+evidence, proof, and completion fields, plus:
 
+- work-unit states (`active`, `completed`, `awaiting_user`,
+  `awaiting_external`, `deferred`, `historical_unresolved`) with parentage,
+  prompt bindings, and the persisted `last_active_seq` used for unique
+  explicit resume; and
 - bounded instruction-source metadata and canonical contract digests;
 - contract, phase, gate, authorization-candidate, drift, and exact-host
   coverage records;

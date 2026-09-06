@@ -26,7 +26,8 @@ Run from the repository root:
 python scripts/validate_public_repo.py .
 python scripts/audit_public_tree.py .
 python scripts/audit_commit_identity.py .
-python -m unittest discover -s tests -p "test_*.py"
+python scripts/run_current_behavior_suite.py
+python scripts/check_phase3_transition.py
 ruff check .
 ```
 

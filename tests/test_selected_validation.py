@@ -46,7 +46,9 @@ class SelectedValidationTests(unittest.TestCase):
     def test_full_candidate_runs_full_suite_once(self) -> None:
         commands = RUNNER.commands_for(plan(["full_candidate"], ["validation-map.json"]))
         joined = [" ".join(command) for command in commands]
-        self.assertEqual(sum("unittest discover" in item for item in joined), 1)
+        self.assertEqual(sum("run_current_behavior_suite.py" in item for item in joined), 1)
+        self.assertEqual(sum("check_phase3_transition.py" in item for item in joined), 1)
+        self.assertFalse(any("unittest discover" in item for item in joined))
         self.assertEqual(sum(item == "ruff check ." for item in joined), 1)
         self.assertTrue(any("compileall -q scripts tests tools" in item for item in joined))
 

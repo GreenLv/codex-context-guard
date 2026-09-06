@@ -33,7 +33,7 @@ Tool activity is stored as a bounded, redacted summary and outcome, not as compl
 
 For images and other binary inputs, the store keeps a redacted basename or type, media facts such as byte count and dimensions, and hashes of the locator and content. It does not keep the image bytes or data-URL body.
 
-Recovery and diagnosis keep compact checkpoints, delegated-result summaries, protocol versions, bounded status and reason values, and prompt or reply hashes. Schema 9 also keeps bounded work-unit identifiers, candidate-closure and readiness digests, ticket lifecycle state, normalized tool-input hashes, and exact release identity fields when those values affect authorization or verification. It does not store raw tool input, private paths, or action-bearing tokens.
+Recovery and diagnosis keep compact checkpoints, delegated-result summaries, protocol versions, bounded status and reason values, and prompt or reply hashes. Schema 10 also keeps bounded work-unit lifecycle states and identifiers, candidate-closure and readiness digests, ticket lifecycle state, normalized tool-input hashes, and exact release identity fields when those values affect authorization or verification. It does not store raw tool input, private paths, or action-bearing tokens.
 
 ## What it does not save
 
@@ -81,6 +81,10 @@ This distinction is important: user prompt bodies are saved privately for recove
 - Work units retain bounded identifiers, parent relationships, kinds, and
   prompt bindings. Default status output exposes only current-unit counts and
   bounded summaries; full or item audit output must be requested explicitly.
+- Default Stop feedback is anonymous by contract: it names only the current
+  work unit's pending-item count, one reason, and one next step — never
+  requirement, acceptance, or evidence IDs, which stay in `diagnose` and
+  explicit audit views.
 - Ended sessions become eligible for cleanup after 30 days.
 
 ## Redaction

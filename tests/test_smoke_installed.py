@@ -11,6 +11,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "scripts" / "smoke_installed.py"
 RUNTIME = ROOT / "scripts" / "context_guard.py"
+# Phase-2 router modules: cg_hook.py is the production hook entry (routed
+# from run_context_guard.sh / run-context-guard.ps1) and imports
+# cg_actions/cg_protocol/cg_codex_adapter at module level. Since Phase 3 the
+# heavy core lazily loads the protocol layer cg_stop3.py (Stop 3.0 /
+# schema-10 semantics) from its own scripts directory at runtime, so the
+# installed plugin root must carry it next to context_guard.py.
+REQUIRED_MODULES = [
+    ROOT / "scripts" / "cg_actions.py",
+    ROOT / "scripts" / "cg_codex_adapter.py",
+    ROOT / "scripts" / "cg_hook.py",
+    ROOT / "scripts" / "cg_protocol.py",
+    ROOT / "scripts" / "cg_stop3.py",
+]
 
 
 class InstalledSmokeTests(unittest.TestCase):
@@ -20,6 +33,9 @@ class InstalledSmokeTests(unittest.TestCase):
             scripts = plugin_root / "scripts"
             scripts.mkdir(parents=True)
             shutil.copy2(RUNTIME, scripts / RUNTIME.name)
+            for module_path in REQUIRED_MODULES:
+                if module_path.is_file():
+                    shutil.copy2(module_path, scripts / module_path.name)
 
             environment = os.environ.copy()
             environment.pop("PYTHONDONTWRITEBYTECODE", None)

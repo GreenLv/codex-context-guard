@@ -25,14 +25,18 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
+# Schemas below 9 are read-only compatibility inputs; 9 is the last full
+# migration source for the 9 -> 10 work-unit lifecycle upgrade.
+FULL_MIGRATION_SOURCE_SCHEMAS = {9}
 READ_ONLY_COMPATIBILITY_SCHEMAS = {7, 8}
-STOP_PROTOCOL_VERSION = "2.1.0"
-CLASSIFIER_VERSION = "2.4.0"
+STOP_PROTOCOL_VERSION = "3.0.0"
+CLASSIFIER_VERSION = "3.2.1"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "2.0.0"
-WORK_UNIT_PROTOCOL_VERSION = "1.0.0"
-ADAPTER_MANIFEST_VERSION = "1.0.0"
+WORK_UNIT_PROTOCOL_VERSION = "2.0.0"
+WORK_UNIT_PROTOCOL_VERSION_V1 = "1.0.0"
+ADAPTER_MANIFEST_VERSION = "2.0.0"
 CURRENT_RELEASE_READINESS_SCHEMA = "release-readiness/v3"
 SUPPORTED_RELEASE_READINESS_SCHEMAS = frozenset(
     {"release-readiness/v2", CURRENT_RELEASE_READINESS_SCHEMA}
@@ -41,12 +45,62 @@ CLAUSE_DERIVATION_VERSION = "1.0.0"
 ADAPTER_MANIFEST = {
     "version": ADAPTER_MANIFEST_VERSION,
     "adapters": {
-        "file_read": "1.0.0",
-        "thread_read": "1.0.0",
+        "file_read": "2.0.0",
+        "thread_read": "2.0.0",
         "shell_read": "1.0.0",
         "visual_read": "1.0.0",
     },
 }
+
+# Stop protocol 3.0 / schema-10 lifecycle semantics live in cg_stop3
+# (protocol layer, cg_protocol <- cg_stop3 <- this module). The heavy core
+# loads it lazily so non-Stop paths and exotic embedding contexts do not
+# depend on module-path resolution; the Phase-2 router fast path never
+# imports either side.
+_STOP3_MODULE: Any = None
+
+
+def stop3() -> Any:
+    global _STOP3_MODULE
+    if _STOP3_MODULE is None:
+        try:
+            import cg_stop3 as module
+        except ImportError:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "cg_stop3", Path(__file__).resolve().parent / "cg_stop3.py"
+            )
+            if spec is None or spec.loader is None:
+                raise
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        _STOP3_MODULE = module
+    return _STOP3_MODULE
+
+
+def resolve_waiting_owner(facts: dict[str, Any]) -> str:
+    """Structured waiting-owner ladder (plan section 4.3); see cg_stop3."""
+    return stop3().resolve_waiting_owner(facts)
+
+
+def plan_waiting_outcome(
+    facts: dict[str, Any],
+    declared: str | None = None,
+    *,
+    interruption_index: int = 1,
+) -> str:
+    """Terminal-action planner over structured facts; see cg_stop3."""
+    return stop3().plan_waiting_outcome(
+        facts, declared, interruption_index=interruption_index
+    )
+
+
+def evaluate_reason(
+    item_id: str, binding: dict[str, Any], projection: dict[str, Any]
+) -> dict[str, Any]:
+    """Pure obligation/proof matcher (INV-11); see cg_stop3."""
+    return stop3().evaluate_reason(item_id, binding, projection)
 
 PRIVATE_CONTROL_TOKEN_BYTES = 24
 PRIVATE_CONTROL_TOKEN_LENGTH = (PRIVATE_CONTROL_TOKEN_BYTES * 8 + 5) // 6
@@ -2075,7 +2129,55 @@ def repository_identity(cwd: Any) -> str:
     return "repo-" + sha256_text(resolved)
 
 
+def git_head(cwd: Any) -> str:
+    """The resolvable HEAD identity of the Git TARGET.
+
+    Deliberately independent of worktree cleanliness: tagging and pushing
+    act on HEAD commits, and a dirty worktree must not erase the target's
+    identity. Returns "unresolved" only when HEAD cannot be resolved.
+    """
+    root = str(cwd or os.getcwd())
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unresolved"
+    value = result.stdout.strip().lower()
+    return (
+        value
+        if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", value)
+        else "unresolved"
+    )
+
+
+def worktree_is_clean(cwd: Any) -> bool:
+    """True when the worktree/index carry no changes (candidate hygiene)."""
+    root = str(cwd or os.getcwd())
+    try:
+        status = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain=v1", "--untracked-files=all"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return status.returncode == 0 and not status.stdout.strip()
+
+
 def repository_commit(cwd: Any) -> str:
+    """The VERIFIED candidate identity: resolvable HEAD of a CLEAN worktree.
+
+    Used ONLY for release/ticket candidate identity (candidate closure and
+    cleanliness discipline). Target identity for tag/push authorizations
+    uses :func:`git_head`; never conflate the two.
+    """
     root = str(cwd or os.getcwd())
     try:
         result = subprocess.run(
@@ -2128,6 +2230,10 @@ def _command_basename(token: str) -> str:
 
 
 def _command_tokens(command: str, *, posix: bool | None = None) -> list[str]:
+    # Newlines separate commands exactly like ";" in POSIX shells; shlex
+    # would otherwise fold them into ordinary whitespace and merge the
+    # segments. Quoted newlines stay inside their quoted token.
+    command = command.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "; ")
     try:
         lexer = shlex.shlex(
             command,
@@ -2145,29 +2251,159 @@ SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", "&", "(", ")"}
 SHELL_WRAPPERS = {"bash", "dash", "ksh", "pwsh", "powershell", "sh", "zsh"}
 
 
-def _subcommands(tokens: list[str], executable: str) -> list[tuple[str, list[str]]]:
-    """Return every executable invocation instead of trusting the first one."""
-    invocations: list[tuple[str, list[str]]] = []
-    indices = [
-        index
-        for index, token in enumerate(tokens)
-        if _command_basename(token) == executable
-    ]
-    for position, start in enumerate(indices):
-        end = indices[position + 1] if position + 1 < len(indices) else len(tokens)
-        segment = tokens[start + 1 : end]
-        boundary = next(
-            (index for index, token in enumerate(segment) if token in SHELL_CONTROL_TOKENS),
-            len(segment),
-        )
-        segment = segment[:boundary]
-        index = 0
-        while index < len(segment) and segment[index].startswith("-"):
-            option = segment[index]
-            index += 2 if option in {"-C", "-c", "--git-dir", "--work-tree"} else 1
-        if index < len(segment):
-            invocations.append((segment[index].lower(), segment[index + 1 :]))
+def command_segments(tokens: list[str]) -> list[list[str]]:
+    """Split a token stream into command segments at control operators."""
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in SHELL_CONTROL_TOKENS:
+            segments.append([])
+            continue
+        segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Prefixes whose own name is never the effect carrier: the first token after
+# them is the real executable (sudo/env/exec/command/time/...). ``timeout``
+# consumes its duration argument first. ``watch`` is NOT transparent: it
+# executes its argument later, so it belongs to the argument-runners.
+TRANSPARENT_PREFIXES = {
+    "sudo", "env", "command", "exec", "time", "nice", "nohup", "stdbuf", "doas",
+}
+PREFIX_ARG_CONSUMERS = {"timeout"}
+
+
+def _segment_invocation(
+    segment: list[str],
+) -> tuple[str, list[str], dict[str, str]] | None:
+    """Resolve a segment to (executable basename, args, visible env) or None.
+
+    Environment assignments are never transparent noise: the VISIBLE ones —
+    leading assignments and assignments passed through the ``env`` prefix —
+    are captured, because a selector such as ``NPM_CONFIG_REGISTRY`` or
+    ``GH_REPO`` changes the real remote target. Quoted phrases stay single
+    tokens, so their basenames can never resolve to an executable here.
+
+    Bounded ``env`` grammar: known flags and ``-u NAME`` argument forms are
+    consumed; any OTHER option after ``env`` makes the executable position
+    unresolvable — the segment resolves to ("", [], env) and classifies as
+    the bounded envelope, never as provably safe.
+    """
+    index = 0
+    env: dict[str, str] = {}
+    in_env_prefix = False
+    while index < len(segment):
+        token = segment[index]
+        if _ENV_ASSIGNMENT_RE.match(token):
+            name, _, value = token.partition("=")
+            # Non-POSIX shlex preserves quotes around an assignment value
+            # inside Windows shell-wrapper payloads.  Normalize only matching
+            # outer pairs so target selectors bind the value the shell uses.
+            env[name] = _unquote_command_token(value)
+            index += 1
+            continue
+        basename = _command_basename(token)
+        if basename in TRANSPARENT_PREFIXES:
+            # Only `env` consumes option/assignment arguments of its own.
+            in_env_prefix = basename == "env"
+            index += 1
+            continue
+        if in_env_prefix:
+            if token in {"-u", "--unset", "-C", "--chdir"}:
+                index += 2
+                continue
+            if token.startswith("--") and "=" in token:
+                index += 1
+                continue
+            if token.startswith("-"):
+                if token in {"-i", "-v", "-0", "--ignore-environment",
+                             "--null", "--debug"}:
+                    index += 1
+                    continue
+                # Unknown env option: the real executable position cannot
+                # be proven — bounded unresolvable marker.
+                return "", [], env
+            in_env_prefix = False
+        if basename in PREFIX_ARG_CONSUMERS and index + 2 < len(segment):
+            index += 2
+            continue
+        return basename, segment[index + 1 :], env
+    return None
+
+
+def command_invocations_full(
+    command: str, *, posix: bool | None = None
+) -> list[tuple[str, list[str], dict[str, str]]]:
+    """Every real invocation with its visible environment assignments.
+
+    An executable name of "" marks a bounded unresolvable segment (unknown
+    ``env`` prefix option): envelope state, never provably safe."""
+    invocations = []
+    for segment in _expanded_command_segments(command, posix=posix):
+        invocation = _segment_invocation(segment)
+        if invocation is not None:
+            invocations.append(invocation)
     return invocations
+
+
+def _expanded_command_segments(
+    command: str, *, depth: int = 0, posix: bool | None = None
+) -> list[list[str]]:
+    """Position-aware segment expansion: shell ``-c`` wrapper scripts are
+    parsed recursively and spliced in place, so a nested invocation keeps
+    its own segment boundary (``bash -c 'git tag v1' ; npm publish`` stays
+    two invocations)."""
+    tokens = _command_tokens(command, posix=posix)
+    if not tokens:
+        return []
+    if depth >= 3:
+        return command_segments(tokens)
+    result: list[list[str]] = []
+    for segment in command_segments(tokens):
+        spliced = False
+        if segment and _command_basename(segment[0]) in SHELL_WRAPPERS:
+            wrapper = _command_basename(segment[0])
+            for option_index in range(1, min(len(segment), 5)):
+                option = segment[option_index].lower()
+                if option in SHELL_CONTROL_TOKENS:
+                    break
+                is_command_option = (
+                    option in {"-c", "--command", "-command"}
+                    or (
+                        option.startswith("-")
+                        and "c" in option[1:]
+                        and wrapper not in {"pwsh", "powershell"}
+                    )
+                )
+                if is_command_option and option_index + 1 < len(segment):
+                    # A POSIX shell keeps POSIX quoting semantics even when its
+                    # outer launcher command was tokenized on Windows.
+                    nested_posix = (
+                        True if wrapper not in {"pwsh", "powershell"} else posix
+                    )
+                    result.extend(
+                        _expanded_command_segments(
+                            " ".join(segment[option_index + 1 :]),
+                            depth=depth + 1,
+                            posix=nested_posix,
+                        )
+                    )
+                    spliced = True
+                    break
+        if not spliced:
+            result.append(segment)
+    return result if result else [tokens]
+
+
+def command_invocations(
+    command: str, *, posix: bool | None = None
+) -> list[tuple[str, list[str]]]:
+    """Every real (executable position) invocation of a shell command."""
+    return [
+        (executable, args)
+        for executable, args, _env in command_invocations_full(command, posix=posix)
+    ]
 
 
 def _expanded_command_tokens(
@@ -2191,19 +2427,70 @@ def _expanded_command_tokens(
                 or (option.startswith("-") and "c" in option[1:] and wrapper not in {"pwsh", "powershell"})
             )
             if is_command_option and option_index + 1 < len(tokens):
+                nested_posix = (
+                    True if wrapper not in {"pwsh", "powershell"} else posix
+                )
                 expanded.extend(
                     _expanded_command_tokens(
-                        tokens[option_index + 1], depth=depth + 1, posix=posix
+                        tokens[option_index + 1],
+                        depth=depth + 1,
+                        posix=nested_posix,
                     )
                 )
                 break
     return expanded
 
 
+# Known external mutation executables: their presence as an ARGUMENT of an
+# argument-runner (xargs/find/watch/parallel) is the one bounded ambiguity
+# class; everywhere else a mutation executable outside executable position
+# is provably inert text.
+MUTATION_EXECUTABLES = {"git", "gh", "npm", "cargo", "gem", "docker", "twine"}
+ARG_RUNNER_EXECUTABLES = {"xargs", "find", "watch", "parallel"}
+
+GIT_GLOBAL_ARG_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree"}
+
+GIT_TAG_INERT_FLAGS = {
+    "-d", "--delete", "-l", "--list", "-v", "--verify",
+    "--contains", "--points-at",
+}
+PUSH_FORCE_FLAGS = {"--force", "--force-with-lease", "-f"}
+PUSH_DRY_RUN_FLAGS = {"--dry-run", "-n"}
+GH_RELEASE_VERBS = {"create", "edit", "delete", "upload"}
+GH_RELEASE_INERT_VERBS = {"view", "list", "status"}
+
+# Registry grammar: (tool, CLI subcommand) -> (operation, tool). Publish,
+# unpublish, yank, and deprecate are DISTINCT exact semantics; a publish
+# authorization never covers the reverse/metadata mutations.
+REGISTRY_OPERATIONS = {
+    ("npm", "publish"): ("publish", "npm"),
+    ("npm", "unpublish"): ("unpublish", "npm"),
+    ("npm", "deprecate"): ("deprecate", "npm"),
+    ("cargo", "publish"): ("publish", "cargo"),
+    ("cargo", "yank"): ("yank", "cargo"),
+    ("gem", "push"): ("publish", "gem"),
+    ("gem", "yank"): ("yank", "gem"),
+    ("docker", "push"): ("publish", "docker"),
+    ("twine", "upload"): ("publish", "twine"),
+}
+REGISTRY_OPERATION_TOOLS = frozenset(tool for tool, _op in REGISTRY_OPERATIONS)
+REGISTRY_DRY_RUN_FLAGS = {
+    "npm": {"--dry-run"},
+    "cargo": {"--dry-run", "-n"},
+    "docker": {"--dry-run"},
+    "twine": {"--dry-run"},
+    "gem": set(),
+}
+
+VERSION_PATTERN = (
+    r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][A-Za-z0-9._-]+)?"
+)
+
+
 def _first_version_token(values: list[str]) -> str | None:
     for value in values:
         candidate = value.removeprefix("refs/tags/")
-        if re.fullmatch(r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][A-Za-z0-9._-]+)?", candidate):
+        if re.fullmatch(VERSION_PATTERN, candidate):
             return candidate
     return None
 
@@ -2223,86 +2510,718 @@ def current_branch(cwd: Any) -> str:
     return value if result.returncode == 0 and EXECUTION_ID_RE.fullmatch(value) else "unknown"
 
 
-def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, str] | None:
+def _git_invocation_action(
+    args: list[str], branch_cwd: Any = None
+) -> dict[str, str] | None:
+    """Classify one real git invocation by subcommand and effect."""
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        option = args[index]
+        index += 2 if option in GIT_GLOBAL_ARG_OPTIONS else 1
+    if index >= len(args):
+        return None
+    subcommand = args[index].lower()
+    tail = args[index + 1 :]
+    if subcommand == "tag":
+        if any(value in GIT_TAG_INERT_FLAGS for value in tail):
+            return None
+        positional_tags = [value for value in tail if not value.startswith("-")]
+        if positional_tags:
+            tag = _first_version_token(tail) or "unknown"
+            return {
+                "tier": "A", "semantic_action_id": "release_tag_mutation",
+                "canonical_target_id": f"tag:{tag}", "write_surface_id": "git_release_tag",
+                "tag": tag,
+            }
+        return None
+    if subcommand == "push":
+        if any(value in PUSH_DRY_RUN_FLAGS for value in tail):
+            return None
+        positional = [value for value in tail if not value.startswith("-")]
+        version = _first_version_token(tail)
+        if version is not None or "--tags" in tail or any("refs/tags/" in value for value in tail):
+            tag = version or "all"
+            return {
+                "tier": "A", "semantic_action_id": "release_tag_push",
+                "canonical_target_id": f"tag:{tag}", "write_surface_id": "git_remote_tag",
+                "tag": tag,
+                "remote": positional[0] if positional else "unknown",
+            }
+        remote = positional[0] if positional else "unknown"
+        if len(positional) > 1:
+            refspec = positional[1]
+        elif branch_cwd is not None:
+            refspec = current_branch(branch_cwd)
+        else:
+            refspec = "unknown"
+        ref = refspec.rsplit(":", 1)[-1]
+        semantic = "remote_push"
+        if any(
+            value in PUSH_FORCE_FLAGS
+            or value.startswith("--force-with-lease")
+            or value == "--force-if-includes"
+            or value.startswith("+")
+            for value in tail
+        ):
+            # --force-with-lease=<ref>[:<expect>] and --force-if-includes
+            # are force semantics in value form too; a plain push
+            # authorization never covers them.
+            semantic = "force_push"
+        elif "--delete" in tail or any(value.startswith(":") for value in tail):
+            semantic = "remote_branch_delete"
+        return {
+            "tier": "B", "semantic_action_id": semantic,
+            "canonical_target_id": f"remote:{remote}:{ref.lstrip(':')}",
+            "write_surface_id": "git_remote_branch",
+            "remote": remote,
+            "ref": ref.lstrip(":"),
+        }
+    return None
+
+
+GH_GLOBAL_VALUE_OPTIONS = {"--repo", "-R", "--hostname"}
+GH_GLOBAL_FLAG_OPTIONS = {"--web", "-w", "--paginate", "--json"}
+
+REGISTRY_GLOBAL_VALUE_OPTIONS = {
+    "gh": {"--repo", "-R", "--hostname"},
+    "npm": {"--registry", "--workspace", "-w", "--userconfig", "--prefix",
+            "--cache", "--loglevel", "--tag", "--otp", "--access",
+            "--useragent"},
+    "cargo": {"--config", "--manifest-path", "--target", "--jobs", "-j",
+              "--color"},
+    "gem": {"--config-file"},
+    "docker": {"--config", "--context", "-c", "--host", "-H", "--log-level",
+               "-l"},
+    "twine": {"--config", "--repository", "-r", "--repository-url"},
+}
+REGISTRY_GLOBAL_FLAG_OPTIONS = {
+    "gh": {"--web", "-w", "--paginate", "--json"},
+    "npm": {"-g", "--global", "--workspaces", "--offline",
+            "--prefer-offline", "--no-audit", "--no-fund", "--json",
+            "--silent", "-s", "--quiet", "-q", "--if-present",
+            "--ignore-scripts", "--dry-run"},
+    "cargo": {"-q", "--quiet", "-v", "--verbose", "--frozen", "--locked",
+              "--offline"},
+    "gem": set(),
+    "docker": {"--debug", "-D"},
+    "twine": set(),
+}
+REGISTRY_SUBCOMMAND_VALUE_OPTIONS = {
+    "npm": {"--registry", "--tag", "--access", "--otp", "--userconfig",
+            "--workspace", "-w", "--prefix"},
+    "cargo": {"--manifest-path", "--target", "--index", "--registry",
+              "--config", "-j", "--jobs", "--version"},
+    "gem": {"--host", "-v", "--version"},
+    "docker": {"--platform"},
+    "twine": {"--repository", "-r", "--repository-url", "--config"},
+}
+
+# Real option ALIAS pairs inside each tool's grammar: the two spellings
+# are the SAME option, so captured values are stored and compared on the
+# canonical (long) spelling. Repeating the SAME value is idempotent —
+# across aliases, across option regions, and across separated/= forms;
+# different values are a conflict (undetermined — controlled deny),
+# never spelling- or order-dependent (P1-J). npm's -w/--workspace also
+# compares on its own workspace dimension; gem's -v/--version is a
+# subcommand-tail option canonicalized by the same table.
+CANONICAL_VALUE_OPTION_SPELLINGS: dict[str, dict[str, str]] = {
+    "gh": {"-R": "--repo"},
+    "cargo": {"-j": "--jobs"},
+    "docker": {"-c": "--context", "-H": "--host", "-l": "--log-level"},
+    "npm": {"-w": "--workspace"},
+    "twine": {"-r": "--repository"},
+    "gem": {"-v": "--version"},
+}
+
+# Visible environment/config selectors that change the REAL remote target
+# (P1-D/P1-I). Each maps the environment variable onto the equivalent CLI
+# option dimension; the CLI option always wins when both are present.
+# npm reads its config environment case-insensitively AND accepts its
+# whole config surface as npm_config_* variables, so the target-affecting
+# allowlist covers registry, userconfig (never read — undetermined deny),
+# prefix, and workspace; ``npm_config_workspaces`` is the plural boolean
+# and is handled as the multi-target envelope. gh and cargo match their
+# exact documented spellings. Unknown variables remain inert.
+ENV_TARGET_SELECTORS: dict[str, dict[str, str]] = {
+    "npm": {
+        "npm_config_registry": "--registry",
+        "npm_config_userconfig": "--userconfig",
+        "npm_config_prefix": "--prefix",
+        "npm_config_workspace": "--workspace",
+    },
+    "gh": {"GH_REPO": "--repo", "GH_HOST": "--hostname"},
+    "cargo": {"CARGO_REGISTRY_DEFAULT": "--registry"},
+}
+NPM_WORKSPACES_ENV_VAR = "npm_config_workspaces"
+_NPM_TRUTHY = {"true", "1", "yes", "on"}
+_NPM_FALSY = {"false", "0", "no", "off", ""}
+
+
+def _npm_env_value(name: str, env: dict[str, str]) -> str | None:
+    """The npm config environment value of ONE logical variable, matched
+    case-insensitively across spellings. Two spellings carrying
+    DIFFERENT values are a conflict (undetermined); an empty value is
+    returned as "" (undetermined for value dimensions), and no matching
+    spelling returns None."""
+    wanted = name.lower()
+    values: list[str] = []
+    for key, value in env.items():
+        if key.lower() == wanted:
+            values.append(value)
+    if not values:
+        return None
+    distinct = {value for value in values}
+    if len(distinct) > 1:
+        return "\x00conflict"
+    return values[0]
+
+
+def _env_selector_options(
+    executable: str, env: dict[str, str]
+) -> tuple[dict[str, str], set[str]]:
+    """Visible env selectors of one invocation, mapped to their option
+    dimension (case-insensitive multi-spelling grouping for npm), plus
+    the set of CONFLICTED options (two spellings disagreeing). Unknown
+    variables are inert."""
+    table = ENV_TARGET_SELECTORS.get(executable)
+    if not table or not env:
+        return {}, set()
+    matched: dict[str, str] = {}
+    conflicts: set[str] = set()
+    if executable == "npm":
+        for logical, option in table.items():
+            value = _npm_env_value(logical, env)
+            if value is None:
+                continue
+            if value == "\x00conflict" or value == "":
+                conflicts.add(option)
+                continue
+            matched[option] = value
+        return matched, conflicts
+    for name, value in env.items():
+        option = table.get(name)
+        if option is None:
+            continue
+        if value == "":
+            conflicts.add(option)
+            continue
+        existing = matched.get(option)
+        if existing is not None and existing != value:
+            conflicts.add(option)
+            continue
+        matched[option] = value
+    return matched, conflicts
+
+
+# ---------------------------------------------------------------------------
+# Canonical execution projection (R7 closure table). The closed field set
+# every declared mutation surface must resolve — through ONE semantic source
+# (this module) shared by the router grammar and the heavy target
+# projection — before an action can become an exact authorization target:
+#
+#   executable          resolved command position (never text)
+#   operation           publish/unpublish/yank/deprecate/release verb
+#   simulation          tri-state (--dry-run bare/=true vs =false vs absent)
+#   trusted_adapter     MCP namespace x method family x tool identity
+#   repository_host     GitHub repo/host or local repository identity
+#   package/version/source   registry identity (from trusted metadata,
+#                       explicit spec, or the exact image reference)
+#   registry_name/index/url  the tool's OWN registry value domain, with
+#                       documented equivalences normalized (never mixed)
+#   config_env_selectors visible env/config selectors folded into the
+#                       option dimensions they control (CLI wins)
+#   release_tag/target  GitHub release tag + --target commit-ish
+#
+# Fields stay either EXACT or explicitly undetermined (empty) — never
+# dropped and never sentinel-compared.
+# ---------------------------------------------------------------------------
+
+CANONICAL_PROJECTION_FIELDS = (
+    "executable", "operation", "simulation", "trusted_adapter",
+    "repository_host", "package", "version", "source",
+    "registry_name", "registry_index_url", "config_env_selectors",
+    "release_tag", "release_target_commit",
+)
+
+# Documented default equivalences per tool value domain (P1-E): the
+# canonical default identity maps onto every documented spelling of the
+# same real endpoint — and ONLY those. npm's registry is a base URL whose
+# default host is registry.npmjs.org; Cargo's --registry takes a registry
+# NAME whose default name is crates-io (= crates.io), --index takes a URL;
+# twine's -r is a .pypirc repository NAME (default "pypi") and its default
+# --repository-url is https://upload.pypi.org/legacy/.
+DEFAULT_REGISTRY_ENDPOINTS = {
+    "npm": "registry.npmjs.org",
+    "cargo": "crates.io",
+    "gem": "rubygems.org",
+    "docker": "docker.io",
+    "twine": "pypi.org",
+    "pypi": "pypi.org",
+}
+CARGO_REGISTRY_NAME_DEFAULTS = {"crates-io": "crates.io"}
+TWINE_REPOSITORY_NAME_DEFAULTS = {"pypi": "pypi.org"}
+TWINE_REPOSITORY_URL_DEFAULTS = {
+    "upload.pypi.org/legacy": "pypi.org",
+}
+_GEM_HOST_DEFAULTS = {"rubygems.org": "rubygems.org"}
+
+
+def _skip_global_options(
+    executable: str, args: list[str], start: int
+) -> tuple[int, dict[str, Any]]:
+    """Skip the supported global-option prefix of one invocation and
+    collect the STRUCTURED option values that change the effective target.
+
+    Returns (index of the first positional token or len(args), collected)
+    where collected carries workspace selector, option flags, option
+    values (registry/repository/manifest/...), a tri-state dry-run
+    (True / False / None), and a CONFLICTS set: an option left without
+    its value, an explicitly empty = value, or two occurrences with
+    different values make that dimension undetermined — controlled deny,
+    never last-wins guessing or a silent default (P1-H/P1-I). An unknown
+    pre-subcommand option signals (index=-1, ...) — the invocation cannot
+    be reliably resolved and becomes the bounded high-risk envelope.
+    """
+    value_opts = REGISTRY_GLOBAL_VALUE_OPTIONS.get(executable, set())
+    flag_opts = REGISTRY_GLOBAL_FLAG_OPTIONS.get(executable, set())
+    aliases = CANONICAL_VALUE_OPTION_SPELLINGS.get(executable, {})
+    collected: dict[str, Any] = {
+        "workspace": None,
+        "flags": [],
+        "values": {},
+        "dry_run": None,
+        "conflicts": set(),
+    }
+
+    def capture(name: str, value: str | None) -> None:
+        if executable == "npm" and name in {"--workspace", "-w"}:
+            if value is None or value == "":
+                collected["conflicts"].add("--workspace")
+                return
+            if (
+                collected["workspace"] is not None
+                and collected["workspace"] != value
+            ):
+                collected["conflicts"].add("--workspace")
+                return
+            collected["workspace"] = value
+            return
+        canonical = aliases.get(name, name)
+        if value is None or value == "":
+            collected["conflicts"].add(canonical)
+            return
+        existing = collected["values"].get(canonical)
+        if existing is not None and existing != value:
+            collected["conflicts"].add(canonical)
+            return
+        collected["values"][canonical] = value
+
+    index = start
+    while index < len(args):
+        token = args[index]
+        if not token.startswith("-"):
+            return index, collected
+        if "=" in token:
+            name, _, value = token.partition("=")
+            if name == "--dry-run":
+                collected["dry_run"] = value.strip().lower() not in {
+                    "false", "0", "no", "off", "",
+                }
+                collected["flags"].append(name)
+                index += 1
+                continue
+            capture(name, value if value else None)
+            collected["flags"].append(name)
+            index += 1
+            continue
+        if token in value_opts:
+            capture(
+                token, args[index + 1] if index + 1 < len(args) else None
+            )
+            if token == "--dry-run":
+                collected["dry_run"] = True
+            collected["flags"].append(token)
+            index += 2
+            continue
+        if token in flag_opts:
+            if token == "--dry-run":
+                collected["dry_run"] = True
+            collected["flags"].append(token)
+            index += 1
+            continue
+        return -1, collected
+    return index, collected
+
+def _dry_run_tri_state(tokens: list[str]) -> bool | None:
+    """Tri-state --dry-run semantics over a token list.
+
+    True  — an explicit simulation (--dry-run, --dry-run=true, ...),
+    False — an explicitly disabled simulation (--dry-run=false is a REAL
+            mutation, pre- or post-subcommand alike),
+    None  — no dry-run option present.
+    """
+    state = None
+    for token in tokens:
+        if token == "--dry-run":
+            state = True
+        elif token.startswith("--dry-run="):
+            value = token.partition("=")[2].strip().lower()
+            state = value not in {"false", "0", "no", "off", ""}
+    return state
+
+
+def _registry_invocation_state(
+    executable: str, args: list[str], env: dict[str, str] | None = None
+) -> tuple[str, dict[str, Any] | None]:
+    """Classify one registry-tool invocation by its REAL option grammar.
+
+    Returns ("mutation", action) for a resolved publish/unpublish/yank/
+    deprecate subcommand, ("envelope", None) when the invocation cannot
+    resolve to ONE exact target (unknown pre-subcommand option, all
+    workspaces at once — CLI flag or npm_config_workspaces env, a publish
+    naming several distribution files), and ("inert", None) for every
+    non-mutation invocation. --dry-run (bare or =true) is a simulation;
+    --dry-run=false is a REAL mutation, pre- or post-subcommand alike.
+    Visible env selectors (P1-D/P1-I) fold into the option dimensions
+    whenever the CLI option itself is absent; conflicting spellings,
+    missing values, and conflicting repeats make the dimension
+    undetermined (controlled deny), never dropped.
+    """
+    index, collected = _skip_global_options(executable, args, 0)
+    if index == -1:
+        return "envelope", None
+    if index >= len(args):
+        return "inert", None
+    operation = REGISTRY_OPERATIONS.get((executable, args[index].lower()))
+    if operation is None:
+        return "inert", None
+    operation_name, tool = operation
+    tail = args[index + 1 :]
+    tail_dry_run = _dry_run_tri_state(tail)
+    if tail_dry_run is None and any(
+        flag in REGISTRY_DRY_RUN_FLAGS.get(executable, set()) for flag in tail
+    ):
+        tail_dry_run = True
+    dry_run = (
+        collected["dry_run"] if collected["dry_run"] is not None else tail_dry_run
+    )
+    if dry_run is True:
+        return "inert", None
+    workspaces_value = collected["values"].get("--workspaces")
+    if "--workspaces" in collected["flags"] and (
+        workspaces_value is None
+        or workspaces_value.strip().lower() not in _NPM_FALSY
+    ):
+        # Every workspace at once: the exact package identity is
+        # undetermined, so the invocation cannot be a single exact target.
+        # The =false spelling explicitly disables the multi-target mode.
+        return "envelope", None
+    if executable == "npm":
+        workspaces_env = _npm_env_value(NPM_WORKSPACES_ENV_VAR, env or {})
+        if workspaces_env is not None and (
+            workspaces_env == "\x00conflict"
+            or workspaces_env.strip().lower() not in _NPM_FALSY
+        ):
+            # npm_config_workspaces=true (or an unparseable value) is the
+            # same multi-target mode as the CLI flag.
+            return "envelope", None
+    positionals: list[str] = []
+    sub_value_opts = REGISTRY_SUBCOMMAND_VALUE_OPTIONS.get(tool, set())
+    walk = 0
+    tail_values: dict[str, str] = {}
+    tail_aliases = CANONICAL_VALUE_OPTION_SPELLINGS.get(tool, {})
+    while walk < len(tail):
+        token = tail[walk]
+        if token.startswith("-"):
+            if "=" in token:
+                name, _, value = token.partition("=")
+                if name == "--dry-run":
+                    walk += 1
+                    continue
+                canonical = tail_aliases.get(name, name)
+                if value:
+                    existing = tail_values.get(canonical)
+                    if existing is not None and existing != value:
+                        collected.setdefault("conflicts", set()).add(canonical)
+                    else:
+                        tail_values[canonical] = value
+                else:
+                    collected.setdefault("conflicts", set()).add(canonical)
+                walk += 1
+                continue
+            if token in sub_value_opts:
+                canonical = tail_aliases.get(token, token)
+                if walk + 1 < len(tail):
+                    value = tail[walk + 1]
+                    existing = tail_values.get(canonical)
+                    if existing is not None and existing != value:
+                        collected.setdefault("conflicts", set()).add(canonical)
+                    else:
+                        tail_values[canonical] = value
+                    walk += 2
+                else:
+                    # An option left without its value cannot prove the
+                    # dimension it controls.
+                    collected.setdefault("conflicts", set()).add(canonical)
+                    walk += 1
+                continue
+            walk += 1
+            continue
+        positionals.append(token)
+        walk += 1
+    if operation_name == "publish" and len(positionals) > 1:
+        # Several distribution files at once (twine upload a.tar.gz b.whl):
+        # more than one exact identity, never a single authorized target.
+        return "envelope", None
+    # Region merge on CANONICAL dimensions (P1-J): the same option spelled
+    # in two regions with different values is a conflict (undetermined —
+    # never last-wins); the same value repeats idempotently.
+    values = dict(collected["values"])
+    for name, value in tail_values.items():
+        existing = values.get(name)
+        if existing is not None and existing != value:
+            collected.setdefault("conflicts", set()).add(name)
+        else:
+            values[name] = value
+    # Visible env/config selectors fold into their option dimension ONLY
+    # when the CLI option itself is absent (the CLI always wins); env
+    # conflicts are undetermined, never dropped.
+    env_values, env_conflicts = _env_selector_options(executable, env or {})
+    for option, value in env_values.items():
+        values.setdefault(option, value)
+    conflicts = set(collected.get("conflicts") or ()) | set(env_conflicts)
+    if tool == "npm" and values.get("--workspace"):
+        if collected["workspace"] is None:
+            # npm_config_workspace selects the effective source exactly
+            # like the CLI option.
+            collected["workspace"] = values["--workspace"]
+        elif collected["workspace"] != values["--workspace"]:
+            # The workspace dimension repeats across regions with
+            # different values: undetermined, never region-priority.
+            conflicts.add("--workspace")
+    action = {
+        "tier": "A",
+        "semantic_action_id": f"registry_{tool}_{operation_name}",
+        "canonical_target_id": f"registry:{tool}:{operation_name}",
+        "write_surface_id": "package_registry",
+        "release_version": "unresolved",
+        "registry_operation": operation_name,
+        "registry_tool": tool,
+        "registry_tail": tail[:8],
+        "registry_workspace": collected["workspace"],
+        "registry_flags": collected["flags"][:8],
+        "registry_values": values,
+        "registry_positionals": positionals[:8],
+    }
+    if conflicts:
+        action["registry_conflicts"] = sorted(conflicts)
+    return "mutation", action
+
+GH_INHERITED_VALUE_OPTIONS = {"--repo", "-R", "--hostname", "--target"}
+# -R and --repo are the SAME option: values are captured and compared on
+# the canonical --repo dimension, so a cross-alias repeat with a different
+# value is a conflict and a same-value repeat is idempotent (P1-J).
+GH_OPTION_ALIAS_SPELLINGS = {"-R": "--repo"}
+GH_RELEASE_VERB_TAIL_VALUE_OPTIONS = {
+    "--title", "--notes", "--notes-file", "--assets", "--notes-start-tag",
+}
+
+
+def _gh_capture_option(
+    collected: dict[str, Any], name: str, value: str | None
+) -> None:
+    """Capture one inherited-option value position-independently on the
+    CANONICAL option dimension (-R and --repo are the same repo option).
+
+    Repeating the SAME value is idempotent — across aliases, across the
+    three legal regions, and across separated/= spellings; a conflicting
+    value, or an option left WITHOUT its value, is a controlled conflict
+    — the target becomes undetermined (deny), never last-wins guessing
+    (P1-H/P1-J).
+    """
+    canonical = GH_OPTION_ALIAS_SPELLINGS.get(name, name)
+    if value is None or value == "":
+        collected.setdefault("conflicts", set()).add(canonical)
+        return
+    existing = collected["values"].get(canonical)
+    if existing is not None and existing != value:
+        collected.setdefault("conflicts", set()).add(canonical)
+        return
+    collected["values"][canonical] = value
+
+
+def _gh_scan_options(
+    tokens: list[str],
+    collected: dict[str, Any],
+    *,
+    stop_at_positional: bool,
+) -> int:
+    """Scan one option region (before the noun, between noun and verb, or
+    the verb tail) with ONE position-independent grammar: inherited
+    options (--repo/-R/--hostname/--target) capture their values in both
+    the separated and the = form; known value options consume theirs; the
+    walk returns at the first positional when ``stop_at_positional``."""
+    walk = 0
+    while walk < len(tokens):
+        token = tokens[walk]
+        if not token.startswith("-"):
+            if stop_at_positional:
+                return walk
+            if collected.get("tag") is None:
+                collected["tag"] = token
+            walk += 1
+            continue
+        if "=" in token:
+            name, _, value = token.partition("=")
+            if name in GH_INHERITED_VALUE_OPTIONS:
+                _gh_capture_option(collected, name, value)
+            walk += 1
+            continue
+        if token in GH_INHERITED_VALUE_OPTIONS:
+            _gh_capture_option(
+                collected, token,
+                tokens[walk + 1] if walk + 1 < len(tokens) else None,
+            )
+            walk += 2
+            continue
+        if token in GH_RELEASE_VERB_TAIL_VALUE_OPTIONS:
+            walk += 2 if walk + 1 < len(tokens) else 1
+            continue
+        walk += 1
+    return walk
+
+def _gh_invocation_state(
+    executable: str, args: list[str], env: dict[str, str] | None = None
+) -> tuple[str, dict[str, Any] | None]:
+    """gh invocations: ONE position-independent grammar over the THREE
+    regions the GitHub CLI accepts inherited options in — after ``gh``,
+    between ``release`` and the verb, and after the verb. --repo/-R/
+    --hostname bind the real target repo/host wherever they appear;
+    ``--target`` changes the commit an auto-created tag points at. An
+    unknown pre-noun option is the bounded envelope, never provably safe;
+    missing values and CONFLICTING repeats make the target undetermined
+    (controlled deny), never last-wins guessing. Verb-tail values
+    (--title/--notes/...) can never impersonate the release tag.
+    """
+    index, collected = _skip_global_options(executable, args, 0)
+    if index == -1:
+        return "envelope", None
+    if index >= len(args) or args[index].lower() != "release":
+        return "inert", None
+    collected.setdefault("values", {})
+    # Region 2: between the release noun and the verb — inherited options
+    # are legal exactly here (gh release --repo o/r create ...), so the
+    # scan stops at the first positional, which IS the verb.
+    scan = args[index + 1 :]
+    verb_index = _gh_scan_options(scan, collected, stop_at_positional=True)
+    if verb_index >= len(scan):
+        return "inert", None
+    verb = scan[verb_index].lower()
+    if verb not in GH_RELEASE_VERBS:
+        return "inert", None
+    verb_tail = scan[verb_index + 1 :]
+    if "--dry-run" in verb_tail:
+        return "inert", None
+    # Region 3: the verb tail. The tag is the first true positional;
+    # option values are never the tag.
+    collected["tag"] = None
+    _gh_scan_options(verb_tail, collected, stop_at_positional=False)
+    tag = collected.get("tag") or "unknown"
+    action = {
+        "tier": "A", "semantic_action_id": f"github_release_{verb}",
+        "canonical_target_id": f"release:{tag}",
+        "write_surface_id": "github_release",
+        "release_version": tag,
+    }
+    gh_repo_value = collected["values"].get("--repo") or ""
+    if gh_repo_value:
+        action["gh_repo"] = gh_repo_value
+    if collected["values"].get("--hostname"):
+        action["gh_hostname"] = collected["values"]["--hostname"]
+    if collected["values"].get("--target"):
+        action["gh_target"] = collected["values"]["--target"]
+    conflicts = sorted(collected.get("conflicts") or ())
+    if conflicts:
+        # Conflicting repeats or missing values: the real target cannot be
+        # proven — the identity dimensions involved become undetermined.
+        action["gh_conflicts"] = conflicts
+    # Visible env selectors (P1-D) fold in only when the option is absent.
+    env_values, _env_conflicts = _env_selector_options(executable, env or {})
+    for option, value in env_values.items():
+        if option == "--repo" and not gh_repo_value:
+            action["gh_repo"] = value
+        elif option == "--hostname" and "gh_hostname" not in action:
+            action["gh_hostname"] = value
+    return "mutation", action
+
+def _git_invocation_state(
+    executable: str, args: list[str], branch_cwd: Any = None
+) -> tuple[str, dict[str, str] | None]:
+    action = _git_invocation_action(args, branch_cwd=branch_cwd)
+    return ("mutation", action) if action is not None else ("inert", None)
+
+
+def _invocation_state(
+    executable: str,
+    args: list[str],
+    env: dict[str, str] | None = None,
+    branch_cwd: Any = None,
+) -> tuple[str, dict[str, str] | None]:
+    if executable == "":
+        # Bounded unresolvable segment (unknown `env` prefix option).
+        return "envelope", None
+    if executable == "git":
+        return _git_invocation_state(executable, args, branch_cwd=branch_cwd)
+    if executable == "gh":
+        return _gh_invocation_state("gh", args, env)
+    if executable in REGISTRY_OPERATION_TOOLS:
+        return _registry_invocation_state(executable, args, env)
+    return "inert", None
+
+
+def _shell_actions(
+    command: str, *, branch_cwd: Any = None, posix: bool | None = None
+) -> list[dict[str, str]]:
+    """Every real mutation action carried by a shell command.
+
+    Only invocations whose executable sits in a real command position are
+    considered; simulation (--dry-run/-n) and read-only forms produce no
+    action; envelope invocations (unresolvable option prefixes) produce no
+    action here but classify as the bounded envelope upstream.
+    ``branch_cwd`` resolves a bare ``git push`` refspec to the current
+    branch; purity callers pass None (``unknown``).
+    """
+    actions: list[dict[str, str]] = []
+    for executable, args, env in command_invocations_full(command, posix=posix):
+        state, action = _invocation_state(
+            executable, args, env, branch_cwd=branch_cwd
+        )
+        if state == "mutation" and action is not None:
+            actions.append(action)
+    return actions
+
+
+def _shell_invocation_states(
+    command: str, *, posix: bool | None = None
+) -> list[str]:
+    """The per-invocation state sequence: inert / mutation / envelope."""
+    states = []
+    for executable, args, env in command_invocations_full(command, posix=posix):
+        state, _action = _invocation_state(executable, args, env)
+        states.append(state)
+    return states
+
+def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, Any] | None:
     tool_name = str(payload.get("tool_name") or "")
     normalized = normalized_tool_name(tool_name)
     tool_input = payload.get("tool_input")
     input_sha = pre_tool_input_sha256(tool_name, tool_input)
-    action: dict[str, str] | None = None
+    action: dict[str, Any] | None = None
     if normalized in SHELL_TOOL_NAMES or normalized.endswith("_exec_command"):
         command = _shell_command(tool_input)
         if command is None:
             return None
-        tokens = _expanded_command_tokens(command)
-        actions: list[dict[str, str]] = []
-        for git_command, git_args in _subcommands(tokens, "git"):
-            if git_command == "tag" and not any(
-                value in {"-d", "--delete", "-l", "--list", "-v", "--verify", "--contains", "--points-at"}
-                for value in git_args
-            ):
-                positional_tags = [value for value in git_args if not value.startswith("-")]
-                if positional_tags:
-                    tag = _first_version_token(git_args) or "unknown"
-                    actions.append({
-                        "tier": "A", "semantic_action_id": "release_tag_mutation",
-                        "canonical_target_id": f"tag:{tag}", "write_surface_id": "git_release_tag",
-                    })
-            elif git_command == "push":
-                version = _first_version_token(git_args)
-                if version is not None or "--tags" in git_args or any("refs/tags/" in value for value in git_args):
-                    tag = version or "all"
-                    actions.append({
-                        "tier": "A", "semantic_action_id": "release_tag_push",
-                        "canonical_target_id": f"tag:{tag}", "write_surface_id": "git_remote_tag",
-                    })
-                else:
-                    positional = [value for value in git_args if not value.startswith("-")]
-                    remote = positional[0] if positional else "unknown"
-                    refspec = positional[1] if len(positional) > 1 else current_branch(payload.get("cwd"))
-                    ref = refspec.rsplit(":", 1)[-1]
-                    semantic = "remote_push"
-                    if any(value in {"--force", "--force-with-lease", "-f"} or value.startswith("+") for value in git_args):
-                        semantic = "force_push"
-                    elif "--delete" in git_args or any(value.startswith(":") for value in git_args):
-                        semantic = "remote_branch_delete"
-                    actions.append({
-                        "tier": "B", "semantic_action_id": semantic,
-                        "canonical_target_id": f"remote:{remote}:{ref.lstrip(':')}",
-                        "write_surface_id": "git_remote_branch",
-                    })
-        for gh_command, gh_args in _subcommands(tokens, "gh"):
-            if gh_command != "release" or not gh_args:
-                continue
-            verb = gh_args[0].lower()
-            if verb in {"create", "edit", "delete", "upload"}:
-                target = _first_version_token(gh_args[1:]) or next(
-                    (value for value in gh_args[1:] if not value.startswith("-")),
-                    "unknown",
-                )
-                actions.append({
-                    "tier": "A", "semantic_action_id": f"github_release_{verb}",
-                    "canonical_target_id": f"release:{target}",
-                    "write_surface_id": "github_release",
-                })
-        lowered = [
-            token if token in SHELL_CONTROL_TOKENS else _command_basename(token)
-            for token in tokens
-        ]
-        registry_pairs = {
-            ("npm", "publish"), ("npm", "unpublish"),
-            ("cargo", "publish"), ("cargo", "yank"),
-            ("gem", "push"), ("gem", "yank"),
-            ("docker", "push"), ("twine", "upload"),
-        }
-        for left, right in zip(lowered, lowered[1:]):
-            if (left, right) in registry_pairs:
-                semantic = f"{left}_{right}"
-                actions.append({
-                    "tier": "A", "semantic_action_id": f"registry_{semantic}",
-                    "canonical_target_id": f"registry:{semantic}",
-                    "write_surface_id": "package_registry",
-                    "release_version": "unresolved",
-                })
+        actions = _shell_actions(command, branch_cwd=payload.get("cwd"))
         if len(actions) == 1:
             action = actions[0]
         elif len(actions) > 1:
@@ -2314,23 +3233,21 @@ def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, str] | None:
                 "release_version": "unresolved",
             }
     if action is None:
-        joined = normalized
-        mcp_actions = {
-            "create_release": "github_release_create",
-            "update_release": "github_release_edit",
-            "delete_release": "github_release_delete",
-            "publish_package": "registry_publish_package",
-            "yank_package": "registry_yank_package",
-        }
-        for marker, semantic in mcp_actions.items():
-            if joined == marker or joined.endswith("_" + marker):
-                action = {
-                    "tier": "A", "semantic_action_id": semantic,
-                    "canonical_target_id": f"tool-target:{sha256_text(canonical_json(tool_input))}",
-                    "write_surface_id": "remote_release_api",
-                    "release_version": "unresolved",
-                }
-                break
+        semantic = _mcp_marker_semantic(normalized)
+        if semantic:
+            action = {
+                "tier": "A", "semantic_action_id": semantic,
+                "canonical_target_id": f"tool-target:{sha256_text(canonical_json(tool_input))}",
+                "write_surface_id": "remote_release_api",
+                "release_version": "unresolved",
+            }
+            _namespace, family, near_miss = mcp_adapter_provenance(tool_name)
+            if family:
+                # Structured adapter provenance rides on the action. An
+                # EMPTY namespace marks a non-MCP bare tool name, and a
+                # near-miss method spelling is deliberately untrusted
+                # (P1-B/P1-G closed allowlist) — neither can inherit.
+                action["mcp_namespace"] = "" if near_miss else _namespace
     if action is None:
         return None
     if "release_version" not in action:
@@ -2342,6 +3259,299 @@ def classify_pre_tool_action(payload: dict[str, Any]) -> dict[str, str] | None:
         "repository_id": repository_identity(payload.get("cwd")),
         "candidate_commit": repository_commit(payload.get("cwd")),
     }
+
+
+def classify_action_kind(tool_name: str, tool_input: Any) -> dict[str, Any] | None:
+    """Pure, fast action-kind detection (no git subprocess, no repo fields).
+
+    Text-position command words, quoted phrases, and simulation variants
+    never produce an action kind.
+    """
+    normalized = normalized_tool_name(tool_name)
+    if normalized in SHELL_TOOL_NAMES or normalized.endswith("_exec_command"):
+        command = _shell_command(tool_input)
+        if command is None:
+            return None
+        actions = _shell_actions(command)
+        if len(actions) == 1:
+            return actions[0]
+        if len(actions) > 1:
+            return {
+                "tier": "A" if any(item["tier"] == "A" for item in actions) else "B",
+                "semantic_action_id": "compound_remote_mutation",
+                "canonical_target_id": f"compound:{sha256_text(canonical_json(actions))}",
+                "write_surface_id": "multiple_remote_surfaces",
+                "release_version": "unresolved",
+            }
+        return None
+    semantic = _mcp_marker_semantic(normalized)
+    if semantic:
+        return {
+            "tier": "A", "semantic_action_id": semantic,
+            "canonical_target_id": f"tool-target:{sha256_text(canonical_json(tool_input))}",
+            "write_surface_id": "remote_release_api",
+            "release_version": "unresolved",
+        }
+    return None
+
+
+# Three-state PreToolUse classification plus the bounded high-risk envelope.
+# SAFE and generic AMBIGUOUS (malformed/unparseable input) are silent empty
+# objects with zero state I/O — dispatch pre-classifies them BEFORE the
+# session lock/state load. CANDIDATE delegates for authorization.
+# STATE_AMBIGUOUS_CANDIDATE is the candidate-high-risk envelope (obvious
+# external mutation executable behind an argument runner): it reaches the
+# heavy core so the profile decides (fail closed only under release).
+STATE_SAFE = "safe"
+STATE_CANDIDATE = "candidate"
+STATE_AMBIGUOUS = "ambiguous"
+STATE_AMBIGUOUS_CANDIDATE = "ambiguous_candidate"
+
+# Tools that are read-only by contract and need no shell parsing.
+SAFE_TOOL_NAMES = {
+    "read", "view", "grep", "glob", "search", "web_search", "fetch",
+}
+
+
+def _shell_runner_ambiguity(command: str, *, posix: bool | None = None) -> bool:
+    """True only when a known mutation executable is handed to an
+    argument-runner (xargs/find/watch/parallel) — executed later, position
+    unresolvable from the command string alone."""
+    for executable, args in command_invocations(command, posix=posix):
+        if executable in ARG_RUNNER_EXECUTABLES and any(
+            _command_basename(value) in MUTATION_EXECUTABLES for value in args
+        ):
+            return True
+    return False
+
+
+def classify_pre_tool_state(tool_name: Any, tool_input: Any) -> str:
+    """Classify a PreToolUse invocation into SAFE / CANDIDATE / AMBIGUOUS.
+
+    Mirrors the pure router classifier: only provably side-effect-free
+    invocations are SAFE (empty-object fast path, zero state I/O);
+    recognized mutation surfaces are CANDIDATE; structurally unreliable
+    input and the bounded argument-runner ambiguity class are AMBIGUOUS.
+    Unknown non-mutation tools — including MCP tools with unregistered
+    methods — are SAFE and never touch private state.
+    """
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        return STATE_AMBIGUOUS
+    normalized = normalized_tool_name(tool_name)
+    if normalized in APPLY_PATCH_TOOL_NAMES or normalized.endswith("_apply_patch"):
+        return STATE_CANDIDATE
+    if normalized in SHELL_TOOL_NAMES or normalized.endswith("_exec_command"):
+        return _classify_shell_state(normalized, tool_input)
+    if _mcp_marker_semantic(normalized):
+        # Exact registered methods AND near-miss spellings (garbage
+        # prefix/suffix, wrong case, extra __ segments) are gated
+        # candidates — a near-miss is never silently safe (P1-G).
+        return STATE_CANDIDATE
+    if normalized in SAFE_TOOL_NAMES:
+        return STATE_SAFE
+    return STATE_SAFE
+
+
+def _classify_shell_state(normalized: str, tool_input: Any) -> str:
+    if not isinstance(tool_input, dict):
+        return STATE_AMBIGUOUS
+    command = _shell_command(tool_input)
+    if not isinstance(command, str) or not command.strip():
+        return STATE_AMBIGUOUS
+    if not _command_tokens(command):
+        # shlex could not tokenize the command reliably (unterminated
+        # quote, stray backslash, ...) — parseability, not safety.
+        return STATE_AMBIGUOUS
+    if _shell_runner_ambiguity(command):
+        # Obvious mutation executable behind an argument runner: a
+        # candidate-high-risk envelope; profiles decide in the heavy core.
+        return STATE_AMBIGUOUS_CANDIDATE
+    if any(
+        state == "envelope" for state in _shell_invocation_states(command)
+    ):
+        # An unknown pre-subcommand option on a mutation executable cannot
+        # be reliably resolved: bounded high-risk envelope, profile decides.
+        return STATE_AMBIGUOUS_CANDIDATE
+    if _shell_actions(command):
+        return STATE_CANDIDATE
+    return STATE_SAFE
+
+
+GIT_COMMIT_SIMULATION_FLAGS = {"--dry-run"}
+
+
+def is_git_commit_command(command: str) -> bool:
+    """True when a command really executes ``git commit`` at a real
+    executable position (``--dry-run`` is a simulation, not a commit)."""
+    for executable, args in command_invocations(command):
+        if executable != "git" or not args:
+            continue
+        index = 0
+        while index < len(args) and args[index].startswith("-"):
+            option = args[index]
+            index += 2 if option in GIT_GLOBAL_ARG_OPTIONS else 1
+        if index < len(args) and args[index].lower() == "commit":
+            if not any(
+                value in GIT_COMMIT_SIMULATION_FLAGS for value in args[index + 1 :]
+            ):
+                return True
+    return False
+
+
+_MCP_MUTATION_MARKERS = {
+    "create_release": "github_release_create",
+    "update_release": "github_release_edit",
+    "delete_release": "github_release_delete",
+    "upload_release_asset": "github_release_upload",
+    "publish_package": "registry_publish_package",
+    "unpublish_package": "registry_unpublish_package",
+    "yank_package": "registry_yank_package",
+    "deprecate_package": "registry_deprecate_package",
+}
+
+# MCP adapter provenance: the closed allowlist of namespaces AND EXACT
+# registered methods whose structured tool identity may satisfy an
+# authorization. A registry surface is trusted only when the adapter
+# namespace EQUALS the structured tool identity; the github namespace is
+# trusted only for the github release family; and the RAW method token
+# must be EXACTLY one of the registered method spellings. Unknown or
+# cross-family namespaces and near-miss method spellings are deliberately
+# unmatchable ("untrusted-adapter:<ns>") — they never inherit an
+# authorization (P1-B/P1-G).
+MCP_REGISTRY_ADAPTER_NAMESPACES = frozenset(
+    {"npm", "cargo", "gem", "docker", "twine", "pypi"}
+)
+MCP_GITHUB_ADAPTER_NAMESPACE = "github"
+
+_MCP_METHOD_FAMILIES = {
+    "create_release": "github_release",
+    "update_release": "github_release",
+    "delete_release": "github_release",
+    "upload_release_asset": "github_release",
+    "publish_package": "registry_package",
+    "unpublish_package": "registry_package",
+    "yank_package": "registry_package",
+    "deprecate_package": "registry_package",
+}
+
+
+def _mcp_marker_semantic(normalized: str) -> str:
+    """The longest registered marker CONTAINED in the normalized name —
+    the deterministic semantic for exact AND near-miss surfaces. Exact
+    registered methods never reach the near-miss caller, so plain
+    containment is the near-miss rule (garbage before, after, or around
+    the marker all gate)."""
+    best_marker = ""
+    best_semantic = ""
+    for marker, semantic in _MCP_MUTATION_MARKERS.items():
+        if marker in normalized and len(marker) > len(best_marker):
+            best_marker, best_semantic = marker, semantic
+    return best_semantic
+
+
+def mcp_adapter_provenance(tool_name: Any) -> tuple[str, str, bool]:
+    """(namespace, method family, near_miss) of a structured adapter tool
+    name.
+
+    Namespace and method come from the RAW ``mcp__<ns>__<method>``
+    identity (not the lossy normalized form). ``family`` is
+    "github_release", "registry_package", or "" when the name carries no
+    known mutation marker at all. The family is EXACT only when the raw
+    method token is precisely a registered method and the whole raw name
+    is exactly mcp__ns__METHOD (or the bare METHOD); any other name that
+    still hides a known marker — garbage prefix/suffix inside the method,
+    wrong case, extra __-segments — is a NEAR-MISS: the family is still
+    set (so the surface stays a gated candidate, never silently safe) and
+    ``near_miss`` is True, which makes the provenance deliberately
+    untrusted.
+    """
+    raw = str(tool_name or "")
+    parts = raw.split("__")
+    mcp_form = len(parts) == 3 and parts[0] == "mcp"
+    namespace = parts[1] if mcp_form else ""
+    method = parts[2] if mcp_form else ""
+    normalized = normalized_tool_name(raw)
+    family = _MCP_METHOD_FAMILIES.get(method, "")
+    if not family and not mcp_form and normalized in _MCP_METHOD_FAMILIES:
+        # A bare tool named exactly like a registered method: no adapter
+        # namespace at all — an exact surface, deliberately untrusted.
+        family = _MCP_METHOD_FAMILIES[normalized]
+    if family:
+        return namespace, family, False
+    if _mcp_marker_semantic(normalized):
+        # Near-miss: a known mutation marker hides inside the name but the
+        # raw method is not an exactly registered one. Gated candidate,
+        # never trusted, never silently safe.
+        family = (
+            "github_release"
+            if normalized.endswith("_release") or "_release_" in normalized
+            else "registry_package"
+        )
+        return namespace, family, True
+    return "", "", False
+
+
+def trusted_mcp_adapter(tool_name: Any, structured_tool: Any = None) -> bool:
+    """True only when the EXACT registered method, the namespace, and the
+    structured tool identity all agree inside the closed allowlist. Near
+    misses, non-MCP names, and unknown namespaces are never trusted."""
+    namespace, family, near_miss = mcp_adapter_provenance(tool_name)
+    if near_miss or not namespace or not family:
+        return False
+    if family == "github_release":
+        return namespace == MCP_GITHUB_ADAPTER_NAMESPACE
+    if namespace not in MCP_REGISTRY_ADAPTER_NAMESPACES:
+        return False
+    if structured_tool is None:
+        return True
+    return namespace == str(structured_tool or "").strip().lower()
+
+
+def classify_shell_effects(
+    command: str, *, posix: bool | None = None
+) -> list[dict[str, str]]:
+    """Per-invocation effect classes for diagnostics and conformance tests.
+
+    Single source of truth: every row derives from :func:`_invocation_state`
+    (the same grammar the gate uses), so diagnostics can never drift from
+    enforcement. Effects: mutation (gated), simulation (--dry-run, ungated),
+    read_only (ungated query forms), envelope (bounded high-risk ambiguity),
+    inert (provably unrelated).
+    """
+    rows: list[dict[str, str]] = []
+    for executable, args, env in command_invocations_full(command, posix=posix):
+        state, action = _invocation_state(executable, args, env)
+        effect = "inert"
+        if state == "envelope":
+            effect = "envelope"
+        elif state == "mutation":
+            effect = "mutation"
+        elif executable in MUTATION_EXECUTABLES or executable in REGISTRY_OPERATION_TOOLS:
+            # A mutation executable whose invocation resolved to no action:
+            # either a simulation (--dry-run) or a read-only form.
+            tokens = [value.lower() for value in args]
+            dry_flags = REGISTRY_DRY_RUN_FLAGS.get(executable, set())
+            if (
+                "--dry-run" in tokens
+                or _dry_run_tri_state(args) is True
+                or any(flag in dry_flags for flag in args)
+            ):
+                effect = "simulation"
+            elif executable in REGISTRY_OPERATION_TOOLS:
+                effect = "read_only"
+            else:
+                effect = "read_only"
+        rows.append({"executable": executable, "effect": effect})
+    return rows
+
+def is_stateless_pre_tool(payload: dict[str, Any]) -> bool:
+    """Light-router fast-path predicate: provably SAFE calls AND generic
+    (malformed/unresolvable) ambiguity both take the silent empty-object
+    path with zero state I/O; only candidates and the runner envelope
+    reach the heavy core."""
+    return classify_pre_tool_state(
+        payload.get("tool_name"), payload.get("tool_input")
+    ) in {STATE_SAFE, STATE_AMBIGUOUS}
 
 
 def _pre_tool_decision(permission: str, reason: str | None = None) -> dict[str, Any]:
@@ -2356,29 +3566,2168 @@ def _pre_tool_decision(permission: str, reason: str | None = None) -> dict[str, 
     return decision
 
 
-def _prompt_authorizes_b_action(prompt_text_value: str, action: dict[str, str]) -> bool:
-    text = authoritative_supersession_text(prompt_text_value)
-    text = re.sub(r"[,，](?=\s*(?:and\b|并(?:且|将)?))", " ", text, flags=re.I)
-    patterns = {
-        "remote_push": re.compile(r"\bpush\b|推送", re.I),
-        "force_push": re.compile(r"\bforce[- ]?push\b|强制推送", re.I),
-        "remote_branch_delete": re.compile(r"(?:delete|remove).{0,24}(?:remote\s+branch)|删除.{0,12}远程分支", re.I),
-    }
-    pattern = patterns.get(action["semantic_action_id"])
-    if pattern is None:
-        return False
-    raw_target_parts = action["canonical_target_id"].split(":")[1:]
-    if not raw_target_parts or any(
-        part in {"", "unknown", "HEAD"} for part in raw_target_parts
-    ):
-        return False
-    target_parts = raw_target_parts
-    for clause in re.split(r"[\n!?。！？;；,，]|\.(?=\s|$)", text):
-        if not pattern.search(clause) or CLAUSE_NEGATION_RE.search(clause):
+# Phase 4 allow wire (frozen plan section 4.4): the allow path returns the
+# PLAIN EMPTY OBJECT and never a permissionDecisionReason; only a real deny
+# carries one actionable sentence. Observe/inactive/safe/simulation paths
+# return the same empty object.
+
+AUTH_ACTION_VOCABULARY = frozenset({
+    "commit", "push", "tag", "release", "force_push", "tag_push",
+    "remote_branch_delete", "release_delete", "publish",
+    "unpublish", "yank", "deprecate",
+})
+ACTION_WRITE_SURFACES = {
+    "commit": "local_commit",
+    "push": "git_remote_branch",
+    "force_push": "git_remote_branch",
+    "remote_branch_delete": "git_remote_branch",
+    "tag": "git_release_tag",
+    "tag_push": "git_remote_tag",
+    "release": "github_release",
+    "release_delete": "github_release",
+    "publish": "package_registry",
+    "unpublish": "package_registry",
+    "yank": "package_registry",
+    "deprecate": "package_registry",
+}
+MAX_UNIT_AUTHORIZATIONS = 8
+
+ACTION_PROFILE_LABELS = {
+    "release_tag_mutation": "tag creation",
+    "unpublish": "package unpublish",
+    "yank": "package yank",
+    "deprecate": "package deprecation",
+    "release_tag_push": "tag push",
+    "remote_push": "remote branch push",
+    "force_push": "force push",
+    "remote_branch_delete": "remote branch deletion",
+    "github_release_create": "GitHub Release creation",
+    "github_release_edit": "GitHub Release edit",
+    "github_release_delete": "GitHub Release deletion",
+    "github_release_upload": "GitHub Release asset upload",
+}
+
+
+def _action_label(action: dict[str, str]) -> str:
+    semantic = action["semantic_action_id"]
+    if semantic.startswith("registry_"):
+        return semantic.removeprefix("registry_").replace("_", " ")
+    return ACTION_PROFILE_LABELS.get(semantic, semantic.replace("_", " "))
+
+
+# Phase 4 authorization statements: one root-user sentence in the current
+# work unit ("打 tag v1.2.3", "提交并推送", "发布 release v1") authorizes the
+# SEMANTIC action. Structured hints are extracted only from the same
+# statement; repository/branch/upstream/commit targets are resolved from
+# the unique structured task state at execution time (the user never has
+# to restate remotes, SHAs, or refspecs).
+AUTH_CLAUSE_SPLIT_RE = re.compile(r"[。！？；;\n]|,|，")
+_AUTH_VERSION_RE = re.compile(VERSION_PATTERN)
+_AUTH_REMOTE_URL_RE = re.compile(r"(?:https?://|git@)[^\s，。；;]+", re.I)
+_AUTH_REFSPEC_RE = re.compile(r"refs/heads/(\S+)")
+_AUTH_BRANCH_RE = re.compile(
+    r"(?:\S+)\s*(?:远程)?分支|(?:branches?\b\s*)(\S+)|(?:branch)\s+(\S+)", re.I
+)
+_AUTH_NAMED_REMOTE_RE = re.compile(r"\b(origin|upstream)\b", re.I)
+
+# Bare negation prefixes immediately before an action phrase ("不创建 tag",
+# "never push") mark that match as a prohibition; the shared schema-8
+# clause-negation regex does not cover them.
+_AUTH_LOCAL_NEGATION_RE = re.compile(r"(?:不要|不|没|别|勿|禁|never|not)\s*$", re.I)
+# FAM-AUTH-STATEMENT-TARGET-HINTS: deletion semantics anywhere in a clause
+# govern a bare "tag <version>" reference — it names an existing tag to
+# remove, never a creation authorization. Position-independent: the deletion
+# verb may sit before or after the target, with qualifiers in between.
+_AUTH_DELETE_SEMANTICS_RE = re.compile(r"删除|移除|删掉|\b(?:delet|remov|drop)\w*", re.I)
+# Canonical intent/target projection: a "tag <version>" reference is
+# attributed to the NEAREST preceding intent token (creation or deletion);
+# with no preceding intent, a clause carrying deletion semantics is deletion
+# context (fail closed), and otherwise the bare reference is an imperative
+# creation ("git tag v9.9.9", "tag v1.2.3 on this repo").
+_AUTH_CREATE_VERB_RE = re.compile(r"创建|打|\b(?:create|make|add)\b", re.I)
+_AUTH_TAG_REF_RES = (
+    re.compile(rf"(?:tags?|标签)\s+({VERSION_PATTERN})", re.I),
+    re.compile(rf"({VERSION_PATTERN})\s+(?:release\s+)?tags?\b", re.I),
+)
+_AUTH_RELEASE_REF_RES = (
+    re.compile(rf"\breleases?\s+({VERSION_PATTERN})", re.I),
+    re.compile(rf"({VERSION_PATTERN})\s+releases?\b(?!\s+tags?\b)", re.I),
+    re.compile(rf"发布\s*({VERSION_PATTERN})", re.I),
+)
+_AUTH_TAG_DELETE_COMMAND_RE = re.compile(
+    rf"\bgit\s+tags?\s+(?:-[dD]|--delete)\s+({VERSION_PATTERN})", re.I
+)
+_AUTH_TOOL_RE = re.compile(r"\b(npm|cargo|gem|twine|docker|pypi)\b", re.I)
+_AUTH_PACKAGE_SPEC_RE = re.compile(
+    r"([A-Za-z0-9@/._-]+)@(" + VERSION_PATTERN + r")"
+)
+# P1-F: a docker image reference NAME[:TAG] (optional registry host
+# component) names the exact pushed package + version.
+_AUTH_IMAGE_SPEC_RE = re.compile(
+    r"(?<![\w@./-])([\w][\w./-]*):(" + VERSION_PATTERN + r")"
+)
+# A publish source/path hint: a relative path with a separator, or a
+# tarball filename. URLs are remotes, never sources.
+_AUTH_SOURCE_HINT_RE = re.compile(
+    r"(?:\.{1,2}/|(?=[\w.-]*/))[\w@./-]*[\w-]|"
+    r"[\w.-]+\.(?:tgz|tar\.gz)",
+    re.I,
+)
+
+
+def _auth_hint_add(hints: dict[str, list[str]], key: str, value: str) -> None:
+    """Append one ordered statement hint, deduplicated and bounded; the
+    snapshot builders slice their candidate dimensions from these lists."""
+    values = hints.setdefault(key, [])
+    if value and value not in values and len(values) < 4:
+        values.append(value)
+
+
+def _auth_source_hints(clause: str) -> list[str]:
+    """Ordered publish-source hints from one clause: relative paths with a
+    separator and distribution filenames. URLs (http/https/git@) are
+    remotes, never sources."""
+    found: list[str] = []
+    for match in _AUTH_SOURCE_HINT_RE.finditer(clause):
+        token = match.group(0)
+        if "://" in token:
             continue
-        if target_parts and all(re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(part)}(?![A-Za-z0-9_.-])", clause) for part in target_parts):
+        prefix = clause[: match.start()]
+        if prefix.endswith("://") or prefix.endswith("git@"):
+            continue
+        if token not in found:
+            found.append(token)
+    return found[:4]
+
+
+def _auth_tag_creation_versions(clause: str) -> list[str]:
+    """Project version spans owned by tag-creation intent in one clause.
+
+    Every version is classified once from structured neighbouring spans.
+    Release references and ``git tag -d/--delete`` are typed first, then the
+    remaining tag-shaped or continuation versions are assigned to the nearest
+    explicit create/delete intent.  Equal-distance conflicting intent is
+    unresolved and therefore omitted (fail closed).  With no explicit intent,
+    an actual ``tag <version>`` reference is the bare imperative creation form.
+    """
+    versions = list(_AUTH_VERSION_RE.finditer(clause))
+    if not versions:
+        return []
+    tag_refs = [
+        match
+        for pattern in _AUTH_TAG_REF_RES
+        for match in pattern.finditer(clause)
+    ]
+    release_refs = [
+        match
+        for pattern in _AUTH_RELEASE_REF_RES
+        for match in pattern.finditer(clause)
+    ]
+    delete_commands = list(_AUTH_TAG_DELETE_COMMAND_RE.finditer(clause))
+    intents = [
+        (match.start(), match.end(), "delete")
+        for match in _AUTH_DELETE_SEMANTICS_RE.finditer(clause)
+    ]
+    intents.extend(
+        (match.start(), match.end(), "delete") for match in delete_commands
+    )
+    intents.extend(
+        (match.start(), match.end(), "create")
+        for match in _AUTH_CREATE_VERB_RE.finditer(clause)
+    )
+
+    def _contains(matches: list[re.Match[str]], start: int) -> bool:
+        return any(match.start() <= start < match.end() for match in matches)
+
+    def _intent_for(start: int, end: int) -> str | None:
+        preceding: list[tuple[int, str]] = []
+        following: list[tuple[int, str]] = []
+        for intent_start, intent_end, kind in intents:
+            if intent_end <= start:
+                preceding.append((start - intent_end, kind))
+            elif end <= intent_start:
+                following.append((intent_start - end, kind))
+            else:
+                preceding.append((0, kind))
+        # Natural imperative ownership is left-to-right.  A following intent
+        # is consulted only for target-first forms such as "tag v1 删掉".
+        ranked = preceding or following
+        if not ranked:
+            return None
+        nearest = min(distance for distance, _ in ranked)
+        kinds = {kind for distance, kind in ranked if distance == nearest}
+        return kinds.pop() if len(kinds) == 1 else "unresolved"
+
+    projected: list[str] = []
+    has_tag_reference = bool(tag_refs)
+    has_explicit_tag_creation = any(
+        pattern.search(clause) is not None
+        for action, pattern in AUTH_STATEMENT_PATTERNS
+        if action == "tag"
+    )
+    for match in versions:
+        start, end = match.span()
+        value = match.group(0)
+        if _contains(delete_commands, start) or _contains(release_refs, start):
+            continue
+        is_tag_reference = _contains(tag_refs, start)
+        # An otherwise untyped version can continue an explicit tag target
+        # list ("tag v1.2.3 and v1.2.4").  It must not manufacture a tag
+        # action from an unrelated version such as a release candidate.
+        if not is_tag_reference and not (has_tag_reference or has_explicit_tag_creation):
+            continue
+        intent = _intent_for(start, end)
+        if intent == "delete" or intent == "unresolved":
+            continue
+        if intent is None and not is_tag_reference:
+            continue
+        if value not in projected:
+            projected.append(value)
+    return projected[:4]
+
+
+AUTH_STATEMENT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "force_push",
+        re.compile(r"\bforce(?:[- ]?push)?\b|强制推送", re.I),
+    ),
+    (
+        "tag",
+        re.compile(
+            r"(?:创建|打).{0,16}tags?\b"
+            r"|(?:创建|打).{0,6}标签"
+            r"|(?:create|make|add)\s+(?:a\s+|an\s+)?(?:release\s+)?tags?\b",
+            re.I,
+        ),
+    ),
+    (
+        "tag_push",
+        re.compile(
+            r"\bpush\b.{0,24}tags?\b|tags?\b.{0,24}\bpush\b"
+            r"|推送.{0,12}tags?\b|tags?\b.{0,12}推送",
+            re.I,
+        ),
+    ),
+    (
+        "push",
+        re.compile(r"\bpush\b|推送", re.I),
+    ),
+    (
+        "release",
+        re.compile(
+            r"创建.{0,12}release|发布.{0,12}release"
+            r"|发布.{0,4}v?\d|(?:create|publish|cut)\s+(?:a\s+)?(?:the\s+)?release\b"
+            r"|\brelease\s+v?\d",
+            re.I,
+        ),
+    ),
+    (
+        "release_delete",
+        re.compile(r"删除.{0,20}release|delete.{0,20}release", re.I),
+    ),
+    (
+        "unpublish",
+        re.compile(r"\bunpublish\b|取消发布|撤销发布|撤回发布", re.I),
+    ),
+    (
+        "yank",
+        re.compile(r"\byank\b", re.I),
+    ),
+    (
+        "deprecate",
+        re.compile(r"\bdeprecate\b|废弃", re.I),
+    ),
+    (
+        "publish",
+        re.compile(
+            r"\b(?:npm\s+publish|cargo\s+publish|twine\s+upload|gem\s+push|docker\s+push)\b"
+            r"|(?<!撤销)(?<!取消)(?<!撤回)发布[^.。；;，,\n]{0,10}(?:包|package|release)"
+            r"|(?<!撤销)(?<!取消)(?<!撤回)发布[^.。；;，,\n]{0,4}v?\d"
+            r"|(?<!un)\bpublish.{0,20}package",
+            re.I,
+        ),
+    ),
+    (
+        "remote_branch_delete",
+        re.compile(
+            r"删除.{0,24}远程分支|delete.{0,24}remote\s+branch",
+            re.I,
+        ),
+    ),
+    (
+        "commit",
+        re.compile(r"\bcommit\b|提交", re.I),
+    ),
+)
+
+
+def parse_authorization_statement(text: str) -> dict[str, Any] | None:
+    """Pure: one requirement text → one structured authorization statement.
+
+    Negated clauses never authorize. The returned record carries the
+    semantic actions and the statement's own structured target hints as
+    ORDERED LISTS (tags, versions, remotes, refs): a statement naming two
+    versions yields two candidates, which is the ask-once path, never a
+    silent first-wins bind. Statements are matched per clause so a trailing
+    prohibition ("但不要强制推送") cannot poison the authorized clause and
+    an authorization cannot leak into a prohibition.
+    """
+    actions: list[str] = []
+    hints: dict[str, list[str]] = {}
+    tag_creation_versions_all: list[str] = []
+    non_tag_versions_all: list[str] = []
+    for clause in AUTH_CLAUSE_SPLIT_RE.split(str(text or "")):
+        if not clause.strip() or CLAUSE_NEGATION_RE.search(clause):
+            continue
+        versions_in_clause = [m.group(0) for m in _AUTH_VERSION_RE.finditer(clause)]
+        # FAM-AUTH-STATEMENT-TARGET-HINTS: canonical span projection owns tag
+        # targets before the action vocabulary is flattened.  This prevents
+        # delete targets and sibling-action versions from entering tag hints.
+        clause_tag_versions = _auth_tag_creation_versions(clause)
+        clause_non_tag_versions: list[str] = []
+        for action, pattern in AUTH_STATEMENT_PATTERNS:
+            matched = pattern.search(clause)
+            if matched is None:
+                continue
+            matched_prefix = clause[: matched.start()]
+            if _AUTH_LOCAL_NEGATION_RE.search(matched_prefix):
+                # The negation directly prefixes this action phrase: the
+                # clause prohibits exactly this action.
+                continue
+            if action not in actions:
+                actions.append(action)
+            version_relevant = action in {
+                "tag", "tag_push", "release", "release_delete", "publish",
+                "unpublish", "yank", "deprecate",
+            }
+            if version_relevant:
+                if action in {"tag", "tag_push"}:
+                    versions_for_action = clause_tag_versions
+                else:
+                    # Versions projected onto a sibling tag intent do not
+                    # also become release/package versions merely because
+                    # both actions share a clause. If every value is shared,
+                    # retain the compatible fallback identity.
+                    versions_for_action = [
+                        version for version in versions_in_clause
+                        if version not in clause_tag_versions
+                    ] or versions_in_clause
+                for version in versions_for_action:
+                    if action in {"tag", "tag_push"}:
+                        _auth_hint_add(hints, "tags", version)
+                    elif version not in clause_non_tag_versions:
+                        clause_non_tag_versions.append(version)
+            for match in _AUTH_REMOTE_URL_RE.finditer(clause):
+                _auth_hint_add(hints, "remotes", match.group(0))
+            named = _AUTH_NAMED_REMOTE_RE.search(clause)
+            if named:
+                _auth_hint_add(hints, "remotes", named.group(1).lower())
+            named_tools = {
+                match.group(1).lower()
+                for match in _AUTH_TOOL_RE.finditer(clause)
+            }
+            for tool_name in sorted(named_tools):
+                _auth_hint_add(hints, "tools", tool_name)
+            for spec in _AUTH_PACKAGE_SPEC_RE.finditer(clause):
+                _auth_hint_add(hints, "packages", spec.group(1))
+                _auth_hint_add(hints, "versions", spec.group(2))
+            if "docker" in named_tools:
+                # P1-F: a docker image reference names the exact package +
+                # version; a registry host component re-splits in the
+                # target projection.
+                for match in _AUTH_IMAGE_SPEC_RE.finditer(clause):
+                    _auth_hint_add(hints, "packages", match.group(1))
+                    _auth_hint_add(hints, "versions", match.group(2))
+            if action == "publish":
+                # P1-E recovery reachability: an explicitly stated
+                # source/path/tarball hint binds at adoption time.
+                for source in _auth_source_hints(clause):
+                    _auth_hint_add(hints, "sources", source)
+            refspec = _AUTH_REFSPEC_RE.search(clause)
+            branch = _AUTH_BRANCH_RE.search(clause)
+            if refspec:
+                _auth_hint_add(hints, "refs", refspec.group(1))
+            elif branch:
+                token = next(
+                    (group for group in branch.groups() if group), ""
+                ) or branch.group(0).split()[0]
+                _auth_hint_add(hints, "refs", token)
+        for version in clause_tag_versions:
+            if version not in tag_creation_versions_all:
+                tag_creation_versions_all.append(version)
+        for version in clause_non_tag_versions:
+            if version not in non_tag_versions_all:
+                non_tag_versions_all.append(version)
+    # FAM-AUTH-STATEMENT-TARGET-HINTS: a bare imperative reference ("git tag
+    # v9.9.9", "tag v1.2.3 on this repo") authorizes the tag action even
+    # without a creation verb; attributed deletion references never reach
+    # this list.
+    if tag_creation_versions_all and "tag" not in actions:
+        actions.append("tag")
+    if "tag" in actions:
+        for version in tag_creation_versions_all:
+            _auth_hint_add(hints, "tags", version)
+    # ``versions`` is the release/package identity dimension.  When a
+    # statement contains a sibling version-bearing action, only that action's
+    # versions enter it; otherwise the tag version remains the compatible
+    # single-action fallback.
+    version_sibling_actions = [
+        action for action in actions
+        if action in {"release", "release_delete", "publish", "unpublish", "yank", "deprecate"}
+    ]
+    for version in (
+        non_tag_versions_all if version_sibling_actions else tag_creation_versions_all
+    ):
+        _auth_hint_add(hints, "versions", version)
+    # FAM-AUTH-STATEMENT-TARGET-HINTS: when the statement recognizes
+    # exactly one version-relevant action, versions named in the other
+    # non-negated clauses belong to that same authorization statement
+    # ("创建这个 tag，目标 v9.9.9"). With several version-relevant
+    # actions each clause keeps its own attribution. Negated clauses never
+    # contribute (they were skipped above). This runs once after the full
+    # clause scan so the action set is complete.
+    version_relevant_actions = [a for a in actions if a in {
+        "tag", "tag_push", "release", "release_delete", "publish",
+        "unpublish", "yank", "deprecate",
+    }]
+    primary_action = version_relevant_actions[0] if version_relevant_actions else None
+    primary_has_target = bool(
+        hints.get("tags")
+        if primary_action in {"tag", "tag_push"}
+        else hints.get("versions")
+    )
+    if len(version_relevant_actions) == 1 and not primary_has_target:
+        primary = version_relevant_actions[0]
+        for clause in AUTH_CLAUSE_SPLIT_RE.split(str(text or "")):
+            if not clause.strip() or CLAUSE_NEGATION_RE.search(clause):
+                continue
+            if _AUTH_DELETE_SEMANTICS_RE.search(clause):
+                # A deletion-intent clause names a removal subject, never a
+                # second creation candidate ("创建 tag v1.2.3，然后删除旧
+                # tag v0.9" binds exactly v1.2.3).
+                continue
+            clause_versions = [m.group(0) for m in _AUTH_VERSION_RE.finditer(clause)]
+            for version in clause_versions:
+                if primary in {"tag", "tag_push"}:
+                    _auth_hint_add(hints, "tags", version)
+                _auth_hint_add(hints, "versions", version)
+    if not actions:
+        return None
+    return {"actions": actions, "hints": hints}
+
+
+def _normalize_auth_ref(ref: Any) -> str:
+    value = str(ref or "").strip().removeprefix("refs/heads/")
+    return value
+
+
+def current_upstream_remote(cwd: Any) -> str:
+    """Resolve the branch's upstream remote from the structured git state."""
+    import subprocess as _subprocess
+    try:
+        result = _subprocess.run(
+            ["git", "-C", str(cwd or os.getcwd()), "rev-parse",
+             "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2,
+        )
+    except (OSError, _subprocess.SubprocessError):
+        return "unknown"
+    value = result.stdout.strip().rsplit("/", 1)
+    if result.returncode == 0 and len(value) == 2 and value[0]:
+        return value[0]
+    return "unknown"
+
+
+def _normalize_github_repo(value: str) -> str:
+    """Normalize a GitHub repo reference ("owner/repo", a full URL, an
+    scp-like spec, or an explicit DEFAULT-host spelling
+    "github.com/OWNER/REPO") to the lowercase canonical identity. A
+    non-default host is a distinct identity and is preserved (P1-H)."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:"):
+        if text.lower().startswith(prefix):
+            text = text[len(prefix):]
+            break
+    if text.lower().startswith("github.com/"):
+        text = text[len("github.com/"):]
+    text = text.removesuffix(".git").strip("/")
+    return text.lower()
+
+
+def _split_github_repo_reference(value: str) -> tuple[str, str]:
+    """Split a repo reference into (host or "", owner/repo): a leading
+    host component is recognized for URL/scp forms and for a bare
+    "HOST/OWNER/REPO" spelling where HOST contains a dot. The default
+    host collapses to "" (P1-H equivalence)."""
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:"):
+        if text.lower().startswith(prefix):
+            return "github.com", text[len(prefix):]
+    lowered = text.lower()
+    if lowered.startswith("github.com/"):
+        return "github.com", text[len("github.com/"):]
+    first, slash, rest = text.partition("/")
+    if slash and ("." in first or ":" in first or first == "localhost"):
+        if ":" in first and not first.startswith(("http", "git@")):
+            # scp-like host:port — treat the whole first component as host
+            return first.lower(), rest
+        return first.lower(), rest
+    return "", text
+
+
+def github_repo_identity(cwd: Any) -> str | None:
+    """Normalize the origin remote into a GitHub repo identity
+    ("owner/repo"), or None when it cannot be determined."""
+    root = str(cwd or os.getcwd())
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, "config", "--get", "remote.origin.url"],
+            text=True, capture_output=True, check=False, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    url = result.stdout.strip()
+    if result.returncode != 0 or not url:
+        return None
+    match = re.search(r"github\.com[/:](.+?)(?:\.git)?/?$", url)
+    if not match:
+        return None
+    repo = match.group(1).strip("/").lower()
+    return repo or None
+
+
+def resolve_internal_targets(cwd: Any) -> dict[str, Any]:
+    """Structured facts resolved from the unique task state.
+
+    Three identities, deliberately separate:
+      * head_sha256 — the Git TARGET identity (resolvable HEAD, dirty or
+        clean): what tag/push authorizations bind;
+      * verified_commit — the clean-worktree VERIFIED candidate: what
+        release/ticket identities bind (cleanliness discipline NOT
+        weakened);
+      * prepared_source — the plumbing projection of the candidate bytes.
+    """
+    root = str(cwd or os.getcwd())
+    verified = repository_commit(root)
+    return {
+        "repository": repository_identity(root),
+        "ref": current_branch(root),
+        "upstream_remote": current_upstream_remote(root),
+        "head_sha256": git_head(root),
+        "verified_commit": verified,
+        "clean": bool(_SHA256_40_RE.fullmatch(verified or "")),
+        "cwd": root,
+        "github_repo": github_repo_identity(root),
+    }
+
+
+MAX_PREPARED_FILES = 64
+_SHA256_40_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def current_unit_authorization_bindings(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The current work unit's ACTIVE immutable authorization bindings.
+
+    Bindings are persisted when the root-user authorization statement is
+    recorded/adopted (prompt time) and carry an exact target snapshot:
+    work-unit id + generation, repository identity, ref/upstream, verified
+    commit or candidate identity, semantic actions, canonical target
+    fields, and write surfaces. Historical units never authorize; superseded
+    bindings never execute.
+    """
+    unit_id = (state.get("work_state") or {}).get("active_work_unit_id")
+    if not isinstance(unit_id, str) or not unit_id:
+        return []
+    unit = next(
+        (
+            item
+            for item in state.get("work_units", [])
+            if isinstance(item, dict) and item.get("id") == unit_id
+        ),
+        None,
+    )
+    if unit is None:
+        return []
+    records = unit.get("authorizations")
+    if not isinstance(records, list):
+        return []
+    return [
+        record
+        for record in records
+        if isinstance(record, dict) and record.get("state") == "active"
+    ]
+
+
+def canonical_registry_url(value: str) -> str:
+    """Canonical host[:port][/path] form of a registry URL: scheme and
+    trailing slash are not identity; a non-root path is (case kept)."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    for scheme in ("https://", "http://"):
+        if lowered.startswith(scheme):
+            text = text[len(scheme):]
+            break
+    text = text.rstrip("/")
+    first, slash, path = text.partition("/")
+    return first.lower() + slash + path
+
+
+def canonical_registry_identity(tool: str, option: str, raw_value: str) -> str:
+    """Canonical value of ONE registry option in the tool's OWN domain.
+
+    ``option`` selects the domain: --registry (npm URL / cargo+twine name),
+    --index (cargo URL), --repository-url/--host (URL). Unknown raw values
+    stay exact strings so they can only ever equal themselves — two
+    different real endpoints never collapse.
+    """
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    if tool == "npm" and option == "--registry":
+        return canonical_registry_url(text)
+    if tool == "cargo" and option == "--registry":
+        lowered = text.lower()
+        return CARGO_REGISTRY_NAME_DEFAULTS.get(lowered, text)
+    if tool == "cargo" and option == "--index":
+        return "index:" + canonical_registry_url(text)
+    if tool == "twine" and option in {"--repository", "-r"}:
+        lowered = text.lower()
+        return TWINE_REPOSITORY_NAME_DEFAULTS.get(lowered, text)
+    if tool == "twine" and option == "--repository-url":
+        canonical = canonical_registry_url(text)
+        return TWINE_REPOSITORY_URL_DEFAULTS.get(canonical, canonical)
+    if tool == "gem" and option == "--host":
+        canonical = canonical_registry_url(text)
+        return _GEM_HOST_DEFAULTS.get(canonical, canonical)
+    return text
+
+
+# The registry options of each tool that participate in the endpoint
+# identity, in the tool's OWN value domain (npm: URL; cargo: registry
+# NAME + index URL; twine: .pypirc repository NAME + URL; gem: host URL).
+REGISTRY_ENDPOINT_OPTION_DOMAINS: dict[str, tuple[str, ...]] = {
+    "npm": ("--registry",),
+    "cargo": ("--registry", "--index"),
+    "gem": ("--host",),
+    "twine": ("--repository", "-r", "--repository-url"),
+}
+
+
+def canonical_registry_endpoint(tool: str, values: dict[str, str]) -> str:
+    """Canonical endpoint identity of one CLI invocation.
+
+    Documented default spellings normalize onto the default identity (no
+    false deny); any non-default dimension becomes a named drift
+    component bound to its option (so --registry X and --index X can
+    never collapse); an EMPTY explicit value is unresolvable ("") — the
+    controlled deny, never a silent default.
+    """
+    parts: list[str] = []
+    for option in sorted(REGISTRY_ENDPOINT_OPTION_DOMAINS.get(tool, ())):
+        if option not in values:
+            continue
+        raw = str(values.get(option) or "").strip()
+        if not raw:
+            # An explicitly EMPTY value cannot prove which endpoint is
+            # effective: undetermined, never defaulted.
+            return ""
+        canonical = canonical_registry_identity(tool, option, raw)
+        if canonical and canonical != DEFAULT_REGISTRY_ENDPOINTS.get(tool):
+            parts.append(f"{option}={canonical}")
+    default = DEFAULT_REGISTRY_ENDPOINTS.get(tool, "")
+    if not parts:
+        return default
+    return default + "|" + "|".join(parts)
+
+
+def split_docker_image_reference(
+    reference: str,
+) -> tuple[str, str, str] | None:
+    """Split a Docker image reference into (registry host or "", name, tag).
+
+    Per the Docker docs a reference is NAME[:TAG]; the registry host is the
+    first path component when it contains a dot, a colon, or equals
+    "localhost" — otherwise the reference targets Docker Hub. A missing tag
+    means every tag of the repository, so the tag component stays empty and
+    the caller treats the version as undetermined. Malformed references
+    return None (unresolvable — never guessed).
+    """
+    text = str(reference or "").strip().strip("\"'")
+    if not text or any(ch.isspace() for ch in text):
+        return None
+    name, has_colon, tag = text.rpartition(":")
+    if has_colon and ("/" not in tag and tag):
+        rest = name
+    else:
+        rest, tag = text, ""
+    components = rest.split("/")
+    host = ""
+    if len(components) >= 2 and (
+        "." in components[0] or ":" in components[0]
+        or components[0] == "localhost"
+    ):
+        host = components[0].lower()
+        rest = "/".join(components[1:])
+    if not rest or not all(component for component in rest.split("/")):
+        return None
+    return host, rest, tag
+
+
+def registry_reverse_identity(
+    tool: str, positionals: list[str], values: dict[str, str]
+) -> tuple[str, str]:
+    """(package, version) of a reverse/metadata mutation in the tool's OWN
+    spec grammar (empty components = undetermined, never a sentinel):
+    npm name@version (scoped split at the LAST @), cargo crate@version OR
+    crate --version <version> (both orders), gem <gem> -v <version>."""
+    spec = positionals[0] if positionals else ""
+    if tool == "npm":
+        name, _, version = spec.rpartition("@")
+        if not name:
+            return "", ""
+        return name, version.removeprefix("v")
+    if tool == "cargo":
+        if "@" in spec:
+            name, _, version = spec.rpartition("@")
+            return (name, version.removeprefix("v")) if name else ("", "")
+        name = spec
+        version = str(values.get("--version") or "")
+        if not name or not version:
+            return "", ""
+        return name, version.removeprefix("v")
+    if tool == "gem":
+        name = spec
+        # -v and --version are the same option: live captures store the
+        # canonical --version spelling (P1-J); the -v fallback keeps
+        # hand-built value dicts resolvable.
+        version = str(values.get("--version") or values.get("-v") or "")
+        if not name or not version:
+            return "", ""
+        return name, version.removeprefix("v")
+    return "", ""
+
+
+def _untracked_regular_git_mode(
+    path: Path, *, windows: bool | None = None
+) -> str:
+    """Return the Git tree mode a new regular file can carry locally."""
+    use_windows = os.name == "nt" if windows is None else windows
+    if use_windows:
+        return "100644"
+    return "100755" if path.stat().st_mode & stat.S_IXUSR else "100644"
+
+
+def prepared_source_identity(cwd: Any) -> dict[str, Any] | None:
+    """Bounded canonical projection of the PREPARED CANDIDATE at
+    authorization time, built from Git PLUMBING only.
+
+    Explicitly covers, per path: the base HEAD tree, the index/staged
+    delta (``diff-index --cached`` — includes STAGED DELETIONS), the
+    unstaged worktree delta (``diff-files``, worktree blobs hashed via
+    ``hash-object``), and untracked files. Renames project as delete+add
+    pairs; modes ride on every entry; content is hashed, never stored.
+    Deterministic for the same bytes; returns None when Git facts are
+    unavailable or the change set exceeds its bound.
+    """
+    root = str(cwd or os.getcwd())
+    try:
+        head = subprocess.run(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        base_head = head.stdout.strip().lower()
+        base_head = (
+            base_head
+            if head.returncode == 0 and _SHA256_40_RE.fullmatch(base_head)
+            else None
+        )
+        head_tree: dict[str, tuple[str, str]] = {}
+        tree = subprocess.run(
+            ["git", "-C", root, "ls-tree", "-r", "-z", "HEAD"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        if tree.returncode == 0:
+            for token in (item for item in tree.stdout.split("\0") if item):
+                meta, _, path = token.partition("\t")
+                parts = meta.split(" ")
+                if len(parts) == 3 and path:
+                    head_tree[path] = (parts[0], parts[2])
+        index_map: dict[str, tuple[str, str]] = {}
+        index = subprocess.run(
+            ["git", "-C", root, "ls-files", "--stage", "-z"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        if index.returncode != 0:
+            return None
+        for token in (item for item in index.stdout.split("\0") if item):
+            # ls-files --stage format: "<mode> <blob> <stage>\t<path>"
+            meta, _, entry_path = token.partition("\t")
+            parts = meta.split(" ")
+            if len(parts) != 3 or not entry_path:
+                return None
+            index_map[entry_path] = (parts[0], parts[1])
+        staged = subprocess.run(
+            ["git", "-C", root, "diff-index", "--cached", "-z",
+             "--no-abbrev", "HEAD"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        unstaged = subprocess.run(
+            ["git", "-C", root, "diff-files", "-z"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        others = subprocess.run(
+            ["git", "-C", root, "ls-files", "--others", "-z",
+             "--exclude-standard"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        if staged.returncode != 0 or unstaged.returncode != 0 or others.returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    def parse_raw(raw: str) -> list[tuple[str, str, str, str, str]]:
+        parsed = []
+        tokens = raw.split("\0")
+        walk = 0
+        while walk + 1 < len(tokens) + 1 and walk < len(tokens):
+            meta = tokens[walk]
+            if not meta.startswith(":"):
+                break
+            parts = meta[1:].split(" ")
+            if len(parts) != 5 or walk + 1 >= len(tokens):
+                break
+            old_mode, new_mode, _old_blob, new_blob, status = parts
+            parsed.append((path_token := tokens[walk + 1], status, new_mode, new_blob, old_mode))
+            walk += 2
+            del path_token
+        return parsed
+
+    def parse_raw_simple(raw: str) -> list[tuple[str, str, str, str, str]]:
+        parsed: list[tuple[str, str, str, str, str]] = []
+        tokens = raw.split("\0")
+        walk = 0
+        while walk < len(tokens):
+            meta = tokens[walk]
+            if not meta.startswith(":"):
+                walk += 1
+                continue
+            parts = meta[1:].split(" ")
+            path = tokens[walk + 1] if walk + 1 < len(tokens) else ""
+            if len(parts) == 5 and path:
+                parsed.append((path, parts[4], parts[1], parts[3], parts[0]))
+            walk += 2
+        return parsed
+
+    merged: dict[str, dict[str, Any]] = {}
+
+    def add_entry(path: str, status: str, mode: str | None, blob: str | None, origin: str) -> bool:
+        if status == "deleted":
+            merged[path] = {
+                "path": path, "status": "deleted", "mode": None,
+                "blob": None, "origin": origin,
+            }
             return True
-    return False
+        merged[path] = {
+            "path": path, "status": "modified", "mode": mode,
+            "blob": blob, "origin": origin,
+        }
+        return True
+
+    bound = MAX_PREPARED_FILES
+    seen = 0
+    for path, status, new_mode, new_blob, _old_mode in parse_raw_simple(staged.stdout):
+        if seen >= bound:
+            return None
+        seen += 1
+        if status == "D":
+            add_entry(path, "deleted", None, None, "staged")
+        else:
+            add_entry(path, "modified", new_mode.removeprefix("0"), new_blob, "staged")
+    for path, status, new_mode, _new_blob, _old_mode in parse_raw_simple(unstaged.stdout):
+        if seen >= bound:
+            return None
+        seen += 1
+        if status == "D":
+            add_entry(path, "deleted", None, None, "unstaged")
+            continue
+        absolute = Path(root) / path
+        if not absolute.is_file() or absolute.is_symlink():
+            return None
+        blob = subprocess.run(
+            ["git", "-C", root, "hash-object", "--", path],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        blob_value = blob.stdout.strip()
+        if blob.returncode != 0 or not _SHA256_40_RE.fullmatch(blob_value):
+            return None
+        # Git plumbing already reports the effective worktree mode for a
+        # tracked path.  Do not infer it with os.access(X_OK): on Windows that
+        # check can report ordinary files such as candidate.txt as executable.
+        mode = new_mode.removeprefix("0")
+        add_entry(path, "modified", mode, blob_value, "unstaged")
+    for token in (item for item in others.stdout.split("\0") if item):
+        if seen >= bound:
+            return None
+        seen += 1
+        absolute = Path(root) / token
+        if not absolute.is_file() or absolute.is_symlink():
+            return None
+        blob = subprocess.run(
+            ["git", "-C", root, "hash-object", "--", token],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        blob_value = blob.stdout.strip()
+        if blob.returncode != 0 or not _SHA256_40_RE.fullmatch(blob_value):
+            return None
+        # Git for Windows cannot represent a native executable bit for a new
+        # regular worktree file and stages it as 100644.  POSIX filesystems do
+        # carry that bit, so inspect the mode directly rather than using
+        # os.access(), whose Windows X_OK semantics are not a Git mode test.
+        mode = _untracked_regular_git_mode(absolute)
+        add_entry(token, "modified", mode, blob_value, "untracked")
+
+    # A projected entry equal to its HEAD tree state is a no-op, not a
+    # prepared change.
+    for path in list(merged):
+        entry = merged[path]
+        head_entry = head_tree.get(path)
+        if (
+            entry["status"] == "modified"
+            and head_entry is not None
+            and head_entry == (entry["mode"], entry["blob"])
+        ):
+            del merged[path]
+
+    entries = [merged[path] for path in sorted(merged)]
+    projection = {
+        "base_head": base_head,
+        "entries": [
+            {key: entry[key] for key in ("path", "status", "mode", "blob")}
+            for entry in entries
+        ],
+    }
+    return {
+        "base_head": base_head,
+        "entries": entries,
+        "projection_sha256": sha256_text(canonical_json(projection)),
+    }
+
+
+def _git_commit_changes(cwd: Any, sha: str) -> tuple[str, list[dict[str, Any]]] | None:
+    """(parent, entries) of one commit: bounded exact tree correspondence.
+
+    Entries are (path, mode, blob) for additions/modifications and
+    (path, deleted) for removals — directly comparable with
+    :func:`prepared_source_identity` entries.
+    """
+    root = str(cwd or os.getcwd())
+    try:
+        parent_run = subprocess.run(
+            ["git", "-C", root, "rev-parse", f"{sha}~1"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        parent = parent_run.stdout.strip().lower()
+        parent = parent if parent_run.returncode == 0 and _SHA256_40_RE.fullmatch(parent) else None
+        diff = subprocess.run(
+            ["git", "-C", root, "diff-tree", "-r", "--root", "--no-commit-id",
+             "--no-abbrev", sha],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+        if diff.returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    entries: list[dict[str, Any]] = []
+    for line in diff.stdout.splitlines():
+        if not line or "\t" not in line:
+            continue
+        meta, path = line.split("\t", 1)
+        parts = meta.split(" ")
+        if len(parts) != 5:
+            continue
+        _old_mode, new_mode, _old_blob, new_blob, kind = parts
+        if kind.startswith("D") or new_mode == "000000":
+            entries.append({"path": path, "status": "deleted", "mode": None, "blob": None})
+        else:
+            entries.append({
+                "path": path, "status": "modified",
+                "mode": new_mode.removeprefix("0") or new_mode,
+                "blob": new_blob,
+            })
+    entries.sort(key=lambda item: canonical_json(item))
+    return parent, entries
+
+
+_RESOLVED_VERSION_RE = re.compile(r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][A-Za-z0-9._-]+)?")
+_MAX_METADATA_BYTES = 262144
+
+
+def resolve_project_release_info(source: Any, tool: str) -> tuple[str, str] | None:
+    """Resolve the EXACT package identity (name, version) from TRUSTED
+    metadata of the effective publish source.
+
+    ``source`` is the effective publish directory (or a distribution
+    file). npm reads package.json (directory, or package/package.json
+    inside a .tgz), cargo reads [package] in Cargo.toml, twine/pypi read
+    pyproject.toml (directory), an sdist's PKG-INFO (.tar.gz), or a
+    wheel's METADATA (.whl). Returns None when the identity cannot be
+    uniquely resolved — the ask-once path, never a sentinel.
+    """
+    if not tool:
+        return None
+    root = Path(str(source or "")).expanduser()
+    if tool == "npm" and root.is_file() and root.name.endswith((".tgz", ".tar.gz")):
+        # A tarball source must NEVER leak an exception out of the hook:
+        # valid archives resolve to their exact identity; anything
+        # malformed, oversized, or unreadable resolves to None (ask).
+        if root.stat().st_size > _MAX_METADATA_BYTES:
+            return None
+        try:
+            import tarfile
+            with tarfile.open(root, "r:*") as archive:
+                member = None
+                for candidate in archive.getmembers():
+                    if candidate.name in {"package.json", "package/package.json"}:
+                        member = candidate
+                        break
+                if member is None or not member.isfile() or member.size > _MAX_METADATA_BYTES:
+                    return None
+                raw_bytes = archive.extractfile(member).read()
+            data = json.loads(raw_bytes.decode("utf-8"))
+            if isinstance(data, dict):
+                name, version = data.get("name"), data.get("version")
+                if isinstance(name, str) and isinstance(version, str):
+                    return name.strip(), version.strip()
+            return None
+        except Exception:  # noqa: BLE001 - hostile/invalid archives are just unresolvable
+            return None
+    if tool in {"twine", "pypi"} and root.is_file() and root.name.endswith(
+        (".tar.gz", ".tgz", ".whl")
+    ):
+        # P1-F: a twine distribution file carries its own trusted
+        # metadata — the sdist's PKG-INFO or the wheel's METADATA. Like
+        # the npm tarball branch, hostile/malformed/oversized archives
+        # resolve to None (ask) and never leak an exception.
+        if root.stat().st_size > _MAX_METADATA_BYTES:
+            return None
+        try:
+            raw_bytes = None
+            if root.name.endswith(".whl"):
+                import zipfile
+                with zipfile.ZipFile(root) as archive:
+                    metadata_names = [
+                        name for name in archive.namelist()
+                        if name.endswith(".dist-info/METADATA")
+                    ]
+                    if len(metadata_names) != 1:
+                        return None
+                    info = archive.getinfo(metadata_names[0])
+                    if info.file_size > _MAX_METADATA_BYTES:
+                        return None
+                    raw_bytes = archive.read(metadata_names[0])
+            else:
+                import tarfile
+                with tarfile.open(root, "r:*") as archive:
+                    member = None
+                    for candidate in archive.getmembers():
+                        if (
+                            candidate.isfile()
+                            and candidate.name.split("/")[-1] == "PKG-INFO"
+                        ):
+                            member = candidate
+                            break
+                    if member is None or member.size > _MAX_METADATA_BYTES:
+                        return None
+                    raw_bytes = archive.extractfile(member).read()
+            text = raw_bytes.decode("utf-8", "replace")
+            name_match = re.search(r"(?m)^Name:\s*(\S+)\s*$", text)
+            version_match = re.search(r"(?m)^Version:\s*(\S+)\s*$", text)
+            if name_match and version_match:
+                return name_match.group(1).strip(), version_match.group(1).strip()
+            return None
+        except Exception:  # noqa: BLE001 - hostile archives are just unresolvable
+            return None
+    try:  # directory metadata: json/toml parsing failures are unresolvable, not tarball errors
+        if tool == "npm":
+            metadata = root / "package.json"
+            if not metadata.is_file() or metadata.stat().st_size > _MAX_METADATA_BYTES:
+                return None
+            data = json.loads(metadata.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                name, version = data.get("name"), data.get("version")
+                if isinstance(name, str) and isinstance(version, str):
+                    return name.strip(), version.strip()
+            return None
+        if tool == "cargo":
+            metadata = root / "Cargo.toml"
+            if not metadata.is_file() or metadata.stat().st_size > _MAX_METADATA_BYTES:
+                return None
+            text = metadata.read_text(encoding="utf-8", errors="replace")
+            section = re.search(
+                r"\[package\][^\[]*?^\s*name\s*=\s*\"([^\"\n]+)\"",
+                text, re.M | re.S,
+            )
+            version_section = re.search(
+                r"\[package\][^\[]*?^\s*version\s*=\s*\"([^\"\n]+)\"",
+                text, re.M | re.S,
+            )
+            if section and version_section:
+                return section.group(1).strip(), version_section.group(1).strip()
+            return None
+        if tool in {"twine", "pypi"}:
+            metadata = root / "pyproject.toml"
+            if not metadata.is_file() or metadata.stat().st_size > _MAX_METADATA_BYTES:
+                return None
+            text = metadata.read_text(encoding="utf-8", errors="replace")
+            name_section = re.search(
+                r"^\s*name\s*=\s*\"([^\"\n]+)\"", text, re.M
+            )
+            version_section = re.search(
+                r"^\s*version\s*=\s*\"([^\"\n]+)\"", text, re.M
+            )
+            if name_section and version_section:
+                return name_section.group(1).strip(), version_section.group(1).strip()
+            return None
+    except (OSError, ValueError):
+        # json.JSONDecodeError subclasses ValueError; tarfile errors are
+        # fully contained inside the tarball branch above.
+        return None
+    return None
+
+
+def resolve_project_release_version(cwd: Any, tool: str) -> str | None:
+    info = resolve_project_release_info(cwd, tool)
+    return info[1] if info else None
+
+
+def _authorization_snapshot_targets(
+    actions: list[str],
+    hints: dict[str, list[str]],
+    resolved: dict[str, Any],
+    *,
+    pending_fields: frozenset[str] = frozenset(),
+) -> list[dict[str, str]]:
+    """Snapshot candidate targets captured AT AUTHORIZATION TIME.
+
+    Fields the statement named win; the rest are resolved ONCE, now, from
+    the structured task state and must be EXACT values (field-level check
+    happens in the pure contract): unresolvable identities drop the
+    candidate and become the ask-once path — never sentinel equality.
+    A statement naming several values yields several candidates.
+    """
+    authority = _authority_module()
+    required: list[str] = []
+    for action in actions:
+        for field in authority.ACTION_REQUIRED_FIELDS.get(action, ()):
+            if field not in required:
+                required.append(field)
+    exact_required = [field for field in required if field not in pending_fields]
+    tags = hints.get("tags") or []
+    versions = hints.get("versions") or []
+    remotes = hints.get("remotes") or []
+    refs = hints.get("refs") or []
+    tools = hints.get("tools") or []
+    packages = hints.get("packages") or []
+    head = resolved.get("head_sha256") or ""
+    repository = resolved["repository"]
+    branch = _normalize_auth_ref(resolved.get("ref"))
+    remote_values = remotes[:2] or (
+        [resolved.get("upstream_remote")]
+        if resolved.get("upstream_remote") not in {"", "unknown", None}
+        else []
+    )
+    ref_values = [_normalize_auth_ref(value) for value in refs[:2]] or (
+        [branch] if branch not in {"", "unknown"} else []
+    )
+    if "remote" in exact_required and not remote_values:
+        remote_values = []
+    else:
+        remote_values = remote_values or [""]
+    ref_values = ref_values or [""]
+    tag_values = tags[:4] or [None]
+    version_values = versions[:4] or [None]
+    tool_values = tools[:2] or [None]
+    package_values = packages[:2] or [None]
+
+    targets: list[dict[str, str]] = []
+    for tag in tag_values:
+        for version in version_values:
+            for tool in tool_values:
+                for package in package_values:
+                    for remote in remote_values:
+                        for ref in ref_values:
+                            target: dict[str, str] = {"repository": repository}
+                            if "tag" in exact_required:
+                                if not tag:
+                                    continue
+                                target["tag"] = tag
+                            if "release_version" in exact_required and version:
+                                target["release_version"] = version
+                            elif (
+                                "release_version" in exact_required
+                                and "source" not in exact_required
+                            ):
+                                # A GitHub-style release version is a
+                                # statement decision; without it the
+                                # candidate is dropped.
+                                continue
+                            if "tool" in exact_required:
+                                if not tool:
+                                    continue
+                                target["tool"] = tool
+                            if "package" in exact_required and package:
+                                # Registry package identity: a statement-
+                                # named exact package wins; otherwise the
+                                # source branch below resolves it from the
+                                # bound source's trusted metadata.
+                                target["package"] = package
+                            if "source" in exact_required:
+                                if not tool:
+                                    continue
+                                if tool == "docker":
+                                    # Docker has no local source metadata
+                                    # (P1-F): the exact pushed identity is
+                                    # the image reference the statement
+                                    # named — package:tag. Without both
+                                    # parts the candidate is incomplete.
+                                    if package and version:
+                                        target["source"] = f"{package}:{version}"
+                                    else:
+                                        continue
+                                else:
+                                    # The bound source is the stated
+                                    # source path/tarball when the
+                                    # statement named one (P1-E: the
+                                    # restatement path must be reachable
+                                    # at adoption time), otherwise the
+                                    # authorized root directory.
+                                    stated = (hints.get("sources") or [None])[0]
+                                    if stated:
+                                        source_path = os.path.abspath(os.path.join(
+                                            str(resolved.get("cwd") or "."), stated
+                                        ))
+                                    else:
+                                        source_path = os.path.abspath(
+                                            str(resolved.get("cwd") or ".")
+                                        )
+                                    info = resolve_project_release_info(
+                                        source_path, tool
+                                    )
+                                    if info is None:
+                                        continue
+                                    target["package"] = info[0]
+                                    target["release_version"] = info[1]
+                                    target["source"] = source_path
+                            if "remote" in exact_required:
+                                if not remote or remote == "unknown":
+                                    continue
+                                target["remote"] = remote
+                            if "ref" in exact_required:
+                                # A tag binding may carry an unknown local
+                                # ref; a remote mutation may not.
+                                if "remote" in exact_required and (not ref or ref == "unknown"):
+                                    continue
+                                target["ref"] = ref or "unknown"
+                            if "commit_sha256" in exact_required:
+                                # Exact Git TARGET identity: resolvable HEAD
+                                # even on a dirty worktree; an unresolvable
+                                # HEAD is not an identity and drops it.
+                                if not _SHA256_40_RE.fullmatch(head):
+                                    continue
+                                target["commit_sha256"] = head
+                            if "registry" in exact_required and tool:
+                                target["registry"] = (
+                                    DEFAULT_REGISTRY_ENDPOINTS.get(tool) or ""
+                                )
+                            if target not in targets and len(targets) < 4:
+                                targets.append(target)
+    # GitHub release surfaces bind the GitHub repo identity (normalized
+    # origin), not the local path hash.
+    if any(action in {"release", "release_delete"} for action in actions):
+        github_repo = resolved.get("github_repo")
+        if github_repo:
+            for target in targets:
+                target["repository"] = "github:" + github_repo
+    return targets
+
+
+def _expected_commit_plan(
+    actions: list[str], resolved: dict[str, Any]
+) -> dict[str, Any]:
+    """Per-action commit expectations for one authorization record.
+
+    A commit-chain action ("commit" also authorized) gets the typed
+    pending transition; a standalone action binds the exact HEAD snapshot.
+    When the HEAD snapshot is not an exact value the action is omitted —
+    the binding itself already cannot reach authorized_unique, and a
+    sentinel expectation must never exist in persisted state.
+    """
+    head = resolved.get("head_sha256") or ""
+    plan: dict[str, Any] = {}
+    for action in actions:
+        if action == "commit":
+            continue
+        if "commit" in actions:
+            plan[action] = {"source": "authorized_commit", "commit_sha256": None}
+        elif _SHA256_40_RE.fullmatch(head):
+            plan[action] = head
+    return plan
+
+
+def _record_prompt_authorization(
+    state: dict[str, Any],
+    work_unit_id: str,
+    prompt_record: dict[str, Any],
+    text: str,
+) -> dict[str, Any] | None:
+    """Persist the immutable authorization binding at ADOPTION time.
+
+    Called from the live prompt path and the deterministic prompt-replay
+    rebuild: the snapshot (repository identity, ref, upstream, verified
+    commit, canonical target fields, write surfaces, unit + generation) is
+    captured NOW and never re-derived at execution time. A re-authorization
+    whose actions overlap an active binding supersedes it; distinct action
+    sets coexist.
+    """
+    statement = parse_authorization_statement(text)
+    if statement is None or not work_unit_id:
+        return None
+    actions = [
+        action
+        for action in statement["actions"]
+        if action in AUTH_ACTION_VOCABULARY
+    ]
+    if not actions:
+        return None
+    unit = next(
+        (
+            item
+            for item in state.get("work_units", [])
+            if isinstance(item, dict) and item.get("id") == work_unit_id
+        ),
+        None,
+    )
+    if unit is None:
+        return None
+    authorizations = unit.setdefault("authorizations", [])
+    if not isinstance(authorizations, list):
+        return None
+
+    # One sentence may name actions whose exact repository identities are
+    # intentionally different: a local Git tag binds the checkout, while a
+    # GitHub Release binds owner/repository. Registry mutations add their
+    # own package/source/endpoint dimensions. Record parallel bindings from
+    # the same prompt instead of flattening incompatible targets into one
+    # impossible normative vector.
+    domain_actions: dict[str, list[str]] = {
+        "git": [], "github": [], "registry": [],
+    }
+    for action in actions:
+        if action in {"release", "release_delete"}:
+            domain = "github"
+        elif action in {"publish", "unpublish", "yank", "deprecate"}:
+            domain = "registry"
+        else:
+            domain = "git"
+        domain_actions[domain].append(action)
+    action_groups = [group for group in domain_actions.values() if group]
+    # A named commit is the typed predecessor for every target domain in
+    # the statement. Same-prompt bindings may share it; a later prompt still
+    # supersedes all overlapping older bindings.
+    if "commit" in actions:
+        action_groups = [
+            group if "commit" in group else ["commit", *group]
+            for group in action_groups
+        ]
+    if len(authorizations) + len(action_groups) > MAX_UNIT_AUTHORIZATIONS:
+        return None
+
+    resolved = resolve_internal_targets(state.get("session", {}).get("cwd"))
+    authority = _authority_module()
+    created_at = str(prompt_record.get("created_at") or utc_now())
+    prompt_id = str(prompt_record.get("id") or "")
+    recorded: list[dict[str, Any]] = []
+    for group in action_groups:
+        generation = len(authorizations) + 1
+        pending_fields: frozenset[str] = frozenset()
+        prepared: dict[str, Any] | None = None
+        if "commit" in group:
+            # A serial chain binds follow-up actions to the commit THIS
+            # statement will produce, anchored to prepared source bytes.
+            pending_fields = frozenset({"commit_sha256"})
+            prepared = prepared_source_identity(state.get("session", {}).get("cwd"))
+            if prepared is None:
+                return None
+        targets = _authorization_snapshot_targets(
+            group, statement["hints"], resolved, pending_fields=pending_fields
+        )
+        binding = authority.bind_authorization(
+            group,
+            targets,
+            work_unit_id=work_unit_id,
+            generation=generation,
+            pending={"commit_sha256": "authorized_commit"} if pending_fields else None,
+        )
+        record: dict[str, Any] = {
+            "prompt_id": prompt_id,
+            "prompt_sha256": str(prompt_record.get("sha256") or ""),
+            "created_at": created_at,
+            "actions": group,
+            "surfaces": {
+                action: ACTION_WRITE_SURFACES.get(action, "unknown")
+                for action in group
+            },
+            "generation": generation,
+            "binding": binding,
+            "context": dict(resolved),
+            "expected_commits": _expected_commit_plan(group, resolved),
+            "state": "active",
+        }
+        if prepared is not None:
+            record["prepared_source"] = prepared
+        for existing in authorizations:
+            if (
+                not isinstance(existing, dict)
+                or existing.get("state") != "active"
+                or existing.get("prompt_id") == prompt_id
+            ):
+                continue
+            if set(existing.get("actions") or []) & set(group):
+                existing["state"] = "superseded"
+                existing["superseded_at"] = created_at
+        authorizations.append(record)
+        recorded.append(record)
+    return recorded[-1] if recorded else None
+
+
+def advance_commit_transitions(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str
+) -> None:
+    """Advance a typed pending transition ONLY on exact prepared-source
+    correspondence.
+
+    A real ``git commit`` advances the current unit's pending expectations
+    when — and only when — the produced commit's parent equals the
+    authorization's base HEAD and its tree changes equal the prepared
+    candidate projection exactly (same paths, modes, blobs; clean/allow-
+    empty means an empty projection with a matching empty parent-linked
+    commit). Failure, simulation, extra/missing/changed bytes, an unborn
+    mismatch, or an unverifiable HEAD never advance; an advanced
+    expectation is immutable.
+    """
+    if outcome != "success":
+        return
+    command = _shell_command(payload.get("tool_input"))
+    if not isinstance(command, str) or not is_git_commit_command(command):
+        return
+    unit_id = (state.get("work_state") or {}).get("active_work_unit_id")
+    if not isinstance(unit_id, str) or not unit_id:
+        return
+    unit = next(
+        (
+            item
+            for item in state.get("work_units", [])
+            if isinstance(item, dict) and item.get("id") == unit_id
+        ),
+        None,
+    )
+    if unit is None:
+        return
+    cwd = state.get("session", {}).get("cwd")
+    head = git_head(cwd)
+    if not _SHA256_40_RE.fullmatch(head):
+        return
+    advanced = False
+    for record in unit.get("authorizations") or []:
+        if not isinstance(record, dict) or record.get("state") != "active":
+            continue
+        has_pending = any(
+            isinstance(expectation, dict)
+            and expectation.get("commit_sha256") is None
+            for expectation in (record.get("expected_commits") or {}).values()
+        )
+        if not has_pending:
+            continue
+        prepared = record.get("prepared_source")
+        if not isinstance(prepared, dict):
+            continue
+        changes = _git_commit_changes(cwd, head)
+        if changes is None:
+            continue
+        parent, entries = changes
+        if parent != prepared.get("base_head"):
+            continue
+        # Compare the commit's tree delta with the prepared projection on
+        # the identity dimensions (path/status/mode/blob); the audit-only
+        # origin field never participates.
+        prepared_identity = sorted(
+            (
+                {key: entry[key] for key in ("path", "status", "mode", "blob")}
+                for entry in prepared.get("entries") or []
+                if isinstance(entry, dict)
+            ),
+            key=lambda item: canonical_json(item),
+        )
+        if entries != prepared_identity:
+            continue
+        tool_sha = pre_tool_input_sha256(
+            str(payload.get("tool_name") or ""), payload.get("tool_input")
+        )
+        for expectation in (record.get("expected_commits") or {}).values():
+            if (
+                isinstance(expectation, dict)
+                and expectation.get("commit_sha256") is None
+            ):
+                expectation["commit_sha256"] = head
+                expectation["advanced_from_tool_sha256"] = tool_sha
+                expectation["advanced_commit_projection"] = (
+                    prepared.get("projection_sha256") or ""
+                )
+                advanced = True
+    if advanced:
+        return
+
+
+def _snapshot_material_drift(
+    record: dict[str, Any], requested: str, resolved: dict[str, Any]
+) -> str | None:
+    """Compare the authorization-time snapshot against the CURRENT facts.
+
+    Material drift (repository, branch, upstream, target HEAD or candidate
+    identity) invalidates the binding: deny with one actionable
+    re-authorization sentence. The typed pending transition is checked by
+    the pure contract (resolved_pending) and the advance machinery; here a
+    PENDING expectation simply cannot authorize yet.
+    """
+    context = record.get("context") or {}
+    if str(context.get("repository") or "") != str(resolved.get("repository") or ""):
+        return "The authorized repository changed since authorization; state the authorization once for the current candidate."
+    auth_ref = str(context.get("ref") or "")
+    if auth_ref not in {"", "unknown"} and str(resolved.get("ref") or "") != auth_ref:
+        return f"The branch moved from {auth_ref} since authorization; state the authorization once for the current candidate."
+    auth_upstream = str(context.get("upstream_remote") or "")
+    if (
+        auth_upstream not in {"", "unknown"}
+        and str(resolved.get("upstream_remote") or "") != auth_upstream
+    ):
+        return "The branch upstream changed since authorization; state the authorization once for the current candidate."
+    expected = (record.get("expected_commits") or {}).get(requested)
+    if isinstance(expected, dict):
+        if expected.get("commit_sha256") is None:
+            return "The authorized commit has not verifiably completed yet; run the authorized commit before this action."
+        expected_sha = str(expected["commit_sha256"])
+    else:
+        expected_sha = str(context.get("head_sha256") or "")
+    current = str(resolved.get("head_sha256") or "")
+    if expected_sha != current:
+        return "The target commit moved since authorization; state the authorization once for the current candidate."
+    return None
+
+
+def _covers_authorized_action(actions: list[str], requested: str) -> bool:
+    authority = _authority_module()
+    if requested in actions:
+        return True
+    return any(
+        requested in authority.IMPLIED_ACTIONS.get(action, frozenset())
+        for action in actions
+    )
+
+
+def _authority_module() -> Any:
+    import cg_authority
+    return cg_authority
+
+
+_COMMITISH_RE = re.compile(r"^[A-Za-z0-9._/~^-]{1,200}$")
+
+
+def _resolve_git_commitish(cwd: Any, value: Any) -> str:
+    """Exact commit sha a commit-ish resolves to, or "" when unresolvable.
+
+    Bounded and exception-contained: a hostile or unresolvable ``--target``
+    value (``gh release create --target ...``) is never an identity and can
+    only deny — it can never crash the hook or widen the target.
+    """
+    text = str(value or "").strip()
+    if not _COMMITISH_RE.fullmatch(text):
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd or os.getcwd()), "rev-parse", "--verify",
+             "--quiet", text + "^{commit}"],
+            text=True, capture_output=True, check=False, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    sha = result.stdout.strip().lower()
+    return sha if result.returncode == 0 and _SHA256_40_RE.fullmatch(sha) else ""
+
+
+def _canonical_invocation_endpoint(
+    tool: str, values: dict[str, str], image_reference: str
+) -> str:
+    """Canonical registry-endpoint identity of one CLI invocation.
+
+    Single semantic source (the canonical closure table): documented default
+    spellings normalize onto the default identity (P1-E — no false deny),
+    any non-default dimension becomes a named drift component, and an
+    EMPTY explicit value poisons the identity (unresolvable — deny). For
+    docker the endpoint comes from the image reference's registry host
+    plus the folded --context; a config-file selector (--userconfig)
+    cannot be resolved without reading it, so the identity is
+    undetermined (the controlled deny path, P1-D).
+    """
+    if "--userconfig" in values:
+        return ""
+    if tool == "docker":
+        split = split_docker_image_reference(image_reference)
+        host = split[0] if split else ""
+        endpoint = DEFAULT_REGISTRY_ENDPOINTS.get("docker", "") if not host else host
+        context = values.get("--context") or values.get("-c") or ""
+        if context and context != "default":
+            endpoint = f"{endpoint}@{context}"
+        return endpoint
+    return canonical_registry_endpoint(tool, values)
+
+
+def _concrete_action_target(
+    action: dict[str, str],
+    resolved: dict[str, Any],
+    tool_input: Any = None,
+) -> tuple[str, dict[str, str]] | None:
+    """Map a classifier action onto (contract action, normative target)."""
+    semantic = action["semantic_action_id"]
+    if semantic.startswith("registry_") or semantic.startswith("github_release_"):
+        action = {**action, "_tool_input": tool_input}
+    # GitHub release surfaces bind the normalized GitHub repo identity.
+    repository = action.get("repository_id") or resolved["repository"]
+    if semantic.startswith("github_release_") and resolved.get("github_repo"):
+        repository = "github:" + resolved["github_repo"]
+
+    def _registry_tail_positionals(
+        registry_tool: str, tail: list[str]
+    ) -> tuple[list[str], str | None]:
+        """Option-aware positional extraction for a registry subcommand:
+        option values (--registry URL, --workspace path, ...) are never
+        mistaken for positional source/package arguments. A workspace
+        selector is returned separately so the effective source resolves
+        from it."""
+        value_opts = REGISTRY_SUBCOMMAND_VALUE_OPTIONS.get(registry_tool, set())
+        positionals: list[str] = []
+        workspace: str | None = None
+        walk = 0
+        while walk < len(tail):
+            token = tail[walk]
+            if token.startswith("-"):
+                if "=" in token:
+                    name, _, value = token.partition("=")
+                    if registry_tool == "npm" and name in {"--workspace", "-w"}:
+                        workspace = value
+                    walk += 1
+                    continue
+                if token in value_opts and walk + 1 < len(tail):
+                    if registry_tool == "npm" and token in {"--workspace", "-w"}:
+                        workspace = tail[walk + 1]
+                    walk += 2
+                    continue
+                walk += 1
+                continue
+            positionals.append(token)
+            walk += 1
+        return positionals, workspace
+
+    # tag/push act on the Git TARGET identity (resolvable HEAD, dirty or
+    # clean); only release/ticket identity requires the verified candidate.
+    head = resolved.get("head_sha256") or ""
+    if semantic == "release_tag_mutation":
+        return "tag", {
+            "repository": repository,
+            "ref": _normalize_auth_ref(action.get("ref") or resolved.get("ref")) or "unknown",
+            "commit_sha256": head,
+            "tag": action.get("tag") or action["canonical_target_id"].split(":", 1)[-1],
+        }
+    if semantic == "release_tag_push":
+        return "tag_push", {
+            "repository": repository,
+            "remote": action.get("remote") or "unknown",
+            "tag": action.get("tag") or action["canonical_target_id"].split(":", 1)[-1],
+        }
+    if semantic in {"remote_push", "force_push"}:
+        return ("push" if semantic == "remote_push" else "force_push"), {
+            "repository": repository,
+            "remote": action.get("remote") or "unknown",
+            "ref": _normalize_auth_ref(action.get("ref") or resolved.get("ref")),
+            "commit_sha256": head,
+        }
+    if semantic == "remote_branch_delete":
+        return semantic, {
+            "repository": repository,
+            "remote": action.get("remote") or "unknown",
+            "ref": _normalize_auth_ref(action.get("ref") or resolved.get("ref")),
+        }
+    if semantic.startswith("github_release_"):
+        requested = (
+            "release_delete" if semantic == "github_release_delete" else "release"
+        )
+        # P1-7: MCP structured inputs map onto the same canonical schema —
+        # repository (normalized GitHub identity) + tag/version. The
+        # release identity keeps the VERIFIED candidate discipline.
+        input_map = action.get("_tool_input") or {}
+        mcp_namespace = action.get("mcp_namespace")
+        if "mcp_namespace" in action and mcp_namespace != "github":
+            # P1-B closed allowlist: only the github adapter may satisfy a
+            # github release binding. Unknown namespaces AND non-MCP bare
+            # tool names are deliberately unmatchable, so the decision is
+            # ask/deny — the authorization is never inherited.
+            return requested, {
+                "repository": "untrusted-adapter:" + (mcp_namespace or "unnamed"),
+                "release_version": "",
+                "commit_sha256": "",
+            }
+        # gh --repo/-R (CLI, in ANY of the three legal regions), GH_REPO/
+        # GH_HOST (visible env), and the structured repository (MCP) all
+        # bind the REAL target repository into the canonical identity.
+        if action.get("gh_conflicts"):
+            # P1-H: conflicting repeats or missing values — the real
+            # target cannot be proven; undetermined, never last-wins.
+            return requested, {
+                "repository": "",
+                "release_version": "",
+                "commit_sha256": "",
+            }
+        cli_repo = str(action.get("gh_repo") or "").strip()
+        mcp_repo = str(input_map.get("repository") or "").strip()
+        target_repo = repository
+        repo_reference = mcp_repo or cli_repo
+        gh_hostname = str(action.get("gh_hostname") or "").strip().lower()
+        if repo_reference:
+            reference_host, reference_repo = _split_github_repo_reference(
+                repo_reference
+            )
+            # P1-H: a reference spelling the DEFAULT host explicitly
+            # (github.com/OWNER/REPO) is the same identity as OWNER/REPO;
+            # any OTHER host is a distinct identity — and a host given
+            # both in the reference and via --hostname/GH_HOST must agree.
+            if (
+                reference_host
+                and gh_hostname
+                and reference_host != gh_hostname
+                and reference_host != "github.com"
+            ):
+                return requested, {
+                    "repository": "",
+                    "release_version": "",
+                    "commit_sha256": "",
+                }
+            effective_host = gh_hostname or reference_host
+            normalized = _normalize_github_repo(reference_repo)
+            if normalized:
+                target_repo = "github:" + (
+                    f"{effective_host}/{normalized}"
+                    if effective_host and effective_host != "github.com"
+                    else normalized
+                )
+        elif gh_hostname and gh_hostname != "github.com" and str(
+            target_repo
+        ).startswith("github:"):
+            # A non-default GH_HOST/--hostname changes the real host; the
+            # canonical identity carries it (default host stays implicit).
+            target_repo = "github:" + gh_hostname + target_repo[len("github:"):]
+        release_version = action.get("release_version") or ""
+        if release_version == "unresolved":
+            # The canonical fill is a legacy sentinel here, not an
+            # identity: the structured tag_name/version is the exact value.
+            release_version = str(
+                input_map.get("tag_name") or input_map.get("version") or ""
+            ).strip()
+        commit_value = str(resolved.get("verified_commit") or "")
+        gh_target = str(action.get("gh_target") or "").strip()
+        if gh_target:
+            # P1-C: --target moves the commit an auto-created tag points
+            # at; the exact resolved commit IS the canonical target, and an
+            # unresolvable value stays undetermined (deny — never ignored).
+            commit_value = _resolve_git_commitish(resolved.get("cwd"), gh_target)
+        return requested, {
+            "repository": target_repo,
+            "release_version": release_version,
+            "commit_sha256": commit_value,
+        }
+    if semantic.startswith("registry_"):
+        stripped = semantic.removeprefix("registry_")
+        if action.get("registry_conflicts"):
+            # P1-H/P1-I: conflicting option repeats, missing values,
+            # conflicting env spellings, or empty explicit values make the
+            # affected dimension UNDETERMINED — the controlled deny, never
+            # last-wins guessing and never a silent default.
+            return None
+        if stripped.endswith("_package"):
+            # MCP structured target: operation from the method name, and
+            # identity fields ONLY from the structured tool input — never
+            # collapsed into publish, never defaulted to the cwd package.
+            operation = stripped.split("_", 1)[0]
+            input_map = action.get("_tool_input") or {}
+            requested = operation if operation in AUTH_ACTION_VOCABULARY else None
+            if requested is None:
+                return None
+            input_tool = str(input_map.get("tool") or "").strip()
+            # P1-B closed-set allowlist: adapter namespace, method family
+            # (registry_package), and the structured tool identity must
+            # all agree. Unknown namespaces, cross-namespace adapters
+            # (github exposing publish_package), and non-MCP bare tool
+            # names are deliberately unmatchable — they never inherit the
+            # authorization, over publish/unpublish/yank/deprecate alike.
+            mcp_namespace = str(action.get("mcp_namespace") or "")
+            if (
+                mcp_namespace not in MCP_REGISTRY_ADAPTER_NAMESPACES
+                or mcp_namespace != input_tool.strip().lower()
+            ):
+                return requested, {
+                    "repository": "untrusted-adapter:" + (mcp_namespace or "unnamed"),
+                    "tool": "",
+                    "registry": "",
+                    "package": "",
+                    "release_version": "",
+                    "source": "",
+                }
+            registry_value = str(input_map.get("registry") or "").strip()
+            if registry_value:
+                registry_endpoint = canonical_registry_identity(
+                    input_tool, "--registry", registry_value
+                )
+            else:
+                registry_endpoint = DEFAULT_REGISTRY_ENDPOINTS.get(input_tool) or ""
+            package_value = str(
+                input_map.get("package") or input_map.get("name") or ""
+            ).strip()
+            version_value = str(
+                input_map.get("version") or input_map.get("release_version") or ""
+            ).strip()
+            source_value = str(input_map.get("source") or "").strip()
+            if input_tool == "docker" and not source_value:
+                # Docker's exact pushed identity IS the image reference.
+                if package_value and version_value:
+                    source_value = f"{package_value}:{version_value}"
+            return requested, {
+                "repository": repository,
+                "tool": input_tool,
+                "registry": registry_endpoint,
+                "package": package_value,
+                "release_version": version_value,
+                "source": source_value,
+            }
+        if "_" not in stripped:
+            return None
+        tool, operation = stripped.rsplit("_", 1)
+        requested = {
+            "publish": "publish",
+            "unpublish": "unpublish",
+            "yank": "yank",
+            "deprecate": "deprecate",
+        }.get(operation)
+        if requested is None:
+            return None
+        target: dict[str, str] = {"repository": repository, "tool": tool}
+        tail = list(action.get("registry_tail") or [])
+        positional, tail_workspace = _registry_tail_positionals(tool, tail)
+        workspace = action.get("registry_workspace") or tail_workspace
+        # Option VALUES that change the remote registry endpoint are part
+        # of the canonical identity. The endpoint resolves through the
+        # canonical value domain of the tool's OWN registry option grammar
+        # (P1-E): documented default spellings normalize onto the bound
+        # default (no false deny); any non-default dimension is a named
+        # drift component; an unresolvable config selector (--userconfig)
+        # leaves the endpoint undetermined — the controlled deny (P1-D).
+        values = action.get("registry_values") or {}
+        image_reference = positional[0] if positional else ""
+        endpoint = _canonical_invocation_endpoint(tool, values, image_reference)
+        if endpoint:
+            target["registry"] = endpoint
+        manifest_path = values.get("--manifest-path")
+        if manifest_path:
+            target["manifest"] = manifest_path
+        if operation == "publish":
+            if tool == "docker":
+                # P1-F: Docker's canonical identity is the image reference
+                # itself (NAME[:TAG]) — registry host folded into the
+                # endpoint, package = image name, version = tag. A missing
+                # tag means EVERY tag of the repository, so the version
+                # stays undetermined (ask); a malformed reference is no
+                # target at all (deny — never guessed, never thrown on).
+                split = split_docker_image_reference(image_reference)
+                if split is None:
+                    return None
+                _host, image_name, image_tag = split
+                target["package"] = image_name
+                if image_tag:
+                    target["release_version"] = image_tag
+                    target["source"] = image_reference
+            else:
+                # The effective source is bound exactly, resolved with an
+                # option-aware grammar (P1-C): an option VALUE such as a
+                # --registry URL is never a source; a --workspace/--prefix
+                # selector, a positional path, or a tarball normalizes to
+                # the canonical effective source directory/tarball; a
+                # plain publish uses the authorized root. Package identity
+                # comes from THAT source's trusted metadata, never blindly
+                # from the cwd root.
+                manifest_path = values.get("--manifest-path")
+                source_argument = positional[0] if positional else ""
+                effective = (
+                    workspace
+                    or source_argument
+                    or values.get("--prefix")
+                    or (os.path.dirname(manifest_path) if manifest_path else "")
+                )
+                base_dir = str(resolved.get("cwd") or ".")
+                source_path = os.path.abspath(
+                    os.path.join(base_dir, effective)
+                ) if effective else os.path.abspath(base_dir)
+                target["source"] = source_path
+                info = resolve_project_release_info(source_path, tool)
+                if info is not None:
+                    target["package"], target["release_version"] = info
+        else:
+            # Reverse/metadata mutations bind the exact spec in the tool's
+            # OWN grammar (P1-F): npm name@version (scoped split at the
+            # LAST @), cargo crate@version OR crate --version <version>
+            # (both orders), gem <gem> -v <version>. deprecate's trailing
+            # message is not identity and is ignored.
+            package_value, version_value = registry_reverse_identity(
+                tool, positional, values
+            )
+            if package_value:
+                target["package"] = package_value
+            if _RESOLVED_VERSION_RE.fullmatch(version_value):
+                target["release_version"] = version_value
+        return requested, target
+    return None
+
+
+def _pre_tool_deny_no_authorization(requested: str) -> dict[str, Any]:
+    label = requested
+    if requested in ACTION_PROFILE_LABELS:
+        label = ACTION_PROFILE_LABELS[requested]
+    return _pre_tool_decision(
+        "deny",
+        f"{label.capitalize() if label else 'This action'} is a real high-risk action; "
+        "state the authorization once in this task (for example 'create tag v1.2.3' or "
+        "'push to origin main') and I will bind the exact target myself.",
+    )
+
+
+def _expected_commit_for(record: dict[str, Any], requested: str) -> str | None:
+    """The commit identity this binding expects for the requested action.
+
+    Returns None only for a PENDING authorized-commit transition (the
+    authorized commit has not verifiably completed yet).
+    """
+    expected = (record.get("expected_commits") or {}).get(requested)
+    if isinstance(expected, dict):
+        if expected.get("commit_sha256") is None:
+            return None
+        return str(expected["commit_sha256"])
+    if isinstance(expected, str) and expected:
+        return expected
+    head = str((record.get("context") or {}).get("head_sha256") or "")
+    return head or None
+
+
+def _evaluate_persisted_bindings(
+    bindings: list[dict[str, Any]],
+    requested: str,
+    concrete_target: dict[str, str],
+    resolved: dict[str, str],
+    work_unit_id: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Evaluate the persisted bindings for one concrete action.
+
+    Returns (authorized_record, deny_reason). Each active binding is
+    evaluated through the pure cg_authority contract with its own persisted
+    unit/generation validity facts; the commit dimension is aligned to the
+    binding's expected transition (snapshot commit or the authorized-commit
+    chain) BEFORE the contract comparison, and the winner is then checked
+    for material snapshot drift against the freshly resolved facts.
+    """
+    label = ACTION_PROFILE_LABELS.get(requested, requested.replace("_", " "))
+    if not bindings:
+        return None, None
+    authority = _authority_module()
+    covered = False
+    ask_reason: str | None = None
+    drift_reason: str | None = None
+    pending_reason: str | None = None
+    for record in bindings:
+        binding = record.get("binding") or {}
+        bound_actions = [str(action) for action in (binding.get("actions") or [])]
+        if not _covers_authorized_action(bound_actions, requested):
+            continue
+        covered = True
+        pending_binding = dict(binding.get("pending") or {})
+        resolved_pending: dict[str, str] | None = None
+        if pending_binding:
+            expected_commit = _expected_commit_for(record, requested)
+            if expected_commit is None:
+                if pending_reason is None:
+                    pending_reason = (
+                        "The authorized commit has not verifiably completed yet; "
+                        "run the authorized commit before this action."
+                    )
+                continue
+            resolved_pending = {
+                field: expected_commit for field in pending_binding
+            }
+        result = authority.evaluate_action_authorization(
+            requested,
+            binding,
+            [concrete_target],
+            current_work_unit_id=str(work_unit_id),
+            authorization_generation=binding.get("generation"),
+            resolved_pending=resolved_pending,
+        )
+        status = result.get("status")
+        if status == authority.STATUS_AUTHORIZED_UNIQUE:
+            return record, None
+        if status == authority.STATUS_REQUIRES_SELECTION:
+            if ask_reason is None:
+                if result.get("reason_code") == authority.REASON_MULTIPLE_TARGETS:
+                    ask_reason = (
+                        f"Several targets match your {label} statement; name the exact one "
+                        "(remote, tag, or version) once."
+                    )
+                else:
+                    ask_reason = (
+                        f"Cannot determine the exact target for {label}; state the precise "
+                        "remote/tag/version once and the target will be bound for you."
+                    )
+        elif status == authority.STATUS_DRIFTED and drift_reason is None:
+            drift_reason = (
+                _snapshot_material_drift(record, requested, resolved)
+                or (
+                    f"The current target for {label} differs from the authorized one; "
+                    "restate the exact target (or re-authorize) before running it."
+                )
+            )
+    if not covered:
+        return None, (
+            f"Your authorization in this task does not cover {label}; state it explicitly "
+            "once (force push, tag push, and release deletion each need their own statement)."
+        )
+    return None, drift_reason or pending_reason or ask_reason
+
+
+def _release_ticket_decision(
+    session_dir: Path,
+    state: dict[str, Any],
+    action: dict[str, str],
+    tool_use_id: str,
+) -> dict[str, Any]:
+    """Release-profile gate: one-shot ticket facts via the versioned adapter.
+
+    Runs only after the standard authority check passed and only in the
+    release profile; candidate-closure/readiness/ticket facts come from the
+    adopted contract through cg_release_adapter, never from file presence
+    or workflow text.
+    """
+    import cg_release_adapter
+    execution = state.get("execution")
+    if not isinstance(execution, dict):
+        execution = dormant_execution_state()
+        state["execution"] = execution
+    now = utc_now()
+    expire_execution_tickets(execution, observed_at=now)
+    ticket = cg_release_adapter.match_action_ticket(execution, action, now=now)
+    if ticket is None:
+        save_state(session_dir, state)
+        return _pre_tool_decision(
+            "deny",
+            "This release mutation needs an exact unexpired action-ticket/v1 from the "
+            "adopted repository-release contract; run the release preflight to issue one.",
+        )
+    if not EXECUTION_ID_RE.fullmatch(tool_use_id):
+        save_state(session_dir, state)
+        return _pre_tool_decision(
+            "deny", "High-risk tool use has no valid tool-use identity."
+        )
+    cg_release_adapter.reserve_ticket(ticket, tool_use_id, now)
+    save_state(session_dir, state)
+    # The allow wire is the plain empty object: no permissionDecision text.
+    return {}
+
+
+def effective_action_profile(state: dict[str, Any]) -> str:
+    """Resolve the enforcement profile for the current private state.
+
+    inactive: guard off or never activated — no completion or action gate.
+    observe: maintainer shadow — the would-be decision is computed and
+    recorded, never enforced. release: explicit declaration or an adopted
+    repository-release contract — adds candidate/readiness/ticket facts.
+    strict: enforced proof on the current unit; does NOT enable release.
+    standard: root-user semantic authorization only.
+    """
+    mode = state.get("mode")
+    if not isinstance(mode, dict) or mode.get("manual_off") or not mode.get("active"):
+        return "inactive"
+    declared = str(mode.get("profile") or "").strip().lower()
+    if declared == "observe":
+        return "observe"
+    execution = state.get("execution")
+    contract = execution.get("contract") if isinstance(execution, dict) else None
+    if isinstance(contract, dict) and contract.get("state") == "active":
+        return "release"
+    if declared in {"strict", "release"}:
+        return declared
+    return "standard"
+
+
+def _handle_runner_envelope(
+    session_dir: Path, state: dict[str, Any], payload: dict[str, Any], profile: str
+) -> dict[str, Any]:
+    """Candidate-high-risk envelope: an obvious external mutation executable
+    handed to an argument runner (xargs/find/watch/parallel).
+
+    Only this envelope — never generic ambiguity — reaches the heavy core.
+    The release profile fails closed; standard/strict fail open with a
+    bounded classifier_ambiguous diagnostic; inactive stays silent.
+    """
+    if profile == "inactive":
+        return {}
+    if profile == "release":
+        return _pre_tool_decision(
+            "deny",
+            "This command may run an external mutation executable through a runner "
+            "(xargs/find/watch); the release profile requires the exact plain command.",
+        )
+    try:
+        require_usable_state(state)
+        command = _shell_command(payload.get("tool_input"))
+        append_decision_log(
+            state,
+            {
+                "decision_source": "pre_tool_classifier",
+                "outcome": "classifier_ambiguous",
+                "reason_codes": ["runner_envelope", "classifier_ambiguous", "fail_open"],
+                "reply_sha256": (
+                    sha256_text(str(command))
+                    if isinstance(command, str)
+                    else sha256_text("")
+                ),
+            },
+            str(payload.get("turn_id") or ""),
+        )
+        save_state(session_dir, state)
+    except (StateIntegrityError, OSError, TypeError, ValueError):
+        pass
+    return {}
 
 
 def _active_work_unit_kind(state: dict[str, Any]) -> str | None:
@@ -2389,57 +5738,25 @@ def _active_work_unit_kind(state: dict[str, Any]) -> str | None:
     return None
 
 
-def _matching_action_ticket(
-    state: dict[str, Any], action: dict[str, str]
-) -> dict[str, Any] | None:
-    if not re.fullmatch(r"[0-9a-f]{40}", action.get("candidate_commit", "")):
-        return None
-    execution = state.get("execution", {})
-    contract = execution.get("contract", {}) if isinstance(execution, dict) else {}
-    if contract.get("state") != "active":
-        return None
-    now = utc_now()
-    expire_execution_tickets(execution, observed_at=now)
-    for ticket in execution.get("action_tickets", []):
-        if not isinstance(ticket, dict) or ticket.get("state") != "reserved":
-            continue
-        if (
-            ticket.get("repository_id") == action["repository_id"]
-            and (
-                ticket.get("candidate_commit") != action["candidate_commit"]
-                or ticket.get("contract_revision") != contract.get("revision")
-                or ticket.get("contract_sha256") != contract.get("canonical_sha256")
-            )
-        ):
-            ticket["state"] = "invalidated"
-            ticket["settled_at"] = now
-            continue
-        exact = (
-            ticket.get("ticket_schema") == "action-ticket/v1"
-            and ticket.get("contract_revision") == contract.get("revision")
-            and ticket.get("contract_sha256") == contract.get("canonical_sha256")
-            and ticket.get("semantic_action_id") == action["semantic_action_id"]
-            and ticket.get("canonical_target_id") == action["canonical_target_id"]
-            and ticket.get("write_surface_id") == action["write_surface_id"]
-            and ticket.get("repository_id") == action["repository_id"]
-            and ticket.get("candidate_commit") == action["candidate_commit"]
-            and (
-                action["release_version"] == "unresolved"
-                or ticket.get("release_version") == action["release_version"]
-            )
-            and ticket.get("input_sha256") == action["input_sha256"]
-        )
-        if exact:
-            return ticket
-    return None
-
-
 def handle_pre_tool(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
-    if state.get("mode", {}).get("manual_off"):
+    # Defensive three-state classification (the router already applied the
+    # same decision): SAFE and generic ambiguity return the empty object
+    # with ZERO state I/O; only candidates and the runner envelope may
+    # touch private state.
+    tool_class = classify_pre_tool_state(
+        payload.get("tool_name"), payload.get("tool_input")
+    )
+    if tool_class in {STATE_SAFE, STATE_AMBIGUOUS}:
         return {}
-    require_usable_state(state)
+    profile = effective_action_profile(state)
+    if tool_class == STATE_AMBIGUOUS_CANDIDATE:
+        return _handle_runner_envelope(session_dir, state, payload, profile)
+    if profile == "inactive":
+        # off/inactive: no action gate at all — even a real mutation in a
+        # session that never adopted a profile is not intercepted here.
+        return {}
     normalized = normalized_tool_name(payload.get("tool_name"))
     if _active_work_unit_kind(state) == "cleanup" and (
         normalized in APPLY_PATCH_TOOL_NAMES or normalized.endswith("_apply_patch")
@@ -2448,34 +5765,144 @@ def handle_pre_tool(
             "deny",
             "The active work unit is cleanup-only; product edits require a separate root-user authorization.",
         )
+    try:
+        require_usable_state(state)
+    except StateIntegrityError:
+        return _pre_tool_decision(
+            "deny",
+            "This matches a real high-risk action, but private task state could not be "
+            "verified; run 'context-guard diagnose' before retrying it.",
+        )
     effective_payload = dict(payload)
     effective_payload.setdefault("cwd", state.get("session", {}).get("cwd"))
     action = classify_pre_tool_action(effective_payload)
     if action is None:
+        # Simulation/read-only or text-position command: never gated.
         return {}
-    if action["tier"] == "B":
-        prompt_value = latest_requirement_text(session_dir, state)
-        if _prompt_authorizes_b_action(prompt_value, action):
-            return _pre_tool_decision("allow", "Exact root-user remote target authorization matched.")
-        return _pre_tool_decision(
-            "deny",
-            "Shared remote mutation requires an explicit root-user action and exact remote/ref target.",
+    if profile == "observe":
+        enforcement = effective_enforcement_profile(state)
+        would = _enforce_candidate(
+            session_dir, state, effective_payload, action, enforcement,
+            dry_run=True,
         )
-    ticket = _matching_action_ticket(state, action)
-    if ticket is None:
+        permission = (
+            would.get("hookSpecificOutput", {}).get("permissionDecision", "allow")
+        )
+        append_decision_log(
+            state,
+            {
+                "decision_source": "pre_tool_observe",
+                "outcome": (
+                    "observe_would_deny" if permission == "deny" else "observe_would_allow"
+                ),
+                "reason_codes": [
+                    action["semantic_action_id"],
+                    str(enforcement),
+                ],
+            },
+            str(payload.get("turn_id") or ""),
+        )
         save_state(session_dir, state)
+        return {}
+    return _enforce_candidate(session_dir, state, effective_payload, action, profile)
+
+
+def effective_enforcement_profile(state: dict[str, Any]) -> str:
+    """The profile whose decision observe mirrors (never observe itself)."""
+    mode = state.get("mode")
+    declared = str((mode or {}).get("profile") or "").strip().lower()
+    if declared == "observe":
+        declared = ""
+    shadow = dict(state)
+    shadow["mode"] = dict(mode or {})
+    shadow["mode"]["profile"] = declared
+    shadow["mode"]["active"] = True
+    shadow["mode"]["manual_off"] = False
+    return effective_action_profile(shadow)
+
+
+def _enforce_candidate(
+    session_dir: Path,
+    state: dict[str, Any],
+    effective_payload: dict[str, Any],
+    action: dict[str, str],
+    profile: str,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if action["semantic_action_id"] == "compound_remote_mutation":
         return _pre_tool_decision(
             "deny",
-            "Release/public identity mutation requires an exact unexpired action-ticket/v1 bound to the active candidate.",
+            "This call chains several remote mutations; run them as separate, "
+            "individually authorized commands.",
         )
-    tool_use_id = str(payload.get("tool_use_id") or payload.get("toolUseId") or "")
-    if not EXECUTION_ID_RE.fullmatch(tool_use_id):
-        return _pre_tool_decision("deny", "High-risk tool use has no valid tool-use identity.")
-    ticket["state"] = "in_flight"
-    ticket["tool_use_id"] = tool_use_id
-    ticket["attempt_count"] += 1
-    save_state(session_dir, state)
-    return _pre_tool_decision("allow", "Exact one-shot action ticket matched this release mutation.")
+    if action["semantic_action_id"] == "registry_gem_publish":
+        # P1-F controlled unsupported surface: a local .gem carries no
+        # safely parseable exact identity (RubyGems metadata is a binary
+        # Marshal blob), so gem push can never bind to an authorization.
+        # This deny IS the declared contract for the surface — in every
+        # profile — not a supported surface with a false deny.
+        return _pre_tool_decision(
+            "deny",
+            "gem push is a declared-unsupported surface: the exact gem identity cannot "
+            "be verified locally, so it can never be bound to an authorization.",
+        )
+    resolved = resolve_internal_targets(effective_payload.get("cwd"))
+    mapped = _concrete_action_target(
+        action, resolved, effective_payload.get("tool_input")
+    )
+    if mapped is None:
+        return _pre_tool_decision(
+            "deny",
+            "This high-risk action could not be resolved to an exact structured target; "
+            "state it as a plain single command.",
+        )
+    requested, concrete_target = mapped
+    work_unit_id = str(
+        (state.get("work_state") or {}).get("active_work_unit_id") or ""
+    )
+    bindings = current_unit_authorization_bindings(state)
+    authorized_record, deny_reason = _evaluate_persisted_bindings(
+        bindings,
+        requested,
+        concrete_target,
+        resolved,
+        work_unit_id,
+    )
+    if authorized_record is None:
+        if deny_reason is None:
+            return _pre_tool_deny_no_authorization(requested)
+        return _pre_tool_decision("deny", deny_reason)
+    drift = _snapshot_material_drift(authorized_record, requested, resolved)
+    if drift is not None:
+        return _pre_tool_decision("deny", drift)
+    if profile == "release" and action.get("tier") == "A":
+        if dry_run:
+            # observe must never mutate the ticket ledger: compute the
+            # release-facts decision over a detached copy.
+            import cg_release_adapter
+            facts = cg_release_adapter.release_facts(
+                json.loads(canonical_json(state)), action
+            )
+            if facts["ticket_matched"]:
+                return {}
+            return _pre_tool_decision(
+                "deny",
+                "This release mutation needs an exact unexpired action-ticket/v1 from the "
+                "adopted repository-release contract; run the release preflight to issue one.",
+            )
+        return _release_ticket_decision(
+            session_dir,
+            state,
+            action,
+            str(
+                effective_payload.get("tool_use_id")
+                or effective_payload.get("toolUseId")
+                or ""
+            ),
+        )
+    # The allow wire is the plain empty object (frozen plan section 4.4).
+    return {}
 
 
 def settle_pre_tool_ticket(state: dict[str, Any], payload: dict[str, Any], outcome: str) -> None:
@@ -2548,13 +5975,170 @@ def project_state_to_schema6(state: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def _validate_unit_authorizations(
+    unit_id: str, authorizations: Any
+) -> None:
+    """Schema validation for persisted authorization bindings.
+
+    Each record is an immutable adoption-time snapshot; the binding's
+    work-unit and generation facts must match the owning unit, actions stay
+    inside the closed vocabulary, and expected-commit plans are either a
+    snapshot sha/unresolved or the one-shot authorized-commit transition.
+    """
+    if authorizations is None:
+        return
+    if not isinstance(authorizations, list) or len(authorizations) > MAX_UNIT_AUTHORIZATIONS:
+        raise StateIntegrityError("work-unit authorization ledger exceeds its record limit")
+    generations: set[int] = set()
+    for raw in authorizations:
+        record = _require_record_keys(
+            raw,
+            field="work_units.authorizations",
+            required={
+                "prompt_id", "prompt_sha256", "created_at", "actions",
+                "surfaces", "generation", "binding", "context",
+                "expected_commits", "state",
+            },
+            optional={"superseded_at", "prepared_source"},
+        )
+        _execution_id(record["prompt_id"], "work_units.authorizations.prompt_id")
+        _execution_sha(record["prompt_sha256"], "work_units.authorizations.prompt_sha256")
+        _execution_time(record["created_at"], "work_units.authorizations.created_at")
+        superseded_at = record.get("superseded_at")
+        if superseded_at is not None:
+            _execution_time(superseded_at, "work_units.authorizations.superseded_at")
+        actions = record["actions"]
+        if (
+            not isinstance(actions, list)
+            or not actions
+            or len(actions) > 8
+            or any(action not in AUTH_ACTION_VOCABULARY for action in actions)
+        ):
+            raise StateIntegrityError("work-unit authorization actions are invalid")
+        surfaces = record["surfaces"]
+        if (
+            not isinstance(surfaces, dict)
+            or set(surfaces) != set(actions)
+            or any(not isinstance(value, str) or not value for value in surfaces.values())
+        ):
+            raise StateIntegrityError("work-unit authorization surfaces are invalid")
+        generation = record["generation"]
+        if (
+            not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 1
+            or generation in generations
+        ):
+            raise StateIntegrityError("work-unit authorization generation is invalid")
+        generations.add(generation)
+        if record["state"] not in {"active", "superseded"}:
+            raise StateIntegrityError("work-unit authorization state is invalid")
+        context = record["context"]
+        if not isinstance(context, dict) or any(
+            not isinstance(context.get(key), str)
+            for key in ("repository", "ref", "head_sha256", "upstream_remote", "verified_commit", "cwd")
+        ) or not isinstance(context.get("clean"), bool):
+            raise StateIntegrityError("work-unit authorization context is invalid")
+        binding = record["binding"]
+        if not isinstance(binding, dict):
+            raise StateIntegrityError("work-unit authorization binding is invalid")
+        if binding.get("work_unit_id") != unit_id or binding.get("generation") != generation:
+            raise StateIntegrityError(
+                "work-unit authorization binding does not match its owner"
+            )
+        if binding.get("status") not in {
+            "authorized_unique", "pending_transition",
+            "requires_selection", "authorization_invalid",
+        }:
+            raise StateIntegrityError("work-unit authorization binding status is invalid")
+        binding_target = binding.get("target")
+        if binding_target is not None and (
+            not isinstance(binding_target, dict)
+            or any(not isinstance(value, str) for value in binding_target.values())
+        ):
+            raise StateIntegrityError("work-unit authorization binding target is invalid")
+        # Field-level exactness on persisted ACTIVE exact bindings: string
+        # sentinels (unknown/unresolved/all) and empty/malformed values can
+        # never constitute an executable identity.
+        pending_fields = {
+            str(field): str(source)
+            for field, source in (binding.get("pending") or {}).items()
+        }
+        if any(source != "authorized_commit" for source in pending_fields.values()):
+            raise StateIntegrityError("work-unit authorization pending transition is invalid")
+        if binding.get("status") in {"authorized_unique", "pending_transition"}:
+            if not isinstance(binding_target, dict):
+                raise StateIntegrityError(
+                    "active exact authorization binding lacks an exact target"
+                )
+            required_fields = [
+                str(field)
+                for field in (binding.get("required_fields") or [])
+                if field not in pending_fields
+            ]
+            for field in required_fields:
+                value = binding_target.get(field)
+                if not _authority_module().is_exact_value(value):
+                    raise StateIntegrityError(
+                        "active exact authorization binding carries a non-exact "
+                        f"value for {field}"
+                    )
+        expected = record["expected_commits"]
+        if not isinstance(expected, dict):
+            raise StateIntegrityError("work-unit authorization expected commits are invalid")
+        for action, expectation in expected.items():
+            if action not in AUTH_ACTION_VOCABULARY or action == "commit":
+                raise StateIntegrityError("work-unit authorization expected commit is invalid")
+            if isinstance(expectation, str):
+                # Snapshot expectations must be exact HEAD identities; the
+                # unresolved/unknown sentinels are forbidden in state.
+                if not re.fullmatch(r"[0-9a-f]{40}", expectation):
+                    raise StateIntegrityError("work-unit authorization expected commit is invalid")
+            elif isinstance(expectation, dict):
+                if expectation.get("source") != "authorized_commit":
+                    raise StateIntegrityError("work-unit authorization expected transition is invalid")
+                value = expectation.get("commit_sha256")
+                if value is not None and not re.fullmatch(r"[0-9a-f]{40}", str(value)):
+                    raise StateIntegrityError("work-unit authorization expected transition is invalid")
+            else:
+                raise StateIntegrityError("work-unit authorization expected commit is invalid")
+        if "commit" in actions and record["state"] == "active":
+            prepared = record.get("prepared_source")
+            if not isinstance(prepared, dict):
+                raise StateIntegrityError(
+                    "commit-chain authorization lacks its prepared-source projection"
+                )
+            base_head = prepared.get("base_head")
+            if base_head is not None and not re.fullmatch(r"[0-9a-f]{40}", str(base_head)):
+                raise StateIntegrityError(
+                    "prepared-source base head is invalid"
+                )
+            entries = prepared.get("entries")
+            if not isinstance(entries, list) or len(entries) > MAX_PREPARED_FILES:
+                raise StateIntegrityError("prepared-source projection is invalid")
+            projection = prepared.get("projection_sha256")
+            if not isinstance(projection, str) or not re.fullmatch(r"[0-9a-f]{64}", projection):
+                raise StateIntegrityError("prepared-source projection digest is invalid")
+
+
 def validate_work_units(state: dict[str, Any]) -> None:
+    version = state.get("schema_version")
     units = state.get("work_units")
     sequence = state.get("work_unit_sequence")
     if not isinstance(units, list) or len(units) > MAX_EXECUTION_RECORDS:
         raise StateIntegrityError("private work-unit ledger exceeds its record limit")
     if not isinstance(sequence, int) or sequence < 0:
         raise StateIntegrityError("private work-unit sequence is invalid")
+    if version == SCHEMA_VERSION:
+        protocol = WORK_UNIT_PROTOCOL_VERSION
+        statuses = stop3().WORK_UNIT_STATUSES
+        optional_keys: set[str] = {
+            "last_active_seq", "resume_pending_reopen", "authorizations",
+        }
+    else:
+        protocol = WORK_UNIT_PROTOCOL_VERSION_V1
+        statuses = {"active", "passed", "superseded"}
+        optional_keys = set()
     ids: set[str] = set()
     for raw in units:
         record = _require_record_keys(
@@ -2564,11 +6148,12 @@ def validate_work_units(state: dict[str, Any]) -> None:
                 "id", "protocol_version", "prompt_id", "parent_id", "kind",
                 "status", "created_at", "closed_at", "scope_sha256",
             },
+            optional=optional_keys,
         )
         unit_id = str(record.get("id") or "")
         if not re.fullmatch(r"WU\d{4,}", unit_id) or unit_id in ids:
             raise StateIntegrityError("private work-unit identity is invalid")
-        if record.get("protocol_version") != WORK_UNIT_PROTOCOL_VERSION:
+        if record.get("protocol_version") != protocol:
             raise StateIntegrityError("private work-unit protocol is invalid")
         _execution_id(record.get("prompt_id"), "work_units.prompt_id")
         parent = record.get("parent_id")
@@ -2576,13 +6161,31 @@ def validate_work_units(state: dict[str, Any]) -> None:
             raise StateIntegrityError("private work-unit parent must precede its child")
         if record.get("kind") not in {"legacy", "general", "planning", "implementation", "cleanup", "release"}:
             raise StateIntegrityError("private work-unit kind is invalid")
-        if record.get("status") not in {"active", "passed", "superseded"}:
+        if record.get("status") not in statuses:
             raise StateIntegrityError("private work-unit status is invalid")
+        if version == SCHEMA_VERSION:
+            seq = record.get("last_active_seq")
+            if seq is not None and not isinstance(seq, int):
+                raise StateIntegrityError("private work-unit activity sequence is invalid")
+            reopen = record.get("resume_pending_reopen")
+            if reopen is not None and not isinstance(reopen, bool):
+                raise StateIntegrityError("private work-unit resume flag is invalid")
+            if (
+                reopen
+                and str(record.get("status")) not in stop3().WAITING_UNIT_STATUSES
+            ):
+                raise StateIntegrityError(
+                    "only waiting units may carry the resume-pending flag"
+                )
         _execution_time(record.get("created_at"), "work_units.created_at")
+        if version == SCHEMA_VERSION:
+            _validate_unit_authorizations(unit_id, record.get("authorizations"))
         _execution_time(record.get("closed_at"), "work_units.closed_at", nullable=True)
         _execution_sha(record.get("scope_sha256"), "work_units.scope_sha256")
-        if record.get("status") == "passed" and record.get("closed_at") is None:
-            raise StateIntegrityError("passed work unit requires closed_at")
+        if record.get("status") in {"passed", "completed", "historical_unresolved"} and (
+            record.get("closed_at") is None
+        ):
+            raise StateIntegrityError("closed work unit requires closed_at")
         ids.add(unit_id)
     active = state.get("work_state", {}).get("active_work_unit_id")
     if active is not None and active not in ids:
@@ -2593,7 +6196,12 @@ def validate_work_units(state: dict[str, Any]) -> None:
 
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version not in {1, 2, 3, 4, 5, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS, SCHEMA_VERSION}:
+    if version not in {
+        1, 2, 3, 4, 5, 6,
+        *READ_ONLY_COMPATIBILITY_SCHEMAS,
+        *FULL_MIGRATION_SOURCE_SCHEMAS,
+        SCHEMA_VERSION,
+    }:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     stored_hash = state.get("content_hash")
     if not isinstance(stored_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", stored_hash):
@@ -2666,7 +6274,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
     ):
         if key in state and not isinstance(state.get(key), list):
             raise StateIntegrityError(f"private state field {key} must be a list")
-    if version == SCHEMA_VERSION:
+    if version == SCHEMA_VERSION or version in FULL_MIGRATION_SOURCE_SCHEMAS:
         validate_execution_state(state.get("execution"))
         validate_work_units(state)
         work_unit_ids = {
@@ -2705,6 +6313,27 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                     raise StateIntegrityError("private verification contract is invalid")
                 if contract.get("mode") == "legacy_fallback" and contract.get("obligations"):
                     raise StateIntegrityError("legacy fallback cannot retain enforced obligations")
+                if contract.get("mode") == "enforced":
+                    # P1-B3: enforced contracts share the pure matcher's
+                    # closed-world verification-contract validation. A
+                    # corrupted or injected empty/unknown obligation must
+                    # fail the integrity gate instead of silently
+                    # satisfying the completion check.
+                    obligations_fault = stop3().obligations_reason(
+                        contract.get("obligations")
+                    )
+                    if obligations_fault is not None:
+                        raise StateIntegrityError(
+                            "private verification contract is invalid: "
+                            + obligations_fault
+                        )
+        if version == SCHEMA_VERSION:
+            for entry in state.get("evidence", []):
+                evidence_fault = stop3().evidence_record_reason(entry)
+                if evidence_fault is not None:
+                    raise StateIntegrityError(
+                        "private evidence ledger is invalid: " + evidence_fault
+                    )
         proof_ids: set[str] = set()
         for proof in state.get("proofs", []):
             if (
@@ -2815,6 +6444,7 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "mode": {
             "active": False,
             "manual_off": False,
+            "profile": None,
             "complexity_score": 0,
             "activation_reasons": [],
         },
@@ -2938,7 +6568,16 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                     item["status"] = "pending"
                     item["evidence"] = []
         state["evidence_sequence"] = evidence_sequence
-    elif version not in {2, 3, 4, 5, 6, *READ_ONLY_COMPATIBILITY_SCHEMAS, SCHEMA_VERSION}:
+    elif version not in {
+        2,
+        3,
+        4,
+        5,
+        6,
+        *READ_ONLY_COMPATIBILITY_SCHEMAS,
+        *FULL_MIGRATION_SOURCE_SCHEMAS,
+        SCHEMA_VERSION,
+    }:
         raise StateIntegrityError(f"unsupported private state schema {version!r}")
     if version in {1, 2}:
         state["work_state"] = {"plan_snapshot": None}
@@ -3027,6 +6666,56 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                 for item in state[collection]:
                     if isinstance(item, dict):
                         item.setdefault("work_unit_id", "WU0001")
+    if version in FULL_MIGRATION_SOURCE_SCHEMAS:
+        # Schema 9 -> 10: the per-prompt parent chain becomes the explicit
+        # work-unit lifecycle. Old active chains are isolated as
+        # historical_unresolved (never pass), the current root stays active,
+        # waiting candidates follow the persisted last_active_seq resume
+        # policy, and the next prompt starts a fresh sibling root.
+        fallback_prompt_id = state["prompts"][-1]["id"] if state.get("prompts") else "P0001"
+        normalized_units, active_id, _migration_audit = stop3().migrate_work_units_to_schema10(
+            [item for item in state.get("work_units", []) if isinstance(item, dict)],
+            state.get("work_state", {}).get("active_work_unit_id"),
+            now=utc_now(),
+            placeholder_scope_sha256=sha256_text("migrated-schema9-work-unit"),
+        )
+        for record in normalized_units:
+            record.setdefault("prompt_id", fallback_prompt_id)
+        state["work_units"] = normalized_units
+        migrated_unit_ids = {record["id"] for record in normalized_units}
+        max_seq = max(
+            (
+                record["last_active_seq"]
+                for record in normalized_units
+                if isinstance(record.get("last_active_seq"), int)
+            ),
+            default=0,
+        )
+        work_state = state.setdefault("work_state", {})
+        work_state["active_work_unit_id"] = active_id
+        work_state["unit_activity_seq"] = max(0, max_seq)
+        state["work_unit_sequence"] = max(
+            int(state.get("work_unit_sequence") or 0), len(normalized_units)
+        )
+        for collection in ("requirements", "acceptance_items"):
+            for item in state.get(collection, []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("work_unit_id") not in migrated_unit_ids:
+                    item["work_unit_id"] = (
+                        active_id
+                        or (normalized_units[-1]["id"] if normalized_units else "WU0001")
+                    )
+                contract = item.get("verification_contract")
+                if not isinstance(contract, dict):
+                    item["verification_contract"] = {
+                        "protocol_version": PROOF_PROTOCOL_VERSION,
+                        "mode": "legacy_fallback",
+                        "reason": "migrated_schema9_without_contract",
+                        "obligations": [],
+                    }
+        state["adapter_manifest"] = json.loads(canonical_json(ADAPTER_MANIFEST))
+        state["schema_version"] = SCHEMA_VERSION
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
     attempt = state.get("completion_attempt")
@@ -4402,7 +8091,8 @@ def is_control_prompt(text: str) -> bool:
     return bool(
         stripped.startswith(INTERNAL_CONTINUATION_PREFIX)
         or re.fullmatch(
-            r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover|adopt)(?:\s+.+)?)?",
+            r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover|adopt"
+            r"|standard|strict|release|observe)(?:\s+.+)?)?",
             stripped,
             re.I,
         )
@@ -4412,7 +8102,8 @@ def is_control_prompt(text: str) -> bool:
 def control_action(text: str) -> tuple[str | None, str | None]:
     stripped = text.strip()
     match = re.fullmatch(
-        r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover|adopt)(?:\s+(.+))?)?",
+        r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover|adopt"
+        r"|standard|strict|release|observe)(?:\s+(.+))?)?",
         stripped,
         re.I,
     )
@@ -4701,30 +8392,199 @@ def work_unit_kind(text: str) -> str:
     return "general"
 
 
+def self_resume_unique_candidate(
+    state: dict[str, Any], work_state: dict[str, Any]
+) -> str | None:
+    """Explicit-resume policy over parked units (plan section 4.2).
+
+    Reactivates a parked unit only when its persisted ``last_active_seq``
+    has a unique maximum among the waiting candidates; missing or tied
+    sequence numbers keep every candidate pending and record the selection
+    requirement for the prompt context. Returns the reopened unit id or
+    None.
+
+    The automatic sequence comparison runs over the waiting candidates only
+    (plan 4.2 auto-reopens a unique waiting unit). ``deferred`` and
+    ``historical_unresolved`` units are never auto-reopened by speech and
+    never suppress a unique waiting candidate, but they stay in the
+    surfaced selection list for an explicit user choice.
+    """
+    candidates = [
+        item
+        for item in state.get("work_units", [])
+        if isinstance(item, dict)
+        and item.get("status") in stop3().RESUMABLE_UNIT_STATUSES
+    ]
+    if not candidates:
+        return None
+    auto_candidates = [
+        item
+        for item in candidates
+        if item.get("status") in stop3().WAITING_UNIT_STATUSES
+    ]
+    seqs = [
+        item.get("last_active_seq")
+        for item in auto_candidates
+        if isinstance(item.get("last_active_seq"), int)
+    ]
+    unique_max = None
+    if auto_candidates and len(seqs) == len(auto_candidates):
+        top = max(seqs)
+        if sum(1 for value in seqs if value == top) == 1:
+            unique_max = top
+    if unique_max is None:
+        work_state["resume_selection_required"] = sorted(
+            str(item["id"]) for item in candidates
+        )
+        return None
+    target = next(
+        item
+        for item in auto_candidates
+        if item.get("last_active_seq") == unique_max
+    )
+    target["status"] = "active"
+    target["closed_at"] = None
+    work_state["unit_activity_seq"] = int(work_state.get("unit_activity_seq") or 0) + 1
+    target["last_active_seq"] = int(work_state["unit_activity_seq"])
+    work_state["active_work_unit_id"] = str(target["id"])
+    return str(target["id"])
+
+
+RESUME_NAMED_UNIT_RE = re.compile(r"\bWU\d{4,}\b", re.IGNORECASE)
+
+
+def self_resume_named_unit(
+    state: dict[str, Any], work_state: dict[str, Any], unit_id: str
+) -> str | None:
+    """Targeted explicit selection (plan 4.2: the user names the unit).
+
+    Reopens exactly the named unit when it exists and is resumable
+    (waiting, deferred, or migration-isolated historical); a name that does
+    not exist or names a closed unit fails closed and returns None so the
+    caller surfaces the selection list instead of guessing.
+    """
+    target = next(
+        (
+            item
+            for item in state.get("work_units", [])
+            if isinstance(item, dict)
+            and str(item.get("id") or "").upper() == unit_id.upper()
+        ),
+        None,
+    )
+    if target is None or str(target.get("status")) not in stop3().RESUMABLE_UNIT_STATUSES:
+        return None
+    target["status"] = "active"
+    target["closed_at"] = None
+    work_state["unit_activity_seq"] = int(work_state.get("unit_activity_seq") or 0) + 1
+    target["last_active_seq"] = int(work_state["unit_activity_seq"])
+    work_state["active_work_unit_id"] = str(target["id"])
+    return str(target["id"])
+
+
 def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -> str:
+    """Open the prompt's work unit under the schema-10 lifecycle.
+
+    Units are sibling roots (plan section 4.2): a new non-control request
+    never chains behind the previous unit. An explicit resume prompt
+    reactivates the current unit instead of opening a new one; a prompt
+    that starts a new request while a unit is still active archives that
+    unit as historical_unresolved (auditable, never pass, outside the
+    default completion gate). Parked units (awaiting_*/deferred) survive
+    until the user explicitly resumes them.
+    """
+    work_state = state.setdefault(
+        "work_state", {"plan_snapshot": None, "active_work_unit_id": None}
+    )
+    work_state.setdefault("plan_snapshot", None)
+    work_state.setdefault("active_work_unit_id", None)
+    work_state.setdefault("unit_activity_seq", 0)
+    work_state.pop("resume_selection_required", None)
+    current_id = work_state.get("active_work_unit_id")
+    current = next(
+        (
+            item
+            for item in state.get("work_units", [])
+            if isinstance(item, dict) and item.get("id") == current_id
+        ),
+        None,
+    )
+    if (
+        current is not None
+        and current.get("status") == "awaiting_user"
+    ):
+        # The unit is parked because the next step needed the user. The
+        # user's next prompt is the structured answer to that wait: reopen
+        # the current unit instead of opening a sibling root. This is a
+        # lifecycle fact, not wording guessing; awaiting_external/deferred
+        # units are not reopened by speech and stay parked until an
+        # explicit resume.
+        work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
+        current["status"] = "active"
+        current["closed_at"] = None
+        current["last_active_seq"] = int(work_state["unit_activity_seq"])
+        return str(current["id"])
+    if (
+        current is not None
+        and current.get("status") == "active"
+        and stop3().has_explicit_resume_intent(text)
+    ):
+        work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
+        current["last_active_seq"] = int(work_state["unit_activity_seq"])
+        return str(current["id"])
+    if (
+        stop3().has_explicit_resume_intent(text)
+        and (current is None or current.get("status") != "active")
+    ):
+        named = RESUME_NAMED_UNIT_RE.search(text)
+        if named is not None:
+            # Targeted explicit selection: the user names the unit, so the
+            # sequence-uniqueness rule does not apply; an unknown or
+            # non-resumable name fails closed to the selection list.
+            reopen_id = self_resume_named_unit(state, work_state, named.group(0))
+            if reopen_id is not None:
+                return reopen_id
+            parked = sorted(
+                str(item["id"])
+                for item in state.get("work_units", [])
+                if isinstance(item, dict)
+                and item.get("status") in stop3().RESUMABLE_UNIT_STATUSES
+            )
+            if parked:
+                work_state["resume_selection_required"] = parked
+        else:
+            reopen_id = self_resume_unique_candidate(state, work_state)
+            if reopen_id is not None:
+                return reopen_id
+        # No unique/named candidate: fall through to a fresh root; the
+        # ambiguous candidate list is surfaced once in the prompt context.
+    if current is not None and current.get("status") == "active":
+        current["status"] = "historical_unresolved"
+        current["closed_at"] = utc_now()
     state["work_unit_sequence"] = int(state.get("work_unit_sequence", 0)) + 1
     unit_id = f"WU{state['work_unit_sequence']:04d}"
-    parent_id = state.get("work_state", {}).get("active_work_unit_id")
     kind = work_unit_kind(text)
     scope = {
         "prompt_sha256": prompt["sha256"],
-        "parent_id": parent_id,
+        "parent_id": None,
         "kind": kind,
     }
+    work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
     state.setdefault("work_units", []).append(
         {
             "id": unit_id,
             "protocol_version": WORK_UNIT_PROTOCOL_VERSION,
             "prompt_id": prompt["id"],
-            "parent_id": parent_id,
+            "parent_id": None,
             "kind": kind,
             "status": "active",
             "created_at": utc_now(),
             "closed_at": None,
+            "last_active_seq": int(work_state["unit_activity_seq"]),
             "scope_sha256": sha256_text(canonical_json(scope)),
         }
     )
-    state.setdefault("work_state", {})["active_work_unit_id"] = unit_id
+    work_state["active_work_unit_id"] = unit_id
     return unit_id
 
 
@@ -4757,15 +8617,28 @@ def work_unit_relations(state: dict[str, Any]) -> tuple[set[str], set[str], set[
 
 
 def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Current-unit item ids plus the still-applicable ancestor constraints.
+
+    historical_unresolved units are outside the default completion gate:
+    their items stay auditable but are never constraints, never feedback,
+    and never pass.
+    """
     _current, descendants, ancestors = work_unit_relations(state)
+    unit_status = {
+        str(item.get("id")): str(item.get("status"))
+        for item in state.get("work_units", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
     if not descendants:
-        all_ids = {
+        live_ids = {
             str(item["id"])
             for collection in ("requirements", "acceptance_items")
             for item in state.get(collection, [])
-            if isinstance(item, dict) and item.get("status") != "superseded"
+            if isinstance(item, dict)
+            and item.get("status") != "superseded"
+            and unit_status.get(str(item.get("work_unit_id"))) == "active"
         }
-        return all_ids, set()
+        return live_ids, set()
     scoped = {
         str(item["id"])
         for collection in ("requirements", "acceptance_items")
@@ -4781,6 +8654,7 @@ def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]
         if isinstance(item, dict)
         and item.get("status") != "superseded"
         and item.get("work_unit_id") in ancestors
+        and unit_status.get(str(item.get("work_unit_id"))) != "historical_unresolved"
     }
     return scoped, ancestor_constraints
 
@@ -4950,6 +8824,17 @@ def replay_prompt_record(
     elif action == "off":
         state["mode"]["active"] = False
         state["mode"]["manual_off"] = True
+    elif action in {"standard", "strict", "release", "observe"}:
+        # Phase 4 profile declarations: strict/observe are explicit user or
+        # maintainer choices; release is the explicit adoption signal (the
+        # adopted contract stays the release-facts source). standard resets
+        # to the default profile.
+        state["mode"]["active"] = True
+        state["mode"]["manual_off"] = False
+        state["mode"]["profile"] = None if action == "standard" else action
+        state["mode"]["activation_reasons"] = list(
+            dict.fromkeys(state["mode"]["activation_reasons"] + [action])
+        )
     if is_control_prompt(text):
         return
     work_unit_id = append_work_unit(state, metadata, text)
@@ -4960,6 +8845,7 @@ def replay_prompt_record(
         state, metadata["id"], text, [], work_unit_id=work_unit_id
     )
     record_supersession(state, text, requirement_id)
+    _record_prompt_authorization(state, work_unit_id, record, text)
     score, reasons = score_complexity(text)
     goal_requested = bool(re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE))
     if goal_requested:
@@ -5195,19 +9081,15 @@ def tool_actor(state: dict[str, Any], payload: dict[str, Any]) -> tuple[str, str
 # *input* binds an artifact readback subject. A path that is merely echoed in
 # a tool response, command output, or unrelated payload text stays inert for
 # readback derivation — the same rule the thread-read adapter already enforces
-# for thread subjects (exact name membership, never a name substring).
-FILE_READ_TOOL_ALIASES = {
-    "read",
-    "read_file",
-    "readfile",
-    "read_text_file",
-    "view",
-    "view_file",
-    "open_file",
-    "cat_file",
-    "show_file",
-}
-FILE_READ_TOOL_SUFFIXES = ("_read_file", "_read_text_file")
+# for thread subjects. Phase 3 (P1-A): the binding surface is the CLOSED-WORLD
+# registry in cg_stop3.ADAPTER_REGISTRY — the fully qualified MCP tool name is
+# the canonical key and bare names bind only when explicitly registered; no
+# suffix or wildcard matching exists anywhere. FILE_READ_TOOL_ALIASES below is
+# a read-only mirror of that registry for diagnostics; the binding decision is
+# made exclusively by stop3().adapter_identity.
+FILE_READ_TOOL_ALIASES = frozenset(
+    stop3().ADAPTER_REGISTRY["file_read"]["trusted_short_names"]
+)
 # Read-shaped shell commands: their path arguments are read targets. Anything
 # else (echo, grep, ls, redirects, in-place edits) is not a readback.
 READ_COMMAND_NAMES = {"cat", "head", "tail", "nl", "stat", "wc", "file", "sha256sum", "shasum", "md5"}
@@ -5217,11 +9099,16 @@ READ_COMMAND_REDIRECT_RE = re.compile(r"(?:^|[>\s])>{1,2}\s*\S|\btee\b")
 def read_input_subject_ids(tool_name: str, tool_input: Any) -> list[str]:
     """Subject ids actually read by this tool call's input, [] when ambiguous.
 
-    Only registered read adapters contribute. Shell reads bind from read-shaped
-    command segments; every other tool response text is inert. Ambiguous forms
-    (redirections, in-place edits, non-``-n`` sed) fail closed to no binding.
+    Only registered read adapters contribute, and only through the explicit
+    canonical identity registry: the fully qualified MCP tool name is the
+    canonical key, a bare trusted short name maps through the registry, and
+    a same-named tool under an unknown namespace stays
+    ``adapter_identity_ambiguous`` — it records evidence but can never bind
+    a readback subject or satisfy a proof. Shell reads bind from read-shaped
+    command segments; every other tool response text is inert. Ambiguous
+    forms (redirections, in-place edits, non-``-n`` sed) fail closed to no
+    binding.
     """
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(tool_name).lower()).strip("_")
     if tool_is_shell_execution(tool_name):
         if not isinstance(tool_input, dict):
             return []
@@ -5229,13 +9116,23 @@ def read_input_subject_ids(tool_name: str, tool_input: Any) -> list[str]:
         if not isinstance(command, str) or not command:
             return []
         return _read_command_subject_ids(command)
-    is_registered = normalized in FILE_READ_TOOL_ALIASES or normalized.endswith(
-        FILE_READ_TOOL_SUFFIXES
-    )
-    if not is_registered or not isinstance(tool_input, dict):
+    identity = stop3().adapter_identity(tool_name)
+    if not stop3().identity_binds_readback(identity):
+        return []
+    if not isinstance(tool_input, dict):
         return []
     subjects: list[str] = []
-    for key in ("file_path", "path", "filename", "file", "notebook_path", "target_file"):
+    if identity.get("adapter") == "thread_read":
+        fields = stop3().ADAPTER_REGISTRY["thread_read"]["input_subject_fields"]
+        for key in fields:
+            value = tool_input.get(key)
+            if isinstance(value, str) and value:
+                subject_id = thread_subject_id_from_thread_id(value)
+                if subject_id is not None:
+                    subjects.append(subject_id)
+        return list(dict.fromkeys(subjects))
+    fields = stop3().ADAPTER_REGISTRY["file_read"]["input_subject_fields"]
+    for key in fields:
         value = tool_input.get(key)
         if isinstance(value, str) and value:
             subjects.extend(
@@ -5246,7 +9143,10 @@ def read_input_subject_ids(tool_name: str, tool_input: Any) -> list[str]:
     return list(dict.fromkeys(subjects))
 
 
-def _read_command_subject_ids(command: str) -> list[str]:
+def _read_command_subject_ids(
+    command: str, *, windows: bool | None = None
+) -> list[str]:
+    use_windows = os.name == "nt" if windows is None else windows
     subjects: list[str] = []
     for segment in re.split(r"&&|\|\||;|\n", command):
         segment = segment.strip()
@@ -5254,12 +9154,17 @@ def _read_command_subject_ids(command: str) -> list[str]:
             # A redirect makes the read shape ambiguous: fail closed.
             continue
         try:
-            tokens = shlex.split(segment, posix=True)
+            # POSIX shlex treats backslashes as escapes and therefore
+            # corrupts unquoted Windows drive paths (for example
+            # ``E:\\work\\spec.txt``).  Preserve those path separators on the
+            # native Windows surface while retaining POSIX parsing elsewhere.
+            tokens = shlex.split(segment, posix=not use_windows)
         except ValueError:
             tokens = segment.split()
         if not tokens:
             continue
-        name = re.sub(r"[^a-z0-9]+", "_", Path(tokens[0]).name.lower()).strip("_")
+        command_name = re.split(r"[\\/]", tokens[0].strip("\"'"))[-1]
+        name = re.sub(r"[^a-z0-9]+", "_", command_name.lower()).strip("_")
         if name == "sed":
             if "-n" not in tokens or any(
                 token == "-i" or token.startswith("--in-place") for token in tokens
@@ -5269,6 +9174,15 @@ def _read_command_subject_ids(command: str) -> list[str]:
             continue
         skip_value = False
         for token in tokens[1:]:
+            if use_windows and token and (
+                token[0] in {"'", '"'} or token[-1] in {"'", '"'}
+            ):
+                if len(token) < 2 or token[0] != token[-1]:
+                    continue
+                # Non-POSIX shlex intentionally preserves Windows/PowerShell
+                # path quotes.  Remove only a matching outer pair before
+                # locator normalization; unmatched quoting stays ambiguous.
+                token = token[1:-1]
             if skip_value:
                 skip_value = False
                 continue
@@ -5737,25 +9651,29 @@ def completion_command_context(
         if item.get("status") != "superseded" and item["id"] in scoped_ids
     ]
     return (
-        "Context Guard is active. Keep completion metadata private: never append "
+        "Context Guard is active (Stop protocol "
+        f"{STOP_PROTOCOL_VERSION}). Keep completion metadata private: never append "
         "a context-guard checkpoint, HTML comment, JSON block, token, or private "
-        "command to the user-facing response. Before claiming full completion, "
-        "inspect the private ledger with this exact command:\n"
+        "command to the user-facing response. Ordinary endings need no commands: "
+        "when the reply shows a verifiable whole completion, the guard binds the "
+        "unique successful evidence itself and closes the current work unit; "
+        "waiting or deferred boundaries are detected from structured facts and "
+        "end silently. Commands are only for the explicit advanced path (visual "
+        "facts, human evidence selection, or ambiguous evidence). Inspect the "
+        "private ledger with:\n"
         f"{status_command}\n"
-        "Then stage a turn-bound private checkpoint with this command plus one "
-        "`--requirement ID=E####[,E####]` flag for each pending requirement and "
-        "one `--acceptance ID=E####[,E####]` flag for each pending acceptance item:\n"
-        f"{stage_command}\n"
-        "For an incomplete terminal response, stage exactly one typed boundary "
-        "instead: append `--disposition user_wait`, `external_wait`, or `deferred` "
-        "to this exact command base (the reason is derived). Continue authorized "
-        "assistant work by calling tools before ending the turn; the legacy "
-        "`continue` value is advisory only and cannot force a Stop continuation:\n"
+        "Stage a turn-bound private checkpoint only when deliberately claiming "
+        "whole completion, with one `--requirement ID=E####[,E####]` flag per "
+        "pending requirement and one `--acceptance ID=E####[,E####]` flag per "
+        f"pending acceptance item:\n{stage_command}\n"
+        "A typed boundary can still be staged explicitly by appending "
+        "`--disposition user_wait`, `external_wait`, or `deferred` to this "
+        "command base (advisory; the structured facts remain authoritative):\n"
         f"{disposition_command}\n"
         "A different already-staged control can be replaced only with `--replace`. "
         "Only successful evidence IDs printed by checkpoint-status are valid. "
-        "For an enforced verification contract, register each immutable proof "
-        "manifest before staging the checkpoint with this command:\n"
+        "Register an immutable proof manifest before staging when an obligation "
+        "needs visual facts, human selection, or disambiguation:\n"
         f"{proof_command}\n"
         "Previously passed items in the current work-unit closure are carried "
         "forward automatically; ancestor requirements remain constraints. "
@@ -6194,29 +10112,40 @@ def _minimal_subject_cover(
     *,
     field: str = "subject_ids",
 ) -> tuple[list[str], bool]:
-    """Deterministic first-fit cover in ledger order; no caller input.
+    """Unique-candidate cover in ledger order; ambiguity never selects.
 
-    With ``field="readback_subjects"`` (readback derivation) evidence whose
-    binding is a *superset* of the required subjects is skipped: a read that
-    covers more than the obligation's subjects is not a unique derivation and
-    fails closed instead of covering it.
+    Stop protocol 3.0 / CGR1-P2-B: for every required subject the candidate
+    set is computed from the structured binding field only. A subject with
+    no candidate leaves the cover incomplete; a subject with more than one
+    candidate is ``evidence_ambiguous`` — derivation fails closed instead
+    of picking the first, latest, or any record (order independence). With
+    ``field="readback_subjects"`` evidence whose binding is a *superset* of
+    the required subjects is skipped: a read covering more than the
+    obligation's subjects is not a unique derivation.
     """
+    if field != "subject_ids":
+        evidence_list = [
+            evidence
+            for evidence in evidence_list
+            if not set(evidence.get(field, [])) - required_subjects
+        ]
     cover: list[str] = []
     covered: set[str] = set()
-    for evidence in evidence_list:
-        if required_subjects <= covered:
-            break
-        binding = set(evidence.get(field, []))
-        if field != "subject_ids" and binding - required_subjects:
-            # Superset binding: the read covers more than the obligation's
-            # subjects, so it is not a unique derivation — skip it and let
-            # the obligation stay unresolved (fail closed).
-            continue
-        subjects = binding & required_subjects
-        if subjects - covered:
-            cover.append(str(evidence["id"]))
-            covered |= subjects
-    return cover, required_subjects <= covered
+    for subject in sorted(required_subjects):
+        candidates = [
+            evidence
+            for evidence in evidence_list
+            if subject in set(evidence.get(field, []))
+        ]
+        if not candidates:
+            return [], False
+        if len(candidates) > 1:
+            return [], False
+        evidence_id = str(candidates[0]["id"])
+        if evidence_id not in cover:
+            cover.append(evidence_id)
+        covered.add(subject)
+    return cover, covered >= required_subjects
 
 
 def derive_ordinary_proofs(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -6845,6 +10774,18 @@ def handle_user_prompt(
         state["mode"]["manual_off"] = True
         state["completion_attempt"] = None
         context = "Context Guard full protection disabled; immutable prompt journaling remains active."
+    elif action in {"standard", "strict", "release", "observe"}:
+        # Phase 4 profile declarations: strict/observe are explicit user or
+        # maintainer choices; release is the explicit adoption signal (the
+        # adopted contract remains the release-facts source). standard
+        # resets to the default profile.
+        state["mode"]["active"] = True
+        state["mode"]["manual_off"] = False
+        state["mode"]["profile"] = None if action == "standard" else action
+        state["mode"]["activation_reasons"] = list(
+            dict.fromkeys(state["mode"]["activation_reasons"] + [action])
+        )
+        context = f"Context Guard profile set to {action}."
     elif action == "status":
         context = status_context(state)
     elif action == "diagnose":
@@ -6861,6 +10802,15 @@ def handle_user_prompt(
     if not is_control_prompt(text):
         state["continuation_attempts"] = 0
         work_unit_id = append_work_unit(state, prompt, text)
+        selection_required = state.get("work_state", {}).get(
+            "resume_selection_required"
+        )
+        if selection_required:
+            note = (
+                "Multiple parked tasks match this resume request; name one "
+                "work unit: " + ",".join(str(item) for item in selection_required[:8]) + "."
+            )
+            context = f"{context}\n{note}" if context else note
         requirement_id = append_requirement(
             state, prompt, text, asset_ids, work_unit_id=work_unit_id
         )
@@ -6872,6 +10822,7 @@ def handle_user_prompt(
             item["id"] for item in state["acceptance_items"][acceptance_count:]
         ]
         supersession_result = record_supersession(state, text, requirement_id)
+        _record_prompt_authorization(state, work_unit_id, prompt, text)
         score, reasons = score_complexity(text)
         goal_requested = bool(
             re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE)
@@ -7633,6 +11584,7 @@ def handle_post_tool(
     settle_pre_tool_ticket(state, payload, outcome)
     if state["mode"]["active"]:
         require_usable_state(state)
+        advance_commit_transitions(state, payload, outcome)
         # Codex may persist attachment metadata only after UserPromptSubmit.
         # Reconcile the bounded transcript before recording the first tool so
         # an available prompt asset cannot remain an accidental fallback.
@@ -7647,13 +11599,11 @@ def handle_post_tool(
                         raise ValueError(
                             "private proof request tool result was not successful"
                         )
-                    proof = append_normalized_proof(state, proof_request)
+                    append_normalized_proof(state, proof_request)
                     save_state(session_dir, state)
-                    return hook_output(
-                        "PostToolUse",
-                        "Context Guard privately registered immutable proof "
-                        f"{proof['id']}. Continue with the remaining obligations.",
-                    )
+                    # Silent success wire: the proof is persisted privately;
+                    # no developer receipt enters the visible event stream.
+                    return {}
                 stage_request = parse_stage_request_from_tool(state, payload)
                 if stage_request is not None:
                     if outcome != "success":
@@ -7668,7 +11618,7 @@ def handle_post_tool(
                     try:
                         for normalized in stage_request.get("derived_proofs", []):
                             append_normalized_proof(state, normalized)
-                        idempotent = stage_control(
+                        stage_control(
                             attempt,
                             stage_request["control"],
                             replace=stage_request["replace"],
@@ -7678,13 +11628,9 @@ def handle_post_tool(
                         state["proof_sequence"] = sequence_mark
                         raise
                     save_state(session_dir, state)
-                    suffix = " (idempotent)" if idempotent else ""
-                    return hook_output(
-                        "PostToolUse",
-                        "Context Guard privately staged the turn-bound control"
-                        f"{suffix}. Send a normal user-facing response without "
-                        "private control metadata.",
-                    )
+                    # Silent success wire: the control is persisted privately;
+                    # no developer receipt enters the visible event stream.
+                    return {}
                 if is_exact_checkpoint_status_command(state, payload):
                     save_state(session_dir, state)
                     return {}
@@ -7715,8 +11661,22 @@ def handle_post_tool(
         upgraded, _transient = host_tool_surface_disposition(state, payload)
         if upgraded:
             capabilities.add("ui")
-        normalized_tool = re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_")
-        is_thread_reader = normalized_tool in THREAD_READ_TOOL_ALIASES
+        # Canonical adapter identity (frozen plan INV-11 / UX-09): the fully
+        # qualified MCP tool name is the canonical key; a bare trusted short
+        # name maps through the explicit registry; a same-named tool under an
+        # unknown namespace stays ambiguous — its evidence is recorded but it
+        # can never bind a readback subject or satisfy a proof.
+        tool_identity = stop3().adapter_identity(tool_name)
+        # Shell executions bind through their own registered shell-read
+        # adapter (read-shaped command segments only); every other tool needs
+        # a canonical or registry-mapped short identity.
+        binds_readback = (
+            tool_is_shell_execution(tool_name)
+            or stop3().identity_binds_readback(tool_identity)
+        )
+        is_thread_reader = (
+            tool_identity.get("adapter") == "thread_read" and binds_readback
+        )
         # Navigation/open tools and arbitrary output text produce at most
         # navigation facts: a codex://threads/ URI echoed by any other tool
         # can never satisfy a thread-subject readback (same thread, wrong
@@ -7740,7 +11700,11 @@ def handle_post_tool(
         state["evidence_sequence"] += 1
         # CG-CODEX-001: a readback subject is bound only by a registered read
         # adapter's *input*; response echoes and payload mentions stay inert.
-        readback_subjects = read_input_subject_ids(tool_name, payload.get("tool_input"))
+        readback_subjects = (
+            read_input_subject_ids(tool_name, payload.get("tool_input"))
+            if binds_readback
+            else []
+        )
         evidence = {
             "id": f"E{state['evidence_sequence']:04d}",
             "adapter_manifest_version": ADAPTER_MANIFEST_VERSION,
@@ -7760,6 +11724,7 @@ def handle_post_tool(
             "asset_ids": evidence_asset_ids,
             "subject_ids": list(dict.fromkeys(evidence_subject_ids)),
             "readback_subjects": readback_subjects,
+            "adapter_identity": str(tool_identity.get("identity")),
             "capabilities": sorted(capabilities),
         }
         state["evidence"].append(evidence)
@@ -8115,7 +12080,7 @@ def apply_checkpoint(
     closed_at = utc_now()
     for unit in state.get("work_units", []):
         if isinstance(unit, dict) and unit.get("id") in scope_units:
-            unit["status"] = "passed"
+            unit["status"] = "completed"
             unit["closed_at"] = closed_at
     state["open_items"] = open_item_ids(state)
     state["completion_checkpoint"] = {
@@ -8153,19 +12118,128 @@ def terminal_stop_policy(
 def disposition_matches_observed(
     declared_disposition: str | None, observed_outcome: str
 ) -> bool:
+    """Owner-class comparator (frozen plan section 4.3).
+
+    ``user_wait`` and ``external_wait`` are the same owner class — the
+    assistant cannot continue either way — so a sub-class difference alone
+    never fails the declaration (CGR1-P2-B/UX-03). ``deferred`` matches
+    only an out-of-scope boundary; absence and ``continue`` always match.
+    """
     if declared_disposition in {None, "continue"}:
         return True
-    expected = {
-        "user_wait": "allow_user_handoff",
-        "external_wait": "allow_external_wait",
-        "deferred": "allow_out_of_scope_deferred",
+    wait_outcomes = {"allow_user_handoff", "allow_external_wait"}
+    if declared_disposition in {"user_wait", "external_wait"}:
+        return observed_outcome in wait_outcomes
+    if declared_disposition == "deferred":
+        return observed_outcome == "allow_out_of_scope_deferred"
+    return False
+
+
+def _scoped_obligation_states(
+    state: dict[str, Any], scoped_ids: set[str]
+) -> dict[tuple[str, str], str]:
+    """Reason code per (item, obligation) for the current unit's gate.
+
+    Pure evaluation through the structured matcher: the binding is the set
+    of successful evidence ids and the projection is the enforced contract
+    plus the raw evidence list; canonicalization happens inside the matcher.
+    """
+    states: dict[tuple[str, str], str] = {}
+    evidence = [
+        item
+        for item in state.get("evidence", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    successful_ids = [
+        item["id"] for item in evidence if item.get("outcome") == "success"
+    ]
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            if not isinstance(item, dict) or item["id"] not in scoped_ids:
+                continue
+            if item.get("status") == "superseded":
+                continue
+            contract = item.get("verification_contract")
+            if not isinstance(contract, dict) or contract.get("mode") != "enforced":
+                continue
+            projection = {
+                "item": {"id": item["id"], "verification_contract": contract},
+                "evidence": evidence,
+            }
+            for obligation in contract.get("obligations", []):
+                if not isinstance(obligation, dict) or not obligation.get("id"):
+                    continue
+                binding = {
+                    "itemId": item["id"],
+                    "evidenceIds": successful_ids,
+                    "obligationId": obligation["id"],
+                }
+                evaluated = evaluate_reason(item["id"], binding, projection)
+                states[(item["id"], str(obligation["id"]))] = str(
+                    evaluated.get("reason_code")
+                )
+    return states
+
+
+def _auto_complete_checkpoint(
+    state: dict[str, Any], scoped_ids: set[str]
+) -> dict[str, Any] | None:
+    """Build the verified-completion checkpoint from unique evidence only.
+
+    Every scoped item must be pass or auto-bindable from the derived
+    proofs; a single non-verifiable item (legacy contract, ambiguous
+    evidence) keeps the unit open. Returns None when completion cannot be
+    verified — completion is never fabricated.
+    """
+    scoped_items = [
+        item
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict)
+        and item.get("id") in scoped_ids
+        and item.get("status") != "superseded"
+    ]
+    if not scoped_items:
+        return None
+    supplied: dict[str, dict[str, list[str]]] = {
+        "requirements": {},
+        "acceptance_items": {},
     }
-    return expected.get(declared_disposition) == observed_outcome
+    for item in scoped_items:
+        if item.get("status") == "pass":
+            evidence_ids = [str(value) for value in item.get("evidence", [])]
+        else:
+            evidence_ids = sorted(
+                {
+                    str(evidence_id)
+                    for proof in state.get("proofs", [])
+                    if proof.get("item_id") == item["id"]
+                    for evidence_id in proof.get("evidence_ids", [])
+                }
+            )
+        if not evidence_ids:
+            return None
+        collection = "requirements" if str(item["id"]).startswith("R") else "acceptance_items"
+        supplied[collection][item["id"]] = evidence_ids
+    return private_checkpoint(
+        state, supplied["requirements"], supplied["acceptance_items"]
+    )
 
 
 def handle_stop(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
+    """Stop protocol 3.0 (frozen plan section 4.3).
+
+    The ordinary terminal path computes the waiting owner from the current
+    unit's structured facts and ends silently; verified completions close
+    the current unit automatically from uniquely bound evidence; only a
+    wrong whole-completion claim over deterministic pending obligations, or
+    an explicit persistence demand with authorized assistant work, draws
+    the single per-turn visible correction. Privacy and state-integrity
+    failures stay budget-exempt hard stops. Default feedback is at most
+    240 characters: current unit, one reason, one next step.
+    """
     if not state["mode"]["active"] or state["mode"]["manual_off"]:
         return {}
     try:
@@ -8182,45 +12256,79 @@ def handle_stop(
                 "preserved corrupt state and immutable prompt ledger."
             ),
         }
+    stop3_mod = stop3()
     text = assistant_text(payload)
     authoritative_prompt = latest_requirement_text(session_dir, state)
     attempt = state.get("completion_attempt")
     turn_id = str(
         payload.get("turn_id")
         or (attempt.get("turn_id") if isinstance(attempt, dict) else "")
+        or ""
     )
     prompt_integrity = bool(authoritative_prompt) or not state.get("requirements")
     observed = classify_stop_decision(
         text, authoritative_prompt, prompt_integrity=prompt_integrity
     )
-    decision = dict(observed)
+    decision: dict[str, Any] = dict(observed)
     decision.update(
         {
             "protocol_version": STOP_PROTOCOL_VERSION,
-            "decision_source": "nlp_diagnostic",
+            "decision_source": "stop3_structured",
             "declared_disposition": None,
             "observed_outcome": observed["outcome"],
+            "reason_codes": list(observed.get("reason_codes", [])),
         }
     )
-    if observed["outcome"] == "fail_closed_integrity":
-        decision["decision_source"] = "integrity"
-        append_decision_log(state, decision, turn_id)
-        save_state(session_dir, state)
-        return {
-            "continue": False,
-            "stopReason": (
-                "Context Guard stopped completion because the authoritative "
-                "prompt boundary could not be verified."
-            ),
-            "systemMessage": (
-                "Context Guard prompt integrity is ambiguous. Review the immutable "
-                "prompt ledger before retrying."
-            ),
-        }
 
-    legacy_checkpoint = CHECKPOINT_RE.search(text) is not None
+    def finish(result: dict[str, Any], *reason_codes: str) -> dict[str, Any]:
+        codes = list(decision.get("reason_codes", []))
+        for code in reason_codes:
+            if code not in codes:
+                codes.append(code)
+        decision["reason_codes"] = codes
+        # Protocol envelope consumption: the heavy path routes its terminal
+        # decision through the model-agnostic protocol layer.
+        envelope = stop3_mod.stop_decision_event(
+            str(state.get("session", {}).get("id") or ""), turn_id, decision
+        )
+        decision["event_type"] = str(envelope.event_type)
+        append_decision_log(state, decision, turn_id)
+        # The turn-bound attempt stays staged until the next prompt replaces
+        # it: the model may correct a visible interruption within the same
+        # turn, and staged controls remain turn-bound and token-checked.
+        save_state(session_dir, state)
+        return result
+
+    # Budget-exempt hard gates: privacy and state integrity (plan INV-04/06).
     privacy_classification, privacy_reasons = classify_private_metadata(text)
-    leaked_private_metadata = privacy_classification != "explanatory_reference"
+    if observed["outcome"] == "fail_closed_integrity":
+        decision["outcome"] = "fail_closed_integrity"
+        decision["decision_source"] = "integrity"
+        return finish(
+            {
+                "continue": False,
+                "stopReason": (
+                    "Context Guard stopped completion because the "
+                    "authoritative prompt boundary could not be verified."
+                ),
+            }
+        )
+    if CHECKPOINT_RE.search(text) or privacy_classification != "explanatory_reference":
+        decision["outcome"] = "fail_closed_integrity"
+        decision["decision_source"] = "integrity"
+        return finish(
+            {
+                "continue": False,
+                "stopReason": (
+                    "Context Guard blocked a user-facing reply that carries "
+                    "private control metadata. Move it out of the reply."
+                ),
+            },
+            "private_metadata_leak",
+            privacy_classification,
+            *privacy_reasons,
+        )
+
     turn_matches = (
         isinstance(attempt, dict)
         and str(attempt.get("turn_id")) == turn_id
@@ -8230,33 +12338,6 @@ def handle_stop(
         if turn_matches and isinstance(attempt, dict)
         else None
     )
-    explicit_persistence = bool(
-        authoritative_prompt
-        and USER_PERSISTENCE_RE.search(authoritative_prompt)
-    )
-    issues: list[str] = []
-    if legacy_checkpoint:
-        issues.append(
-            "legacy inline checkpoint metadata is not accepted; stage it privately"
-        )
-    elif leaked_private_metadata:
-        issues.append(
-            "user-facing reply contains private control metadata or a "
-            "credential-like binding"
-        )
-    if issues:
-        decision.update(
-            {
-                "outcome": "fail_closed_integrity",
-                "reason_codes": [
-                    "private_metadata_leak",
-                    privacy_classification,
-                    *privacy_reasons,
-                ],
-                "decision_source": "integrity",
-            }
-        )
-
     checkpoint: dict[str, Any] | None = None
     declared_disposition: str | None = None
     if staged_control is not None:
@@ -8267,210 +12348,228 @@ def handle_stop(
             else:
                 declared_disposition = str(control["disposition"])
         except ValueError:
-            issues.append("invalid staged private checkpoint or disposition")
-            decision.update(
+            decision["outcome"] = "fail_closed_integrity"
+            decision["decision_source"] = "integrity"
+            return finish(
                 {
-                    "outcome": "fail_closed_integrity",
-                    "reason_codes": ["invalid_staged_control"],
-                    "decision_source": "integrity",
-                }
+                    "continue": False,
+                    "stopReason": (
+                        "Context Guard rejected a malformed private control; "
+                        "re-stage it with the private commands."
+                    ),
+                },
+                "invalid_staged_control",
             )
+    decision["declared_disposition"] = declared_disposition
+    if isinstance(attempt, dict) and (
+        checkpoint is not None or declared_disposition is not None
+    ):
+        # A staged control is consumed by the Stop that reads it: clear the
+        # slot so it cannot be replayed, while the turn-bound attempt itself
+        # survives until the next prompt replaces it.
+        attempt["staged_control"] = None
+        attempt["staged_at"] = None
 
-    # A valid checkpoint is the only protocol declaration of completion. It
-    # satisfies an explicit persistence request and outranks reply diagnostics.
-    if checkpoint is not None and not issues:
+    def current_unit_id() -> str | None:
+        return state.get("work_state", {}).get("active_work_unit_id")
+
+    def close_current_unit(status: str) -> str | None:
+        unit_id = current_unit_id()
+        for unit in state.get("work_units", []):
+            if isinstance(unit, dict) and unit.get("id") == unit_id:
+                unit["status"] = status
+                unit["closed_at"] = utc_now()
+        return unit_id
+
+    def visible_correction(
+        reason: str, next_step: str, *codes: str
+    ) -> dict[str, Any]:
+        """The single per-turn visible interruption (plan INV-04)."""
+        used = int(state.get("continuation_attempts") or 0)
+        if used >= stop3_mod.VISIBLE_INTERRUPTION_BUDGET:
+            return finish({}, "visible_interruption_budget_exhausted", *codes)
+        state["continuation_attempts"] = used + 1
+        # Acceptance-D: the default feedback carries the current unit's
+        # pending-item COUNT, never IDs (those live in diagnose/--full).
+        scoped_now, _ = checkpoint_scope_item_ids(state)
+        pending_count = sum(
+            1
+            for collection in ("requirements", "acceptance_items")
+            for item in state.get(collection, [])
+            if isinstance(item, dict)
+            and item["id"] in scoped_now
+            and item.get("status") not in {"pass", "superseded"}
+        )
+        feedback = stop3_mod.bounded_stop_feedback(pending_count, reason, next_step)
+        decision["outcome"] = "visible_correction"
+        return finish({"decision": "block", "reason": feedback}, *codes)
+
+    # Advanced explicit path: a valid staged checkpoint still closes the
+    # current unit. It is no longer required on the ordinary path.
+    if checkpoint is not None:
         checkpoint_problems = checkpoint_issues(state, checkpoint)
         if checkpoint_problems:
-            issues.extend(checkpoint_problems)
-            decision.update(
-                {
-                    "outcome": "fail_closed_integrity",
-                    "reason_codes": ["checkpoint_validation_failed"],
-                    "decision_source": "protocol_checkpoint",
-                    "declared_disposition": "complete",
-                }
+            return visible_correction(
+                "the private completion checkpoint does not validate",
+                "resolve the named items, then stage the checkpoint again",
+                "checkpoint_validation_failed",
+                "wrong_whole_completion",
             )
-        else:
-            apply_checkpoint(state, checkpoint, turn_id)
-            state["continuation_attempts"] = 0
-            decision.update(
-                {
-                    "outcome": "consume_checkpoint",
-                    "reason_codes": ["validated_turn_bound_checkpoint"],
-                    "decision_source": "protocol_checkpoint",
-                    "declared_disposition": "complete",
-                }
-            )
-            append_decision_log(state, decision, turn_id)
-            save_state(session_dir, state)
-            return {}
+        apply_checkpoint(state, checkpoint, turn_id)
+        state["continuation_attempts"] = 0
+        decision["outcome"] = "consume_checkpoint"
+        decision["decision_source"] = "protocol_checkpoint"
+        return finish({}, "validated_turn_bound_checkpoint")
 
-    prompt_scope = prompt_action_scope(authoritative_prompt)
-    deferred_bindings = deferred_action_bindings(text, prompt_scope)
+    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
+    unresolved_all = unresolved_proof_obligations(state)
+    scoped_unresolved = {
+        item_id: obligations
+        for item_id, obligations in unresolved_all.items()
+        if item_id in scoped_ids
+    }
+    completion_claim = claims_whole_completion(text)
+    explicit_persistence = bool(
+        authoritative_prompt
+        and USER_PERSISTENCE_RE.search(authoritative_prompt)
+    )
+    facts = {
+        "whole_completion_claim": completion_claim,
+        "explicit_persistence": explicit_persistence,
+        "authorized_assistant_actions_available": (
+            observed["outcome"] == "gate_authorized_remaining_work"
+        ),
+        "missing_user_only_input_or_approval": (
+            observed["outcome"] == "allow_user_handoff"
+        ),
+        "registered_external_operation": (
+            observed["outcome"] == "allow_external_wait"
+        ),
+        "deferred_by_scope_or_authority": (
+            observed["outcome"] == "allow_out_of_scope_deferred"
+        ),
+    }
+    decision["waiting_owner"] = stop3_mod.resolve_waiting_owner(facts)
+    interruption_index = int(state.get("continuation_attempts") or 0) + 1
+
+    # Explicit persistence gate (plan section 4.3 item 6): the user demanded
+    # continuous completion. A staged wait the user asked for, or a deferral
+    # bound to prompt-denied actions, still ends the turn; anything else
+    # draws the single per-turn correction. Sub-class differences between
+    # the two waits never block (CGR1-P2-D).
+    deferred_bindings = deferred_action_bindings(
+        text, prompt_action_scope(authoritative_prompt)
+    )
     persistence_allows_deferred = bool(
         explicit_persistence
         and declared_disposition == "deferred"
         and deferred_bindings
     )
-    if (
-        not issues
-        and declared_disposition is not None
-        and not disposition_matches_observed(
-            declared_disposition, str(observed.get("outcome") or "")
-        )
-    ):
-        issues.append("declared disposition does not match the observed ownership boundary")
-        decision.update(
-            {
-                "outcome": observed["outcome"],
-                "reason_codes": [
-                    "disposition_observation_mismatch",
-                    f"declared_{declared_disposition}",
-                    f"observed_{observed['outcome']}",
-                ],
-                "decision_source": "protocol_disposition_validation",
-                "declared_disposition": declared_disposition,
-            }
-        )
-    policy = (
-        None
-        if issues
-        else terminal_stop_policy(
-            explicit_persistence=explicit_persistence,
-            persistence_allows_deferred=persistence_allows_deferred,
-            declared_disposition=declared_disposition,
-        )
-    )
-    if policy == "gate_explicit_persistence":
-        issues.append("authoritative user prompt requires persistence")
-        decision.update(
-            {
-                "outcome": "gate_authorized_remaining_work",
-                "reason_codes": ["explicit_user_persistence"],
-                "decision_source": "protocol_user_persistence",
-                "declared_disposition": declared_disposition,
-            }
+
+    def persistence_gate_blocks() -> bool:
+        return bool(
+            explicit_persistence
+            and not persistence_allows_deferred
+            and declared_disposition not in {"user_wait", "external_wait"}
         )
 
-    if not issues and declared_disposition is not None:
-        disposition_outcomes = {
-            "user_wait": "allow_user_handoff",
-            "external_wait": "allow_external_wait",
-            "deferred": "allow_out_of_scope_deferred",
+    if completion_claim:
+        # Ordinary terminal completion: bind uniquely supported evidence and
+        # close the unit only when verification is complete and unambiguous.
+        for manifest in derive_ordinary_proofs(state):
+            append_normalized_proof(state, manifest)
+        unresolved_all = unresolved_proof_obligations(state)
+        scoped_unresolved = {
+            item_id: obligations
+            for item_id, obligations in unresolved_all.items()
+            if item_id in scoped_ids
         }
-        outcome = disposition_outcomes.get(declared_disposition)
-        if outcome is not None:
-            state["completion_attempt"] = None
-            state["continuation_attempts"] = 0
-            decision.update(
-                {
-                    "outcome": outcome,
-                    "reason_codes": [
-                        f"protocol_{declared_disposition}",
-                        DISPOSITION_REASONS[declared_disposition],
-                    ]
-                    + (
-                        ["authoritative_prompt_bounds_deferred_action"]
-                        + [
-                            f"deferred_{category}"
-                            for category in deferred_bindings[:4]
-                        ]
-                        if persistence_allows_deferred
-                        else []
-                    ),
-                    "decision_source": "protocol_disposition",
-                    "declared_disposition": declared_disposition,
-                }
+        if not scoped_unresolved:
+            auto_checkpoint = _auto_complete_checkpoint(state, scoped_ids)
+            if auto_checkpoint is not None:
+                problems = checkpoint_issues(state, auto_checkpoint)
+                if not problems:
+                    apply_checkpoint(state, auto_checkpoint, turn_id)
+                    state["continuation_attempts"] = 0
+                    decision["outcome"] = "auto_complete_verified"
+                    decision["decision_source"] = "protocol_auto_completion"
+                    return finish({}, "auto_verified_completion")
+        if scoped_unresolved:
+            obligation_states = _scoped_obligation_states(state, scoped_ids)
+            ambiguous = any(
+                code == "evidence_ambiguous" for code in obligation_states.values()
             )
-            append_decision_log(state, decision, turn_id)
-            save_state(session_dir, state)
-            return {}
-
-        if policy == "yield_continue_advisory":
-            # A terminal reply and a staged continue declaration can disagree:
-            # the declaration is prepared before the final reply exists. Never
-            # turn that within-turn mismatch into an expensive forced retry.
-            # Explicit prompt-bound persistence was handled above; otherwise a
-            # continue declaration is advisory and unresolved items stay open.
-            state["completion_attempt"] = None
-            state["continuation_attempts"] = 0
-            decision.update(
-                {
-                    "outcome": "allow_neutral",
-                    "reason_codes": [
-                        "protocol_continue_advisory",
-                        DISPOSITION_REASONS[declared_disposition],
-                        "safe_yield_pending_preserved",
-                    ],
-                    "decision_source": "protocol_disposition",
-                    "declared_disposition": declared_disposition,
-                }
+            if ambiguous:
+                return visible_correction(
+                    "several equally valid evidence records; selection is not automatic",
+                    "register one proof manifest naming the exact evidence",
+                    "evidence_ambiguous",
+                    "wrong_whole_completion",
+                )
+            return visible_correction(
+                "unverified obligations remain in this work unit",
+                "finish the pending verification, then end the turn again",
+                "deterministic_obligations_pending",
+                "wrong_whole_completion",
             )
-            append_decision_log(state, decision, turn_id)
-            save_state(session_dir, state)
-            return {}
-
-    if not issues:
-        state["completion_attempt"] = None
-        state["continuation_attempts"] = 0
-        decision.update(
-            {
-                "outcome": "allow_neutral",
-                "reason_codes": ["protocol_default_yield"],
-                "decision_source": "protocol_default",
+        if persistence_gate_blocks():
+            return visible_correction(
+                "authorized work remains and the user required persistence",
+                "Continue the authorized work",
+                "explicit_user_persistence",
+            )
+        # A claim without deterministic pending work never continues; the
+        # owner ladder decides whether the boundary is assistant-pending or
+        # ambiguous (both silent).
+        outcome = stop3_mod.plan_waiting_outcome(
+            facts, declared_disposition, interruption_index=interruption_index
+        )
+        decision["outcome"] = outcome
+        if outcome == stop3_mod.OUTCOME_SINGLE_BOUNDED_CORRECTION:
+            return visible_correction(
+                "authorized work remains and the user required persistence",
+                "Continue the authorized work",
+                "explicit_user_persistence",
+            )
+        if outcome == stop3_mod.OUTCOME_SILENT_YIELD_PRESERVE_PENDING:
+            status_map = {
+                "user": "awaiting_user",
+                "external": "awaiting_external",
+                "deferred": "deferred",
             }
-        )
-        append_decision_log(state, decision, turn_id)
-        save_state(session_dir, state)
-        return {}
+            close_current_unit(status_map[decision["waiting_owner"]])
+            return finish({}, "protocol_waiting_boundary")
+        if outcome == stop3_mod.OUTCOME_SILENT_ASSISTANT_PENDING:
+            return finish({}, "assistant_pending_actions")
+        return finish({}, "owner_ambiguous")
 
-    concise = "; ".join(dict.fromkeys(issues[:12]))
-    expected_ids = (
-        "Expected IDs: requirements="
-        + (",".join(item["id"] for item in state["requirements"]) or "none")
-        + "; acceptance="
-        + (",".join(item["id"] for item in state["acceptance_items"]) or "none")
-        + "."
+    if persistence_gate_blocks():
+        return visible_correction(
+            "authorized work remains and the user required persistence",
+            "Continue the authorized work",
+            "explicit_user_persistence",
+        )
+    outcome = stop3_mod.plan_waiting_outcome(
+        facts, declared_disposition, interruption_index=interruption_index
     )
-    if state["continuation_attempts"] >= 2:
-        decision["reason_codes"] = list(decision["reason_codes"]) + [
-            "completion_contract_failed_twice"
-        ]
-        append_decision_log(state, decision, turn_id)
-        save_state(session_dir, state)
-        return {
-            "continue": False,
-            "stopReason": "Context Guard stopped an unverified completion after two correction attempts.",
-            "systemMessage": (
-                "Context Guard stopped an unverified completion. Review the private "
-                "evidence ledger before retrying."
-            )
+    decision["outcome"] = outcome
+    if outcome == stop3_mod.OUTCOME_SINGLE_BOUNDED_CORRECTION:
+        return visible_correction(
+            "authorized work remains and the user required persistence",
+            "Continue the authorized work",
+            "explicit_user_persistence",
+        )
+    if outcome == stop3_mod.OUTCOME_SILENT_YIELD_PRESERVE_PENDING:
+        status_map = {
+            "user": "awaiting_user",
+            "external": "awaiting_external",
+            "deferred": "deferred",
         }
-    state["continuation_attempts"] += 1
-    decision["reason_codes"] = list(decision["reason_codes"]) + [
-        "protocol_control_rejected"
-    ]
-    append_decision_log(state, decision, turn_id)
-    save_state(session_dir, state)
-    if decision["outcome"] == "gate_authorized_remaining_work":
-        correction = (
-            "Continue the authorized work, or stage an exact user_wait/external_wait "
-            "disposition only when that boundary is actually reached."
-        )
-    else:
-        correction = (
-            "Resolve or explicitly report these items. If claiming completion, use "
-            "the private checkpoint commands injected for the continuation turn; do "
-            "not put checkpoint metadata in the user-facing reply."
-        )
-    return {
-        "decision": "block",
-        "reason": (
-            f"{INTERNAL_CONTINUATION_PREFIX} The task is not yet safely complete. "
-            f"{correction} "
-            f"{concise}. {expected_ids}"
-        ),
-    }
+        close_current_unit(status_map[decision["waiting_owner"]])
+        return finish({}, "protocol_waiting_boundary")
+    if outcome == stop3_mod.OUTCOME_SILENT_ASSISTANT_PENDING:
+        return finish({}, "assistant_pending_actions")
+    return finish({}, "owner_ambiguous")
 
 
 def safe_export_path(state: dict[str, Any], argument: str | None) -> Path:
@@ -9130,6 +13229,18 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     if unicode_repairs:
         payload["_context_guard_unicode_repairs"] = unicode_repairs
     event = str(payload.get("hook_event_name") or payload.get("event") or "")
+    if event == "PreToolUse":
+        # Generic/malformed ambiguity fails open BEFORE any session lock or
+        # state I/O: only candidate mutations (including the runner
+        # envelope) may ever read or lock private state.
+        try:
+            pre_class = classify_pre_tool_state(
+                payload.get("tool_name"), payload.get("tool_input")
+            )
+        except Exception:  # noqa: BLE001 - classification failure stays fail-open
+            pre_class = STATE_SAFE
+        if pre_class == STATE_AMBIGUOUS:
+            return {}
     session_dir = session_dir_for(payload)
     with session_lock(session_dir):
         state = load_state(session_dir, payload)
@@ -9170,6 +13281,22 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         if event == "PreToolUse":
+            # Event-level fail policy: candidates (recognized real
+            # mutations) fail closed when validation itself failed, but
+            # provably safe and classifier-ambiguous calls stay fail-open
+            # so ordinary tools never lose capability to corrupt state or
+            # lock contention.
+            try:
+                tool_class = classify_pre_tool_state(
+                    payload.get("tool_name"), payload.get("tool_input")
+                )
+            except Exception:  # noqa: BLE001 - classification must not deny on its own failure
+                tool_class = STATE_AMBIGUOUS
+            # Fail closed ONLY for a proven candidate mutation; the runner
+            # envelope and generic ambiguity stay fail-open on validation
+            # failure, lock contention, or corrupt state.
+            if tool_class != STATE_CANDIDATE:
+                return {}
             return _pre_tool_decision(
                 "deny",
                 "Context Guard failed closed while validating this pre-action authorization.",

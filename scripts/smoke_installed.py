@@ -121,6 +121,15 @@ def main() -> int:
     runtime = plugin_root / "scripts" / "context_guard.py"
     if not runtime.is_file():
         raise RuntimeError(f"installed runtime not found: {runtime}")
+    # Stop protocol 3.0: the heavy core lazily loads the protocol layer from
+    # its own scripts directory, so an installed plugin root without it can
+    # only fail every Stop path. Refuse with an explicit parity error.
+    protocol_layer = plugin_root / "scripts" / "cg_stop3.py"
+    if not protocol_layer.is_file():
+        raise RuntimeError(
+            f"installed protocol layer missing: {protocol_layer}; the plugin "
+            "root is incomplete for Stop protocol 3.0"
+        )
 
     with tempfile.TemporaryDirectory(prefix="context-guard-smoke-") as temporary:
         root = Path(temporary)
@@ -171,12 +180,19 @@ def main() -> int:
             ),
         )
         pre_tool_output = pre_tool.get("hookSpecificOutput", {})
+        # Phase 4: the session is ACTIVE with the standard profile, so an
+        # unauthorized real high-risk action denies on root-user authority
+        # grounds; the ticket requirement only exists behind the release
+        # profile. Allow decisions stay silent (no reason).
         if (
             pre_tool_output.get("permissionDecision") != "deny"
-            or "action-ticket/v1"
+            or "state the authorization once"
             not in str(pre_tool_output.get("permissionDecisionReason") or "")
         ):
-            raise RuntimeError("PreToolUse did not fail closed without an action ticket")
+            raise RuntimeError(
+                "PreToolUse did not fail closed for an unauthorized high-risk "
+                "action under the standard profile"
+            )
 
         hook(
             runtime,

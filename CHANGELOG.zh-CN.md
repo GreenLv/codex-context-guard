@@ -4,6 +4,30 @@
 
 以下版本从新到旧排列，未发布候选会明确标注。`0.11.0` 是当前最新正式版本，运行时基线为提交 `ea73bed7a387295e1f6475e743e623298413e710`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 0.12.0 - Unreleased
+
+### 重点
+
+- **正常工作重新变得无感。** 被允许的工具调用、安全结束的回合和私有 staging 不再显示任何 Hook 状态文案或 developer 回执；只有错误、完整性失败和被拒绝的未授权高风险动作仍然可见，完成纠正每回合最多打断一次。
+- **守卫检查真正执行的东西，而不是关键词。** 位置感知分类器解析真实可执行文件及其效果：`echo git tag v1.2.3`、文本搜索和 `npm publish --dry-run` 自由通过，而真实未授权的发布动作仍然在执行前被拦截。
+- **授权遵循显式的 profile 阶梯。** 默认 profile 只核对当前工作单元内 root 用户是否授权了被覆盖的高风险动作。例如你在当前任务里说"给这个仓库打 v1.2.3 标签"：`standard` 直接放行这个精确标签，不做额外仪式；`release` 还要求已采用的就绪合同和一次性票据；`observe` 只记录本来会做出的决定。之后的无关提示不能把授权扩展到别的仓库或标签。
+- **长期任务不再累积历史债务。** 显式的工作单元生命周期（schema 10）关闭或隔离已完成的工作；Stop protocol 3.0.0 让普通等待和延期回合静默结束；默认反馈保持在 240 字符以内，只提到当前单元的未验项数量。
+
+### 变更
+
+- Schema 10 新增工作单元生命周期（`active`、`completed`、`awaiting_user`、`awaiting_external`、`deferred`、`historical_unresolved`）。旧的 active 父链被隔离为 `historical_unresolved`，而不是被悄悄标记为通过或失败。Schema 9 是完整迁移源；schema 7 和 8 仍为只读输入。
+- Stop protocol 3.0.0 在回复可验证地完成当前单元时自动绑定唯一的成功证据；证据不唯一时绝不自动挑选，等待方按结构化事实和固定优先级判定。私有 staging 保留高级的 `stage-checkpoint`/`register-proof` 路径，用于视觉事实、人工证据选择和证据歧义。
+- 九个 Hook 定义不再携带 `statusMessage`，私有 staging 和 proof 回执改为静默的空对象 wire。按照官方 Codex matcher 合同（对工具名及别名的正则匹配），`PreToolUse` 的 matcher 从 `"*"` 收缩到被门禁的表面——shell/统一执行的 Bash 别名、`apply_patch` 及其 `Edit`/`Write` 别名、所有 `mcp__` 名字，以及裸的变更方法名——所需模式由分类器常量推导并用契约测试钉住。`PostToolUse` 为广泛收集证据保持全匹配 wire。无状态路由器对每个非候选调用仍然静默返回。
+- 运行时拆分为无状态 PreToolUse 路由器（`cg_hook.py`）、纯分类器（`cg_actions.py`）、与 Codex Hook adapter 分离的 model/agent-agnostic 协议层（`cg_protocol.py`）、Stop 3.0 语义（`cg_stop3.py`）和惰性加载的发布适配器（`cg_release_adapter.py`）。诊断分类器版本为 3.2.1。Context Guard 不假定模型或 Agent 自带可靠的长上下文保护；从恢复到授权的闭环由本地提供，并且它不替代 Codex 权限系统、`repository-release`、人工审查或平台 readback。
+- Schema 9 在真实 resume 路径上是完整迁移源：schema-9 状态文件现在在 `SessionStart(resume)` 时原位迁移，而不是被隔离重建；旧 active 父链保持隔离为 `historical_unresolved`；显式恢复策略按表驱动确定——唯一等待候选且 `last_active_seq` 可解析时自动重开，缺失/并列序号或 deferred/historical 候选一律 fail-closed 进入一次性选择列表，点名单元（`WU0002`）精确重开。
+- 单语句授权接受裸 Git 命令形态与跨子句目标："git tag v9.9.9" 和 "tag v1.2.3 on this repo" 与动词形态一样绑定精确 tag；多个被点名的版本仍是两个候选（问一次）；否定与删除措辞绝不构成创建授权。删除语义按子句判定且与位置无关："删除本仓库的 tag v9.9.9"、"delete the tag v1.2.3" 和 "git tag --delete v9.9.9" 都不会留下创建授权。混合子句把每个版本归给自己的意图，因此删除 `v1.0.0` 再创建 `v2.0.0` 只绑定 `v2.0.0`，相邻的 `release v3.0.0` 也不会变成第二个 tag 目标。同一句话同时点名本地 Git 动作和 GitHub Release 或注册表动作时，运行时保存来自同一 prompt 的并列授权，使每个目标保留各自精确的仓库与身份字段。
+
+### 验证
+
+- Phase 5 聚焦回归证明静默成功 wire 在旧字节上失败。冻结 benchmark 报告 1140 次分类调用、11 个类别零 false deny、无常驻状态文案事件；current-behavior 套件在 16 个模块上通过 684 个测试；冻结基线 transition 审计保持 24 fixed / 0 remaining / 1 superseded / 15 inverted；仓库校验、公开树隐私审计（身份字面量规则收窄为语义边界匹配，HOL 徽章的公开账号 slug 不再误报）、Ruff、编译和九事件 self-test 全部通过。最终字节上的热路径新鲜采样通过 p95 < 50 ms 门（记录运行 p95 36.292/35.943/35.441 ms；六个热路径输入字节与更早记录运行一致，两次受桌面负载影响的采样尝试作为历史披露）。
+- macOS Phase 6 子集只使用一次性隔离 Codex home：安装/no-op/一致性/生命周期与 fresh/resume 任务通过，observe 账本和授权 canary 未发现 false deny 或 continuation。Windows 原生 R11 对同一准备态运行时树摘要独立通过全部 7 组必需门禁和清理。详细数量、来源与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- 准备态源码尚未形成干净的发布提交；精确提交 CI、干净提交上的 macOS portable 门禁、tag、GitHub Release、公开 readback 与正常用户运行时升级仍未执行，macOS 与 Windows 继续作为相互独立的发布门禁。
+
 ## 0.11.1 - 未发布
 
 ### 重点

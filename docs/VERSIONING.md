@@ -263,14 +263,38 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
-- `0.11.1` is an unreleased maintenance candidate. It recognizes the exact
-  historical fixed-name managed marketplace staging directory only when its
-  manifest still binds to this repository, then migrates registration to the
-  current commit-addressed staging copy. It also accepts current publication
-  readiness `v3` in `action-ticket/v1` while retaining an exact legacy `v2`
-  allowlist and rejecting unknown readiness versions. Schema 9, all public
-  protocol and classifier identifiers, the nine-Hook wire, and the Python floor
-  are unchanged.
+- `0.12.0` is an unreleased behavior/protocol candidate. Schema 10 adds the
+  explicit work-unit lifecycle (`active`, `completed`, `awaiting_user`,
+  `awaiting_external`, `deferred`, `historical_unresolved`); old active
+  parent chains are isolated as `historical_unresolved`, never silently
+  passed or failed. Stop protocol 3.0.0 handles ordinary endings
+  automatically, allows at most one visible Stop interruption per turn, and
+  keeps default feedback anonymous and bounded to the current work unit.
+  Enforcement profiles split authority: `standard` checks only current
+  root-user semantic authorization, `strict` adds enforced proofs, `release`
+  adds candidate/readiness/one-shot ticket facts behind an explicit adoption,
+  `observe` records the identical decision without blocking, and `off` and
+  inactive sessions gate nothing at all. The position-aware classifier 3.2.1
+  resolves real executable positions and effects, and the Hook allow wire is
+  the silent empty object: no persistent `statusMessage` and no private
+  staging or proof receipts in the visible event stream. Under the official
+  Codex matcher contract the `PreToolUse` matcher is shrunk to the gated tool
+  surfaces (Bash, apply_patch with its Edit/Write aliases, all `mcp__` names,
+  and bare mutation-method names) while `PostToolUse` keeps broad coverage. A
+  model/agent-agnostic
+  protocol layer (`cg_protocol`) is separated from the Codex Hook adapter
+  (`cg_codex_adapter`). The nine-Hook wire and the Python floor are unchanged.
+  The unreleased `0.11.1` maintenance line below is the independent base of
+  this candidate.
+- `0.11.1` is an independent unreleased maintenance candidate. It recognizes
+  the exact historical fixed-name managed marketplace staging directory only
+  when its manifest still binds to this repository, then migrates
+  registration to the current commit-addressed staging copy. It serializes
+  session-state writes through an in-process lock, corrects B-tier target
+  parsing, and accepts current publication readiness `v3` in
+  `action-ticket/v1` while retaining an exact legacy `v2` allowlist and
+  rejecting unknown readiness versions. Schema 9, all public protocol
+  identifiers, the nine-Hook wire, and the Python floor are unchanged.
 - `0.11.0` is the 2026-09-03 execution-authority release. It advances private
   state to schema 9, Stop protocol to 2.1.0, and Execution protocol to 2.0.0.
   The ninth Hook, `PreToolUse`, enforces exact one-shot action tickets for

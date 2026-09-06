@@ -8,11 +8,13 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.11.1"
-SCHEMA_VERSION = 9
-STOP_PROTOCOL_VERSION = "2.1.0"
+VERSION = "0.12.0"
+# Stop protocol 3.0 / schema 10 (Phase 3): the public contract pins the runtime
+# constants and the one-way safety contract fragments below.
+SCHEMA_VERSION = 10
+STOP_PROTOCOL_VERSION = "3.0.0"
 EXECUTION_PROTOCOL_VERSION = "2.0.0"
-CLASSIFIER_VERSION = "2.4.0"
+CLASSIFIER_VERSION = "3.2.1"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
 DISPOSITION_REASONS = {
@@ -67,6 +69,10 @@ REQUIRED_FILES = {
     "hooks/hooks.json",
     "scripts/audit_commit_identity.py",
     "scripts/context_guard.py",
+    "scripts/cg_actions.py",
+    "scripts/cg_codex_adapter.py",
+    "scripts/cg_hook.py",
+    "scripts/cg_protocol.py",
     "scripts/incident_corpus.py",
     "scripts/run_context_guard.sh",
     "scripts/run-context-guard.ps1",
@@ -351,7 +357,11 @@ def validate(root: Path) -> list[str]:
             errors.append("runtime must implement the Proof protocol")
         for fragment in (
             "terminal_stop_policy",
-            "protocol_continue_advisory",
+            # Stop 3.0 one-way safety contract: the per-turn visible
+            # interruption budget and the structured pending preservation.
+            "visible_interruption_budget_exhausted",
+            "assistant_pending_actions",
+            "cg_stop3",
             "tool_is_shell_execution",
             "shell_control_operator_present",
         ):

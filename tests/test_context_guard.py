@@ -145,6 +145,32 @@ class ContextGuardTests(unittest.TestCase):
                 self.payload("UserPromptSubmit", session=session, prompt=text)
             )
 
+    def git_init_project(self) -> None:
+        """Real git repository with one base commit: exact authorization
+        identities need a resolvable Git target HEAD."""
+        subprocess.run(
+            ["git", "init", "-q", str(self.project)], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.name", "Context Guard Test"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.email", "test@example.invalid"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty", "-m", "base"],
+            check=True, capture_output=True,
+        )
+
+    def activate(self, session: str = "session-a") -> dict:
+        """Explicitly turn the guard on (0.12: profiles gate active sessions
+        only — an inactive session performs no action gating)."""
+        result = self.prompt("context-guard on", session=session)
+        self.assertTrue(self.state(session)["mode"]["active"], "activation failed")
+        return result
+
     def test_find_latest_state_ignores_empty_session_directory(self) -> None:
         empty = self.root / "private" / "sessions" / "empty"
         empty.mkdir(parents=True)
@@ -247,8 +273,10 @@ class ContextGuardTests(unittest.TestCase):
         state = self.hook_session_state("utf8-stop")
         latest = state["decision_log"][-1]
         self.assertEqual(latest["observed_outcome"], "gate_completion_claim")
-        self.assertEqual(latest["decision_source"], "protocol_default")
-        self.assertEqual(latest["outcome"], "allow_neutral")
+        # Stop 3.0: an unverified claim over legacy (non-deterministic)
+        # items ends silently as owner-ambiguous pending.
+        self.assertEqual(latest["decision_source"], "stop3_structured")
+        self.assertEqual(latest["outcome"], "silent_end_owner_ambiguous")
         self.assertEqual(state["continuation_attempts"], 0)
         self.assertEqual(
             [r["id"] for r in state["requirements"] if r["status"] == "pending"],
@@ -478,7 +506,7 @@ class ContextGuardTests(unittest.TestCase):
     def test_schema9_clause_metadata_and_prompt_journal_are_bounded(self) -> None:
         self.prompt("读取 /tmp/example.py 并验证全部范围。")
         state = self.state()
-        self.assertEqual(state["schema_version"], 9)
+        self.assertEqual(state["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(state["adapter_manifest"]["version"], cg.ADAPTER_MANIFEST_VERSION)
         self.assertEqual(state["classifier_metadata"]["version"], cg.CLASSIFIER_VERSION)
         self.assertEqual(len(state["prompt_journal"]["entries"]), 1)
@@ -500,7 +528,7 @@ class ContextGuardTests(unittest.TestCase):
         legacy["content_hash"] = cg.state_content_hash(legacy)
         cg.atomic_write_json(session_dir / "state.json", legacy)
         loaded = cg.load_state(session_dir, self.payload("SessionStart", source="resume"))
-        self.assertEqual(loaded["schema_version"], 9)
+        self.assertEqual(loaded["schema_version"], cg.SCHEMA_VERSION)
         self.assertIsNone(loaded["completion_attempt"])
         self.assertEqual(loaded["pending"]["operations"], [])
 
@@ -1019,8 +1047,8 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(self.state()["continuation_attempts"], 0)
         decision = self.state()["decision_log"][-1]
         self.assertEqual(decision["observed_outcome"], "gate_completion_claim")
-        self.assertEqual(decision["outcome"], "allow_neutral")
-        self.assertEqual(decision["decision_source"], "protocol_default")
+        self.assertEqual(decision["outcome"], "silent_end_owner_ambiguous")
+        self.assertEqual(decision["decision_source"], "stop3_structured")
         self.assertEqual(len(self.state()["requirements"]), 1)
 
     def test_completion_wording_cannot_change_authoritative_state(self) -> None:
@@ -1101,7 +1129,11 @@ class ContextGuardTests(unittest.TestCase):
                     session=session,
                 )
                 self.assertEqual(staged.returncode, 0, staged.stderr)
-                self.assertIn("privately staged", json.dumps(hook_result))
+                self.assertEqual(
+                    hook_result,
+                    {},
+                    "successful staging returns the silent empty-object wire",
+                )
                 result = cg.dispatch(
                     self.payload(
                         "Stop",
@@ -1118,9 +1150,11 @@ class ContextGuardTests(unittest.TestCase):
                     attempt is None or attempt.get("staged_control") is None
                 )
                 if disposition == "continue":
-                    self.assertEqual(
-                        state["decision_log"][-1]["reason_codes"][0],
-                        "protocol_continue_advisory",
+                    # Stop 3.0: a staged continue is advisory; the structured
+                    # facts end the turn silently with pending preserved.
+                    self.assertNotEqual(
+                        state["decision_log"][-1]["outcome"],
+                        "consume_checkpoint",
                     )
 
     def test_structured_control_is_authoritative_across_completion_wording(self) -> None:
@@ -1144,21 +1178,21 @@ class ContextGuardTests(unittest.TestCase):
                 if disposition is not None:
                     staged, _ = self.stage_disposition(disposition, session=session)
                     self.assertEqual(staged.returncode, 0, staged.stderr)
-                observed = cg.classify_stop_decision(
-                    message, "$context-guard\n完成复杂任务并保留未完成要求。"
-                )["outcome"]
                 result = cg.dispatch(
                     self.payload(
                         "Stop", session=session, last_assistant_message=message,
                     )
                 )
-                matches = cg.disposition_matches_observed(disposition, observed)
-                if disposition in {"user_wait", "external_wait", "deferred"} and not matches:
-                    self.assertEqual(result["decision"], "block")
-                else:
-                    self.assertEqual(result, {})
+                # Stop 3.0: staged dispositions are advisory — the
+                # structured facts decide, so no wording and no sub-class
+                # declaration ever draws a continuation; pending survives.
+                self.assertEqual(result, {})
                 state = self.state(session)
                 self.assertTrue(state["open_items"])
+                self.assertIsNone(state["completion_checkpoint"])
+                self.assertNotEqual(
+                    state["decision_log"][-1]["outcome"], "consume_checkpoint"
+                )
 
     def test_private_disposition_api_derives_fixed_reason(self) -> None:
         for disposition, reason in self.DISPOSITION_REASONS.items():
@@ -1287,7 +1321,7 @@ class ContextGuardTests(unittest.TestCase):
                     self.assertEqual(result, {})
                     self.assertEqual(
                         self.state(session)["decision_log"][-1]["outcome"],
-                        "allow_out_of_scope_deferred",
+                        "silent_yield_preserve_pending",
                     )
                 else:
                     self.assertEqual(result["decision"], "block")
@@ -1513,12 +1547,16 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="整个任务已经全部完成。")
         )
-        self.assertEqual(result["decision"], "block")
-        self.assertEqual(
+        # Stop 3.0: a staged wait never marks the waits complete and cannot
+        # override the completion diagnostic; an unverified claim over
+        # legacy items ends silently with pending preserved.
+        self.assertEqual(result, {})
+        self.assertNotEqual(
             self.state()["decision_log"][-1]["outcome"],
-            "gate_completion_claim",
+            "consume_checkpoint",
         )
         self.assertIsNone(self.state()["completion_checkpoint"])
+        self.assertTrue(self.state()["open_items"])
 
     def test_staged_deferred_cannot_override_completion_diagnostic(self) -> None:
         self.prompt(
@@ -1529,12 +1567,13 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="The task is complete.")
         )
-        self.assertEqual(result["decision"], "block")
-        self.assertEqual(
+        self.assertEqual(result, {})
+        self.assertNotEqual(
             self.state()["decision_log"][-1]["outcome"],
-            "gate_completion_claim",
+            "consume_checkpoint",
         )
         self.assertIsNone(self.state()["completion_checkpoint"])
+        self.assertTrue(self.state()["open_items"])
 
     def test_private_checkpoint_passes_without_reply_metadata(self) -> None:
         self.prompt(
@@ -1595,8 +1634,10 @@ class ContextGuardTests(unittest.TestCase):
             + "\n-->"
         )
         result = cg.dispatch(self.payload("Stop", last_assistant_message=message))
-        self.assertEqual(result["decision"], "block")
-        self.assertIn("legacy inline checkpoint", result["reason"])
+        # Stop 3.0: private metadata in a user-facing reply is a
+        # budget-exempt hard stop, not a counted continuation.
+        self.assertFalse(result.get("continue", True))
+        self.assertIn("private control metadata", result["stopReason"])
         self.assertEqual(self.state()["requirements"][0]["status"], "pending")
 
     def test_private_checkpoint_commands_are_rejected_from_user_reply(self) -> None:
@@ -1614,8 +1655,9 @@ class ContextGuardTests(unittest.TestCase):
                 ),
             )
         )
-        self.assertEqual(result["decision"], "block")
-        self.assertIn("private control metadata", result["reason"])
+        # Stop 3.0: private control material in the reply is a hard stop.
+        self.assertFalse(result.get("continue", True))
+        self.assertIn("private control metadata", result["stopReason"])
         self.assertIsNone(self.state()["completion_checkpoint"])
 
     def test_stop_privacy_classifier_separates_explanation_control_and_ambiguity(
@@ -1691,12 +1733,15 @@ class ContextGuardTests(unittest.TestCase):
         )
 
     def test_work_unit_checkpoint_closes_current_unit_not_ancestor(self) -> None:
-        self.prompt("建立祖先约束并保留。")
+        self.prompt("建立前一请求并保留。")
         self.prompt("修复当前问题。必须运行测试。")
         evidence_id = self.record_tool()
         state = self.state()
         self.assertEqual(len(state["work_units"]), 2)
-        self.assertEqual(state["work_units"][1]["parent_id"], "WU0001")
+        # Stop 3.0 schema-10 lifecycle: units are sibling roots; the
+        # superseded-request unit is archived as historical_unresolved
+        # (auditable, never pass) instead of chaining as a live ancestor.
+        self.assertIsNone(state["work_units"][1]["parent_id"])
         receipt = self.stage_all(evidence_id)
         self.assertRegex(receipt["checkpoint_sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(
@@ -1706,11 +1751,17 @@ class ContextGuardTests(unittest.TestCase):
             {},
         )
         state = self.state()
-        self.assertEqual(state["work_units"][1]["status"], "passed")
-        self.assertEqual(state["work_units"][0]["status"], "active")
-        self.assertEqual(state["requirements"][0]["status"], "pass")
+        self.assertEqual(state["work_units"][1]["status"], "completed")
+        self.assertEqual(state["work_units"][0]["status"], "historical_unresolved")
+        self.assertEqual(state["requirements"][0]["status"], "pending")
         self.assertEqual(state["requirements"][1]["status"], "pass")
-        self.assertTrue(all(item["status"] == "pass" for item in state["acceptance_items"]))
+        self.assertTrue(
+            all(
+                item["status"] == "pass"
+                for item in state["acceptance_items"]
+                if item.get("work_unit_id") == "WU0002"
+            )
+        )
 
     def test_checkpoint_status_is_compact_and_revision_stable_with_many_items(self) -> None:
         self.prompt("实现大规模验收。必须保存证据。")
@@ -1770,8 +1821,10 @@ class ContextGuardTests(unittest.TestCase):
 
         self.assertEqual(result, {})
         latest = self.state()["decision_log"][-1]
-        self.assertEqual(latest["decision_source"], "protocol_disposition")
-        self.assertEqual(latest["outcome"], "allow_out_of_scope_deferred")
+        # Stop 3.0: structured facts are authoritative; the staged deferred
+        # boundary yields silently and preserves the pending items.
+        self.assertEqual(latest["decision_source"], "stop3_structured")
+        self.assertEqual(latest["outcome"], "silent_yield_preserve_pending")
 
     def test_stop_rejects_whitespace_obfuscated_private_token_shape(self) -> None:
         self.prompt("$context-guard\n审查本地实现并报告仍需下一轮修复的问题。")
@@ -1790,8 +1843,9 @@ class ContextGuardTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result["decision"], "block")
-        self.assertIn("private control metadata", result["reason"])
+        # Stop 3.0: obfuscated private token material is a hard stop.
+        self.assertFalse(result.get("continue", True))
+        self.assertIn("private control metadata", result["stopReason"])
         latest = self.state()["decision_log"][-1]
         self.assertEqual(latest["outcome"], "fail_closed_integrity")
 
@@ -1875,8 +1929,10 @@ class ContextGuardTests(unittest.TestCase):
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message="任务已经完成。")
         )
-        self.assertEqual(result["decision"], "block")
-        self.assertIn("invalid staged private", result["reason"])
+        # Stop 3.0: a structurally corrupt staged control is a
+        # budget-exempt hard stop.
+        self.assertFalse(result.get("continue", True))
+        self.assertIn("malformed private control", result["stopReason"])
         self.assertIsNone(self.state()["completion_checkpoint"])
 
     def test_only_high_confidence_whole_task_completion_phrases_are_detected(
@@ -1948,9 +2004,13 @@ class ContextGuardTests(unittest.TestCase):
         observed = cg.classify_stop_decision(message, prompt)
         self.assertEqual(observed["outcome"], "gate_completion_claim")
         result = cg.dispatch(self.payload("Stop", last_assistant_message=message))
-        self.assertEqual(result["decision"], "block")
+        # Stop 3.0: the strict whole-completion detector correctly rejects
+        # the meta-discussion wording, so the classifier's lexical candidate
+        # never escalates into a continuation — the false block is gone.
+        self.assertEqual(result, {})
         decision = self.state()["decision_log"][-1]
-        self.assertEqual(decision["outcome"], "gate_completion_claim")
+        self.assertEqual(decision["outcome"], "silent_end_owner_ambiguous")
+        self.assertIsNone(self.state()["completion_checkpoint"])
 
         for direct_claim in (
             "“任务已完成”。",
@@ -1988,7 +2048,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         decision = self.state()["decision_log"][-1]
         self.assertEqual(decision["observed_outcome"], "allow_external_wait")
-        self.assertEqual(decision["outcome"], "allow_external_wait")
+        self.assertEqual(decision["outcome"], "silent_yield_preserve_pending")
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
     def test_classifier_22_whole_completion_plurals_questions_and_attribution(
@@ -3028,7 +3088,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 9)
+        self.assertEqual(cg.SCHEMA_VERSION, 10)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
@@ -3512,6 +3572,7 @@ class ContextGuardTests(unittest.TestCase):
                     cg.validate_pre_tool_decision(decision)
 
     def test_pre_tool_a_tier_denies_without_exact_ticket(self) -> None:
+        self.activate()
         self.prompt("准备 v1.2.3 发布候选，但不要发布。")
         result = cg.dispatch(
             self.payload(
@@ -3522,7 +3583,11 @@ class ContextGuardTests(unittest.TestCase):
         )
         output = result["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
-        self.assertIn("action-ticket/v1", output["permissionDecisionReason"])
+        # Standard profile: the deny is about root-user authorization, not
+        # release machinery; the ticket requirement lives behind the
+        # release profile only.
+        self.assertIn("state the authorization once", output["permissionDecisionReason"])
+        self.assertNotIn("ticket", output["permissionDecisionReason"])
 
     def test_release_authorization_bridge_matches_runtime_allowlist(self) -> None:
         bridge = json.loads(
@@ -3547,6 +3612,8 @@ class ContextGuardTests(unittest.TestCase):
         self, _commit: mock.Mock
     ) -> None:
         def exercise(session: str, readiness_schema: str) -> tuple[dict, dict]:
+            self.git_init_project()
+            self.activate(session)
             self.prompt("授权在精确候选上创建 v1.2.3 release tag。", session=session)
             source = self.state(session)["prompts"][0]
             pre_payload = self.payload(
@@ -3592,7 +3659,7 @@ class ContextGuardTests(unittest.TestCase):
         accepted, pre_payload = exercise("session-v3", "release-readiness/v3")
         self.assertIn("adopted explicitly", json.dumps(accepted))
         allowed = cg.dispatch(pre_payload)
-        self.assertEqual(allowed["hookSpecificOutput"]["permissionDecision"], "allow")
+        self.assertEqual(allowed, {})
         self.assertEqual(
             self.state("session-v3")["execution"]["action_tickets"][0]["readiness_schema"],
             "release-readiness/v3",
@@ -3754,6 +3821,8 @@ class ContextGuardTests(unittest.TestCase):
     def test_pre_tool_exact_ticket_is_consumed_only_after_success(
         self, _commit: mock.Mock
     ) -> None:
+        self.git_init_project()
+        self.activate()
         self.prompt("授权在精确候选上创建 v1.2.3 release tag。")
         state = self.state()
         source = state["prompts"][0]
@@ -3795,9 +3864,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("adopted explicitly", json.dumps(adopted))
 
         allowed = cg.dispatch(pre_payload)
-        self.assertEqual(
-            allowed["hookSpecificOutput"]["permissionDecision"], "allow"
-        )
+        self.assertEqual(allowed, {})
         self.assertEqual(
             self.state()["execution"]["action_tickets"][0]["state"], "in_flight"
         )
@@ -3813,9 +3880,7 @@ class ContextGuardTests(unittest.TestCase):
             self.state()["execution"]["action_tickets"][0]["state"], "reserved"
         )
         allowed_retry = cg.dispatch(pre_payload)
-        self.assertEqual(
-            allowed_retry["hookSpecificOutput"]["permissionDecision"], "allow"
-        )
+        self.assertEqual(allowed_retry, {})
         cg.dispatch(
             self.payload(
                 "PostToolUse", tool_name="exec_command",
@@ -3836,6 +3901,8 @@ class ContextGuardTests(unittest.TestCase):
     def test_pre_tool_unknown_result_invalidates_ticket_without_retry(
         self, _commit: mock.Mock
     ) -> None:
+        self.git_init_project()
+        self.activate()
         self.prompt("授权在精确候选上创建 v1.2.3 release tag。")
         state = self.state()
         source = state["prompts"][0]
@@ -3877,9 +3944,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("context-guard adopt unknown-result-release-contract.json")
 
         allowed = cg.dispatch(pre_payload)
-        self.assertEqual(
-            allowed["hookSpecificOutput"]["permissionDecision"], "allow"
-        )
+        self.assertEqual(allowed, {})
         cg.dispatch(
             self.payload(
                 "PostToolUse",
@@ -3900,6 +3965,8 @@ class ContextGuardTests(unittest.TestCase):
         )
 
     def test_pre_tool_b_tier_requires_exact_root_target_and_c_is_neutral(self) -> None:
+        self.git_init_project()
+        self.activate()
         self.prompt("推送 origin 的 main 分支，但不要强制推送。")
         allowed = cg.dispatch(
             self.payload(
@@ -3907,7 +3974,8 @@ class ContextGuardTests(unittest.TestCase):
                 tool_input={"cmd": "git push origin main"}, tool_use_id="push-1",
             )
         )
-        self.assertEqual(allowed["hookSpecificOutput"]["permissionDecision"], "allow")
+        # Allow wire: the plain empty object — no permissionDecision text.
+        self.assertEqual(allowed, {})
         denied = cg.dispatch(
             self.payload(
                 "PreToolUse", tool_name="exec_command",
@@ -3926,9 +3994,67 @@ class ContextGuardTests(unittest.TestCase):
         )
 
     def test_pre_tool_b_tier_accepts_https_destination_refspec_authority(self) -> None:
+        """The commit→push chain binds push to the authorized commit: the
+        push only passes AFTER the authorized commit verifiably succeeded."""
+        subprocess.run(
+            ["git", "init", "-q", str(self.project)], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.name", "Context Guard Test"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.email", "test@example.invalid"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty", "-m", "base"],
+            check=True, capture_output=True,
+        )
+        self.activate()
         self.prompt(
             "提交候选，并将生成的精确提交推送到 "
             "https://github.com/GreenLv/codex-context-guard.git 的 refs/heads/main。"
+        )
+        pending = cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={
+                    "cmd": (
+                        "git push https://github.com/GreenLv/codex-context-guard.git "
+                        "HEAD:refs/heads/main"
+                    )
+                },
+                tool_use_id="push-pending",
+            )
+        )
+        # The authorized commit has not verifiably completed yet.
+        self.assertEqual(
+            pending["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        commit_cmd = "git commit -q --allow-empty -m candidate"
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty",
+             "-m", "candidate"],
+            check=True, capture_output=True,
+        )
+        cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={"cmd": commit_cmd},
+                tool_use_id="commit-authorized",
+            )
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="exec_command",
+                tool_input={"cmd": commit_cmd},
+                tool_response={"exit_code": 0},
+                tool_use_id="commit-authorized",
+            )
         )
         allowed = cg.dispatch(
             self.payload(
@@ -3937,13 +4063,14 @@ class ContextGuardTests(unittest.TestCase):
                 tool_input={
                     "cmd": (
                         "git push https://github.com/GreenLv/codex-context-guard.git "
-                        "7b1a302212063408c5e9760744652e920747dfda:refs/heads/main"
+                        "HEAD:refs/heads/main"
                     )
                 },
                 tool_use_id="push-refspec",
             )
         )
-        self.assertEqual(allowed["hookSpecificOutput"]["permissionDecision"], "allow")
+        # Allow wire is the plain empty object (frozen plan section 4.4).
+        self.assertEqual(allowed, {})
 
         denied = cg.dispatch(
             self.payload(
@@ -3952,7 +4079,7 @@ class ContextGuardTests(unittest.TestCase):
                 tool_input={
                     "cmd": (
                         "git push https://github.com/GreenLv/codex-context-guard.git "
-                        "7b1a302212063408c5e9760744652e920747dfda:refs/heads/other"
+                        "HEAD:refs/heads/other"
                     )
                 },
                 tool_use_id="push-wrong-refspec",
@@ -3961,6 +4088,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_pre_tool_b_tier_denies_unresolved_remote_target(self) -> None:
+        self.activate()
         self.prompt("明确 push main，但没有指定 remote。")
 
         result = cg.dispatch(
@@ -3974,11 +4102,12 @@ class ContextGuardTests(unittest.TestCase):
             result["hookSpecificOutput"]["permissionDecision"], "deny"
         )
         self.assertIn(
-            "exact remote/ref target",
+            "Cannot determine the exact target",
             result["hookSpecificOutput"]["permissionDecisionReason"],
         )
 
     def test_pre_tool_scans_chained_and_wrapped_high_risk_commands(self) -> None:
+        self.activate()
         self.prompt("只运行本地检查，不创建 tag，不发布。")
         commands = (
             "git status --short && git tag v1.2.3",
@@ -4017,6 +4146,7 @@ class ContextGuardTests(unittest.TestCase):
                 )
 
     def test_pre_tool_rejects_multiple_remote_mutations_in_one_tool_call(self) -> None:
+        self.activate()
         self.prompt("推送 origin 的 main 分支，但不授权 tag 或 Release。")
         commands = (
             "git push origin main && git tag v1.2.3",
@@ -4060,6 +4190,7 @@ class ContextGuardTests(unittest.TestCase):
         )
 
     def test_cleanup_work_unit_rejects_implicit_product_edit(self) -> None:
+        self.activate()
         self.prompt("只做已审查字节的合并和清理。")
         state = self.state()
         self.assertEqual(state["work_units"][-1]["kind"], "cleanup")
@@ -4613,7 +4744,11 @@ class ContextGuardTests(unittest.TestCase):
                 tool_response={"exit_code": 0, "output": staged.stdout},
             )
         )
-        self.assertIn("privately staged", json.dumps(hook_result))
+        self.assertEqual(
+            hook_result,
+            {},
+            "successful staging returns the silent empty-object wire",
+        )
         self.assertEqual(
             self.state()["completion_attempt"]["staged_control"]["kind"],
             "checkpoint",
@@ -4668,7 +4803,11 @@ class ContextGuardTests(unittest.TestCase):
                 tool_response=checkpoint.stdout,
             )
         )
-        self.assertIn("privately staged", json.dumps(checkpoint_result))
+        self.assertEqual(
+            checkpoint_result,
+            {},
+            "successful staging returns the silent empty-object wire",
+        )
         after_checkpoint = self.state()
         self.assertEqual(
             after_checkpoint["completion_attempt"]["staged_control"]["kind"],
@@ -4720,7 +4859,11 @@ class ContextGuardTests(unittest.TestCase):
                 tool_response=disposition.stdout,
             )
         )
-        self.assertIn("privately staged", json.dumps(disposition_result))
+        self.assertEqual(
+            disposition_result,
+            {},
+            "successful staging returns the silent empty-object wire",
+        )
         after_disposition = self.state()
         self.assertEqual(
             after_disposition["completion_attempt"]["staged_control"]["kind"],
@@ -4894,7 +5037,11 @@ class ContextGuardTests(unittest.TestCase):
                 tool_response={"exit_code": 0, "output": staged.stdout},
             )
         )
-        self.assertIn("privately staged", json.dumps(hook_result))
+        self.assertEqual(
+            hook_result,
+            {},
+            "successful staging returns the silent empty-object wire",
+        )
 
     def test_stage_request_marker_in_unrelated_output_is_ignored(self) -> None:
         self.prompt(
@@ -5343,8 +5490,10 @@ class ContextGuardTests(unittest.TestCase):
         latest = self.state()["decision_log"][-1]
         self.assertEqual(latest["declared_disposition"], "continue")
         self.assertEqual(latest["observed_outcome"], "allow_user_handoff")
-        self.assertEqual(latest["outcome"], "allow_neutral")
-        self.assertIn("protocol_continue_advisory", latest["reason_codes"])
+        # Stop 3.0: the user-handoff boundary yields silently; the staged
+        # continue is advisory and consumed.
+        self.assertEqual(latest["outcome"], "silent_yield_preserve_pending")
+        self.assertNotIn("consume_checkpoint", latest["reason_codes"])
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
         session = "session-continue-persistence"
@@ -5368,7 +5517,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(
             self.state(session)["decision_log"][-1]["decision_source"],
-            "protocol_user_persistence",
+            "stop3_structured",
         )
 
     def test_anonymized_historical_terminal_replays_never_loop_on_continue(
@@ -5403,11 +5552,14 @@ class ContextGuardTests(unittest.TestCase):
             self.assertTrue(current["open_items"])
             latest = current["decision_log"][-1]
             self.assertEqual(latest["declared_disposition"], "continue")
-            self.assertEqual(latest["outcome"], "allow_neutral")
+            # Stop 3.0: the advisory continue is consumed; the structured
+            # facts end the turn silently — a resolved owner yields with
+            # pending preserved, an undeterminable owner stays ambiguous.
             self.assertIn(
-                "protocol_continue_advisory",
-                latest["reason_codes"],
+                latest["outcome"],
+                {"silent_yield_preserve_pending", "silent_end_owner_ambiguous"},
             )
+            self.assertNotIn("consume_checkpoint", latest["reason_codes"])
 
     def test_realistic_string_tool_failures_are_not_success_evidence(self) -> None:
         for response in (
@@ -6038,19 +6190,24 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn('"C:\\Plugin Root\\context_guard.py"', windows_command)
 
     @unittest.skipIf(os.name == "nt", "POSIX launcher check")
-    def test_posix_hook_launcher_skips_unsupported_python3(self) -> None:
+    def test_posix_hook_launcher_selects_versioned_python_without_probe(self) -> None:
+        """Version-suffixed names satisfy the >=3.10 floor by name, so the
+        launcher must exec them directly and must NOT pay a capability probe
+        on the Hook hot path (single Python start)."""
         launcher = MODULE_PATH.parent / "run_context_guard.sh"
-        fake_bin = self.root / "fake-bin"
+        fake_bin = self.root / "fake-bin-no-probe"
         fake_bin.mkdir()
-        probed = self.root / "unsupported-python3-probed"
-        old_python = fake_bin / "python3.14"
-        old_python.write_text(
+        probed = self.root / "generic-probed"
+        # A broken generic python3 would poison a probe-based selection;
+        # the versioned python3.12 must be chosen before python3 is touched.
+        generic_python3 = fake_bin / "python3"
+        generic_python3.write_text(
             "#!/bin/sh\n"
             f"printf probed > '{probed}'\n"
             "exit 1\n",
             encoding="utf-8",
         )
-        old_python.chmod(0o755)
+        generic_python3.chmod(0o755)
         (fake_bin / "python3.12").symlink_to(sys.executable)
         environment = os.environ.copy()
         environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
@@ -6063,7 +6220,76 @@ class ContextGuardTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS context-guard self-test", result.stdout)
+        self.assertFalse(probed.is_file())
+
+    @unittest.skipIf(os.name == "nt", "POSIX launcher check")
+    def test_posix_hook_launcher_probes_generic_fallback(self) -> None:
+        """Generic `python3`/`python` names say nothing about the version, so
+        the launcher must still capability-probe them and fail closed when no
+        supported interpreter exists."""
+        launcher = MODULE_PATH.parent / "run_context_guard.sh"
+        fake_bin = self.root / "fake-bin-generic-only"
+        fake_bin.mkdir()
+        probed = self.root / "generic-probed-fallback"
+        old_python3 = fake_bin / "python3"
+        old_python3.write_text(
+            "#!/bin/sh\n"
+            f"printf probed > '{probed}'\n"
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        old_python3.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+        result = subprocess.run(
+            ["/bin/sh", str(launcher), "self-test"],
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=15,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
         self.assertTrue(probed.is_file())
+        self.assertIn("requires Python 3.10", result.stderr)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell launcher check is Windows-only")
+    def test_windows_launcher_continues_after_failed_py_probe(self) -> None:
+        """An unavailable early ``py -3.x`` candidate must not abort the
+        launcher when PowerShell promotes native non-zero exits to errors."""
+        launcher = MODULE_PATH.parent / "run-context-guard.ps1"
+        fake_bin = self.root / "fake-windows-python-bin"
+        fake_bin.mkdir()
+        python_path = str(Path(sys.executable).resolve())
+        (fake_bin / "py.cmd").write_text(
+            "@echo off\r\n"
+            "if not \"%~1\"==\"-3.12\" exit /b 1\r\n"
+            "if \"%~2\"==\"-c\" exit /b 0\r\n"
+            f'"{python_path}" "%~2" %3\r\n'
+            "exit /b %ERRORLEVEL%\r\n",
+            encoding="utf-8",
+        )
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(shell)
+        environment = os.environ.copy()
+        system_root = environment.get("SystemRoot", r"C:\\Windows")
+        environment["PATH"] = os.pathsep.join(
+            [str(fake_bin), str(Path(system_root) / "System32")]
+        )
+        command = (
+            "$PSNativeCommandUseErrorActionPreference=$true; "
+            f"& '{launcher}' self-test"
+        )
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", command],
+            text=True,
+            capture_output=True,
+            env=environment,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS context-guard self-test", result.stdout)
 
     def _installed_hook_command(self, key: str) -> str:

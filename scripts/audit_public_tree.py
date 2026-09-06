@@ -14,9 +14,16 @@ GENERATED_NAMES = {".DS_Store", "Thumbs.db", "__pycache__", ".pytest_cache"}
 SELF = "scripts/audit_public_tree.py"
 FORBIDDEN_LITERALS = (
     "codex-sync",
-    "lgr59",
     "@126.com",
     "GreenLv@users.noreply.github.com",
+)
+# Identity literals match on semantic boundaries instead of raw substrings:
+# a standalone name, a ``user=<name>`` binding, an email local part, or a
+# local user path must still fail, while a longer public account slug that
+# merely shares the prefix (for example the HOL badge affiliate URL) must
+# not fire. Local user paths stay covered by the dedicated PATTERNS below.
+IDENTITY_LITERALS = (
+    "lgr59",
 )
 PATTERNS = {
     "macOS user-specific path": re.compile(r"/Users/[A-Za-z0-9._-]+/"),
@@ -50,6 +57,21 @@ def candidate_files(root: Path) -> list[Path]:
     return [path for path in sorted(root.rglob("*")) if path.is_file()]
 
 
+def identity_literal_hits(text: str, literal: str) -> bool:
+    """Semantic-boundary match for a private identity literal.
+
+    Fires when the literal stands alone, ends a prefix binding such as
+    ``user=`` or an email local part, or sits inside a local user path.
+    Never fires when the literal is extended by further letters, digits,
+    or underscores, which is the shape of an unrelated public slug."""
+    return (
+        re.search(
+            rf"(?i)(?<![a-z0-9_]){re.escape(literal)}(?![a-z0-9_])", text
+        )
+        is not None
+    )
+
+
 def findings(root: Path, extra_forbidden: list[str] | None = None) -> list[str]:
     issues: list[str] = []
     literals = FORBIDDEN_LITERALS + tuple(extra_forbidden or [])
@@ -72,6 +94,9 @@ def findings(root: Path, extra_forbidden: list[str] | None = None) -> list[str]:
             continue
         for literal in literals:
             if literal and literal.casefold() in text.casefold():
+                issues.append(f"{relative}: forbidden private literal")
+        for literal in IDENTITY_LITERALS:
+            if identity_literal_hits(text, literal):
                 issues.append(f"{relative}: forbidden private literal")
         for label, pattern in PATTERNS.items():
             if pattern.search(text):

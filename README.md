@@ -3,6 +3,7 @@
 [![CI](https://github.com/GreenLv/codex-context-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/GreenLv/codex-context-guard/actions/workflows/ci.yml)
 [![HOL Plugin Scanner](https://github.com/GreenLv/codex-context-guard/actions/workflows/hol-plugin-scanner.yml/badge.svg)](https://github.com/GreenLv/codex-context-guard/actions/workflows/hol-plugin-scanner.yml)
 [![Release](https://img.shields.io/github/v/release/GreenLv/codex-context-guard)](https://github.com/GreenLv/codex-context-guard/releases)
+[![HOL Guard](https://img.shields.io/endpoint?url=https%3A%2F%2Fhol.org%2Fapi%2Fregistry%2Fbadges%2Fplugin%3Fslug%3Dgerui-lv%252Fcontext-guard%26metric%3Dtrust)](https://hol.org/go/guard/lgr5945?dest=%2Fguard%2Fbilling%3Fpromo%3DGUARD20-LGR5945%23upgrade&link_id=9d478ce8-6afd-4a4e-a445-144ff2084e80&utm_source=insights_share&utm_medium=affiliate_cta&utm_campaign=share20)
 [![License](https://img.shields.io/github/license/GreenLv/codex-context-guard)](LICENSE)
 
 [简体中文](README.zh-CN.md) | [Introduction](https://greenlv.github.io/blogs/protecting-context-in-long-running-agent-tasks/) | [Changelog](CHANGELOG.md)
@@ -13,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.11.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-> The source tree is preparing an unreleased `0.11.1` maintenance patch: upgrades can now recognize and migrate the older managed marketplace staging directory instead of leaving it registered. It does not alter the published `0.11.0` runtime.
+> The source tree is preparing `0.12.0`: normal success paths become silent (no Hook status text, no developer receipts, at most one completion correction per turn), an explicit work-unit lifecycle stops long tasks from accumulating historical debt, and a position-aware classifier plus an explicit profile ladder decide exactly when high-risk actions are gated. It does not alter the published `0.11.0` runtime.
 
 ## Install
 
@@ -82,6 +83,19 @@ Automatic checks are used only when the request names a concrete target, such as
 
 Context Guard records these boundaries when the project opts in and asks for review if the adopted instructions or plan change. Its `PreToolUse` Hook can deny covered release and remote-mutation calls, but it does not grant permissions or replace platform approval, and specialized tools outside Hook coverage remain an explicit gap.
 
+## Protection levels
+
+Context Guard's checks follow the active protection level. Skills, repository instructions, or installing the plugin can suggest a level, but only you can turn on a stricter one.
+
+| Level | How it turns on | What it does |
+| --- | --- | --- |
+| **Standard** (default) | Activating the guard | Recovers your requirements after compaction, checks completion honestly for the current work unit, and blocks a real high-risk action (such as a remote push or a publish) unless you actually asked for it in this task. |
+| **Strict** | You explicitly ask for strict evidence protection | Standard, plus enforced proof obligations for the current work unit — useful for formal deliverables and multi-image work. Never implies release checking. |
+| **Release** | You explicitly adopt a release execution contract or declare the release profile | Standard, plus candidate-closure, publication-readiness, and a one-shot ticket for covered release actions (tags, registry publish/yank, GitHub Releases). Having a tag or release authorized never follows automatically from anything else. |
+| **Observe** | Maintainer or canary configuration | Records what it would have blocked, without blocking anything. |
+
+Everything else stays open by design: local edits, tests, ordinary commits, reads, searches, and dry-runs do not need authorization, and turning the guard `off` stops all gating while prompt journaling continues. When a normal action is allowed, nothing appears on screen; when an action is denied, you get one short actionable reason.
+
 ## How it works
 
 ```mermaid
@@ -130,13 +144,13 @@ These are task-local identifiers, not GitHub issues or global task numbers. They
 
 ## When Context Guard asks Codex to continue
 
-When an open requirement still lacks matching evidence, Context Guard may ask Codex to continue with this standard redacted message:
+When an open requirement still lacks matching evidence and the reply claims the whole task is complete, Context Guard may ask Codex to continue with this standard redacted message:
 
 ```text
 [Context Guard continuation] The task is not yet safely complete.
 ```
 
-The message is normal when requested work is still open. If it is unexpected, ask Codex what remains and run `context-guard status` or `context-guard diagnose`. Waiting for the user, an external result, or an explicitly deferred step can end the current turn without closing the task.
+The message is normal when requested work is still open. If it is unexpected, ask Codex what remains and run `context-guard status` or `context-guard diagnose`. The default feedback names only the current work unit's pending-item count, one reason, and one next step — never the full historical ID list — and a turn can be corrected at most once; after that, unresolved work stays pending and the turn ends safely. Waiting for the user, an external result, or an explicitly deferred step ends the turn silently without closing unfinished requirements. Ordinary endings need no commands: when a reply verifiably completes the unit, the guard binds the unique successful evidence itself.
 
 Existing tasks may keep the Hook version they started with. Start a fresh task after an upgrade; if an old Hook path is missing, see [Versioning](docs/VERSIONING.md) for recovery guidance.
 
@@ -189,15 +203,20 @@ Removing code does not remove private runtime data. Keep old data or caches whil
 ```shell
 python3 scripts/validate_public_repo.py .
 python3 scripts/audit_public_tree.py .
-python3 -m unittest discover -s tests -p "test_*.py"
+python3 scripts/run_current_behavior_suite.py
+python3 scripts/check_phase3_transition.py
 ruff check .
 ```
+
+The current-behavior runner discovers every current `test_*.py` module except the byte-frozen 0.11.x observation baseline. The transition audit runs that historical baseline separately and succeeds only when its exact fixed/inverted manifest matches; running the frozen file as an ordinary all-pass suite would intentionally report failures and unexpected successes.
 
 The Hook runtime uses only the Python standard library. CI covers Ubuntu, macOS, and Windows on Python 3.10–3.13; CI does not substitute for native Hook trust or installed lifecycle evidence.
 
 ## Explicit non-goals
 
-Context Guard is not a semantic proof system, security sandbox, transcript backup, cloud sync service, second Plan/Goal controller, agent scheduler, or replacement for tests and human review.
+Context Guard is not a semantic proof system, security sandbox, transcript backup, cloud sync service, second Plan/Goal controller, agent scheduler, or replacement for tests and human review. It does not guarantee that arbitrary content is correct; it enforces only the deterministic checks it can express. It does not replace Codex's permission system, the `repository-release` publication contract, human review, or platform readbacks.
+
+Version 0.12 is a model- and agent-agnostic baseline: it does not assume the model or agent host brings reliable long-context protection or recovery. The recovery → work unit → evidence → completion → authorization loop is provided locally by Context Guard itself, with protocol semantics separated from the Codex Hook adapter.
 
 Project instructions and plan references are adopted only after the user who started the root task runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in prose does not activate this behavior. Context Guard does not block tools, modify Codex Plan state, or grant authority.
 

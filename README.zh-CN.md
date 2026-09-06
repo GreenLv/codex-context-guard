@@ -13,7 +13,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > 当前正式版本：`0.11.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-> 当前源码正在准备未发布的 `0.11.1` 维护版本：升级时可以识别并迁移旧版受管 marketplace 临时目录，不再把旧注册残留在那里。它不会改写已发布的 `0.11.0` 运行时。
+> 当前源码正在准备`0.12.0`：正常成功路径恢复无感（不再显示 Hook 状态文案和 developer 回执，完成纠正每回合最多一次），显式的工作单元生命周期让长期任务不再累积历史债务，位置感知分类器加显式的 profile 阶梯精确决定何时拦截高风险动作。它不会改写已发布的 `0.11.0` 运行时。
 
 ## 安装
 
@@ -82,6 +82,19 @@ context-guard diagnose
 
 项目显式采用这些规则后，Context Guard 会记录边界，并在说明或计划发生变化时要求重新确认。它的 `PreToolUse` Hook 可以拒绝已覆盖的发布和远端变更调用，但不会授予权限或替代平台审批；未接入 Hook 的专用工具仍是明确的覆盖缺口。
 
+## 保护级别
+
+Context Guard 的检查强度跟随当前保护级别。Skill、仓库说明或安装插件只能"建议"级别，只有你能打开更严格的级别。
+
+| 级别 | 如何开启 | 实际行为 |
+| --- | --- | --- |
+| **standard**（默认） | 启用守卫 | 在压缩后恢复你的要求；对当前工作单元诚实地核对完成；真实高风险动作（如远端推送、发布）只有在本次任务中你确实要求过才会放行。 |
+| **strict** | 你明确要求严格证据保护 | standard 之外，对当前工作单元启用强制证明义务——适合正式交付和多图任务。它不会顺带开启发布检查。 |
+| **release** | 你显式采用发布执行合同或声明 release profile | standard 之外，对已覆盖的发布动作（打标签、registry publish/yank、GitHub Release）额外要求候选闭包、发布就绪凭据和一次性票据。标签或 Release 的授权永远不会自动成立。 |
+| **observe** | 维护者或灰度配置 | 只记录"本来会拦截什么"，不实际拦截。 |
+
+其余保持开放：本地修改、测试、普通提交、读取、搜索和 dry-run 不需要授权；`context-guard off` 会停止全部门禁，仅保留提示记录。普通动作被放行时屏幕上什么都不会出现；动作被拒绝时，你会看到一句可操作的简短原因。
+
 ## 工作流程
 
 ```mermaid
@@ -130,13 +143,13 @@ flowchart TB
 
 ## 看到“任务尚未安全完成”时
 
-当仍有要求缺少匹配证据时，Context Guard 可能用下面这条标准脱敏提示要求 Codex 继续：
+当仍有要求缺少匹配证据、而回复声称整个任务已完成时，Context Guard 可能用下面这条标准脱敏提示要求 Codex 继续：
 
 ```text
 [Context Guard continuation] The task is not yet safely complete.
 ```
 
-确实还有工作未完成时，这条提示属于正常保护。如果提示与预期不符，可以直接问 Codex 还缺什么，并运行 `context-guard status` 或 `context-guard diagnose`。等待用户、外部结果或明确延期可以结束当前回合，但不会关闭任务。
+确实还有工作未完成时，这条提示属于正常保护。如果提示与预期不符，可以直接问 Codex 还缺什么，并运行 `context-guard status` 或 `context-guard diagnose`。默认反馈只提到当前工作单元的未验项数量、一个原因和一个下一步，不会罗列全部历史 ID；每回合最多纠正一次，之后未完成的工作保持待办，回合安全结束。等待用户、外部结果或明确延期的回合会静默结束，不会关闭未完成要求。普通结束不需要任何命令：回复可验证地完成当前单元时，守卫会自行绑定唯一的成功证据。
 
 已有任务可能继续使用启动时加载的 Hook 版本。升级后请启动新任务；如果旧 Hook 路径缺失，请按[版本策略](docs/VERSIONING.md)中的说明恢复。
 
@@ -189,15 +202,20 @@ codex plugin marketplace remove codex-context-guard
 ```shell
 python3 scripts/validate_public_repo.py .
 python3 scripts/audit_public_tree.py .
-python3 -m unittest discover -s tests -p "test_*.py"
+python3 scripts/run_current_behavior_suite.py
+python3 scripts/check_phase3_transition.py
 ruff check .
 ```
+
+current-behavior runner 会发现除字节冻结的 0.11.x 观察基线外的全部当前 `test_*.py` 模块。transition 审计会单独运行该历史基线，并且只有 fixed/inverted 精确清单一致时才成功；若把冻结文件当成普通的“全部应通过”套件直接发现，它会按设计报告失败与 unexpected success。
 
 Hook 运行时只使用 Python 标准库。CI 覆盖 Ubuntu、macOS、Windows 和 Python 3.10–3.13；CI 不能替代原生 Hook 信任或已安装生命周期证据。
 
 ## 明确不做
 
-Context Guard 不是语义证明系统、安全沙箱、会话备份、云同步服务、第二套 Plan/Goal 控制器、Agent 调度器，也不能替代测试和人工审查。
+Context Guard 不是语义证明系统、安全沙箱、会话备份、云同步服务、第二套 Plan/Goal 控制器、Agent 调度器，也不能替代测试和人工审查。它不保证任意内容的语义正确性，只执行自己能表达确定性检查的部分；它不替代 Codex 权限系统、`repository-release` 发布合同、人工审查或平台 readback。
+
+0.12 是 model/agent-agnostic 的基线：它不假定模型或 Agent 自带可靠的长上下文保护与恢复。从恢复、工作单元、证据、完成到授权的闭环由 Context Guard 本地提供，协议语义与 Codex Hook adapter 保持分离。
 
 只有发起根任务的用户执行 `context-guard adopt <project-relative-json>` 后，项目说明和计划引用才会被采用。安装 Skill、加载模板或在普通文字中提到计划都不会启用这项行为。Context Guard 不阻止工具、不修改 Codex Plan 状态，也不授予权限。
 

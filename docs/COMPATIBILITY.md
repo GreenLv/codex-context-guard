@@ -5,13 +5,14 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current source candidate: `0.11.1` (unreleased maintenance patch)
+- Current source candidate: `0.12.0` (unreleased behavior/protocol candidate)
 - Current published Context Guard release: `0.11.0`
-- Private state schema: `9` (schema 7 and 8 read-only compatibility)
+- Private state schema: `10` (schema 9 is the full migration source; schema 7 and 8 read-only compatibility)
 - Proof protocol: `1.0.0`
-- Stop protocol: `2.1.0`
+- Stop protocol: `3.0.0`
+- Work-unit protocol: `2.0.0` (stored records remain `work-unit/v1`)
 - Execution protocol: `2.0.0`
-- Diagnostic classifier: `2.4.0`
+- Diagnostic classifier: `3.2.1` (0.12.0 candidate; position-aware PreToolUse)
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
@@ -21,15 +22,67 @@ behavior may change in future Codex releases and must be revalidated.
 
 ## 0.11.1 candidate status
 
-Version 0.11.1 includes managed marketplace migration. It recognizes the
-exact historical fixed-name staging directory when its manifest still binds to
-this repository, then re-registers the current commit-addressed staging copy.
-It also restores the release authorization bridge: `action-ticket/v1` accepts
-the current `release-readiness/v3` producer output and the explicit legacy `v2`
-value, while every unknown readiness schema fails closed.
-The public state schema, Hook event set, protocol identifiers, diagnostic
-classifier version, and Python baseline are unchanged. Source and native
-candidate validation are still required before release.
+Version 0.11.1 is an independent unreleased maintenance line: managed
+marketplace staging migration from the exact historical fixed-name directory
+(only when its manifest still binds to this repository), in-process session
+locking, B-tier target parsing corrections, and the release authorization
+bridge that accepts the current `release-readiness/v3` producer output and the
+explicit legacy `v2` value while every unknown readiness schema fails closed.
+Its release-doc, source, and native gates are separate from 0.12.0.
+
+## 0.12.0 candidate status
+
+Version 0.12.0 is an unreleased behavior/protocol candidate built on top of
+the `0.11.1` maintenance content. The behavior work adds:
+
+- Schema 10 with the explicit work-unit lifecycle (`active`, `completed`,
+  `awaiting_user`, `awaiting_external`, `deferred`,
+  `historical_unresolved`). Old active parent chains are isolated as
+  `historical_unresolved` instead of silently passing or failing; Stop
+  protocol 3.0.0 handles ordinary endings automatically, allows at most one
+  visible Stop interruption per turn, and keeps default feedback anonymous
+  and bounded to the current work unit.
+- Enforcement profiles: `standard` checks only current root-user semantic
+  authorization for real high-risk actions; `strict` adds enforced proofs;
+  `release` additionally consults candidate-closure, publication-readiness,
+  and one-shot `action-ticket/v1` facts behind an explicit adoption through
+  the versioned release adapter; `observe` records the identical decision
+  without blocking; `off` and inactive sessions gate nothing, so corrupt
+  private state cannot deny ordinary tools.
+- A position-aware command classifier with real executable positions,
+  subcommands, and effects; echo, search, quoted, and `--dry-run` forms are
+  never actions.
+- Hook visibility: every allow path returns the plain empty object, the nine
+  Hook definitions carry no persistent `statusMessage`, and the private
+  staging and proof receipts no longer enter the visible event stream.
+  Denials, integrity failures, and Stop corrections remain visible. Under the
+  official Codex matcher contract, the `PreToolUse` matcher is shrunk to the
+  gated tool surfaces (Bash, apply_patch with its Edit/Write aliases, all
+  `mcp__` names, and bare mutation-method names) while `PostToolUse` keeps
+  the match-everything wire for evidence collection.
+- A model/agent-agnostic protocol layer (`cg_protocol`) separated from the
+  Codex Hook adapter (`cg_codex_adapter`); the heavy core still consumes the
+  Codex wire directly for compatibility.
+
+The public Hook event set (nine events), the Python floor, and the
+standard-library-only dependency boundary are unchanged. macOS Phase-6
+verification of the current source passed in isolated disposable Codex homes:
+installation, strict no-op, byte parity, the installed lifecycle smoke, a real
+no-bypass fresh task, resume-after-upgrade from a real 0.11.x schema-9 session
+(in-place schema-10 migration with the old immutable cache preserved), a
+48-session observe shadow, and a canary over ordinary, unauthorized,
+under-specified, and explicitly authorized mutations plus a resumed task.
+The Phase-6 Windows R11 lane independently passed all seven native gate groups
+for the prepared source and its 26-file runtime tree (SHA-256
+`fa5928a3ce754120b4f7a5ce4d9907d04a80cc948780f72ffdfe96187924f4ae`),
+including the 684-test suite, isolated installation/parity/lifecycle checks,
+fresh and schema-9-resume checks, observe/shadow thresholds, authorization
+canary, and nested wrapper regressions. Cleanup left no retained task IDs. This
+is explicitly authorized remote-reported provenance, not a claim that macOS
+executed the Windows report. The prepared source is not yet a clean release
+commit: exact-commit source automation and native macOS portable acceptance are
+still required before publication, and nothing in this section is a release
+claim.
 
 ## 0.11.0 release status
 

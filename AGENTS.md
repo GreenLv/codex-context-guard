@@ -154,7 +154,8 @@ authoritative.
 ```shell
 python scripts/validate_public_repo.py .
 python scripts/audit_public_tree.py .
-python -m unittest discover -s tests -p "test_*.py"
+python scripts/run_current_behavior_suite.py
+python scripts/check_phase3_transition.py
 python scripts/context_guard.py self-test
 ruff check .
 python -m compileall -q scripts tests tools
