@@ -316,9 +316,23 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current source candidate: `0.12.0`", compatibility
+            "Current source and published Context Guard release: `0.12.0`",
+            compatibility,
         )
-        self.assertIn("Current published Context Guard release: `0.11.0`", compatibility)
+        self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
+        self.assertNotIn(
+            "Current published Context Guard release: `0.11.0`", compatibility
+        )
+        self.assertIn("## 0.11.1 candidate status", compatibility)
+        self.assertIn(
+            "Version 0.11.1 is an independent unreleased maintenance line",
+            compatibility,
+        )
+        self.assertIn("## 0.12.0 release status", compatibility)
+        self.assertNotIn(
+            "Version 0.12.0 is an unreleased behavior/protocol candidate",
+            compatibility,
+        )
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `2.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `3.2.1`", compatibility)
@@ -333,7 +347,14 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("`0.10.0` advances private state to schema 8", versioning)
         self.assertIn("`0.11.0` is the 2026-09-03 execution-authority release", versioning)
         self.assertIn(
+            "`0.12.0` is the 2026-09-06 behavior/protocol release", versioning
+        )
+        self.assertNotIn(
             "`0.12.0` is an unreleased behavior/protocol candidate", versioning
+        )
+        self.assertIn(
+            "The unreleased `0.11.1` maintenance line below is the independent base of\n  this release.",
+            versioning,
         )
         self.assertIn("`0.7.7` keeps schema 6", versioning)
         self.assertIn("`0.8.3` is the first completed Phase 3 release", versioning)
@@ -391,6 +412,19 @@ class PublicContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("```mermaid\nsequenceDiagram", architecture)
+        self.assertIn("the published `0.12.0`\nrelease advances", architecture)
+        self.assertIn("Sections marked *0.12 release*", architecture)
+        self.assertIn("## Enforcement profiles (0.12 release)", architecture)
+        self.assertIn(
+            "## Model- and agent-agnostic baseline (0.12 release)", architecture
+        )
+        self.assertIn("### Stop protocol 3.0.0 (0.12 release)", architecture)
+        self.assertNotIn("current unreleased\n`0.12.0` candidate", architecture)
+        self.assertNotIn("Sections marked *0.12 candidate*", architecture)
+        self.assertNotIn(
+            "The unreleased 0.12.0 candidate advances it to Stop protocol 3.0.0",
+            architecture,
+        )
 
 
 class CommitIdentityTests(unittest.TestCase):

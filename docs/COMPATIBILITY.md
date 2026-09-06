@@ -5,14 +5,13 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current source candidate: `0.12.0` (unreleased behavior/protocol candidate)
-- Current published Context Guard release: `0.11.0`
+- Current source and published Context Guard release: `0.12.0`
 - Private state schema: `10` (schema 9 is the full migration source; schema 7 and 8 read-only compatibility)
 - Proof protocol: `1.0.0`
 - Stop protocol: `3.0.0`
 - Work-unit protocol: `2.0.0` (stored records remain `work-unit/v1`)
 - Execution protocol: `2.0.0`
-- Diagnostic classifier: `3.2.1` (0.12.0 candidate; position-aware PreToolUse)
+- Diagnostic classifier: `3.2.1` (0.12.0 release; position-aware PreToolUse)
 - Python: `3.10+`
 - Codex CLI tested minimum: `0.146.0`
 - Runtime dependencies: Python standard library only
@@ -30,10 +29,10 @@ bridge that accepts the current `release-readiness/v3` producer output and the
 explicit legacy `v2` value while every unknown readiness schema fails closed.
 Its release-doc, source, and native gates are separate from 0.12.0.
 
-## 0.12.0 candidate status
+## 0.12.0 release status
 
-Version 0.12.0 is an unreleased behavior/protocol candidate built on top of
-the `0.11.1` maintenance content. The behavior work adds:
+Version 0.12.0 is the current published behavior/protocol release, built on
+top of the `0.11.1` maintenance content. The behavior work adds:
 
 - Schema 10 with the explicit work-unit lifecycle (`active`, `completed`,
   `awaiting_user`, `awaiting_external`, `deferred`,
@@ -83,9 +82,12 @@ executed the Windows report. Implementation commit
 `8e49604f57ebdb4d9cee6ea14208b56d3f4e27d3` subsequently passed the macOS
 portable native profile on the same runtime-tree digest: exact clean source
 identity, isolated install/no-op/parity/lifecycle, and cleanup all passed.
-Documentation-only successors preserve both native runtime results, but still
-require their own exact-main automation and publication checks. Nothing in this
-section is a release claim.
+Documentation-only successors preserve both native runtime results, but each
+successor requires its own exact-main automation and publication checks before
+it can become a new release identity. The 0.12.0 release identity and public
+readback remain separate evidence recorded in the [local acceptance record](LOCAL_ACCEPTANCE.md);
+normal user-runtime installation and downstream consumer adoption are not
+established by this document.
 
 ## 0.11.0 release status
 

@@ -3,12 +3,11 @@
 The authoritative continuation plan for the 0.9 protocol transition is
 [Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md); its protocol
 rationale is [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md).
-That 0.9 transition shipped in the 0.9.x line; the current unreleased
-`0.12.0` candidate advances the same model with enforcement profiles, an
+That 0.9 transition shipped in the 0.9.x line; the published `0.12.0`
+release advances the same model with enforcement profiles, an
 explicit work-unit lifecycle (schema 10), Stop protocol 3.0.0, and silent
-success paths. Sections marked *0.12 candidate* describe candidate behavior
-that still requires release validation; unmarked sections describe the
-published releases.
+success paths. Sections marked *0.12 release* describe behavior introduced in
+0.12.0; unmarked sections describe the published releases that preceded it.
 
 Context Guard is a correctness sidecar for Codex. It observes lifecycle events,
 maintains private local task state, compiles a bounded recovery packet, and
@@ -65,7 +64,7 @@ not Context Guard, performs compaction, controls the task lifecycle, and runs
 tools or subagents. The private ledger never becomes a second transcript or
 editable plan.
 
-## Enforcement profiles (0.12 candidate)
+## Enforcement profiles (0.12 release)
 
 `PreToolUse` and Stop behavior follow the active enforcement profile. Skill
 text, repository instructions, plugin installation, or file presence can
@@ -82,7 +81,7 @@ suggest a profile but never enable one implicitly.
 A denied action shows one bounded, actionable reason. An allowed action
 returns the plain empty object with no text.
 
-## Model- and agent-agnostic baseline (0.12 candidate)
+## Model- and agent-agnostic baseline (0.12 release)
 
 0.12 does not assume that the model or agent host brings reliable long-context
 protection or recovery of its own. Context Guard provides the whole loop
@@ -280,11 +279,11 @@ already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
-### Stop protocol 3.0.0 (0.12 candidate)
+### Stop protocol 3.0.0 (0.12 release)
 
 The 0.9 protocol-authoritative completion change described below was
 implemented in the 0.9.x line, and 0.11.0 advanced it to Stop protocol
-2.1.0. The unreleased 0.12.0 candidate advances it to Stop protocol 3.0.0:
+2.1.0. The published 0.12.0 release advances it to Stop protocol 3.0.0:
 
 - Stop derives intent from the final reply plus the current work unit's
   structured state. Ordinary endings need no commands: when the reply shows a

@@ -263,7 +263,7 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
-- `0.12.0` is an unreleased behavior/protocol candidate. Schema 10 adds the
+- `0.12.0` is the 2026-09-06 behavior/protocol release. Schema 10 adds the
   explicit work-unit lifecycle (`active`, `completed`, `awaiting_user`,
   `awaiting_external`, `deferred`, `historical_unresolved`); old active
   parent chains are isolated as `historical_unresolved`, never silently
@@ -285,7 +285,9 @@ not as a measure of code volume.
   protocol layer (`cg_protocol`) is separated from the Codex Hook adapter
   (`cg_codex_adapter`). The nine-Hook wire and the Python floor are unchanged.
   The unreleased `0.11.1` maintenance line below is the independent base of
-  this candidate.
+  this release. Release identity and publication readback are separate
+  evidence in the [local acceptance record](LOCAL_ACCEPTANCE.md); normal
+  user-runtime installation remains independent.
 - `0.11.1` is an independent unreleased maintenance candidate. It recognizes
   the exact historical fixed-name managed marketplace staging directory only
   when its manifest still binds to this repository, then migrates
