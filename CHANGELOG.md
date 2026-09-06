@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.11.0` is the latest published release, built from runtime baseline `ea73bed7a387295e1f6475e743e623298413e710`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.0` is the latest published release, tagged at `75e8fe13af32c5512fce31a3d69c27db1b509aa0`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.12.0 - Unreleased
+## 0.12.0 - 2026-09-06
 
 ### Highlights
 
@@ -26,7 +26,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 - Phase-5 focused regressions prove the silent success wire fails on the previous bytes. The frozen benchmark reports 1140 classification calls with zero false denies across 11 categories and no persistent status-message events; the current-behavior suite passes 684 tests across 16 modules; the frozen-baseline transition audit stays at 24 fixed / 0 remaining / 1 superseded / 15 inverted; repository validation, the public-tree privacy audit (with its identity-literal rule narrowed to semantic boundaries so the HOL badge's public account slug no longer false-positives), Ruff, compilation, and the nine-Hook self-test pass. Fresh hot-path sampling over the final bytes passed the p95 < 50 ms gate (recorded run p95 36.292/35.943/35.441 ms; the six hot-path input bytes are identical to the earlier recorded run, and two desktop-load-affected sampling attempts are disclosed as history).
 - The macOS Phase-6 subset used isolated disposable Codex homes only: install/no-op/parity/lifecycle and fresh/resume tasks pass, while the observe ledger and authorization canary report no false deny or continuation. Native Windows R11 independently passes all seven required gate groups and cleanup for the same prepared runtime-tree digest. Detailed counts, provenance, and platform limits are recorded in the [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
-- Clean implementation commit `8e49604` passes the macOS portable native gate on the same runtime-tree digest; documentation-only successors preserve both native runtime results. Exact-main CI, tag/Release publication, public readback, and the normal runtime upgrade remain independent gates.
+- Clean implementation commit `8e49604` passes the macOS portable native gate on the same runtime-tree digest; documentation-only successors preserve both native runtime results. Release commit `75e8fe1` passed Candidate CI `34018302184` and HOL `34018302110`; the annotated `v0.12.0` tag and bilingual, non-draft, non-prerelease GitHub Release were then verified by anonymous public readback. Normal user-runtime installation remains separate.
 
 ## 0.11.1 - Unreleased
 

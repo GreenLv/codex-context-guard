@@ -213,11 +213,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.11.0`.",
+            "> Current release: `0.12.0`.",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.11.0`。",
+            "> 当前正式版本：`0.12.0`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)

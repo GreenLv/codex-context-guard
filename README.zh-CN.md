@@ -11,9 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前正式版本：`0.11.0`。详见[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
-
-> 当前源码正在准备`0.12.0`：正常成功路径恢复无感（不再显示 Hook 状态文案和 developer 回执，完成纠正每回合最多一次），显式的工作单元生命周期让长期任务不再累积历史债务，位置感知分类器加显式的 profile 阶梯精确决定何时拦截高风险动作。它不会改写已发布的 `0.11.0` 运行时。
+> 当前正式版本：`0.12.0`。详见[发布说明](docs/releases/v0.12.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -37,9 +35,10 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 版本与兼容性说明
 
-- 0.11.0 会在已覆盖的发布动作真正执行前拦截：只有用户明确授权了对应仓库、提交和发布身份，动作才能继续。
-- 它还会阻止引用或示例文字误改任务要求，核对“等待/延期”是否符合事实，避免把清理工作悄悄扩成产品开发，并让大型任务的默认状态保持简短。
-- 内部实现采用 `PreToolUse`、一次性 action ticket、经核对的 Stop disposition 和限定范围的工作单元。运行时基线 `ea73bed` 已分别通过 macOS 与 Windows 的隔离安装和 fresh-task 验收；Windows 证据采用经过明确授权的远端报告来源。
+- 0.12.0 让正常成功路径保持无感，在 compact 或 resume 后隔离已完成和历史工作，并区分真实高风险执行与引用、搜索、示例和 dry run。
+- 显式的 profile 阶梯把普通完成保护、严格证据和发布策略分开。协议语义与 Codex Hook adapter 分离；`PreToolUse`、一次性 action ticket、经核对的 Stop disposition 和限定范围的工作单元只在对应 profile 需要时生效。
+- 0.12.0 运行时已在 macOS 和 Windows 上分别通过同一 26 文件运行时树摘要的原生验收；Windows 证据采用经过明确授权的远端报告来源。
+- 0.11.0 引入精确的发布动作授权和第九个 Hook 事件 `PreToolUse`。
 - 0.10.0 会检查证据是否证明了用户要求的操作。
 - Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
 

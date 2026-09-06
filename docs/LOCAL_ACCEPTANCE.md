@@ -1,12 +1,12 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source candidate is unreleased `0.12.0`; the current published release is `0.11.0`. Accepted releases include `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current source and published release is `0.12.0`. Accepted releases include `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.12.0 candidate acceptance
+## 0.12.0 release acceptance (2026-09-06)
 
-This unreleased behavior/protocol candidate adds the schema-10 work-unit
+This release adds the schema-10 work-unit
 lifecycle, Stop protocol 3.0.0, enforcement profiles, the position-aware
 classifier, and silent success paths (no persistent Hook status text, no
 developer receipts on allow paths). Public Hook identity remains the
@@ -27,20 +27,20 @@ earlier runtime candidate `1bda76d299698482e42bbb84168a90321c2f2874`, which
 is contained in `main` and `origin/main`; that candidate predates the 0.12
 behavior work, so its source, CI, and native results do not cover the current
 implementation. The current implementation has repeated local source and
-independent native macOS and Windows acceptance; the exact release-document
-successor must pass its own exact-main automation. The normal user runtime has not
-been upgraded, and no `v0.12.0` tag, GitHub Release, or public readback exists
-yet.
+independent native macOS and Windows acceptance. Release commit
+`75e8fe13af32c5512fce31a3d69c27db1b509aa0` passed exact-main Candidate CI
+and HOL before the annotated tag and GitHub Release were published and read
+back anonymously. The normal user runtime has not been upgraded.
 
 | Release-candidate gate | Evidence | Status |
 | --- | --- | --- |
 | Source checks (current Phase 2–6 source, fix round 11) | Phase-5 focused regressions (silent success wire and matcher contract) fail on the pre-R2 bytes and pass after; Phase-6 table-driven families (schema-9 resume migration; authorization statement target ownership including deletion, mixed-intent, sibling-release, prompt-bound target-domain, and nested Windows/POSIX wrapper cases) fail on their pre-fix bytes and pass after; the current-behavior suite passes 684 tests across 16 modules with 0 failures or errors and capability-aware skips (11 on macOS, 7 on Windows); repository validation, public-tree privacy audit (identity-literal rule narrowed to semantic boundaries), Ruff, compilation, `git diff --check`, and the nine-Hook self-test pass | passed for the prepared Phase-6 R11 source; not a release claim |
 | Frozen benchmark and transition audit | 1140 classification calls, 11 categories, zero false denies, zero persistent status-message events; frozen-baseline transition audit 24 fixed / 0 remaining / 1 superseded / 15 inverted with `matches_manifest=true` | passed for the local Phase-6 source |
 | Hot-path performance | Fresh 3×110 sampling over the final bytes: recorded run p95 36.292/35.943/35.441 ms with 330/330 correct rounds (gate < 50 ms); the six hot-path input bytes are byte-identical to the earlier R2 recorded run (42.048/33.692/34.418 ms); two Phase-6 sampling attempts affected by desktop load (p95 up to ~93 ms, p50 in-family) are preserved as disclosed history | passed; load-affected attempts disclosed |
-| Exact-main automation | Candidate CI and HOL on the exact release-document successor | required before tag publication |
+| Exact-main automation | Candidate CI `34018302184` passed the Ubuntu, macOS, and Windows Python 3.10–3.13 matrix and required summary gate; the unchanged native-runtime selector correctly skipped redundant Windows portable acceptance. HOL `34018302110` passed independently. | passed for release commit `75e8fe1` |
 | Native macOS (implementation and portable runtime) | The Phase-6 behavioral subset used isolated disposable homes: managed install/no-op/parity/lifecycle, real fresh and schema-9-resume tasks, a turn-aware observe ledger, and the authorization canary passed within their recorded scopes. Clean implementation commit `8e49604` then passed the portable native profile on macOS with Python 3.12.2 and Codex CLI 0.153.4: exact clean source identity, isolated install, strict second no-op, 26-file runtime parity, installed lifecycle smoke, and cleanup with no remaining IDs. The portable result has SHA-256 `b5ef00bfb4428f14c184e61a4226f4d5141f8db3d4551d3164b376f9954916b0` and binds the runtime-tree digest above. | passed; documentation-only successors preserve this runtime evidence |
-| Native Windows (prepared R11 runtime) | Windows 11, PowerShell 5.1, and Python 3.12.10 independently passed all 7/7 R11 gate groups: 684-test source suite, repository/privacy/lint/compile/self-test checks, 26-file isolated install/no-op/parity/lifecycle checks, fresh and schema-9-resume lifecycle checks, turn-aware observe/shadow checks, three-path authorization canary, and the nested POSIX/PowerShell wrapper regressions; cleanup reported zero remaining IDs. The result document has SHA-256 `f61165b870ffb87d00cace882af49625650c0ec0d4c0dcd3c14165f2e0d89599` and binds the runtime-tree digest above. | passed, explicitly authorized remote-reported provenance; reusable across documentation-only successors, but exact-commit automation remains pending |
-| Release publication | Tag, GitHub Release, and anonymous public readback | pending |
+| Native Windows (prepared R11 runtime) | Windows 11, PowerShell 5.1, and Python 3.12.10 independently passed all 7/7 R11 gate groups: 684-test source suite, repository/privacy/lint/compile/self-test checks, 26-file isolated install/no-op/parity/lifecycle checks, fresh and schema-9-resume lifecycle checks, turn-aware observe/shadow checks, three-path authorization canary, and the nested POSIX/PowerShell wrapper regressions; cleanup reported zero remaining IDs. The result document has SHA-256 `f61165b870ffb87d00cace882af49625650c0ec0d4c0dcd3c14165f2e0d89599` and binds the runtime-tree digest above. | passed, explicitly authorized remote-reported provenance; reused across documentation/test-only successors under the validation map |
+| Release publication | Annotated tag `v0.12.0` and the bilingual, non-draft, non-prerelease GitHub Release identify `75e8fe1`; anonymous GitHub pages read back the tag, exact commit, title, and release body. External `release-receipt/v2` SHA-256 `f513be15d266c388128c90297dcee068be9817921eb6305bec648355cfdeb02b` validates all three required `github_only` channels. | passed |
 | Normal runtime upgrade | Managed installation into the normal macOS and Windows user runtimes | not performed |
 
 | Release-candidate gate | Evidence | Status |

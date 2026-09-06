@@ -12,9 +12,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Current release: `0.11.0`. See the [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
-
-> The source tree is preparing `0.12.0`: normal success paths become silent (no Hook status text, no developer receipts, at most one completion correction per turn), an explicit work-unit lifecycle stops long tasks from accumulating historical debt, and a position-aware classifier plus an explicit profile ladder decide exactly when high-risk actions are gated. It does not alter the published `0.11.0` runtime.
+> Current release: `0.12.0`. See the [release notes](docs/releases/v0.12.0.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -38,9 +36,10 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
-- Version 0.11.0 stops covered release actions before they run unless the user authorized that exact repository, commit, and release identity.
-- It also prevents quoted examples from changing the task, checks whether a claimed wait or deferral is real, keeps cleanup from silently turning into product development, and keeps large task summaries short.
-- Internally, these protections use `PreToolUse`, one-shot action tickets, checked Stop dispositions, and scoped work units. Runtime baseline `ea73bed` passed independent isolated installation and fresh-task acceptance on macOS and Windows; the Windows evidence has explicitly authorized remote-reported provenance.
+- Version 0.12.0 makes normal success paths silent, isolates completed or historical work after compaction and resume, and distinguishes real high-risk execution from quoted text, searches, examples, and dry runs.
+- Its explicit profile ladder separates ordinary completion protection from strict evidence and release policy. Internally, protocol semantics are separated from the Codex Hook adapter, with `PreToolUse`, one-shot action tickets, checked Stop dispositions, and scoped work units used only where their profile requires them.
+- The 0.12.0 runtime passed independent native macOS and Windows acceptance on the same 26-file runtime-tree digest; the Windows evidence has explicitly authorized remote-reported provenance.
+- Version 0.11.0 introduced exact release-action authorization and the ninth Hook event, `PreToolUse`.
 - Version 0.10.0 checks that evidence proves the operation the user requested.
 - Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
 
