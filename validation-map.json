@@ -40,7 +40,7 @@
     },
     {
       "id": "runtime",
-      "paths": ["assets/state.schema.json", "hooks/**", "scripts/context_guard.py", "skills/context-guard/**"],
+      "paths": ["assets/state.schema.json", "hooks/**", "scripts/cg_*.py", "scripts/context_guard.py", "skills/context-guard/**"],
       "gates": ["lint_compile", "repo_contract", "runtime_tests", "self_test"],
       "invalidates": ["artifact", "candidate_matrix", "native_artifact", "native_runtime", "publication_identity"],
       "contracts": [],
@@ -96,7 +96,7 @@
     },
     {
       "id": "validation_infrastructure",
-      "paths": [".github/**", "tools/validation/**", "tests/test_public_contract.py", "tests/test_required_jobs.py", "tests/test_selected_validation.py", "tests/test_validation_selection.py", "validation-map.json"],
+      "paths": [".github/**", "scripts/check_phase3_transition.py", "scripts/run_current_behavior_suite.py", "tools/validation/**", "tests/test_public_contract.py", "tests/test_required_jobs.py", "tests/test_selected_validation.py", "tests/test_validation_selection.py", "validation-map.json"],
       "gates": ["full_candidate"],
       "invalidates": ["candidate_matrix"],
       "contracts": [],

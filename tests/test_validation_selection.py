@@ -40,6 +40,9 @@ class ValidationSelectionTests(unittest.TestCase):
         plan = self.classify("scripts/context_guard.py")
         self.assertIn("runtime_tests", plan["gates"])
         self.assertIn("native_runtime", plan["invalidates"])
+        module_plan = self.classify("scripts/cg_actions.py")
+        self.assertIn("runtime_tests", module_plan["gates"])
+        self.assertIn("native_runtime", module_plan["invalidates"])
 
     def test_packaging_invalidates_artifact_and_downstream_evidence(self) -> None:
         plan = self.classify("pyproject.toml")
@@ -92,6 +95,9 @@ class ValidationSelectionTests(unittest.TestCase):
         plan = self.classify("validation-map.json")
         self.assertTrue(plan["full_required"])
         self.assertEqual(plan["gates"], ["full_candidate"])
+        runner_plan = self.classify("scripts/run_current_behavior_suite.py")
+        self.assertTrue(runner_plan["full_required"])
+        self.assertEqual(runner_plan["gates"], ["full_candidate"])
 
     def test_overlapping_rules_are_additive(self) -> None:
         plan = self.classify("docs/SEMANTIC_COMPATIBILITY.md")

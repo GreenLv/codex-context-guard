@@ -464,7 +464,7 @@ class SilentSuccessWireTests(unittest.TestCase):
 
     def test_failed_stage_tool_result_still_blocks(self) -> None:
         self.prompt("$context-guard\n完成认证流程。")
-        staged, hook_result = self.stage_disposition("deferred", token="wrong-token")
+        staged, hook_result = self.stage_disposition("deferred", token="invalid")
         self.assertNotEqual(staged.returncode, 0)
         self.assertEqual(hook_result.get("decision"), "block")
         self.assertTrue(hook_result.get("reason"))
