@@ -5,7 +5,7 @@ platform does not prove a fresh installed runtime on another platform.
 
 ## Baselines
 
-- Current source and published Context Guard release: `0.12.0`
+- Current source and published Context Guard release: `0.12.1`
 - Private state schema: `10` (schema 9 is the full migration source; schema 7 and 8 read-only compatibility)
 - Proof protocol: `1.0.0`
 - Stop protocol: `3.0.0`
@@ -19,6 +19,18 @@ platform does not prove a fresh installed runtime on another platform.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
+## 0.12.1 release scope
+
+Version 0.12.1 changes packaged Skill instructions and source validation tooling.
+The existing runtime already binds a clear push request to a unique task/repository
+target; the Skill now follows that behavior without requiring a second confirmation.
+Hook implementation, schema, protocol versions, and the nine-event wire are unchanged.
+
+The new packaged bytes require exact 0.12.1 install/no-op/parity and lifecycle
+checks on macOS and Windows. Unchanged real-task, Hook-trust and hot-path behavior
+retain the original 0.12.0 evidence; this does not relabel old runtime-tree digests.
+The [acceptance record](LOCAL_ACCEPTANCE.md) keeps those scopes separate.
+
 ## 0.11.1 candidate status
 
 Version 0.11.1 is an independent unreleased maintenance line: managed
@@ -31,7 +43,7 @@ Its release-doc, source, and native gates are separate from 0.12.0.
 
 ## 0.12.0 release status
 
-Version 0.12.0 is the current published behavior/protocol release, built on
+Version 0.12.0 is the preceding behavior/protocol release, built on
 top of the `0.11.1` maintenance content. The behavior work adds:
 
 - Schema 10 with the explicit work-unit lifecycle (`active`, `completed`,

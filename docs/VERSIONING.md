@@ -263,6 +263,15 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.12.1` is the 2026-09-07 Skill and validation-workflow patch. Advanced completion,
+  authorization, migration, and explicit controls move to conditional
+  references. The current-work-unit completion boundary is made explicit in
+  the instructions; Hook code, schema, and protocol versions are unchanged.
+  Packaged Skill bytes change, so the new version must receive its own
+  artifact/install evidence before publication. Clear push requests use unique
+  task/repository targets without repeated confirmation; unresolved, conflicting
+  or changed targets still require clarification. Consumed 0.12.0 caches remain
+  immutable; source validation does not imply a normal-user installation.
 - `0.12.0` is the 2026-09-06 behavior/protocol release. Schema 10 adds the
   explicit work-unit lifecycle (`active`, `completed`, `awaiting_user`,
   `awaiting_external`, `deferred`, `historical_unresolved`); old active

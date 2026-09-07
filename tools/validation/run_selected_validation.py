@@ -60,6 +60,9 @@ def commands_for(value: Any) -> list[list[str]]:
     current_behavior = [sys.executable, "scripts/run_current_behavior_suite.py"]
     historical_transition = [sys.executable, "scripts/check_phase3_transition.py"]
     commands: list[list[str]] = []
+    # This closed-world suite discovers every current test_*.py module.
+    # Retain standalone checks, but do not execute its module subsets twice.
+    covers_current_tests = "focused_tests" in gates
     if "full_candidate" in gates:
         commands.extend([
             validate_repo,
@@ -73,21 +76,21 @@ def commands_for(value: Any) -> list[list[str]]:
     else:
         if {"docs_contract", "repo_contract", "artifact_identity"} & gates:
             commands.extend([validate_repo, audit_tree])
-        if {"docs_contract", "repo_contract"} & gates:
+        if {"docs_contract", "repo_contract"} & gates and not covers_current_tests:
             commands.append(public_contract)
-        if "contract_tests" in gates:
+        if "contract_tests" in gates and not covers_current_tests:
             commands.append([
                 sys.executable, "-m", "unittest",
                 "tests.test_conformance_fixtures", "tests.test_reference_digest_encoder",
             ])
-        if "runtime_tests" in gates:
+        if "runtime_tests" in gates and not covers_current_tests:
             commands.append([
                 sys.executable, "-m", "unittest",
                 "tests.test_context_guard", "tests.test_context_guard_v095",
             ])
         if "focused_tests" in gates:
             commands.extend([current_behavior, historical_transition])
-        if "install_lifecycle" in gates:
+        if "install_lifecycle" in gates and not covers_current_tests:
             commands.append([
                 sys.executable, "-m", "unittest",
                 "tests.test_manage_plugin", "tests.test_smoke_installed",

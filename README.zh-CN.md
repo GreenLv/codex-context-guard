@@ -11,7 +11,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前正式版本：`0.12.0`。详见[发布说明](docs/releases/v0.12.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 当前正式版本：`0.12.1`。详见[发布说明](docs/releases/v0.12.1.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -35,6 +35,7 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 版本与兼容性说明
 
+- 0.12.1 移除 Skill 中重复确认推送目标的要求，按需加载高级说明，并省去完整套件已覆盖的重复测试子集。Hook 行为与公开协议不变。
 - 0.12.0 让正常成功路径保持无感，在 compact 或 resume 后隔离已完成和历史工作，并区分真实高风险执行与引用、搜索、示例和 dry run。
 - 显式的 profile 阶梯把普通完成保护、严格证据和发布策略分开。协议语义与 Codex Hook adapter 分离；`PreToolUse`、一次性 action ticket、经核对的 Stop disposition 和限定范围的工作单元只在对应 profile 需要时生效。
 - 0.12.0 运行时已在 macOS 和 Windows 上分别通过同一 26 文件运行时树摘要的原生验收；Windows 证据采用经过明确授权的远端报告来源。
@@ -80,6 +81,8 @@ context-guard diagnose
 - 工具、文件、图片、UI 和公开页面的读回只说明事实。工具成功不能自行授权推送、发布、安装或其他变更。
 
 项目显式采用这些规则后，Context Guard 会记录边界，并在说明或计划发生变化时要求重新确认。它的 `PreToolUse` Hook 可以拒绝已覆盖的发布和远端变更调用，但不会授予权限或替代平台审批；未接入 Hook 的专用工具仍是明确的覆盖缺口。
+
+当你说“推送”，且当前仓库的目标可以唯一确定时，Codex 应直接执行，不需要你再重复远端和分支。Context Guard 会在内部绑定这个目标；只有目标无法确定、存在冲突或授权后发生变化时才询问。普通推送授权不包含强制推送、删除分支或发布版本。
 
 ## 保护级别
 
@@ -216,7 +219,7 @@ Context Guard 不是语义证明系统、安全沙箱、会话备份、云同步
 
 0.12 是 model/agent-agnostic 的基线：它不假定模型或 Agent 自带可靠的长上下文保护与恢复。从恢复、工作单元、证据、完成到授权的闭环由 Context Guard 本地提供，协议语义与 Codex Hook adapter 保持分离。
 
-只有发起根任务的用户执行 `context-guard adopt <project-relative-json>` 后，项目说明和计划引用才会被采用。安装 Skill、加载模板或在普通文字中提到计划都不会启用这项行为。Context Guard 不阻止工具、不修改 Codex Plan 状态，也不授予权限。
+只有发起根任务的用户执行 `context-guard adopt <project-relative-json>` 后，项目说明和计划引用才会被采用。安装 Skill、加载模板或在普通文字中提到计划都不会启用这项行为。采用项目说明不会修改 Codex Plan 状态，也不会授予权限。已覆盖动作的检查遵循上文的保护级别。
 
 ## 贡献与安全
 

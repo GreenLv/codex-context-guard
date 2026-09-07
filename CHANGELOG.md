@@ -2,7 +2,27 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.0` is the latest published release, tagged at `75e8fe13af32c5512fce31a3d69c27db1b509aa0`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.1` is the latest release. The preceding `0.12.0` release is tagged at `75e8fe13af32c5512fce31a3d69c27db1b509aa0`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+
+## 0.12.1 - 2026-09-07
+
+### Highlights
+
+- A clear push request no longer triggers a redundant request to restate the remote and branch in the Skill guidance. The runtime already resolves a unique target; instructions now match that behavior.
+- Ordinary tasks read a shorter Context Guard Skill; advanced proof and control instructions load only when needed.
+- Completion guidance follows the current work unit and required descendants, preserving ancestor constraints without reopening historical work.
+- Avoid rerunning public-contract, runtime, conformance, and installer test subsets when the selected current-behavior suite already covers them; keep standalone checks and independent native gates.
+
+### Changes
+
+- Align the Skill, authorization reference, architecture and bilingual README guidance: ask only for an unresolved, conflicting or changed push target; preserve separate force-push, deletion and release authorization.
+- Preserve advanced evidence, release authorization, migration, privacy, and successor controls in explicitly routed references.
+- Keep the Hook implementation, schema, and protocol versions unchanged. The packaged Skill bytes change, so this patch uses a new version and does not overwrite consumed 0.12.0 caches.
+
+### Validation
+
+- Four added synthetic regressions pass against the unchanged runtime: plain Chinese/English push requests, commit-and-push, unresolved destinations, and prevention of destination/action expansion. All 18 authorization UX tests pass.
+- The [acceptance record](docs/LOCAL_ACCEPTANCE.md) defines separate requirements for source checks, isolated installation, native acceptance, CI, and publication. Unchanged 0.12.0 host-behavior and performance results keep their original identities; the changed 0.12.1 runtime tree requires fresh install/parity evidence. Normal user-runtime upgrades remain separate.
 
 ## 0.12.0 - 2026-09-06
 

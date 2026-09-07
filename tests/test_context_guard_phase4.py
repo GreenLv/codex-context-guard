@@ -762,6 +762,63 @@ class AuthorizationStatementTargetFamilyTests(Phase4Harness):
 
 
 class AuthorizationUXTests(Phase4Harness):
+    def _unique_push_upstream(self) -> None:
+        self._git("branch", "-M", "main")
+        self._git("remote", "add", "origin", str(self.root / "remote-origin"))
+        self._git("update-ref", "refs/remotes/origin/main", "HEAD")
+        self._git("branch", "--set-upstream-to=origin/main")
+
+    def test_plain_push_statement_uses_unique_upstream_without_restatement(self) -> None:
+        self._unique_push_upstream()
+        self.activate()
+        for prompt in ("推送。", "请推送本仓库。", "Push this repository."):
+            with self.subTest(prompt=prompt):
+                self.prompt(prompt)
+                target = self.bindings()[0]["binding"]["target"]
+                self.assertEqual(target["remote"], "origin")
+                self.assertEqual(target["ref"], "main")
+                self.assertEqual(self.decision("git push origin HEAD:refs/heads/main"), ("allow", ""))
+
+    def test_plain_commit_push_uses_unique_upstream_after_verified_commit(self) -> None:
+        self._unique_push_upstream()
+        self._write("candidate.txt", "approved candidate\n")
+        self.activate()
+        self.prompt("提交并推送。")
+        permission, reason = self.decision("git push origin HEAD:refs/heads/main")
+        self.assertEqual(permission, "deny")
+        self.assertIn("has not verifiably completed", reason)
+        self._git("add", "candidate.txt")
+        self._git("commit", "-q", "-m", "candidate")
+        self._run_command("git commit -q -m candidate")
+        self.assertEqual(self.decision("git push origin HEAD:refs/heads/main"), ("allow", ""))
+
+    def test_plain_push_without_unique_upstream_requires_selection(self) -> None:
+        self._git("branch", "-M", "main")
+        for remote in ("origin", "upstream"):
+            self._git("remote", "add", remote, str(self.root / remote))
+        self.activate()
+        self.prompt("推送。")
+        self.assertEqual(self.bindings()[0]["binding"]["status"], "requires_selection")
+        permission, reason = self.decision("git push origin main")
+        self.assertEqual(permission, "deny")
+        self.assertIn("Cannot determine the exact target", reason)
+
+    def test_inferred_push_target_does_not_expand_destination_or_action(self) -> None:
+        self._unique_push_upstream()
+        self.activate()
+        self.prompt("推送。")
+        for command in (
+            "git push upstream main",
+            "git push origin HEAD:refs/heads/other",
+            "git push --force origin main",
+            "git push --delete origin main",
+        ):
+            with self.subTest(command=command):
+                permission, reason = self.decision(command)
+                self.assertEqual(permission, "deny")
+                self.assertTrue(reason)
+        self.assertEqual(self.decision("git push origin main"), ("allow", ""))
+
     def test_one_statement_authorizes_tag_without_restating_targets(self) -> None:
         git_init(self.project)
         self.activate()

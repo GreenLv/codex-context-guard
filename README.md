@@ -12,7 +12,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Current release: `0.12.0`. See the [release notes](docs/releases/v0.12.0.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Current release: `0.12.1`. See the [release notes](docs/releases/v0.12.1.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## Install
 
@@ -36,6 +36,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Version and compatibility notes
 
+- Version 0.12.1 removes redundant push-target confirmation from the Skill guidance, loads advanced instructions only when needed, and avoids repeating test subsets already covered by the selected full suite. Hook behavior and public protocols are unchanged.
 - Version 0.12.0 makes normal success paths silent, isolates completed or historical work after compaction and resume, and distinguishes real high-risk execution from quoted text, searches, examples, and dry runs.
 - Its explicit profile ladder separates ordinary completion protection from strict evidence and release policy. Internally, protocol semantics are separated from the Codex Hook adapter, with `PreToolUse`, one-shot action tickets, checked Stop dispositions, and scoped work units used only where their profile requires them.
 - The 0.12.0 runtime passed independent native macOS and Windows acceptance on the same 26-file runtime-tree digest; the Windows evidence has explicitly authorized remote-reported provenance.
@@ -81,6 +82,8 @@ Automatic checks are used only when the request names a concrete target, such as
 - Tool, file, image, UI, and public-page readbacks establish facts. A successful result cannot authorize a push, release, installation, or other change by itself.
 
 Context Guard records these boundaries when the project opts in and asks for review if the adopted instructions or plan change. Its `PreToolUse` Hook can deny covered release and remote-mutation calls, but it does not grant permissions or replace platform approval, and specialized tools outside Hook coverage remain an explicit gap.
+
+When you ask to push and the current repository has one clear destination, Codex proceeds without asking you to repeat the remote and branch. Context Guard binds that target internally; it asks only when the target is unresolved, conflicting, or has changed. Ordinary push permission does not include force-push, branch deletion, or release publication.
 
 ## Protection levels
 
@@ -217,7 +220,7 @@ Context Guard is not a semantic proof system, security sandbox, transcript backu
 
 Version 0.12 is a model- and agent-agnostic baseline: it does not assume the model or agent host brings reliable long-context protection or recovery. The recovery → work unit → evidence → completion → authorization loop is provided locally by Context Guard itself, with protocol semantics separated from the Codex Hook adapter.
 
-Project instructions and plan references are adopted only after the user who started the root task runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in prose does not activate this behavior. Context Guard does not block tools, modify Codex Plan state, or grant authority.
+Project instructions and plan references are adopted only after the user who started the root task runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in prose does not activate this behavior. Adoption does not modify Codex Plan state or grant authority. Covered action checks follow the protection levels described above.
 
 ## Contributing and security
 

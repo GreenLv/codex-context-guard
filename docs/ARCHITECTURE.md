@@ -224,11 +224,18 @@ and expiry. Unknown readiness schemas fail closed. The ticket is reserved for
 one tool-use identity, consumed after success, returned to reserved only after
 a failed identical call, and invalidated by candidate or contract drift.
 
-B-tier ordinary remote push, force-push, and remote-branch deletion requires
-the latest root-user prompt to name both the action and exact remote/ref target;
-quoted or attributed text and delegated authority do not count. C-tier local
-edits, tests, ordinary commits, and proven-redundant local worktree cleanup are
-not hard-gated. A cleanup work unit still denies a product edit until a separate
+B-tier ordinary remote push, force-push, and remote-branch deletion require
+root-user authorization for the respective action. A push request need not
+spell out the remote, ref or SHA when the request and unique task/repository
+state already determine them. The runtime captures the exact target at
+authorization time and checks it at execution; it asks once for an unresolved
+or competing target, request conflict, or material drift. Status turns do not
+erase an applicable authorization. A commit-and-push request still requires
+the authorized commit to verifiably complete before the push can proceed.
+Ordinary push does not grant force-push, deletion or release authority; quoted,
+attributed and delegated text cannot grant authority. C-tier local edits,
+tests, ordinary commits, and proven-redundant local worktree cleanup are not
+hard-gated. A cleanup work unit still denies a product edit until a separate
 root-user work unit authorizes it.
 
 In the `standard` and `strict` profiles, covered high-risk actions are checked

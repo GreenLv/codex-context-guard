@@ -1,8 +1,30 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current source and published release is `0.12.0`. Accepted releases include `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current release is `0.12.1`. Release history includes `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
+
+## 0.12.1 release acceptance scope (2026-09-07)
+
+This patch changes the packaged Skill entrypoint and references, the product
+version marker, the public repository validator's version constant, and the
+repository-only validation runner/tests. Hook execution code, all nine Hook
+definitions, schemas, and public protocols are unchanged.
+
+| Gate | Exact evidence required for this release |
+| --- | --- |
+| Source and documentation | Current-behavior coverage including four new ordinary-push authorization regressions, standalone/covered-suite validation selection tests, repository and privacy audit, self-test, lint, compile, and final bilingual reader review |
+| Native macOS | The versioned portable entrypoint on the release commit: isolated install, strict second no-op, runtime-tree parity, lifecycle smoke and cleanup |
+| Native Windows | The separate Windows portable installed-runtime job on the same candidate: the same five gates and cleanup, with its machine-produced annex retained as a CI artifact |
+| Host behavior retained from 0.12.0 | Real-task fresh/resume, Hook trust, observe/shadow, authorization canary and hot-path performance results remain under their original runtime identities; no claim that those runs executed 0.12.1 |
+| Publication | Exact-main Candidate CI and HOL, annotated `v0.12.1`, bilingual GitHub Release, and independent tag/Release readback |
+
+Context Guard installs from the source repository/tag; this release publishes
+no separate package-registry artifact. The native annexes bind the exact source
+commit and each platform's runtime-tree digest. Public readback is a separate
+release receipt; normal-user upgrades are separate from isolated acceptance.
+The 0.12.0 records below remain historical evidence and are not rewritten as
+0.12.1 executions.
 
 ## 0.12.0 release acceptance (2026-09-06)
 
