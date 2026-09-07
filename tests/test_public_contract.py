@@ -137,8 +137,8 @@ class PublicContractTests(unittest.TestCase):
     def test_identity_literals_match_on_semantic_boundaries_only(self) -> None:
         """The built-in local-username literal fires on standalone names,
         ``user=<name>`` bindings, email local parts, and local user paths,
-        but a longer public account slug that merely shares the prefix (the
-        HOL badge affiliate URL embeds such a slug) is not a private literal.
+        but a longer public account slug that merely shares the prefix is not
+        a private literal.
         The real literal is constructed at runtime so this test's own bytes
         never carry it."""
         name = "lgr" + "59"
@@ -179,6 +179,17 @@ class PublicContractTests(unittest.TestCase):
             root = Path(temporary)
             (root / "note.md").write_text("token abc123x\n", encoding="utf-8")
             self.assertEqual(audit.findings(root, ["abc123"]), ["note.md: forbidden private literal"])
+
+    def test_hol_badge_links_to_canonical_listing(self) -> None:
+        english = (ROOT / "README.md").read_text(encoding="utf-8")
+        badge = (
+            "[![HOL Guard](https://img.shields.io/endpoint?url="
+            "https%3A%2F%2Fhol.org%2Fapi%2Fregistry%2Fbadges%2Fplugin%3Fslug%3D"
+            "gerui-lv%252Fcontext-guard%26metric%3Dtrust)]"
+            "(https://hol.org/registry/plugins/gerui-lv%2Fcontext-guard)"
+        )
+        self.assertIn(badge, english)
+        self.assertNotIn("hol.org/go/guard/", english)
 
     def test_readmes_keep_bilingual_diagram_and_example_parity(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
