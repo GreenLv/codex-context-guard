@@ -175,9 +175,29 @@
         },
         "verification_contract": {
           "$ref": "#/$defs/verificationContract"
+        },
+        "constraint_scope": {
+          "const": "session"
+        },
+        "source_span": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       },
-      "additionalProperties": true
+      "additionalProperties": true,
+      "dependentRequired": {
+        "constraint_scope": [
+          "source_span"
+        ],
+        "source_span": [
+          "constraint_scope"
+        ]
+      }
     },
     "executionId": {
       "type": "string",
@@ -833,6 +853,8 @@
     "work_state",
     "work_units",
     "work_unit_sequence",
+    "wait_conditions",
+    "wait_condition_sequence",
     "agents",
     "open_items",
     "compactions",
@@ -850,7 +872,241 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 10
+      "const": 11
+    },
+    "wait_conditions": {
+      "type": "array",
+      "description": "Bounded typed one-shot wait conditions (schema 11). Raised provenance is nullable only for deterministic migrated_unresolved conditions; released conditions always carry their release source and kind.",
+      "items": {
+        "type": "object",
+        "required": [
+          "condition_id",
+          "owner_work_unit_id",
+          "kind",
+          "condition_type",
+          "raised_by_kind",
+          "raised_by_source",
+          "status",
+          "created_at",
+          "released_at",
+          "released_by_kind",
+          "released_by_source",
+          "source_clause_sha256",
+          "subject_sha256",
+          "external_source_sha256"
+        ],
+        "properties": {
+          "condition_id": {
+            "type": "string",
+            "pattern": "^(?:WC\\d{4,}|WCU-WU\\d{4,})$"
+          },
+          "owner_work_unit_id": {
+            "type": "string",
+            "pattern": "^WU\\d{4,}$"
+          },
+          "kind": {
+            "enum": [
+              "one_shot",
+              "migrated_unresolved"
+            ]
+          },
+          "condition_type": {
+            "enum": [
+              "choice",
+              "input",
+              "confirmation",
+              "external_dependency"
+            ]
+          },
+          "raised_by_kind": {
+            "enum": [
+              "root_user",
+              "assistant",
+              "external"
+            ]
+          },
+          "raised_by_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^P\\d{4,}$"
+          },
+          "status": {
+            "enum": [
+              "waiting",
+              "released"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "released_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "released_by_kind": {
+            "enum": [
+              "root_user_confirmation",
+              "external_fact",
+              null
+            ]
+          },
+          "released_by_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^(?:P\\d{4,}|agent-stop:[0-9a-f]{64})$"
+          },
+          "source_clause_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "subject_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "external_source_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "migrated_unresolved"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "raised_by_source": {
+                  "type": "null"
+                },
+                "source_clause_sha256": {
+                  "type": "null"
+                },
+                "subject_sha256": {
+                  "type": "null"
+                },
+                "condition_id": {
+                  "pattern": "^WCU-WU\\d{4,}$"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "raised_by_source": {
+                  "type": "string"
+                },
+                "condition_id": {
+                  "pattern": "^WC\\d{4,}$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "waiting"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "released_at": {
+                  "type": "null"
+                },
+                "released_by_kind": {
+                  "type": "null"
+                },
+                "released_by_source": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "released_at": {
+                  "type": "string"
+                },
+                "released_by_kind": {
+                  "type": "string"
+                },
+                "released_by_source": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "released_by_kind": {
+                  "const": "external_fact"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "condition_type": {
+                  "const": "external_dependency"
+                },
+                "external_source_sha256": {
+                  "type": "string"
+                },
+                "released_by_source": {
+                  "pattern": "^agent-stop:[0-9a-f]{64}$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "released_by_kind": {
+                  "const": "root_user_confirmation"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "condition_type": {
+                  "enum": [
+                    "choice",
+                    "input",
+                    "confirmation"
+                  ]
+                },
+                "released_by_source": {
+                  "pattern": "^P\\d{4,}$"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "maxItems": 64
+    },
+    "wait_condition_sequence": {
+      "type": "integer",
+      "minimum": 0
     },
     "session": {
       "type": "object",
@@ -1295,9 +1551,61 @@
                     "string",
                     "null"
                   ]
+                },
+                "commit_reason": {
+                  "type": "string"
                 }
               }
             }
+          },
+          "commit_context": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pending",
+              "edits",
+              "consumed",
+              "targets"
+            ],
+            "properties": {
+              "pending": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "object"
+                }
+              },
+              "edits": {
+                "type": "array",
+                "maxItems": 64,
+                "items": {
+                  "type": "object"
+                }
+              },
+              "consumed": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "targets": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object"
+                }
+              },
+              "decisions": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Bounded current-unit paired tool observations, exact target facts, and direct-push decisions. The writer always emits decisions; readers also accept the early schema-11 predecessor shape without that field and upgrade it to an empty list after integrity validation. Edit objects retain the authorization generations present before execution. Target facts do not grant authority; an allow decision names the exact selected authorization generation."
           }
         }
       }

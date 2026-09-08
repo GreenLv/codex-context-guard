@@ -3,10 +3,17 @@
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 
+The unreleased candidate also includes CG122-08: subordinate or local completion
+reports no longer enter root completion proof selection. Its source regressions
+are distinct from coordinator acceptance and actual-host validation; P3 reader
+review and P4 candidate gates must include this behavior.
+
 ## Baselines
 
-- Current source and published Context Guard release: `0.12.1`
-- Private state schema: `10` (schema 9 is the full migration source; schema 7 and 8 read-only compatibility)
+- Current source candidate: `0.12.4` (unreleased)
+- Published release baseline: `0.12.1`
+- Private state schema: `11` in the unreleased 0.12.4 candidate
+- Private state schema: `10` in the published release (schema 9 is the full migration source; schema 7 and 8 read-only compatibility)
 - Proof protocol: `1.0.0`
 - Stop protocol: `3.0.0`
 - Work-unit protocol: `2.0.0` (stored records remain `work-unit/v1`)
@@ -18,6 +25,18 @@ platform does not prove a fresh installed runtime on another platform.
 
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
+
+## 0.12.4 candidate scope (unreleased source candidate)
+
+Version 0.12.4 uses schema 11 for source- and subject-bound waiting conditions. Follow-ups retain unfinished work, while valid independent switches isolate the prior business task and preserve explicit session restrictions. Recovery pages require a session ID and return full prompt text or the exact persistent-constraint span, plus bounded continuations for large verification metadata. Default recovery, diagnostics and completion share the applicable scope.
+
+Supersession parsing distinguishes an actual correction of a requirement-like target from an operational noun phrase. In particular, a permission-boundary correction retry that keeps the existing authorization unchanged does not raise an ambiguous-target clarification merely because its Chinese text contains `修正`; `修正 R001` and equivalent corrections that name a requirement-like object remain authoritative, and unresolved genuine corrections still fail closed. A normally trusted 0.12.3 macOS trial exposed this false clarification with exact prompt bytes after activation, unauthorized-push denial, and the bounded edit had already succeeded. The consumed 0.12.3 cache remains immutable; its partial and failure evidence is not a 0.12.4 pass.
+
+A root push re-authorization that names the current candidate commit is a binding to that existing Git object, not an instruction to create another commit. An explicit 40-character SHA is retained in the authorization target; it must match the live repository HEAD and exact push target. Stale SHAs, another repository or ref, absent readback, replayed or consumed authorization, and ambiguous target state remain fail-closed. Earlier native trials consumed the unreleased 0.12.2 and 0.12.3 runtime bytes; 0.12.4 has a new runtime identity and requires fresh isolated-install and native evidence.
+
+External factual closure currently covers a uniquely bound registered subagent lifecycle ending through `SubagentStop`. A stopped child may have failed: its parent requirements remain pending. An unrelated tool success, ordinary user confirmation, missing start event or ambiguous child identity cannot establish that external fact. CI, review approval and other producers without a supported binding remain waiting.
+
+Schema 10 derives one unresolved condition per old waiting unit; external waits remain external. Schema 9 migration and schemas 7/8 read-only compatibility remain unchanged. Early schema-11 state with the exact four-field source-observation context is also a read-compatible input: after content-hash and field validation, resume adds an empty bounded decision list and preserves the existing observations. Malformed predecessor records remain integrity failures. All nine Hook events, public protocols and Python 3.10+ remain unchanged. P1 and CG122-08 have bounded source acceptance. P2 commit-chain repair is under source validation and pending independent acceptance; native platform, installation and actual-host gates remain pending. No source test or synthetic Hook replay substitutes for those gates.
 
 ## 0.12.1 release scope
 

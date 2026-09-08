@@ -4,6 +4,23 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.12.1`. Release history includes `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.12.4 candidate scope (source boundary, unreleased)
+
+`0.12.4` is an unreleased source candidate (schema 11) on branch
+`codex/0.12.2-stabilization` over base `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`.
+Behavior is documented per area in the
+[behavior baseline](BEHAVIOR_BASELINE_0_12_4.md). Every row below names its
+own evidence boundary.
+
+| Gate | Evidence status for the 0.12.4 candidate |
+| --- | --- |
+| Source checks (P0 counterexamples, P1 repair, CG122-08 stop subject, P2 commit chain, P3 host profile, Windows R5 authorization repair, live push re-authorization, private Hook-shape probe, exact native-prompt supersession repair) | The latest integrated macOS source run passes all 966 current-behavior tests: 955 passes and 11 capability-aware skips, with 0 failures/errors. A three-way full-handler reproducer covers the exact 0.12.3 behavior, the first 0.12.4 noun-phrase repair, and the corrected 0.12.4 grammar: targets before and after `修正`, direct requirement-like objects, ambiguous corrections, the native permission retry, negation, quotations and test instructions. Repository validation, privacy audit, transition audit, self-test, Ruff, compilation and final diff checks are recorded separately below; earlier bounded source acceptances retain their prepared-source identities |
+| Host behavior (real-host Hook events) | Pending for 0.12.4. A normally trusted macOS trial of the consumed 0.12.2 bytes reached a real commit, then exposed the push re-authorization parser defect. A separate normally trusted 0.12.3 trial proved explicit activation and unauthorized-push denial, completed the bounded edit, then raised a false supersession clarification on the permission-boundary retry before any new Git mutation. These are partial/failure evidence for their original runtime identities, not a 0.12.4 pass. The repository-owned `host_behavior` profile still requires the six separate gates (`hook_trust`, `continuity_wait`, `compact_resume`, `commit_event`, `local_push_readback`, `cleanup`) and an accepted raw-to-gate mapping |
+| Isolated install / parity / lifecycle | Pending for the corrected exact 0.12.4 bytes. The preceding prepared 0.12.4 candidate passed a disposable first install, strict second no-op, lifecycle smoke and four-way parity under its original hashes; that isolated cache remains unchanged and its evidence is not reused for this corrected runtime |
+| Native macOS / native Windows portable acceptance | Pending for the exact 0.12.4 candidate. The consumed 0.12.2/0.12.3 macOS trials and bounded Windows R5 run retain their original identities and do not establish 0.12.4 native acceptance |
+| Actual-host behavior trials (fresh/resume, Hook trust, canary) | Pending on each real platform; trust configuration is never modified by automation |
+| Artifact identity, CI/HOL, tag, release, public readback | Not started; publication requires the frozen release sequence |
+
 ## 0.12.1 release acceptance scope (2026-09-07)
 
 This patch changes the packaged Skill entrypoint and references, the product
@@ -1337,3 +1354,15 @@ the release task and were created from the exact final commit only after it
 preserved the accepted macOS and Windows runtime evidence, passed all local and
 remote packaging gates, passed PR/main CI and HOL, and then passed tag CI.
 Compatibility wording must remain bounded by observed evidence.
+
+## Historical 0.12.2 P2 source repair boundary (unreleased)
+
+At the P2 boundary, the candidate exercised exact source-scope and commit
+correspondence plus current-task target confirmation in synthetic local Git
+fixtures. Earlier P1 and CG122-08 source acceptance retained its original
+identity; changed runtime bytes required fresh integrated source validation
+and later artifact evidence. P2 independent acceptance, actual nested Hook
+payload, native macOS/Windows, isolated installation, CI and publication were
+separate pending gates at that boundary. The current 0.12.4 candidate status is
+recorded at the top of this document.
+No historical business commit or remote is used as a regression fixture.

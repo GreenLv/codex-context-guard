@@ -21,9 +21,21 @@ from typing import Any
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
+HOST_BEHAVIOR_MODULE = "host_behavior"
+
 
 class NativeRunError(RuntimeError):
     """Raised when portable native acceptance cannot establish its contract."""
+
+
+def load_host_behavior():
+    path = Path(__file__).resolve().parent / "host_behavior.py"
+    spec = importlib.util.spec_from_file_location(HOST_BEHAVIOR_MODULE, path)
+    if spec is None or spec.loader is None:
+        raise NativeRunError("could not load the host_behavior profile module")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def load_manager(root: Path):
@@ -184,16 +196,25 @@ def portable_acceptance(
     }
 
 
+def build_argument_parser() -> argparse.ArgumentParser:
+    return load_host_behavior().build_argument_parser()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
-    parser.add_argument("--codex", default="codex")
-    parser.add_argument("--run-url")
+    parser = build_argument_parser()
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
+    if args.profile == "host_behavior":
+        try:
+            result = load_host_behavior().run_host_behavior(args)
+        except Exception as exc:  # noqa: BLE001 - surfaced through argparse
+            parser.error(str(exc))
+        args.output.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        print(f"native_acceptance={result['status']}")
+        return {"passed": 0, "failed": 1, "pending": 3}[result["status"]]
     try:
         codex = resolve_executable(args.codex)
     except NativeRunError as exc:

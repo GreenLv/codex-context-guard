@@ -172,7 +172,7 @@ class Phase4Harness(unittest.TestCase):
         )
 
     def _run_command(self, command: str, exit_code: int = 0) -> dict:
-        result = self.pre(command)
+        result = {}  # No retroactive Pre: unique readback is tested here.
         self.dispatch(
             "PostToolUse",
             tool_name="shell",
@@ -783,10 +783,10 @@ class AuthorizationUXTests(Phase4Harness):
         self._unique_push_upstream()
         self._write("candidate.txt", "approved candidate\n")
         self.activate()
-        self.prompt("提交并推送。")
+        self.prompt("提交 `candidate.txt` 并推送。")
         permission, reason = self.decision("git push origin HEAD:refs/heads/main")
         self.assertEqual(permission, "deny")
-        self.assertIn("has not verifiably completed", reason)
+        self.assertTrue(reason.startswith("commit_result_missing:"), reason)
         self._git("add", "candidate.txt")
         self._git("commit", "-q", "-m", "candidate")
         self._run_command("git commit -q -m candidate")
@@ -831,10 +831,10 @@ class AuthorizationUXTests(Phase4Harness):
     def test_commit_and_push_statement_covers_push(self) -> None:
         git_init(self.project)
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("空提交并推送 origin 的 main 分支。")
         permission, reason = self.decision("git push origin main")
         self.assertEqual(permission, "deny")
-        self.assertIn("has not verifiably completed", reason)
+        self.assertTrue(reason.startswith("commit_result_missing:"), reason)
         self._git("commit", "--allow-empty", "-q", "-m", "authorized work")
         self._run_command("git commit -q --allow-empty -m authorized work")
         self.assertEqual(self.decision("git push origin main"), ("allow", ""))
@@ -847,7 +847,7 @@ class AuthorizationUXTests(Phase4Harness):
         git_init(self.project)
         self.activate()
         self.prompt(
-            "提交候选，并将生成的精确提交推送到 "
+            "空提交候选，并将生成的精确提交推送到 "
             "https://github.com/GreenLv/codex-context-guard.git 的 refs/heads/main。"
         )
         permission, reason = self.decision(
@@ -855,7 +855,7 @@ class AuthorizationUXTests(Phase4Harness):
             "HEAD:refs/heads/main"
         )
         self.assertEqual(permission, "deny")
-        self.assertIn("has not verifiably completed", reason)
+        self.assertTrue(reason.startswith("commit_result_missing:"), reason)
         commit_cmd = "git commit -q --allow-empty -m candidate"
         self.assertEqual(self.pre(commit_cmd), {})
         # The authorized commit REALLY runs; the PostToolUse result is what
@@ -1118,7 +1118,7 @@ class AuthorizationSnapshotTests(Phase4Harness):
         return self
 
     def _run_command(self, command: str, exit_code: int = 0) -> dict:
-        result = self.pre(command)
+        result = {}  # No retroactive Pre: unique readback is tested here.
         self.dispatch(
             "PostToolUse",
             tool_name="shell",
@@ -1199,11 +1199,11 @@ class AuthorizationSnapshotTests(Phase4Harness):
     def test_commit_push_chain_expected_transition_allows(self) -> None:
         self._git_repo()
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("空提交并推送 origin 的 main 分支。")
         # Before the authorized commit: the push expectation is pending.
         permission, reason = self.decision("git push origin main")
         self.assertEqual(permission, "deny")
-        self.assertIn("has not verifiably completed", reason)
+        self.assertTrue(reason.startswith("commit_result_missing:"), reason)
         self._git("commit", "--allow-empty", "-q", "-m", "authorized work")
         self._run_command("git commit -q --allow-empty -m authorized work")
         self.assertEqual(self.pre("git push origin main"), {})
@@ -1211,11 +1211,11 @@ class AuthorizationSnapshotTests(Phase4Harness):
     def test_failed_commit_never_advances_the_binding(self) -> None:
         self._git_repo()
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("空提交并推送 origin 的 main 分支。")
         self._run_command("git commit -q --allow-empty -m work", exit_code=1)
         permission, reason = self.decision("git push origin main")
         self.assertEqual(permission, "deny")
-        self.assertIn("has not verifiably completed", reason)
+        self.assertTrue(reason.startswith("commit_result_missing:"), reason)
 
     def test_ambiguous_commit_outcome_never_advances_the_binding(self) -> None:
         self._git_repo()
@@ -1232,9 +1232,10 @@ class AuthorizationSnapshotTests(Phase4Harness):
     def test_second_unrelated_commit_after_chain_advances_denies(self) -> None:
         self._git_repo()
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("空提交并推送 origin 的 main 分支。")
         self._git("commit", "--allow-empty", "-q", "-m", "authorized work")
         self._run_command("git commit -q --allow-empty -m authorized work")
+        self.assertEqual(self.decision("git push origin main"), ("allow", ""))
         self._git("commit", "--allow-empty", "-q", "-m", "second unrelated")
         permission, reason = self.decision("git push origin main")
         self.assertEqual(permission, "deny")
@@ -1314,7 +1315,7 @@ class PreparedCandidateRegressionTests(Phase4Harness):
         self._git("commit", "-q", "-m", "A")
         self._write("candidate.txt", "prepared bytes A")
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("提交 `candidate.txt` 并推送 origin 的 main 分支。")
         # Drift the prepared bytes to B, then commit B: the transition must
         # NOT advance — B was never the authorized prepared candidate.
         self._write("candidate.txt", "drifted bytes B")
@@ -1323,7 +1324,7 @@ class PreparedCandidateRegressionTests(Phase4Harness):
         self._run_command("git commit -q -m commit B", exit_code=1)
         permission, reason = self.decision("git push origin main")
         self.assertEqual(permission, "deny")
-        self.assertIn("has not verifiably completed", reason)
+        self.assertTrue(reason.startswith("commit_scope_mismatch:"), reason)
 
     def test_counterexample_c_matching_prepared_bytes_advance_and_allow(self) -> None:
         self._write("base.txt", "base")
@@ -1331,7 +1332,7 @@ class PreparedCandidateRegressionTests(Phase4Harness):
         self._git("commit", "-q", "-m", "A")
         self._write("candidate.txt", "prepared bytes A")
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("提交 `candidate.txt` 并推送 origin 的 main 分支。")
         self._git("add", "candidate.txt")
         self._git("commit", "-q", "-m", "commit prepared A")
         self._run_command("git commit -q -m commit prepared A")
@@ -1344,7 +1345,7 @@ class PreparedCandidateRegressionTests(Phase4Harness):
         self._write("prepared.txt", "prepared")
         self._write("extra.txt", "extra")
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("提交 `prepared.txt`、`extra.txt` 并推送 origin 的 main 分支。")
         # Only part of the prepared candidate is committed (and an extra
         # file rides along): no exact correspondence, no advance.
         self._git("add", "prepared.txt")
@@ -1354,7 +1355,7 @@ class PreparedCandidateRegressionTests(Phase4Harness):
         self.assertEqual(permission, "deny")
 
     def _run_command(self, command: str, exit_code: int = 0) -> dict:
-        result = self.pre(command)
+        result = {}  # No retroactive Pre: unique readback is tested here.
         self.dispatch(
             "PostToolUse",
             tool_name="shell",
@@ -1540,12 +1541,13 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
     with staged deletions, renames, mode changes, and worktree/staging
     combinations all visible; the commit correspondence is strict."""
 
-    def _auth_chain(self) -> None:
+    def _auth_chain(self, *paths: str) -> None:
         self.activate()
-        self.prompt("提交并推送 origin 的 main 分支。")
+        self.prompt("提交 " + ("、".join(f"`{path}`" for path in paths) if paths else "空提交") + " 并推送 origin 的 main 分支。")
 
     def _commit_via_hooks(self, command: str, uid: str) -> None:
-        self.pre(command)
+        # The fixture already committed: this is uncorrelated output.
+        # Only unique full local readback may reconcile it, never causality.
         self.dispatch(
             "PostToolUse",
             tool_name="shell",
@@ -1562,7 +1564,7 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
         self._git("add", "victim.txt")
         self._git("commit", "-q", "-m", "add victim")
         self._git("rm", "-q", "victim.txt")  # staged deletion
-        self._auth_chain()
+        self._auth_chain("victim.txt")
         entries = self._projection()["entries"]
         self.assertIn(
             ("victim.txt", "deleted"),
@@ -1593,7 +1595,7 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
         self._git("add", "old.txt")
         self._git("commit", "-q", "-m", "add old")
         self._git("mv", "old.txt", "new.txt")
-        self._auth_chain()
+        self._auth_chain("old.txt", "new.txt")
         entries = {
             (entry["path"], entry["status"]) for entry in self._projection()["entries"]
         }
@@ -1612,7 +1614,7 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
         # worktree file is a net no-op and projects to an empty delta).
         self._git("update-index", "--chmod=+x", "run.sh")
         os.chmod(self.project / "run.sh", 0o755)
-        self._auth_chain()
+        self._auth_chain("run.sh")
         entries = self._projection()["entries"]
         self.assertTrue(
             any(entry["path"] == "run.sh" and entry["mode"] == "100755" for entry in entries),
@@ -1648,7 +1650,7 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
         self._write("staged.txt", "staged content")
         self._git("add", "staged.txt")
         self._write("unstaged.txt", "unstaged content")
-        self._auth_chain()
+        self._auth_chain("staged.txt", "unstaged.txt")
         # Commit only the staged half: the prepared candidate (both files)
         # is not fully committed, so the transition never advances.
         self._git("commit", "-q", "-m", "partial")
@@ -1667,7 +1669,7 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
         self._write("staged.txt", "staged content")
         self._git("add", "staged.txt")
         self._write("unstaged.txt", "unstaged content")
-        self._auth_chain()
+        self._auth_chain("staged.txt", "unstaged.txt")
         self._git("add", "unstaged.txt")
         self._git("commit", "-q", "-m", "everything")
         self._commit_via_hooks("git commit -q -m everything", "c1")
@@ -1676,7 +1678,7 @@ class PreparedProjectionPlumbingTests(Phase4Harness):
     def test_extra_uncommitted_file_blocks_advance_until_committed(self) -> None:
         self._write("prepared.txt", "prepared")
         self._write("extra.txt", "extra")
-        self._auth_chain()
+        self._auth_chain("prepared.txt")
         # Commit ONLY the extra file: the prepared candidate (prepared.txt)
         # is not fully committed, so the transition never advances.
         self._git("add", "extra.txt")
@@ -2989,6 +2991,103 @@ class McpAdapterProvenanceClosedSetTests(Phase4Harness):
             )["hookSpecificOutput"]["permissionDecision"],
             "deny",
         )
+
+
+class WindowsNonPosixQuoteBoundaryTests(Phase4Harness):
+    """R3: native Windows quote spans never swallow real shell boundaries."""
+
+    def test_trailing_backslash_before_double_quote_keeps_cmd_boundaries(self) -> None:
+        operators = ("&", "&&", "|", "||")
+        mutations = (
+            ("git push origin main", "remote_push"),
+            ("npm publish", "registry_npm_publish"),
+        )
+        for module in (cg_actions, cg):
+            for operator in operators:
+                for mutation, action_id in mutations:
+                    command = f'echo "C:\\foo\\" {operator} {mutation}'
+                    with self.subTest(
+                        module=module.__name__,
+                        operator=operator,
+                        action_id=action_id,
+                    ):
+                        actions = module._shell_actions(command, posix=False)
+                        self.assertEqual(
+                            [action["semantic_action_id"] for action in actions],
+                            [action_id],
+                        )
+
+    def test_same_backslash_quote_is_not_a_posix_boundary(self) -> None:
+        command = 'echo "C:\\foo\\" & git push origin main'
+        for module in (cg_actions, cg):
+            with self.subTest(module=module.__name__):
+                self.assertEqual(module._shell_actions(command, posix=True), [])
+
+    def test_cmd_single_quotes_do_not_hide_a_real_boundary(self) -> None:
+        command = "echo 'literal & git push origin main'"
+        for module in (cg_actions, cg):
+            with self.subTest(module=module.__name__):
+                actions = module._shell_actions(command, posix=False)
+                self.assertEqual(
+                    [action["semantic_action_id"] for action in actions],
+                    ["remote_push"],
+                )
+
+    def test_posix_single_quotes_and_windows_double_quotes_keep_literals_inert(
+        self,
+    ) -> None:
+        cases = (
+            (True, "echo 'literal & git push origin main'"),
+            (False, 'echo "literal & git push origin main"'),
+        )
+        for module in (cg_actions, cg):
+            for posix, command in cases:
+                with self.subTest(
+                    module=module.__name__, posix=posix, command=command
+                ):
+                    self.assertEqual(module._shell_actions(command, posix=posix), [])
+
+    def test_hostile_inline_env_selector_remains_visible(self) -> None:
+        command = (
+            'npm_config_registry="https://evil.example; rm -rf /" npm publish'
+        )
+        for module in (cg_actions, cg):
+            for posix in (False, True):
+                with self.subTest(module=module.__name__, posix=posix):
+                    actions = module._shell_actions(command, posix=posix)
+                    self.assertEqual(
+                        [action["semantic_action_id"] for action in actions],
+                        ["registry_npm_publish"],
+                    )
+                    self.assertEqual(
+                        actions[0]["registry_values"]["--registry"],
+                        "https://evil.example; rm -rf /",
+                    )
+
+    def test_normal_non_mutations_and_powershell_literal_stay_inert(self) -> None:
+        commands = (
+            'echo "C:\\foo\\bar"',
+            'echo "literal ; & && | || text"',
+            "powershell -NoProfile -Command \"Write-Output 'literal & git push origin main'\"",
+            "powershell -NoProfile -Command \"Write-Output 'it''s literal & git push origin main'\"",
+        )
+        for module in (cg_actions, cg):
+            for command in commands:
+                with self.subTest(module=module.__name__, command=command):
+                    self.assertEqual(module._shell_actions(command, posix=False), [])
+
+    def test_powershell_backslash_quote_keeps_real_boundary_visible(self) -> None:
+        command = (
+            "powershell -NoProfile -Command "
+            "'Write-Output \"C:\\foo\\\"; git push origin main'"
+        )
+        for module in (cg_actions, cg):
+            with self.subTest(module=module.__name__):
+                actions = module._shell_actions(command, posix=False)
+                self.assertEqual(
+                    [action["semantic_action_id"] for action in actions],
+                    ["remote_push"],
+                )
 
 
 class ConfigEnvSelectorTests(Phase4Harness):

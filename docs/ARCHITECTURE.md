@@ -160,7 +160,11 @@ Before attribution, quoted spans, blockquotes, code, reply annotations,
 attributed text, and system-added text are removed. Only an unquoted explicit
 root-user correction with one unique target can supersede an existing item; the
 runtime never falls back to “the previous requirement” when the target is
-ambiguous.
+ambiguous. A generic correction word embedded in an operational noun phrase is
+not a supersession act: Chinese `修正` is considered a correction verb only
+when a requirement-like target appears before or after the correction verb;
+an explicit correction with no unique target remains a fail-closed
+clarification.
 
 ### L2: bounded work state and evidence
 
@@ -317,6 +321,36 @@ implemented in the 0.9.x line, and 0.11.0 advanced it to Stop protocol
   isolate old active parent chains as `historical_unresolved` — they are
   never silently marked passed — and only a unique explicit resume intent
   reopens a waiting unit.
+- Stop subject interpretation (0.12.4 candidate): completion diagnostics,
+  waiting-owner facts, current-wait checks and ordinary proof selection share
+  one bounded clause interpretation. Only an affirmative claim about the
+  whole current unit invokes completion evidence checks. Child/external and
+  local-phase results, quoted or hypothetical claims, and unknown subjects
+  cannot auto-complete the root. Explicit current-unit claims still require
+  evidence beside unrelated wait language. Integrity and valid advanced
+  checkpoints retain their earlier priority. Typed summaries use enums and
+  hashes; they do not persist raw reply clauses or assert external success.
+- Wait conditions (schema 11, 0.12.4 candidate): every parked unit carries
+  bounded typed one-shot wait conditions with auditable raise/release
+  provenance. Only the unique matching user-controlled condition is
+  released by a real root confirmation or explicit resume; progress
+  questions, negated replies, quoted text, and external dependencies never
+  release through speech. Unfinished tasks are continuous by default, so
+  supplements keep the unit while only an explicit independent-task switch
+  opens a sibling root. Recovery, completion, and diagnostics share one
+  current-scope projection whose revision binds the deterministic
+  `recovery-page` cursor. The subcommand requires an explicit session ID and
+  reads complete hash-verified prompt text in bounded chunks, including tail
+  constraints beyond the stored summary. Large verification metadata has its
+  own chunk offsets and digest. Unreleased waits participate in completion
+  checks independently of successful tool evidence. Source-clause hashes
+  separate same-type pauses; exact normalized subjects select confirmations.
+  Explicit session restrictions are separate requirement records with original
+  prompt spans, so switching business tasks does not drop those restrictions.
+  A bound registered child start/stop lifecycle can release its end-of-child
+  wait; it never certifies a successful result or the parent task. Unsupported
+  external producers remain waiting. Recovery cursors exclude transient
+  compact/resume bookkeeping and expire when their actual scope changes.
 
 The protocol history below describes the shipped 0.9.x and 2.1.0 behavior
 for released versions and remains the baseline that released runtimes
@@ -552,3 +586,29 @@ is the first completed contract-adoption release. It remains on the existing
 eight-event Hook wire and adds no `PreToolUse`, tool interception, automatic
 ticket reservation, commit/publish action, or authority for uncovered
 surfaces.
+
+### Candidate commit scope and target facts (0.12.4, unreleased)
+
+The root user's affirmative commit-object clauses define the source-scope ceiling. Excluded files, read/test inputs and quoted or delegated statements do not add objects. For example, “commit owned.txt; leave other.txt unchanged” permits only owned.txt. An unresolved explicit ceiling never falls back to inferred edits. Without an explicit file list, only paired, successful current-unit root edit observations can supply source objects.
+
+Permission and preparation are separate. A root instruction to fix a file before committing keeps the ceiling but does not freeze existing dirty bytes as ready. At the commit boundary, the prepared objects must match verified edits from that authorization generation. An already-ready commit request instead freezes the current content when authorized; later drift remains denied. The frozen identity contains the repository and base, exact Git paths, status, mode and blob plus a scope digest. Staged content wins for a staged path even if its worktree differs.
+
+Direct structured PreToolUse/PostToolUse pairs share the session, turn, tool-use
+identity, input hash and authority generation. A successful commit must produce
+one matching full delta against the frozen parent. A unique complete local Git
+readback may reconcile an existing candidate in unchanged scope. Multiple equal
+candidates, extra or missing objects, changed blobs, base drift and failed
+execution remain distinct unresolved conditions. Printed SHAs are not proof.
+
+An ordinary push target observed from a direct tool invocation is a fact, not
+authority. A later root authorization can adopt it only while it is unique and
+its repository and commit are unchanged. Force, deletion, other refs and release
+operations remain separate. The direct-push gate evaluates the persisted
+authorization once; the silent allow wire and its private decision record share
+the selected generation from that evaluation. The nested functions.exec host payload contract is
+still unverified; no JavaScript or display text is executed to infer it.
+
+Git plumbing uses NUL delimiters and strict reversible UTF-8. Input separator
+mapping must resolve uniquely; pathspecs, parent symlink escapes and unsupported
+path bytes fail closed. Native Windows filesystem behavior remains a separate
+gate from synthetic parser coverage.

@@ -327,9 +327,10 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current source and published Context Guard release: `0.12.1`",
+            "Current source candidate: `0.12.4` (unreleased)",
             compatibility,
         )
+        self.assertIn("Published release baseline: `0.12.1`", compatibility)
         self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
         self.assertNotIn(
             "Current published Context Guard release: `0.11.0`", compatibility

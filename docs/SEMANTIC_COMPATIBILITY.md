@@ -8,6 +8,13 @@ delta ledger and portable conformance fixtures. This document describes the
 shared assets and their authority boundaries. It does not claim full feature
 parity between the products.
 
+> Historical snapshot: the delta ledger below records the v0.9.4 alignment
+> baseline (schema 7, Stop protocol 2.0.0). It is preserved as frozen history
+> and does not describe current capability. The current 0.12.4 behavior
+> baseline lives in [BEHAVIOR_BASELINE_0_12_4.md](BEHAVIOR_BASELINE_0_12_4.md);
+> 0.12.4 DSH adaptation of anything newer than the frozen digest-v3 and
+> conformance mirrors remains pending work in the DSH repository.
+
 ## Shared assets
 
 ```text

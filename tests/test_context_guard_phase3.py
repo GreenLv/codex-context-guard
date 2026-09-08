@@ -109,7 +109,7 @@ class Schema10MigrationConformanceTests(Phase3TestCase):
         chained ledger (per-prompt child units, v1 protocol) exactly as
         0.11.x would have written it."""
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
-        self.prompt("请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
+        self.prompt("切换到独立任务：请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
         session_dir = self.root / "private" / "sessions" / "p3"
         legacy = json.loads((session_dir / "state.json").read_text("utf-8"))
         units = legacy["work_units"]
@@ -138,7 +138,7 @@ class Schema10MigrationConformanceTests(Phase3TestCase):
         migrated = cg.load_state(
             session_dir, {"session_id": "p3"}
         )
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         units = {item["id"]: item for item in migrated["work_units"]}
         self.assertEqual(units["WU0001"]["status"], "historical_unresolved")
         self.assertEqual(units["WU0002"]["status"], "active")
@@ -165,21 +165,39 @@ class Schema10MigrationConformanceTests(Phase3TestCase):
 
 
 class LifecycleConformanceTests(Phase3TestCase):
-    """Sibling roots, displacement, parked units, and explicit resume."""
+    """Default continuity, explicit-switch displacement, parked units, resume.
 
-    def test_sibling_roots_and_displacement_to_historical(self) -> None:
+    0.12.2 plan sections 3.1 (CG122-01): an unfinished task is continuous by
+    default — an ordinary second request is a SUPPLEMENT that keeps the same
+    unit and its original constraints inside the completion scope. Only an
+    explicit independent-task switch archives the active root as
+    historical_unresolved and opens a sibling root.
+    """
+
+    def test_supplement_keeps_unit_while_explicit_switch_displaces(self) -> None:
         self.prompt("请处理第一项修复任务。必须逐项落实。必须运行测试验证。", turn="t1")
+        # A plain second request is a supplement: SAME unit, constraints stay.
         self.prompt("请处理第二项修复任务。必须逐项落实。必须运行测试验证。", turn="t2")
+        state = self.state()
+        self.assertEqual(len(state["work_units"]), 1)
+        self.assertEqual(state["work_units"][0]["status"], "active")
+        self.assertEqual(state["requirements"][0]["status"], "pending")
+        scoped, _ancestors = cg.checkpoint_scope_item_ids(state)
+        self.assertIn("R001", scoped)
+        self.assertIn("R002", scoped)
+        # An explicit independent switch displaces the unit to
+        # historical_unresolved (auditable, never pass) and opens a sibling.
+        self.prompt("切换到独立任务：请整理文档目录的索引。必须运行测试验证。", turn="t3")
         state = self.state()
         units = state["work_units"]
         self.assertEqual([unit["parent_id"] for unit in units], [None, None])
         self.assertEqual(units[0]["status"], "historical_unresolved")
         self.assertEqual(units[1]["status"], "active")
-        self.assertEqual(state["requirements"][0]["status"], "pending")
         # Historical items stay auditable but leave the default gate.
         scoped, _ancestors = cg.checkpoint_scope_item_ids(state)
         self.assertNotIn("R001", scoped)
-        self.assertIn("R002", scoped)
+        self.assertNotIn("R002", scoped)
+        self.assertIn("R003", scoped)
 
     def test_awaiting_user_is_reopened_by_the_user_reply(self) -> None:
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
@@ -1242,6 +1260,28 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
                     prompt=f"批量任务第 {index} 步:请修复对应条目。必须运行测试验证。",
                 )
         state = self.state()
+        # 0.12.2 plan 3.1 (CG122-01): 120 plain step prompts are supplements
+        # to the SAME continuous work unit — no displacement chain.
+        self.assertEqual(len(state["work_units"]), 1)
+        self.assertEqual(state["work_units"][0]["status"], "active")
+        self.assertEqual(len(state["requirements"]), 121)
+        status = cg.status_context(state)
+        self.assertLess(len(status.encode("utf-8")), 4096)
+
+    def test_switch_chains_stay_bounded_in_default_status_after_many_units(
+        self,
+    ) -> None:
+        with mock.patch.object(cg.secrets, "token_urlsafe", return_value="token"):
+            for index in range(1, 122):
+                self.dispatch(
+                    "UserPromptSubmit",
+                    turn=f"turn-{index}",
+                    prompt=(
+                        f"切换到独立任务：处理批次 {index}。"
+                        "必须运行测试验证。"
+                    ),
+                )
+        state = self.state()
         self.assertEqual(len(state["work_units"]), 121)
         self.assertEqual(state["work_units"][-1]["status"], "active")
         self.assertEqual(state["work_units"][0]["status"], "historical_unresolved")
@@ -1630,6 +1670,13 @@ class RunnerDiscoveryEvidenceTests(Phase3TestCase):
             (self.real_tests_dir / f"{self.PROBE_MODULE}.py").exists()
         )
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows chmod cannot make a directory unwritable: the directory "
+        "read-only attribute is not enforced on file creation, so this "
+        "POSIX mode-bit negative control cannot establish its precondition "
+        "on a native host (capability limitation, not a pass)",
+    )
     def test_readonly_checkout_still_discovers(self) -> None:
         """Negative control mirroring a read-only source checkout: the
         directory is made read-only (temp only, never the real repo), a
@@ -1672,7 +1719,7 @@ class SchemaUpgradePromptIntegrationTests(Phase3TestCase):
 
     def build_schema9_state(self) -> None:
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
-        self.prompt("请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
+        self.prompt("切换到独立任务：请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
         session_dir = self.root / "private" / "sessions" / "p3"
         legacy = json.loads((session_dir / "state.json").read_text("utf-8"))
         units = legacy["work_units"]
@@ -1699,7 +1746,7 @@ class SchemaUpgradePromptIntegrationTests(Phase3TestCase):
         # UserPromptSubmit (no resume intent, no control syntax).
         self.prompt("另一件独立事项:请检查文档拼写。必须运行测试验证。", turn="t3")
         state = self.state()
-        self.assertEqual(state["schema_version"], 10)
+        self.assertEqual(state["schema_version"], 11)
         units = {unit["id"]: unit for unit in state["work_units"]}
         self.assertEqual(len(units), 3)
         self.assertEqual(units["WU0001"]["status"], "historical_unresolved")
@@ -1714,20 +1761,20 @@ class SchemaUpgradePromptIntegrationTests(Phase3TestCase):
         self,
     ) -> None:
         self.build_schema9_state()
-        # A plain sibling request displaces the migrated active root to
+        # An explicit independent switch displaces the migrated active root to
         # historical; the only parked unit is then the post-upgrade root
         # with a persisted activity sequence. The explicit resume reopens
         # exactly that unique waiting candidate (plan 4.2).
-        self.prompt("先看一下别的问题。必须运行测试验证。", turn="t3")
+        self.prompt("切换到新任务：检查别的问题。必须运行测试验证。", turn="t3")
         state = self.state()
         self.assertEqual(state["work_units"][1]["status"], "historical_unresolved")
         self.assertEqual(state["work_units"][2]["status"], "active")
         self.dispatch(
             "Stop",
             turn="t3",
-            last_assistant_message="目录发布已完成,当前等待外部审核。",
+            last_assistant_message="请确认是否继续检查目录。",
         )
-        self.assertEqual(self.state()["work_units"][2]["status"], "awaiting_external")
+        self.assertEqual(self.state()["work_units"][2]["status"], "awaiting_user")
         self.prompt("继续刚才的任务。", turn="t4")
         state = self.state()
         units = {unit["id"]: unit for unit in state["work_units"]}
@@ -1760,7 +1807,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
 
     def build_schema9_state(self) -> None:
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
-        self.prompt("请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
+        self.prompt("切换到独立任务：请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
         session_dir = self.root / "private" / "sessions" / "p3"
         legacy = json.loads((session_dir / "state.json").read_text("utf-8"))
         units = legacy["work_units"]
@@ -1911,7 +1958,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
         self.build_schema9_state()
         session_dir = self.root / "private" / "sessions" / "p3"
         migrated = cg.load_state(session_dir, {"session_id": "p3"})
-        self.assertEqual(migrated["schema_version"], 10)
+        self.assertEqual(migrated["schema_version"], 11)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["integrity"]["issue"])
         self.assertIsNone(migrated["integrity"]["backup_file"])

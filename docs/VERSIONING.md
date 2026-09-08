@@ -263,6 +263,44 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.12.4` is an unreleased source candidate (2026-09-09). It folds the
+  earlier unreleased 0.12.2 and 0.12.3 stabilization candidates into a new
+  patch identity. A normally trusted 0.12.2 trial exposed a push
+  re-authorization parser defect; a normally trusted 0.12.3 trial then exposed
+  a supersession false clarification when an operational
+  `permission-boundary correction retry` phrase used the Chinese word `修正`
+  without revising any requirement. Version 0.12.4 treats `修正` as a
+  supersession verb when a requirement-like target appears before or after it,
+  and keeps an explicit correction with no unique target on the fail-closed
+  clarification path.
+  The consumed 0.12.2 and 0.12.3 caches remain immutable and their evidence is
+  not reused for changed runtime bytes. A statement that names
+  the current candidate commit now binds that existing object; an explicit
+  40-character SHA remains exact and mismatches fail closed. Private state
+  advances to schema 11 with bounded typed wait-condition records
+  (`condition_id`, owner work unit, kind, condition type, raise source,
+  status, and release provenance). Schema 10 is a full migration source:
+  each still-parked waiting unit deterministically derives one
+  `migrated_unresolved` condition whose raise-source reference is
+  restricted-nullable and whose release source stays empty until a real
+  eligible root-user confirmation or bound external fact; external waits never
+  become user-controlled through migration. Repeated migration never duplicates conditions,
+  and no lossy schema-11 rewrite path exists. Unfinished tasks are
+  continuous by default: supplements, corrections, progress questions, and
+  same-task continuations retain the current work unit and its
+  constraints, while only an explicit independent-task switch opens an
+  auditable sibling root. Supersession parses the speech act first, so
+  test specifications and product descriptions never revoke real
+  requirements. Recovery, completion, and diagnostics share one
+  current-scope projection with a projection-bound `recovery-page`
+  paging entry requiring an explicit session ID. Source-clause and subject
+  hashes distinguish waits; explicit session restrictions use separate
+  requirement records with verified prompt spans. Registered child lifecycle
+  facts can release only their uniquely bound end-of-child waits, without
+  completing parent work. The nine-Hook wire, Stop protocol 3.0.0, classifier
+  3.2.1, Proof protocol 1.0.0, Execution protocol 2.0.0, and the Python
+  3.10+ floor are unchanged. Native platform, installed-lifecycle, and
+  real-host evidence remain separate and pending before publication.
 - `0.12.1` is the 2026-09-07 Skill and validation-workflow patch. Advanced completion,
   authorization, migration, and explicit controls move to conditional
   references. The current-work-unit completion boundary is made explicit in
@@ -342,3 +380,54 @@ gated on accepted native and adversarial evidence for the exact source.
 Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
 for an `enforced` item. It does not claim arbitrary pixel understanding,
 official-source validity, or semantic completeness for `legacy_fallback` items.
+
+### 0.12.4 supplemental Stop-subject repair (unreleased)
+
+CG122-08 unifies ordinary Stop completion interpretation across diagnostics,
+waiting and evidence selection. A child task or local phase ending does not
+assert that the current unit passed acceptance. Only affirmative current-unit
+whole completion enters proof checks; unrelated waiting cannot bypass them.
+The bounded interpreter preserves unknown subjects as non-completing and
+exposes its unsupported interpretation as `legacy_fallback`. No Hook payload,
+state schema beyond the candidate's schema 11, or public protocol is added.
+The runtime bytes change, so earlier P1 source and artifact evidence cannot
+stand for this later candidate; native and actual-host acceptance remain pending.
+
+### 0.12.4 supplemental commit-chain repair (unreleased)
+
+Schema 11 adds a bounded per-unit source-observation context: paired pending
+operations, consumed identity hashes, attributable edit objects and exact push
+target facts. Prepared source retains its affirmative root file ceiling and digest, plus a preparation mode separating ready-at-authorization content from work that still requires verified edits. Exclusions and reference-only objects do not enter that ceiling; edit observations carry bounded authorization-generation references. These
+records never grant root authority. Existing schema-10 projections without this
+provenance cannot manufacture attributable edits during migration. Git path
+identity remains exact; unsupported bytes and non-unique input mappings fail
+closed. The nested host payload and native platform gates remain pending.
+
+An early 0.12.2 candidate wrote the same schema number with the four original
+source-observation fields before the bounded `decisions` list existed. That
+exact predecessor shape remains a read-compatible input: the runtime verifies
+its content hash and every retained observation first, then adds an empty
+decision list in memory. It does not accept extra keys or relax path, object,
+hash, generation, or target validation. Current writes always include the
+decision list. Direct push enforcement selects one authorization generation
+once and uses that same result for the returned Hook decision and private
+ledger record.
+
+The final native-gate repair distinguishes a commit noun in “push the current
+candidate commit” from an instruction to create a new commit. Authorization
+adoption reads the live repository identity and HEAD for the new root prompt;
+when that prompt names a full Git SHA, the target retains the named SHA instead
+of silently replacing it with the checkout snapshot. The same SHA passes only
+for the matching repository/ref/remote/current HEAD. This changes runtime
+bytes without changing schema 11 or any public protocol.
+
+### 0.12.4 private host-shape probe (unreleased)
+
+The repository validation tools include an owner-private command-Hook stdin
+probe for normally trusted real-host runs. It records bounded exact bytes,
+measures the installed runtime tree, verifies the documented PreToolUse and
+PostToolUse correlation fields, and emits only a non-authoritative structural
+report. The probe lives under `tools/validation/` and changes no installed
+Hook, runtime tree, state schema, or public protocol, so it does not consume a
+new plugin version. The six `host_behavior` gates remain pending until a real
+capture supports an independently reviewed raw-to-gate mapping.

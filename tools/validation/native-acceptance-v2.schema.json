@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/GreenLv/codex-context-guard/tools/validation/native-acceptance-v2.schema.json",
+  "title": "native-acceptance/v2 result",
+  "description": "Result document for the versioned native-acceptance entrypoint. gate_profile portable_runtime covers exact-runtime portable gates on a clean source commit; gate_profile host_behavior covers real-host behavior captures validated from host event records only. The two profiles are separate evidence: a portable result never satisfies a host_behavior obligation.",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "product",
+    "gate_profile",
+    "repository",
+    "runtime_tree_sha256",
+    "platform",
+    "gates",
+    "cleanup",
+    "unperformed_actions"
+  ],
+  "properties": {
+    "schema": {"const": "native-acceptance/v2"},
+    "status": {"enum": ["passed", "failed", "pending"]},
+    "product": {"const": "codex_context_guard"},
+    "gate_profile": {"enum": ["portable_runtime", "host_behavior"]},
+    "subject": {
+      "type": "object",
+      "required": ["kind", "source_commit", "prepared_source_sha256", "runtime_tree_sha256"],
+      "properties": {
+        "kind": {"type": "string"},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "prepared_source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "runtime_tree_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "repository": {
+      "type": "object",
+      "properties": {
+        "url": {"type": ["string", "null"]},
+        "commit": {"type": "string"}
+      }
+    },
+    "runtime_tree_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifact": {"type": ["object", "null"]},
+    "platform": {
+      "type": "object",
+      "required": ["os", "shell", "toolchain"],
+      "properties": {
+        "os": {"type": "string"},
+        "shell": {"type": "string"},
+        "toolchain": {
+          "type": "object",
+          "required": ["python", "codex"],
+          "properties": {
+            "python": {"type": "string"},
+            "codex": {"type": "string"}
+          }
+        }
+      }
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["session_id", "scenarios"],
+        "properties": {
+          "session_id": {"type": "string"},
+          "scenarios": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "gates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "required", "status", "subject", "exit_code", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "required": {"type": "boolean"},
+          "status": {"enum": ["passed", "failed", "pending"]},
+          "chain": {
+            "description": "Parser-only causal-chain verdict, distinct from host acceptance.",
+            "enum": ["absent", "incomplete", "valid", "contradicted"]
+          },
+          "subject": {
+            "type": "object",
+            "required": ["kind", "id"],
+            "properties": {
+              "kind": {"type": "string"},
+              "id": {"type": "string"}
+            }
+          },
+          "exit_code": {"type": "integer"},
+          "note": {"type": ["string", "null"]},
+          "evidence": {
+            "type": "object",
+            "required": ["mode"],
+            "properties": {
+              "mode": {"type": "string"},
+              "source_result_sha256": {"type": ["string", "null"]},
+              "source_gate_id": {"type": ["string", "null"]},
+              "invalidation_reason": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "visibility": {
+      "type": "object",
+      "required": ["full_result_is_public", "public_annex_sanitized"],
+      "properties": {
+        "full_result_is_public": {"type": "boolean"},
+        "public_annex_sanitized": {"type": "boolean"},
+        "host_passed_reachable": {"type": "boolean"}
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "required": ["status", "remaining_ids"],
+      "properties": {
+        "status": {"type": "string"},
+        "remaining_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "public_annex": {
+      "type": "object",
+      "required": ["events"],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["event_type", "scenario_id", "payload_sha256"],
+            "properties": {
+              "event_type": {"type": "string"},
+              "scenario_id": {"type": "string"},
+              "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    },
+    "capability_note": {"type": "string"},
+    "run": {
+      "type": "object",
+      "properties": {
+        "started_at": {"type": ["string", "null"]},
+        "finished_at": {"type": ["string", "null"]},
+        "run_url": {"type": ["string", "null"]}
+      }
+    },
+    "unperformed_actions": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}

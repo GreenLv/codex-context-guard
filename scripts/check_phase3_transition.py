@@ -68,7 +68,6 @@ EXPECTED_FIXED_TARGETS = [
     "OwnerLadderFixtureTests.test_target_whole_claim_no_persistence_no_obligations",
     "OwnerLadderFixtureTests.test_target_whole_claim_persistence",
     "ReasonCodeFixtureTests.test_production_structured_matcher_api",
-    "SchemaMigrationBaselineTests.test_schema_version_is_10_with_migration",
     "SchemaMigrationTargetTests.test_schema10_migration_isolates_chain_without_marking_pass",
     "SchemaMigrationTargetTests.test_schema10_resume_policy_unique_and_tie",
     "SimulationBaselineTests.test_dry_run_variants_are_treated_as_real_mutations",
@@ -99,6 +98,15 @@ SUPERSEDED_WIRE_ASSERTIONS = [
         "requires the allow path to return the plain empty object without "
         "permissionDecisionReason; UX-05 itself is closed by the Phase-4 "
         "conformance suite",
+    ),
+    (
+        "SchemaMigrationBaselineTests.test_schema_version_is_10_with_migration",
+        "SCHEMA-11 (0.12.4 candidate)",
+        "intentionally superseded version pin: the frozen plan section 4.3 "
+        "advances private state to schema 11 with the schema-10 full "
+        "migration source, so the schema-10 equality pin inverts back to an "
+        "expected failure; schema-10 behavior itself stays verified by the "
+        "Phase-3 conformance suite and the P0/P1 regression modules",
     ),
 ]
 

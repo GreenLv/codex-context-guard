@@ -80,7 +80,7 @@
     },
     {
       "id": "native_acceptance_infrastructure",
-      "paths": ["tools/validation/native_acceptance.py", "tests/test_native_acceptance.py"],
+      "paths": ["tools/validation/native_acceptance.py", "tools/validation/host_behavior.py", "tools/validation/host_capture.py", "tools/validation/host_gate_adapter.py", "tools/validation/host_gate_probe.py", "tools/validation/native-acceptance-v2.schema.json", "tests/test_native_acceptance.py", "tests/test_host_behavior_acceptance.py", "tests/test_host_capture.py", "tests/test_host_gate_adapter.py"],
       "gates": ["full_candidate"],
       "invalidates": ["native_runtime"],
       "contracts": [],

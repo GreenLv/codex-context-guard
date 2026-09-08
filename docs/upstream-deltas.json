@@ -1,6 +1,10 @@
 {
   "ledgerVersion": "1",
   "description": "Delta ledger tracking how dsh-completion-guard adapts codex-context-guard protocol capabilities. Each entry separates the source fact from plan status, implementation status, deterministic tests, native platform acceptance, and release readback. A disposition of adapted/adopted with implementationStatus not-implemented is a planned alignment, not a shipped one.",
+  "historicalSnapshot": {
+    "historical": true,
+    "note": "This ledger is the frozen v0.9.4 alignment baseline (schema 7, Stop protocol 2.0.0). It is a historical snapshot: current 0.12.4 behavior is documented in docs/BEHAVIOR_BASELINE_0_12_4.md, and 0.12.4 DSH adaptation beyond the frozen digest-v3/conformance mirrors remains pending in the DSH repository."
+  },
   "source": {
     "product": "codex-context-guard",
     "version": "v0.9.4",

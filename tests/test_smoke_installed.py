@@ -18,6 +18,7 @@ RUNTIME = ROOT / "scripts" / "context_guard.py"
 # schema-10 semantics) from its own scripts directory at runtime, so the
 # installed plugin root must carry it next to context_guard.py.
 REQUIRED_MODULES = [
+    ROOT / "scripts" / "cg_commit.py",
     ROOT / "scripts" / "cg_actions.py",
     ROOT / "scripts" / "cg_codex_adapter.py",
     ROOT / "scripts" / "cg_hook.py",

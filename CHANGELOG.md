@@ -2,7 +2,36 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.1` is the latest release. The preceding `0.12.0` release is tagged at `75e8fe13af32c5512fce31a3d69c27db1b509aa0`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.4` is an unreleased source candidate and `0.12.1` is the latest release. The preceding `0.12.0` release is tagged at `75e8fe13af32c5512fce31a3d69c27db1b509aa0`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+
+## 0.12.4 - Unreleased (source candidate)
+
+### Highlights
+
+- Finishing a child task or local phase no longer claims completion of the current task. Missing attachments or external results keep obligations pending; a real whole-task claim still requires evidence even alongside an unrelated wait.
+- Follow-up instructions keep the unfinished task and its original limits. Operational correction wording, “do not switch tasks,” quoted examples and plan tables no longer move those limits into history or ask which requirement to replace.
+- A confirmation releases only the matching pause. “The model is ready” does not clear a separate file-check pause; unrelated replies, unmet conditions and ambiguous confirmations keep waiting.
+- Recovery puts current obligations first and offers complete text in pages tied to the requested session. Long requirements retain their suffix constraints, and a changed scope invalidates old page cursors.
+- Commit-and-push follows the authorized source objects, without absorbing unrelated dirty files. A push re-authorization that names the current candidate commit now binds that existing commit and its exact SHA instead of creating an impossible future-commit transition.
+
+### Changes
+
+- Test descriptions, product explanations and operational noun phrases such as “permission-boundary correction retry” do not cancel existing requirements or raise a replacement clarification. The `修正` verb remains authoritative when a requirement-like target appears before or after it, while an explicit correction with no unique target still asks for clarification. An exact requirement ID resolves that target; unresolved ambiguity preserves the old requirements. The exact native retry prompt exposed the noun-phrase defect after consuming the unpublished `0.12.3` runtime bytes; those caches stay immutable and their partial/failure evidence is not relabeled as `0.12.4`.
+- Commit-and-push uses only the root user’s affirmative file scope, or uniquely attributable current-task edits when no files were named. “Commit owned.txt; leave other.txt unchanged” permits only owned.txt; read/test references and quoted instructions add no files. The complete commit must match the frozen parent, paths, modes and blobs.
+- Permission to finish further fixes preserves the file limit while waiting for verified edits from that authorization. Existing dirty bytes are not automatically ready. An already-ready candidate stays frozen against later drift, and a staged file retains its staged blob even when its worktree content differs.
+- A paired direct-tool commit result or unique complete local readback can bind the commit without repeating unchanged authorization. Failed commits, scope mismatch, base drift and ambiguous candidates have distinct reasons. A later root push confirmation can use one still-current target established by a direct tool invocation; that target fact alone grants no permission.
+- Push re-authorization distinguishes an existing “current candidate commit” from an instruction to create a commit. A statement-named 40-character Git SHA wins over the checkout snapshot: the matching live candidate can proceed, while a stale, foreign or otherwise mismatched SHA remains denied. The isolated native trial consumed the earlier unreleased `0.12.2` bytes when it exposed this defect; those caches remain immutable and their evidence is not relabeled as `0.12.4`.
+- Early schema-11 state that predates the bounded push-decision list resumes without losing its verified commit observations. Its exact four-field predecessor shape is validated before an empty decision list is added; malformed paths, hashes or records still fail closed. Each direct push now uses one authorization evaluation for both the Hook wire and its private decision record, so an emitted allow and the recorded authorization generation cannot diverge.
+- Private state advances to schema 11. Waits retain source and subject hashes; explicit session restrictions remain separate from the business task. Schema 10 migrates old waits without inventing a source or release, schema 9 still migrates, and schemas 7/8 remain read-only inputs. Schema 11 cannot be written back lossily as schema 10.
+- The `recovery-page` runtime subcommand requires `--session-id`. It returns bounded text and metadata chunks with continuation offsets; recovery supplies the exact invocation. Default diagnostics and completion checks use the same applicable task scope.
+- A uniquely bound `SubagentStop` fact can end a wait for that child to finish. This proves lifecycle termination, not a successful child result or completion of the parent task. Other external waits need their own supported factual binding.
+- A standalone [0.12.4 behavior baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) now documents, per behavior area, the expected behavior, its source and regression locators, host dependencies, the native evidence still missing, and the DSH adaptation that remains pending there. The v0.9.4 delta ledger is explicitly marked as a historical alignment snapshot and is no longer the description of current capability.
+- The versioned native-acceptance entrypoint gains a separate `host_behavior` profile beside the unchanged portable default. Its collector is the only component that turns normalized captured host records into evidence, while a separate validator enforces causal order, request/response pair roles, fact-identity bindings, duplicate/replay rejection, and session/scenario/runtime/producer-version containment. A new owner-private probe records exact command-Hook stdin bytes, measures the installed runtime, and validates the documented Pre/PostToolUse fields without producing gate claims. Overall `passed` remains unreachable until a normally trusted real run supplies raw captures and a reviewed raw-to-gate mapping is accepted. Unrun or unverified evidence stays `pending`, contradictory evidence fails, and the public annex includes only allowlisted labels and digests.
+- The nine Hook events, Stop 3.0.0, classifier 3.2.1, Proof 1.0.0, Execution 2.0.0 and Python 3.10+ standard-library runtime remain unchanged.
+
+### Validation
+
+- Integrated source checks pass within their recorded scope. Disposable installation evidence belongs to the preceding 0.12.4 prepared bytes; the corrected exact candidate requires fresh installation checks and keeps exact clean-source native macOS/Windows, real-host behavior, artifact, CI/HOL and publication gates separate and pending. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for counts, identities and evidence boundaries. This candidate remains unreleased.
 
 ## 0.12.1 - 2026-09-07
 

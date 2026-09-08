@@ -151,32 +151,183 @@ def _command_basename(token: str) -> str:
     return name.removesuffix(".exe")
 
 
-def _command_tokens(command: str, *, posix: bool | None = None) -> list[str]:
+def _command_tokens(
+    command: str,
+    *,
+    posix: bool | None = None,
+    _windows_shell: str | None = None,
+) -> list[str]:
     # Newlines separate commands exactly like ";" in POSIX shells; shlex
     # would otherwise fold them into ordinary whitespace and merge the
     # segments. Quoted newlines stay inside their quoted token.
-    command = command.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "; ")
+    posix_mode = os.name != "nt" if posix is None else posix
+    windows_shell = _windows_shell or (
+        "powershell" if posix is None and os.name == "nt" else "cmd"
+    )
+    powershell_mode = not posix_mode and windows_shell == "powershell"
+    pieces: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            pieces.append(char)
+            escaped = False
+            index += 1
+            continue
+        escape_char = "\\" if posix_mode else "\x60" if powershell_mode else None
+        if char == escape_char and quote != "'":
+            escaped = True
+            pieces.append(char)
+            index += 1
+            continue
+        quote_chars = {"'", '"'} if posix_mode or powershell_mode else {'"'}
+        if (
+            powershell_mode
+            and quote == "'"
+            and char == "'"
+            and index + 1 < len(command)
+            and command[index + 1] == "'"
+        ):
+            pieces.extend(("'", "'"))
+            index += 2
+            continue
+        if char in quote_chars:
+            if quote is None:
+                quote = char
+            elif quote == char:
+                quote = None
+        pieces.append("; " if char in "\r\n" and quote is None else char)
+        index += 1
+    command = "".join(pieces)
+    if not posix_mode:
+        # Non-POSIX shlex only honors quotes at word starts, so a quoted
+        # ";" or "&" inside an env-assignment value splits into separate
+        # segments and hides the real invocation. Mask punctuation AND
+        # whitespace inside quote spans with sentinel prefixes before
+        # lexing and restore them per token afterwards: a control char or
+        # blank inside quotes is never a segment boundary, and the
+        # assignment keeps binding the value the shell would use
+        # (fail-closed: hostile selector values stay visible to the
+        # classifier).
+        if any(char in command for char in _QUOTE_SENTINELS.values()):
+            return []
+        masked: list[str] = []
+        quote = None
+        escaped = False
+        index = 0
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                masked.append(char)
+                escaped = False
+                index += 1
+                continue
+            if powershell_mode and char == "\x60" and quote != "'":
+                masked.append(char)
+                escaped = True
+                index += 1
+                continue
+            if (
+                powershell_mode
+                and quote == "'"
+                and char == "'"
+                and index + 1 < len(command)
+                and command[index + 1] == "'"
+            ):
+                masked.extend(("'", "'"))
+                index += 2
+                continue
+            quote_chars = {"'", '"'} if powershell_mode else {'"'}
+            if char in quote_chars:
+                if quote is None:
+                    quote = char
+                elif quote == char:
+                    quote = None
+                masked.append(char)
+                index += 1
+                continue
+            if quote is not None and char in _QUOTE_SENTINELS:
+                # Whole-word sentinel: the shell punctuation or blank
+                # inside the quote span is replaced by a wordchar sentinel
+                # and restored verbatim after lexing, so it can never act
+                # as a segment boundary or split the quoted value.
+                masked.append(_QUOTE_SENTINELS[char])
+                index += 1
+                continue
+            masked.append(char)
+            index += 1
+        command = "".join(masked)
     try:
         lexer = shlex.shlex(
             command,
-            posix=os.name != "nt" if posix is None else posix,
+            posix=posix_mode,
             punctuation_chars=";&|()",
         )
         lexer.whitespace_split = True
         lexer.commenters = ""
-        return [_unquote_command_token(token) for token in lexer]
+        if not posix_mode:
+            lexer.quotes = "'" + '"' if powershell_mode else '"'
+            lexer.wordchars += "".join(_QUOTE_SENTINELS.values())
+        tokens = [_unquote_command_token(token) for token in lexer]
+        if not posix_mode:
+            # Restore the sentinel mapping to the exact original bytes.
+            restore = str.maketrans(
+                {value: key for key, value in _QUOTE_SENTINELS.items()}
+            )
+            tokens = [token.translate(restore) for token in tokens]
+        return tokens
     except ValueError:
         return []
+
+
+_QUOTE_SENTINELS = {
+    ";": "\x03",
+    "&": "\x04",
+    "|": "\x05",
+    "(": "\x06",
+    ")": "\x07",
+    " ": "\x01",
+    "\t": "\x02",
+}
 
 
 SHELL_CONTROL_TOKENS = {";", "&&", "||", "|", "&", "(", ")"}
 
 
 SHELL_WRAPPERS = {"bash", "dash", "ksh", "pwsh", "powershell", "sh", "zsh"}
+POSIX_SHELL_WRAPPERS = SHELL_WRAPPERS - {"pwsh", "powershell"}
+
+
+def _outer_windows_shell(
+    command: str, *, posix: bool | None, windows_shell: str
+) -> str:
+    """Select quote rules for an explicit POSIX wrapper on Windows.
+
+    A direct non-POSIX command is projected with CMD quote rules so a single
+    quote never hides a real CMD control boundary.  Codex commonly spells an
+    explicit POSIX wrapper payload with an outer PowerShell single-quoted
+    argument; recognize only that known wrapper position before recursively
+    switching the payload itself to POSIX rules.
+    """
+    posix_mode = os.name != "nt" if posix is None else posix
+    if posix_mode or windows_shell != "cmd":
+        return windows_shell
+    first = command.lstrip().split(maxsplit=1)[0] if command.strip() else ""
+    return (
+        "powershell"
+        if _command_basename(first) in POSIX_SHELL_WRAPPERS
+        else windows_shell
+    )
 
 
 def _expanded_command_tokens(
-    command: str, *, depth: int = 0, posix: bool | None = None
+    command: str,
+    *,
+    depth: int = 0,
+    posix: bool | None = None,
+    _windows_shell: str | None = None,
 ) -> list[str]:
     """Tokenize a command and boundedly inspect explicit shell ``-c`` wrappers.
 
@@ -185,7 +336,11 @@ def _expanded_command_tokens(
     classification uses :func:`_expanded_command_segments`, which splices
     wrapper scripts in place so segment boundaries stay truthful.
     """
-    tokens = _command_tokens(command, posix=posix)
+    windows_shell = _windows_shell or (
+        "powershell" if posix is None and os.name == "nt" else "cmd"
+    )
+    token_shell = _outer_windows_shell(command, posix=posix, windows_shell=windows_shell)
+    tokens = _command_tokens(command, posix=posix, _windows_shell=token_shell)
     if depth >= 3:
         return tokens
     expanded = list(tokens)
@@ -202,14 +357,16 @@ def _expanded_command_tokens(
                 or (option.startswith("-") and "c" in option[1:] and wrapper not in {"pwsh", "powershell"})
             )
             if is_command_option and option_index + 1 < len(tokens):
-                nested_posix = (
-                    True if wrapper not in {"pwsh", "powershell"} else posix
-                )
+                is_powershell = wrapper in {"pwsh", "powershell"}
+                nested_posix = True if not is_powershell else False
                 expanded.extend(
                     _expanded_command_tokens(
                         tokens[option_index + 1],
                         depth=depth + 1,
                         posix=nested_posix,
+                        _windows_shell=(
+                            "powershell" if is_powershell else "cmd"
+                        ),
                     )
                 )
                 break
@@ -312,13 +469,21 @@ def command_invocations_full(
 
 
 def _expanded_command_segments(
-    command: str, *, depth: int = 0, posix: bool | None = None
+    command: str,
+    *,
+    depth: int = 0,
+    posix: bool | None = None,
+    _windows_shell: str | None = None,
 ) -> list[list[str]]:
     """Position-aware segment expansion: shell ``-c`` wrapper scripts are
     parsed recursively and spliced in place, so a nested invocation keeps
     its own segment boundary (``bash -c 'git tag v1' ; npm publish`` stays
     two invocations)."""
-    tokens = _command_tokens(command, posix=posix)
+    windows_shell = _windows_shell or (
+        "powershell" if posix is None and os.name == "nt" else "cmd"
+    )
+    token_shell = _outer_windows_shell(command, posix=posix, windows_shell=windows_shell)
+    tokens = _command_tokens(command, posix=posix, _windows_shell=token_shell)
     if not tokens:
         return []
     if depth >= 3:
@@ -343,14 +508,16 @@ def _expanded_command_segments(
                 if is_command_option and option_index + 1 < len(segment):
                     # A POSIX shell keeps POSIX quoting semantics even when its
                     # outer launcher command was tokenized on Windows.
-                    nested_posix = (
-                        True if wrapper not in {"pwsh", "powershell"} else posix
-                    )
+                    is_powershell = wrapper in {"pwsh", "powershell"}
+                    nested_posix = True if not is_powershell else False
                     result.extend(
                         _expanded_command_segments(
                             " ".join(segment[option_index + 1 :]),
                             depth=depth + 1,
                             posix=nested_posix,
+                            _windows_shell=(
+                                "powershell" if is_powershell else "cmd"
+                            ),
                         )
                     )
                     spliced = True
@@ -434,6 +601,40 @@ def _first_version_token(values: list[str]) -> str | None:
     return None
 
 
+_GIT_PSEUDO_REFS = {
+    "HEAD",
+    "FETCH_HEAD",
+    "ORIG_HEAD",
+    "MERGE_HEAD",
+    "CHERRY_PICK_HEAD",
+    "REVERT_HEAD",
+    "BISECT_HEAD",
+    "AUTO_MERGE",
+}
+
+
+def _is_valid_git_branch_name(value: Any) -> bool:
+    """Bounded Git branch-name validation, separate from execution IDs."""
+    text = str(value or "")
+    if not text or len(text) > 1024 or text.upper() in _GIT_PSEUDO_REFS:
+        return False
+    if text.startswith("-") or text.endswith(("/", ".")):
+        return False
+    if ".." in text or "@{" in text or "//" in text:
+        return False
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        return False
+    if any(char in " ~^:?*[\\" for char in text):
+        return False
+    components = text.split("/")
+    return all(
+        component
+        and not component.startswith(".")
+        and not component.endswith((".", ".lock"))
+        for component in components
+    )
+
+
 def current_branch(cwd: Any) -> str:
     import subprocess
     try:
@@ -447,7 +648,7 @@ def current_branch(cwd: Any) -> str:
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     value = result.stdout.strip()
-    return value if result.returncode == 0 and EXECUTION_ID_RE.fullmatch(value) else "unknown"
+    return value if result.returncode == 0 and _is_valid_git_branch_name(value) else "unknown"
 
 
 def _git_invocation_action(
@@ -1569,6 +1770,8 @@ def _classify_shell_state(normalized: str, tool_input: Any) -> str:
         return STATE_AMBIGUOUS_CANDIDATE
     if _shell_actions(command):
         return STATE_CANDIDATE
+    if local_source_effect(command) is not None:
+        return STATE_CANDIDATE
     return STATE_SAFE
 
 
@@ -1638,3 +1841,45 @@ def is_git_commit_command(command: str) -> bool:
             ):
                 return True
     return False
+
+
+def local_source_effect(command: str) -> dict[str, Any] | None:
+    """Recognized local observations, never high-risk action authorization.
+
+    This only routes literal direct-shell source writes and real commits to
+    the existing stateful Hook. It does not interpret JavaScript/tool text.
+    """
+    invocations = command_invocations(command)
+    if any(exe in {"cd", "pushd", "set-location"} for exe, _args in invocations):
+        return {"kind": "unsupported", "paths": []}
+    commits = []
+    for exe, args in invocations:
+        if exe != "git":
+            continue
+        index = 0
+        roots = []
+        while index < len(args) and args[index].startswith("-"):
+            flag = args[index]
+            if flag in {"--git-dir", "--work-tree"} or flag.startswith(("--git-dir=", "--work-tree=")):
+                return {"kind": "unsupported", "paths": []}
+            if flag == "-C" and index + 1 < len(args):
+                roots.append(args[index + 1])
+            index += 2 if flag in GIT_GLOBAL_ARG_OPTIONS else 1
+        if index < len(args) and args[index] == "commit" and "--dry-run" not in args[index+1:]:
+            commits.append({"roots": roots})
+    if commits:
+        return {"kind": "commit", "paths": [], "roots": commits[0]["roots"]} if all(c == commits[0] for c in commits) else {"kind": "unsupported", "paths": []}
+    paths: list[str] = []
+    tokens = _command_tokens(command)
+    for i, token in enumerate(tokens[:-1]):
+        if token in {">", ">>"} and tokens[i+1] not in {"&", "1", "2", "/dev/null"}:
+            paths.append(tokens[i+1].strip("\"'"))
+    for exe, args in invocations:
+        if exe.lower() in {"set-content", "add-content", "out-file"}:
+            for flag in {"-path", "-literalpath", "-filepath"}:
+                lowered = [a.lower() for a in args]
+                if flag in lowered and lowered.index(flag) + 1 < len(args):
+                    paths.append(args[lowered.index(flag)+1].strip("\"'"))
+    if paths:
+        return {"kind": "edit", "paths": list(dict.fromkeys(paths))}
+    return None

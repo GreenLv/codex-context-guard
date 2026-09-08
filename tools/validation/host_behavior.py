@@ -1,0 +1,882 @@
+#!/usr/bin/env python3
+"""Host-behavior acceptance profile: separate collector and validator (r2).
+
+Evidence provenance model. The ``Collector`` is the only component allowed to
+turn raw captured bytes into event records: it reads raw JSON lines, computes
+each record's ``payload_sha256`` itself from those bytes, and rejects records
+with caller-claimed digest fields, malformed fields, or unknown payload data.
+Normalized records carry no status authority. The ``Validator`` is the only
+status authority; it derives gate outcomes from the normalized records and the
+declared subject identity.
+
+Capture bundles declare their origin:
+
+* ``collector_v1``  - assembled by this collector from raw captured bytes.
+* ``external_normalized`` - assembled outside this repository's collector.
+* ``synthetic`` - parser unit fixtures.
+
+Capability limit (honest, by design): ``host_capture.py`` now provides a
+supported private raw Hook-shape probe, but this validator implements no
+accepted raw-to-gate mapping. Therefore ``host_passed_reachable`` is false and
+no capture, whatever its origin, can earn an overall ``passed``. Parser chain validity is
+reported per gate as ``chain`` (``absent``/``incomplete``/``valid``/
+``contradicted``) and stays distinct from host acceptance: a valid chain still
+yields ``pending`` (``awaiting_live_capture_support``). Contradictory observed
+evidence - reordered pairs, reversed pair roles, duplicate or replayed event
+IDs, subject/reference mismatches, cross-scenario/session/runtime
+contamination, producer version mismatch - fails the result and takes
+precedence over pending. Incomplete or unrun evidence stays pending.
+``passed`` becomes reachable only after observed raw payloads support a
+reviewed mapping that binds records to real host dispatch (later P4 scope).
+
+Cleanup must be evidenced by observed ``cleanup_observed`` records carrying
+their own ``remaining_ids`` facts; a handwritten cleanup status is ignored.
+The full result document is private (it retains session/scenario binding);
+only ``public_annex`` is sanitized for publication, and its tokens are
+redacted when they are not plain public identifiers - even for
+attacker-controlled values.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from collections.abc import Sequence
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+RESULT_SCHEMA = "native-acceptance/v2"
+CAPTURE_SCHEMA = "host-behavior-capture/v2"
+EVENT_SCHEMA = "host-behavior-events/v2"
+PROFILE = "host_behavior"
+PLUGIN_VERSION_DEFAULT = "0.12.2"
+ORIGIN_COLLECTOR = "collector_v1"
+ORIGIN_EXTERNAL = "external_normalized"
+ORIGIN_SYNTHETIC = "synthetic"
+SUPPORTED_ORIGINS = (ORIGIN_COLLECTOR, ORIGIN_EXTERNAL, ORIGIN_SYNTHETIC)
+REQUIRED_GATES = (
+    "hook_trust",
+    "continuity_wait",
+    "compact_resume",
+    "commit_event",
+    "local_push_readback",
+    "cleanup",
+)
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
+PUBLIC_TOKEN_REPLACEMENT = "[redacted]"
+
+_EVENT_REQUIRED = {
+    "schema",
+    "event_id",
+    "observed_at",
+    "sequence",
+    "session_id",
+    "scenario_id",
+    "event_type",
+    "producer",
+}
+_EVENT_OPTIONAL = {
+    "subject_id",
+    "pair_id",
+    "pair_role",
+    "remaining_ids",
+    "synthetic",
+}
+_PRODUCER_REQUIRED = {"kind", "runtime_tree_sha256", "plugin_version"}
+_HOST_PRODUCER_KINDS = {
+    "codex_hook": "hook_event",
+    "codex_tool": "tool_name",
+    "host_gate_adapter": "adapter_sha256",
+}
+_CAPTURE_REQUIRED = {
+    "schema",
+    "origin",
+    "subject",
+    "session_id",
+    "plugin_version",
+    "scenarios",
+    "host",
+    "events",
+}
+_SUBJECT_REQUIRED = (
+    "source_commit",
+    "prepared_source_sha256",
+    "runtime_tree_sha256",
+)
+_ANNEX_EVENT_FIELDS = ("event_type", "scenario_id", "payload_sha256")
+
+# Ordered causal chains per gate. Every chain event must share one
+# subject_id (the actual fact identity); the commit chain additionally binds
+# its first two records as a request/response pair via a shared pair_id with
+# exact roles in capture order.
+_GATE_CHAINS: dict[str, tuple[str, ...]] = {
+    "hook_trust": ("hook_trust_reviewed", "hook_trust_granted"),
+    "continuity_wait": (
+        "requirement_registered",
+        "wait_started",
+        "wait_released",
+    ),
+    "compact_resume": (
+        "compact_started",
+        "session_resumed",
+        "recovery_page_shown",
+    ),
+    "commit_event": (
+        "commit_requested",
+        "commit_observed",
+        "commit_readback_observed",
+    ),
+    "local_push_readback": ("push_requested", "push_readback_observed"),
+    "cleanup": ("cleanup_observed",),
+}
+# The public annex is a true allowlist: only these known protocol labels may
+# be published. Unknown values are redacted even when they look like harmless
+# lowercase identifiers.
+_PUBLIC_EVENT_TYPES = frozenset(
+    event_type for chain in _GATE_CHAINS.values() for event_type in chain
+)
+_PUBLIC_SCENARIOS = frozenset(REQUIRED_GATES)
+_EXIT_CODES = {"passed": 0, "failed": 1, "pending": 3}
+_CHAIN_STATES = ("absent", "incomplete", "valid", "contradicted")
+
+
+class HostBehaviorError(ValueError):
+    """Raised when host-behavior evidence or its declared subject is invalid."""
+
+
+def _reject(condition: bool, message: str) -> None:
+    if condition:
+        raise HostBehaviorError(message)
+
+
+def _valid_timestamp(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+class Collector:
+    """Normalize raw captured bytes into event records; never judge them."""
+
+    def collect_raw(self, raw_events: Sequence[Any]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(raw_events):
+            _reject(
+                not isinstance(raw, str),
+                f"event {index} raw bytes must be captured text",
+            )
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise HostBehaviorError(
+                    f"event {index} raw bytes are not JSON: {exc}"
+                ) from exc
+            normalized.append(self._normalize(index, record, raw))
+        return normalized
+
+    def _normalize(
+        self, index: int, raw_record: Any, raw_text: str
+    ) -> dict[str, Any]:
+        _reject(
+            not isinstance(raw_record, dict),
+            f"event {index} is not a JSON object",
+        )
+        unknown = set(raw_record) - _EVENT_REQUIRED - _EVENT_OPTIONAL
+        _reject(
+            bool(unknown),
+            f"event {index} carries non-evidence fields: {sorted(unknown)}",
+        )
+        missing = _EVENT_REQUIRED - set(raw_record)
+        _reject(
+            bool(missing),
+            f"event {index} is missing required fields: {sorted(missing)}",
+        )
+        _reject(
+            raw_record["schema"] != EVENT_SCHEMA,
+            f"event {index} schema mismatch",
+        )
+        for field in ("event_id", "session_id", "scenario_id", "event_type"):
+            _reject(
+                not isinstance(raw_record[field], str) or not raw_record[field],
+                f"event {index} has an empty {field}",
+            )
+        if "subject_id" in raw_record:
+            _reject(
+                not isinstance(raw_record["subject_id"], str)
+                or not raw_record["subject_id"],
+                f"event {index} subject_id must be a non-empty string when present",
+            )
+        _reject(
+            not _valid_timestamp(raw_record["observed_at"]),
+            f"event {index} has an invalid observed_at timestamp",
+        )
+        _reject(
+            not _is_int(raw_record["sequence"]),
+            f"event {index} sequence must be an integer",
+        )
+        producer = raw_record["producer"]
+        _reject(
+            not isinstance(producer, dict) or not _PRODUCER_REQUIRED <= set(producer),
+            f"event {index} producer identity is incomplete",
+        )
+        _reject(
+            not isinstance(producer["plugin_version"], str)
+            or not producer["plugin_version"],
+            f"event {index} producer plugin_version must be a non-empty string",
+        )
+        _reject(
+            not isinstance(producer["runtime_tree_sha256"], str)
+            or not HEX64.fullmatch(producer["runtime_tree_sha256"]),
+            f"event {index} producer runtime digest must be lowercase hex64",
+        )
+        kind = producer.get("kind")
+        _reject(
+            not isinstance(kind, str) or not kind,
+            f"event {index} producer kind must be a non-empty string",
+        )
+        if kind in _HOST_PRODUCER_KINDS:
+            identity_field = _HOST_PRODUCER_KINDS[kind]
+            _reject(
+                not isinstance(producer.get(identity_field), str)
+                or not producer[identity_field],
+                f"event {index} producer kind {kind} requires {identity_field}",
+            )
+        pair_role = raw_record.get("pair_role")
+        _reject(
+            pair_role is not None and pair_role not in {"request", "response"},
+            f"event {index} pair_role must be request or response",
+        )
+        _reject(
+            (raw_record.get("pair_id") is None) != (pair_role is None),
+            f"event {index} must bind pair_id and pair_role together",
+        )
+        if "remaining_ids" in raw_record:
+            _reject(
+                raw_record["event_type"] != "cleanup_observed",
+                f"event {index} may carry remaining_ids only on cleanup_observed",
+            )
+            _reject(
+                not isinstance(raw_record["remaining_ids"], list)
+                or not all(isinstance(item, str) for item in raw_record["remaining_ids"]),
+                f"event {index} remaining_ids must be a list of strings",
+            )
+        _reject(
+            not isinstance(raw_record.get("synthetic", False), bool),
+            f"event {index} synthetic marker must be a boolean",
+        )
+        record = dict(raw_record)
+        # The digest is computed here, from the captured raw bytes; records
+        # never accept a caller-claimed payload digest.
+        record["payload_sha256"] = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+        return record
+
+    def load_capture(self, path: Path) -> dict[str, Any]:
+        try:
+            capture = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HostBehaviorError(f"capture bundle unreadable: {exc}") from exc
+        _reject(
+            not isinstance(capture, dict),
+            "capture bundle must be a JSON object",
+        )
+        _reject(
+            not isinstance(capture.get("events"), list),
+            "capture events must be a list of raw captured lines",
+        )
+        return capture
+
+
+def _event_gate(event_type: str) -> str | None:
+    for gate_id, chain in _GATE_CHAINS.items():
+        if event_type in chain:
+            return gate_id
+    return None
+
+
+class Validator:
+    """Derive host_behavior gate outcomes; the only status authority."""
+
+    def __init__(
+        self,
+        declared: dict[str, str],
+        plugin_version: str = PLUGIN_VERSION_DEFAULT,
+    ) -> None:
+        for field in ("source_commit", "prepared_source_sha256",
+                      "runtime_tree_sha256"):
+            value = declared.get(field)
+            _reject(
+                not isinstance(value, str) or not value,
+                f"declared {field} is required",
+            )
+        _reject(
+            not HEX40.fullmatch(declared["source_commit"]),
+            "declared source_commit must be a lowercase hex40 commit",
+        )
+        _reject(
+            not HEX64.fullmatch(declared["prepared_source_sha256"])
+            or not HEX64.fullmatch(declared["runtime_tree_sha256"]),
+            "declared digests must be lowercase hex64",
+        )
+        _reject(
+            not isinstance(plugin_version, str) or not plugin_version,
+            "declared plugin_version must be a non-empty string",
+        )
+        self._declared = {
+            "source_commit": declared["source_commit"],
+            "prepared_source_sha256": declared["prepared_source_sha256"],
+            "runtime_tree_sha256": declared["runtime_tree_sha256"],
+        }
+        self._plugin_version = plugin_version
+
+    def validate(self, capture: dict[str, Any]) -> dict[str, Any]:
+        origin = capture.get("origin")
+        events = capture.get("events")
+        if (
+            capture.get("schema") != CAPTURE_SCHEMA
+            or origin not in SUPPORTED_ORIGINS
+            or not isinstance(events, list)
+            or not all(isinstance(item, str) for item in events)
+        ):
+            return self._unverified_bundle(
+                "bundle is not a supported host-behavior-capture/v2 with a "
+                "supported origin; it is not accepted as host evidence"
+            )
+        records = Collector().collect_raw(events)
+        contradictions, pend_reasons = self._evaluate(records, capture)
+        digest = self._declared["runtime_tree_sha256"]
+        origin_synthetic = origin == ORIGIN_SYNTHETIC
+        gates = []
+        for gate_id in REQUIRED_GATES:
+            chain, chain_note, pend, gate_synthetic = self._chain_verdict(
+                gate_id, records, contradictions, pend_reasons,
+                origin_synthetic, origin,
+            )
+            status = "failed" if chain == "contradicted" else "pending"
+            gates.append(
+                _gate(
+                    gate_id, digest, status, chain=chain, note=chain_note,
+                    mode=self._mode(chain, pend, gate_synthetic, origin),
+                )
+            )
+        overall = _overall(gates)
+        result = assemble_result(capture, self._declared, gates, overall, records)
+        result["capability_note"] = (
+            "parser chain validity is recorded per gate; overall passed is "
+            "unreachable in this source because the supported private live-host shape "
+            "probe has no accepted raw-to-gate mapping yet (P4 scope)"
+        )
+        return result
+
+    def _unverified_bundle(self, reason: str) -> dict[str, Any]:
+        digest = self._declared["runtime_tree_sha256"]
+        gates = [
+            _gate(
+                gate_id, digest, "pending", chain="absent",
+                note=reason, mode="unverified_origin",
+            )
+            for gate_id in REQUIRED_GATES
+        ]
+        result = assemble_result(None, self._declared, gates, "pending")
+        result["capability_note"] = (
+            f"unverified capture ({reason}); host passed stays unreachable"
+        )
+        return result
+
+    def _mode(
+        self,
+        chain: str,
+        pend: str | None,
+        synthetic: bool,
+        origin: str,
+    ) -> str:
+        if chain == "contradicted":
+            return "contradicted_evidence"
+        if pend:
+            return pend
+        if chain == "valid":
+            if synthetic:
+                return "synthetic_unit_fixture"
+            if origin == ORIGIN_EXTERNAL:
+                return "unverified_origin"
+            return "awaiting_live_capture_support"
+        if chain == "incomplete":
+            return "incomplete_capture"
+        return "no_host_events"
+
+    def _evaluate(
+        self, records: list[dict[str, Any]], capture: dict[str, Any]
+    ) -> tuple[list[str], dict[str, str]]:
+        """Binding/contradiction scan shared by all gates.
+
+        Returns contradictions (fail the whole result) and per-gate pending
+        reasons that are weaker than contradictions.
+        """
+        contradictions: list[str] = []
+        seen_ids: dict[str, str] = {}
+        seen_raw: dict[str, str] = {}
+        previous_sequence = None
+        session_id = capture.get("session_id")
+        scenarios = capture.get("scenarios")
+        capture_version = capture.get("plugin_version")
+        subject = capture.get("subject")
+        if not isinstance(session_id, str) or not session_id:
+            contradictions.append("capture session_id is missing or invalid")
+        if not isinstance(scenarios, list) or not all(
+            isinstance(item, str) for item in scenarios
+        ):
+            contradictions.append("capture scenarios is missing or invalid")
+            scenarios = []
+        if capture_version != self._plugin_version:
+            contradictions.append(
+                f"capture plugin_version {capture_version!r} does not bind to "
+                f"the declared candidate {self._plugin_version!r}"
+            )
+        if not isinstance(subject, dict) or any(
+            subject.get(field) != self._declared[field]
+            for field in _SUBJECT_REQUIRED
+        ):
+            contradictions.append(
+                "capture subject does not match the declared prepared source, "
+                "source commit, and runtime tree"
+            )
+        for record in records:
+            if record["event_id"] in seen_ids:
+                contradictions.append(
+                    f"event {record['event_id']} duplicates "
+                    f"{seen_ids[record['event_id']]}"
+                )
+            seen_ids.setdefault(record["event_id"], record["event_id"])
+            if record["payload_sha256"] in seen_raw:
+                contradictions.append(
+                    f"event {record['event_id']} replays captured bytes of "
+                    f"{seen_raw[record['payload_sha256']]}"
+                )
+            seen_raw.setdefault(record["payload_sha256"], record["event_id"])
+            if session_id and record["session_id"] != session_id:
+                contradictions.append(
+                    f"event {record['event_id']} belongs to a foreign session"
+                )
+            if isinstance(scenarios, list) and record["scenario_id"] not in scenarios:
+                contradictions.append(
+                    f"event {record['event_id']} names an undeclared scenario"
+                )
+            if (
+                record["producer"]["runtime_tree_sha256"]
+                != self._declared["runtime_tree_sha256"]
+            ):
+                contradictions.append(
+                    f"event {record['event_id']} was produced by a foreign runtime"
+                )
+            if (
+                record["producer"]["plugin_version"]
+                != capture.get("plugin_version")
+            ):
+                contradictions.append(
+                    f"event {record['event_id']} producer version contradicts "
+                    "the capture provenance"
+                )
+            if (
+                previous_sequence is not None
+                and record["sequence"] <= previous_sequence
+            ):
+                contradictions.append(
+                    f"event {record['event_id']} breaks capture sequence order"
+                )
+            previous_sequence = record["sequence"]
+        return contradictions, {}
+
+    def _chain_verdict(
+        self,
+        gate_id: str,
+        records: list[dict[str, Any]],
+        contradictions: list[str],
+        pend_reasons: dict[str, str],
+        origin_synthetic: bool,
+        origin: str,
+    ) -> tuple[str, str, str | None, bool]:
+        """Return (chain state, note, pending reason override, synthetic).
+
+        Contradictory observed facts - role/pair violations, order violations,
+        reference conflicts, non-empty observed cleanup facts - always win
+        over pending reasons such as missing bindings, unverified producers,
+        or unrun prefixes.
+        """
+        if contradictions:
+            return (
+                "contradicted",
+                f"binding violation: {contradictions[0]}",
+                None,
+                False,
+            )
+        chain = _GATE_CHAINS[gate_id]
+        scoped = [
+            record
+            for record in records
+            if record["scenario_id"] == gate_id
+            and record["event_type"] in chain
+        ]
+        synthetic = origin_synthetic or any(
+            record.get("synthetic", False) for record in scoped
+        )
+        foreign = sorted(
+            record["event_type"]
+            for record in records
+            if record["scenario_id"] == gate_id
+            and _event_gate(record["event_type"]) not in (None, gate_id)
+        )
+        if foreign:
+            return (
+                "contradicted",
+                f"cross-scenario events inside {gate_id}: {foreign}",
+                None,
+                synthetic,
+            )
+        if not scoped:
+            return (
+                "absent",
+                "no host event records captured for this capability",
+                None,
+                synthetic,
+            )
+        # Contradiction checks first: none of the pending reasons below may
+        # mask an observed contradiction.
+        subjects = {
+            record["subject_id"] for record in scoped if record.get("subject_id")
+        }
+        if len(subjects) > 1:
+            return (
+                "contradicted",
+                f"chain events reference different fact identities: "
+                f"{sorted(subjects)}",
+                None,
+                synthetic,
+            )
+        if gate_id == "commit_event":
+            role_problem = self._pair_problem(scoped)
+            if role_problem:
+                return "contradicted", role_problem, None, synthetic
+        if gate_id == "cleanup":
+            remaining = [
+                item
+                for record in scoped
+                for item in record.get("remaining_ids", [])
+            ]
+            if remaining:
+                return (
+                    "contradicted",
+                    f"observed cleanup facts report remaining ids: {remaining}",
+                    None,
+                    synthetic,
+                )
+        types = [record["event_type"] for record in scoped]
+        if types != list(chain):
+            if len(types) < len(chain) and types == list(chain)[: len(types)]:
+                return (
+                    "incomplete",
+                    f"observed prefix {types} of expected chain {list(chain)}; "
+                    "capability unrun in this capture",
+                    None,
+                    synthetic,
+                )
+            return (
+                "contradicted",
+                f"expected causal chain {list(chain)}, observed {types}",
+                None,
+                synthetic,
+            )
+        # Pending reasons only after all contradiction checks passed.
+        if any(not record.get("subject_id") for record in scoped):
+            return (
+                "incomplete",
+                "chain events lack a fact identity binding",
+                "insufficient_binding",
+                synthetic,
+            )
+        if gate_id == "cleanup" and any(
+            "remaining_ids" not in record for record in scoped
+        ):
+            return (
+                "incomplete",
+                "cleanup records omit their observed remaining_ids facts",
+                "missing_cleanup_facts",
+                synthetic,
+            )
+        unverified = sorted(
+            record["event_id"]
+            for record in scoped
+            if record["producer"]["kind"] not in _HOST_PRODUCER_KINDS
+        )
+        if unverified:
+            return (
+                "incomplete" if types != list(chain) else "valid",
+                f"records lack a supported host producer identity: {unverified}",
+                "unverified_producer",
+                synthetic,
+            )
+        return (
+            "valid",
+            "causal chain and fact bindings verified by the parser",
+            None,
+            synthetic,
+        )
+
+    @staticmethod
+    def _pair_problem(scoped: list[dict[str, Any]]) -> str | None:
+        request = next(
+            (r for r in scoped if r["event_type"] == "commit_requested"), None
+        )
+        response = next(
+            (r for r in scoped if r["event_type"] == "commit_observed"), None
+        )
+        if request is None or response is None:
+            return None
+        if (
+            request.get("pair_role") != "request"
+            or response.get("pair_role") != "response"
+        ):
+            return "commit pair roles are reversed or missing"
+        if request.get("pair_id") != response.get("pair_id"):
+            return "commit pair_id mismatch between request and response"
+        return None
+
+
+def _gate(
+    gate_id: str,
+    digest: str,
+    status: str,
+    *,
+    chain: str,
+    note: str,
+    mode: str,
+) -> dict[str, Any]:
+    return {
+        "id": gate_id,
+        "required": True,
+        "status": status,
+        "chain": chain,
+        "subject": {"kind": "runtime_tree", "id": digest},
+        "exit_code": _EXIT_CODES[status],
+        "note": note,
+        "evidence": {
+            "mode": mode,
+            "source_result_sha256": None,
+            "source_gate_id": None,
+            "invalidation_reason": "host_events_changed",
+        },
+    }
+
+
+def _overall(gates: list[dict[str, Any]]) -> str:
+    statuses = {gate["status"] for gate in gates}
+    if "failed" in statuses:
+        return "failed"
+    return "pending"
+
+
+def _public_event_label(value: str, session_id: str | None) -> str:
+    if value != session_id and value in _PUBLIC_EVENT_TYPES:
+        return value
+    return PUBLIC_TOKEN_REPLACEMENT
+
+
+def _public_scenario_label(value: str, session_id: str | None) -> str:
+    if value != session_id and value in _PUBLIC_SCENARIOS:
+        return value
+    return PUBLIC_TOKEN_REPLACEMENT
+
+
+def redact_events(
+    records: Sequence[dict[str, Any]], session_id: str | None = None
+) -> list[dict[str, Any]]:
+    annex: list[dict[str, Any]] = []
+    for record in records:
+        annex.append(
+            {
+                "event_type": _public_event_label(
+                    record["event_type"], session_id
+                ),
+                "scenario_id": _public_scenario_label(
+                    record["scenario_id"], session_id
+                ),
+                "payload_sha256": record["payload_sha256"],
+            }
+        )
+    return annex
+
+
+def assemble_result(
+    capture: dict[str, Any] | None,
+    declared: dict[str, str],
+    gates: list[dict[str, Any]],
+    overall: str,
+    records: Sequence[dict[str, Any]] = (),
+) -> dict[str, Any]:
+    capture = capture or {}
+    host = capture.get("host") or {
+        "os": "unavailable",
+        "python": "unavailable",
+        "codex": "unavailable",
+    }
+    session_id = capture.get("session_id")
+    if not isinstance(session_id, str):
+        session_id = None
+    return {
+        "schema": RESULT_SCHEMA,
+        "status": overall,
+        "product": "codex_context_guard",
+        "gate_profile": PROFILE,
+        "visibility": {
+            # The full result keeps private session/scenario binding and is
+            # NOT publication-safe; only public_annex is sanitized.
+            "full_result_is_public": False,
+            "public_annex_sanitized": True,
+            "host_passed_reachable": False,
+        },
+        "subject": {
+            "kind": "prepared_host_behavior",
+            "source_commit": declared["source_commit"],
+            "prepared_source_sha256": declared["prepared_source_sha256"],
+            "runtime_tree_sha256": declared["runtime_tree_sha256"],
+        },
+        "repository": {"url": None, "commit": declared["source_commit"]},
+        "runtime_tree_sha256": declared["runtime_tree_sha256"],
+        "artifact": None,
+        "platform": {
+            "os": host.get("os", "unavailable"),
+            "shell": "real-host-capture",
+            "toolchain": {
+                "python": host.get("python", "unavailable"),
+                "codex": host.get("codex", "unavailable"),
+            },
+        },
+        "sessions": [
+            {
+                "session_id": session_id or "unavailable",
+                "scenarios": list(capture.get("scenarios", []) or []),
+            }
+        ],
+        "gates": gates,
+        "cleanup": {
+            "status": "observed_facts_required",
+            "remaining_ids": [],
+            "note": (
+                "cleanup derives from observed cleanup_observed records; no "
+                "handwritten status is accepted"
+            ),
+        },
+        "public_annex": {
+            "events": redact_events(records, session_id),
+        },
+        "run": {"started_at": None, "finished_at": None, "run_url": None},
+        "unperformed_actions": [
+            "commit",
+            "push",
+            "merge",
+            "tag",
+            "release",
+            "public_promotion",
+        ],
+    }
+
+
+def capability_record(
+    declared: dict[str, str], plugin_version: str, reason: str
+) -> dict[str, Any]:
+    digest = declared["runtime_tree_sha256"]
+    gates = [
+        _gate(
+            gate_id, digest, "pending", chain="absent",
+            note="capability unrun: no real host capture was available",
+            mode="no_host_events",
+        )
+        for gate_id in REQUIRED_GATES
+    ]
+    result = assemble_result(None, declared, gates, "pending")
+    result["capability_note"] = (
+        f"pending capability ({reason}): the host_behavior profile records the "
+        "declared subject and required gate set without claiming any host "
+        "fact; passed requires an observed and accepted raw-to-gate mapping (P4)"
+    )
+    return result
+
+
+def adopt_portable_result(
+    portable: dict[str, Any], declared: dict[str, str]
+) -> dict[str, Any]:
+    raise HostBehaviorError(
+        "a portable_runtime result can never substitute for host_behavior "
+        "evidence; run a real-host capture instead"
+    )
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run exact-runtime acceptance and emit native-acceptance/v2; "
+            "profile host_behavior validates real-host captures only"
+        )
+    )
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument("--codex", default="codex")
+    parser.add_argument("--run-url")
+    parser.add_argument(
+        "--profile",
+        choices=("portable_runtime", PROFILE),
+        default="portable_runtime",
+    )
+    parser.add_argument("--prepared-source-sha256")
+    parser.add_argument("--runtime-tree-sha256")
+    parser.add_argument("--plugin-version", default=PLUGIN_VERSION_DEFAULT)
+    parser.add_argument("--capability-reason", default="no_host_capture")
+    parser.add_argument("--events-bundle", type=Path)
+    return parser
+
+
+def run_host_behavior(args: argparse.Namespace) -> dict[str, Any]:
+    _reject(
+        not HEX64.fullmatch(args.prepared_source_sha256 or "")
+        or not HEX64.fullmatch(args.runtime_tree_sha256 or ""),
+        "host_behavior requires --prepared-source-sha256 and "
+        "--runtime-tree-sha256 as lowercase hex64",
+    )
+    declared = {
+        "source_commit": args.source_commit,
+        "prepared_source_sha256": args.prepared_source_sha256,
+        "runtime_tree_sha256": args.runtime_tree_sha256,
+    }
+    if args.events_bundle is None:
+        return capability_record(declared, args.plugin_version, args.capability_reason)
+    capture = Collector().load_capture(args.events_bundle)
+    return Validator(declared, args.plugin_version).validate(capture)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_argument_parser()
+    args = parser.parse_args(argv)
+    try:
+        result = run_host_behavior(args)
+    except HostBehaviorError as exc:
+        parser.error(str(exc))
+    args.output.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"native_acceptance={result['status']}")
+    return _EXIT_CODES[result["status"]]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

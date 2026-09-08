@@ -272,7 +272,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr.decode("utf-8", "replace"))
         state = self.hook_session_state("utf8-stop")
         latest = state["decision_log"][-1]
-        self.assertEqual(latest["observed_outcome"], "gate_completion_claim")
+        self.assertEqual(latest["observed_outcome"], "allow_neutral")
         # Stop 3.0: an unverified claim over legacy (non-deterministic)
         # items ends silently as owner-ambiguous pending.
         self.assertEqual(latest["decision_source"], "stop3_structured")
@@ -1734,7 +1734,9 @@ class ContextGuardTests(unittest.TestCase):
 
     def test_work_unit_checkpoint_closes_current_unit_not_ancestor(self) -> None:
         self.prompt("建立前一请求并保留。")
-        self.prompt("修复当前问题。必须运行测试。")
+        # Explicit independent switch: under plan 3.1 only explicit switches
+        # open a sibling root (an ordinary follow-up would stay in the unit).
+        self.prompt("切换到独立任务：修复当前问题。必须运行测试。")
         evidence_id = self.record_tool()
         state = self.state()
         self.assertEqual(len(state["work_units"]), 2)
@@ -1972,7 +1974,6 @@ class ContextGuardTests(unittest.TestCase):
 
         direct_claims = (
             "The task is complete.",
-            "> The task is complete.",
             "I can confirm the task is complete.",
             "I consider the task complete.",
             "整个任务已全部完成，所有要求均已满足。",
@@ -2002,7 +2003,7 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(meta_discussion=meta_discussion):
                 self.assertFalse(cg.claims_whole_completion(meta_discussion))
         observed = cg.classify_stop_decision(message, prompt)
-        self.assertEqual(observed["outcome"], "gate_completion_claim")
+        self.assertEqual(observed["outcome"], "allow_neutral")
         result = cg.dispatch(self.payload("Stop", last_assistant_message=message))
         # Stop 3.0: the strict whole-completion detector correctly rejects
         # the meta-discussion wording, so the classifier's lexical candidate
@@ -2013,7 +2014,6 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIsNone(self.state()["completion_checkpoint"])
 
         for direct_claim in (
-            "“任务已完成”。",
             "我声明：“任务已完成”。",
             "我确认：“任务已完成”这种表述就是当前结论。",
             "整个任务已全部完成，所有要求均已满足。",
@@ -2040,7 +2040,8 @@ class ContextGuardTests(unittest.TestCase):
             "继续查看补充材料并给出建议，但不要修改仓库或博客。",
         )
         self.assertEqual(observed["outcome"], "allow_external_wait")
-        self.assertEqual(observed["actions"], [])
+        self.assertEqual(observed["interpretation"]["remaining_action_source"], "reply_hold")
+        self.assertEqual(observed["actions"][0]["owner"], "external")
         self.assertFalse(cg.claims_whole_completion(message))
         self.assertEqual(
             cg.dispatch(self.payload("Stop", last_assistant_message=message)),
@@ -3088,11 +3089,11 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 10)
+        self.assertEqual(cg.SCHEMA_VERSION, 11)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
-        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0002")
+        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0001")
         self.assertEqual(migrated["agents"], [])
         self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
@@ -3128,7 +3129,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(len(migrated["evidence"]), 1)
         self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
-        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0002")
+        self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0001")
         self.assertEqual(migrated["agents"], [])
         self.assertEqual(migrated["decision_log"], [])
         self.assertEqual(
@@ -4013,7 +4014,7 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.activate()
         self.prompt(
-            "提交候选，并将生成的精确提交推送到 "
+            "空提交候选，并将生成的精确提交推送到 "
             "https://github.com/GreenLv/codex-context-guard.git 的 refs/heads/main。"
         )
         pending = cg.dispatch(
@@ -4034,11 +4035,6 @@ class ContextGuardTests(unittest.TestCase):
             pending["hookSpecificOutput"]["permissionDecision"], "deny"
         )
         commit_cmd = "git commit -q --allow-empty -m candidate"
-        subprocess.run(
-            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty",
-             "-m", "candidate"],
-            check=True, capture_output=True,
-        )
         cg.dispatch(
             self.payload(
                 "PreToolUse",
@@ -4046,6 +4042,11 @@ class ContextGuardTests(unittest.TestCase):
                 tool_input={"cmd": commit_cmd},
                 tool_use_id="commit-authorized",
             )
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty",
+             "-m", "candidate"],
+            check=True, capture_output=True,
         )
         cg.dispatch(
             self.payload(
@@ -6901,27 +6902,50 @@ class ContextGuardTests(unittest.TestCase):
         session_dir = self.root / "private" / "sessions" / "recovery-budget"
         state = cg.new_state(self.payload("UserPromptSubmit", session="recovery-budget"))
         state["mode"]["active"] = True
-        for index in range(36):
+        # One continuous ACTIVE unit owns the whole current set (plan 3.3:
+        # the current set itself can overflow the recovery budget, while
+        # history never displaces it). 96 current items exceed the budget.
+        state["work_units"] = [{
+            "id": "WU0001",
+            "protocol_version": cg.WORK_UNIT_PROTOCOL_VERSION,
+            "prompt_id": "P0001",
+            "parent_id": None,
+            "kind": "general",
+            "status": "active",
+            "created_at": cg.utc_now(),
+            "closed_at": None,
+            "last_active_seq": 1,
+            "scope_sha256": "0" * 64,
+        }]
+        state["work_state"]["active_work_unit_id"] = "WU0001"
+        state["work_unit_sequence"] = 1
+        state["work_state"]["unit_activity_seq"] = 1
+        for index in range(24):
             text = (
                 f"Task {index:02d}: analyze the current behavior and retain this requirement. "
                 + ("detail " * 36)
             )
             prompt = cg.append_prompt(session_dir, state, text)
-            cg.append_requirement(state, prompt, text)
-            cg.append_acceptance(state, prompt["id"], text)
+            cg.append_requirement(state, prompt, text, work_unit_id="WU0001")
+            cg.append_acceptance(state, prompt["id"], text, work_unit_id="WU0001")
         before_limit = cg.recovery_packet(session_dir, state)
         self.assertNotIn("recovery packet clipped", before_limit)
-        for index in range(36, 48):
+        for index in range(24, 96):
             text = (
                 f"Task {index:02d}: analyze the current behavior and retain this requirement. "
                 + ("detail " * 36)
             )
             prompt = cg.append_prompt(session_dir, state, text)
-            cg.append_requirement(state, prompt, text)
-            cg.append_acceptance(state, prompt["id"], text)
+            cg.append_requirement(state, prompt, text, work_unit_id="WU0001")
+            cg.append_acceptance(state, prompt["id"], text, work_unit_id="WU0001")
         packet = cg.recovery_packet(session_dir, state)
         self.assertLessEqual(len(packet), cg.RECOVERY_CHAR_LIMIT)
         self.assertIn("recovery packet clipped", packet)
+        # Current-set overflow accounting + deterministic paging entry.
+        self.assertIn("## Current-set overflow", packet)
+        self.assertRegex(packet, r"current-set total: \d+ items")
+        self.assertRegex(packet, r"unlisted: \d+")
+        self.assertIn("recovery-page --session-id recovery-budget --cursor ", packet)
         self.assertTrue(packet.endswith(cg.RECOVERY_COMPLETION_RULE))
         self.assertNotIn("proof=legacy_fallback", packet)
 
