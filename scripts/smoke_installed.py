@@ -121,15 +121,22 @@ def main() -> int:
     runtime = plugin_root / "scripts" / "context_guard.py"
     if not runtime.is_file():
         raise RuntimeError(f"installed runtime not found: {runtime}")
-    # Stop protocol 3.0: the heavy core lazily loads the protocol layer from
-    # its own scripts directory, so an installed plugin root without it can
-    # only fail every Stop path. Refuse with an explicit parity error.
-    protocol_layer = plugin_root / "scripts" / "cg_stop3.py"
-    if not protocol_layer.is_file():
-        raise RuntimeError(
-            f"installed protocol layer missing: {protocol_layer}; the plugin "
-            "root is incomplete for Stop protocol 3.0"
-        )
+    # Stop protocol 4.0 / response-delivery and the 0.13 release gate lazily
+    # or plainly load their layers from the runtime's own scripts directory,
+    # so an installed plugin root without them can only fail the Stop and
+    # release-profile paths. Refuse with an explicit parity error.
+    for layer_name in (
+        "cg_stop3.py",
+        "cg_delivery.py",
+        "cg_authority.py",
+        "cg_release_adapter.py",
+    ):
+        layer = plugin_root / "scripts" / layer_name
+        if not layer.is_file():
+            raise RuntimeError(
+                f"installed protocol layer missing: {layer}; the plugin "
+                "root is incomplete for the 0.13 lifecycle"
+            )
 
     with tempfile.TemporaryDirectory(prefix="context-guard-smoke-") as temporary:
         root = Path(temporary)
@@ -175,23 +182,19 @@ def main() -> int:
                 "PreToolUse",
                 "turn-root",
                 tool_name="exec_command",
-                tool_use_id="release-tool-without-ticket",
+                tool_use_id="standard-candidate-tool",
                 tool_input={"cmd": "git tag v9.9.9"},
             ),
         )
-        pre_tool_output = pre_tool.get("hookSpecificOutput", {})
-        # Phase 4: the session is ACTIVE with the standard profile, so an
-        # unauthorized real high-risk action denies on root-user authority
-        # grounds; the ticket requirement only exists behind the release
-        # profile. Allow decisions stay silent (no reason).
-        if (
-            pre_tool_output.get("permissionDecision") != "deny"
-            or "state the authorization once"
-            not in str(pre_tool_output.get("permissionDecisionReason") or "")
-        ):
+        # 0.13: the standard profile has NO default execution gate. A
+        # candidate high-risk action in an active session returns the plain
+        # empty allow — no permissionDecision, no reason, no state writes.
+        # The exact-ticket denial only exists behind the explicit release
+        # profile and is verified below, after the ordinary lifecycle.
+        if pre_tool != {}:
             raise RuntimeError(
-                "PreToolUse did not fail closed for an unauthorized high-risk "
-                "action under the standard profile"
+                "PreToolUse did not return the plain silent allow for a "
+                "candidate high-risk action under the standard profile"
             )
 
         hook(
@@ -555,11 +558,76 @@ def main() -> int:
         if failed:
             raise RuntimeError("smoke assertions failed: " + ", ".join(failed))
 
+        # Release-profile negative (0.13): the fail-closed action gate lives
+        # ONLY behind the explicit release profile. The "context-guard
+        # release" control prompt declares that profile without an adopted
+        # contract, so a tier-A tag mutation must deny with the exact
+        # action-ticket reason; "context-guard standard" then restores the
+        # plain silent allow. This runs after the completion assertions so
+        # the recorded lifecycle above stays untouched.
+        release_prompt = hook(
+            runtime,
+            environment,
+            payload(
+                "UserPromptSubmit",
+                "turn-release",
+                prompt="context-guard release",
+            ),
+        )
+        if "profile set to release" not in context_text(release_prompt):
+            raise RuntimeError("release control prompt did not declare the profile")
+        denied = hook(
+            runtime,
+            environment,
+            payload(
+                "PreToolUse",
+                "turn-release",
+                tool_name="exec_command",
+                tool_use_id="release-tool-without-ticket",
+                tool_input={"cmd": "git tag v9.9.9"},
+            ),
+        )
+        denied_output = denied.get("hookSpecificOutput", {})
+        if (
+            denied_output.get("permissionDecision") != "deny"
+            or "action-ticket"
+            not in str(denied_output.get("permissionDecisionReason") or "")
+        ):
+            raise RuntimeError(
+                "release profile did not deny a tier-A action without an "
+                "exact unexpired action-ticket"
+            )
+        hook(
+            runtime,
+            environment,
+            payload(
+                "UserPromptSubmit",
+                "turn-restore",
+                prompt="context-guard standard",
+            ),
+        )
+        restored_allow = hook(
+            runtime,
+            environment,
+            payload(
+                "PreToolUse",
+                "turn-restore",
+                tool_name="exec_command",
+                tool_use_id="standard-tool-after-restore",
+                tool_input={"cmd": "git tag v9.9.9"},
+            ),
+        )
+        if restored_allow != {}:
+            raise RuntimeError(
+                "standard restore did not return the plain silent allow"
+            )
+
     print(
         "SMOKE_PASS context-guard installed lifecycle: "
         f"schema{expected_schema}/proof-1.0.0, private disposition consumption, plan mirror, delegated "
         "authority, bounded agent result, unknown-text exclusion, binary "
-        "omission, pre-action denial, compaction recovery, and private completion gate"
+        "omission, standard-profile silent allow, release-profile "
+        "action-ticket denial, compaction recovery, and private completion gate"
     )
     return 0
 

@@ -4,6 +4,16 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.12.4`. Release history includes `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.0 candidate status (unreleased)
+
+Version 0.13.0 is an unreleased source candidate. Its current evidence is
+source-level only, from the local repository suite on macOS. Native macOS
+and Windows acceptance, isolated install/no-op/parity and installed
+lifecycle evidence, and publication checks are pending and must not be
+inferred from CI. No capability-aware skip in any run is presented as a
+platform pass. The 0.12.4 records below describe the published release and
+are not rewritten as 0.13.0 executions.
+
 ## 0.12.4 release acceptance (2026-09-09)
 
 The original accepted product source is commit `5f56ae49e9bf62627c5fb3c81cfadf87433b1806`, with prepared-source SHA-256 `0243cd29dc80f8f3460b0c7796f02292692ddc2105d5a27480839f91c0a774cf` (107 files) and runtime-tree SHA-256 `c60a05b3c8d7de9323e84cf4efc7717375f8e518c9867136603aa3df9ad8d681` (29 files). The reviewed tools/documentation successor differs from this 107-file prepared product source. It retains the same runtime-tree bytes; the original source and native results keep their recorded identities. The [behavior baseline](BEHAVIOR_BASELINE_0_12_4.md) describes what the source implements and which host scenarios have been observed.

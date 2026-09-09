@@ -4,6 +4,29 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.4` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.13.0 - Unreleased
+
+### Highlights
+
+- **The default Context Guard exits execution approval.** Ordinary edits, commits, pushes, tags, and publications no longer trigger its own natural-language authorization prompts, and committing no longer requires rebuilding an edit-provenance chain. Whether an action is within your authorization is decided by the main executing agent from the real conversation, repository rules, and host permissions. A Context Guard allow was never authorization, and the product now says so explicitly.
+- **Answer delivery is tracked separately from completion.** A new `response-delivery/v1` dimension records whether a natural answer was actually delivered. Delivered answers to pure questions close as `answered` and never replay after compaction; execution obligations always need evidence; unknown delivery states never fabricate completion.
+- **Schema-12 migration marks history honestly.** Private state migrates from schemas 11, 10, and 9. Old pending questions without trusted delivery facts are annotated "historical answer-delivery uncertain" instead of being mechanically re-asked, and old natural-language authorization records are preserved as `participation: "historical"` history that never blocks anything.
+- **Loaded identity becomes visible.** `context-guard status` now reports the loaded product version and all protocol versions, so a task still running an old installed copy is visible instead of silent.
+- **Protocol generation advances.** Stop protocol moves to 4.0.0, Execution and Work-unit protocols to 3.0.0. Proof protocol 1.0.0, `action-ticket/v1`, and `release-readiness/v3` stay wire-compatible, and classifier 3.3.0 remains diagnostic.
+
+### Changes
+
+- The default path no longer gates ordinary edits, commits, pushes, tags, or publishes. The edit-provenance records (`observe_source_pre`/`observe_source_post`, `prepared_source`, `expected_commits`, and authorization generations) leave the default path and their helper code is deleted; `cg_authority.py` and `cg_commit.py` remain as pure validator and migration inputs. The PreToolUse router keeps its fast path: standard and strict candidates allow silently with no state I/O, while release and observe take their explicit paths.
+- Tier-A exact one-shot `action-ticket/v1` enforcement for covered identity actions (tags, registry publish/yank, GitHub Releases) remains only behind an explicitly adopted release execution contract or an explicit `context-guard release` declaration. Strict mode documents enforced proof obligations only and never implies Git or release gating. Observe mode records bounded would-results and never blocks.
+- `scripts/cg_delivery.py` owns the canonical `response-delivery/v1` contract: domain-separated digests, bounded identifiers, and the reply SHA-256 only — never reply text. Stop protocol 4.0.0 records deliveries from a trusted final reply and closes interrogative requirements as `answered`; delivery states that cannot be established stay unknown and pending.
+- Schema 12 migrates schemas 11, 10, and 9 (schema 10 chains through the schema-11 wait-condition rewrite). Work-unit records advance to protocol 3.0.0; durable requirements, evidence, and waits are preserved with no lossy rewrite path, and old versioned caches stay immutable.
+- `context-guard status` prints the loaded product version, the Stop/classifier/proof/work-unit/execution protocol versions, and the response-delivery schema.
+- The nine-Hook event set, the Python 3.10+ standard-library runtime, and the four non-completion dispositions are unchanged. Observable runtime bytes change, so this candidate is a new version identity; consumed caches are never refreshed in place.
+
+### Validation
+
+Version 0.13.0 is an unreleased source candidate, not a release. Source-level validation on macOS (Python 3.12) passes in full: repository validation, the public-tree privacy audit, the commit-identity audit, the 1,066-test current-behavior suite (0 failures, 11 capability-aware skips), the frozen-baseline transition audit, the Hook self-test, Ruff, and compilation. Isolated install/no-op/parity checks, installed lifecycle evidence, native macOS and Windows acceptance, real-host behavior, and publication checks are not yet performed for this candidate and are not inferred from CI. No capability-aware skip is presented as a pass.
+
 ## 0.12.4 - 2026-09-09
 
 ### Highlights

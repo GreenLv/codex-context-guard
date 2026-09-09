@@ -1,35 +1,86 @@
-"""Windows R5 authorization ref-target grammar and Git branch regressions."""
+"""Windows R5 authorization ref-target grammar and Git branch regressions.
+
+0.13 layer transfer: the DEFAULT execution-approval gate was removed, so
+the resolution half of the old ref-target grammar —
+``cg._authorization_snapshot_targets`` turning statement hints plus the
+live repository snapshot into candidate targets, and the PreToolUse
+enforcement consuming those bindings — is deleted from the product. Each
+old failure family transfers to one of three layers, asserted here:
+(a) the pure statement grammar (``cg.parse_authorization_statement``) is
+UNCHANGED and still extracts ordered remote/ref hints, rejects invalid and
+weak tokens, keeps negated clauses non-authorizing, and keeps multiple
+targets as multiple candidates; (b) the retained pure binder
+(``cg_authority.bind_authorization``, consumed by validators and
+migration) still owns unique-vs-ambiguous selection over EXPLICIT
+candidate facts — exercised here with explicit candidate dicts, because
+resolving those facts from the live repository is no longer Guard work;
+(c) the release-adapter exact contracts behind an explicitly adopted
+release profile (tested under explicit adoption elsewhere); and
+(d) preserved constraint recording — a ref-target statement in an active
+standard session yields the plain allow wire, no fabricated authorization
+record, and the statement survives verbatim as a pending requirement.
+"""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import cg_actions  # noqa: E402
+import cg_authority  # noqa: E402
 import context_guard as cg  # noqa: E402
 
 
 class AuthorizationRefHintTests(unittest.TestCase):
+    def _candidate_targets(
+        self, hints: dict[str, object], resolved: dict[str, object],
+    ) -> list[dict[str, str]]:
+        """Explicit candidate facts for the retained pure binder.
+
+        This is TEST-side construction only: 0.13 deleted the runtime
+        resolver that projected hints onto the live repository snapshot.
+        The binder keeps consuming explicit exact candidates, which under
+        0.13 are supplied by release-adapter contracts instead.
+        """
+        remotes = list(hints.get("remotes") or [resolved["upstream_remote"]])
+        refs = list(hints.get("refs") or [resolved["ref"]])
+        return [
+            {
+                "repository": str(resolved["repository"]),
+                "remote": remote,
+                "ref": ref,
+                "commit_sha256": str(resolved["head_sha256"]),
+            }
+            for remote in remotes
+            for ref in refs
+        ]
+
     def _binding(
         self, statement: str, *, current_branch: str = "feature/current"
     ) -> tuple[dict[str, object], dict[str, object]]:
         parsed = cg.parse_authorization_statement(statement)
         self.assertIsNotNone(parsed, statement)
         assert parsed is not None
-        targets = cg._authorization_snapshot_targets(
+        # Statements that named an invalid ref produce no candidate fact
+        # at all — the old snapshot resolver resolved them to [] and the
+        # binder must keep reporting requires_selection with no target.
+        if parsed["hints"].get("invalid_refs"):
+            candidates: list[dict[str, str]] = []
+        else:
+            candidates = self._candidate_targets(
+                parsed["hints"], self._resolved(current_branch)
+            )
+        binding = cg_authority.bind_authorization(
             parsed["actions"],
-            parsed["hints"],
-            self._resolved(current_branch),
-        )
-        binding = cg._authority_module().bind_authorization(
-            parsed["actions"],
-            targets,
+            candidates,
             work_unit_id="WU-R5",
             generation=1,
         )
@@ -64,11 +115,22 @@ class AuthorizationRefHintTests(unittest.TestCase):
         self.assertEqual(parsed["actions"], ["push"])
         self.assertEqual(parsed["hints"]["remotes"], ["origin", "upstream"])
         self.assertEqual(parsed["hints"]["refs"], ["main", "other"])
-        targets = cg._authorization_snapshot_targets(
-            parsed["actions"], parsed["hints"], self._resolved("feature/current")
+        # 0.13 transfer (b): ambiguity stays a requires_selection fact on
+        # the retained pure binder over explicit candidates — two remotes
+        # times two refs are four candidates, never one silent bind.
+        binding = cg_authority.bind_authorization(
+            parsed["actions"],
+            self._candidate_targets(parsed["hints"], self._resolved("feature/current")),
+            work_unit_id="WU-R5",
+            generation=1,
         )
-        self.assertEqual(len(targets), 4)
-        self.assertEqual({target["ref"] for target in targets}, {"main", "other"})
+        self.assertEqual(binding["status"], "requires_selection")
+        self.assertIsNone(binding["target"])
+        self.assertEqual(len(binding["candidates"]), 4)
+        self.assertEqual(
+            {candidate["ref"] for candidate in binding["candidates"]},
+            {"main", "other"},
+        )
 
     def test_position_aware_branch_grammar_binds_the_exact_target(self) -> None:
         rows = (
@@ -99,7 +161,11 @@ class AuthorizationRefHintTests(unittest.TestCase):
         )
         for statement, remote, ref in rows:
             with self.subTest(statement=statement):
-                _parsed, binding = self._binding(statement)
+                parsed, binding = self._binding(statement)
+                self.assertEqual(parsed["hints"]["remotes"], [remote])
+                self.assertEqual(parsed["hints"]["refs"], [ref])
+                # 0.13 transfer (b): the grammar output still selects one
+                # exact target when ONE candidate fact exists.
                 self.assertEqual(binding["status"], "authorized_unique")
                 self.assertEqual(binding["target"]["remote"], remote)
                 self.assertEqual(binding["target"]["ref"], ref)
@@ -133,6 +199,10 @@ class AuthorizationRefHintTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 parsed, binding = self._binding(statement)
                 self.assertNotIn("refs", parsed["hints"])
+                # 0.13 transfer: with no usable ref hint and no candidate
+                # fact, nothing is invented — the binder reports
+                # requires_selection with no target, and the runtime no
+                # longer resolves a fallback on its own (INV-02).
                 self.assertEqual(binding["status"], "requires_selection")
                 self.assertIsNone(binding["target"])
 
@@ -153,7 +223,20 @@ class AuthorizationRefHintTests(unittest.TestCase):
                 self.assertIsNone(binding["target"])
 
     def test_plain_push_without_explicit_ref_keeps_structured_fallback(self) -> None:
-        _parsed, binding = self._binding("push to origin")
+        # 0.13 transfer: the statement itself fabricates no ref hint — the
+        # old live-repository fallback resolution left the Guard with the
+        # deleted snapshot resolver. What remains: (a) the parse layer
+        # invents nothing, (b) the executing agent's explicit candidate
+        # facts still bind uniquely through the retained pure binder.
+        parsed = cg.parse_authorization_statement("push to origin")
+        self.assertEqual(parsed["actions"], ["push"])
+        self.assertNotIn("refs", parsed["hints"])
+        binding = cg_authority.bind_authorization(
+            parsed["actions"],
+            self._candidate_targets(parsed["hints"], self._resolved("feature/current")),
+            work_unit_id="WU-R5",
+            generation=1,
+        )
         self.assertEqual(binding["status"], "authorized_unique")
         self.assertEqual(binding["target"]["remote"], "origin")
         self.assertEqual(binding["target"]["ref"], "feature/current")
@@ -171,23 +254,27 @@ class AuthorizationRefHintTests(unittest.TestCase):
                 self.assertEqual(parsed["actions"], ["push"])
                 self.assertNotIn("refs", parsed["hints"])
                 if "after tests" not in statement:
-                    self.assertEqual(
-                        cg._authorization_snapshot_targets(
-                            parsed["actions"],
-                            parsed["hints"],
-                            self._resolved("feature/current"),
-                        ),
+                    binding = cg_authority.bind_authorization(
+                        parsed["actions"],
                         [],
+                        work_unit_id="WU-R5",
+                        generation=1,
                     )
+                    self.assertEqual(binding["status"], "requires_selection")
+                    self.assertIsNone(binding["target"])
 
     def test_statement_ref_wins_over_different_current_branch(self) -> None:
         parsed = cg.parse_authorization_statement("push to origin main")
-        targets = cg._authorization_snapshot_targets(
-            parsed["actions"], parsed["hints"], self._resolved("feature/current")
+        binding = cg_authority.bind_authorization(
+            parsed["actions"],
+            self._candidate_targets(parsed["hints"], self._resolved("feature/current")),
+            work_unit_id="WU-R5",
+            generation=1,
         )
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0]["remote"], "origin")
-        self.assertEqual(targets[0]["ref"], "main")
+        self.assertEqual(len(parsed["hints"]["refs"]), 1)
+        self.assertEqual(binding["status"], "authorized_unique")
+        self.assertEqual(binding["target"]["remote"], "origin")
+        self.assertEqual(binding["target"]["ref"], "main")
 
     @staticmethod
     def _resolved(branch: str) -> dict[str, object]:
@@ -206,6 +293,72 @@ class AuthorizationRefHintTests(unittest.TestCase):
         self.assertIsNone(
             cg.parse_authorization_statement("do not push to origin main")
         )
+
+
+class RefStatementStandardProfileTransferTests(unittest.TestCase):
+    """0.13 transfer (d): a ref-target statement in an active standard
+    session is constraint recording, not enforcement."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.project = Path(self.temp.name) / "project"
+        self.project.mkdir()
+        env = {
+            "CONTEXT_GUARD_DATA_DIR": str(Path(self.temp.name) / "private")
+        }
+        patcher = mock.patch.dict("os.environ", env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        subprocess.run(
+            ["git", "init", "-q", str(self.project)], check=True,
+            capture_output=True,
+        )
+        for key, value in (("user.name", "R5 Synthetic"), ("user.email", "r5@example.invalid")):
+            subprocess.run(
+                ["git", "-C", str(self.project), "config", key, value],
+                check=True, capture_output=True,
+            )
+        self.turn = 0
+
+    def dispatch(self, event: str, **extra: object) -> dict:
+        self.turn += 1
+        payload = {
+            "hook_event_name": event,
+            "session_id": "r5",
+            "cwd": str(self.project),
+            "turn_id": f"t{self.turn}",
+            "tool_use_id": f"tool-{self.turn}",
+        }
+        payload.update(extra)
+        return cg.dispatch(payload)
+
+    def prompt(self, text: str) -> None:
+        self.dispatch("UserPromptSubmit", prompt=text)
+
+    def test_ref_statement_records_a_requirement_and_never_gates(self) -> None:
+        self.prompt("context-guard on")
+        self.prompt("现在明确授权把候选提交推送到 origin 的 main 分支。")
+        result = self.dispatch(
+            "PreToolUse",
+            tool_name="shell",
+            tool_input={"command": "git push origin HEAD:refs/heads/main"},
+        )
+        # Plain allow wire: no permissionDecision text, no deny.
+        self.assertEqual(result, {})
+        state = json.loads(
+            (Path(self.temp.name) / "private" / "sessions" / "r5" / "state.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertTrue(
+            any("origin 的 main 分支" in item["text"] for item in state["requirements"]),
+            "the ref-target statement must survive as a recorded requirement",
+        )
+        for unit in state["work_units"]:
+            self.assertNotIn(
+                "authorizations", unit,
+                "0.13 fabricates no authorization from ref statements",
+            )
 
 
 class GitBranchValidationTests(unittest.TestCase):
@@ -266,4 +419,6 @@ class GitBranchValidationTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    import unittest
+
     unittest.main()

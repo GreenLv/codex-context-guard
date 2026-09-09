@@ -1,4 +1,13 @@
-"""Stop protocol 3.0 and schema-10 lifecycle semantics for Context Guard.
+"""Stop lifecycle decision semantics for Context Guard.
+
+Since 0.13.0 the heavy core stamps ``STOP_PROTOCOL_VERSION = "4.0.0"`` on
+its decisions; this module remains the model-agnostic decision ladder that
+protocol version consumes (waiting-owner resolution, outcome planning,
+obligation/proof matching, bounded feedback). Its historical constants
+(``SCHEMA_VERSION_10``, ``WORK_UNIT_PROTOCOL_VERSION_2``) keep their frozen
+values because they describe schema-9/10 migration inputs, not the current
+ledger. Original scope note: Stop protocol 3.0 and schema-10 lifecycle
+semantics for Context Guard.
 
 Protocol-semantic, model-agnostic module (frozen plan section 4.2/4.3).
 The Codex Hook wire mapping stays isolated in cg_codex_adapter; this module

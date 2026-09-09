@@ -438,7 +438,7 @@ class RecoveryProjectionTests(P0Harness):
         first = cg.load_state(session_dir, {"session_id": "p0"})
         cg.save_state(session_dir, first)
         second = cg.load_state(session_dir, {"session_id": "p0"})
-        self.assertEqual(second["schema_version"], 11)
+        self.assertEqual(second["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(len(second["wait_conditions"]), 1)
         self.assertEqual(
             json.dumps(first["wait_conditions"], sort_keys=True),

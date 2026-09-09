@@ -11,18 +11,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "scripts" / "smoke_installed.py"
 RUNTIME = ROOT / "scripts" / "context_guard.py"
-# Phase-2 router modules: cg_hook.py is the production hook entry (routed
-# from run_context_guard.sh / run-context-guard.ps1) and imports
+# Router/protocol modules the installed runtime loads from its own scripts
+# directory: cg_hook.py is the production hook entry (routed from
+# run_context_guard.sh / run-context-guard.ps1) and imports
 # cg_actions/cg_protocol/cg_codex_adapter at module level. Since Phase 3 the
-# heavy core lazily loads the protocol layer cg_stop3.py (Stop 3.0 /
-# schema-10 semantics) from its own scripts directory at runtime, so the
-# installed plugin root must carry it next to context_guard.py.
+# heavy core lazily loads the Stop protocol layer cg_stop3.py from its own
+# scripts directory; 0.13 adds the lazily loaded response-delivery layer
+# (cg_delivery.py) and the plainly imported authority/release layers
+# (cg_authority.py, cg_release_adapter.py) behind the release-profile gate.
 REQUIRED_MODULES = [
     ROOT / "scripts" / "cg_commit.py",
     ROOT / "scripts" / "cg_actions.py",
+    ROOT / "scripts" / "cg_authority.py",
     ROOT / "scripts" / "cg_codex_adapter.py",
+    ROOT / "scripts" / "cg_delivery.py",
     ROOT / "scripts" / "cg_hook.py",
     ROOT / "scripts" / "cg_protocol.py",
+    ROOT / "scripts" / "cg_release_adapter.py",
     ROOT / "scripts" / "cg_stop3.py",
 ]
 

@@ -25,10 +25,16 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 11
-# Schema 9 migrates through the schema-10 work-unit lifecycle and then the
-# schema-11 wait-condition upgrade; 7/8 stay read-only compatibility inputs.
-FULL_MIGRATION_SOURCE_SCHEMAS = {9, 10}
+PRODUCT_VERSION = "0.13.0"
+SCHEMA_VERSION = 12
+# Schema 9 migrates through the schema-10 work-unit lifecycle and the
+# schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
+# compatibility inputs. Schema 11 keeps every durable record and gains the
+# response-delivery ledger plus the historical marking of pre-0.13
+# authorization records.
+FULL_MIGRATION_SOURCE_SCHEMAS = {9, 10, 11}
+SCHEMA_11_WORK_UNIT_PROTOCOL = "2.0.0"
+LEGACY_EXECUTION_PROTOCOLS = frozenset({"1.0.0", SCHEMA_11_WORK_UNIT_PROTOCOL})
 READ_ONLY_COMPATIBILITY_SCHEMAS = {7, 8}
 # Schema-11 bounded wait-condition vocabulary (frozen plan sections 3.2/4.3).
 WAIT_CONDITION_KINDS = ("one_shot", "migrated_unresolved")
@@ -37,11 +43,11 @@ WAIT_CONDITION_RAISE_KINDS = ("root_user", "assistant", "external")
 WAIT_CONDITION_STATUSES = ("waiting", "released")
 WAIT_RELEASE_KINDS = ("root_user_confirmation", "external_fact")
 MIGRATED_WAIT_CONDITION_KIND = "migrated_unresolved"
-STOP_PROTOCOL_VERSION = "3.0.0"
-CLASSIFIER_VERSION = "3.2.1"
+STOP_PROTOCOL_VERSION = "4.0.0"
+CLASSIFIER_VERSION = "3.3.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
-EXECUTION_PROTOCOL_VERSION = "2.0.0"
-WORK_UNIT_PROTOCOL_VERSION = "2.0.0"
+EXECUTION_PROTOCOL_VERSION = "3.0.0"
+WORK_UNIT_PROTOCOL_VERSION = "3.0.0"
 WORK_UNIT_PROTOCOL_VERSION_V1 = "1.0.0"
 ADAPTER_MANIFEST_VERSION = "2.0.0"
 CURRENT_RELEASE_READINESS_SCHEMA = "release-readiness/v3"
@@ -108,6 +114,40 @@ def evaluate_reason(
 ) -> dict[str, Any]:
     """Pure obligation/proof matcher (INV-11); see cg_stop3."""
     return stop3().evaluate_reason(item_id, binding, projection)
+
+
+_DELIVERY_MODULE: Any = None
+
+
+def delivery() -> Any:
+    """Lazy response-delivery contract module (cg_protocol <- cg_delivery)."""
+    global _DELIVERY_MODULE
+    if _DELIVERY_MODULE is None:
+        try:
+            import cg_delivery as module
+        except ImportError:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location(
+                "cg_delivery", Path(__file__).resolve().parent / "cg_delivery.py"
+            )
+            if spec is None or spec.loader is None:
+                raise
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        _DELIVERY_MODULE = module
+    return _DELIVERY_MODULE
+
+
+def response_delivery_ledger() -> dict[str, Any]:
+    return {
+        "schema": delivery().DELIVERY_SCHEMA,
+        "sequence": 0,
+        "records": [],
+    }
+
+
+TERMINAL_ITEM_STATUSES = frozenset({"pass", "superseded", "answered"})
 
 PRIVATE_CONTROL_TOKEN_BYTES = 24
 PRIVATE_CONTROL_TOKEN_LENGTH = (PRIVATE_CONTROL_TOKEN_BYTES * 8 + 5) // 6
@@ -1375,7 +1415,9 @@ def _validate_phase_records(records: Any, field: str) -> None:
                 _execution_id(value, f"{field}.{list_field}")
 
 
-def validate_execution_state(execution: Any) -> None:
+def validate_execution_state(
+    execution: Any, *, legacy_protocols: frozenset[str] = frozenset()
+) -> None:
     if not isinstance(execution, dict):
         raise StateIntegrityError("private execution state must be an object")
     if len(canonical_json(execution).encode("utf-8")) > MAX_EXECUTION_STATE_BYTES:
@@ -1385,7 +1427,9 @@ def validate_execution_state(execution: Any) -> None:
         "protocol_version", "instruction_sources", "contract", "coverage_manifest", "drift",
         "action_tickets", "denials", "unified_exec_sessions", "delegations",
     }
-    if set(execution) != expected_top or execution.get("protocol_version") != EXECUTION_PROTOCOL_VERSION:
+    if set(execution) != expected_top or execution.get("protocol_version") not in (
+        {EXECUTION_PROTOCOL_VERSION} | set(legacy_protocols)
+    ):
         raise StateIntegrityError("private execution state has invalid top-level fields")
 
     sources = execution.get("instruction_sources")
@@ -4741,41 +4785,6 @@ def resolve_internal_targets(cwd: Any) -> dict[str, Any]:
 
 MAX_PREPARED_FILES = 64
 _SHA256_40_RE = re.compile(r"[0-9a-f]{40}")
-
-
-def current_unit_authorization_bindings(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """The current work unit's ACTIVE immutable authorization bindings.
-
-    Bindings are persisted when the root-user authorization statement is
-    recorded/adopted (prompt time) and carry an exact target snapshot:
-    work-unit id + generation, repository identity, ref/upstream, verified
-    commit or candidate identity, semantic actions, canonical target
-    fields, and write surfaces. Historical units never authorize; superseded
-    bindings never execute.
-    """
-    unit_id = (state.get("work_state") or {}).get("active_work_unit_id")
-    if not isinstance(unit_id, str) or not unit_id:
-        return []
-    unit = next(
-        (
-            item
-            for item in state.get("work_units", [])
-            if isinstance(item, dict) and item.get("id") == unit_id
-        ),
-        None,
-    )
-    if unit is None:
-        return []
-    records = unit.get("authorizations")
-    if not isinstance(records, list):
-        return []
-    return [
-        record
-        for record in records
-        if isinstance(record, dict) and record.get("state") == "active"
-    ]
-
-
 def canonical_registry_url(value: str) -> str:
     """Canonical host[:port][/path] form of a registry URL: scheme and
     trailing slash are not identity; a non-root path is (case kept)."""
@@ -4935,47 +4944,6 @@ def _untracked_regular_git_mode(
     if use_windows:
         return "100644"
     return "100755" if path.stat().st_mode & stat.S_IXUSR else "100644"
-
-
-def prepared_source_identity(cwd: Any) -> dict[str, Any] | None:
-    from cg_commit import projection
-    return projection(str(cwd or os.getcwd()))
-
-
-def _git_commit_changes(cwd: Any, sha: str) -> tuple[str | None, list[dict[str, Any]]] | None:
-    from cg_commit import commit_changes
-    return commit_changes(str(cwd or os.getcwd()), sha)
-
-
-def _commit_unit(state: dict[str, Any]) -> dict[str, Any] | None:
-    current = state.get("work_state", {}).get("active_work_unit_id")
-    return next((u for u in state.get("work_units", []) if u.get("id") == current), None)
-
-
-def _source_context(unit: dict[str, Any]) -> dict[str, Any]:
-    context = unit.setdefault(
-        "commit_context",
-        {"pending": [], "edits": [], "consumed": [], "targets": [], "decisions": []},
-    )
-    context.setdefault("decisions", [])
-    return context
-
-
-def _source_call_key(state: dict[str, Any], payload: dict[str, Any]) -> str | None:
-    uid = payload.get("tool_use_id") or payload.get("toolUseId")
-    turn = payload.get("turn_id")
-    if not isinstance(uid, str) or not uid or not isinstance(turn, str) or not turn:
-        return None
-    if (payload.get("agent_id") or payload.get("_context_guard_unicode_repairs")
-        or payload.get("actor_id") not in (None, "", "root")):
-        return None
-    unit_id = state.get("work_state", {}).get("active_work_unit_id")
-    if payload.get("work_unit_id") not in (None, unit_id):
-        return None
-    return sha256_text(canonical_json([state["session"]["id"], unit_id, turn, uid,
-        payload.get("actor_id", "root"), pre_tool_input_sha256(str(payload.get("tool_name")), payload.get("tool_input"))]))
-
-
 def local_source_effect(command: str) -> dict[str, Any] | None:
     """Recognized local observations, never high-risk action authorization.
 
@@ -5029,355 +4997,6 @@ def _source_effect(payload: dict[str, Any]) -> dict[str, Any] | None:
         command = _shell_command(inp)
         return local_source_effect(command) if isinstance(command, str) else None
     return None
-
-
-def _source_root(state: dict[str, Any], payload: dict[str, Any], effect: dict[str, Any] | None = None) -> str | None:
-    from cg_commit import repository
-    base = str(payload.get("cwd") or state.get("session", {}).get("cwd") or "")
-    inp = payload.get("tool_input")
-    if isinstance(inp, dict):
-        path = inp.get("workdir") or inp.get("cwd")
-        if isinstance(path, str):
-            base = os.path.abspath(os.path.join(base, path))
-    for path in (effect or {}).get("roots", []):
-        base = os.path.abspath(os.path.join(base, path))
-    return repository(base)
-
-
-_SOURCE_COMMIT_RE = re.compile(r"提交|\bcommit\b", re.I)
-_SOURCE_DEVELOP_RE = re.compile(r"修复|修改|完善|实现|更新|补齐|\b(?:fix(?:ing)?|repair(?:ing)?|edit(?:ing)?|updat(?:e|ing)|implement(?:ing)?|develop(?:ing)?|prepar(?:e|ing))\b", re.I)
-_SOURCE_READ_RE = re.compile(r"阅读|读取|读|参考|检查|查看|测试|诊断|\b(?:read(?:ing)?|inspect(?:ing)?|review(?:ing)?|tests?|testing|diagnostic|reference)\b", re.I)
-_SOURCE_EXCLUDE_RE = re.compile(r"不要|不得|勿|别|不提交|不包含|排除|保持不动|保持原样|\b(?:do\s+not|don't|not|never|exclude|excluded|excluding|except|unchanged|untouched)\b", re.I)
-_SOURCE_TOKEN_RE = re.compile(r"CGSOURCEOBJECT(\d+)X")
-
-
-def _source_scope_text(text: str) -> tuple[str, list[str]]:
-    """Preserve literal objects while removing surrounding reported speech."""
-    values: list[str] = []
-    if _SOURCE_TOKEN_RE.search(text):
-        return "", values
-    def protect(match: re.Match[str]) -> str:
-        values.append(match.group(1))
-        return f" CGSOURCEOBJECT{len(values)-1}X "
-    clean = re.sub(r"```.*?```", " ", text, flags=re.S)
-    clean = re.sub(r"<(?:codex_delegation|delegation|delegated|subagent)\b[^>]*>.*?</(?:codex_delegation|delegation|delegated|subagent)>", " ", clean, flags=re.S | re.I)
-    if re.search(r"</?(?:codex_delegation|delegation|delegated|subagent)\b", clean, re.I):
-        return "", values
-    clean = re.sub(r"`([^`]+)`", protect, clean)
-    # Quoted objects following a source verb are literal file subjects;
-    # surrounding quoted sentences still disappear in the speech filter.
-    quoted_object = r"((?:\b(?:commit|fix|repair|edit|read|inspect|test|include|exclude|leave|keep)\b|提交|修复|修改|阅读|检查|测试|包含|排除)\s*(?:only\s+)?)"
-    def protect_quoted(match: re.Match[str]) -> str:
-        values.append(match.group(3))
-        return match.group(1) + f" CGSOURCEOBJECT{len(values)-1}X "
-    clean = re.sub(quoted_object + r'''(["'])([^"']+)\2''', protect_quoted, clean, flags=re.I)
-    clean = re.sub(r'''["']([^"'\s]*[./\\][^"'\s]*)["']''', protect, clean)
-    if re.search(quoted_object + r'''["']''', clean, re.I):
-        return "", values  # unresolved quoted object cannot infer wider scope
-    generic = {"all", "the", "these", "those", "current", "existing", "prepared", "ready", "authorized", "my", "our", "changes", "change", "work", "candidate", "files", "modifications", "fixes", "and", "then", "this", "repository", "repo", "only", "now", "immediately", "it", "them", "everything", "already"}
-    def direct_object(match: re.Match[str]) -> str:
-        token = match.group(2)
-        value = token.rstrip(".") or token
-        if value.lower() in generic or _SOURCE_TOKEN_RE.fullmatch(value):
-            return match.group(0)
-        values.append(value)
-        return match.group(1) + f" CGSOURCEOBJECT{len(values)-1}X " + ("." if token != value else "")
-    # Literal direct objects include new extensionless files and unsupported
-    # pathspecs. Unknown explicit objects must never become inferred scope.
-    clean = re.sub(r'''((?:\bcommit\b\s+|提交\s*)(?:only\s+)?)([A-Za-z0-9_./:*?\[\\-][^\s;，,。"']*)''', direct_object, clean, flags=re.I)
-    clean = authoritative_supersession_text(clean)
-    report = re.compile(r"^(?:(?:the\s+)?(?:worker|agent|child)\s+(?:said|reported)|diagnostic|diagnosis|example|log|delegated\s+(?:text|report)|诊断|示例|日志|子任务报告|委派(?:内容|报告))\s*[:：]", re.I)
-    clean = "; ".join(c for c in _source_scope_clauses(clean, strip_targets=False) if not report.search(c))
-    return clean, values
-
-
-def _source_scope_clauses(text: str, *, strip_targets: bool = True) -> list[str]:
-    if strip_targets:
-        text = re.sub(r"https?://[^\s`]+|git@[^\s`]+", " ", text)
-    # A comma between literal objects is a list relation, not a new
-    # action clause. Other commas keep their clause boundary.
-    text = re.sub(r"(CGSOURCEOBJECT\d+X)\s*[,，]\s*(?=CGSOURCEOBJECT\d+X)", r"\1 and ", text)
-    # Sentence boundaries do not split literal path placeholders. Keep the
-    # negative verb with its object when separating mixed action clauses.
-    text = re.sub(r"(?i)\s+(?:and|but|then)\s+(?=(?:do\s+not|not|leave|exclude|commit|push|read|inspect|review|test|fix|repair|edit|update|implement|develop|prepare)\b)", ";", text)
-    text = re.sub(r"(?:然后|再|并且|并)(?=提交|推送|阅读|读取|读|修复|修改|检查|测试)", ";", text)
-    text = re.sub(r"\s+(?=(?:after|before)\s+(?:reading|inspecting|reviewing|testing|fixing|repairing)\b|using\b[^;。\n]*\breference\b)", ";", text, flags=re.I)
-    clauses = [c.strip() for c in re.split(r"[。！？；;，,\n]|\.(?=\s|$)", text) if c.strip()]
-    result = []
-    for clause in clauses:
-        start = 0
-        for match in re.finditer(r"\b(?:except|exclude|excluding|not|leave)\b|不要|但不|而不|不包含|不提交|排除", clause, re.I):
-            prefix = clause[start:match.start()]
-            if _SOURCE_COMMIT_RE.search(prefix) and _SOURCE_TOKEN_RE.search(prefix):
-                result.append(prefix.strip())
-                start = match.start()
-        if clause[start:].strip():
-            result.append(clause[start:].strip())
-    return result
-
-
-def _root_commit_scope(text: str, root: str) -> dict[str, Any] | None:
-    from cg_commit import input_path
-    clean, values = _source_scope_text(text)
-    # Bare file names are recognized only as objects, never by scanning
-    # quoted/delegated material that was removed above.
-    def bare(match: re.Match[str]) -> str:
-        values.append(match.group(0))
-        return f" CGSOURCEOBJECT{len(values)-1}X "
-    clean = re.sub(r"https?://[^\s`]+|git@[^\s`]+", " ", clean)
-    clean = re.sub(r"(?<![\w./\\-])(?:[\w.-]+[/\\])*[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,11}", bare, clean)
-    clean = re.sub(r"\b[A-Za-z_][A-Za-z0-9_-]*\b", lambda m: bare(m) if os.path.lexists(Path(root) / m.group(0)) else m.group(0), clean)
-    if len(values) > MAX_PREPARED_FILES * 2:
-        return None
-    clauses = _source_scope_clauses(clean)
-    positive: list[str] = []
-    developing: list[str] = []
-    development_objects: list[str] = []
-    excluded: list[str] = []
-    saw_commit = False
-    unknown = False
-    future = False
-    first_commit = _SOURCE_COMMIT_RE.search(clean)
-    for clause in clauses:
-        object_clause = re.split(r"\bpush\b|推送|打标签|\btag\b", clause, maxsplit=1, flags=re.I)[0]
-        objects = [values[int(m.group(1))] for m in _SOURCE_TOKEN_RE.finditer(object_clause)]
-        if _SOURCE_EXCLUDE_RE.search(clause):
-            excluded.extend(objects)
-            continue
-        commits = bool(_SOURCE_COMMIT_RE.search(clause))
-        saw_commit = saw_commit or commits
-        dev_matches = [m for m in _SOURCE_DEVELOP_RE.finditer(clause)
-                       if not re.search(r"已(?:经)?\s*$|\balready\s*$", clause[:m.start()], re.I)
-                       and not re.match(r"好的|完成的", clause[m.end():])]
-        development = bool(dev_matches)
-        if development:
-            development_objects.extend(objects)
-        if development and first_commit:
-            # Further work precedes commit, or is explicitly named after
-            # an English 'commit after ...' relation.
-            dev = _SOURCE_DEVELOP_RE.search(clean)
-            future = future or bool(dev and (dev.start() < first_commit.start()
-                or re.search(r"\bafter\b", clause, re.I)))
-        if commits:
-            if re.search(r"\bonly\b|仅|只", clause, re.I) and not objects:
-                return None
-            if re.search(r"\b(?:or|either)\b|或者|任选|或", clause, re.I) and objects:
-                return None
-            positive.extend(objects)
-        elif development:
-            developing.extend(objects)
-        elif objects and not _SOURCE_READ_RE.search(clause):
-            unknown = True
-    if not saw_commit:
-        return None
-    future = future and (not positive or not development_objects or any(v in positive for v in development_objects))
-    selected = positive or (developing if future else [])
-    if unknown or (excluded and not selected):
-        return None
-    result: list[str] = []
-    deny_paths: set[str] = set()
-    for value in excluded:
-        mapped = input_path(root, value)
-        if mapped is None:
-            return None
-        deny_paths.add(mapped)
-    for value in selected:
-        mapped = input_path(root, value)
-        if mapped is None or (Path(root) / mapped).is_dir():
-            return None
-        if not any(mapped == denied or mapped.startswith(denied + "/") for denied in deny_paths) and mapped not in result:
-            result.append(mapped)
-    if selected and not result:
-        return None
-    if len(result) > MAX_PREPARED_FILES:
-        return None
-    return {"paths": result, "after_edits": future}
-
-
-def _root_commit_paths(text: str, root: str) -> list[str] | None:
-    scope = _root_commit_scope(text, root)
-    return scope["paths"] if scope is not None else None
-
-
-def _prepared_authorized_source(state: dict[str, Any], unit: dict[str, Any], text: str, prompt_id: str) -> dict[str, Any] | None:
-    from cg_commit import identity, projection
-    root = str(state["session"]["cwd"])
-    intent = _root_commit_scope(text, root)
-    if intent is None:
-        return None
-    paths = intent["paths"]
-    explicit = bool(paths)
-    if not explicit:
-        paths = list(dict.fromkeys(e["path"] for e in _source_context(unit)["edits"] if e["repository"] == repository_identity(root)))
-    prepared = projection(root, paths)
-    if prepared is None:
-        return None
-    if not explicit:
-        observed = [e for e in _source_context(unit)["edits"] if e["repository"] == repository_identity(root)]
-        prepared["entries"] = [e for e in prepared["entries"] if any(identity([e]) == identity([o]) for o in observed)]
-        prepared["projection_sha256"] = sha256_text(canonical_json({"base_head": prepared["base_head"], "entries": identity(prepared["entries"])}))
-    prepared["scope"] = {"source": "root_files" if explicit else "verified_edits", "paths": paths if explicit else [],
-                         "prompt_id": prompt_id, "ready": bool(prepared["entries"]) and not intent["after_edits"],
-                         "preparation": "after_verified_edits" if intent["after_edits"] else "immediate",
-                         "allow_empty": bool(re.search(r"空提交|empty commit|allow-empty", text, re.I))}
-    if prepared["scope"]["allow_empty"] and not intent["after_edits"]:
-        prepared["scope"]["ready"] = True
-    prepared["scope"]["sha256"] = sha256_text(canonical_json({k: v for k, v in prepared["scope"].items() if k != "ready"}))
-    return prepared
-
-
-def _freeze_ready_source(state: dict[str, Any], unit: dict[str, Any], record: dict[str, Any]) -> None:
-    from cg_commit import identity, projection
-    old = record.get("prepared_source") or {}
-    scope = old.get("scope")
-    if not isinstance(scope, dict) or scope.get("ready"):
-        return
-    root = str(state["session"]["cwd"])
-    if git_head(root) != old.get("base_head"):
-        record["commit_reason"] = "commit_base_drift"
-        return
-    paths = scope["paths"] if scope["source"] == "root_files" else list(dict.fromkeys(e["path"] for e in _source_context(unit)["edits"]))
-    new = projection(root, paths)
-    if new is None:
-        record["commit_reason"] = "commit_path_unsupported"
-        return
-    if scope["source"] == "verified_edits":
-        new["entries"] = [e for e in new["entries"] if any(identity([e]) == identity([o]) for o in _source_context(unit)["edits"])]
-        new["projection_sha256"] = sha256_text(canonical_json({"base_head": new["base_head"], "entries": identity(new["entries"])}))
-    if scope.get("preparation") == "after_verified_edits":
-        eligible = [o for o in _source_context(unit)["edits"]
-                    if o["repository"] == repository_identity(root)
-                    and record["generation"] in o.get("generations", [])]
-        if not new["entries"] or any(not any(identity([entry]) == identity([o]) for o in eligible) for entry in new["entries"]):
-            record["commit_reason"] = "commit_scope_unresolved"
-            return
-    if new["entries"] or scope.get("allow_empty"):
-        new["scope"] = dict(scope, ready=True)
-        record["prepared_source"] = new
-        record.pop("commit_reason", None)
-
-
-def observe_source_pre(state: dict[str, Any], payload: dict[str, Any]) -> None:
-    from cg_commit import candidates, input_path, projection
-    unit = _commit_unit(state)
-    effect = _source_effect(payload)
-    call = _source_call_key(state, payload)
-    if unit is None or effect is None or call is None or unit.get("status") != "active":
-        return
-    context = _source_context(unit)
-    if call in context["consumed"] or any(p["call"] == call for p in context["pending"]):
-        return
-    root = _source_root(state, payload, effect)
-    if root is None or effect["kind"] == "unsupported":
-        return
-    if repository_identity(root) != repository_identity(state["session"]["cwd"]):
-        for record in current_unit_authorization_bindings(state):
-            if "commit" in record.get("actions", []):
-                record["commit_reason"] = "commit_repository_mismatch"
-        return
-    paths = []
-    input_root = str(payload.get("cwd") or state["session"]["cwd"])
-    source_input = payload.get("tool_input")
-    if isinstance(source_input, dict):
-        workdir = source_input.get("workdir") or source_input.get("cwd")
-        if isinstance(workdir, str):
-            input_root = os.path.join(input_root, workdir)
-    input_root = str(Path(input_root).resolve())
-    for raw in effect["paths"]:
-        path = input_path(root, os.path.join(input_root, raw))
-        if path is None:
-            return
-        paths.append(path)
-    before = projection(root, paths, prefer_index=False) if effect["kind"] == "edit" else None
-    records = current_unit_authorization_bindings(state)
-    if effect["kind"] == "commit":
-        for record in records:
-            if "commit" in record.get("actions", []):
-                _freeze_ready_source(state, unit, record)
-    bases = {r["prepared_source"]["base_head"] for r in records if "prepared_source" in r}
-    base = next(iter(bases)) if len(bases) == 1 else git_head(root)
-    seen = candidates(root, base) if effect["kind"] == "commit" else []
-    if (effect["kind"] == "edit" and before is None) or seen is None:
-        return
-    context["pending"].append({"call": call, "kind": effect["kind"], "repository": repository_identity(root),
-        "head": git_head(root), "paths": paths, "before": before["entries"] if before else [],
-        "seen": seen, "generations": [r["generation"] for r in records], "base": base})
-    context["pending"] = context["pending"][-16:]
-
-
-def observe_source_post(state: dict[str, Any], payload: dict[str, Any], outcome: str) -> dict[str, Any] | None:
-    from cg_commit import identity, projection
-    unit = _commit_unit(state)
-    call = _source_call_key(state, payload)
-    if unit is None or call is None:
-        return None
-    context = _source_context(unit)
-    pending = next((p for p in context["pending"] if p["call"] == call), None)
-    if pending is None or call in context["consumed"]:
-        return None
-    context["pending"].remove(pending)
-    context["consumed"] = (context["consumed"] + [call])[-128:]
-    if outcome == "success" and tool_outcome_details(payload)[1] not in {"structured_exit_code", "structured_status"}:
-        outcome = "unknown"
-    if outcome != "success":
-        # A real Codex shell PostToolUse commonly carries one opaque string
-        # rather than a structured exit code.  For a paired commit call the
-        # string is not success evidence, but the caller can still perform an
-        # independent, exact Git candidate readback.  Edits and explicit
-        # failures retain the existing fail-closed behavior.
-        if pending["kind"] == "commit" and outcome == "unknown":
-            return pending
-        if pending["kind"] == "commit":
-            for record in current_unit_authorization_bindings(state):
-                if "commit" in record.get("actions", []):
-                    record["commit_reason"] = "commit_failed" if outcome == "failed" else "commit_result_missing"
-        return None
-    if pending["kind"] == "edit":
-        root = _source_root(state, payload, _source_effect(payload))
-        if root is None or repository_identity(root) != pending["repository"] or git_head(root) != pending["head"]:
-            return None
-        after = projection(root, pending["paths"], prefer_index=False)
-        if after is None:
-            return None
-        for entry in after["entries"]:
-            if identity([entry]) not in [identity([e]) for e in pending["before"]]:
-                observed = dict(entry, call=call, repository=pending["repository"], prompt_id=unit["prompt_id"], generations=pending["generations"])
-                context["edits"].append(observed)
-        context["edits"] = context["edits"][-64:]
-        return None
-    return pending
-
-
-def _set_committed(record: dict[str, Any], sha: str, source_hash: str, source: str) -> None:
-    for expectation in record.get("expected_commits", {}).values():
-        if isinstance(expectation, dict) and expectation.get("commit_sha256") is None:
-            expectation.update(commit_sha256=sha, advanced_from_tool_sha256=source_hash,
-                advanced_commit_projection=record["prepared_source"]["projection_sha256"], advanced_source=source)
-    record.pop("commit_reason", None)
-
-
-def reconcile_commit_bindings(state: dict[str, Any], root: str) -> None:
-    from cg_commit import match_candidates
-    for record in current_unit_authorization_bindings(state):
-        if "commit" not in record.get("actions", []) or not any(isinstance(e, dict) and e.get("commit_sha256") is None for e in record.get("expected_commits", {}).values()):
-            continue
-        prepared = record.get("prepared_source") or {}
-        if record.get("commit_reason") in {"commit_failed", "commit_authority_changed", "commit_repository_mismatch", "commit_base_drift"}:
-            continue
-        if not prepared.get("scope", {}).get("ready"):
-            record["commit_reason"] = "commit_scope_unresolved"
-            continue
-        if repository_identity(root) != record["context"]["repository"]:
-            record["commit_reason"] = "commit_repository_mismatch"
-            continue
-        matches, reason = match_candidates(root, prepared)
-        if len(matches) == 1 and matches[0] == git_head(root):
-            _set_committed(record, matches[0], sha256_text(canonical_json([root, matches[0], prepared["projection_sha256"]])), "full_local_readback")
-        else:
-            record["commit_reason"] = reason if len(matches) != 1 else "commit_base_drift"
-
-
-
 _RESOLVED_VERSION_RE = re.compile(r"v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:[-+][A-Za-z0-9._-]+)?")
 _MAX_METADATA_BYTES = 262144
 
@@ -5513,525 +5132,6 @@ def resolve_project_release_info(source: Any, tool: str) -> tuple[str, str] | No
         # fully contained inside the tarball branch above.
         return None
     return None
-
-
-def resolve_project_release_version(cwd: Any, tool: str) -> str | None:
-    info = resolve_project_release_info(cwd, tool)
-    return info[1] if info else None
-
-
-def observe_push_target(state: dict[str, Any], payload: dict[str, Any], action: dict[str, str]) -> None:
-    """A direct tool invocation supplies a target fact, never permission."""
-    unit = _commit_unit(state)
-    call = _source_call_key(state, payload)
-    name = normalized_tool_name(payload.get("tool_name"))
-    if unit is None or call is None or action.get("semantic_action_id") != "remote_push":
-        return
-    if name not in SHELL_TOOL_NAMES and not name.endswith("_exec_command"):
-        return
-    root = _source_root(state, payload)
-    resolved = resolve_internal_targets(root) if root else {}
-    if not root or resolved["repository"] != repository_identity(state["session"]["cwd"]):
-        return
-    mapped = _concrete_action_target(action, resolved, payload.get("tool_input"))
-    if mapped is None or mapped[0] != "push":
-        return
-    target = mapped[1]
-    remote = target.get("remote", "")
-    if "?" in remote or "#" in remote or ("://" in remote and "@" in remote.split("://", 1)[1].split("/", 1)[0]):
-        return
-    if not all(_authority_module().is_exact_value(v) for v in target.values()):
-        return
-    context = _source_context(unit)
-    fact = {"target": target, "call": call}
-    if not any(x["target"] == target for x in context["targets"]):
-        context["targets"] = (context["targets"] + [fact])[-8:]
-
-
-def record_push_decision(
-    state: dict[str, Any],
-    payload: dict[str, Any],
-    action: dict[str, str],
-    result: dict[str, Any],
-    authorization_generation: int | None,
-) -> None:
-    """Persist the bounded decision for one direct push call.
-
-    The target observation remains a fact rather than authority.  An allow
-    additionally records the exact authorization generation selected by the
-    normal evaluator, so private readback can distinguish event capture, Git
-    outcome, and the Guard decision chain without retaining command output.
-    """
-    unit = _commit_unit(state)
-    call = _source_call_key(state, payload)
-    if unit is None or call is None or action.get("semantic_action_id") != "remote_push":
-        return
-    context = _source_context(unit)
-    fact = next((x for x in reversed(context["targets"]) if x.get("call") == call), None)
-    if fact is None:
-        return
-    output = result.get("hookSpecificOutput") if isinstance(result, dict) else None
-    denied = isinstance(output, dict) and output.get("permissionDecision") == "deny"
-    generation = None if denied else authorization_generation
-    if not denied and (type(generation) is not int or generation < 1):
-        raise StateIntegrityError(
-            "an allowed push lacks its authoritative authorization generation"
-        )
-    decision = {
-        "call": call,
-        "target": fact["target"],
-        "decision": "deny" if denied else "allow",
-        "authorization_generation": generation,
-    }
-    context["decisions"] = (context["decisions"] + [decision])[-16:]
-
-
-def _confirmed_push_hints(unit: dict[str, Any], hints: dict[str, list[str]], resolved: dict[str, Any]) -> dict[str, list[str]]:
-    """Resolve an omitted target only from one current-unit exact fact.
-
-    Invoked only while adopting genuine root authorization. A fact's commit
-    and repository must still match; multiple targets remain unresolved.
-    """
-    if hints.get("remotes") or hints.get("refs"):
-        return hints
-    facts = [x["target"] for x in _source_context(unit)["targets"]
-             if x["target"].get("repository") == resolved["repository"]
-             and x["target"].get("commit_sha256") == resolved["head_sha256"]]
-    if len(facts) != 1:
-        return hints
-    return dict(hints, remotes=[facts[0]["remote"]], refs=[facts[0]["ref"]])
-
-
-def _authorization_snapshot_targets(
-    actions: list[str],
-    hints: dict[str, list[str]],
-    resolved: dict[str, Any],
-    *,
-    pending_fields: frozenset[str] = frozenset(),
-) -> list[dict[str, str]]:
-    """Snapshot candidate targets captured AT AUTHORIZATION TIME.
-
-    Fields the statement named win; the rest are resolved ONCE, now, from
-    the structured task state and must be EXACT values (field-level check
-    happens in the pure contract): unresolvable identities drop the
-    candidate and become the ask-once path — never sentinel equality.
-    A statement naming several values yields several candidates.
-    """
-    authority = _authority_module()
-    required: list[str] = []
-    for action in actions:
-        for field in authority.ACTION_REQUIRED_FIELDS.get(action, ()):
-            if field not in required:
-                required.append(field)
-    exact_required = [field for field in required if field not in pending_fields]
-    if "ref" in exact_required and hints.get("invalid_refs"):
-        return []
-    tags = hints.get("tags") or []
-    versions = hints.get("versions") or []
-    remotes = hints.get("remotes") or []
-    refs = hints.get("refs") or []
-    tools = hints.get("tools") or []
-    packages = hints.get("packages") or []
-    head = resolved.get("head_sha256") or ""
-    repository = resolved["repository"]
-    branch = _normalize_auth_ref(resolved.get("ref"))
-    remote_values = remotes[:2] or (
-        [resolved.get("upstream_remote")]
-        if resolved.get("upstream_remote") not in {"", "unknown", None}
-        else []
-    )
-    ref_values = [_normalize_auth_ref(value) for value in refs[:2]] or (
-        [branch] if branch not in {"", "unknown"} else []
-    )
-    if "remote" in exact_required and not remote_values:
-        remote_values = []
-    else:
-        remote_values = remote_values or [""]
-    ref_values = ref_values or [""]
-    tag_values = tags[:4] or [None]
-    version_values = versions[:4] or [None]
-    tool_values = tools[:2] or [None]
-    package_values = packages[:2] or [None]
-
-    targets: list[dict[str, str]] = []
-    for tag in tag_values:
-        for version in version_values:
-            for tool in tool_values:
-                for package in package_values:
-                    for remote in remote_values:
-                        for ref in ref_values:
-                            target: dict[str, str] = {"repository": repository}
-                            if "tag" in exact_required:
-                                if not tag:
-                                    continue
-                                target["tag"] = tag
-                            if "release_version" in exact_required and version:
-                                target["release_version"] = version
-                            elif (
-                                "release_version" in exact_required
-                                and "source" not in exact_required
-                            ):
-                                # A GitHub-style release version is a
-                                # statement decision; without it the
-                                # candidate is dropped.
-                                continue
-                            if "tool" in exact_required:
-                                if not tool:
-                                    continue
-                                target["tool"] = tool
-                            if "package" in exact_required and package:
-                                # Registry package identity: a statement-
-                                # named exact package wins; otherwise the
-                                # source branch below resolves it from the
-                                # bound source's trusted metadata.
-                                target["package"] = package
-                            if "source" in exact_required:
-                                if not tool:
-                                    continue
-                                if tool == "docker":
-                                    # Docker has no local source metadata
-                                    # (P1-F): the exact pushed identity is
-                                    # the image reference the statement
-                                    # named — package:tag. Without both
-                                    # parts the candidate is incomplete.
-                                    if package and version:
-                                        target["source"] = f"{package}:{version}"
-                                    else:
-                                        continue
-                                else:
-                                    # The bound source is the stated
-                                    # source path/tarball when the
-                                    # statement named one (P1-E: the
-                                    # restatement path must be reachable
-                                    # at adoption time), otherwise the
-                                    # authorized root directory.
-                                    stated = (hints.get("sources") or [None])[0]
-                                    if stated:
-                                        source_path = os.path.abspath(os.path.join(
-                                            str(resolved.get("cwd") or "."), stated
-                                        ))
-                                    else:
-                                        source_path = os.path.abspath(
-                                            str(resolved.get("cwd") or ".")
-                                        )
-                                    info = resolve_project_release_info(
-                                        source_path, tool
-                                    )
-                                    if info is None:
-                                        continue
-                                    target["package"] = info[0]
-                                    target["release_version"] = info[1]
-                                    target["source"] = source_path
-                            if "remote" in exact_required:
-                                if not remote or remote == "unknown":
-                                    continue
-                                target["remote"] = remote
-                            if "ref" in exact_required:
-                                # A tag binding may carry an unknown local
-                                # ref; a remote mutation may not.
-                                if "remote" in exact_required and (not ref or ref == "unknown"):
-                                    continue
-                                target["ref"] = ref or "unknown"
-                            if "commit_sha256" in exact_required:
-                                # A statement-named commit wins over live
-                                # HEAD.  This preserves the user's exact
-                                # candidate identity so a stale or foreign
-                                # SHA drifts closed instead of silently
-                                # rebinding to the checkout.
-                                commit_values = hints.get("commits") or [head]
-                                commit_values = [
-                                    value.lower()
-                                    for value in commit_values[:4]
-                                    if _SHA256_40_RE.fullmatch(value)
-                                ]
-                                if not commit_values:
-                                    continue
-                            else:
-                                commit_values = []
-                            if "registry" in exact_required and tool:
-                                target["registry"] = (
-                                    DEFAULT_REGISTRY_ENDPOINTS.get(tool) or ""
-                                )
-                            expanded = []
-                            if commit_values:
-                                for commit_sha in commit_values:
-                                    candidate = dict(target)
-                                    candidate["commit_sha256"] = commit_sha
-                                    expanded.append(candidate)
-                            else:
-                                expanded.append(target)
-                            for candidate in expanded:
-                                if candidate not in targets and len(targets) < 4:
-                                    targets.append(candidate)
-    # GitHub release surfaces bind the GitHub repo identity (normalized
-    # origin), not the local path hash.
-    if any(action in {"release", "release_delete"} for action in actions):
-        github_repo = resolved.get("github_repo")
-        if github_repo:
-            for target in targets:
-                target["repository"] = "github:" + github_repo
-    return targets
-
-
-def _expected_commit_plan(
-    actions: list[str], resolved: dict[str, Any], targets: list[dict[str, str]]
-) -> dict[str, Any]:
-    """Per-action commit expectations for one authorization record.
-
-    A commit-chain action ("commit" also authorized) gets the typed
-    pending transition; a standalone action binds the exact HEAD snapshot.
-    When the HEAD snapshot is not an exact value the action is omitted —
-    the binding itself already cannot reach authorized_unique, and a
-    sentinel expectation must never exist in persisted state.
-    """
-    named_commits = {
-        target.get("commit_sha256")
-        for target in targets
-        if _SHA256_40_RE.fullmatch(str(target.get("commit_sha256") or ""))
-    }
-    head = (
-        next(iter(named_commits))
-        if len(named_commits) == 1
-        else resolved.get("head_sha256") or ""
-    )
-    plan: dict[str, Any] = {}
-    for action in actions:
-        if action == "commit":
-            continue
-        if "commit" in actions:
-            plan[action] = {"source": "authorized_commit", "commit_sha256": None}
-        elif _SHA256_40_RE.fullmatch(head):
-            plan[action] = head
-    return plan
-
-
-def _record_prompt_authorization(
-    state: dict[str, Any],
-    work_unit_id: str,
-    prompt_record: dict[str, Any],
-    text: str,
-) -> dict[str, Any] | None:
-    """Persist the immutable authorization binding at ADOPTION time.
-
-    Called from the live prompt path and the deterministic prompt-replay
-    rebuild: the snapshot (repository identity, ref, upstream, verified
-    commit, canonical target fields, write surfaces, unit + generation) is
-    captured NOW and never re-derived at execution time. A re-authorization
-    whose actions overlap an active binding supersedes it; distinct action
-    sets coexist.
-    """
-    statement_text = text
-    if _SOURCE_COMMIT_RE.search(text):
-        masked, literals = _source_scope_text(text)
-        statement_text = masked
-        for index, value in enumerate(literals):
-            statement_text = statement_text.replace(f"CGSOURCEOBJECT{index}X", value)
-    statement = parse_authorization_statement(statement_text)
-    if statement is None or not work_unit_id:
-        return None
-    actions = [
-        action
-        for action in statement["actions"]
-        if action in AUTH_ACTION_VOCABULARY
-    ]
-    if not actions:
-        return None
-    unit = next(
-        (
-            item
-            for item in state.get("work_units", [])
-            if isinstance(item, dict) and item.get("id") == work_unit_id
-        ),
-        None,
-    )
-    if unit is None:
-        return None
-    authorizations = unit.setdefault("authorizations", [])
-    if not isinstance(authorizations, list):
-        return None
-
-    # One sentence may name actions whose exact repository identities are
-    # intentionally different: a local Git tag binds the checkout, while a
-    # GitHub Release binds owner/repository. Registry mutations add their
-    # own package/source/endpoint dimensions. Record parallel bindings from
-    # the same prompt instead of flattening incompatible targets into one
-    # impossible normative vector.
-    domain_actions: dict[str, list[str]] = {
-        "git": [], "github": [], "registry": [],
-    }
-    for action in actions:
-        if action in {"release", "release_delete"}:
-            domain = "github"
-        elif action in {"publish", "unpublish", "yank", "deprecate"}:
-            domain = "registry"
-        else:
-            domain = "git"
-        domain_actions[domain].append(action)
-    action_groups = [group for group in domain_actions.values() if group]
-    # A named commit is the typed predecessor for every target domain in
-    # the statement. Same-prompt bindings may share it; a later prompt still
-    # supersedes all overlapping older bindings.
-    if "commit" in actions:
-        action_groups = [
-            group if "commit" in group else ["commit", *group]
-            for group in action_groups
-        ]
-    if len(authorizations) + len(action_groups) > MAX_UNIT_AUTHORIZATIONS:
-        return None
-
-    resolved = resolve_internal_targets(state.get("session", {}).get("cwd"))
-    authority = _authority_module()
-    created_at = str(prompt_record.get("created_at") or utc_now())
-    prompt_id = str(prompt_record.get("id") or "")
-    recorded: list[dict[str, Any]] = []
-    for group in action_groups:
-        generation = len(authorizations) + 1
-        pending_fields: frozenset[str] = frozenset()
-        prepared: dict[str, Any] | None = None
-        if "commit" in group:
-            # A serial chain binds follow-up actions to the commit THIS
-            # statement will produce, anchored to prepared source bytes.
-            pending_fields = frozenset({"commit_sha256"})
-            prepared = _prepared_authorized_source(state, unit, text, prompt_id)
-            if prepared is None:
-                return None
-        hints = statement["hints"]
-        if group == ["push"]:
-            hints = _confirmed_push_hints(unit, hints, resolved)
-        targets = _authorization_snapshot_targets(
-            group, hints, resolved, pending_fields=pending_fields
-        )
-        binding = authority.bind_authorization(
-            group,
-            targets,
-            work_unit_id=work_unit_id,
-            generation=generation,
-            pending={"commit_sha256": "authorized_commit"} if pending_fields else None,
-        )
-        record: dict[str, Any] = {
-            "prompt_id": prompt_id,
-            "prompt_sha256": str(prompt_record.get("sha256") or ""),
-            "created_at": created_at,
-            "actions": group,
-            "surfaces": {
-                action: ACTION_WRITE_SURFACES.get(action, "unknown")
-                for action in group
-            },
-            "generation": generation,
-            "binding": binding,
-            "context": dict(resolved),
-            "expected_commits": _expected_commit_plan(group, resolved, targets),
-            "state": "active",
-        }
-        if prepared is not None:
-            record["prepared_source"] = prepared
-        for existing in authorizations:
-            if (
-                not isinstance(existing, dict)
-                or existing.get("state") != "active"
-                or existing.get("prompt_id") == prompt_id
-            ):
-                continue
-            if set(existing.get("actions") or []) & set(group):
-                existing["state"] = "superseded"
-                existing["superseded_at"] = created_at
-        authorizations.append(record)
-        recorded.append(record)
-    return recorded[-1] if recorded else None
-
-
-def advance_commit_transitions(state: dict[str, Any], payload: dict[str, Any], outcome: str) -> None:
-    from cg_commit import candidates, match_candidates
-    pending = observe_source_post(state, payload, outcome)
-    if pending is None or pending["kind"] != "commit":
-        return
-    root = _source_root(state, payload, _source_effect(payload))
-    if root is None:
-        return
-    for record in current_unit_authorization_bindings(state):
-        if "commit" not in record.get("actions", []) or not any(isinstance(e, dict) and e.get("commit_sha256") is None for e in record.get("expected_commits", {}).values()):
-            continue
-        if record["generation"] not in pending["generations"]:
-            record["commit_reason"] = "commit_authority_changed"
-            continue
-        prepared = record.get("prepared_source") or {}
-        if not prepared.get("scope", {}).get("ready"):
-            record["commit_reason"] = "commit_scope_unresolved"
-            continue
-        if repository_identity(root) != pending["repository"] or pending["repository"] != record["context"]["repository"]:
-            record["commit_reason"] = "commit_repository_mismatch"
-            continue
-        if pending["head"] != prepared.get("base_head"):
-            record["commit_reason"] = "commit_base_drift"
-            continue
-        now = candidates(root, prepared.get("base_head"))
-        if now is None:
-            record["commit_reason"] = "commit_candidates_ambiguous"
-            continue
-        produced = [sha for sha in now if sha not in pending["seen"]]
-        matches, reason = match_candidates(root, prepared, produced)
-        if len(matches) == 1:
-            detail = tool_outcome_details(payload)[1]
-            source = (
-                "causal_commit"
-                if detail in {"structured_exit_code", "structured_status"}
-                else "causal_commit_readback"
-            )
-            _set_committed(record, matches[0], pending["call"], source)
-        else:
-            record["commit_reason"] = reason
-
-
-def _snapshot_material_drift(
-    record: dict[str, Any], requested: str, resolved: dict[str, Any]
-) -> str | None:
-    """Compare the authorization-time snapshot against the CURRENT facts.
-
-    Material drift (repository, branch, upstream, target HEAD or candidate
-    identity) invalidates the binding: deny with one actionable
-    re-authorization sentence. The typed pending transition is checked by
-    the pure contract (resolved_pending) and the advance machinery; here a
-    PENDING expectation simply cannot authorize yet.
-    """
-    context = record.get("context") or {}
-    if str(context.get("repository") or "") != str(resolved.get("repository") or ""):
-        return "The authorized repository changed since authorization; state the authorization once for the current candidate."
-    auth_ref = str(context.get("ref") or "")
-    if auth_ref not in {"", "unknown"} and str(resolved.get("ref") or "") != auth_ref:
-        return f"The branch moved from {auth_ref} since authorization; state the authorization once for the current candidate."
-    auth_upstream = str(context.get("upstream_remote") or "")
-    if (
-        auth_upstream not in {"", "unknown"}
-        and str(resolved.get("upstream_remote") or "") != auth_upstream
-    ):
-        return "The branch upstream changed since authorization; state the authorization once for the current candidate."
-    expected = (record.get("expected_commits") or {}).get(requested)
-    if isinstance(expected, dict):
-        if expected.get("commit_sha256") is None:
-            from cg_commit import REASONS
-            code = record.get("commit_reason", "commit_result_missing")
-            return f"{code}: {REASONS.get(code, REASONS['commit_result_missing'])}"
-        expected_sha = str(expected["commit_sha256"])
-    elif isinstance(expected, str) and expected:
-        expected_sha = expected
-    else:
-        expected_sha = str(context.get("head_sha256") or "")
-    current = str(resolved.get("head_sha256") or "")
-    if expected_sha != current:
-        return "The target commit moved since authorization; state the authorization once for the current candidate."
-    return None
-
-
-def _covers_authorized_action(actions: list[str], requested: str) -> bool:
-    authority = _authority_module()
-    if requested in actions:
-        return True
-    return any(
-        requested in authority.IMPLIED_ACTIONS.get(action, frozenset())
-        for action in actions
-    )
-
-
 def _authority_module() -> Any:
     import cg_authority
     return cg_authority
@@ -6400,119 +5500,6 @@ def _concrete_action_target(
                 target["release_version"] = version_value
         return requested, target
     return None
-
-
-def _pre_tool_deny_no_authorization(requested: str) -> dict[str, Any]:
-    label = requested
-    if requested in ACTION_PROFILE_LABELS:
-        label = ACTION_PROFILE_LABELS[requested]
-    return _pre_tool_decision(
-        "deny",
-        f"{label.capitalize() if label else 'This action'} is a real high-risk action; "
-        "state the authorization once in this task (for example 'create tag v1.2.3' or "
-        "'push to origin main') and I will bind the exact target myself.",
-    )
-
-
-def _expected_commit_for(record: dict[str, Any], requested: str) -> str | None:
-    """The commit identity this binding expects for the requested action.
-
-    Returns None only for a PENDING authorized-commit transition (the
-    authorized commit has not verifiably completed yet).
-    """
-    expected = (record.get("expected_commits") or {}).get(requested)
-    if isinstance(expected, dict):
-        if expected.get("commit_sha256") is None:
-            return None
-        return str(expected["commit_sha256"])
-    if isinstance(expected, str) and expected:
-        return expected
-    head = str((record.get("context") or {}).get("head_sha256") or "")
-    return head or None
-
-
-def _evaluate_persisted_bindings(
-    bindings: list[dict[str, Any]],
-    requested: str,
-    concrete_target: dict[str, str],
-    resolved: dict[str, str],
-    work_unit_id: str,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Evaluate the persisted bindings for one concrete action.
-
-    Returns (authorized_record, deny_reason). Each active binding is
-    evaluated through the pure cg_authority contract with its own persisted
-    unit/generation validity facts; the commit dimension is aligned to the
-    binding's expected transition (snapshot commit or the authorized-commit
-    chain) BEFORE the contract comparison, and the winner is then checked
-    for material snapshot drift against the freshly resolved facts.
-    """
-    label = ACTION_PROFILE_LABELS.get(requested, requested.replace("_", " "))
-    if not bindings:
-        return None, None
-    authority = _authority_module()
-    covered = False
-    ask_reason: str | None = None
-    drift_reason: str | None = None
-    pending_reason: str | None = None
-    for record in bindings:
-        binding = record.get("binding") or {}
-        bound_actions = [str(action) for action in (binding.get("actions") or [])]
-        if not _covers_authorized_action(bound_actions, requested):
-            continue
-        covered = True
-        pending_binding = dict(binding.get("pending") or {})
-        resolved_pending: dict[str, str] | None = None
-        if pending_binding:
-            expected_commit = _expected_commit_for(record, requested)
-            if expected_commit is None:
-                if pending_reason is None:
-                    from cg_commit import REASONS
-                    code = record.get("commit_reason", "commit_result_missing")
-                    pending_reason = f"{code}: {REASONS.get(code, REASONS['commit_result_missing'])}"
-                continue
-            resolved_pending = {
-                field: expected_commit for field in pending_binding
-            }
-        result = authority.evaluate_action_authorization(
-            requested,
-            binding,
-            [concrete_target],
-            current_work_unit_id=str(work_unit_id),
-            authorization_generation=binding.get("generation"),
-            resolved_pending=resolved_pending,
-        )
-        status = result.get("status")
-        if status == authority.STATUS_AUTHORIZED_UNIQUE:
-            return record, None
-        if status == authority.STATUS_REQUIRES_SELECTION:
-            if ask_reason is None:
-                if result.get("reason_code") == authority.REASON_MULTIPLE_TARGETS:
-                    ask_reason = (
-                        f"Several targets match your {label} statement; name the exact one "
-                        "(remote, tag, or version) once."
-                    )
-                else:
-                    ask_reason = (
-                        f"Cannot determine the exact target for {label}; state the precise "
-                        "remote/tag/version once and the target will be bound for you."
-                    )
-        elif status == authority.STATUS_DRIFTED and drift_reason is None:
-            drift_reason = (
-                _snapshot_material_drift(record, requested, resolved)
-                or (
-                    f"The current target for {label} differs from the authorized one; "
-                    "restate the exact target (or re-authorize) before running it."
-                )
-            )
-    if not covered:
-        return None, (
-            f"Your authorization in this task does not cover {label}; state it explicitly "
-            "once (force push, tag push, and release deletion each need their own statement)."
-        )
-    return None, drift_reason or pending_reason or ask_reason
-
-
 def _release_ticket_decision(
     session_dir: Path,
     state: dict[str, Any],
@@ -6526,7 +5513,15 @@ def _release_ticket_decision(
     adopted contract through cg_release_adapter, never from file presence
     or workflow text.
     """
-    import cg_release_adapter
+    try:
+        import cg_release_adapter
+    except ImportError:
+        return _pre_tool_decision(
+            "deny",
+            "The release verification module is unavailable; the release "
+            "profile refuses this action instead of silently passing it. "
+            "Run 'context-guard diagnose'.",
+        )
     execution = state.get("execution")
     if not isinstance(execution, dict):
         execution = dormant_execution_state()
@@ -6616,16 +5611,6 @@ def _handle_runner_envelope(
     except (StateIntegrityError, OSError, TypeError, ValueError):
         pass
     return {}
-
-
-def _active_work_unit_kind(state: dict[str, Any]) -> str | None:
-    active = state.get("work_state", {}).get("active_work_unit_id")
-    for unit in state.get("work_units", []):
-        if isinstance(unit, dict) and unit.get("id") == active:
-            return str(unit.get("kind") or "")
-    return None
-
-
 def handle_pre_tool(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -6645,34 +5630,39 @@ def handle_pre_tool(
         # off/inactive: no action gate at all — even a real mutation in a
         # session that never adopted a profile is not intercepted here.
         return {}
-    normalized = normalized_tool_name(payload.get("tool_name"))
-    if _active_work_unit_kind(state) == "cleanup" and (
-        normalized in APPLY_PATCH_TOOL_NAMES or normalized.endswith("_apply_patch")
-    ):
-        return _pre_tool_decision(
-            "deny",
-            "The active work unit is cleanup-only; product edits require a separate root-user authorization.",
-        )
+    if profile in {"standard", "strict"}:
+        # 0.13 contract (frozen plan sections 4.1-4.4): the default path has
+        # NO execution veto, NO provenance solving, NO Git subprocess, and NO
+        # state mutation. A Guard allow is not authorization (INV-01);
+        # unknown observations are not authorization questions (INV-02);
+        # inferred categories never reject business tools (INV-04). Whether
+        # an action is within the user's authorization is owned by the main
+        # agent, the repository rules, and the host permission system.
+        return {}
+    # Only the explicit release/observe contracts read or mutate private
+    # state here, so deterministic integrity stays fail-closed exactly where
+    # adopted obligations exist (INV-03) and ordinary tools never lose
+    # capability to ledger damage.
     try:
         require_usable_state(state)
     except StateIntegrityError:
-        return _pre_tool_decision(
-            "deny",
-            "This matches a real high-risk action, but private task state could not be "
-            "verified; run 'context-guard diagnose' before retrying it.",
-        )
+        if profile == "release":
+            return _pre_tool_decision(
+                "deny",
+                "This action falls under an adopted release contract, but private task "
+                "state could not be verified; run 'context-guard diagnose' before "
+                "retrying it.",
+            )
+        return {}
     effective_payload = dict(payload)
     effective_payload.setdefault("cwd", state.get("session", {}).get("cwd"))
-    observe_source_pre(state, effective_payload)
     action = classify_pre_tool_action(effective_payload)
     if action is None:
-        save_state(session_dir, state)
         # Simulation/read-only or text-position command: never gated.
         return {}
-    observe_push_target(state, effective_payload, action)
     if profile == "observe":
         enforcement = effective_enforcement_profile(state)
-        would = _enforce_candidate(
+        would = _release_enforcement_decision(
             session_dir, state, effective_payload, action, enforcement,
             dry_run=True,
         )
@@ -6695,24 +5685,20 @@ def handle_pre_tool(
         )
         save_state(session_dir, state)
         return {}
-    enforcement_audit: dict[str, Any] = {}
-    result = _enforce_candidate(
-        session_dir,
-        state,
-        effective_payload,
-        action,
-        profile,
-        audit=enforcement_audit,
-    )
-    record_push_decision(
-        state,
-        effective_payload,
-        action,
-        result,
-        enforcement_audit.get("authorization_generation"),
-    )
-    save_state(session_dir, state)
-    return result
+    try:
+        return _release_enforcement_decision(
+            session_dir, state, effective_payload, action, profile, dry_run=False
+        )
+    except ImportError:
+        # The release facts adapter could not be loaded: an explicitly
+        # declared or adopted release posture never silently degrades to
+        # the ungated default path (INV-03 / migration rule 4).
+        return _pre_tool_decision(
+            "deny",
+            "The release verification module is unavailable; the release "
+            "profile refuses this action instead of silently passing it. "
+            "Run 'context-guard diagnose'.",
+        )
 
 
 def effective_enforcement_profile(state: dict[str, Any]) -> str:
@@ -6729,7 +5715,7 @@ def effective_enforcement_profile(state: dict[str, Any]) -> str:
     return effective_action_profile(shadow)
 
 
-def _enforce_candidate(
+def _release_enforcement_decision(
     session_dir: Path,
     state: dict[str, Any],
     effective_payload: dict[str, Any],
@@ -6737,25 +5723,38 @@ def _enforce_candidate(
     profile: str,
     *,
     dry_run: bool = False,
-    audit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Explicit release-contract enforcement (0.13 responsibility boundary).
+
+    Runs ONLY in the release profile or as observe's bounded would-result:
+    a compound remote mutation cannot be bound to exact ticket facts, a
+    declared-unsupported surface can never be verified locally, and tier-A
+    identity mutations need an exact unexpired action-ticket/v1 from the
+    adopted contract. Ordinary edits, tests, commits, and pushes are NOT
+    business of this gate — the old provenance/authorization chain was
+    removed from the default path in 0.13 and its helper code deleted.
+    """
     if action["semantic_action_id"] == "compound_remote_mutation":
         return _pre_tool_decision(
             "deny",
-            "This call chains several remote mutations; run them as separate, "
-            "individually authorized commands.",
+            "This call chains several remote mutations so no exact release "
+            "facts can be bound; run them as separate plain commands.",
         )
     if action["semantic_action_id"] == "registry_gem_publish":
         # P1-F controlled unsupported surface: a local .gem carries no
         # safely parseable exact identity (RubyGems metadata is a binary
-        # Marshal blob), so gem push can never bind to an authorization.
-        # This deny IS the declared contract for the surface — in every
-        # profile — not a supported surface with a false deny.
+        # Marshal blob), so gem push can never bind to a release ticket.
+        # This deny IS the declared contract for the surface under the
+        # release profile — not a supported surface with a false deny.
         return _pre_tool_decision(
             "deny",
             "gem push is a declared-unsupported surface: the exact gem identity cannot "
-            "be verified locally, so it can never be bound to an authorization.",
+            "be verified locally, so it can never be bound to a release contract.",
         )
+    if action.get("tier") != "A":
+        # Ordinary writes never pass through release facts; they stay with
+        # the executing agent and the host permission system.
+        return {}
     resolved = resolve_internal_targets(effective_payload.get("cwd"))
     mapped = _concrete_action_target(
         action, resolved, effective_payload.get("tool_input")
@@ -6763,66 +5762,40 @@ def _enforce_candidate(
     if mapped is None:
         return _pre_tool_decision(
             "deny",
-            "This high-risk action could not be resolved to an exact structured target; "
+            "This release action could not be resolved to an exact structured target; "
             "state it as a plain single command.",
         )
-    requested, concrete_target = mapped
-    work_unit_id = str(
-        (state.get("work_state") or {}).get("active_work_unit_id") or ""
-    )
-    if not dry_run:
-        reconcile_commit_bindings(state, str(effective_payload.get("cwd")))
-    bindings = current_unit_authorization_bindings(state)
-    authorized_record, deny_reason = _evaluate_persisted_bindings(
-        bindings,
-        requested,
-        concrete_target,
-        resolved,
-        work_unit_id,
-    )
-    if authorized_record is None:
-        if deny_reason is None:
-            return _pre_tool_deny_no_authorization(requested)
-        return _pre_tool_decision("deny", deny_reason)
-    drift = _snapshot_material_drift(authorized_record, requested, resolved)
-    if drift is not None:
-        return _pre_tool_decision("deny", drift)
-    generation = authorized_record.get("generation")
-    if type(generation) is not int or generation < 1:
-        return _pre_tool_decision(
-            "deny",
-            "The selected authorization has an invalid generation; state the "
-            "authorization once for the current candidate.",
-        )
-    if audit is not None:
-        audit["authorization_generation"] = generation
-    if profile == "release" and action.get("tier") == "A":
-        if dry_run:
-            # observe must never mutate the ticket ledger: compute the
-            # release-facts decision over a detached copy.
+    if dry_run:
+        # observe must never mutate the ticket ledger: compute the
+        # release-facts decision over a detached copy.
+        try:
             import cg_release_adapter
             facts = cg_release_adapter.release_facts(
                 json.loads(canonical_json(state)), action
             )
-            if facts["ticket_matched"]:
-                return {}
+        except ImportError:
             return _pre_tool_decision(
                 "deny",
-                "This release mutation needs an exact unexpired action-ticket/v1 from the "
-                "adopted repository-release contract; run the release preflight to issue one.",
+                "The release verification module is unavailable; the observe "
+                "profile records a would-deny instead of a would-allow.",
             )
-        return _release_ticket_decision(
-            session_dir,
-            state,
-            action,
-            str(
-                effective_payload.get("tool_use_id")
-                or effective_payload.get("toolUseId")
-                or ""
-            ),
+        if facts["ticket_matched"]:
+            return {}
+        return _pre_tool_decision(
+            "deny",
+            "This release mutation needs an exact unexpired action-ticket/v1 from the "
+            "adopted repository-release contract; run the release preflight to issue one.",
         )
-    # The allow wire is the plain empty object (frozen plan section 4.4).
-    return {}
+    return _release_ticket_decision(
+        session_dir,
+        state,
+        action,
+        str(
+            effective_payload.get("tool_use_id")
+            or effective_payload.get("toolUseId")
+            or ""
+        ),
+    )
 
 
 def settle_pre_tool_ticket(state: dict[str, Any], payload: dict[str, Any], outcome: str) -> None:
@@ -7145,7 +6118,7 @@ def validate_wait_conditions(state: dict[str, Any]) -> None:
     """
     version = state.get("schema_version")
     conditions = state.get("wait_conditions")
-    if version != SCHEMA_VERSION:
+    if version not in {SCHEMA_VERSION, 11}:
         if conditions:
             raise StateIntegrityError(
                 "wait conditions require the current private state schema"
@@ -7270,10 +6243,18 @@ def validate_work_units(state: dict[str, Any]) -> None:
         raise StateIntegrityError("private work-unit ledger exceeds its record limit")
     if not isinstance(sequence, int) or sequence < 0:
         raise StateIntegrityError("private work-unit sequence is invalid")
-    if version == SCHEMA_VERSION or version == 10:
+    if version == SCHEMA_VERSION:
         protocol = WORK_UNIT_PROTOCOL_VERSION
         statuses = stop3().WORK_UNIT_STATUSES
         optional_keys: set[str] = {
+            "last_active_seq", "resume_pending_reopen", "authorizations", "commit_context",
+        }
+    elif version in {10, 11}:
+        # Frozen historical shapes: schema 10/11 units carry the schema-11
+        # work-unit protocol until the schema-12 migration rewrites them.
+        protocol = SCHEMA_11_WORK_UNIT_PROTOCOL
+        statuses = stop3().WORK_UNIT_STATUSES
+        optional_keys = {
             "last_active_seq", "resume_pending_reopen", "authorizations", "commit_context",
         }
     else:
@@ -7304,7 +6285,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
             raise StateIntegrityError("private work-unit kind is invalid")
         if record.get("status") not in statuses:
             raise StateIntegrityError("private work-unit status is invalid")
-        if version == SCHEMA_VERSION or version == 10:
+        if version in {SCHEMA_VERSION, 10, 11}:
             seq = record.get("last_active_seq")
             if seq is not None and not isinstance(seq, int):
                 raise StateIntegrityError("private work-unit activity sequence is invalid")
@@ -7319,7 +6300,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
                     "only waiting units may carry the resume-pending flag"
                 )
         _execution_time(record.get("created_at"), "work_units.created_at")
-        if version == SCHEMA_VERSION or version == 10:
+        if version in {SCHEMA_VERSION, 10, 11}:
             _validate_unit_authorizations(unit_id, record.get("authorizations"))
             _validate_commit_context(record.get("commit_context"))
         _execution_time(record.get("closed_at"), "work_units.closed_at", nullable=True)
@@ -7417,7 +6398,12 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         if key in state and not isinstance(state.get(key), list):
             raise StateIntegrityError(f"private state field {key} must be a list")
     if version == SCHEMA_VERSION or version in FULL_MIGRATION_SOURCE_SCHEMAS:
-        validate_execution_state(state.get("execution"))
+        validate_execution_state(
+            state.get("execution"),
+            legacy_protocols=LEGACY_EXECUTION_PROTOCOLS
+            if version != SCHEMA_VERSION
+            else frozenset(),
+        )
         validate_work_units(state)
         work_unit_ids = {
             str(item.get("id"))
@@ -7455,7 +6441,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                     raise StateIntegrityError("private verification contract is invalid")
                 if 'constraint_scope' in item or 'source_span' in item:
                     span = item.get('source_span')
-                    if (version != SCHEMA_VERSION or item.get('constraint_scope') != 'session'
+                    if (version not in {SCHEMA_VERSION, 11} or item.get('constraint_scope') != 'session'
                             or not isinstance(span, list) or len(span) != 2
                             or any(type(v) is not int for v in span) or not 0 <= span[0] < span[1]):
                         raise StateIntegrityError('private persistent constraint source is invalid')
@@ -7476,6 +6462,16 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                             + obligations_fault
                         )
         if version == SCHEMA_VERSION:
+            if "response_delivery" not in state:
+                raise StateIntegrityError(
+                    "private state is missing required field: response_delivery"
+                )
+            try:
+                delivery().validate_ledger(state.get("response_delivery"))
+            except delivery().DeliveryValueError as exc:
+                raise StateIntegrityError(
+                    f"private response-delivery ledger is invalid: {exc}"
+                ) from exc
             validate_wait_conditions(state)
             for entry in state.get("evidence", []):
                 evidence_fault = stop3().evidence_record_reason(entry)
@@ -7623,6 +6619,7 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "continuation_attempts": 0,
         "decision_log": [],
         "execution": dormant_execution_state(),
+        "response_delivery": response_delivery_ledger(),
         "adapter_manifest": json.loads(canonical_json(ADAPTER_MANIFEST)),
         "classifier_metadata": {
             "version": CLASSIFIER_VERSION,
@@ -7647,10 +6644,15 @@ def migrate_execution_state(execution: Any) -> dict[str, Any]:
     protocol = execution.get("protocol_version")
     if protocol == EXECUTION_PROTOCOL_VERSION:
         return execution
-    if protocol != "1.0.0":
+    if protocol not in LEGACY_EXECUTION_PROTOCOLS:
         raise StateIntegrityError("unsupported execution protocol during schema migration")
     migrated = json.loads(canonical_json(execution))
     migrated["protocol_version"] = EXECUTION_PROTOCOL_VERSION
+    if protocol == SCHEMA_11_WORK_UNIT_PROTOCOL:
+        # Schema-11 -> 12 execution upgrade: the release-facts adapter
+        # contract is wire-compatible, so only the protocol identity moves;
+        # no field is rewritten and every adoption stays verifiable.
+        return migrated
     contract = migrated.get("contract", {})
     for candidate in contract.get("authorization_candidates", []):
         if isinstance(candidate, dict):
@@ -7694,6 +6696,153 @@ def migrate_execution_state(execution: Any) -> dict[str, Any]:
     if isinstance(contract, dict):
         contract["canonical_sha256"] = contract_content_hash(contract)
     return migrated
+
+
+# Stop outcomes under which a final reply was actually delivered (the turn
+# was allowed to end). Visible corrections and integrity stops never record
+# delivery; only these outcomes prove a trusted allowed final reply existed.
+DELIVERY_ALLOWED_STOP_OUTCOMES = frozenset(
+    {
+        "consume_checkpoint",
+        "auto_complete_verified",
+        "protocol_waiting_boundary",
+        "silent_end_assistant_pending_actions",
+        "silent_end_owner_ambiguous",
+    }
+)
+# The exhausted-budget allow keeps the initially observed outcome; the
+# reason code is the honest marker that the turn was allowed to end.
+DELIVERY_ALLOWED_STOP_REASON_CODES = frozenset(
+    {"visible_interruption_budget_exhausted"}
+)
+
+
+def _delivable_question(item: dict[str, Any], state: dict[str, Any]) -> bool:
+    """A question-type requirement whose deliverable is the reply itself.
+
+    Deterministic inputs only: interrogative phrasing, a non-enforced
+    verification contract (no deterministic obligation was ever extracted),
+    no enforced acceptance item derived from the same root prompt, and not
+    a session-scope persistent constraint. Unknown shapes stay open —
+    delivery never fabricates completion for execution work (INV-07).
+    """
+    if item.get("status") != "pending" or item.get("constraint_scope") == "session":
+        return False
+    contract = item.get("verification_contract")
+    if not isinstance(contract, dict) or contract.get("mode") == "enforced":
+        return False
+    text = str(item.get("text") or "")
+    if not text or not clause_is_interrogative(text):
+        return False
+    prompt_id = item.get("prompt_id")
+    for candidate in state.get("acceptance_items", []):
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("prompt_id") == prompt_id
+            and candidate.get("status") not in TERMINAL_ITEM_STATUSES
+            and isinstance(candidate.get("verification_contract"), dict)
+            and candidate["verification_contract"].get("mode") == "enforced"
+        ):
+            return False
+    return True
+
+
+def _migrate_response_delivery_history(state: dict[str, Any]) -> dict[str, Any]:
+    """Reconstruct trusted delivery facts for a schema-11 ledger.
+
+    A pending question requirement is closed as ``answered`` only when the
+    decision log contains an ALLOWED stop whose ``prompt_sha256`` matches
+    the requirement's root prompt and whose non-empty ``reply_sha256``
+    postdates the prompt. One decision entry never answers two requirements
+    (identical duplicate questions stay conservatively open). Missing
+    facts are marked ``delivery_unknown`` — never fabricated, never
+    batch-passed (plan section 6.2 rule 6).
+    """
+    mod = delivery()
+    records: list[dict[str, Any]] = []
+    empty_reply = sha256_text("")
+    prompt_created = {
+        str(item.get("id")): str(item.get("created_at") or "")
+        for item in state.get("prompts", [])
+        if isinstance(item, dict)
+    }
+    decisions = [
+        item
+        for item in state.get("decision_log", [])
+        if isinstance(item, dict)
+        and (
+            item.get("outcome") in DELIVERY_ALLOWED_STOP_OUTCOMES
+            or any(
+                code in DELIVERY_ALLOWED_STOP_REASON_CODES
+                for code in item.get("reason_codes") or []
+                if isinstance(code, str)
+            )
+        )
+        and isinstance(item.get("reply_sha256"), str)
+        and item["reply_sha256"] != empty_reply
+        and re.fullmatch(r"[0-9a-f]{64}", str(item.get("prompt_sha256") or ""))
+    ]
+    consumed: set[int] = set()
+    sequence = 0
+    for item in state.get("requirements", []):
+        if not isinstance(item, dict) or not _delivable_question(item, state):
+            continue
+        prompt_at = prompt_created.get(str(item.get("prompt_id")) or "", "")
+        matched_index = None
+        for index in range(len(decisions) - 1, -1, -1):
+            if index in consumed:
+                continue
+            entry = decisions[index]
+            if entry["prompt_sha256"] != item.get("sha256"):
+                continue
+            if prompt_at and str(entry.get("created_at") or "") < prompt_at:
+                continue
+            matched_index = index
+            break
+        if matched_index is None:
+            # Historical delivery fact is missing: keep the requirement open
+            # and annotate the uncertainty instead of re-asking mechanically.
+            item["answer_state"] = "delivery_unknown"
+            continue
+        consumed.add(matched_index)
+        # One reply answers one requirement: identical duplicates stay open.
+        entry = decisions[matched_index]
+        for extra in range(len(decisions)):
+            if decisions[extra].get("prompt_sha256") == item.get("sha256"):
+                consumed.add(extra)
+        item["status"] = "answered"
+        item["answer_state"] = "answered"
+        projection = mod.canonical_projection(
+            session_id=str(state.get("session", {}).get("id") or "unknown-session"),
+            turn_id=str(entry.get("turn_id") or "unknown-turn"),
+            work_unit_id=item.get("work_unit_id"),
+            requirement_ids=[str(item.get("id"))],
+            source="migration_reconstruction",
+            reply_sha256=entry["reply_sha256"],
+            delivery="delivered",
+        )
+        try:
+            sequence += 1
+            records.append(
+                mod.build_record(
+                    projection,
+                    resolution="not_applicable",
+                    sequence=sequence,
+                    recorded_at=utc_now(),
+                )
+            )
+        except mod.DeliveryValueError:
+            sequence -= 1
+            # An unusable identity never becomes a delivery fact; the
+            # requirement returns to its honest pending state.
+            item["status"] = "pending"
+            item["answer_state"] = "delivery_unknown"
+    records = records[-mod.MAX_DELIVERY_RECORDS:]
+    return {
+        "schema": mod.DELIVERY_SCHEMA,
+        "sequence": sequence,
+        "records": records,
+    }
 
 
 def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -7916,6 +7065,27 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             })
         state["wait_conditions"] = migrated_conditions
         state["wait_condition_sequence"] = 0
+        state["schema_version"] = SCHEMA_VERSION
+    if version in {9, 10, 11}:
+        # Schema 9/10/11 -> 12 (0.13.0): durable records are preserved; the
+        # work-unit protocol identity moves forward, pre-0.13 authorization
+        # records become explicit history that no longer participates in
+        # execution decisions, and answer-delivery facts are reconstructed
+        # ONLY where a trusted allowed-stop decision entry correlates with
+        # the requirement's root prompt. Everything else keeps its status
+        # and is annotated with unknown historical delivery (plan section
+        # 6.2 rules 5/6) — pending items are never batch-flipped. Schema-10
+        # inputs arrive here already chained through the schema-11
+        # wait-condition migration, so the same rewrite keeps both sources
+        # byte-consistent.
+        for unit in state.get("work_units", []):
+            if not isinstance(unit, dict):
+                continue
+            unit["protocol_version"] = WORK_UNIT_PROTOCOL_VERSION
+            for record in unit.get("authorizations") or []:
+                if isinstance(record, dict):
+                    record["participation"] = "historical"
+        state["response_delivery"] = _migrate_response_delivery_history(state)
         state["schema_version"] = SCHEMA_VERSION
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
@@ -10379,12 +9549,12 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
             released_by_prompt.setdefault(
                 str(item["raised_by_source"]), []
             ).append(str(item.get("condition_type")))
-    counts = {"historical": 0, "superseded": 0, "completed": 0}
+    counts = {"historical": 0, "superseded": 0, "completed": 0, "answered": 0}
     in_scope = {
         str(item["id"]) for collection in ("requirements", "acceptance_items")
         for item in state.get(collection, [])
         if item.get("id") in scoped | ancestor_constraints
-        and item.get("status") not in {"pass", "superseded"}
+        and item.get("status") not in TERMINAL_ITEM_STATUSES
     }
     for collection in ("requirements", "acceptance_items"):
         for item in state.get(collection, []):
@@ -10395,6 +9565,8 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
                 counts["superseded"] += 1
             elif status == "pass":
                 counts["completed"] += 1
+            elif status == "answered":
+                counts["answered"] += 1
             elif str(item.get("id")) not in in_scope:
                 counts["historical"] += 1
     revision = sha256_text(canonical_json({
@@ -10649,7 +9821,6 @@ def replay_prompt_record(
         state, metadata["id"], text, [], work_unit_id=work_unit_id
     )
     record_supersession(state, text, requirement_id)
-    _record_prompt_authorization(state, work_unit_id, record, text)
     score, reasons = score_complexity(text)
     goal_requested = bool(re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE))
     if goal_requested:
@@ -10720,7 +9891,7 @@ def open_item_ids(state: dict[str, Any]) -> list[str]:
     result = []
     for collection in ("requirements", "acceptance_items"):
         for item in state[collection]:
-            if item.get("status") not in {"pass", "superseded"}:
+            if item.get("status") not in TERMINAL_ITEM_STATUSES:
                 result.append(item["id"])
     return result
 
@@ -10804,11 +9975,15 @@ def status_context(state: dict[str, Any]) -> str:
     )
     return (
         "Context Guard status: "
+        f"product={PRODUCT_VERSION}, "
         f"active={state['mode']['active']}, "
         f"integrity={integrity.get('status', 'unknown')}, "
         f"stop_protocol={STOP_PROTOCOL_VERSION}, "
         f"classifier={CLASSIFIER_VERSION}, "
         f"proof_protocol={PROOF_PROTOCOL_VERSION}, "
+        f"work_unit_protocol={WORK_UNIT_PROTOCOL_VERSION}, "
+        f"execution_protocol={EXECUTION_PROTOCOL_VERSION}, "
+        f"response_delivery={delivery().DELIVERY_SCHEMA}, "
         f"plan_mirror={plan_mirror_health(state)}, "
         f"execution_contract={execution_state}, "
         f"execution_mode={execution_mode}, "
@@ -11134,7 +10309,7 @@ def subagent_contract_context(state: dict[str, Any]) -> str:
     ]
     for collection in ("requirements", "acceptance_items"):
         for item in state.get(collection, []):
-            if item.get("status") in {"pass", "superseded"}:
+            if item.get("status") in TERMINAL_ITEM_STATUSES:
                 continue
             lines.append(
                 f"- {item.get('id')}: {bounded(item.get('text', ''), 320)}"
@@ -11240,6 +10415,13 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
             released = projection["released_by_prompt"].get(str(item.get("prompt_id")))
             if released:
                 line = line.replace(": ", ": [等待条件已解除/released: " + ",".join(sorted(set(released))) + "; only business duties and persistent restrictions remain] ", 1)
+            if item.get("answer_state") == "delivery_unknown":
+                line = line.replace(
+                    ": ",
+                    ": [历史答复状态不确定/historical answer-delivery uncertain; "
+                    "keep the open obligations, do not mechanically re-answer] ",
+                    1,
+                )
             if used + len(line) > min(9000, max(0, char_limit - 3500)):
                 continue
             lines.append(line)
@@ -11311,7 +10493,7 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
         sections.append("## Recently verified or attempted evidence\n" + "\n".join(
             f"- {i['id']} [{i['outcome']}]: {bounded(i.get('summary', ''), 180)}" for i in state['evidence'][-3:]
         ))
-    sections.append("## Out-of-scope history (bounded note)\n" + f"- {counts['historical']} isolated-historical, {counts['superseded']} superseded, {counts['completed']} completed items are not current obligations. Explicit checkpoint-status --full retains the audit view.")
+    sections.append("## Out-of-scope history (bounded note)\n" + f"- {counts['historical']} isolated-historical, {counts['superseded']} superseded, {counts['completed']} completed, {counts['answered']} answer-delivered items are not current obligations. Explicit checkpoint-status --full retains the audit view.")
     sections.append(RECOVERY_COMPLETION_RULE)
     return clip_preserving_suffix(redact_text("\n\n".join(sections)), char_limit,
                                   RECOVERY_COMPLETION_RULE, "…[lower-priority recovery detail clipped]")
@@ -11392,12 +10574,14 @@ def completion_command_context(
     requirement_ids = [
         item["id"]
         for item in state["requirements"]
-        if item.get("status") != "superseded" and item["id"] in scoped_ids
+        if item.get("status") not in TERMINAL_ITEM_STATUSES
+        and item["id"] in scoped_ids
     ]
     acceptance_ids = [
         item["id"]
         for item in state["acceptance_items"]
-        if item.get("status") != "superseded" and item["id"] in scoped_ids
+        if item.get("status") not in TERMINAL_ITEM_STATUSES
+        and item["id"] in scoped_ids
     ]
     return (
         "Context Guard is active (Stop protocol "
@@ -12164,7 +11348,9 @@ def checkpoint_status_snapshot(
     counts = {
         "requirements": sum(str(item.get("id", "")).startswith("R") for item in items),
         "acceptance": sum(str(item.get("id", "")).startswith("A") for item in items),
-        "pending": sum(item.get("status") not in {"pass", "superseded"} for item in items),
+        "pending": sum(
+            item.get("status") not in TERMINAL_ITEM_STATUSES for item in items
+        ),
         "passed": sum(item.get("status") == "pass" for item in items),
         "ancestor_constraints": len(ancestor_ids),
     }
@@ -12600,7 +11786,6 @@ def handle_user_prompt(
         ]
         supersession_result = record_supersession(state, text, requirement_id)
         append_session_constraints(state, prompt, text, work_unit_id)
-        _record_prompt_authorization(state, work_unit_id, prompt, text)
         score, reasons = score_complexity(text)
         goal_requested = bool(
             re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE)
@@ -13370,7 +12555,10 @@ def handle_post_tool(
     settle_pre_tool_ticket(state, payload, outcome)
     if state["mode"]["active"]:
         require_usable_state(state)
-        advance_commit_transitions(state, payload, outcome)
+        # 0.13: the PostToolUse commit-transition advance (provenance →
+        # expected-commit chain) was removed with the default authorization
+        # path. Ordinary tool results stay completion EVIDENCE, never
+        # authorization facts.
         # Codex may persist attachment metadata only after UserPromptSubmit.
         # Reconcile the bounded transcript before recording the first tool so
         # an available prompt asset cannot remain an accidental fallback.
@@ -14077,12 +13265,116 @@ def handle_stop(
         }
     )
 
+    # Response-delivery association (0.13 plan section 4.5): the trusted
+    # association comes from root session events only — the requirements
+    # created by THIS turn's human prompt — never from ids the reply
+    # claims for itself. Stale turns cannot close current items and a
+    # delivered reply never fabricates execution completion (INV-07).
+    delivery_mod = delivery()
+    human_prompt_ids = [
+        str(item.get("id"))
+        for item in state.get("prompts", [])
+        if isinstance(item, dict) and item.get("origin", "human") == "human"
+    ]
+    turn_prompt_id = human_prompt_ids[-1] if human_prompt_ids else None
+    turn_requirement_ids = [
+        str(item["id"])
+        for item in state.get("requirements", [])
+        if isinstance(item, dict) and item.get("prompt_id") == turn_prompt_id and item.get("id")
+    ][-delivery_mod.MAX_REQUIREMENT_ASSOCIATIONS:]
+
+    def _final_reply_fact() -> tuple[str, str | None]:
+        """(delivery status, reply digest) for the Stop's final reply.
+
+        Missing, empty, non-string, or conflicting reply sources are
+        ``delivery_unknown``: no digest is fabricated and no resolution is
+        claimed (plan section 4.5 unknown-state rule).
+        """
+        present = [
+            payload[key]
+            for key in ("last_assistant_message", "assistant_response", "response")
+            if isinstance(payload.get(key), str)
+        ]
+        unique = {value for value in present}
+        text_value = assistant_text(payload)
+        if len(unique) > 1 or not text_value or not text_value.strip():
+            return "delivery_unknown", None
+        return "delivered", sha256_text(text_value)
+
+    def record_delivery() -> None:
+        status, reply_digest = _final_reply_fact()
+        projection = delivery_mod.canonical_projection(
+            session_id=str(state.get("session", {}).get("id") or "unknown-session"),
+            turn_id=turn_id or "unknown-turn",
+            work_unit_id=current_unit_id(),
+            requirement_ids=turn_requirement_ids,
+            source="stop_final_reply",
+            reply_sha256=reply_digest,
+            delivery=status,
+        )
+        ledger = state.setdefault("response_delivery", response_delivery_ledger())
+        records = ledger.setdefault("records", [])
+        key = delivery_mod.idempotency_key(projection)
+        for existing in records:
+            try:
+                prior = {
+                    field: existing[field]
+                    for field in delivery_mod.PROJECTION_FIELDS
+                }
+            except (KeyError, TypeError):
+                continue
+            if delivery_mod.idempotency_key(prior) == key:
+                # Same-event replay: no state growth, no closure rerun.
+                return
+        if status == "delivered":
+            for item in state.get("requirements", []):
+                if (
+                    isinstance(item, dict)
+                    and item.get("id") in turn_requirement_ids
+                    and _delivable_question(item, state)
+                ):
+                    item["status"] = "answered"
+                    item["answer_state"] = "answered"
+        outcome = str(decision.get("outcome") or "")
+        if outcome in {"consume_checkpoint", "auto_complete_verified"}:
+            resolution = "verified"
+        elif outcome == "protocol_waiting_boundary":
+            resolution = "waiting"
+        elif (
+            not current_scope_projection(state)["current_item_ids"]
+            and not current_scope_projection(state)["waiting_conditions"]
+        ):
+            resolution = "not_applicable"
+        else:
+            resolution = "open"
+        sequence = int(ledger.get("sequence") or 0) + 1
+        try:
+            record = delivery_mod.build_record(
+                projection,
+                resolution=resolution,
+                sequence=sequence,
+                recorded_at=utc_now(),
+            )
+        except delivery_mod.DeliveryValueError:
+            return
+        records.append(record)
+        del records[:-delivery_mod.MAX_DELIVERY_RECORDS]
+        ledger["sequence"] = sequence
+
     def finish(result: dict[str, Any], *reason_codes: str) -> dict[str, Any]:
         codes = list(decision.get("reason_codes", []))
         for code in reason_codes:
             if code not in codes:
                 codes.append(code)
         decision["reason_codes"] = codes
+        # A delivered final answer is recorded only when THIS Guard allowed
+        # the turn to end; blocked candidates and integrity stops keep the
+        # reply un-delivered (plan section 4.5).
+        if result == {} and decision.get("decision_source") != "integrity":
+            try:
+                record_delivery()
+            except delivery_mod.DeliveryValueError:
+                pass
         # Protocol envelope consumption: the heavy path routes its terminal
         # decision through the model-agnostic protocol layer.
         envelope = stop3_mod.stop_decision_event(
@@ -14231,7 +13523,7 @@ def handle_stop(
             for item in state.get(collection, [])
             if isinstance(item, dict)
             and item["id"] in scoped_now
-            and item.get("status") not in {"pass", "superseded"}
+            and item.get("status") not in TERMINAL_ITEM_STATUSES
         )
         feedback = stop3_mod.bounded_stop_feedback(pending_count, reason, next_step)
         decision["outcome"] = "visible_correction"
@@ -15108,6 +14400,38 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         return handler(session_dir, state, payload)
 
 
+def _release_posture_plausibly_active(payload: dict[str, Any]) -> bool:
+    """Best-effort, read-only release-posture probe for the fail policy.
+
+    Never mutates state and never raises: any read failure answers False,
+    so a corrupt ledger cannot strip ordinary tool capability (INV-03).
+    A READABLE state keeps the release posture fail-closed when Guard
+    validation itself failed — either an adopted repository-release
+    contract is active, or the maintainer explicitly declared the release
+    profile. In both cases a silent fail-open would downgrade release
+    enforcement, so the action is refused with an actionable message.
+    """
+    try:
+        state_file = session_dir_for(payload) / "state.json"
+        if not state_file.exists():
+            return False
+        with state_file.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if not isinstance(state, dict):
+            return False
+        execution = state.get("execution")
+        contract = execution.get("contract") if isinstance(execution, dict) else None
+        if isinstance(contract, dict) and contract.get("state") == "active":
+            return True
+        mode = state.get("mode")
+        return (
+            isinstance(mode, dict)
+            and str(mode.get("profile") or "").strip().lower() == "release"
+        )
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     event = str(payload.get("hook_event_name") or payload.get("event") or "")
     try:
@@ -15128,26 +14452,29 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         if event == "PreToolUse":
-            # Event-level fail policy: candidates (recognized real
-            # mutations) fail closed when validation itself failed, but
-            # provably safe and classifier-ambiguous calls stay fail-open
-            # so ordinary tools never lose capability to corrupt state or
-            # lock contention.
+            # Event-level fail policy (0.13 contract): ordinary business
+            # candidates stay fail-open — a Guard-internal failure is never
+            # an authorization question (INV-02/INV-04), and corrupt ledger
+            # state must not strip normal tool capability (INV-03). Only an
+            # ADOPTED release contract keeps its fail-closed posture when
+            # validation itself failed: an adoption that cannot be verified
+            # must never silently degrade to the ungated default path.
             try:
                 tool_class = classify_pre_tool_state(
                     payload.get("tool_name"), payload.get("tool_input")
                 )
             except Exception:  # noqa: BLE001 - classification must not deny on its own failure
                 tool_class = STATE_AMBIGUOUS
-            # Fail closed ONLY for a proven candidate mutation; the runner
-            # envelope and generic ambiguity stay fail-open on validation
-            # failure, lock contention, or corrupt state.
             if tool_class != STATE_CANDIDATE:
                 return {}
-            return _pre_tool_decision(
-                "deny",
-                "Context Guard failed closed while validating this pre-action authorization.",
-            )
+            if _release_posture_plausibly_active(payload):
+                return _pre_tool_decision(
+                    "deny",
+                    "An adopted release contract is active but Context Guard could not "
+                    "complete release verification; run 'context-guard diagnose' before "
+                    "retrying this action.",
+                )
+            return {}
         return {"systemMessage": f"Context Guard {event or 'hook'} warning: {message}"}
 
 

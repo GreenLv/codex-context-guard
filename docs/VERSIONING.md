@@ -263,6 +263,37 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.13.0` is an unreleased source candidate that moves responsibilities out
+  of the default path. Standard and strict no longer execute business gates:
+  ordinary edits, commits, pushes, tags, and publications are allowed silently
+  without natural-language authorization prompts, and the edit-provenance
+  chain (`observe_source_pre`/`observe_source_post`, `prepared_source`,
+  `expected_commits`, authorization generations) is removed from the default
+  path together with its helper code; whether an action is authorized is
+  decided by the main executing agent from the conversation, repository
+  rules, and host permissions. Private state advances to schema 12: schema 11
+  is a full migration source and schemas 9 and 10 migrate chained through the
+  schema-11 wait-condition rewrite; pre-0.13 natural-language authorization
+  records are preserved with `participation: "historical"` and never block;
+  old pending questions without trusted delivery facts are marked
+  `delivery_unknown` ("historical answer-delivery uncertain") instead of
+  being mechanically re-asked. Stop protocol 4.0.0 splits delivery and
+  acceptance semantics: a delivered natural answer to a pure question closes
+  the item as `answered` and never replays after compaction, execution
+  obligations always need evidence, and unknown delivery states never
+  fabricate completion. The canonical `response-delivery/v1` projection
+  (session/turn ids, root work-unit id, associated requirement ids, event
+  source, reply SHA-256 only, delivery status, resolution, digest, sequence,
+  timestamp) is owned by `scripts/cg_delivery.py`. Execution protocol 3.0.0
+  records that the core no longer executes business gates; the release
+  adapter is explicit-only. Work-unit protocol 3.0.0 associates deliveries
+  and obligations. Proof protocol 1.0.0, `action-ticket/v1`, and
+  `release-readiness/v3` are wire-compatible and unchanged; classifier 3.3.0
+  remains diagnostic. Tier-A exact one-shot `action-ticket/v1` enforcement
+  survives only behind an explicitly adopted release execution contract or an
+  explicit `context-guard release` declaration, and Observe records bounded
+  would-results without blocking. Status output reports the loaded product
+  version and every protocol version. Consumed caches remain immutable.
 - `0.12.4` is the stabilization release dated 2026-09-09. It folds the
   earlier unreleased 0.12.2 and 0.12.3 stabilization candidates into a new
   patch identity. A normally trusted 0.12.2 trial exposed a push

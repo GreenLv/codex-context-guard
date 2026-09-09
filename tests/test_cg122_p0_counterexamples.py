@@ -18,6 +18,27 @@ counterexample asserts the DESIRED post-fix contract, so it fails on the
 incidental exception). Guard tests already hold on the baseline and pin the
 boundaries a P1/P2 fix must not break.
 
+0.13 layer transfer: the DEFAULT execution-approval gate was removed. The
+default path (standard/strict, active session) returns the plain empty
+object for every candidate tool — no state writes, no cleanup-category
+veto, no Git subprocess, and NO authorization chain. The per-claim
+provenance chain (``prepared_source`` / ``expected_commits`` / generation,
+once produced by ``authorize_commit_push`` prompts and consumed by the
+commit/push gates) is no longer produced or enforced: whether an action is
+within the user's authorization is owned by (a) the executing agent and
+the host permission system, (b) the release-adapter exact contracts behind
+an explicitly adopted release profile (exercised here only at the boundary,
+full coverage under explicit adoption elsewhere), and (c) the preserved
+constraint recording asserted in this module — every old failure family now
+asserts one of: the action is simply allowed with no fabricated
+authorization/evidence in state, the user's original request survives as a
+pending requirement, or the retained pure Git-object fact layer
+(``cg_commit``) still fails closed for the validators/migration that keep
+consuming it. Denial diagnostics under an adopted release contract name
+their exact fact (ticket, compound, unresolvable); the old
+standard-path factual-reason vocabulary (commit_scope_mismatch and
+siblings) left the product with the deleted enforcement chain.
+
 Family cells that stay pending and are deliberately NOT replayed here:
 
 * Hook-payload event shapes (``functions.exec -> exec_command``): the frozen
@@ -66,16 +87,13 @@ AWAIT_USER_STOP_MESSAGE = "需要你先在方案 A 与方案 B 之间做出选�
 MODEL_WAIT_STOP_MESSAGE = "需要你先把运行模型更换为 5.3，更换完成后告诉我。"
 NOT_VERIFIABLY_COMPLETED = "not verifiably completed"
 
-# Factual-reason vocabulary for denial diagnostics (plan section 4.2: the
-# runtime must distinguish scope mismatch, base/parent drift, and ambiguity
-# instead of claiming the commit never completed). Until P1/P2 freeze a
-# reason enum, the oracle accepts any of these factual markers and always
-# rejects the generic non-completion claim; a frozen enum replaces this set.
-SCOPE_REASON_MARKERS = ("scope", "extra", "beyond", "mismatch", "范围", "额外", "超出", "不符")
-PARENT_REASON_MARKERS = ("parent", "base", "drift", "moved", "漂移", "基线", "移动")
-AMBIGUITY_REASON_MARKERS = (
-    "ambiguous", "multiple", "candidate", "unique", "歧义", "多个", "唯一", "候选",
-)
+# Factual-reason vocabulary for denial diagnostics: 0.13 removed the
+# standard-path enforcement chain that produced commit_scope_mismatch,
+# commit_base_drift and commit_candidates_ambiguous, so those reason codes
+# no longer exist in the product. Release-profile denial diagnostics name
+# their exact fact instead ("action-ticket/v1", "chains several remote
+# mutations", "could not be resolved to an exact structured target") and
+# are asserted in CommitChainCounterexampleTests' release-boundary transfer.
 
 # Frozen synthetic schema-10 fixture (valid awaiting_user state, WU0001,
 # schema_version=10, synthetic cwd/session/prompt texts). The content_hash
@@ -367,7 +385,59 @@ class P0Harness(unittest.TestCase):
                               session: str = "p0") -> None:
         self.prompt(statement, session=session)
 
+    def assert_no_authorization_records(self, session: str = "p0") -> None:
+        """0.13 invariant: no fabricated `authorizations` ledger exists.
+
+        The default path never manufactures an authorization record — not
+        from prompts, not from candidate observations. Old schemas keep
+        theirs (as `participation: "historical"` after migration); a state
+        produced entirely under 0.13 must not carry the key at all."""
+        state = self.state(session)
+        for unit in state["work_units"]:
+            self.assertNotIn(
+                "authorizations", unit,
+                "the 0.13 default path must not fabricate authorization records",
+            )
+
+    def assert_requirements_all_pending(self, session: str = "p0") -> None:
+        """0.13 invariant: constraint preservation never flips statuses.
+
+        After the full old counterexample sequences no requirement or
+        acceptance item may have been silently advanced to a terminal
+        status: recording facts and verifying outcomes are separate
+        responsibilities, and this harness executes neither."""
+        state = self.state(session)
+        for item in state.get("requirements", []):
+            self.assertEqual(
+                item.get("status"), "pending",
+                f"requirement {item.get('id')} changed status without evidence",
+            )
+        for item in state.get("acceptance_items", []):
+            self.assertEqual(
+                item.get("status"), "pending",
+                f"acceptance item {item.get('id')} changed status without evidence",
+            )
+
+    def assert_absent_from_state(self, needle: str, session: str = "p0") -> None:
+        """A fact the Guard never verified must never be fabricated into a
+        task/authorization structure. (Raw observations legitimately live
+        in the evidence ledger and prompt journal; INV-02 makes them
+        non-authoritative, not invisible.)"""
+        state = self.state(session)
+        rendered = json.dumps(
+            {
+                "work_units": state["work_units"],
+                "execution": state.get("execution", {}),
+                "supersedes": state.get("supersedes", []),
+            },
+            ensure_ascii=False,
+        )
+        self.assertNotIn(needle, rendered)
+
     def frozen_scope_paths(self, session: str = "p0") -> list[str]:
+        """Historical read helper: pre-0.13 records kept their prepared
+        scope; the 0.13 default path produces none, so a state produced
+        under 0.13 always yields [] here (asserted as the absence fact)."""
         state = self.state(session)
         unit_id = state["work_state"]["active_work_unit_id"]
         unit = self.unit(state, unit_id)
@@ -391,14 +461,9 @@ class P0Harness(unittest.TestCase):
         self.assertIsNotNone(exit_code, f"commit denied: {command}")
         self.assertEqual(exit_code, 0, f"commit failed: {command}")
 
-    def assert_factual_reason(self, reason: str, markers: tuple[str, ...]) -> None:
-        """A typed factual diagnostic, rather than any nonempty sentence."""
-        expected = {
-            SCOPE_REASON_MARKERS: "commit_scope_mismatch",
-            PARENT_REASON_MARKERS: "commit_base_drift",
-            AMBIGUITY_REASON_MARKERS: "commit_candidates_ambiguous",
-        }[markers]
-        self.assertTrue(reason.startswith(expected + ":"), reason)
+    # The old assert_factual_reason oracle retired with the standard-path
+    # enforcement chain in 0.13; release-profile factual reasons are
+    # asserted in test_release_boundary_factual_reasons_transfer below.
 
     def prepare_owned_change(self, session: str = "p0") -> None:
         """Track owned.txt in the base commit, then change it as task work."""
@@ -452,15 +517,37 @@ class ContinuityCounterexampleTests(P0Harness):
         self.assertIsNone(self.unit(state, "WU0002")["parent_id"])
 
     def test_old_remote_authorization_not_extended_to_new_task(self) -> None:
-        """[CONTINUITY guard] A push authorization recorded in task A must
-        not authorize a push issued inside a different, later task (plan
-        section 3.1: sibling units never inherit remote-write authority)."""
+        """[CONTINUITY transfer] A push statement recorded in task A must
+        not become executable authority inside a different, later task.
+
+        0.13 flip: the Guard no longer grants or denies the push at all —
+        the transfer asserts the 0.13 form of the same protection: the
+        old task's statement was recorded ONLY as a pending requirement
+        (never as an authorization object), the sibling task carries no
+        fabricated authorization that could be replayed, and the push
+        decision on the default path is the plain allow with no reason
+        text (INV-01: a Guard allow is not authorization). Enforcing the
+        user's actual intent belongs to the executing agent and host."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push()
+        state_before = self.state()
+        before_ids = {
+            (item["id"], item["status"]) for item in state_before["requirements"]
+        }
+        self.assertTrue(before_ids, "the push statement must be recorded")
         self.prompt("切换到独立任务：请整理文档目录的索引。")
-        decision, _reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
+        decision, reason = self.decision("git push origin main")
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assert_no_authorization_records()
+        # The old task's constraints survive the switch unchanged and
+        # nothing was flipped to a terminal status by the push flow.
+        state_after = self.state()
+        after_ids = {
+            (item["id"], item["status"]) for item in state_after["requirements"]
+        }
+        self.assertTrue(before_ids <= after_ids)
+        self.assert_requirements_all_pending()
 
 
 class WaitCounterexampleTests(P0Harness):
@@ -1066,59 +1153,88 @@ class CommitChainCounterexampleTests(P0Harness):
     """CG122-04 + COMMIT/COMMIT-NEG/CHAIN families (plan sections 2.2,
     2.3, 4.1, 4.2, 6.1).
 
-    Failure conditions on the 0.12.1 baseline: the authorization freezes the
-    WHOLE dirty-tree projection (``prepared_source_identity`` covers staged,
-    unstaged, and untracked paths, attributable or not), and
-    ``advance_commit_transitions`` requires the produced commit's tree delta
-    to equal that projection exactly; an unrelated file makes a legal,
-    authorized commit unverifiable, unattributed dirt is silently frozen
-    into scope, and every denial then claims the commit "has not verifiably
-    completed" instead of naming the actual condition. The commit path here
-    always runs as a causal Pre/exact-exec/Post pair with shared ids; the
-    missing-result scenarios below are explicitly unpaired or unexecuted.
+    Failure conditions on the 0.12.1 baseline: the authorization froze the
+    WHOLE dirty-tree projection and the commit/push gates verified produced
+    commits against that frozen provenance chain.
+
+    0.13 layer transfer: the whole chain (frozen projection, expectation
+    advancement, generation checks, factual-reason denies) is deleted from
+    the default path. Each former deny/allow pair below now asserts the
+    0.13 contract for its scenario: the commit/push flow is not a Guard
+    decision (plain allow wire), the Guard fabricates no authorization,
+    expectation, or evidence record from observations (INV-02: unknown
+    observations are not authorization questions), the user's statements
+    survive as pending requirements, and the release boundary keeps exact
+    facts for tier-A surfaces only. The commit path still runs as a causal
+    Pre/exact-exec/Post pair; the missing-result scenarios below are
+    explicitly unpaired or unexecuted, which in 0.13 changes nothing.
     """
 
     def test_explicit_owned_scope_survives_unrelated_untracked_file(
         self,
     ) -> None:
-        """[CG122-04 counterexample] With an explicit root-user authorization
-        naming owned.txt, an unrelated untracked other.txt stays outside the
-        frozen scope: a commit of exactly owned.txt advances the expectation
-        so the following push is allowed (plan section 4.1: the explicit
-        root-user file set wins; the executor must not need a clean tree)."""
+        """[CG122-04 transfer] With an explicit root-user statement naming
+        owned.txt, the commit of exactly owned.txt plus the push both stay
+        ordinary work on the default path (plain allow wire).
+
+        0.13 flip: the old test needed the Guard to freeze an exact file
+        ceiling so the push could advance; the file-list discipline now
+        belongs to the executing agent. The transfer asserts the 0.13
+        facts: the statement is recorded as a pending requirement, no
+        authorization/prepared-scope object is fabricated, and the push
+        wire is the plain allow with no reason text."""
         self.activate()
         self.prepare_owned_change()
         self.write("other.txt", "unrelated\n")
         self.authorize_commit_push("提交 owned.txt 的修改并推送 origin main。")
-        self.assertIn("owned.txt", self.frozen_scope_paths())
+        self.assertEqual(self.frozen_scope_paths(), [])
         self.commit_and_post(
             ["git", "commit", "-q", "-m", "update owned", "--", "owned.txt"]
         )
         decision, reason = self.decision("git push origin main")
         self.assertEqual((decision, reason), ("allow", ""))
+        state = self.state()
+        self.assertTrue(
+            any("owned.txt" in item["text"] for item in state["requirements"]),
+            "the explicit object list must survive as a recorded requirement",
+        )
+        self.assert_no_authorization_records()
+        self.assert_requirements_all_pending()
 
     def test_unattributed_change_is_not_silently_frozen_into_scope(
         self,
     ) -> None:
-        """[CG122-04 provenance guard] Without an explicit file list, the
-        frozen scope may only contain uniquely attributable task changes
-        (plan section 4.1); ghost.txt was written outside every hook event
-        and must be excluded or asked about, never silently frozen. On the
-        baseline the whole-tree projection includes it."""
+        """[CG122-04 provenance transfer] ghost.txt was written outside
+        every hook event and must never become Guard-verified task scope.
+
+        0.13 flip: nothing is frozen at all any more, so "not silently
+        frozen" holds structurally: no prepared-source projection exists,
+        ghost.txt appears in no Guard record, and the authorization
+        statement survives only as a pending requirement. Attributing
+        worktree dirt to task work is an executing-agent duty."""
         self.activate()
         self.prepare_owned_change()
         self.write("ghost.txt", "unattributed dirt\n")
         self.authorize_commit_push()
-        scope = self.frozen_scope_paths()
-        self.assertIn("owned.txt", scope)
-        self.assertNotIn("ghost.txt", scope)
+        self.assertEqual(self.frozen_scope_paths(), [])
+        self.assert_no_authorization_records()
+        self.assert_absent_from_state("unattributed dirt")
+        state = self.state()
+        self.assertTrue(
+            any("提交并推送" in item["text"] for item in state["requirements"])
+        )
+        self.assert_requirements_all_pending()
 
     def test_unpaired_missing_result_never_advances_expectation(self) -> None:
-        """[COMMIT-NEG guard, missing-result scenario] A PostToolUse success
-        with NO matching PreToolUse and no real commit object is an
-        uncorrelated, missing-result call: it must never advance the
-        expectation, and the push stays denied. Synthetic dispatch is not
-        exact-host evidence; this pins only the missing-result outcome."""
+        """[COMMIT-NEG transfer, missing-result scenario] A PostToolUse
+        success with NO matching PreToolUse and no real commit object is an
+        uncorrelated, missing-result call.
+
+        0.13 flip: there is no expectation left to advance and no deny to
+        issue; the transfer asserts that the unpaired observation produces
+        no commit-transition or evidence record whatsoever and that the
+        push on the default path is the plain allow wire (the Guard's
+        allow is not authorization; the executor owns result checking)."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push()
@@ -1128,15 +1244,24 @@ class CommitChainCounterexampleTests(P0Harness):
             tool_input={"command": "git commit -q -m never ran"},
             tool_response={"exit_code": 0},
         )
+        state = self.state()
+        for unit in state["work_units"]:
+            self.assertNotIn("commit_context", unit)
+        self.assert_absent_from_state("expected_commits")
         decision, reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
-        self.assertTrue(reason.startswith("commit_result_missing:"), reason)
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assert_no_authorization_records()
 
     def test_forged_sha_text_never_advances_expectation(self) -> None:
-        """[COMMIT-NEG guard, missing-result scenario] A tool response that
-        merely displays a commit SHA (no causal Pre pairing, no verifiable
-        commit correspondence) is not commit evidence; the expectation stays
-        pending."""
+        """[COMMIT-NEG transfer, missing-result scenario] A tool response
+        that merely displays a commit SHA is not commit evidence.
+
+        0.13 flip: no expectation exists to forge against; the transfer
+        asserts the forged sha enters NO authorization or commit-transition
+        structure (a raw observation is at most evidence, never authority —
+        INV-02), and the push stays the plain allow wire — validating
+        claims against real objects is the executor's duty and
+        Stop-completion evidence remains ordinary Git fact."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push()
@@ -1146,16 +1271,20 @@ class CommitChainCounterexampleTests(P0Harness):
             tool_input={"command": "git rev-parse HEAD"},
             tool_response={"exit_code": 0, "output": "a" * 40},
         )
-        decision, _reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
+        self.assert_absent_from_state("a" * 40)
+        decision, reason = self.decision("git push origin main")
+        self.assertEqual((decision, reason), ("allow", ""))
 
     def test_extra_object_beyond_explicit_scope_denies_with_factual_reason(
         self,
     ) -> None:
-        """[CG122-04 counterexample] A commit that carries an extra object
-        beyond the explicitly frozen owned.txt scope must be denied with a
-        reason naming the scope mismatch, not the generic non-completion
-        claim."""
+        """[CG122-04 transfer] A commit that carries an extra object beyond
+        the explicitly named owned.txt set is not a Guard decision.
+
+        0.13 flip: the old scope-mismatch deny moved to the executing
+        agent/host and to release-adapter exact contracts; here the same
+        inputs must yield the plain allow wire with the statement recorded
+        as a pending requirement and no frozen ceiling in state."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push("提交 owned.txt 的修改并推送 origin main。")
@@ -1163,14 +1292,20 @@ class CommitChainCounterexampleTests(P0Harness):
         self.git("add", "extra.txt")
         self.commit_and_post(["git", "commit", "-q", "-m", "owned plus extra"])
         decision, reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
-        self.assert_factual_reason(reason, SCOPE_REASON_MARKERS)
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assertEqual(self.frozen_scope_paths(), [])
+        self.assert_requirements_all_pending()
 
     def test_base_head_drift_denies_with_factual_reason(self) -> None:
-        """[COMMIT-NEG counterexample] When another commit lands between the
-        authorization and the authorized commit (parent drift), the push
-        must be denied with a drift-specific reason, not the generic
-        non-completion claim."""
+        """[COMMIT-NEG transfer] When another commit lands between the
+        statement and the work commit (parent drift), the push stays a
+        non-event for the Guard.
+
+        0.13 flip: parent-drift detection left the product with the
+        deleted provenance chain. The transfer asserts the plain allow
+        wire, no fabricated expectation naming either head, and that the
+        parallel head movement is still visible as ordinary Git fact for
+        Stop-completion evidence."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push("提交 owned.txt 的修改并推送 origin main。")
@@ -1181,8 +1316,13 @@ class CommitChainCounterexampleTests(P0Harness):
             ["git", "commit", "-q", "-m", "update owned", "--", "owned.txt"]
         )
         decision, reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
-        self.assert_factual_reason(reason, PARENT_REASON_MARKERS)
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assert_no_authorization_records()
+        self.assert_absent_from_state("expected_commits")
+        # Git-object facts stay available to Stop completion: both commits
+        # exist in the repository history regardless of Guard decisions.
+        subjects = self.git_out("log", "--format=%s", "-2")
+        self.assertIn("update owned", subjects)
 
     def test_existing_commit_reconciled_when_unique_and_corresponding(
         self,
@@ -1206,11 +1346,15 @@ class CommitChainCounterexampleTests(P0Harness):
     def test_existing_commit_ambiguity_denies_with_factual_reason(
         self,
     ) -> None:
-        """[CHAIN counterexample] Two existing candidate commits with the
-        same parent and the same frozen-scope delta are ambiguous; none may
-        be auto-associated, and the denial must name the ambiguity rather
-        than claim non-completion (plan section 4.2: only a UNIQUE candidate
-        object may associate)."""
+        """[CHAIN transfer] Two existing candidate commits with the same
+        parent and the same delta are ambiguous; none may be auto-bound.
+
+        0.13 flip: the old "deny with ambiguity reason" became a structural
+        absence — the Guard associates nothing and asks nothing (INV-02:
+        ambiguity is not an authorization question). The transfer asserts
+        the plain allow wire, that NEITHER candidate sha appears anywhere
+        in private state (no fabricated association), and that resolving
+        which commit to push is the executing agent's duty."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push("提交 owned.txt 的修改并推送 origin main。")
@@ -1228,25 +1372,44 @@ class CommitChainCounterexampleTests(P0Harness):
         self.assertEqual(self.git_out("rev-parse", f"{candidate_b}~1"), base)
         self.assertEqual(self.git_out("rev-parse", f"{candidate_a}^{{tree}}"), self.git_out("rev-parse", f"{candidate_b}^{{tree}}"))
         decision, reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
-        self.assert_factual_reason(reason, AMBIGUITY_REASON_MARKERS)
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assert_absent_from_state(candidate_a)
+        self.assert_absent_from_state(candidate_b)
+        self.assert_no_authorization_records()
 
     def test_cross_unit_replay_of_old_authorization_denied(self) -> None:
-        """[COMMIT-NEG guard] An authorization recorded in an earlier work
-        unit cannot be replayed to authorize a push issued from a later
-        unit, even when the repository state still matches."""
+        """[COMMIT-NEG transfer] A push statement recorded in an earlier
+        work unit cannot be replayed as executable authority in a later
+        unit — because 0.13 records no executable authority at all.
+
+        0.13 flip: the replay attack surface was eliminated structurally.
+        The transfer asserts the later unit carries no authorization object
+        that could be replayed, the push wire is the plain allow (INV-01),
+        and the original statement survives as a pending requirement on
+        its own unit."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push()
         self.prompt("切换到独立任务：请整理文档目录的索引。")
-        decision, _reason = self.decision("git push origin main")
-        self.assertEqual(decision, "deny")
+        decision, reason = self.decision("git push origin main")
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assert_no_authorization_records()
+        state = self.state()
+        self.assertTrue(
+            any("提交并推送" in item["text"] for item in state["requirements"])
+        )
+        self.assert_requirements_all_pending()
 
     def test_staged_content_drift_beyond_frozen_blob_denies(self) -> None:
-        """[COMMIT family counterexample] After owned.txt v2 was frozen, the
-        executor stages and commits different content (v3): the committed
-        blob differs from every frozen object, so the push must be denied
-        with a reason naming the content mismatch, not non-completion."""
+        """[COMMIT family transfer] After owned.txt v2 was named, the
+        executor stages and commits different content (v3).
+
+        0.13 flip: there is no frozen blob to drift from — content drift
+        between the stated intent and the produced commit is invisible to
+        the Guard by design and is caught by the executing agent, review,
+        or Stop-completion evidence instead. The transfer asserts the
+        plain allow wire, that no blob identity was frozen into state,
+        and that the drifted commit remains ordinary Git fact."""
         self.activate()
         self.prepare_owned_change()
         self.authorize_commit_push("提交 owned.txt 的修改并推送 origin main。")
@@ -1254,8 +1417,41 @@ class CommitChainCounterexampleTests(P0Harness):
         self.git("add", "owned.txt")
         self.commit_and_post(["git", "commit", "-q", "-m", "commit drifted blob"])
         decision, reason = self.decision("git push origin main")
+        self.assertEqual((decision, reason), ("allow", ""))
+        self.assert_absent_from_state("v3-drifted")
+        self.assert_no_authorization_records()
+        self.assert_requirements_all_pending()
+
+    def test_release_boundary_factual_reasons_transfer(self) -> None:
+        """[Release-boundary transfer of the factual-reason family] Under
+        an EXPLICITLY declared release profile, denial diagnostics still
+        name their exact fact; ordinary edits/commits/pushes are never
+        gated even under release. Full release-contract coverage lives
+        under explicit adoption elsewhere; this pins the boundary this
+        module's old standard-path deny vocabulary transferred to."""
+        self.activate()
+        self.prompt("context-guard release")
+        # Plain pushes are not tier-A: ordinary pushes stay ungated.
+        self.assertEqual(self.decision("git push origin main"), ("allow", ""))
+        # Tier-A without a ticket: the exact missing fact is named.
+        decision, reason = self.decision("git tag v1.2.3")
         self.assertEqual(decision, "deny")
-        self.assert_factual_reason(reason, SCOPE_REASON_MARKERS)
+        self.assertIn("action-ticket/v1", reason)
+        # A compound remote mutation can never bind exact facts.
+        decision, reason = self.decision(
+            "git push origin main && git tag v1.2.3"
+        )
+        self.assertEqual(decision, "deny")
+        self.assertIn("chains several remote mutations", reason)
+        # A tier-A surface that cannot resolve to an exact structured
+        # target is denied with that fact, never guessed.
+        decision, reason = self.decision("docker push")
+        self.assertEqual(decision, "deny")
+        self.assertIn("could not be resolved to an exact structured target", reason)
+        # A declared-unsupported surface denies as its declared contract.
+        decision, reason = self.decision("gem push ./pkg-1.0.0.gem")
+        self.assertEqual(decision, "deny")
+        self.assertIn("declared-unsupported surface", reason)
 
     def test_staged_blob_committed_exactly_survives_unstaged_worktree_drift(
         self,
@@ -1338,12 +1534,18 @@ class CommitChainCounterexampleTests(P0Harness):
 
     @unittest.skipIf(os.name == "nt", "POSIX invalid-byte path fixture")
     def test_invalid_utf8_path_fails_closed_deterministically(self) -> None:
-        """[COMMIT family counterexample, POSIX plumbing] An index path with
-        bytes that cannot be decoded losslessly must fail the prepared
-        projection closed (plan section 4.1: explicit fail-closed, never a
-        silent lossy replacement and never a crashed hook). On the baseline
-        the strict text decoding of ``git ls-files``/``diff-index`` output
-        lets a raw ``UnicodeDecodeError`` escape the runtime helper."""
+        """[COMMIT family transfer, POSIX plumbing] An index path with
+        bytes that cannot be decoded losslessly must fail the retained
+        Git-object fact layer closed (plan section 4.1: explicit
+        fail-closed, never a silent lossy replacement and never a crashed
+        hook).
+
+        0.13 flip: the prepared projection is no longer produced on the
+        default path, but ``cg_commit.projection``/``index_tree`` remain
+        the pure byte-identity plumbing consumed by validators, migration
+        and Stop-completion evidence — they must keep returning None
+        deterministically instead of raising. On the 0.12.1 baseline the
+        strict text decoding let a raw ``UnicodeDecodeError`` escape."""
         self.activate()
         blob = subprocess.run(
             ["git", "-C", str(self.project), "hash-object", "-w", "--stdin"],
@@ -1355,16 +1557,25 @@ class CommitChainCounterexampleTests(P0Harness):
              "--cacheinfo", f"100644,{blob},{raw_name}"],
             check=True, capture_output=True,
         )
+        from cg_commit import index_tree, path_identity, projection
         try:
-            result = cg.prepared_source_identity(str(self.project))
+            projected = projection(str(self.project))
+            index = index_tree(str(self.project))
             raised: BaseException | None = None
         except Exception as exc:  # noqa: BLE001 - the defect IS the escape
-            result, raised = None, exc
+            projected = index = None
+            raised = exc
         self.assertIsNone(
             raised,
-            f"projection must fail closed, not raise {type(raised).__name__}",
+            f"plumbing must fail closed, not raise {type(raised).__name__}",
         )
-        self.assertIsNone(result, "undecodable path must reject the projection")
+        self.assertIsNone(
+            projected, "undecodable path must reject the projection")
+        self.assertIsNone(
+            index, "undecodable path must reject the index identity")
+        # The pure path identity itself rejects the bytes deterministically.
+        with self.assertRaises(ValueError):
+            path_identity(raw_name.encode("utf-8", "surrogateescape"))
 
 
 class MigrationCounterexampleTests(P0Harness):

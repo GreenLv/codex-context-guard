@@ -308,7 +308,7 @@ class ContinuityMappingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = self.fixture(temp)
             bundle, receipt = fixture.adapt()
-            result = BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(
+            result = BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"]).validate(
                 bundle, reviewed_mapping=receipt)
             gates = {g["id"]: g["status"] for g in result["gates"]}
             self.assertEqual({g for g, s in gates.items() if s == "passed"},
@@ -320,7 +320,7 @@ class ContinuityMappingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = self.fixture(temp)
             bundle, _ = fixture.adapt()
-            result = BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(
+            result = BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"]).validate(
                 json.loads(json.dumps(bundle)))
             self.assertTrue(all(g["status"] == "pending" for g in result["gates"]))
 
@@ -481,11 +481,11 @@ class ContinuityMappingTests(unittest.TestCase):
             forged = copy.deepcopy(receipt)
             forged["mapped_gates"] = list(BEHAVIOR.REQUIRED_GATES)
             with self.assertRaisesRegex(BEHAVIOR.HostBehaviorError, "remaining-gate set"):
-                BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(bundle, reviewed_mapping=forged)
+                BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"]).validate(bundle, reviewed_mapping=forged)
             forged = copy.deepcopy(receipt)
             forged["validator_sha256"] = "0" * 64
             with self.assertRaisesRegex(BEHAVIOR.HostBehaviorError, "validator identity"):
-                BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(bundle, reviewed_mapping=forged)
+                BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"]).validate(bundle, reviewed_mapping=forged)
 
     def test_capture_setup_can_select_the_exact_lifecycle_event_set(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -650,7 +650,7 @@ class ContinuityMappingTests(unittest.TestCase):
             }
             fixture.manifest.write_text(json.dumps(manifest, sort_keys=True))
             bundle, receipt = fixture.adapt()
-            result = BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(
+            result = BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"]).validate(
                 bundle, reviewed_mapping=receipt)
             gate_status = {gate["id"]: gate["status"] for gate in result["gates"]}
             self.assertEqual({gate: gate_status[gate]

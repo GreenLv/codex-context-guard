@@ -8,6 +8,10 @@ release advances the same model with enforcement profiles, an
 explicit work-unit lifecycle (schema 10), Stop protocol 3.0.0, and silent
 success paths. Sections marked *0.12 release* describe behavior introduced in
 0.12.0; unmarked sections describe the published releases that preceded it.
+The unreleased `0.13.0` candidate (schema 12, Stop protocol 4.0.0,
+Execution and Work-unit protocols 3.0.0) moves execution-approval
+responsibility out of the default path; sections marked *0.13 candidate*
+describe that candidate.
 
 Context Guard is a correctness sidecar for Codex. It observes lifecycle events,
 maintains private local task state, compiles a bounded recovery packet, and
@@ -66,16 +70,20 @@ editable plan.
 
 ## Enforcement profiles (0.12 release)
 
+The profiles were introduced in 0.12.0; the unreleased 0.13.0 candidate
+changes what the default profiles enforce, and the rows below state the
+current candidate behavior.
+
 `PreToolUse` and Stop behavior follow the active enforcement profile. Skill
 text, repository instructions, plugin installation, or file presence can
 suggest a profile but never enable one implicitly.
 
 | Profile | How it becomes active | What it enforces | What it does not do |
 | --- | --- | --- | --- |
-| `standard` (default) | Skill selected normally or `context-guard on` | recovery, current-work-unit completion truthfulness, root-user authorization checks for real high-risk actions | no release readiness, candidate closure, or ticket requirements |
-| `strict` | the user explicitly asks for strict evidence protection | `standard` plus enforced proofs for the current work unit | never implies the release profile |
-| `release` | the user explicitly adopts a repository-release execution contract or declares the release profile | `standard` plus candidate-closure, publication-readiness, and one-shot `action-ticket/v1` facts through the versioned release adapter | never treats a tag, Release, or package publish as authorized by itself |
-| `observe` | maintainer or canary configuration | computes the identical would-be decision and records aggregate diagnostics | never blocks; not for real high-risk publication |
+| `standard` (default) | Skill selected normally or `context-guard on` | recovery, task-state continuity, current-work-unit completion truthfulness, and answer-delivery tracking; ordinary tool calls allow silently with no state I/O | no execution approvals and no repeated authorization asks; no release readiness, candidate closure, or ticket requirements |
+| `strict` | the user explicitly asks for strict evidence protection | `standard` plus enforced proofs for the current work unit | never implies the release profile or any Git gating |
+| `release` | the user explicitly adopts a repository-release execution contract or makes an explicit `context-guard release` declaration | `standard` plus candidate-closure, publication-readiness, and one-shot `action-ticket/v1` facts through the versioned release adapter | never treats a tag, Release, or package publish as authorized by itself |
+| `observe` | maintainer or canary configuration | computes the identical would-be decision and records bounded diagnostics | never blocks; not for real high-risk publication |
 | `off` / inactive | `context-guard off`, or no activation | prompt journaling only | no action or completion gating; corrupt private state cannot deny ordinary tools |
 
 A denied action shows one bounded, actionable reason. An allowed action
@@ -84,10 +92,12 @@ returns the plain empty object with no text.
 ## Model- and agent-agnostic baseline (0.12 release)
 
 0.12 does not assume that the model or agent host brings reliable long-context
-protection or recovery of its own. Context Guard provides the whole loop
-locally and deterministically — requirement recovery, work-unit lifecycle,
-evidence binding, completion verification, and authorization — regardless of
-which model or agent runtime consumes it.
+protection or recovery of its own. Context Guard provides the recovery side of
+the loop locally and deterministically — requirement recovery, work-unit
+lifecycle, evidence binding, and completion verification — regardless of
+which model or agent runtime consumes it. Under the 0.13 candidate, deciding
+whether an action is authorized is not part of that loop: it belongs to the
+user, the executing agent, and host permissions.
 
 Protocol semantics are separated from platform adapters:
 
@@ -215,46 +225,52 @@ candidates cannot activate a contract or grant authority. Optional native-plan
 binding compares semantic digests and marks changed bindings for review; the
 plan mirror remains read-only.
 
-### L2.1: synchronous pre-action authorization
+### L2.1: PreToolUse routing (0.13 candidate)
 
-`PreToolUse` classifies covered mutations into three tiers under the active
-enforcement profile. In the `release` profile, A-tier release identity
-changes (release-tag creation or push, registry publish/yank, and
-GitHub Release create/update/delete/upload) require one exact, unexpired
-`action-ticket/v1`. The ticket binds repository, commit, tag/version,
-`candidate-closure/v1`, passing publication `release-readiness/v3` or explicit
-legacy `v2`, normalized tool input, contract revision, authorization source,
-and expiry. Unknown readiness schemas fail closed. The ticket is reserved for
-one tool-use identity, consumed after success, returned to reserved only after
-a failed identical call, and invalidated by candidate or contract drift.
+0.13 moves execution approval out of the Guard. The Hook path is now:
 
-B-tier ordinary remote push, force-push, and remote-branch deletion require
-root-user authorization for the respective action. A push request need not
-spell out the remote, ref or SHA when the request and unique task/repository
-state already determine them. The runtime captures the exact target at
-authorization time and checks it at execution; it asks once for an unresolved
-or competing target, request conflict, or material drift. Status turns do not
-erase an applicable authorization. A commit-and-push request still requires
-the authorized commit to verifiably complete before the push can proceed.
-Ordinary push does not grant force-push, deletion or release authority; quoted,
-attributed and delegated text cannot grant authority. C-tier local edits,
-tests, ordinary commits, and proven-redundant local worktree cleanup are not
-hard-gated. A cleanup work unit still denies a product edit until a separate
-root-user work unit authorizes it.
+1. a stateless router fast path (`cg_hook.py`) classifies the candidate call;
+2. only a candidate-heavy envelope reaches the heavy core, which resolves the
+   active enforcement profile;
+3. `standard` and `strict` candidates allow silently with no state I/O.
+   Ordinary edits, commits, pushes, tags, and publications are no longer
+   gated, no edit-provenance chain is rebuilt before committing, and no
+   natural-language authorization prompt is issued;
+4. `release` and `observe` take their explicit paths. Under `release`,
+   A-tier release identity changes (release-tag creation or push, registry
+   publish/yank, and GitHub Release create/update/delete/upload) still
+   require one exact, unexpired `action-ticket/v1` binding the repository,
+   commit, tag/version, `candidate-closure/v1`, passing publication
+   `release-readiness/v3` or explicit legacy `v2`, normalized tool input,
+   contract revision, authorization source, and expiry; unknown readiness
+   schemas fail closed, the ticket is reserved for one tool-use identity and
+   invalidated by candidate or contract drift. `observe` computes the
+   identical decision and records bounded would-results without blocking.
 
-In the `standard` and `strict` profiles, covered high-risk actions are checked
-only against current root-user semantic authorization inside the active work
-unit; release-readiness and ticket facts are never consulted there. The
-`observe` profile computes the identical decision and records it without
-blocking, and `off` or inactive sessions gate nothing at all. The classifier
-resolves real executable positions and effects: command words inside echo,
-search, quoted, or documentation text are never actions, and `--dry-run`
-or read-only forms are simulation or read-only classes that consume neither
-authorization nor tickets.
+Whether an action is within the user's authorization is decided by the main
+executing agent from the real conversation, repository rules, and host
+permissions. A Context Guard allow was never authorization; the product now
+states that explicitly, and pre-0.13 natural-language authorization records
+are preserved only as `participation: "historical"` history that never
+blocks anything.
 
-This Hook is a strong guardrail rather than a complete security boundary.
-Platform approvals remain authoritative, and specialized tools that do not
-emit Codex Hook events remain listed coverage gaps.
+The 0.12 edit-provenance chain (`observe_source_pre`/`observe_source_post`,
+`prepared_source`, `expected_commits`, and authorization-generation
+tracking) is removed from the default path and its helper code is deleted.
+`cg_authority.py` and `cg_commit.py` remain in the tree as pure validator and
+migration inputs for schema-11 state; they take no part in default-path
+decisions.
+
+`scripts/cg_delivery.py` owns the canonical `response-delivery/v1` contract:
+domain-separated digests over bounded identifiers and the reply SHA-256 —
+never reply text. Stop protocol 4.0.0 records deliveries from a trusted
+final reply and closes interrogative requirements as `answered`; delivery
+states that cannot be established stay unknown and pending, and execution
+obligations always need evidence.
+
+This Hook remains a strong guardrail rather than a complete security
+boundary. Platform approvals remain authoritative, and specialized tools that
+do not emit Codex Hook events remain listed coverage gaps.
 
 ### L3: delegated-agent provenance
 
@@ -289,6 +305,21 @@ The completion gate is bound to the current turn. Only successful evidence
 already captured by the Hook may satisfy a requirement or acceptance item.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
+
+### Stop protocol 4.0.0 delivery semantics (0.13 candidate)
+
+The unreleased 0.13.0 candidate advances this line to Stop protocol 4.0.0
+and splits delivery from acceptance. When the trusted final reply verifiably
+answers a pure question, Stop records a bounded `response-delivery/v1`
+record (owned by `scripts/cg_delivery.py`: session/turn ids, root work-unit
+id, associated requirement ids, event source, reply SHA-256, delivery
+status, resolution, digest, sequence, and timestamp) and closes that
+requirement as `answered`; delivered answers never replay after compaction.
+Execution obligations are unchanged: they always need matching evidence, a
+delivery state that cannot be established stays unknown and never fabricates
+completion, and schema-12 migration marks old pending questions without
+trusted delivery facts as "historical answer-delivery uncertain" instead of
+re-asking them.
 
 ### Stop protocol 3.0.0 (0.12 release)
 
@@ -432,7 +463,7 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | Event | Purpose | Visible context |
 | --- | --- | --- |
 | `UserPromptSubmit` | journal prompt, classify authority, capture prompt assets, and update requirements/contracts/revisions | activation/status and bounded completion instructions |
-| `PreToolUse` | classify actions under the active profile, deny unauthorized real high-risk mutations (release-profile tickets for A-tier identities), and prevent cleanup-to-product-edit transitions | one bounded deny reason; an allow returns no text |
+| `PreToolUse` | route candidates on the stateless fast path; standard and strict allow silently with no state I/O; the release profile enforces exact tier-A tickets and observe records | one bounded deny reason (release tickets or integrity failures); an allow returns no text |
 | `PostToolUse` | record bounded evidence/assets/capabilities, observe successful `update_plan`, and authoritatively stage a verified private control request | none — success paths return the empty object |
 | `PreCompact` | validate state and write recovery snapshot | continue/fail-closed result |
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
@@ -444,8 +475,8 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 Normal success paths are invisible: the nine Hook definitions carry no
 persistent `statusMessage`, every allow path returns the plain empty object
 with no developer receipt, and the private staging and proof receipts do not
-enter the visible event stream. Errors, integrity failures, and real
-unauthorized high-risk denies remain visible. Under the official Codex matcher
+enter the visible event stream. Errors, integrity failures, and denies under
+the release profile (ticket failures) remain visible. Under the official Codex matcher
 contract — a regex applied to the tool name and its aliases — the
 `PreToolUse` matcher is shrunk from `"*"` to exactly the surfaces the
 classifier can gate: the Bash shell/unified-exec alias, `apply_patch` with
@@ -588,6 +619,11 @@ ticket reservation, commit/publish action, or authority for uncovered
 surfaces.
 
 ### Candidate commit scope and target facts (0.12.4)
+
+This section describes the published 0.12.4 runtime. The unreleased 0.13.0
+candidate removes the edit-provenance chain and push-binding gates from the
+default path; the records and helpers described here survive only as
+schema-11 migration and validator inputs.
 
 The root user's affirmative commit-object clauses define the source-scope ceiling. Excluded files, read/test inputs and quoted or delegated statements do not add objects. For example, “commit owned.txt; leave other.txt unchanged” permits only owned.txt. An unresolved explicit ceiling never falls back to inferred edits. Without an explicit file list, only paired, successful current-unit root edit observations can supply source objects.
 

@@ -440,24 +440,25 @@ class WireCompatTests(unittest.TestCase):
         self.assertTrue(any(self.data_dir.rglob("*")))
 
     def test_pre_tool_use_exception_fail_policy(self):
-        """Event-level fail policy: candidate mutations fail closed, but
-        non-candidates (including classifier-ambiguous input) fail open so
-        ordinary tools never lose capability."""
+        """0.13 event-level fail policy: ordinary business candidates stay
+        fail-open — a Guard-internal failure is never an authorization
+        question, and (with no adopted release contract on disk) no state
+        can strip tool capability. The runner envelope stays fail-open as
+        before. The adopted-contract fail-closed branch is covered by the
+        0.13 default-path suite."""
         import importlib.util
         spec = importlib.util.spec_from_file_location("cg_wire2", ENTRY)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         with mock.patch.object(mod, "dispatch", side_effect=RuntimeError("test")):
-            denied = mod.safe_dispatch(
+            fail_open = mod.safe_dispatch(
                 {
                     "hook_event_name": "PreToolUse",
                     "tool_name": "bash",
                     "tool_input": {"command": "git tag v1.2.3"},
                 }
             )
-        self.assertEqual(
-            denied.get("hookSpecificOutput", {}).get("permissionDecision"), "deny"
-        )
+        self.assertEqual(fail_open, {})
         with mock.patch.object(mod, "dispatch", side_effect=RuntimeError("test")):
             fail_open = mod.safe_dispatch(
                 {

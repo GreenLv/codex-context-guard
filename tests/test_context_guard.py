@@ -3089,7 +3089,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 11)
+        self.assertEqual(cg.SCHEMA_VERSION, 12)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
@@ -3326,7 +3326,7 @@ class ContextGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
-        self.assertEqual(migrated["execution"]["protocol_version"], "2.0.0")
+        self.assertEqual(migrated["execution"]["protocol_version"], "3.0.0")
         self.assertEqual(migrated["work_state"]["active_work_unit_id"], "WU0001")
         self.assertEqual(len(migrated["work_units"]), 1)
         self.assertTrue(
@@ -3572,7 +3572,12 @@ class ContextGuardTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     cg.validate_pre_tool_decision(decision)
 
-    def test_pre_tool_a_tier_denies_without_exact_ticket(self) -> None:
+    def test_pre_tool_a_tier_is_not_gated_without_adopted_contract(self) -> None:
+        """0.13 transfer of the old default-deny pin: an ordinary tag under
+        the standard profile is no longer a Guard decision. Execution
+        approval belongs to the agent and the host; the exact-ticket
+        requirement lives ONLY behind an adopted release contract and is
+        covered by the 0.13 release-isolation suite."""
         self.activate()
         self.prompt("准备 v1.2.3 发布候选，但不要发布。")
         result = cg.dispatch(
@@ -3582,13 +3587,13 @@ class ContextGuardTests(unittest.TestCase):
                 tool_use_id="tool-release-1",
             )
         )
-        output = result["hookSpecificOutput"]
-        self.assertEqual(output["permissionDecision"], "deny")
-        # Standard profile: the deny is about root-user authorization, not
-        # release machinery; the ticket requirement lives behind the
-        # release profile only.
-        self.assertIn("state the authorization once", output["permissionDecisionReason"])
-        self.assertNotIn("ticket", output["permissionDecisionReason"])
+        # Allow wire: the plain empty object — no authorization facts,
+        # no fabricated evidence, no ledger growth on the default path.
+        self.assertEqual(result, {})
+        state = self.state()
+        self.assertEqual(state["execution"]["contract"]["state"], "absent")
+        for unit in state["work_units"]:
+            self.assertNotIn("authorizations", unit)
 
     def test_release_authorization_bridge_matches_runtime_allowlist(self) -> None:
         bridge = json.loads(
@@ -3965,7 +3970,10 @@ class ContextGuardTests(unittest.TestCase):
             "deny",
         )
 
-    def test_pre_tool_b_tier_requires_exact_root_target_and_c_is_neutral(self) -> None:
+    def test_pre_tool_b_tier_is_not_target_gated_and_c_is_neutral(self) -> None:
+        """0.13 transfer: destination/refspec exactness is an executing-agent
+        concern. The Guard records no authorization, denies nothing on the
+        default path, and stays silent for C-tier local commits."""
         self.git_init_project()
         self.activate()
         self.prompt("推送 origin 的 main 分支，但不要强制推送。")
@@ -3977,13 +3985,13 @@ class ContextGuardTests(unittest.TestCase):
         )
         # Allow wire: the plain empty object — no permissionDecision text.
         self.assertEqual(allowed, {})
-        denied = cg.dispatch(
+        allowed_other = cg.dispatch(
             self.payload(
                 "PreToolUse", tool_name="exec_command",
                 tool_input={"cmd": "git push upstream main"}, tool_use_id="push-2",
             )
         )
-        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(allowed_other, {})
         self.assertEqual(
             cg.dispatch(
                 self.payload(
@@ -3993,10 +4001,19 @@ class ContextGuardTests(unittest.TestCase):
             ),
             {},
         )
+        # The restriction the user stated is preserved as a requirement, not
+        # converted into a Guard enforcement fact.
+        state = self.state()
+        self.assertTrue(
+            any("强制推送" in item["text"] for item in state["requirements"])
+        )
 
-    def test_pre_tool_b_tier_accepts_https_destination_refspec_authority(self) -> None:
-        """The commit→push chain binds push to the authorized commit: the
-        push only passes AFTER the authorized commit verifiably succeeded."""
+    def test_https_destination_push_is_not_provenance_gated(self) -> None:
+        """0.13 transfer of the commit→push chain pin: a push never waits
+        for a Guard-reconstructed provenance chain. Unknown or missing
+        observations are not authorization questions (INV-02), so the push
+        before and after any commit observation stays a plain allow; the
+        commit itself remains ordinary completion EVIDENCE for Stop."""
         subprocess.run(
             ["git", "init", "-q", str(self.project)], check=True, capture_output=True
         )
@@ -4030,9 +4047,93 @@ class ContextGuardTests(unittest.TestCase):
                 tool_use_id="push-pending",
             )
         )
-        # The authorized commit has not verifiably completed yet.
-        self.assertEqual(
-            pending["hookSpecificOutput"]["permissionDecision"], "deny"
+        # No provenance chain exists yet: the push is still not a Guard deny.
+        self.assertEqual(pending, {})
+        commit_cmd = "git commit -q --allow-empty -m candidate"
+        cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={"cmd": commit_cmd},
+                tool_use_id="commit-authorized",
+            )
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty",
+             "-m", "candidate"],
+            check=True, capture_output=True,
+        )
+        cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="exec_command",
+                tool_input={"cmd": commit_cmd},
+                tool_response={"exit_code": 0},
+                tool_use_id="commit-authorized",
+            )
+        )
+        allowed = cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={
+                    "cmd": (
+                        "git push https://github.com/GreenLv/codex-context-guard.git "
+                        "HEAD:refs/heads/main"
+                    )
+                },
+                tool_use_id="push-refspec",
+            )
+        )
+        # Allow wire is the plain empty object (frozen plan section 4.4).
+        self.assertEqual(allowed, {})
+
+        allowed_other = cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={
+                    "cmd": (
+                        "git push https://github.com/GreenLv/codex-context-guard.git "
+                        "HEAD:refs/heads/other"
+                    )
+                },
+                tool_use_id="push-wrong-refspec",
+            )
+        )
+        self.assertEqual(allowed_other, {})
+        subprocess.run(
+            ["git", "init", "-q", str(self.project)], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.name", "Context Guard Test"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "config", "user.email", "test@example.invalid"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.project), "commit", "-q", "--allow-empty", "-m", "base"],
+            check=True, capture_output=True,
+        )
+        self.activate()
+        self.prompt(
+            "空提交候选，并将生成的精确提交推送到 "
+            "https://github.com/GreenLv/codex-context-guard.git 的 refs/heads/main。"
+        )
+        pending = cg.dispatch(
+            self.payload(
+                "PreToolUse",
+                tool_name="exec_command",
+                tool_input={
+                    "cmd": (
+                        "git push https://github.com/GreenLv/codex-context-guard.git "
+                        "HEAD:refs/heads/main"
+                    )
+                },
+                tool_use_id="push-pending",
+            )
         )
         commit_cmd = "git commit -q --allow-empty -m candidate"
         cg.dispatch(
@@ -4073,7 +4174,7 @@ class ContextGuardTests(unittest.TestCase):
         # Allow wire is the plain empty object (frozen plan section 4.4).
         self.assertEqual(allowed, {})
 
-        denied = cg.dispatch(
+        allowed_other = cg.dispatch(
             self.payload(
                 "PreToolUse",
                 tool_name="exec_command",
@@ -4086,9 +4187,11 @@ class ContextGuardTests(unittest.TestCase):
                 tool_use_id="push-wrong-refspec",
             )
         )
-        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(allowed_other, {})
 
-    def test_pre_tool_b_tier_denies_unresolved_remote_target(self) -> None:
+    def test_unresolved_remote_target_is_not_a_guard_question(self) -> None:
+        """0.13 transfer: an under-specified push target stays with the
+        executing agent (INV-02). The Guard neither denies nor asks."""
         self.activate()
         self.prompt("明确 push main，但没有指定 remote。")
 
@@ -4099,15 +4202,12 @@ class ContextGuardTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(
-            result["hookSpecificOutput"]["permissionDecision"], "deny"
-        )
-        self.assertIn(
-            "Cannot determine the exact target",
-            result["hookSpecificOutput"]["permissionDecisionReason"],
-        )
+        self.assertEqual(result, {})
 
-    def test_pre_tool_scans_chained_and_wrapped_high_risk_commands(self) -> None:
+    def test_scanner_still_detects_but_never_denies_wrapped_mutations(self) -> None:
+        """0.13 transfer: wrapped/chained mutations stay DETECTED actions
+        (the classifier feeds release enforcement), but under the standard
+        profile detection no longer denies (INV-04)."""
         self.activate()
         self.prompt("只运行本地检查，不创建 tag，不发布。")
         commands = (
@@ -4118,18 +4218,14 @@ class ContextGuardTests(unittest.TestCase):
         )
         for index, command in enumerate(commands):
             with self.subTest(command=command):
-                result = cg.dispatch(
-                    self.payload(
-                        "PreToolUse",
-                        tool_name="exec_command",
-                        tool_input={"cmd": command},
-                        tool_use_id=f"chained-{index}",
-                    )
+                payload = self.payload(
+                    "PreToolUse",
+                    tool_name="exec_command",
+                    tool_input={"cmd": command},
+                    tool_use_id=f"chained-{index}",
                 )
-                self.assertEqual(
-                    result["hookSpecificOutput"]["permissionDecision"],
-                    "deny",
-                )
+                self.assertIsNotNone(cg.classify_pre_tool_action(payload))
+                self.assertEqual(cg.dispatch(payload), {})
 
     def test_windows_lexing_scans_quoted_shell_wrapper_payloads(self) -> None:
         commands = (
@@ -4170,10 +4266,10 @@ class ContextGuardTests(unittest.TestCase):
                     action["semantic_action_id"],
                     "compound_remote_mutation",
                 )
-                self.assertEqual(
-                    cg.dispatch(payload)["hookSpecificOutput"]["permissionDecision"],
-                    "deny",
-                )
+                # 0.13 transfer: compounding is an execution-organization
+                # concern on the default path; the exact-binding split
+                # requirement lives only behind an adopted release contract.
+                self.assertEqual(cg.dispatch(payload), {})
 
     def test_local_tag_delete_remains_c_tier_neutral(self) -> None:
         self.prompt("只删除本地未推送的 v1.2.3 tag。")
@@ -4190,19 +4286,27 @@ class ContextGuardTests(unittest.TestCase):
             {},
         )
 
-    def test_cleanup_work_unit_rejects_implicit_product_edit(self) -> None:
+    def test_cleanup_work_unit_preserves_constraint_without_execution_veto(self) -> None:
+        """0.13 transfer of the cleanup-only deny pin: the cleanup category
+        remains an ORGANIZATIONAL label and the user's restriction stays a
+        recoverable requirement, but the category never vetoes apply_patch
+        (INV-04). Constraint adherence is an executing-agent duty."""
         self.activate()
         self.prompt("只做已审查字节的合并和清理。")
         state = self.state()
         self.assertEqual(state["work_units"][-1]["kind"], "cleanup")
-        denied = cg.dispatch(
+        allowed = cg.dispatch(
             self.payload(
                 "PreToolUse", tool_name="apply_patch",
                 tool_input={"patch": "change product behavior"},
                 tool_use_id="patch-1",
             )
         )
-        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(allowed, {})
+        state = self.state()
+        self.assertTrue(
+            any("清理" in item["text"] for item in state["requirements"])
+        )
 
     def test_schema7_normal_lifecycle_creates_no_execution_ticket(self) -> None:
         self.prompt(

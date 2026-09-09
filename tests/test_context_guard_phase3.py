@@ -138,7 +138,7 @@ class Schema10MigrationConformanceTests(Phase3TestCase):
         migrated = cg.load_state(
             session_dir, {"session_id": "p3"}
         )
-        self.assertEqual(migrated["schema_version"], 11)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         units = {item["id"]: item for item in migrated["work_units"]}
         self.assertEqual(units["WU0001"]["status"], "historical_unresolved")
         self.assertEqual(units["WU0002"]["status"], "active")
@@ -1167,18 +1167,18 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
                 self.assertLessEqual(len(result["reason"]), 240)
                 self.assertNotIn("R001", result["reason"])
         self.assertEqual(blocks, 1)
-        # A real high-risk action with no authorization is still denied on
-        # every attempt; the Stop budget never silences it.
+        # 0.13 transfer of the PreToolUse-deny-exemption pin: ordinary
+        # mutations under the standard profile are no longer Guard denies at
+        # all, so the Stop budget is not what silences them — the default
+        # path itself never emits an execution veto (INV-04).
         for _ in range(2):
-            denied = self.dispatch(
+            allowed = self.dispatch(
                 "PreToolUse",
                 turn="turn-1",
                 tool_name="shell",
                 tool_input={"command": "git tag v9.9.9"},
             )
-            self.assertEqual(
-                denied["hookSpecificOutput"]["permissionDecision"], "deny"
-            )
+            self.assertEqual(allowed, {})
 
     def test_t2_lane_target_staged_failure_never_cascades(self) -> None:
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
@@ -1746,7 +1746,7 @@ class SchemaUpgradePromptIntegrationTests(Phase3TestCase):
         # UserPromptSubmit (no resume intent, no control syntax).
         self.prompt("另一件独立事项:请检查文档拼写。必须运行测试验证。", turn="t3")
         state = self.state()
-        self.assertEqual(state["schema_version"], 11)
+        self.assertEqual(state["schema_version"], cg.SCHEMA_VERSION)
         units = {unit["id"]: unit for unit in state["work_units"]}
         self.assertEqual(len(units), 3)
         self.assertEqual(units["WU0001"]["status"], "historical_unresolved")
@@ -1958,7 +1958,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
         self.build_schema9_state()
         session_dir = self.root / "private" / "sessions" / "p3"
         migrated = cg.load_state(session_dir, {"session_id": "p3"})
-        self.assertEqual(migrated["schema_version"], 11)
+        self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["integrity"]["status"], "ok")
         self.assertIsNone(migrated["integrity"]["issue"])
         self.assertIsNone(migrated["integrity"]["backup_file"])

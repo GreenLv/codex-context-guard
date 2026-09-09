@@ -1,4 +1,17 @@
-"""Observe later-turn Git identity; this mapping does not prove authorization."""
+"""Observe later-turn Git identity; this mapping does not prove authorization.
+
+0.13 layer transfer: this module needed no expectation flips — its tests
+never asserted the removed default execution-approval gate or the
+per-claim provenance chain (prepared_source/expected_commits/generation).
+The reviewed raw-capture mapping stays a mapping: later-turn Git identity
+is observed and bound to the exact Git object facts (final_head readback),
+which remain available to Stop completion, while push/commit execution
+approval is not a Guard decision. The only 0.13-driven adjustment lives in
+the shared reviewed-mapping Fixture (tests/test_host_raw_mapping.py), whose
+plugin identity now derives from the measured runtime version instead of a
+hardcoded release string, so reviewed hook bytes stay pinned across
+version bumps.
+"""
 import json
 import tempfile
 import unittest

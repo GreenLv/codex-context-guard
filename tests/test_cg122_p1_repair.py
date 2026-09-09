@@ -94,7 +94,10 @@ class WaitIdentityTests(P0Harness):
         self.assertEqual([c['status'] for c in state['wait_conditions']], ['released', 'released'])
         self.assertEqual(state['work_units'][0]['status'], 'active')
         self.assertEqual(state['requirements'][0]['status'], 'pending')
-        self.assertEqual(self.decision('git push origin main')[0], 'deny')
+        # 0.13 transfer of the trailing default-deny pin: wait release no
+        # longer re-arms an execution gate because the default path has no
+        # execution veto; the released wait still keeps the requirement open.
+        self.assertEqual(self.decision('git push origin main')[0], 'allow')
 
     def test_two_pauses_in_one_prompt_and_replay(self):
         self.activate()

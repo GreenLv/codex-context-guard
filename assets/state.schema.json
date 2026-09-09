@@ -164,7 +164,8 @@
           "enum": [
             "pending",
             "pass",
-            "superseded"
+            "superseded",
+            "answered"
           ]
         },
         "evidence": {
@@ -187,6 +188,13 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "answer_state": {
+          "enum": [
+            "answered",
+            "delivery_unknown"
+          ],
+          "description": "Answer-delivery state for question-type items (0.13): answered = a trusted final reply was delivered; delivery_unknown = historical delivery fact is missing and must not be fabricated."
         }
       },
       "additionalProperties": true,
@@ -604,7 +612,7 @@
       ],
       "properties": {
         "protocol_version": {
-          "const": "2.0.0"
+          "const": "3.0.0"
         },
         "instruction_sources": {
           "type": "array",
@@ -868,11 +876,12 @@
     "pending",
     "prompt_journal",
     "integrity",
-    "content_hash"
+    "content_hash",
+    "response_delivery"
   ],
   "properties": {
     "schema_version": {
-      "const": 11
+      "const": 12
     },
     "wait_conditions": {
       "type": "array",
@@ -1414,7 +1423,7 @@
             "pattern": "^WU[0-9]{4,}$"
           },
           "protocol_version": {
-            "const": "2.0.0"
+            "const": "3.0.0"
           },
           "prompt_id": {
             "$ref": "#/$defs/executionId"
@@ -1554,6 +1563,10 @@
                 },
                 "commit_reason": {
                   "type": "string"
+                },
+                "participation": {
+                  "const": "historical",
+                  "description": "Pre-0.13 natural-language authorization records are explicit history: they never participate in 0.13 execution decisions."
                 }
               }
             }
@@ -1640,7 +1653,7 @@
           ],
           "properties": {
             "protocol_version": {
-              "const": "3.0.0"
+              "const": "4.0.0"
             },
             "turn_id": {
               "type": "string"
@@ -1952,6 +1965,119 @@
     "content_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "response_delivery": {
+      "type": "object",
+      "description": "Response-delivery ledger (response-delivery/v1, 0.13): answer-delivery facts separated from completion. The canonical projection carries exactly version, session/turn identity, root work-unit, UTF-8-byte-sorted deduplicated requirement ids, event source, reply SHA-256 and the delivery status; resolution is recorded beside the projection and never enters the hashed identity. Reply text is never copied.",
+      "required": [
+        "schema",
+        "sequence",
+        "records"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "response-delivery/v1"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "records": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "object",
+            "required": [
+              "version",
+              "session_id",
+              "turn_id",
+              "work_unit_id",
+              "requirement_ids",
+              "source",
+              "reply_sha256",
+              "delivery",
+              "resolution",
+              "delivery_sha256",
+              "sequence",
+              "recorded_at"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "version": {
+                "const": "response-delivery/v1"
+              },
+              "session_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "turn_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "work_unit_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 200
+              },
+              "requirement_ids": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "UTF-8-byte-sorted, deduplicated associated requirement ids."
+              },
+              "source": {
+                "enum": [
+                  "stop_final_reply",
+                  "migration_reconstruction"
+                ]
+              },
+              "reply_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "SHA-256 of the adapter-extracted raw reply string's UTF-8 bytes; null only for delivery_unknown."
+              },
+              "delivery": {
+                "enum": [
+                  "delivered",
+                  "not_delivered",
+                  "delivery_unknown"
+                ]
+              },
+              "resolution": {
+                "enum": [
+                  "open",
+                  "waiting",
+                  "verified",
+                  "not_applicable"
+                ]
+              },
+              "delivery_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+                "description": "SHA-256 over 'context-guard/response-delivery/v1' + NUL + canonical JSON of the projection."
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "recorded_at": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "additionalProperties": false

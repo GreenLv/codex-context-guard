@@ -14,6 +14,13 @@ authoritative.
   compatible with Python 3.10 or newer.
 - Preserve fail-closed behavior for integrity, private control, evidence,
   supersession, scope, path, archive, and delegated-authority failures.
+- Since 0.13.0 the default (`standard`/`strict`) path carries no execution
+  approval: it must not veto ordinary business tools, re-ask for
+  natural-language authorizations, or require an edit-provenance chain.
+  Precise release validation only runs behind an explicitly adopted release
+  contract or an explicitly declared release profile. Do not reintroduce
+  default-path denies (cleanup-only, commit-scope, compound-remote,
+  generation-expiry) without a new versioned contract change.
 - Do not claim that Context Guard is a security sandbox, arbitrary semantic
   verifier, or universal visual-understanding system. Unsupported deterministic
   verification remains visible as `legacy_fallback`.

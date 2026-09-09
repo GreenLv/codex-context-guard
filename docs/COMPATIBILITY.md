@@ -25,6 +25,42 @@ review and P4 candidate gates must include this behavior.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
+## 0.13.0 candidate status
+
+Version 0.13.0 is an unreleased source candidate; the published baseline above
+remains `0.12.4`. Its default-path behavior change is a contract change, not a
+bugfix: the `standard` and `strict` profiles no longer execute
+natural-language authorization gates for ordinary edits, commits, pushes,
+tags, or publications, and the edit-provenance chain
+(`observe_source_pre`/`observe_source_post`, `prepared_source`,
+`expected_commits`, authorization generations) is removed from the default
+path together with its helper code. Deciding whether an action is within the
+user's authorization belongs to the main executing agent, guided by the real
+conversation, repository rules, and host permissions; a Context Guard allow
+was never authorization. `strict` documents enforced proof obligations only
+and never implies Git or release gating. The `release` profile is unchanged
+when explicitly adopted or explicitly declared (`context-guard release`):
+tier-A identity actions still require exact one-shot `action-ticket/v1`
+tickets. `observe` records bounded would-results and never blocks.
+
+Migration guarantees: schema 12 is written only forward. Schemas 11, 10, and
+9 migrate (schema 10 chained through the schema-11 wait-condition rewrite)
+with durable records preserved and no lossy rewrite path; schemas 7 and 8
+remain read-only. Old natural-language authorization records are preserved
+as `participation: "historical"` history and never block anything. Old
+pending questions without trusted delivery facts are annotated "historical
+answer-delivery uncertain" instead of being mechanically re-asked. Consumed
+versioned caches stay immutable and are never refreshed from new source
+bytes.
+
+The mode profile values are unchanged on the wire (`standard`, `strict`,
+`release`, `observe`, `off`/inactive); what changes is what the default
+profiles enforce. Candidate protocol identities are: schema 12, Stop protocol
+4.0.0, Execution protocol 3.0.0, Work-unit protocol 3.0.0, Proof protocol
+1.0.0, classifier 3.3.0, and the new `response-delivery/v1` dimension. Only
+source-level macOS evidence exists for this candidate; native, isolated-install,
+and publication evidence are pending and are not inferred from CI.
+
 ## 0.12.4 release scope
 
 Version 0.12.4 uses schema 11 for source- and subject-bound waiting conditions. Follow-ups retain unfinished work, while valid independent switches isolate the prior business task and preserve explicit session restrictions. Recovery pages require a session ID and return full prompt text or the exact persistent-constraint span, plus bounded continuations for large verification metadata. Default recovery, diagnostics and completion share the applicable scope.

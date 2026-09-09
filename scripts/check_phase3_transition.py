@@ -110,6 +110,25 @@ SUPERSEDED_WIRE_ASSERTIONS = [
     ),
 ]
 
+# 0.13 responsibility transfer: frozen-baseline assertions that the DEFAULT
+# execution gate must deny without an adopted release contract. The 0.13
+# contract removes the default path's execution veto (plan sections 4.1-4.4),
+# so the deny assertion can no longer hold and the baseline pin surfaces as
+# an error (KeyError on the absent hookSpecificOutput). Recorded here as the
+# documented deliverable of the responsibility transfer — never special-cased
+# in production code and never faked as a pass.
+SUPERSEDED_DEFAULT_GATE_ASSERTIONS = [
+    (
+        "PolicyScopeBaselineTests.test_unticketed_tag_denied_without_any_adopted_contract",
+        "DEFAULT-GATE (0.13.0)",
+        "intentionally transferred assertion: 0.13 removes the default "
+        "execution-approval path, so an ordinary tag without an adopted "
+        "release contract is no longer a Guard deny; release enforcement "
+        "stays verified by tests.test_cg130_release_adapter under the "
+        "explicitly adopted contract",
+    ),
+]
+
 # 0.11.x defect pins whose frozen observation Phase 3 legitimately inverts.
 EXPECTED_INVERTED_PINS = [
     (
@@ -212,10 +231,18 @@ def main() -> int:
     # assertion (KeyError on the absent explicit-allow shape) surfaces as
     # an expected failure, not an error. Classify over both buckets.
     superseded_ids = {item for item, _family, _note in SUPERSEDED_WIRE_ASSERTIONS}
+    transferred_ids = {
+        item for item, _family, _note in SUPERSEDED_DEFAULT_GATE_ASSERTIONS
+    }
     observed_superseded = sorted(
         item for item in (all_errors + expected_failures) if item in superseded_ids
     )
-    observed_errors = [item for item in all_errors if item not in superseded_ids]
+    observed_transferred = sorted(
+        item for item in (all_errors + expected_failures) if item in transferred_ids
+    )
+    observed_errors = [
+        item for item in all_errors if item not in superseded_ids | transferred_ids
+    ]
     observed_remaining = [
         item for item in observed_remaining if item not in superseded_ids
     ]
@@ -223,6 +250,9 @@ def main() -> int:
     deltas: list[str] = []
     superseded_families = {
         item: family for item, family, _note in SUPERSEDED_WIRE_ASSERTIONS
+    }
+    transferred_families = {
+        item: family for item, family, _note in SUPERSEDED_DEFAULT_GATE_ASSERTIONS
     }
     for label, observed, expected in (
         ("fixed target not passing (regression)", observed_fixed, EXPECTED_FIXED_TARGETS),
@@ -245,6 +275,11 @@ def main() -> int:
             observed_superseded,
             sorted(superseded_ids),
         ),
+        (
+            "superseded default-gate assertion not observed as an error",
+            observed_transferred,
+            sorted(transferred_ids),
+        ),
     ):
         for item in sorted(set(observed) - set(expected)):
             deltas.append(f"{label} (it now passes or behaves differently): {item}")
@@ -264,6 +299,15 @@ def main() -> int:
             }
             for item, _family, note in SUPERSEDED_WIRE_ASSERTIONS
             if item in observed_superseded
+        ],
+        "superseded_default_gate_assertions": [
+            {
+                "test": item,
+                "family": transferred_families[item],
+                "note": note,
+            }
+            for item, _family, note in SUPERSEDED_DEFAULT_GATE_ASSERTIONS
+            if item in observed_transferred
         ],
         "inverted_defect_pins": observed_inverted,
         "errors": observed_errors,
@@ -285,6 +329,7 @@ def main() -> int:
                 "fixed_targets": len(observed_fixed),
                 "remaining_expected_failures": len(observed_remaining),
                 "superseded_wire_assertions": len(observed_superseded),
+                "superseded_default_gate_assertions": len(observed_transferred),
                 "inverted_defect_pins": len(observed_inverted),
                 "errors": len(observed_errors),
                 "matches_manifest": not deltas,

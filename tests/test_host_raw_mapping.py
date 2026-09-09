@@ -50,6 +50,7 @@ def git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
 class Fixture:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
+        _, self.plugin_version, _ = CAPTURE.measure_runtime(ROOT)
         self.repo = self.root / "repo"
         self.remote = self.root / "remote.git"
         self.capture = self.root / "capture"
@@ -222,7 +223,7 @@ class Fixture:
                 if key not in {"key", "sourcePath", "trustStatus"}
             }
             item["sourcePathClass"] = (
-                "plugin_0_12_4" if record["source"] == "plugin"
+                f"plugin_{self.plugin_version.replace('.', '_')}" if record["source"] == "plugin"
                 else "selected_home_hooks"
             )
             normalized.append(item)
@@ -236,7 +237,7 @@ class Fixture:
         self.trust.chmod(0o600)
         contract = {
             "schema": "context-guard-p4-r5-recovery-expected-hooks/v1",
-            "plugin_version": "0.12.4",
+            "plugin_version": self.plugin_version,
             "record_count": 11,
             "plugin_record_count": 9,
             "user_capture_record_count": 2,
@@ -333,7 +334,7 @@ class ReviewedRawMappingTests(unittest.TestCase):
             fixture = self.fixture(temp)
             bundle, receipt = fixture.adapt()
             declared = dict(bundle["subject"])
-            result = BEHAVIOR.Validator(declared, "0.12.4").validate(
+            result = BEHAVIOR.Validator(declared, fixture.plugin_version).validate(
                 bundle, reviewed_mapping=receipt
             )
             gates = {gate["id"]: gate for gate in result["gates"]}
@@ -357,7 +358,7 @@ class ReviewedRawMappingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             fixture = self.fixture(temp)
             bundle, _ = fixture.adapt()
-            result = BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(
+            result = BEHAVIOR.Validator(bundle["subject"], fixture.plugin_version).validate(
                 json.loads(json.dumps(bundle))
             )
             self.assertTrue(all(gate["status"] == "pending" for gate in result["gates"]))
@@ -452,7 +453,7 @@ class ReviewedRawMappingTests(unittest.TestCase):
             forged = copy.deepcopy(receipt)
             forged["validator_sha256"] = "0" * 64
             with self.assertRaisesRegex(BEHAVIOR.HostBehaviorError, "validator identity"):
-                BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(
+                BEHAVIOR.Validator(bundle["subject"], fixture.plugin_version).validate(
                     bundle, reviewed_mapping=forged
                 )
 
@@ -466,7 +467,7 @@ class ReviewedRawMappingTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 BEHAVIOR.HostBehaviorError, "accepted three-gate set"
             ):
-                BEHAVIOR.Validator(bundle["subject"], "0.12.4").validate(
+                BEHAVIOR.Validator(bundle["subject"], fixture.plugin_version).validate(
                     bundle, reviewed_mapping=forged
                 )
 

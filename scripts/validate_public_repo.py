@@ -8,13 +8,15 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.12.4"
-# Stop protocol 3.0 / schema 10 (Phase 3): the public contract pins the runtime
+VERSION = "0.13.0"
+# Stop protocol 4.0 / schema 12 (0.13.0): the public contract pins the runtime
 # constants and the one-way safety contract fragments below.
-SCHEMA_VERSION = 11
-STOP_PROTOCOL_VERSION = "3.0.0"
-EXECUTION_PROTOCOL_VERSION = "2.0.0"
-CLASSIFIER_VERSION = "3.2.1"
+SCHEMA_VERSION = 12
+STOP_PROTOCOL_VERSION = "4.0.0"
+EXECUTION_PROTOCOL_VERSION = "3.0.0"
+WORK_UNIT_PROTOCOL_VERSION = "3.0.0"
+RESPONSE_DELIVERY_SCHEMA = "response-delivery/v1"
+CLASSIFIER_VERSION = "3.3.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 PRIVATE_SUCCESS_RECEIPT = "Script completed"
 DISPOSITION_REASONS = {
@@ -287,6 +289,24 @@ def validate(root: Path) -> list[str]:
         for field in ("assets", "asset_sequence", "proofs", "proof_sequence", "work_units", "work_unit_sequence"):
             if field not in schema.get("required", []):
                 errors.append(f"private state schema must require {field}")
+        if "response_delivery" not in schema.get("required", []):
+            errors.append("private state schema must require the response-delivery ledger")
+        delivery = properties.get("response_delivery", {})
+        serialized_delivery = json.dumps(delivery, sort_keys=True)
+        if RESPONSE_DELIVERY_SCHEMA not in serialized_delivery:
+            errors.append(
+                "response-delivery ledger must bind the response-delivery/v1 schema"
+            )
+        tracked = schema.get("$defs", {}).get("trackedItem", {})
+        statuses = tracked.get("properties", {}).get("status", {}).get("enum", [])
+        if "answered" not in statuses:
+            errors.append(
+                "tracked items must carry the answer-delivered terminal status"
+            )
+        if "delivery_unknown" not in json.dumps(tracked, sort_keys=True):
+            errors.append(
+                "tracked items must carry the unknown historical delivery state"
+            )
         completion_attempt = properties.get("completion_attempt", {})
         serialized_attempt = json.dumps(completion_attempt, sort_keys=True)
         for field in ("protocol_version", "staged_control"):
@@ -334,11 +354,13 @@ def validate(root: Path) -> list[str]:
         )
         runtime_tree = ast.parse(runtime_text)
         expected_literals = {
+            "PRODUCT_VERSION": VERSION,
             "SCHEMA_VERSION": SCHEMA_VERSION,
             "STOP_PROTOCOL_VERSION": STOP_PROTOCOL_VERSION,
             "CLASSIFIER_VERSION": CLASSIFIER_VERSION,
             "PROOF_PROTOCOL_VERSION": PROOF_PROTOCOL_VERSION,
             "EXECUTION_PROTOCOL_VERSION": EXECUTION_PROTOCOL_VERSION,
+            "WORK_UNIT_PROTOCOL_VERSION": WORK_UNIT_PROTOCOL_VERSION,
             "DISPOSITION_REASONS": DISPOSITION_REASONS,
         }
         for name, expected in expected_literals.items():
