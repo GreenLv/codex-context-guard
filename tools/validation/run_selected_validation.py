@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -14,6 +15,9 @@ from typing import Any
 
 PLAN_SCHEMA = "change-scoped-validation-plan/v1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+ROOT = Path(__file__).resolve().parents[2]
+HISTORICAL = "tests.test_context_guard_012_baseline"
+TEST_PATH = re.compile(r"^tests/(test_[a-zA-Z0-9_]+)\.py$")
 KNOWN_GATES = {
     "artifact_identity", "contract_tests", "docs_contract", "focused_tests",
     "full_candidate", "install_lifecycle", "lint_compile", "repo_contract",
@@ -51,18 +55,70 @@ def validate_plan(value: Any) -> dict[str, Any]:
     return value
 
 
+def focused_modules(paths: list[str], root: Path = ROOT) -> list[str] | None:
+    """Select changed test modules and their transitive static test importers.
+
+    Shared fixtures, runtime changes, deleted modules, and unknown owners keep
+    the full-candidate fallback. Do not guess ownership from a filename stem.
+    """
+    selected: set[str] = set()
+    for path in paths:
+        match = TEST_PATH.fullmatch(path)
+        if match is None or not (root / path).is_file():
+            return None
+        name = "tests." + match.group(1)
+        if name == HISTORICAL:
+            return None
+        selected.add(name)
+    if not selected:
+        return None
+    imports: dict[str, set[str]] = {}
+    try:
+        for path in (root / "tests").glob("test_*.py"):
+            name = "tests." + path.stem
+            if name == HISTORICAL:
+                continue
+            dependencies: set[str] = set()
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    dependencies.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    if node.level == 1:
+                        module = "tests" + ("." + module if module else "")
+                    dependencies.add(module)
+                    if module == "tests":
+                        dependencies.update("tests." + alias.name for alias in node.names)
+            imports[name] = dependencies
+    except (OSError, UnicodeError, SyntaxError):
+        return None
+    while True:
+        expanded = selected | {name for name, dependencies in imports.items()
+                               if dependencies & selected}
+        if expanded == selected:
+            return sorted(selected)
+        selected = expanded
+
+
 def commands_for(value: Any) -> list[list[str]]:
     plan = validate_plan(value)
     gates = set(plan["gates"])
+    focused: list[str] = []
+    if "focused_tests" in gates and "full_candidate" not in gates:
+        selection = focused_modules(plan["changed_paths"])
+        if selection is None:
+            gates.add("full_candidate")
+        else:
+            focused = selection
     validate_repo = [sys.executable, "scripts/validate_public_repo.py", "."]
     audit_tree = [sys.executable, "scripts/audit_public_tree.py", "."]
     public_contract = [sys.executable, "-m", "unittest", "tests.test_public_contract"]
     current_behavior = [sys.executable, "scripts/run_current_behavior_suite.py"]
     historical_transition = [sys.executable, "scripts/check_phase3_transition.py"]
     commands: list[list[str]] = []
-    # This closed-world suite discovers every current test_*.py module.
-    # Retain standalone checks, but do not execute its module subsets twice.
-    covers_current_tests = "focused_tests" in gates
+    # Full-candidate discovery covers all module subsets; focused selection
+    # covers only its owning/importer modules and must retain other gate checks.
     if "full_candidate" in gates:
         commands.extend([
             validate_repo,
@@ -76,21 +132,21 @@ def commands_for(value: Any) -> list[list[str]]:
     else:
         if {"docs_contract", "repo_contract", "artifact_identity"} & gates:
             commands.extend([validate_repo, audit_tree])
-        if {"docs_contract", "repo_contract"} & gates and not covers_current_tests:
+        if {"docs_contract", "repo_contract"} & gates:
             commands.append(public_contract)
-        if "contract_tests" in gates and not covers_current_tests:
+        if "contract_tests" in gates:
             commands.append([
                 sys.executable, "-m", "unittest",
                 "tests.test_conformance_fixtures", "tests.test_reference_digest_encoder",
             ])
-        if "runtime_tests" in gates and not covers_current_tests:
+        if "runtime_tests" in gates:
             commands.append([
                 sys.executable, "-m", "unittest",
                 "tests.test_context_guard", "tests.test_context_guard_v095",
             ])
         if "focused_tests" in gates:
-            commands.extend([current_behavior, historical_transition])
-        if "install_lifecycle" in gates and not covers_current_tests:
+            commands.append([sys.executable, "-m", "unittest", *focused])
+        if "install_lifecycle" in gates:
             commands.append([
                 sys.executable, "-m", "unittest",
                 "tests.test_manage_plugin", "tests.test_smoke_installed",
@@ -102,6 +158,14 @@ def commands_for(value: Any) -> list[list[str]]:
                 ["ruff", "check", "."],
                 [sys.executable, "-m", "compileall", "-q", "scripts", "tests", "tools"],
             ])
+    # Combine unittest modules so a shared owner selected by two gates runs once.
+    modules = sorted({module for command in commands
+                      if command[:3] == [sys.executable, "-m", "unittest"]
+                      for module in command[3:]})
+    if modules:
+        commands = [command for command in commands
+                    if command[:3] != [sys.executable, "-m", "unittest"]]
+        commands.insert(0, [sys.executable, "-m", "unittest", *modules])
     if plan.get("base_sha") and plan.get("head_sha"):
         commands.append(["git", "diff", "--check", plan["base_sha"], plan["head_sha"], "--"])
     return unique(commands)

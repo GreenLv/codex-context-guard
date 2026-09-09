@@ -43,7 +43,9 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import re
+import tempfile
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -1033,6 +1035,26 @@ def adopt_portable_result(
     )
 
 
+def check_output_path(output: Path, repo_root: Path) -> None:
+    """Check result storage before collection/replay, without replacing evidence."""
+    if output.exists() or output.is_symlink():
+        raise HostBehaviorError("output already exists; keep it and choose a new result path")
+    if output.resolve().is_relative_to(repo_root.resolve()):
+        raise HostBehaviorError("output must be outside the source repository")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=output.parent) as probe:
+        probe.write(b"result-path-check")
+        probe.flush()
+
+
+def write_result(output: Path, result: dict[str, Any]) -> None:
+    """Use exclusive creation so a late collision cannot overwrite a result."""
+    payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write(payload)
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1042,6 +1064,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--preflight", action="store_true",
+                        help="check inputs and result storage without writing acceptance evidence")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--run-url")
@@ -1118,12 +1142,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
     try:
+        check_output_path(args.output, args.repo_root)
         result = run_host_behavior(args)
-    except HostBehaviorError as exc:
+        if args.preflight:
+            print("native_preflight=" + ("failed" if result["status"] == "failed" else "passed")
+                      + "; acceptance_not_written; capture_status=" + result["status"])
+            return 1 if result["status"] == "failed" else 0
+        write_result(args.output, result)
+    except (HostBehaviorError, OSError) as exc:
         parser.error(str(exc))
-    args.output.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
     print(f"native_acceptance={result['status']}")
     return _EXIT_CODES[result["status"]]
 

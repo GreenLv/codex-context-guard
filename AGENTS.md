@@ -122,6 +122,18 @@ authoritative.
 
 ## Validation matrix
 
+- Keep one coordinating owner; a bounded external implementation batch may
+  return source and evidence for concentrated review. Handoff or commit alone
+  does not create a new review round or formal release candidate.
+- Freeze expensive candidate runs after blocking behavior and packaged reader
+  documentation converge. Important documents must explain purpose, actions,
+  results and upgrades to newcomers; structural checks cannot prove clarity.
+- Before native work, use the native entrypoint's `--preflight` with the actual
+  arguments. It checks local inputs and result storage, not host trust, model
+  behavior or native acceptance. Store results outside the source checkout and
+  disposable fixtures; existing output files are preserved, never overwritten.
+
+
 - Use a verified Python 3.10+ interpreter; do not assume the operating system's
   default `python3` is new enough. Shell scripts must state whether they target
   POSIX shell, `bash`, PowerShell, or another runtime.

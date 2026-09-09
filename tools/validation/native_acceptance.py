@@ -205,24 +205,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
+    behavior = load_host_behavior()
+    try:
+        behavior.check_output_path(args.output, args.repo_root)
+    except (OSError, behavior.HostBehaviorError) as exc:
+        parser.error(str(exc))
     if args.profile == "host_behavior":
         try:
-            result = load_host_behavior().run_host_behavior(args)
+            result = behavior.run_host_behavior(args)
+            if args.preflight:
+                print("native_preflight=" + ("failed" if result["status"] == "failed" else "passed")
+                      + "; acceptance_not_written; capture_status=" + result["status"])
+                return 1 if result["status"] == "failed" else 0
+            behavior.write_result(args.output, result)
         except Exception as exc:  # noqa: BLE001 - surfaced through argparse
             parser.error(str(exc))
-        args.output.write_text(
-            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
         print(f"native_acceptance={result['status']}")
         return {"passed": 0, "failed": 1, "pending": 3}[result["status"]]
     try:
         codex = resolve_executable(args.codex)
-    except NativeRunError as exc:
+        root = args.repo_root.resolve()
+        verify_exact_source(root, args.source_commit)
+        normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout)
+        runtime_digest(load_manager(root), root)
+        run(root, codex, "--version")
+    except (NativeRunError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
+    if args.preflight:
+        print("native_preflight=passed; input_checks_only; acceptance_not_run")
+        return 0
     result = portable_acceptance(
         args.repo_root.resolve(), args.source_commit, codex, args.run_url
     )
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    behavior.write_result(args.output, result)
     print(f"native_acceptance={result['status']}")
     return 0 if result["status"] == "passed" else 1
 

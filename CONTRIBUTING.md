@@ -20,7 +20,25 @@ Thank you for helping improve Context Guard.
 
 ## Validation
 
-Run from the repository root:
+During repair, use the selected validation plan or the owning test module.
+`tools/validation/run_selected_validation.py` runs changed test modules and
+their static test importers; shared fixtures, deleted tests and unknown owners
+keep the full-candidate fallback. Its `--list` mode displays the selected
+commands without executing them. Candidate and validation-infrastructure
+changes still require the declared complete checks below.
+
+For native acceptance, add `--preflight` to the intended command before
+installation or host work. Choose an unused `--output` path outside this
+repository and temporary fixtures. The entrypoint creates missing parent
+directories and checks writing there before doing expensive work. A preflight
+pass proves only input readiness; it creates no acceptance annex and does not
+prove login, Hook trust, restricted-child access or real-model behavior.
+Capture replay additionally reports its existing capture status. Run without
+`--preflight` for actual acceptance; existing outputs are never replaced.
+Keep original captures and results for later readback instead of rerunning
+because a transfer failed.
+
+Run the complete checks from the repository root when required:
 
 ```shell
 python scripts/validate_public_repo.py .

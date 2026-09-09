@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +27,66 @@ def plan(gates: list[str], paths: list[str]) -> dict[str, object]:
 
 
 class SelectedValidationTests(unittest.TestCase):
+    def test_single_test_change_runs_owning_module_without_full_suite(self) -> None:
+        commands = RUNNER.commands_for(plan(
+            ["focused_tests", "repo_contract"], ["tests/test_native_acceptance.py"],
+        ))
+        modules = [command for command in commands if command[1:3] == ["-m", "unittest"]]
+        self.assertEqual(len(modules), 1)
+        self.assertEqual(set(modules[0][3:]), {
+            "tests.test_native_acceptance", "tests.test_public_contract",
+        })
+        self.assertFalse(any("scripts/run_current_behavior_suite.py" in command for command in commands))
+
+    def test_shared_test_harness_includes_all_static_importers(self) -> None:
+        selected = RUNNER.focused_modules(["tests/test_cg122_p0_counterexamples.py"])
+        self.assertIn("tests.test_cg122_p1_repair", selected)
+        self.assertIn("tests.test_cg122_p2_scope_timing", selected)
+        self.assertIn("tests.test_host_direct_git_gates", selected)
+        self.assertNotIn("tests.test_native_acceptance", selected)
+
+    def test_transitive_and_relative_test_importers_are_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            files = {
+                "test_a.py": "VALUE = 1\n",
+                "test_b.py": "from tests.test_a import VALUE\n",
+                "test_c.py": "from . import test_b\n",
+                "test_d.py": "from tests import test_c\n",
+                "test_unrelated.py": "VALUE = 2\n",
+            }
+            for name, content in files.items():
+                (root / "tests" / name).write_text(content, encoding="utf-8")
+            self.assertEqual(RUNNER.focused_modules(["tests/test_a.py"], root), [
+                "tests.test_a", "tests.test_b", "tests.test_c", "tests.test_d",
+            ])
+            (root / "tests" / "test_b.py").write_text("bad syntax [", encoding="utf-8")
+            self.assertIsNone(RUNNER.focused_modules(["tests/test_a.py"], root))
+
+    def test_unknown_deleted_and_historical_owners_keep_full_candidate(self) -> None:
+        for path in ("tests/fixtures/unknown.json", "tests/test_deleted.py",
+                     "tests/test_context_guard_012_baseline.py", "scripts/context_guard.py"):
+            with self.subTest(path=path):
+                commands = RUNNER.commands_for(plan(["focused_tests"], [path]))
+                self.assertTrue(any("scripts/run_current_behavior_suite.py" in command for command in commands))
+                self.assertTrue(any("scripts/check_phase3_transition.py" in command for command in commands))
+                self.assertIn(["ruff", "check", "."], commands)
+
+    def test_selected_command_executes_nonempty_owner_and_propagates_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tests").mkdir()
+            (root / "tests" / "__init__.py").touch()
+            target = root / "tests" / "test_selected.py"
+            target.write_text("import unittest\nclass Test(unittest.TestCase):\n"
+                              "    def test_result(self): self.assertEqual(1, 2)\n", encoding="utf-8")
+            modules = RUNNER.focused_modules(["tests/test_selected.py"], root)
+            result = subprocess.run([sys.executable, "-m", "unittest", *modules],
+                                    cwd=root, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Ran 1 test", result.stderr)
+
     def test_docs_do_not_run_runtime_or_install_gates(self) -> None:
         commands = RUNNER.commands_for(plan(["docs_contract"], ["README.md"]))
         joined = [" ".join(command) for command in commands]
