@@ -14,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.12.4`. See the [release notes](docs/releases/v0.12.4.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
-> Version `0.12.4` repairs task continuation, pause confirmation, complete recovery and the distinction between child-task and whole-task completion. Operational correction wording no longer asks which requirement to replace, while a real correction can name its requirement before or after the correction verb and an unresolved target still asks for clarification. Commit-and-push remains bound to the authorized file content and verified commit, including a later push authorization that names the current candidate SHA. The implemented behavior, its regression locators, and the still-missing native evidence are documented per area in the [0.12.4 behavior baseline](docs/BEHAVIOR_BASELINE_0_12_4.md). The recorded runtime has passed isolated portable acceptance independently on macOS and Windows; both platforms also pass all six real-host behavior gates through separately reviewed composites. Each composite preserves its original sessions and execution-evidence limits. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for the original run identities and release verification requirements.
+> Version `0.12.4` fixes lost task limits, unrelated confirmations clearing pauses, incomplete recovery text, and commit-and-push target mistakes. See the [changelog](CHANGELOG.md) for changes and the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for platform checks.
 
 ## Install
 
@@ -36,18 +36,11 @@ The installer adds this repository as a marketplace, installs `context-guard@cod
 
 Installing a plugin does not trust its Hooks automatically. Start a fresh Codex task, open `/hooks`, review and trust all nine definitions, then start another fresh task so it loads the current version.
 
-### Version and compatibility notes
+### Upgrade notes
 
-- Version 0.12.4 keeps current task limits through follow-ups, ignores operational uses of “correction” when looking for requirement replacement, distinguishes separate pauses, provides complete recovery pages for a specified session, and treats “current candidate commit” as an existing push target. Its schema-11 migration, per-area behavior baseline, and acceptance boundaries are described in the [behavior baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) and the [compatibility matrix](docs/COMPATIBILITY.md).
-- Version 0.12.1 removes redundant push-target confirmation from the Skill guidance, loads advanced instructions only when needed, and avoids repeating test subsets already covered by the selected full suite. Hook behavior and public protocols are unchanged.
-- Version 0.12.0 makes normal success paths silent, isolates completed or historical work after compaction and resume, and distinguishes real high-risk execution from quoted text, searches, examples, and dry runs.
-- Its explicit profile ladder separates ordinary completion protection from strict evidence and release policy. Internally, protocol semantics are separated from the Codex Hook adapter, with `PreToolUse`, one-shot action tickets, checked Stop dispositions, and scoped work units used only where their profile requires them.
-- The 0.12.0 runtime passed independent native macOS and Windows acceptance on the same 26-file runtime-tree digest; the Windows evidence has explicitly authorized remote-reported provenance.
-- Version 0.11.0 introduced exact release-action authorization and the ninth Hook event, `PreToolUse`.
-- Version 0.10.0 checks that evidence proves the operation the user requested.
-- Context Guard chooses a supported Python interpreter and can recover from a surviving managed cache. If neither is available, it stops with a reinstall hint instead of guessing.
+Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them. Version 0.12.4 migrates private state from schemas 10 and 9; see [compatibility](docs/COMPATIBILITY.md) before downgrading.
 
-Detailed version and platform evidence is in the [compatibility matrix](docs/COMPATIBILITY.md), [changelog](CHANGELOG.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); detailed behavior and remaining host-dependent checks are in the [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md).
 
 ## Try it
 

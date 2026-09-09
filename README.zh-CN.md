@@ -13,7 +13,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > 当前正式版本：`0.12.4`。详见[发布说明](docs/releases/v0.12.4.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 >
-> `0.12.4` 修补任务续接、暂停确认、完整恢复，以及子任务结束与整体完成的区分。操作性修正措辞不再要求指出被替代项；真正的修正可以把要求写在“修正”前后，对象仍不明确时继续请求澄清。提交并推送仍绑定获授权的文件内容及已验证提交，也覆盖随后明确写出当前候选 SHA 的推送授权。已实现行为、对应回归定位，以及仍缺失的原生证据，按行为领域记录在 [0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)。已记录的运行时分别通过 macOS 和 Windows 隔离 portable 验收，两平台另分别通过经审查组合的全部六项真实宿主行为门禁，各组合保留原始会话及执行证据边界。各次运行的原始身份和发布验证要求详见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> `0.12.4` 修复补充指令丢失原有限制、确认错解除暂停、恢复正文不完整，以及提交并推送的目标识别问题。变化见[更新日志](CHANGELOG.zh-CN.md)，平台检查见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -35,18 +35,11 @@ py -3.10 scripts\manage_plugin.py --apply
 
 安装插件不会自动信任 Hook。请启动新的 Codex 任务，打开 `/hooks`，检查并信任全部九个定义，然后再启动一个新任务，让它加载当前版本。
 
-### 版本与兼容性说明
+### 升级说明
 
-- 0.12.4 保留补充指令前的任务限制，解析要求替代关系时忽略“权限边界修正”这类操作性用法，区分不同暂停条件，按指定会话分页恢复完整要求，并把“当前候选提交”识别为已有的推送目标。schema-11 迁移、按领域的行为基线及验收边界见[行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)和[兼容性说明](docs/COMPATIBILITY.md)。
-- 0.12.1 移除 Skill 中重复确认推送目标的要求，按需加载高级说明，并省去完整套件已覆盖的重复测试子集。Hook 行为与公开协议不变。
-- 0.12.0 让正常成功路径保持无感，在 compact 或 resume 后隔离已完成和历史工作，并区分真实高风险执行与引用、搜索、示例和 dry run。
-- 显式的 profile 阶梯把普通完成保护、严格证据和发布策略分开。协议语义与 Codex Hook adapter 分离；`PreToolUse`、一次性 action ticket、经核对的 Stop disposition 和限定范围的工作单元只在对应 profile 需要时生效。
-- 0.12.0 运行时已在 macOS 和 Windows 上分别通过同一 26 文件运行时树摘要的原生验收；Windows 证据采用经过明确授权的远端报告来源。
-- 0.11.0 引入精确的发布动作授权和第九个 Hook 事件 `PreToolUse`。
-- 0.10.0 会检查证据是否证明了用户要求的操作。
-- Context Guard 会选择符合要求的 Python 解释器，并可从仍然存在的受管缓存恢复。两者都不可用时，它会停止并提示重装，不会猜测执行。
+通过受管安装器升级后，启动新任务加载新版。旧任务仍可能使用旧版缓存，请继续保留。0.12.4 会迁移 schema 10、9 的私有状态；降级前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
 
-详细版本与平台证据见[兼容性说明](docs/COMPATIBILITY.md)、[更新日志](CHANGELOG.zh-CN.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，详细行为及仍依赖宿主验证的情形见 [0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)。
 
 ## 试用
 
