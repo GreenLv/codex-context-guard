@@ -115,6 +115,329 @@
         "host_passed_reachable": {"type": "boolean"}
       }
     },
+    "validation": {
+      "oneOf": [
+        {
+          "description": "Validation-tool identity, separate from the tested product subject.",
+          "type": "object",
+          "required": [
+            "schema",
+            "validator_sha256",
+            "mapping_manifest_sha256",
+            "adapter_sha256",
+            "collector_sha256",
+            "trust_contract_sha256"
+          ],
+          "properties": {
+            "schema": {
+              "const": "host-behavior-validator/v3"
+            },
+            "validator_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "mapping_manifest_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "adapter_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "collector_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "trust_contract_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "validator_sha256",
+            "composite_manifest_sha256",
+            "platform_alias_policy",
+            "children"
+          ],
+          "properties": {
+            "schema": {
+              "const": "host-behavior-composite/v1"
+            },
+            "validator_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "composite_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "platform_alias_policy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "children": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "manifest_sha256",
+                  "result_sha256",
+                  "tool_sha256",
+                  "fresh_receipt_sha256",
+                  "gates",
+                  "sessions",
+                  "platform_original",
+                  "original_validation",
+                  "capture_configuration"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "git_trust",
+                      "continuity"
+                    ]
+                  },
+                  "manifest_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "result_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "tool_sha256": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "fresh_receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "gates": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "sessions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1
+                  },
+                  "platform_original": {
+                    "type": "object"
+                  },
+                  "original_validation": {
+                    "type": "object"
+                  },
+                  "capture_configuration": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "validator_sha256",
+            "composite_manifest_sha256",
+            "platform_alias_policy",
+            "children",
+            "executable_identity_scope"
+          ],
+          "properties": {
+            "schema": {
+              "const": "host-behavior-composite/v2"
+            },
+            "validator_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "composite_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "platform_alias_policy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "children": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "manifest_sha256",
+                  "result_sha256",
+                  "tool_sha256",
+                  "fresh_receipt_sha256",
+                  "gates",
+                  "sessions",
+                  "platform_original",
+                  "original_validation",
+                  "capture_configuration",
+                  "capture_view_replay"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "git_trust",
+                      "continuity"
+                    ]
+                  },
+                  "manifest_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "result_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "tool_sha256": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  },
+                  "fresh_receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  "gates": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "sessions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1
+                  },
+                  "platform_original": {
+                    "type": "object"
+                  },
+                  "original_validation": {
+                    "type": "object"
+                  },
+                  "capture_configuration": {
+                    "type": "object"
+                  },
+                  "capture_view_replay": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "schema",
+                      "original_directory",
+                      "archive_root",
+                      "archive_files",
+                      "original_files",
+                      "transaction_directory",
+                      "mode",
+                      "restored",
+                      "writer_exclusion"
+                    ],
+                    "properties": {
+                      "schema": {
+                        "const": "offline-capture-view-replay/v1"
+                      },
+                      "original_directory": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "archive_root": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "archive_files": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 4096,
+                        "propertyNames": {
+                          "pattern": "^capture-[0-9]{6}\\.(raw|meta\\.json)$"
+                        },
+                        "additionalProperties": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "original_files": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 4096,
+                        "propertyNames": {
+                          "pattern": "^capture-[0-9]{6}\\.(raw|meta\\.json)$"
+                        },
+                        "additionalProperties": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "transaction_directory": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mode": {
+                        "const": "temporary_canonical_path_switch"
+                      },
+                      "restored": {
+                        "const": true
+                      },
+                      "writer_exclusion": {
+                        "const": "external_quiescence_required; lock_coordinates_replayers_only"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "executable_identity_scope": {
+              "const": "version compatibility only; no shared executable byte identity is proved"
+            }
+          }
+        }
+      ]
+    },
     "cleanup": {
       "type": "object",
       "required": ["status", "remaining_ids"],

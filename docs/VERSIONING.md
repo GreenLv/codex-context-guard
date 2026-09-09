@@ -391,7 +391,7 @@ The bounded interpreter preserves unknown subjects as non-completing and
 exposes its unsupported interpretation as `legacy_fallback`. No Hook payload,
 state schema beyond the candidate's schema 11, or public protocol is added.
 The runtime bytes change, so earlier P1 source and artifact evidence cannot
-stand for this later candidate; native and actual-host acceptance remain pending.
+stand for this later candidate; the later macOS/Windows portable acceptance and separately reviewed six-gate real-host composites are recorded in [local acceptance](LOCAL_ACCEPTANCE.md).
 
 ### 0.12.4 supplemental commit-chain repair (unreleased)
 
@@ -401,7 +401,7 @@ target facts. Prepared source retains its affirmative root file ceiling and dige
 records never grant root authority. Existing schema-10 projections without this
 provenance cannot manufacture attributable edits during migration. Git path
 identity remains exact; unsupported bytes and non-unique input mappings fail
-closed. The nested host payload and native platform gates remain pending.
+closed. The observed Bash command-Hook mapping now has bounded macOS evidence; other host shapes and Windows remain separate from that result.
 
 An early 0.12.2 candidate wrote the same schema number with the four original
 source-observation fields before the bounded `decisions` list existed. That
@@ -429,5 +429,4 @@ measures the installed runtime tree, verifies the documented PreToolUse and
 PostToolUse correlation fields, and emits only a non-authoritative structural
 report. The probe lives under `tools/validation/` and changes no installed
 Hook, runtime tree, state schema, or public protocol, so it does not consume a
-new plugin version. The six `host_behavior` gates remain pending until a real
-capture supports an independently reviewed raw-to-gate mapping.
+new plugin version by itself. The later validation-tools candidate adds reviewed raw-to-gate mappings and a composite validator. The accepted macOS and Windows composites each cover all six `host_behavior` gates for the original runtime, while preserving their original child sessions, raw evidence and tool identities. Windows current-tool portable acceptance separately passes. The Windows composite preserves R3 historical executable-evidence limits; version compatibility does not establish shared executable bytes. Tooling and documentation changes create a different full-source identity and do not establish new full-source install parity or authorize overwriting a consumed cache.

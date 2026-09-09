@@ -1,0 +1,305 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "validator_sha256",
+    "subject",
+    "platform",
+    "children"
+  ],
+  "properties": {
+    "schema": {
+      "enum": [
+        "context-guard-host-composite-manifest/v1",
+        "context-guard-host-composite-manifest/v2"
+      ]
+    },
+    "validator_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_commit",
+        "prepared_source_sha256",
+        "runtime_tree_sha256",
+        "plugin_version"
+      ],
+      "properties": {
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "prepared_source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "runtime_tree_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "plugin_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "python",
+        "codex"
+      ],
+      "properties": {
+        "os": {
+          "enum": [
+            "macos",
+            "linux",
+            "windows"
+          ]
+        },
+        "python": {
+          "type": "string",
+          "minLength": 1
+        },
+        "codex": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "children": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "carrier_root",
+          "runtime_root",
+          "tool_sha256",
+          "manifest",
+          "manifest_sha256",
+          "result",
+          "result_sha256",
+          "gates"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "git_trust",
+              "continuity"
+            ]
+          },
+          "carrier_root": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runtime_root": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tool_sha256": {
+            "type": "object",
+            "minProperties": 3,
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          },
+          "manifest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "result": {
+            "type": "string",
+            "minLength": 1
+          },
+          "result_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "gates": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "hook_trust",
+                "commit_event",
+                "local_push_readback",
+                "continuity_wait",
+                "compact_resume",
+                "cleanup"
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "git_trust"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "gates": {
+                  "const": [
+                    "hook_trust",
+                    "commit_event",
+                    "local_push_readback"
+                  ]
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "gates": {
+                  "const": [
+                    "continuity_wait",
+                    "compact_resume",
+                    "cleanup"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "capture_views": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "directory",
+        "original_files",
+        "children"
+      ],
+      "properties": {
+        "schema": {
+          "const": "offline-capture-views/v1"
+        },
+        "directory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "original_files": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 4096,
+          "propertyNames": {
+            "pattern": "^capture-[0-9]{6}\\.(raw|meta\\.json)$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "children": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "git_trust",
+            "continuity"
+          ],
+          "properties": {
+            "git_trust": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "archive_root",
+                "files"
+              ],
+              "properties": {
+                "archive_root": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "files": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "maxProperties": 4096,
+                  "propertyNames": {
+                    "pattern": "^capture-[0-9]{6}\\.(raw|meta\\.json)$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            },
+            "continuity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "archive_root",
+                "files"
+              ],
+              "properties": {
+                "archive_root": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "files": {
+                  "type": "object",
+                  "minProperties": 1,
+                  "maxProperties": 4096,
+                  "propertyNames": {
+                    "pattern": "^capture-[0-9]{6}\\.(raw|meta\\.json)$"
+                  },
+                  "additionalProperties": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reviewed host composite input manifest",
+  "description": "Private input pins original child carriers and captures. Optional v2 offline views temporarily occupy the original capture path under a no-replace restoration transaction. Serialized receipts alone never grant replay authority.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema": {
+            "const": "context-guard-host-composite-manifest/v2"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "capture_views"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "capture_views"
+          ]
+        }
+      }
+    }
+  ]
+}

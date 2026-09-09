@@ -407,6 +407,7 @@ def prepare_hooks(
     python: Path,
     capture_dir: Path,
     runtime_root: Path,
+    events: Sequence[str] = ("PreToolUse", "PostToolUse"),
 ) -> dict[str, Any]:
     python_path = python.resolve(strict=True)
     if not python_path.is_file():
@@ -432,21 +433,28 @@ def prepare_hooks(
         ]
         return "& " + " ".join(_powershell_quote(part) for part in args)
 
+    selected_events = list(events)
+    if (
+        not selected_events
+        or len(selected_events) != len(set(selected_events))
+        or any(event not in SUPPORTED_EVENTS for event in selected_events)
+    ):
+        raise CaptureError("capture Hook event selection is invalid")
     config = {
         "description": (
-            "Private Context Guard host-shape probe; records raw Pre/PostToolUse "
+            "Private Context Guard host-shape probe; records selected raw Hook "
             "stdin only after normal Codex hook review and trust."
         ),
         "hooks": {},
     }
-    for event in ("PreToolUse", "PostToolUse"):
+    for event in selected_events:
         config["hooks"][event] = [{
             "matcher": ".*",
             "hooks": [{
                 "type": "command",
                 "command": command(event),
                 "commandWindows": command_windows(event),
-                "timeout": 10,
+                "timeout": 3,
             }],
         }]
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -458,7 +466,7 @@ def prepare_hooks(
         "runtime_tree_sha256": runtime_digest,
         "runtime_file_count": runtime_files,
         "plugin_version": plugin_version,
-        "events": ["PreToolUse", "PostToolUse"],
+        "events": selected_events,
         "requires_normal_hook_review_and_trust": True,
         "trust_bypass_used": False,
     }
@@ -490,6 +498,10 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--python", type=Path, required=True)
     prepare.add_argument("--capture-dir", type=Path, required=True)
     prepare.add_argument("--runtime-root", type=Path, required=True)
+    prepare.add_argument(
+        "--event", dest="events", choices=sorted(SUPPORTED_EVENTS),
+        action="append", help="Hook event to capture; repeat as needed",
+    )
     return parser
 
 
@@ -511,6 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             setup = prepare_hooks(
                 args.output, python=args.python, capture_dir=args.capture_dir,
                 runtime_root=args.runtime_root,
+                events=args.events or ("PreToolUse", "PostToolUse"),
             )
             print(json.dumps(setup, sort_keys=True))
             return 0

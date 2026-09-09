@@ -6,16 +6,9 @@ events, Python 3.10+ standard-library runtime). This document is the current
 behavior baseline required by the 0.12.2 stabilization plan and carried through
 the consumed 0.12.3 trial into the 0.12.4 repair candidate. It states what the
 candidate is implemented and regression-tested to do at the source boundary,
-which parts depend on a real host, and which evidence is still missing. It is
-not an installation, native-platform, actual-host, or release claim.
+which parts depend on a real host, and which evidence is still missing. Native statements below describe only the recorded scenarios and platforms; this baseline does not grant a release claim.
 
-Evidence boundary: the source checks cited here are the current-behavior suite
-on the candidate bytes (954 tests = 943 passes + 11 capability-aware skips).
-Independent source acceptance for P1, CG122-08, and P2 was performed on
-recorded prepared-source identities; installed
-lifecycle, native macOS/Windows, real-host Hook behavior, CI/HOL, and
-publication remain separate pending gates and are never inferred from this
-document.
+Evidence boundary: P1, CG122-08 and P2 source acceptance retain their original prepared-source identities. The recorded product runtime has passed portable acceptance independently on macOS and Windows, plus separately reviewed six-gate macOS and Windows real-host composites. The local, uncommitted tools/documentation successor has a separate passing source suite; the preceding tools suites retain their original tool/test identities. The runtime tree is unchanged, while this successor differs from the 107-file prepared product source. Local evidence reconciliation and exact-byte reader review cover the revised documents; whole P4/P5 closure, final artifact/full-source parity, exact-main CI/HOL and publication remain pending. The [acceptance record](LOCAL_ACCEPTANCE.md) owns exact counts, identities and reuse boundaries.
 
 ## Historical alignment ledger
 
@@ -55,9 +48,7 @@ and what DSH would have to adapt later.
 - **Host dependency.** Real PreCompact/SessionStart dispatch, compaction
   timing, and session identity come from the host; source tests use synthetic
   Hook payloads.
-- **Missing native evidence.** No real-host compact/resume capture exists for
-  0.12.4; the `compact_resume` gate of the host_behavior profile
-  (`tools/validation/host_behavior.py`) is pending.
+- **Native evidence and remaining scope.** The recorded macOS and Windows `compact_resume` gates pass with actual PreCompact, compact-start SessionStart, and consumed recovery state in their original sessions. Other resume paths remain pending.
 - **DSH later adaptation.** The same current-first projection, paging, and
   session binding would need porting; nothing here authorizes a DSH change.
 
@@ -78,8 +69,7 @@ and what DSH would have to adapt later.
   `tests/test_cg122_p0_counterexamples.py`.
 - **Host dependency.** Actual Stop/UserPromptSubmit decisions are host turns;
   synthetic tests replay payload shapes only.
-- **Missing native evidence.** No real-host Stop capture for 0.12.4;
-  the `continuity_wait` host_behavior gate is pending.
+- **Native evidence and remaining scope.** The macOS and Windows `continuity_wait` gates pass for their recorded wait/Stop/release sequences. This does not provide native coverage for every Stop-subject regression.
 - **DSH later adaptation.** The typed subject/scope/speech-act model and the
   CG122-08 incident family would need a DSH-side port.
 
@@ -96,11 +86,8 @@ and what DSH would have to adapt later.
   `tests/test_cg122_p2_binding.py` and
   `tests/test_context_guard_phase4.py` completion families.
 - **Host dependency.** Tool-result pairing depends on the host's real
-  tool_call/tool_result records; nested `functions.exec` → `exec_command` Hook
-  payload mapping remains unknown (P0 finding).
-- **Missing native evidence.** The `commit_event` and `local_push_readback`
-  host_behavior gates are pending; no real nested commit event has been
-  captured for 0.12.4.
+  tool_call/tool_result records. The observed inner Bash `tool_use_id` is distinct from the outer wrapper id, and its Post response is an opaque string, not a typed exit code.
+- **Native evidence and remaining scope.** The macOS and Windows `commit_event` and `local_push_readback` gates pass for recorded exact Bash commands with paired Hook events and independent Git readback. Unobserved wrapper shapes remain pending.
 - **DSH later adaptation.** Digest v3 is shared and frozen; DSH already mirrors
   the fixture, but the 0.12.4 commit/readback binding behaviors are not ported.
 
@@ -119,8 +106,7 @@ and what DSH would have to adapt later.
   `tests/test_context_guard.py`.
 - **Host dependency.** PreToolUse dispatch, real command lines, and repository
   identity come from the host.
-- **Missing native evidence.** No real-host authorization canary has run
-  against 0.12.4 bytes.
+- **Native evidence and remaining scope.** The macOS custom run recorded unauthorized, wrong-ref and stale-SHA denials. These bounded canaries are separate from the six-gate composites and do not cover every authorization surface; Windows authorization canaries remain separately unverified.
 - **DSH later adaptation.** The profile ladder is Codex-specific; DSH keeps its
   native scheduling and would adapt the authorization-generations model.
 
@@ -137,7 +123,7 @@ and what DSH would have to adapt later.
   in `tests/test_cg122_p1_repair.py` and `tests/test_context_guard_phase3.py`.
 - **Host dependency.** Real confirmations and subagent lifecycle events arrive
   through host Hook events.
-- **Missing native evidence.** No real-host wait-release capture for 0.12.4.
+- **Native evidence and remaining scope.** The macOS and Windows matching wait/release sequences pass with their original raw prompt and state witnesses. Other external producers and subagent-lifecycle variants remain separately unverified.
 - **DSH later adaptation.** Typed waits plus the no-lossy-rollback rule would
   need porting; schema 7/8 remain read-only inputs on both sides.
 
@@ -155,8 +141,7 @@ and what DSH would have to adapt later.
   preparation regressions in `tests/test_cg122_p2_scope_timing.py`.
 - **Host dependency.** Real git operations and the host's nested tool-call
   layer; source tests perform local fixture commits only.
-- **Missing native evidence.** No real nested commit under actual Hook
-  dispatch; the `commit_event` host_behavior gate is pending.
+- **Native evidence and remaining scope.** The macOS and Windows `commit_event` gates pass for their recorded direct Bash command-Hook pairs and exact commit readbacks. Unobserved nested shapes remain pending.
 - **DSH later adaptation.** Commit semantics are Codex/git-shaped; DSH has no
   equivalent surface today, so this stays deferred there.
 
@@ -178,9 +163,7 @@ and what DSH would have to adapt later.
   and `tests/test_cg122_p4_live_reauthorization.py`.
 - **Host dependency.** Real remote state and actual push execution stay
   host-side and network-side.
-- **Missing native evidence.** No real local-push readback for 0.12.4; the
-  `local_push_readback` host_behavior gate (against a local bare remote only)
-  is pending.
+- **Native evidence and remaining scope.** The macOS and Windows `local_push_readback` gates pass against their local bare remotes. These are not GitHub or publication results; arbitrary named-remote variants remain outside this evidence.
 - **DSH later adaptation.** Not applicable today; DSH has no git push surface.
 
 ### 8. CG122-08 completion subject and remaining-action owner
@@ -199,8 +182,7 @@ and what DSH would have to adapt later.
   mixed clauses, repeated Stop, compact/resume).
 - **Host dependency.** Actual Stop-hook decisions and wait condition state in
   a real session.
-- **Missing native evidence.** No real-host Stop capture; covered by the
-  pending `continuity_wait` gate.
+- **Native evidence and remaining scope.** The macOS and Windows `continuity_wait` gates observe their recorded Stop/wait scenarios. They do not establish every mixed-clause or child-completion variant.
 - **DSH later adaptation.** The Windows-incident family that motivated this
   behavior is DSH-side history; DSH would adopt the subject/relation model as
   a separately accepted change.
@@ -212,14 +194,7 @@ and what DSH would have to adapt later.
   sandbox, an arbitrary semantic verifier, or a universal completion oracle.
 - Source-suite passes do not imply installed, native-platform, real-host, CI,
   or release evidence. Each stays a separate recorded fact.
-- The `host_behavior` acceptance profile cannot mark any capture `passed` in
-  this source: a private raw Hook-shape probe exists, but without an accepted
-  raw-to-gate mapping every capture stays `pending` at best (contradictory
-  evidence fails), parser chain
-  validity is reported separately from host acceptance, cleanup must come from
-  observed cleanup records, and the full result document stays private — only
-  its sanitized public annex is publication material. Live capture and real
-  host `passed` results belong to the P4 platform gates.
+- The `host_behavior` profile can accept only evidence supported by a reviewed raw mapping and validator. Each accepted macOS and Windows composite replays its two original partial results under their pinned tools, then combines complementary gates for one product subject and platform. Generic or serialized capture summaries remain non-authoritative; missing evidence stays pending and contradictions fail. The explicit offline archive-view mode requires stopped writers and restores the original directory before accepting replay; it preserves raw bytes and child identities. Shared platform/version text does not establish shared executable bytes. Full results remain private, and the composites have no public annex. Neither establishes whole P4/P5 completion or removes the historical R3 executable-evidence limit.
 - The historical v1 conformance fixtures, the schema-10 parked fixture, and
   the frozen transition audit keep their original bytes and meaning as
   history; they are not reinterpreted as current capability.

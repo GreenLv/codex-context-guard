@@ -15,10 +15,10 @@ Capture bundles declare their origin:
 * ``external_normalized`` - assembled outside this repository's collector.
 * ``synthetic`` - parser unit fixtures.
 
-Capability limit (honest, by design): ``host_capture.py`` now provides a
-supported private raw Hook-shape probe, but this validator implements no
-accepted raw-to-gate mapping. Therefore ``host_passed_reachable`` is false and
-no capture, whatever its origin, can earn an overall ``passed``. Parser chain validity is
+Capability limit (honest, by design): serialized capture bundles have no
+acceptance authority.  A reviewed mapping is accepted only when this entrypoint
+invokes the repository-owned adapter against immutable raw evidence and passes
+its in-memory receipt to the validator. Parser chain validity is
 reported per gate as ``chain`` (``absent``/``incomplete``/``valid``/
 ``contradicted``) and stays distinct from host acceptance: a valid chain still
 yields ``pending`` (``awaiting_live_capture_support``). Contradictory observed
@@ -26,8 +26,8 @@ evidence - reordered pairs, reversed pair roles, duplicate or replayed event
 IDs, subject/reference mismatches, cross-scenario/session/runtime
 contamination, producer version mismatch - fails the result and takes
 precedence over pending. Incomplete or unrun evidence stays pending.
-``passed`` becomes reachable only after observed raw payloads support a
-reviewed mapping that binds records to real host dispatch (later P4 scope).
+An accepted mapping may pass only the gates named by its receipt; unobserved
+gates stay pending, and overall passed requires all six gates.
 
 Cleanup must be evidenced by observed ``cleanup_observed`` records carrying
 their own ``remaining_ids`` facts; a handwritten cleanup status is ignored.
@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 from collections.abc import Sequence
@@ -56,7 +57,21 @@ PLUGIN_VERSION_DEFAULT = "0.12.2"
 ORIGIN_COLLECTOR = "collector_v1"
 ORIGIN_EXTERNAL = "external_normalized"
 ORIGIN_SYNTHETIC = "synthetic"
-SUPPORTED_ORIGINS = (ORIGIN_COLLECTOR, ORIGIN_EXTERNAL, ORIGIN_SYNTHETIC)
+ORIGIN_REVIEWED = "reviewed_mapping_v1"
+SUPPORTED_ORIGINS = (
+    ORIGIN_COLLECTOR, ORIGIN_EXTERNAL, ORIGIN_SYNTHETIC, ORIGIN_REVIEWED,
+)
+VALIDATOR_SCHEMA = "host-behavior-validator/v3"
+REVIEWED_MAPPING_GATES = (
+    "hook_trust",
+    "commit_event",
+    "local_push_readback",
+)
+REVIEWED_CONTINUITY_GATES = (
+    "continuity_wait",
+    "compact_resume",
+    "cleanup",
+)
 REQUIRED_GATES = (
     "hook_trust",
     "continuity_wait",
@@ -340,7 +355,11 @@ class Validator:
         }
         self._plugin_version = plugin_version
 
-    def validate(self, capture: dict[str, Any]) -> dict[str, Any]:
+    def validate(
+        self,
+        capture: dict[str, Any],
+        reviewed_mapping: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         origin = capture.get("origin")
         events = capture.get("events")
         if (
@@ -357,27 +376,188 @@ class Validator:
         contradictions, pend_reasons = self._evaluate(records, capture)
         digest = self._declared["runtime_tree_sha256"]
         origin_synthetic = origin == ORIGIN_SYNTHETIC
+        mapped_gates = self._reviewed_gates(capture, reviewed_mapping)
         gates = []
         for gate_id in REQUIRED_GATES:
             chain, chain_note, pend, gate_synthetic = self._chain_verdict(
                 gate_id, records, contradictions, pend_reasons,
                 origin_synthetic, origin,
             )
-            status = "failed" if chain == "contradicted" else "pending"
+            if chain == "contradicted":
+                status = "failed"
+            elif chain == "valid" and gate_id in mapped_gates:
+                status = "passed"
+            else:
+                status = "pending"
             gates.append(
                 _gate(
                     gate_id, digest, status, chain=chain, note=chain_note,
-                    mode=self._mode(chain, pend, gate_synthetic, origin),
+                    mode=self._mode(
+                        chain, pend, gate_synthetic, origin,
+                        gate_id in mapped_gates,
+                    ),
                 )
             )
         overall = _overall(gates)
-        result = assemble_result(capture, self._declared, gates, overall, records)
+        result = assemble_result(
+            capture, self._declared, gates, overall, records,
+            reviewed_mapping=reviewed_mapping,
+        )
         result["capability_note"] = (
-            "parser chain validity is recorded per gate; overall passed is "
-            "unreachable in this source because the supported private live-host shape "
-            "probe has no accepted raw-to-gate mapping yet (P4 scope)"
+            "parser validity and live-host acceptance are separate; only gates "
+            "verified by the in-memory reviewed-mapping receipt can pass, "
+            "and overall passed requires all six gates"
         )
         return result
+
+    def _reviewed_gates(
+        self,
+        capture: dict[str, Any],
+        receipt: dict[str, Any] | None,
+    ) -> frozenset[str]:
+        if receipt is None:
+            return frozenset()
+        schema = receipt.get("schema")
+        if schema == "context-guard-reviewed-host-continuity-receipt/v1":
+            return self._reviewed_continuity_gates(capture, receipt)
+        required = {
+            "schema", "manifest_sha256", "adapter_sha256",
+            "collector_sha256", "validator_sha256", "runtime_tree_sha256",
+            "mapped_gates", "capture_report_sha256", "trust_review_sha256",
+            "trust_contract_sha256", "raw_sha256", "git_readback_sha256",
+        }
+        _reject(set(receipt) != required, "reviewed mapping receipt shape mismatch")
+        _reject(
+            receipt.get("schema")
+            != "context-guard-reviewed-host-mapping-receipt/v1",
+            "reviewed mapping receipt schema mismatch",
+        )
+        for field in (
+            "manifest_sha256", "adapter_sha256", "collector_sha256",
+            "validator_sha256", "runtime_tree_sha256",
+            "capture_report_sha256", "trust_review_sha256",
+            "trust_contract_sha256", "git_readback_sha256",
+        ):
+            _reject(
+                not isinstance(receipt.get(field), str)
+                or not HEX64.fullmatch(receipt[field]),
+                f"reviewed mapping {field} is invalid",
+            )
+        _reject(
+            receipt["validator_sha256"]
+            != hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "reviewed mapping validator identity differs",
+        )
+        _reject(
+            receipt["adapter_sha256"]
+            != hashlib.sha256(
+                Path(__file__).with_name("host_raw_mapping.py").read_bytes()
+            ).hexdigest(),
+            "reviewed mapping adapter identity differs",
+        )
+        _reject(
+            receipt["collector_sha256"]
+            != hashlib.sha256(
+                Path(__file__).with_name("host_capture.py").read_bytes()
+            ).hexdigest(),
+            "reviewed mapping collector identity differs",
+        )
+        _reject(
+            receipt["runtime_tree_sha256"]
+            != self._declared["runtime_tree_sha256"],
+            "reviewed mapping runtime identity differs",
+        )
+        gates = receipt.get("mapped_gates")
+        _reject(
+            not isinstance(gates, list)
+            or len(gates) != len(set(gates))
+            or any(gate not in REQUIRED_GATES for gate in gates),
+            "reviewed mapping gate set is invalid",
+        )
+        _reject(
+            gates != list(REVIEWED_MAPPING_GATES),
+            "reviewed mapping may authorize only the accepted three-gate set",
+        )
+        _reject(
+            capture.get("origin") != ORIGIN_REVIEWED,
+            "reviewed mapping capture origin differs",
+        )
+        _reject(
+            sorted(capture.get("scenarios", [])) != sorted(gates),
+            "reviewed mapping scenarios differ from its receipt",
+        )
+        raw_hashes = receipt.get("raw_sha256")
+        _reject(
+            not isinstance(raw_hashes, list)
+            or not raw_hashes
+            or len(raw_hashes) != len(set(raw_hashes))
+            or any(not isinstance(value, str) or not HEX64.fullmatch(value)
+                   for value in raw_hashes),
+            "reviewed mapping raw evidence hashes are invalid",
+        )
+        return frozenset(gates)
+
+    def _reviewed_continuity_gates(
+        self, capture: dict[str, Any], receipt: dict[str, Any]
+    ) -> frozenset[str]:
+        required = {
+            "schema", "manifest_sha256", "adapter_sha256",
+            "collector_sha256", "state_collector_sha256",
+            "validator_sha256", "runtime_tree_sha256", "mapped_gates",
+            "capture_report_sha256", "trust_review_sha256", "raw_sha256",
+            "snapshot_sha256",
+        }
+        _reject(set(receipt) != required, "continuity mapping receipt shape mismatch")
+        for field in (
+            "manifest_sha256", "adapter_sha256", "collector_sha256",
+            "state_collector_sha256", "validator_sha256",
+            "runtime_tree_sha256", "capture_report_sha256", "trust_review_sha256",
+        ):
+            _reject(
+                not isinstance(receipt.get(field), str)
+                or not HEX64.fullmatch(receipt[field]),
+                f"continuity mapping {field} is invalid",
+            )
+        identities = {
+            "adapter_sha256": "host_continuity_mapping.py",
+            "collector_sha256": "host_capture.py",
+            "state_collector_sha256": "host_state_capture.py",
+            "validator_sha256": "host_behavior.py",
+        }
+        for field, name in identities.items():
+            _reject(
+                receipt[field]
+                != hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest(),
+                f"continuity mapping {field.removesuffix('_sha256')} identity differs",
+            )
+        _reject(
+            receipt["runtime_tree_sha256"] != self._declared["runtime_tree_sha256"],
+            "continuity mapping runtime identity differs",
+        )
+        gates = receipt.get("mapped_gates")
+        _reject(
+            gates != list(REVIEWED_CONTINUITY_GATES),
+            "continuity mapping may authorize only the accepted remaining-gate set",
+        )
+        _reject(
+            capture.get("origin") != ORIGIN_REVIEWED,
+            "continuity mapping capture origin differs",
+        )
+        _reject(
+            sorted(capture.get("scenarios", [])) != sorted(gates),
+            "continuity mapping scenarios differ from its receipt",
+        )
+        for field in ("raw_sha256", "snapshot_sha256"):
+            values = receipt.get(field)
+            _reject(
+                not isinstance(values, list)
+                or not values
+                or len(values) != len(set(values))
+                or any(not isinstance(value, str) or not HEX64.fullmatch(value)
+                       for value in values),
+                f"continuity mapping {field} evidence hashes are invalid",
+            )
+        return frozenset(gates)
 
     def _unverified_bundle(self, reason: str) -> dict[str, Any]:
         digest = self._declared["runtime_tree_sha256"]
@@ -400,12 +580,15 @@ class Validator:
         pend: str | None,
         synthetic: bool,
         origin: str,
+        reviewed: bool = False,
     ) -> str:
         if chain == "contradicted":
             return "contradicted_evidence"
         if pend:
             return pend
         if chain == "valid":
+            if reviewed:
+                return "reviewed_raw_mapping"
             if synthetic:
                 return "synthetic_unit_fixture"
             if origin == ORIGIN_EXTERNAL:
@@ -682,6 +865,8 @@ def _overall(gates: list[dict[str, Any]]) -> str:
     statuses = {gate["status"] for gate in gates}
     if "failed" in statuses:
         return "failed"
+    if statuses == {"passed"}:
+        return "passed"
     return "pending"
 
 
@@ -722,6 +907,7 @@ def assemble_result(
     gates: list[dict[str, Any]],
     overall: str,
     records: Sequence[dict[str, Any]] = (),
+    reviewed_mapping: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     capture = capture or {}
     host = capture.get("host") or {
@@ -737,12 +923,38 @@ def assemble_result(
         "status": overall,
         "product": "codex_context_guard",
         "gate_profile": PROFILE,
+        "validation": {
+            "schema": VALIDATOR_SCHEMA,
+            "validator_sha256": hashlib.sha256(
+                Path(__file__).read_bytes()
+            ).hexdigest(),
+            "mapping_manifest_sha256": (
+                reviewed_mapping.get("manifest_sha256")
+                if reviewed_mapping else None
+            ),
+            "adapter_sha256": (
+                reviewed_mapping.get("adapter_sha256")
+                if reviewed_mapping else None
+            ),
+            "collector_sha256": (
+                reviewed_mapping.get("collector_sha256")
+                if reviewed_mapping else None
+            ),
+            "trust_contract_sha256": (
+                reviewed_mapping.get("trust_contract_sha256")
+                if reviewed_mapping else None
+            ),
+        },
         "visibility": {
             # The full result keeps private session/scenario binding and is
             # NOT publication-safe; only public_annex is sanitized.
             "full_result_is_public": False,
             "public_annex_sanitized": True,
-            "host_passed_reachable": False,
+            "host_passed_reachable": (
+                reviewed_mapping is not None
+                and set(reviewed_mapping.get("mapped_gates", []))
+                == set(REQUIRED_GATES)
+            ),
         },
         "subject": {
             "kind": "prepared_host_behavior",
@@ -843,6 +1055,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plugin-version", default=PLUGIN_VERSION_DEFAULT)
     parser.add_argument("--capability-reason", default="no_host_capture")
     parser.add_argument("--events-bundle", type=Path)
+    parser.add_argument("--reviewed-mapping-manifest", type=Path)
+    parser.add_argument("--reviewed-mapping-manifest-sha256")
+    parser.add_argument("--runtime-root", type=Path)
     return parser
 
 
@@ -858,6 +1073,41 @@ def run_host_behavior(args: argparse.Namespace) -> dict[str, Any]:
         "prepared_source_sha256": args.prepared_source_sha256,
         "runtime_tree_sha256": args.runtime_tree_sha256,
     }
+    _reject(
+        args.events_bundle is not None
+        and args.reviewed_mapping_manifest is not None,
+        "choose either --events-bundle or --reviewed-mapping-manifest",
+    )
+    if args.reviewed_mapping_manifest is not None:
+        _reject(
+            args.runtime_root is None
+            or not HEX64.fullmatch(args.reviewed_mapping_manifest_sha256 or ""),
+            "reviewed mapping requires --runtime-root and the exact manifest SHA-256",
+        )
+        adapter_path = Path(__file__).with_name("host_raw_mapping.py")
+        spec = importlib.util.spec_from_file_location(
+            "host_behavior_reviewed_mapping", adapter_path
+        )
+        _reject(spec is None or spec.loader is None, "reviewed mapping adapter unavailable")
+        adapter = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(adapter)
+        try:
+            bundle, receipt = adapter.adapt(
+                args.reviewed_mapping_manifest,
+                args.runtime_root,
+                args.reviewed_mapping_manifest_sha256,
+            )
+        except adapter.MappingError as exc:
+            raise HostBehaviorError(
+                f"reviewed mapping rejected: {exc}"
+            ) from exc
+        _reject(
+            bundle.get("subject") != declared,
+            "reviewed mapping subject differs from command-line declaration",
+        )
+        return Validator(declared, args.plugin_version).validate(
+            bundle, reviewed_mapping=receipt
+        )
     if args.events_bundle is None:
         return capability_record(declared, args.plugin_version, args.capability_reason)
     capture = Collector().load_capture(args.events_bundle)
