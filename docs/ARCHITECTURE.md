@@ -321,7 +321,7 @@ implemented in the 0.9.x line, and 0.11.0 advanced it to Stop protocol
   isolate old active parent chains as `historical_unresolved` — they are
   never silently marked passed — and only a unique explicit resume intent
   reopens a waiting unit.
-- Stop subject interpretation (0.12.4 candidate): completion diagnostics,
+- Stop subject interpretation (0.12.4): completion diagnostics,
   waiting-owner facts, current-wait checks and ordinary proof selection share
   one bounded clause interpretation. Only an affirmative claim about the
   whole current unit invokes completion evidence checks. Child/external and
@@ -330,7 +330,7 @@ implemented in the 0.9.x line, and 0.11.0 advanced it to Stop protocol
   evidence beside unrelated wait language. Integrity and valid advanced
   checkpoints retain their earlier priority. Typed summaries use enums and
   hashes; they do not persist raw reply clauses or assert external success.
-- Wait conditions (schema 11, 0.12.4 candidate): every parked unit carries
+- Wait conditions (schema 11, 0.12.4): every parked unit carries
   bounded typed one-shot wait conditions with auditable raise/release
   provenance. Only the unique matching user-controlled condition is
   released by a real root confirmation or explicit resume; progress
@@ -587,7 +587,7 @@ eight-event Hook wire and adds no `PreToolUse`, tool interception, automatic
 ticket reservation, commit/publish action, or authority for uncovered
 surfaces.
 
-### Candidate commit scope and target facts (0.12.4, unreleased)
+### Candidate commit scope and target facts (0.12.4)
 
 The root user's affirmative commit-object clauses define the source-scope ceiling. Excluded files, read/test inputs and quoted or delegated statements do not add objects. For example, “commit owned.txt; leave other.txt unchanged” permits only owned.txt. An unresolved explicit ceiling never falls back to inferred edits. Without an explicit file list, only paired, successful current-unit root edit observations can supply source objects.
 

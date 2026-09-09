@@ -263,7 +263,7 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
-- `0.12.4` is an unreleased source candidate (2026-09-09). It folds the
+- `0.12.4` is the stabilization release dated 2026-09-09. It folds the
   earlier unreleased 0.12.2 and 0.12.3 stabilization candidates into a new
   patch identity. A normally trusted 0.12.2 trial exposed a push
   re-authorization parser defect; a normally trusted 0.12.3 trial then exposed
@@ -299,8 +299,8 @@ not as a measure of code volume.
   facts can release only their uniquely bound end-of-child waits, without
   completing parent work. The nine-Hook wire, Stop protocol 3.0.0, classifier
   3.2.1, Proof protocol 1.0.0, Execution protocol 2.0.0, and the Python
-  3.10+ floor are unchanged. Native platform, installed-lifecycle, and
-  real-host evidence remain separate and pending before publication.
+  3.10+ floor are unchanged. Native platform, installed-lifecycle, real-host, CI and publication
+  evidence retain their separate identities in the local acceptance record.
 - `0.12.1` is the 2026-09-07 Skill and validation-workflow patch. Advanced completion,
   authorization, migration, and explicit controls move to conditional
   references. The current-work-unit completion boundary is made explicit in
@@ -381,7 +381,7 @@ Proof protocol 1.0.0 guarantees only the deterministic obligations displayed
 for an `enforced` item. It does not claim arbitrary pixel understanding,
 official-source validity, or semantic completeness for `legacy_fallback` items.
 
-### 0.12.4 supplemental Stop-subject repair (unreleased)
+### 0.12.4 supplemental Stop-subject repair
 
 CG122-08 unifies ordinary Stop completion interpretation across diagnostics,
 waiting and evidence selection. A child task or local phase ending does not
@@ -393,7 +393,7 @@ state schema beyond the candidate's schema 11, or public protocol is added.
 The runtime bytes change, so earlier P1 source and artifact evidence cannot
 stand for this later candidate; the later macOS/Windows portable acceptance and separately reviewed six-gate real-host composites are recorded in [local acceptance](LOCAL_ACCEPTANCE.md).
 
-### 0.12.4 supplemental commit-chain repair (unreleased)
+### 0.12.4 supplemental commit-chain repair
 
 Schema 11 adds a bounded per-unit source-observation context: paired pending
 operations, consumed identity hashes, attributable edit objects and exact push
@@ -421,7 +421,7 @@ of silently replacing it with the checkout snapshot. The same SHA passes only
 for the matching repository/ref/remote/current HEAD. This changes runtime
 bytes without changing schema 11 or any public protocol.
 
-### 0.12.4 private host-shape probe (unreleased)
+### 0.12.4 private host-shape probe
 
 The repository validation tools include an owner-private command-Hook stdin
 probe for normally trusted real-host runs. It records bounded exact bytes,

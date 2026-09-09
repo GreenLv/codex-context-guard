@@ -224,11 +224,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.12.1`.",
+            "> Current release: `0.12.4`.",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.12.1`。",
+            "> 当前正式版本：`0.12.4`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -327,10 +327,10 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current source candidate: `0.12.4` (unreleased)",
+            "Current release: `0.12.4` (2026-09-09)",
             compatibility,
         )
-        self.assertIn("Published release baseline: `0.12.1`", compatibility)
+        self.assertIn("Published release baseline: `0.12.4`", compatibility)
         self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
         self.assertNotIn(
             "Current published Context Guard release: `0.11.0`", compatibility
@@ -348,7 +348,8 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("Proof protocol: `1.0.0`", compatibility)
         self.assertIn("Execution protocol: `2.0.0`", compatibility)
         self.assertIn("Diagnostic classifier: `3.2.1`", compatibility)
-        self.assertIn("Private state schema: `10`", compatibility)
+        self.assertIn("Private state schema: `11`", compatibility)
+        self.assertIn("schemas 10 and 9 migrate", compatibility)
         self.assertIn("Stop protocol: `3.0.0`", compatibility)
         versioning = (ROOT / "docs" / "VERSIONING.md").read_text(
             encoding="utf-8"

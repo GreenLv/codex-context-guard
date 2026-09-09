@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.4` is an unreleased source candidate and `0.12.1` is the latest release. The preceding `0.12.0` release is tagged at `75e8fe13af32c5512fce31a3d69c27db1b509aa0`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.4` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.12.4 - Unreleased (source candidate)
+## 0.12.4 - 2026-09-09
 
 ### Highlights
 
@@ -31,7 +31,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- The recorded runtime passes independent macOS and Windows portable acceptance and six-gate host composites, preserving original sessions and execution-evidence limits. The current tools source suite and revised-document reader review pass. Final candidate identity, full-source parity, CI/HOL and publication remain pending. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for original run identities and whole P4/P5 limits. This candidate remains unreleased.
+- The recorded runtime passes independent macOS and Windows portable acceptance and six-gate host composites, preserving original sessions and execution-evidence limits. Source and document checks pass at their recorded identities. The final tag commit requires separate Candidate CI, HOL and portable acceptance before publication; tag and Release readback are recorded separately. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for exact subjects and reuse limits.
 
 ## 0.12.1 - 2026-09-07
 

@@ -1,14 +1,14 @@
-# 0.12.4 behavior baseline (source candidate)
+# 0.12.4 behavior baseline
 
-Status: **unreleased source candidate** for `0.12.4` (private state schema 11,
+Status: **0.12.4 release baseline — 2026-09-09** (private state schema 11,
 Stop protocol 3.0.0, classifier 3.2.1, Proof 1.0.0, Execution 2.0.0, nine Hook
 events, Python 3.10+ standard-library runtime). This document is the current
 behavior baseline required by the 0.12.2 stabilization plan and carried through
-the consumed 0.12.3 trial into the 0.12.4 repair candidate. It states what the
-candidate is implemented and regression-tested to do at the source boundary,
+the consumed 0.12.3 trial into the 0.12.4 release. It states what the
+product is implemented and regression-tested to do at the source boundary,
 which parts depend on a real host, and which evidence is still missing. Native statements below describe only the recorded scenarios and platforms; this baseline does not grant a release claim.
 
-Evidence boundary: P1, CG122-08 and P2 source acceptance retain their original prepared-source identities. The recorded product runtime has passed portable acceptance independently on macOS and Windows, plus separately reviewed six-gate macOS and Windows real-host composites. The reviewed tools/documentation successor has a separate passing source suite; the preceding tools suites retain their original tool/test identities. The runtime tree is unchanged, while this successor differs from the 107-file prepared product source. Local evidence reconciliation and exact-byte reader review cover the revised documents; whole P4/P5 closure, final artifact/full-source parity, exact-main CI/HOL and publication remain pending. The [acceptance record](LOCAL_ACCEPTANCE.md) owns exact counts, identities and reuse boundaries.
+Evidence boundary: P1, CG122-08 and P2 source acceptance retain their original prepared-source identities. The recorded product runtime has passed portable acceptance independently on macOS and Windows, plus separately reviewed six-gate macOS and Windows real-host composites. The reviewed tools/documentation successor has a separate passing source suite; the preceding tools suites retain their original tool/test identities. The runtime tree is unchanged, while this successor differs from the 107-file prepared product source. Local evidence reconciliation and exact-byte reader review cover the revised documents; the source successor at `90159961678e854edf263b640b40b26e13359219` separately passed Candidate CI, HOL and macOS full-source install parity. Final release-commit gates and public tag/Release readback remain separate evidence surfaces. The [acceptance record](LOCAL_ACCEPTANCE.md) owns exact counts, identities and reuse boundaries.
 
 ## Historical alignment ledger
 

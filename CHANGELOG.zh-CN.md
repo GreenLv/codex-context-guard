@@ -2,9 +2,9 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.12.4` 为未发布的源码候选，`0.12.1` 是当前最新发布版本。前一正式版本 `0.12.0` 的 tag 指向提交 `75e8fe13af32c5512fce31a3d69c27db1b509aa0`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.12.4` 是当前最新发布版本。前一正式版本 `0.12.1` 的 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.12.4 - 未发布（源码候选）
+## 0.12.4 - 2026-09-09
 
 ### 重点
 
@@ -31,7 +31,7 @@
 
 ### 验证
 
-- 已记录的运行时通过 macOS、Windows 独立 portable 验收及各自六门禁宿主组合，保留原始会话和执行证据边界。当前工具源码套件与修订文档评审通过；最终候选身份、完整源码一致性、CI/HOL 和发布仍待完成。各次运行身份及整体 P4/P5 边界见[验收记录](docs/LOCAL_ACCEPTANCE.md)。候选仍未发布。
+- 已记录的运行时通过 macOS、Windows 独立 portable 验收及各自六门禁宿主组合，保留原始会话和执行证据边界。源码与文档检查在各自记录的身份上通过。最终 tag 提交须在发布前另行通过 Candidate CI、HOL 和 portable 验收；tag 与 Release 的公开读回单独记录。精确对象和复用边界见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.12.1 - 2026-09-07
 

@@ -3,17 +3,16 @@
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 
-The unreleased candidate also includes CG122-08: subordinate or local completion
+Version 0.12.4 also includes CG122-08: subordinate or local completion
 reports no longer enter root completion proof selection. Its source regressions
 are distinct from coordinator acceptance and actual-host validation; P3 reader
 review and P4 candidate gates must include this behavior.
 
 ## Baselines
 
-- Current source candidate: `0.12.4` (unreleased)
-- Published release baseline: `0.12.1`
-- Private state schema: `11` in the unreleased 0.12.4 candidate
-- Private state schema: `10` in the published release (schema 9 is the full migration source; schema 7 and 8 read-only compatibility)
+- Current release: `0.12.4` (2026-09-09)
+- Published release baseline: `0.12.4`
+- Private state schema: `11`; schemas 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `3.0.0`
 - Work-unit protocol: `2.0.0` (stored records remain `work-unit/v1`)
@@ -26,7 +25,7 @@ review and P4 candidate gates must include this behavior.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.12.4 candidate scope (unreleased source candidate)
+## 0.12.4 release scope
 
 Version 0.12.4 uses schema 11 for source- and subject-bound waiting conditions. Follow-ups retain unfinished work, while valid independent switches isolate the prior business task and preserve explicit session restrictions. Recovery pages require a session ID and return full prompt text or the exact persistent-constraint span, plus bounded continuations for large verification metadata. Default recovery, diagnostics and completion share the applicable scope.
 
@@ -36,7 +35,7 @@ A root push re-authorization that names the current candidate commit is a bindin
 
 External factual closure currently covers a uniquely bound registered subagent lifecycle ending through `SubagentStop`. A stopped child may have failed: its parent requirements remain pending. An unrelated tool success, ordinary user confirmation, missing start event or ambiguous child identity cannot establish that external fact. CI, review approval and other producers without a supported binding remain waiting.
 
-Schema 10 derives one unresolved condition per old waiting unit; external waits remain external. Schema 9 migration and schemas 7/8 read-only compatibility remain unchanged. Early schema-11 state with the exact four-field source-observation context is also a read-compatible input: after content-hash and field validation, resume adds an empty bounded decision list and preserves the existing observations. Malformed predecessor records remain integrity failures. All nine Hook events, public protocols and Python 3.10+ remain unchanged. P1, CG122-08 and P2 have bounded source acceptance. The recorded runtime has passed portable acceptance independently on macOS and Windows; macOS and Windows also independently pass all six real-host behavior gates through reviewed composites of two original sessions on each platform. The reviewed tools/documentation successor has passed its separate source suite and a new evidence-text reconciliation and exact-byte reader review; prior source runs and document reviews retain their original identities. Whole P4/P5 closure remains pending, including final artifact/full-source parity, exact-main CI/HOL and publication. The raw mappings currently verify the observed Bash command-Hook shape; they are not evidence for unobserved tool shapes or authorization canaries. Offline archive-view replay preserves each child’s original evidence and restores the starting capture directory before acceptance; all writers must be stopped first. Platform/version compatibility does not establish identical executable bytes across sessions. No source test or synthetic Hook replay substitutes for a native gate.
+Schema 10 derives one unresolved condition per old waiting unit; external waits remain external. Schema 9 migration and schemas 7/8 read-only compatibility remain unchanged. Early schema-11 state with the exact four-field source-observation context is also a read-compatible input: after content-hash and field validation, resume adds an empty bounded decision list and preserves the existing observations. Malformed predecessor records remain integrity failures. All nine Hook events, public protocols and Python 3.10+ remain unchanged. P1, CG122-08 and P2 have bounded source acceptance. The recorded runtime has passed portable acceptance independently on macOS and Windows; macOS and Windows also independently pass all six real-host behavior gates through reviewed composites of two original sessions on each platform. The reviewed tools/documentation successor has passed its separate source suite and a new evidence-text reconciliation and exact-byte reader review; prior source runs and document reviews retain their original identities. The source successor at `90159961678e854edf263b640b40b26e13359219` separately passed Candidate CI, HOL and macOS full-source install parity. Release metadata retains the same runtime tree; exact release-commit and publication checks are separate from those earlier results. The raw mappings currently verify the observed Bash command-Hook shape; they are not evidence for unobserved tool shapes or authorization canaries. Offline archive-view replay preserves each child’s original evidence and restores the starting capture directory before acceptance; all writers must be stopped first. Platform/version compatibility does not establish identical executable bytes across sessions. No source test or synthetic Hook replay substitutes for a native gate.
 
 ## 0.12.1 release scope
 
