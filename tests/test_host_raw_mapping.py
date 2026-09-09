@@ -617,7 +617,9 @@ class CommitTimestampQuantizationTests(unittest.TestCase):
         for offset, accepted in ((0.999999, True), (1.0, False)):
             with self.subTest(offset=offset), tempfile.TemporaryDirectory() as temp:
                 fixture = Fixture(Path(temp))
-                commit_time = datetime.fromisoformat(git(fixture.repo, "show", "-s", "--format=%cI"))
+                commit_time = datetime.fromisoformat(
+                    git(fixture.repo, "show", "-s", "--format=%cI").replace("Z", "+00:00")
+                )
                 path = fixture.capture / "capture-000001.meta.json"
                 value = json.loads(path.read_bytes())
                 value["captured_at"] = (commit_time + timedelta(seconds=offset)).isoformat()
