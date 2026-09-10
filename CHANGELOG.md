@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.4` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.2` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.13.2 - Unreleased
+## 0.13.2 - 2026-09-10
 
 ### Highlights
 
@@ -16,7 +16,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Changes
 
 - An unresolved mechanical requirement replacement no longer forces confirmation of a clear user authorization. The executing agent follows the current conversation and asks only about real ambiguity; prior requirements are preserved, and the current instruction and answered questions are excluded from suggested old targets.
-- This candidate folds in the consumed, unpublished 0.13.0 and 0.13.1 implementations. Their installed caches remain unchanged. Start a fresh task after upgrading to load 0.13.2.
+- This release folds in the consumed, unpublished 0.13.0 and 0.13.1 implementations. Their installed caches remain unchanged. Start a fresh task after upgrading to load 0.13.2.
 - Standard and strict PreToolUse routes read mode metadata without state writes, locks, recovery or Git subprocesses. Observe records diagnostics; release verification activates only through an adopted release contract or explicit `context-guard release`, never merely from a file or selected Skill.
 - Delivery records use bounded string identities, canonical requirement associations and domain-separated SHA-256 digests. A record from a different turn cannot answer the current prompt; unknown delivery never supplies completion evidence. Reply text is not copied into this ledger.
 - GitHub Enterprise release targets keep the separator between hostname and repository. A release command without `--repo` uses a verified GitHub origin when available; an unresolved target does not establish release readiness.
@@ -24,7 +24,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-Version 0.13.2 is an unreleased source candidate. Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 errors and 11 capability skips, plus repository/privacy checks, baseline transition audit, self-test, Ruff and compilation. Exact-commit macOS portable installation, strict second no-op, runtime parity and installed smoke pass at `9039fa7`; native acceptance remains pending. Earlier 0.13.1 source and macOS portable results retain their original identities. Its native run exposed an answered question retained in recovery when an unrelated wait existed; this candidate separates question closure from inherited waits. CI and publication remain pending.
+Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 errors and 11 capability skips, plus repository/privacy checks, baseline transition audit, self-test, Ruff and compilation. Exact-commit macOS portable installation, strict second no-op, runtime parity and installed smoke pass at `9039fa7`; macOS and Windows native result review is complete (Windows: five portable gates plus cleanup, six host gates and two regressions). Windows review checks saved result files and their links, without a fresh raw-capture replay; see [acceptance boundaries](docs/LOCAL_ACCEPTANCE.md). Earlier 0.13.1 source and macOS portable results retain their original identities. Its native run exposed an answered question retained in recovery when an unrelated wait existed; this release separates question closure from inherited waits. Final-commit CI, HOL and tag/Release readback are recorded separately from these retained runtime results.
 
 ## 0.12.4 - 2026-09-09
 

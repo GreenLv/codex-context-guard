@@ -12,15 +12,15 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> Current release: `0.12.4`. See the [release notes](docs/releases/v0.12.4.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+> Current release: `0.13.2`. See the [release notes](docs/releases/v0.13.2.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
-> Version `0.13.2` is an unreleased source candidate: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. Its native acceptance and publication are pending; see the [changelog](CHANGELOG.md).
+> Version `0.13.2`: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. Native results have been reviewed for macOS and Windows; see the [changelog](CHANGELOG.md) for evidence boundaries.
 >
 > Version `0.12.4` fixes lost task limits, unrelated confirmations clearing pauses, incomplete recovery text, and commit-and-push target mistakes. See the [changelog](CHANGELOG.md) for changes and the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for platform checks.
 
 ## Install
 
-Requirements: Python 3.10 or newer, Codex CLI `0.146.0` or newer as the tested minimum, and a Codex surface that loads plugins and lifecycle Hooks.
+Requirements: Python 3.10 or newer, Codex CLI `0.153.4` (the version tested for this release), and a Codex surface that loads plugins and lifecycle Hooks.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -42,9 +42,9 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them; installed caches are immutable, and 0.13.2 never refreshes a consumed copy.
 
-Version 0.13.2 (unreleased source candidate) changes responsibilities: the default guard no longer asks for execution authorization, so it no longer prompts you to approve edits, commits, or pushes. Codex and repository approval rules still apply. Private state migrates from schemas 11, 10, and 9 to schema 12. Pending questions from old sessions without trusted delivery facts show a "historical answer-delivery uncertain" note instead of being mechanically re-asked, and old natural-language authorization records are preserved as history that never blocks anything. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
+Version 0.13.2 changes responsibilities: the default guard no longer asks for execution authorization, so it no longer prompts you to approve edits, commits, or pushes. Codex and repository approval rules still apply. Private state migrates from schemas 11, 10, and 9 to schema 12. Pending questions from old sessions without trusted delivery facts show a "historical answer-delivery uncertain" note instead of being mechanically re-asked, and old natural-language authorization records are preserved as history that never blocks anything. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
 
-If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); detailed behavior and remaining host-dependent checks are in the [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md).
+If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); current behavior and platform limits are in [compatibility](docs/COMPATIBILITY.md). The [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) is historical.
 
 ## Try it
 

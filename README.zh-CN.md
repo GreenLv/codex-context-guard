@@ -11,15 +11,15 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前正式版本：`0.12.4`。详见[发布说明](docs/releases/v0.12.4.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 当前正式版本：`0.13.2`。详见[发布说明](docs/releases/v0.13.2.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 >
-> `0.13.2` 是未发布源码候选：默认 Context Guard 不再用自带的授权提示门禁普通编辑、提交、推送、打标签和发布，只保留需求恢复、任务状态连续、诚实完成核对、答复送达跟踪和私有控制完整性。其原生验收和发布仍待完成；详见[更新日志](CHANGELOG.zh-CN.md)。
+> `0.13.2`：默认 Context Guard 不再用自带的授权提示门禁普通编辑、提交、推送、打标签和发布，只保留需求恢复、任务状态连续、诚实完成核对、答复送达跟踪和私有控制完整性。macOS 与 Windows 原生结果已复核，证据边界详见[更新日志](CHANGELOG.zh-CN.md)。
 >
 > `0.12.4` 修复补充指令丢失原有限制、确认错解除暂停、恢复正文不完整，以及提交并推送的目标识别问题。变化见[更新日志](CHANGELOG.zh-CN.md)，平台检查见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
-需要 Python 3.10 或更高版本、Codex CLI `0.146.0` 或更高版本作为当前已测试下限，以及能够加载插件和生命周期 Hook 的 Codex 界面。
+需要 Python 3.10 或更高版本、Codex CLI `0.153.4`（本版本实际验收使用的版本），以及能够加载插件和生命周期 Hook 的 Codex 界面。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -41,9 +41,9 @@ py -3.10 scripts\manage_plugin.py --apply
 
 通过受管安装器升级后，启动新任务加载新版。旧任务仍可能使用旧版缓存，请继续保留；已安装缓存不可变，0.13.2 绝不刷新已消费的副本。
 
-`0.13.2`（未发布源码候选）调整了职责分工：默认守卫不再询问执行授权，升级后编辑、提交、推送不再触发它自己的审批提示；Codex 和仓库原有审批规则仍然有效。私有状态会从 schema 11、10、9 迁移到 schema 12。旧会话中缺少可信送达事实的待答问题会标注"历史答复状态不确定"，不会被机械重问；旧的自然语言授权记录保留为历史，永远不会阻塞任何动作。降级前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
+`0.13.2` 调整了职责分工：默认守卫不再询问执行授权，升级后编辑、提交、推送不再触发它自己的审批提示；Codex 和仓库原有审批规则仍然有效。私有状态会从 schema 11、10、9 迁移到 schema 12。旧会话中缺少可信送达事实的待答问题会标注"历史答复状态不确定"，不会被机械重问；旧的自然语言授权记录保留为历史，永远不会阻塞任何动作。降级前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
 
-若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，详细行为及仍依赖宿主验证的情形见 [0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)。
+若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，当前行为与平台边界见[兼容性说明](docs/COMPATIBILITY.md)；[0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)保留为历史记录。
 
 ## 试用
 

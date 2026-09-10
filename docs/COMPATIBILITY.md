@@ -10,25 +10,24 @@ review and P4 candidate gates must include this behavior.
 
 ## Baselines
 
-- Current release: `0.12.4` (2026-09-09)
-- Published release baseline: `0.12.4`
-- Private state schema: `11`; schemas 10 and 9 migrate, while schemas 7 and 8 remain read-only
+- Current release: `0.13.2` (2026-09-10)
+- Published release baseline: `0.13.2`
+- Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
-- Stop protocol: `3.0.0`
-- Work-unit protocol: `2.0.0` (stored records remain `work-unit/v1`)
-- Execution protocol: `2.0.0`
-- Diagnostic classifier: `3.2.1` (0.12.0 release; position-aware PreToolUse)
+- Stop protocol: `4.0.0`
+- Work-unit protocol: `3.0.0` (stored records remain `work-unit/v1`)
+- Execution protocol: `3.0.0`
+- Diagnostic classifier: `3.3.0` (position-aware PreToolUse)
 - Python: `3.10+`
-- Codex CLI tested minimum: `0.146.0`
+- Codex CLI tested for 0.13.2 native acceptance: `0.153.4`
 - Runtime dependencies: Python standard library only
 
-The Codex minimum is a tested lower bound. Hook schemas and plugin installation
+Earlier releases retain their own tested Codex versions. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.13.2 candidate status
+## 0.13.2 release scope
 
-Version 0.13.2 is an unreleased source candidate; the published baseline above
-remains `0.12.4`. Its default-path behavior change is a contract change, not a
+Version 0.13.2 changes the published baseline from 0.12.4. Its default-path behavior change is a contract change, not a
 bugfix: the `standard` and `strict` profiles no longer execute
 natural-language authorization gates for ordinary edits, commits, pushes,
 tags, or publications, and the edit-provenance chain
@@ -55,15 +54,13 @@ bytes.
 
 The mode profile values are unchanged on the wire (`standard`, `strict`,
 `release`, `observe`, `off`/inactive); what changes is what the default
-profiles enforce. Candidate protocol identities are: schema 12, Stop protocol
+profiles enforce. Protocol identities are: schema 12, Stop protocol
 4.0.0, Execution protocol 3.0.0, Work-unit protocol 3.0.0, Proof protocol
 1.0.0, classifier 3.3.0, and the new `response-delivery/v1` dimension. The 0.13.2 source suite passes on macOS: 1,076 tests, 0 failures, 0 errors
 and 11 capability skips. Exact-commit macOS portable installation, strict
-no-op, runtime parity and installed smoke pass at `9039fa7`. Native-host
-acceptance and Windows portable validation remain pending.
+no-op, runtime parity and installed smoke pass at `9039fa7`. macOS and Windows native results have been reviewed, including Windows portable validation. Windows review covers saved result files and their links, not a fresh raw-capture replay; [local acceptance](LOCAL_ACCEPTANCE.md) records the exact boundaries.
 The 0.13.1 source and macOS portable results retain that version and commit;
-they do not establish acceptance for changed runtime bytes. CI and publication
-remain pending.
+they do not establish acceptance for changed runtime bytes. Final-commit CI, HOL and publication identities are recorded in the separate release receipt.
 
 ## 0.12.4 release scope
 

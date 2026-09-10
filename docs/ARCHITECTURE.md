@@ -8,7 +8,7 @@ release advances the same model with enforcement profiles, an
 explicit work-unit lifecycle (schema 10), Stop protocol 3.0.0, and silent
 success paths. Sections marked *0.12 release* describe behavior introduced in
 0.12.0; unmarked sections describe the published releases that preceded it.
-The unreleased `0.13.2` candidate (schema 12, Stop protocol 4.0.0,
+Version `0.13.2` (schema 12, Stop protocol 4.0.0,
 Execution and Work-unit protocols 3.0.0) moves execution-approval
 responsibility out of the default path; sections marked *0.13 candidate*
 describe that candidate.
@@ -70,7 +70,7 @@ editable plan.
 
 ## Enforcement profiles (0.12 release)
 
-The profiles were introduced in 0.12.0; the unreleased 0.13.2 candidate
+The profiles were introduced in 0.12.0; 0.13.2
 changes what the default profiles enforce, and the rows below state the
 current candidate behavior.
 
@@ -312,7 +312,7 @@ assistant response.
 
 ### Stop protocol 4.0.0 delivery semantics (0.13 candidate)
 
-The unreleased 0.13.2 candidate advances this line to Stop protocol 4.0.0
+Version 0.13.2 advances this line to Stop protocol 4.0.0
 and splits delivery from acceptance. When the trusted final reply verifiably
 answers a pure question, Stop records a bounded `response-delivery/v1`
 record (owned by `scripts/cg_delivery.py`: session/turn ids, root work-unit

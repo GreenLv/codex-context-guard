@@ -270,7 +270,7 @@ not as a measure of code volume.
   do not force re-confirmation of clear authorization. Protocols and schema
   are unchanged.
   Both 0.13.0 and 0.13.1 were consumed without publication; their caches stay
-  immutable. This successor remains an unreleased source candidate.
+  immutable. Version 0.13.2 is the published successor (2026-09-10).
 - `0.13.1` is the unreleased successor to the consumed, unpublished 0.13.0
   candidate. It strictly validates delivery identities and canonical records,
   avoids default PreToolUse state writes and locks, and preserves explicit

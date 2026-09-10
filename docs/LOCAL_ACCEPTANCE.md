@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current release is `0.12.4`. Release history includes `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. The current release is `0.13.2`. Release history includes `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.13.2 candidate status (unreleased)
+## 0.13.2 release acceptance (2026-09-10)
 
 Source checks pass on macOS with Python 3.12.2: 1,076 tests across 35 modules,
 0 failures, 0 errors and 11 capability skips, repository/privacy checks,
@@ -14,12 +14,21 @@ entrypoint passes all five gates and cleanup on exact commit
 `b9c4dc41348fad7ef3baee626e18512db5c7db9177e3878c1c696b13420fa444` and
 result SHA-256
 `d5b99a1b1f627abf5c3f72333dfa561caefa73697b45237ee477e9ea16faabb3`.
-Native-host acceptance remains pending. A synthetic
+Native-host evidence and remaining review are recorded below. A synthetic
 regression independently reproduces the 0.13.1 native finding: a delivered
 pure question stayed pending because an existing wait supplied Stop actions.
 The repair closes only the question; inherited waits and execution duties
 remain open. The regression also preserves promises and explicit unfinished
 answers as pending. Real repeated questioning was not observed.
+
+### Native-host evidence update (2026-09-10)
+
+Both platform records name the 0.13.2 commit and runtime-tree digest above. Windows result-file review is complete. Final-commit source and installation checks, CI, HOL and publication readback are recorded separately; the runtime evidence below retains its original subject.
+
+- **macOS:** the recorded composite passes all six real-host gates: Hook trust, continuity across a wait, compact/resume, commit observation, local push readback and cleanup. Coordinator review checked the child results, tool identities and all 159 inventoried files, and freshly replayed the three continuity gates. The six-gate composite has SHA-256 `28e68bba57f2f0b0d2ddb57650d0541aaf93be987c2d2e56ff2bc4a2b58b5077`. The complete composite was run before temporary Hook configuration was removed; the later read-only review did not restore that configuration or rerun the Git/trust portion.
+- **Windows:** coordinator readback of the nine supplied JSON files confirms five portable gates plus cleanup, six real-host gates and two regressions passed without skips, using Python 3.12.10 and Codex CLI 0.153.4. All package checksums, child manifest/result links, gate ownership, candidate identities and 13 validation-tool pins match. The portable result has SHA-256 `5d4714254e13d6b2061475c079a9de15c98fb46fcb8a9bfb7d93d06e2fa1e477`; the six-gate composite is `056089ce24b5b64d851928258acc1cb0072e4808c297e142818825e8ecb911b7`; the regression result is `75ce163cdd74284a0954c020622e745f78b6da1c065bf6b3f407475bf423541f`. This is independent result-file and linkage review of the Windows execution, not a fresh raw-capture replay on macOS. Raw captures, observation files and host configuration remain on the originating platform.
+
+The Windows report states that acceptance used a fresh checkout configured for LF before checkout; the earlier CRLF checkout did not match the runtime digest and was not accepted. It also records that continuity validation used an unchanged, contiguous capture view (original sequence 24–44), because the full capture contained duplicate compact SessionStart payloads. The reviewed results retain this selection boundary and hashes for the original capture inventory; those hashes do not establish a fresh review of the absent raw files. No product source changes or global Codex upgrade are reported, and temporary capture Hooks were restored.
 
 ## 0.13.1 candidate status (unreleased)
 
