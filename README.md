@@ -12,6 +12,8 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
+> Source candidate: `0.13.3` (Unreleased). It fixes ordinary commits and single branch pushes being blocked by damaged release state; the published release and its acceptance evidence remain below.
+
 > Current release: `0.13.2`. See the [release notes](docs/releases/v0.13.2.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
 > Version `0.13.2`: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. Native results have been reviewed for macOS and Windows; see the [changelog](CHANGELOG.md) for evidence boundaries.

@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.2"
+PRODUCT_VERSION = "0.13.3"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -5611,6 +5611,25 @@ def _handle_runner_envelope(
     except (StateIntegrityError, OSError, TypeError, ValueError):
         pass
     return {}
+
+def _requires_release_verification(payload: dict[str, Any], tool_class: str) -> bool:
+    """Pure release-scope check before any posture or private-state access.
+
+    Ordinary commits and single branch pushes belong to the agent and host,
+    even when a release ledger is damaged. Keep the existing publication,
+    compound-remote and mutation-runner contracts fail-closed.
+    """
+    if tool_class == STATE_AMBIGUOUS_CANDIDATE:
+        return True
+    kind = classify_action_kind(payload.get("tool_name"), payload.get("tool_input"))
+    return bool(kind and (
+        kind.get("tier") == "A"
+        or kind.get("semantic_action_id") in {
+            "compound_remote_mutation", "registry_gem_publish",
+        }
+    ))
+
+
 def handle_pre_tool(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -5622,6 +5641,8 @@ def handle_pre_tool(
         payload.get("tool_name"), payload.get("tool_input")
     )
     if tool_class in {STATE_SAFE, STATE_AMBIGUOUS}:
+        return {}
+    if not _requires_release_verification(payload, tool_class):
         return {}
     profile = effective_action_profile(state)
     if tool_class == STATE_AMBIGUOUS_CANDIDATE:
@@ -14426,6 +14447,8 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
             pre_class = STATE_SAFE
         if pre_class in {STATE_SAFE, STATE_AMBIGUOUS}:
             return {}
+        if not _requires_release_verification(payload, pre_class):
+            return {}
         # Read posture without locks, migration or recovery writes. Ordinary
         # business calls never execute the state loader, even on damaged data.
         profile = _pre_tool_profile_hint(payload)
@@ -14561,6 +14584,8 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                 tool_class = classify_pre_tool_state(
                     payload.get("tool_name"), payload.get("tool_input")
                 )
+                if not _requires_release_verification(payload, tool_class):
+                    return {}
             except Exception:  # noqa: BLE001 - classification must not deny on its own failure
                 tool_class = STATE_AMBIGUOUS
             if tool_class not in {STATE_CANDIDATE, STATE_AMBIGUOUS_CANDIDATE}:

@@ -327,6 +327,59 @@ class ReleaseIsolationTests(DefaultPathHarness):
             with mock.patch.object(self.cg, "dispatch", side_effect=RuntimeError("unavailable")):
                 self.assertEqual(self.cg.safe_dispatch(payload)["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_damaged_release_state_does_not_gate_ordinary_followon_work(self) -> None:
+        self.dispatch("UserPromptSubmit", prompt="context-guard release")
+        state = self.state()
+        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        (session_dir / "state.json").write_text("{broken", encoding="utf-8")
+        before = {p.name: p.read_bytes() for p in session_dir.iterdir() if p.is_file()}
+        for command in (
+            "git commit -m ordinary",
+            "git -C sibling commit -m ordinary",
+            "git push origin main",
+            "set -euo pipefail\ngit add -- owned.txt\ngit diff --cached --check\ngit commit -m ordinary",
+        ):
+            with self.subTest(command=command):
+                payload = self.payload("PreToolUse", tool_name="shell",
+                                       tool_input={"command": command})
+                with mock.patch.object(self.cg, "session_lock", side_effect=AssertionError("lock")), \
+                     mock.patch.object(self.cg, "load_state", side_effect=AssertionError("state load")), \
+                     mock.patch.object(self.cg, "resolve_internal_targets", side_effect=AssertionError("git")):
+                    routed = self.cg.dispatch(payload)
+                with mock.patch.object(self.cg, "require_usable_state", side_effect=self.cg.StateIntegrityError("broken")):
+                    handled = self.cg.handle_pre_tool(session_dir, state, payload)
+                with mock.patch.object(self.cg, "dispatch", side_effect=RuntimeError("unavailable")):
+                    fallback = self.cg.safe_dispatch(payload)
+                self.assertEqual((routed, handled, fallback), ({}, {}, {}))
+        self.assertEqual(before, {p.name: p.read_bytes() for p in session_dir.iterdir() if p.is_file()})
+
+    def test_damaged_release_state_still_gates_publication_and_envelopes(self) -> None:
+        self.dispatch("UserPromptSubmit", prompt="context-guard release")
+        state = self.state()
+        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        (session_dir / "state.json").write_text("{broken", encoding="utf-8")
+        for command in (
+            "git tag v1.2.3", "git push origin v1.2.3", "npm publish package.tgz",
+            "gh release create v1.2.3", "gem push package.gem",
+            "echo v1.2.3 | xargs git tag",
+            "git push origin main && git push mirror main",
+            "git commit -m ordinary && git tag v1.2.3",
+        ):
+            with self.subTest(command=command):
+                payload = self.payload("PreToolUse", tool_name="shell",
+                                       tool_input={"command": command})
+                routed = self.cg.dispatch(payload)
+                with mock.patch.object(self.cg, "require_usable_state", side_effect=self.cg.StateIntegrityError("broken")):
+                    handled = self.cg.handle_pre_tool(session_dir, state, payload)
+                normal = self.cg.safe_dispatch(payload)
+                with mock.patch.object(self.cg, "dispatch", side_effect=RuntimeError("unavailable")):
+                    fallback = self.cg.safe_dispatch(payload)
+                self.assertEqual(
+                    [result["hookSpecificOutput"]["permissionDecision"]
+                     for result in (routed, handled, normal, fallback)],
+                    ["deny"] * 4,
+                )
+
     def test_explicit_release_exit_retires_posture_latch(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard release")
         self.dispatch("UserPromptSubmit", prompt="context-guard off")

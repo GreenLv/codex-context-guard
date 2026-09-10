@@ -4,6 +4,19 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.2`. Release history includes `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.3 source candidate (Unreleased)
+
+The current-behavior suite passes on macOS: 1,078 tests, no failures or errors,
+and 11 capability skips. The final 15-test default-path group was rechecked
+after its regression assertions were refined. New tests fail on the previous
+implementation and pass on the repair: ordinary commits and single pushes
+continue with damaged release state or failed dispatch; publication, runner
+and restricted compound calls remain denied across the router, direct handler
+and error fallback. Repository/privacy checks, the historical baseline
+transition audit, self-test, Ruff and compilation also pass.
+No 0.13.3 CI, installed runtime, native-platform or public-release evidence has
+been established. The 0.13.2 results below retain their original subjects.
+
 ## 0.13.2 release acceptance (2026-09-10)
 
 Source checks pass on macOS with Python 3.12.2: 1,076 tests across 35 modules,

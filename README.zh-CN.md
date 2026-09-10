@@ -11,6 +11,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
+> 源码候选：`0.13.3`（未发布）。修复发布状态损坏时误拦普通提交和单次分支推送的问题；下方仍列出已发布版本及其验收记录。
+
 > 当前正式版本：`0.13.2`。详见[发布说明](docs/releases/v0.13.2.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 >
 > `0.13.2`：默认 Context Guard 不再用自带的授权提示门禁普通编辑、提交、推送、打标签和发布，只保留需求恢复、任务状态连续、诚实完成核对、答复送达跟踪和私有控制完整性。macOS 与 Windows 原生结果已复核，证据边界详见[更新日志](CHANGELOG.zh-CN.md)。

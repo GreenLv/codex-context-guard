@@ -12,6 +12,7 @@ review and P4 candidate gates must include this behavior.
 
 - Current release: `0.13.2` (2026-09-10)
 - Published release baseline: `0.13.2`
+- Current source candidate: `0.13.3` (Unreleased); source checks do not establish native acceptance.
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`

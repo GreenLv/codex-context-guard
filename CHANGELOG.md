@@ -4,6 +4,22 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.2` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.13.3 - Unreleased
+
+### Highlights
+
+- Ordinary commits and single branch pushes remain available when an active release contract's private state is unreadable. This also covers follow-on work in another repository within the same task.
+- Publication stays protected: tags, package uploads, GitHub Releases, mutation runners and restricted compound calls still require verified release state when the release profile is active.
+- The fix uses a new plugin version. Existing 0.13.2 caches remain unchanged for tasks that already loaded them.
+
+### Changes
+
+- Check whether an action belongs to release enforcement before reading or validating its private state, including direct-handler and error-fallback paths. No state schema, ticket format, profile activation or host permission changes.
+
+### Validation
+
+Source checks pass on macOS, including the current-behavior suite and regression checks against the previous implementation. No 0.13.3 installation, CI, native-platform acceptance or publication is claimed; see the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+
 ## 0.13.2 - 2026-09-10
 
 ### Highlights
