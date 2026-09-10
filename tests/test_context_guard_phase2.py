@@ -353,16 +353,15 @@ class RouterFastPathTests(_RouterHarness):
         self.assertEqual(list(self.data_dir.rglob("*")), [])
 
     def test_candidate_pre_tool_use_delegates_to_heavy_core(self):
-        """A candidate reaches the heavy core (state files prove the trip).
-        Phase 4: this fresh session never activated a profile, so the
-        heavy decision is the silent empty-object allow."""
+        """A fresh candidate allows without creating private state.
+        Delegation bytes and exit propagation have separate wire coverage."""
         rc, out, err = self._run_router(
             self._payload_bytes("bash", {"command": "git tag v1.2.3"}, session_id="fp-tag")
         )
         self.assertEqual(rc, 0)
         decision = json.loads(out.decode("utf-8"))
         self.assertEqual(decision, {})
-        self.assertTrue(list(self.data_dir.rglob("*")))
+        self.assertEqual(list(self.data_dir.rglob("*")), [])
 
     def test_delegate_wire_contract(self):
         """stdout/stderr must stay separated and the exit code must

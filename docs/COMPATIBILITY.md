@@ -25,9 +25,9 @@ review and P4 candidate gates must include this behavior.
 The Codex minimum is a tested lower bound. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.13.0 candidate status
+## 0.13.1 candidate status
 
-Version 0.13.0 is an unreleased source candidate; the published baseline above
+Version 0.13.1 is an unreleased source candidate; the published baseline above
 remains `0.12.4`. Its default-path behavior change is a contract change, not a
 bugfix: the `standard` and `strict` profiles no longer execute
 natural-language authorization gates for ordinary edits, commits, pushes,
@@ -57,9 +57,9 @@ The mode profile values are unchanged on the wire (`standard`, `strict`,
 `release`, `observe`, `off`/inactive); what changes is what the default
 profiles enforce. Candidate protocol identities are: schema 12, Stop protocol
 4.0.0, Execution protocol 3.0.0, Work-unit protocol 3.0.0, Proof protocol
-1.0.0, classifier 3.3.0, and the new `response-delivery/v1` dimension. Only
-source-level macOS evidence exists for this candidate; native, isolated-install,
-and publication evidence are pending and are not inferred from CI.
+1.0.0, classifier 3.3.0, and the new `response-delivery/v1` dimension. Full macOS source checks pass for this repair (1,074 tests, 11 capability skips).
+Native, isolated-install and publication evidence remain pending and are not
+inferred from CI.
 
 ## 0.12.4 release scope
 

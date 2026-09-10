@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.0"
+PRODUCT_VERSION = "0.13.1"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -5331,7 +5331,7 @@ def _concrete_action_target(
         ).startswith("github:"):
             # A non-default GH_HOST/--hostname changes the real host; the
             # canonical identity carries it (default host stays implicit).
-            target_repo = "github:" + gh_hostname + target_repo[len("github:"):]
+            target_repo = "github:" + gh_hostname + "/" + target_repo[len("github:"):]
         release_version = action.get("release_version") or ""
         if release_version == "unresolved":
             # The canonical fill is a legacy sentinel here, not an
@@ -5579,10 +5579,10 @@ def _handle_runner_envelope(
     handed to an argument runner (xargs/find/watch/parallel).
 
     Only this envelope — never generic ambiguity — reaches the heavy core.
-    The release profile fails closed; standard/strict fail open with a
-    bounded classifier_ambiguous diagnostic; inactive stays silent.
+    The release profile fails closed; standard/strict/inactive stay silent.
+    Only observe records the bounded classifier diagnostic.
     """
-    if profile == "inactive":
+    if profile in {"inactive", "standard", "strict"}:
         return {}
     if profile == "release":
         return _pre_tool_decision(
@@ -7225,7 +7225,21 @@ def save_state(session_dir: Path, state: dict[str, Any]) -> None:
     state["open_items"] = open_item_ids(state)
     state["session"]["updated_at"] = utc_now()
     state["content_hash"] = state_content_hash(state)
+    # A separate, content-free latch preserves explicit release posture if
+    # state.json becomes unreadable. Write it before publishing release state;
+    # only verified state can retire it after a deliberate profile change.
+    release_latch = session_dir / "release-required"
+    if effective_action_profile(state) == "release":
+        atomic_write_json(release_latch, {"schema": "release-posture/v1"})
     atomic_write_json(session_dir / "state.json", state)
+    if state.get("integrity", {}).get("status") == "ok":
+        atomic_write_json(session_dir / "action-profile.json", {
+            "schema": "action-profile/v1", "profile": effective_action_profile(state),
+        })
+    if (effective_action_profile(state) != "release"
+            and state.get("integrity", {}).get("status") == "ok"):
+        with contextlib.suppress(FileNotFoundError):
+            release_latch.unlink()
 
 
 def prompt_text(payload: dict[str, Any]) -> str:
@@ -13250,6 +13264,13 @@ def handle_stop(
         or (attempt.get("turn_id") if isinstance(attempt, dict) else "")
         or ""
     )
+    delivery_turn_matches = (
+        isinstance(attempt, dict)
+        and isinstance(payload.get("turn_id"), str)
+        and bool(payload["turn_id"])
+        and str(attempt.get("turn_id")) == str(payload["turn_id"])
+        and not payload.get("agent_id")
+    )
     prompt_integrity = bool(authoritative_prompt) or not state.get("requirements")
     observed = classify_stop_decision(
         text, authoritative_prompt, prompt_integrity=prompt_integrity, state=state
@@ -13282,6 +13303,8 @@ def handle_stop(
         for item in state.get("requirements", [])
         if isinstance(item, dict) and item.get("prompt_id") == turn_prompt_id and item.get("id")
     ][-delivery_mod.MAX_REQUIREMENT_ASSOCIATIONS:]
+    if not delivery_turn_matches:
+        turn_requirement_ids = []
 
     def _final_reply_fact() -> tuple[str, str | None]:
         """(delivery status, reply digest) for the Stop's final reply.
@@ -13295,9 +13318,14 @@ def handle_stop(
             for key in ("last_assistant_message", "assistant_response", "response")
             if isinstance(payload.get(key), str)
         ]
+        invalid_source = any(
+            key in payload and not isinstance(payload[key], str)
+            for key in ("last_assistant_message", "assistant_response", "response")
+        )
         unique = {value for value in present}
         text_value = assistant_text(payload)
-        if len(unique) > 1 or not text_value or not text_value.strip():
+        if (not delivery_turn_matches or invalid_source or len(unique) > 1
+                or not text_value or not text_value.strip()):
             return "delivery_unknown", None
         return "delivered", sha256_text(text_value)
 
@@ -13326,7 +13354,13 @@ def handle_stop(
             if delivery_mod.idempotency_key(prior) == key:
                 # Same-event replay: no state growth, no closure rerun.
                 return
-        if status == "delivered":
+        answer_can_close = (
+            status == "delivered"
+            and not observed.get("actions")
+            and "explicit_non_completion_without_actionable_detail"
+            not in observed.get("reason_codes", [])
+        )
+        if answer_can_close:
             for item in state.get("requirements", []):
                 if (
                     isinstance(item, dict)
@@ -14378,8 +14412,34 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:  # noqa: BLE001 - classification failure stays fail-open
             pre_class = STATE_SAFE
-        if pre_class == STATE_AMBIGUOUS:
+        if pre_class in {STATE_SAFE, STATE_AMBIGUOUS}:
             return {}
+        # Read posture without locks, migration or recovery writes. Ordinary
+        # business calls never execute the state loader, even on damaged data.
+        profile = _pre_tool_profile_hint(payload)
+        if profile == "unknown":
+            kind = classify_action_kind(payload.get("tool_name"), payload.get("tool_input"))
+            if pre_class == STATE_AMBIGUOUS_CANDIDATE or (kind and kind.get("tier") == "A"):
+                return _pre_tool_decision(
+                    "deny", "The prior release posture cannot be established; "
+                    "run 'context-guard diagnose' before this publication action.",
+                )
+            return {}
+        if profile not in {"release", "observe"}:
+            return {}
+        if profile == "release":
+            try:
+                with (session_dir_for(payload) / "state.json").open(encoding="utf-8") as handle:
+                    raw_state = json.load(handle)
+                validate_state_integrity(raw_state)
+                require_usable_state(raw_state)
+                if effective_action_profile(raw_state) != "release":
+                    raise StateIntegrityError("release posture and private state disagree")
+            except (OSError, ValueError, TypeError, StateIntegrityError):
+                return _pre_tool_decision(
+                    "deny", "Release verification state is unavailable or inconsistent; "
+                    "run 'context-guard diagnose' before retrying this action.",
+                )
     session_dir = session_dir_for(payload)
     with session_lock(session_dir):
         state = load_state(session_dir, payload)
@@ -14400,18 +14460,44 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         return handler(session_dir, state, payload)
 
 
+def _pre_tool_profile_hint(payload: dict[str, Any]) -> str:
+    """Read-only routing through the last verified posture, never recovery."""
+    session_dir = session_dir_for(payload)
+    try:
+        if (session_dir / "release-required").exists():
+            return "release"
+        hint_file = session_dir / "action-profile.json"
+        if hint_file.exists():
+            with hint_file.open(encoding="utf-8") as handle:
+                hint = json.load(handle)
+            if (isinstance(hint, dict) and set(hint) == {"schema", "profile"}
+                    and hint["schema"] == "action-profile/v1"
+                    and hint["profile"] in {"inactive", "standard", "strict", "observe", "release"}):
+                return hint["profile"]
+            return "unknown"
+        # Legacy sessions have no separate posture yet. Only an intact
+        # state can establish one; unreadable legacy adoption is unknown.
+        state_file = session_dir / "state.json"
+        if not state_file.exists():
+            return "unknown" if (session_dir / "prompts").exists() else "inactive"
+        with state_file.open(encoding="utf-8") as handle:
+            state = json.load(handle)
+        validate_state_integrity(state)
+        return effective_action_profile(state)
+    except (OSError, ValueError, TypeError, StateIntegrityError):
+        return "unknown"
+
+
 def _release_posture_plausibly_active(payload: dict[str, Any]) -> bool:
     """Best-effort, read-only release-posture probe for the fail policy.
 
-    Never mutates state and never raises: any read failure answers False,
-    so a corrupt ledger cannot strip ordinary tool capability (INV-03).
-    A READABLE state keeps the release posture fail-closed when Guard
-    validation itself failed — either an adopted repository-release
-    contract is active, or the maintainer explicitly declared the release
-    profile. In both cases a silent fail-open would downgrade release
-    enforcement, so the action is refused with an actionable message.
+    The content-free latch survives unreadable state. Legacy readable state
+    also retains its explicit declaration or adopted contract. This probe
+    never writes or recovers state and grants no execution authorization.
     """
     try:
+        if _pre_tool_profile_hint(payload) == "release":
+            return True
         state_file = session_dir_for(payload) / "state.json"
         if not state_file.exists():
             return False
@@ -14465,7 +14551,7 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                 )
             except Exception:  # noqa: BLE001 - classification must not deny on its own failure
                 tool_class = STATE_AMBIGUOUS
-            if tool_class != STATE_CANDIDATE:
+            if tool_class not in {STATE_CANDIDATE, STATE_AMBIGUOUS_CANDIDATE}:
                 return {}
             if _release_posture_plausibly_active(payload):
                 return _pre_tool_decision(
@@ -14474,6 +14560,13 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                     "complete release verification; run 'context-guard diagnose' before "
                     "retrying this action.",
                 )
+            if _pre_tool_profile_hint(payload) == "unknown":
+                kind = classify_action_kind(payload.get("tool_name"), payload.get("tool_input"))
+                if tool_class == STATE_AMBIGUOUS_CANDIDATE or (kind and kind.get("tier") == "A"):
+                    return _pre_tool_decision(
+                        "deny", "The prior release posture cannot be verified; "
+                        "run 'context-guard diagnose' before this publication action.",
+                    )
             return {}
         return {"systemMessage": f"Context Guard {event or 'hook'} warning: {message}"}
 

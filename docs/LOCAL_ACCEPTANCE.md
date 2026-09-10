@@ -4,15 +4,18 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.12.4`. Release history includes `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.13.0 candidate status (unreleased)
+## 0.13.1 candidate status (unreleased)
 
-Version 0.13.0 is an unreleased source candidate. Its current evidence is
-source-level only, from the local repository suite on macOS. Native macOS
-and Windows acceptance, isolated install/no-op/parity and installed
-lifecycle evidence, and publication checks are pending and must not be
-inferred from CI. No capability-aware skip in any run is presented as a
-platform pass. The 0.12.4 records below describe the published release and
-are not rewritten as 0.13.0 executions.
+Version 0.13.1 is an unreleased source candidate that repairs the consumed,
+unpublished 0.13.0 candidate. Source checks on macOS with Python 3.12.2 pass: 1,074 current-behavior tests
+(0 failures, 0 errors, 11 capability skips), repository and privacy validation,
+the frozen-baseline transition audit, Hook self-test, Ruff and compilation.
+Five controlled before/after probes fail on 9f265cf and pass on this repair:
+implicit delivery identity coercion, wrong delivery version, delayed reply
+association, default PreToolUse locking, and release failure downgrade.
+Isolated installation, native macOS and Windows runs, CI and publication for
+the repaired candidate remain pending. Prior-version results
+below retain their original subjects and are not 0.13.1 acceptance evidence.
 
 ## 0.12.4 release acceptance (2026-09-09)
 

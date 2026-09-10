@@ -4,28 +4,26 @@
 
 以下版本从新到旧排列，未发布候选会明确标注。`0.12.4` 是当前最新发布版本。前一正式版本 `0.12.1` 的 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.13.0 - 未发布
+## 0.13.1 - 未发布
 
 ### 重点
 
-- **默认 Context Guard 退出执行审批。** 普通编辑、提交、推送、打标签和发布不再触发它自己的自然语言授权提示，提交也不再要求重建编辑溯源链。一个动作是否在你的授权范围内，由主执行 Agent 依据真实对话、仓库规则和宿主权限判断。Context Guard 的放行从来不是授权，现在产品把这一点写明。
-- **答复送达与任务完成分开跟踪。** 新的 `response-delivery/v1` 维度记录自然答复是否真正送达。纯问题的已送达答复以 `answered` 关闭，压缩后不再重放；执行义务始终需要证据；未知送达状态绝不伪造完成。
-- **schema-12 迁移诚实标注历史。** 私有状态可从 schema 11、10、9 迁移。缺少可信送达事实的旧待答问题标注"历史答复状态不确定"，不会被机械重问；旧的自然语言授权记录保留为 `participation: "historical"` 历史，永远不会阻塞任何动作。
-- **加载身份可见。** `context-guard status` 现在报告加载的产品版本和全部协议版本，任务仍在运行旧安装副本时一目了然，而不是静默继续。
-- **协议代际前进。** Stop protocol 前进到 4.0.0，Execution 与 Work-unit protocol 前进到 3.0.0。Proof protocol 1.0.0、`action-ticket/v1` 和 `release-readiness/v3` 保持 wire 兼容，分类器 3.3.0 仍为诊断性质。
+- 普通工作不再触发 Context Guard 执行审批。当你要求“完成修改，提交并推送”后，守卫允许这个过程跨越上下文压缩继续进行，不再要求重建编辑溯源链。主执行 Agent 仍需遵循真实对话、仓库规则和宿主权限；守卫放行不等于新增授权。
+- 已答问题不会在压缩后反复重问。答复送达与任务完成分别记录：延迟到达的旧回复、子代理回复、冲突回复源，以及“我会继续核实”之类的承诺，都不能关闭当前问题。文件修改等执行义务仍需匹配证据。
+- 私有状态损坏时，已显式启用的发布校验仍然有效。独立模式记录保留最后一次已验证配置；发布操作仍需精确、未过期的一次性票据。旧会话的发布模式无法确定时，只拦截可识别的发布操作，普通编辑仍可继续。
+- 升级保留旧状态和旧缓存。历史授权记录不再阻塞普通工作；缺少答复证据的旧问题会明确标注不确定。`context-guard status` 显示实际加载的产品及协议版本，便于识别仍在使用旧版的任务。
 
 ### 变更
 
-- 默认路径不再门禁普通编辑、提交、推送、打标签或发布。编辑溯源记录（`observe_source_pre`/`observe_source_post`、`prepared_source`、`expected_commits` 以及授权 generation）移出默认路径，其辅助代码已删除；`cg_authority.py` 与 `cg_commit.py` 保留为纯校验器和迁移输入。PreToolUse 路由器保留快速路径：standard 与 strict 候选静默放行且不做状态 I/O，release 与 observe 走各自的显式路径。
-- tier-A 精确一次性 `action-ticket/v1` 强制（打标签、registry publish/yank、GitHub Release）只保留在显式采用的发布执行合同或显式 `context-guard release` 声明之后。strict 只记录强制证明义务，绝不暗示 Git 或发布门禁。observe 只记录有界的"本来会怎样"结果，绝不阻塞。
-- `scripts/cg_delivery.py` 拥有 `response-delivery/v1` 规范合同：域分隔摘要、有界标识符，只保存回复 SHA-256——从不保存回复正文。Stop protocol 4.0.0 从可信的最终回复记录送达，并把疑问式需求关闭为 `answered`；无法确立的送达状态保持未知并继续待办。
-- schema 12 从 schema 11、10、9 迁移（schema 10 经 schema 11 等待条件重写链式迁移）。工作单元记录前进到 protocol 3.0.0；持久的需求、证据和等待全部保留，不存在有损重写路径，旧版本化缓存保持不可变。
-- `context-guard status` 输出加载的产品版本、Stop/分类器/proof/工作单元/执行协议版本以及 response-delivery schema。
-- 九个 Hook 事件、Python 3.10+ 标准库运行时和四种非完成 disposition 均不变。可观察运行时字节发生变化，因此本候选是新的版本身份；已消费的缓存绝不会被原位刷新。
+- 本候选合并已安装但未发布的 0.13.0 实现，原安装缓存保持不变。升级后需启动新任务加载 0.13.1。
+- standard 与 strict 的 PreToolUse 仅读取模式元数据，不写状态、不加锁、不启动状态恢复或 Git 子进程。observe 保留诊断记录；发布校验仅由采用发布合同或显式 `context-guard release` 启用，不因文件存在或选择 Skill 自动生效。
+- 交付记录采用有界字符串身份、规范化需求关联和带域分隔的 SHA-256 摘要。其他轮次的回复不能回答当前问题，未知送达状态不能作为完成证据；这份记录不复制回复正文。
+- GitHub Enterprise 发布目标补齐主机与仓库之间的分隔符。省略 `--repo` 时，可使用已验证的 GitHub origin；无法确定的目标不能证明发布就绪。
+- 私有 schema 11、10、9 可迁移至 schema 12。Stop protocol 为 4.0.0，Execution 与 Work-unit protocol 为 3.0.0。Proof 1.0.0、`action-ticket/v1`、`release-readiness/v3`、分类器 3.3.0、九项 Hook 事件，以及 Python 3.10+ 标准库运行时均与 0.13.0 候选保持一致。
 
 ### 验证
 
-0.13.0 是未发布的源码候选，不是发布版本。macOS（Python 3.12）源码级验证已全部通过：仓库校验、公开树隐私审计、提交身份审计、1,066 项 current-behavior 套件（0 失败、11 项能力性 skip）、冻结基线 transition 审计、Hook 自检、Ruff 与编译。隔离安装/no-op/一致性检查、安装态 lifecycle 证据、macOS 与 Windows 原生验收、真实宿主行为和发布检查均未执行，也不能从 CI 推断。任何能力性 skip 都不会被当作通过。
+0.13.1 是未发布源码候选。macOS（Python 3.12）源码验证已通过：1,074 项 current-behavior 测试，0 失败、0 错误、11 项能力性跳过，以及仓库/隐私检查、冻结基线 transition 审计、自检、Ruff 和编译。隔离安装、macOS 与 Windows 原生验收、CI 和发布仍待执行。已用于安装的 0.13.0 候选保留原样，从未发布；其验证结果不改标为 0.13.1 证据。
 
 ## 0.12.4 - 2026-09-09
 

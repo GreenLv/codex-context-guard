@@ -95,6 +95,21 @@ class DefaultPathHarness(unittest.TestCase):
 class Report3SequenceTests(DefaultPathHarness):
     """T01: report-3 cases A–E replayed under the standard profile."""
 
+    def test_full_default_pre_hook_never_loads_locks_or_repairs_state(self) -> None:
+        for profile in ("on", "strict"):
+            self.dispatch("UserPromptSubmit", prompt=f"context-guard {profile}")
+            session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+            for corrupt in (False, True):
+                if corrupt:
+                    (session_dir / "state.json").write_text("{broken", encoding="utf-8")
+                before = {p.name: p.read_bytes() for p in session_dir.iterdir() if p.is_file()}
+                with mock.patch.object(self.cg, "session_lock", side_effect=AssertionError("lock")), \
+                     mock.patch.object(self.cg, "load_state", side_effect=AssertionError("load")), \
+                     mock.patch.object(self.cg, "save_state", side_effect=AssertionError("save")):
+                    self.assertEqual(self.dispatch("PreToolUse", tool_name="shell",
+                        tool_input={"command": "git push origin main"}), {})
+                self.assertEqual(before, {p.name: p.read_bytes() for p in session_dir.iterdir() if p.is_file()})
+
     def test_cases_a_through_e_all_allow_without_provenance(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard on")
         self.dispatch(
@@ -301,6 +316,36 @@ class ReleaseIsolationTests(DefaultPathHarness):
         self.assertEqual(
             fallback["hookSpecificOutput"]["permissionDecision"], "deny"
         )
+
+    def test_release_posture_survives_unreadable_state_and_internal_failure(self) -> None:
+        self.dispatch("UserPromptSubmit", prompt="context-guard release")
+        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        (session_dir / "state.json").write_text("{broken", encoding="utf-8")
+        for command in ("git tag v1.2.3", "echo v1.2.3 | xargs git tag"):
+            payload = self.payload("PreToolUse", tool_name="shell", tool_input={"command": command})
+            self.assertEqual(self.cg.safe_dispatch(payload)["hookSpecificOutput"]["permissionDecision"], "deny")
+            with mock.patch.object(self.cg, "dispatch", side_effect=RuntimeError("unavailable")):
+                self.assertEqual(self.cg.safe_dispatch(payload)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_explicit_release_exit_retires_posture_latch(self) -> None:
+        self.dispatch("UserPromptSubmit", prompt="context-guard release")
+        self.dispatch("UserPromptSubmit", prompt="context-guard off")
+        self.assertEqual(self.dispatch("PreToolUse", tool_name="shell",
+                         tool_input={"command": "git tag v1.2.3"}), {})
+
+    def test_unknown_legacy_posture_blocks_publication_only(self) -> None:
+        self.dispatch("UserPromptSubmit", prompt="context-guard release")
+        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        (session_dir / "release-required").unlink()
+        (session_dir / "action-profile.json").unlink()
+        (session_dir / "state.json").write_text("{broken", encoding="utf-8")
+        self.assertEqual(self.dispatch("PreToolUse", tool_name="shell",
+                         tool_input={"command": "git commit -am fix"}), {})
+        payload = self.payload("PreToolUse", tool_name="shell",
+                               tool_input={"command": "git tag v1.2.3"})
+        self.assertEqual(self.cg.safe_dispatch(payload)["hookSpecificOutput"]["permissionDecision"], "deny")
+        with mock.patch.object(self.cg, "dispatch", side_effect=RuntimeError("unavailable")):
+            self.assertEqual(self.cg.safe_dispatch(payload)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_candidate_contract_does_not_activate_release_profile(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard on")

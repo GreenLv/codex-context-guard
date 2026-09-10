@@ -8,8 +8,8 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.13.0"
-# Stop protocol 4.0 / schema 12 (0.13.0): the public contract pins the runtime
+VERSION = "0.13.1"
+# Stop protocol 4.0 / schema 12 (0.13.1): the public contract pins the runtime
 # constants and the one-way safety contract fragments below.
 SCHEMA_VERSION = 12
 STOP_PROTOCOL_VERSION = "4.0.0"

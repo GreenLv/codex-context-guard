@@ -143,11 +143,17 @@ def idempotency_key(projection: dict[str, Any]) -> str:
 def _bounded_id(value: Any, field: str, *, nullable: bool = False) -> str | None:
     if value is None and nullable:
         return None
-    text = value if isinstance(value, str) else str(value or "")
+    if not isinstance(value, str):
+        raise DeliveryValueError(f"delivery field {field} must be a string")
+    text = value
     if not text or len(text) > MAX_DELIVERY_ID_LENGTH or any(
         ord(char) < 0x20 or ord(char) == 0x7F for char in text
     ):
         raise DeliveryValueError(f"delivery field {field} is not a valid identity")
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise DeliveryValueError(f"delivery field {field} is not valid Unicode") from exc
     return text
 
 
@@ -179,8 +185,8 @@ def canonical_projection(
         raise DeliveryValueError("unknown delivery must not fabricate a reply digest")
     if not isinstance(requirement_ids, list) or len(requirement_ids) > MAX_REQUIREMENT_ASSOCIATIONS:
         raise DeliveryValueError("delivery requirement association is invalid")
-    if any(not isinstance(item, str) or not item for item in requirement_ids):
-        raise DeliveryValueError("delivery requirement association is invalid")
+    for item in requirement_ids:
+        _bounded_id(item, "requirement_ids")
     ordered = sorted(set(requirement_ids), key=lambda item: item.encode("utf-8"))
     if len(ordered) != len(dict.fromkeys(requirement_ids)):
         raise DeliveryValueError("delivery requirement association is invalid")
@@ -205,6 +211,7 @@ def build_record(
     recorded_at: str,
 ) -> dict[str, Any]:
     """Attach non-canonical metadata (resolution, digest, ordering)."""
+    _validate_projection(projection)
     if resolution not in DELIVERY_RESOLUTIONS:
         raise DeliveryValueError("delivery resolution is invalid")
     if type(sequence) is not int or sequence < 1:
@@ -219,6 +226,16 @@ def build_record(
     return record
 
 
+def _validate_projection(raw: Any) -> None:
+    if not isinstance(raw, dict) or set(raw) != set(PROJECTION_FIELDS):
+        raise DeliveryValueError("delivery projection fields are invalid")
+    if raw["version"] != DELIVERY_SCHEMA:
+        raise DeliveryValueError("delivery record version is invalid")
+    canonical = canonical_projection(**{key: raw[key] for key in PROJECTION_FIELDS if key != "version"})
+    if raw != canonical:
+        raise DeliveryValueError("delivery projection is not canonical")
+
+
 def validate_record(raw: Any) -> None:
     """Closed-world validation of one persisted delivery record."""
     if not isinstance(raw, dict):
@@ -229,6 +246,7 @@ def validate_record(raw: Any) -> None:
         raise DeliveryValueError(
             f"delivery record fields are invalid: missing={missing}, extra={extra}"
         )
+    _validate_projection({field: raw[field] for field in PROJECTION_FIELDS})
     projection = canonical_projection(
         session_id=raw["session_id"],
         turn_id=raw["turn_id"],
@@ -252,6 +270,8 @@ def validate_ledger(raw: Any) -> None:
     """Validate the persisted ``response_delivery`` ledger shape."""
     if not isinstance(raw, dict):
         raise DeliveryValueError("response delivery ledger must be an object")
+    if set(raw) != {"schema", "sequence", "records"}:
+        raise DeliveryValueError("response delivery ledger fields are invalid")
     if raw.get("schema") != DELIVERY_SCHEMA:
         raise DeliveryValueError("response delivery ledger schema is invalid")
     sequence = raw.get("sequence")
@@ -261,8 +281,12 @@ def validate_ledger(raw: Any) -> None:
     if not isinstance(records, list) or len(records) > MAX_DELIVERY_RECORDS:
         raise DeliveryValueError("response delivery ledger exceeds its record limit")
     seen_keys: set[str] = set()
+    previous_sequence = 0
     for record in records:
         validate_record(record)
+        if not previous_sequence < record["sequence"] <= sequence:
+            raise DeliveryValueError("delivery record sequence is inconsistent")
+        previous_sequence = record["sequence"]
         projection = {
             field: record[field]
             for field in PROJECTION_FIELDS

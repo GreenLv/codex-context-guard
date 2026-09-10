@@ -146,3 +146,17 @@ command. It is not encryption, a sandbox, or an authorization service.
 Proof protocol 1.0.0 does not interpret arbitrary pixels or establish that a
 source is official; it enforces only the deterministic obligations shown for an
 `enforced` item.
+
+### Release posture during state failure
+
+Version 0.13.1 keeps a private `release-required` latch beside session state.
+It contains only the `release-posture/v1` schema marker, never prompts, targets,
+identities or credentials. A separate `action-profile.json` contains only its
+`action-profile/v1` schema and last verified profile enum. It lets ordinary
+sessions retain their default routing when the main state is unreadable. Saving explicit release mode creates it before the
+state write; a verified exit removes it after the new state is saved. Corrupt
+state cannot remove this marker or silently disable release verification. Both files
+share the session retention and deletion policy and are not exported. This is
+fault recovery for managed state, not protection against arbitrary filesystem
+deletion. PreToolUse reads posture without writing, locking or recovering state
+on the standard and strict paths.

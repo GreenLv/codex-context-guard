@@ -14,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.12.4`. See the [release notes](docs/releases/v0.12.4.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
-> Version `0.13.0` is an unreleased source candidate on `main`: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. It has not been installed or released; see the [changelog](CHANGELOG.md).
+> Version `0.13.1` is an unreleased source candidate: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. Its native acceptance and publication are pending; see the [changelog](CHANGELOG.md).
 >
 > Version `0.12.4` fixes lost task limits, unrelated confirmations clearing pauses, incomplete recovery text, and commit-and-push target mistakes. See the [changelog](CHANGELOG.md) for changes and the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for platform checks.
 
@@ -40,9 +40,9 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them; installed caches are immutable, and 0.13.0 never refreshes a consumed copy.
+Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them; installed caches are immutable, and 0.13.1 never refreshes a consumed copy.
 
-Version 0.13.0 (unreleased source candidate) changes responsibilities: the default guard no longer asks for execution authorization, so after upgrading you should not expect approval prompts for edits, commits, or pushes. Private state migrates from schemas 11, 10, and 9 to schema 12. Pending questions from old sessions without trusted delivery facts show a "historical answer-delivery uncertain" note instead of being mechanically re-asked, and old natural-language authorization records are preserved as history that never blocks anything. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
+Version 0.13.1 (unreleased source candidate) changes responsibilities: the default guard no longer asks for execution authorization, so it no longer prompts you to approve edits, commits, or pushes. Codex and repository approval rules still apply. Private state migrates from schemas 11, 10, and 9 to schema 12. Pending questions from old sessions without trusted delivery facts show a "historical answer-delivery uncertain" note instead of being mechanically re-asked, and old natural-language authorization records are preserved as history that never blocks anything. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); detailed behavior and remaining host-dependent checks are in the [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md).
 
@@ -70,7 +70,7 @@ For a recovery check, use it on a non-trivial synthetic task, run `/compact`, an
 - Successful tool evidence must match the named file, URL, image, or other requested result before it can close an item.
 - A delivered answer is not a completed task. A natural answer actually delivered to a pure question closes that item as `answered` and never replays after compaction; an execution obligation always needs evidence; an unknown delivery state is never presented as completion.
 - Images and other multimodal inputs keep only hashes and bounded metadata. When the user asks for an image change, completion evidence can be tied to an inspection of the changed image rather than merely to a successful tool call.
-- Ambiguous output remains `unknown`; damaged or unverifiable private state fails closed.
+- Ambiguous output remains `unknown`; damaged or unverifiable private state blocks completion verification.
 - Exports are explicit and redacted. Image bytes, credentials, and raw transcript content are not copied into the requirement ledger.
 
 Automatic checks are used only when the request names a concrete target, such as a file, URL, edited image, or complete object list. If Context Guard cannot verify a result exactly, it leaves the item open instead of guessing. Waiting for the user, an external result, or a later turn does not close unfinished requirements.
@@ -101,7 +101,7 @@ Context Guard's checks follow the active protection level. Skills, repository in
 | **Release** | Only an explicitly adopted release execution contract or an explicit `context-guard release` declaration | Standard, plus candidate-closure, publication-readiness, and exact one-shot tickets for covered tier-A identity actions (tags, registry publish/yank, GitHub Releases). Having a tag or release authorized never follows automatically from anything else. |
 | **Observe** | Maintainer or canary configuration | Records bounded what-it-would-have-done results, without blocking anything. |
 
-Everything else stays open by design: local edits, tests, ordinary commits, reads, searches, and dry-runs do not need authorization, and turning the guard `off` stops all gating while prompt journaling continues. When a normal action is allowed, nothing appears on screen; when an action is refused — a release-contract ticket failure or an integrity failure — you get one short actionable reason.
+Everything else stays open by design: local edits, tests, ordinary commits, reads, searches, and dry-runs need no additional Context Guard approval, and turning the guard `off` stops all gating while prompt journaling continues. When a normal action is allowed, nothing appears on screen; when an action is refused — a release-contract ticket failure or an integrity failure — you get one short actionable reason.
 
 ## How it works
 

@@ -8,7 +8,7 @@ release advances the same model with enforcement profiles, an
 explicit work-unit lifecycle (schema 10), Stop protocol 3.0.0, and silent
 success paths. Sections marked *0.12 release* describe behavior introduced in
 0.12.0; unmarked sections describe the published releases that preceded it.
-The unreleased `0.13.0` candidate (schema 12, Stop protocol 4.0.0,
+The unreleased `0.13.1` candidate (schema 12, Stop protocol 4.0.0,
 Execution and Work-unit protocols 3.0.0) moves execution-approval
 responsibility out of the default path; sections marked *0.13 candidate*
 describe that candidate.
@@ -70,7 +70,7 @@ editable plan.
 
 ## Enforcement profiles (0.12 release)
 
-The profiles were introduced in 0.12.0; the unreleased 0.13.0 candidate
+The profiles were introduced in 0.12.0; the unreleased 0.13.1 candidate
 changes what the default profiles enforce, and the rows below state the
 current candidate behavior.
 
@@ -80,7 +80,7 @@ suggest a profile but never enable one implicitly.
 
 | Profile | How it becomes active | What it enforces | What it does not do |
 | --- | --- | --- | --- |
-| `standard` (default) | Skill selected normally or `context-guard on` | recovery, task-state continuity, current-work-unit completion truthfulness, and answer-delivery tracking; ordinary tool calls allow silently with no state I/O | no execution approvals and no repeated authorization asks; no release readiness, candidate closure, or ticket requirements |
+| `standard` (default) | Skill selected normally or `context-guard on` | recovery, task-state continuity, current-work-unit completion truthfulness, and answer-delivery tracking; ordinary tool calls allow silently with no state writes, locks, recovery or Git subprocesses | no execution approvals and no repeated authorization asks; no release readiness, candidate closure, or ticket requirements |
 | `strict` | the user explicitly asks for strict evidence protection | `standard` plus enforced proofs for the current work unit | never implies the release profile or any Git gating |
 | `release` | the user explicitly adopts a repository-release execution contract or makes an explicit `context-guard release` declaration | `standard` plus candidate-closure, publication-readiness, and one-shot `action-ticket/v1` facts through the versioned release adapter | never treats a tag, Release, or package publish as authorized by itself |
 | `observe` | maintainer or canary configuration | computes the identical would-be decision and records bounded diagnostics | never blocks; not for real high-risk publication |
@@ -232,7 +232,7 @@ plan mirror remains read-only.
 1. a stateless router fast path (`cg_hook.py`) classifies the candidate call;
 2. only a candidate-heavy envelope reaches the heavy core, which resolves the
    active enforcement profile;
-3. `standard` and `strict` candidates allow silently with no state I/O.
+3. `standard` and `strict` candidates allow silently with no state writes, locks, recovery or Git subprocesses.
    Ordinary edits, commits, pushes, tags, and publications are no longer
    gated, no edit-provenance chain is rebuilt before committing, and no
    natural-language authorization prompt is issued;
@@ -308,7 +308,7 @@ assistant response.
 
 ### Stop protocol 4.0.0 delivery semantics (0.13 candidate)
 
-The unreleased 0.13.0 candidate advances this line to Stop protocol 4.0.0
+The unreleased 0.13.1 candidate advances this line to Stop protocol 4.0.0
 and splits delivery from acceptance. When the trusted final reply verifiably
 answers a pure question, Stop records a bounded `response-delivery/v1`
 record (owned by `scripts/cg_delivery.py`: session/turn ids, root work-unit
@@ -463,7 +463,7 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | Event | Purpose | Visible context |
 | --- | --- | --- |
 | `UserPromptSubmit` | journal prompt, classify authority, capture prompt assets, and update requirements/contracts/revisions | activation/status and bounded completion instructions |
-| `PreToolUse` | route candidates on the stateless fast path; standard and strict allow silently with no state I/O; the release profile enforces exact tier-A tickets and observe records | one bounded deny reason (release tickets or integrity failures); an allow returns no text |
+| `PreToolUse` | route candidates on the stateless fast path; standard and strict allow silently with no state writes, locks, recovery or Git subprocesses; the release profile enforces exact tier-A tickets and observe records | one bounded deny reason (release tickets or integrity failures); an allow returns no text |
 | `PostToolUse` | record bounded evidence/assets/capabilities, observe successful `update_plan`, and authoritatively stage a verified private control request | none — success paths return the empty object |
 | `PreCompact` | validate state and write recovery snapshot | continue/fail-closed result |
 | `SessionStart` | restore bounded context on compact/resume | recovery packet |
@@ -620,7 +620,7 @@ surfaces.
 
 ### Candidate commit scope and target facts (0.12.4)
 
-This section describes the published 0.12.4 runtime. The unreleased 0.13.0
+This section describes the published 0.12.4 runtime. The unreleased 0.13.1
 candidate removes the edit-provenance chain and push-binding gates from the
 default path; the records and helpers described here survive only as
 schema-11 migration and validator inputs.
@@ -648,3 +648,20 @@ Git plumbing uses NUL delimiters and strict reversible UTF-8. Input separator
 mapping must resolve uniquely; pathspecs, parent symlink escapes and unsupported
 path bytes fail closed. Native Windows filesystem behavior remains a separate
 gate from synthetic parser coverage.
+
+### Read-only action routing in 0.13.1
+
+Before a candidate tool call, the core reads the last verified profile without
+locking, migrating or repairing the main state. A separate release latch is
+written before release state; after a verified exit, the new profile is saved
+and the latch is removed last. A damaged main state therefore cannot turn a
+known release session into a default session. Existing sessions without these
+markers use intact legacy state; if their posture cannot be established,
+recognizable publication actions fail closed while ordinary edits and commits
+remain available. These files are managed private recovery data, not a security
+boundary against arbitrary deletion.
+
+Delivery association requires an explicit current root turn. Delayed or
+unbound Stop replies, child replies and malformed/conflicting reply sources
+remain unknown. A delivered promise or reply with explicit remaining work
+retains pending questions; delivery alone never supplies execution evidence.

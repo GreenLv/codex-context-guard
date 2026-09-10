@@ -263,6 +263,12 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.13.1` is the unreleased successor to the consumed, unpublished 0.13.0
+  candidate. It strictly validates delivery identities and canonical records,
+  avoids default PreToolUse state writes and locks, and preserves explicit
+  release posture through unreadable state with a content-free private latch.
+  The nine Hook events and protocol versions introduced in 0.13.0 are unchanged.
+  The 0.13.0 installed cache stays immutable; it was not tagged or published.
 - `0.13.0` is an unreleased source candidate that moves responsibilities out
   of the default path. Standard and strict no longer execute business gates:
   ordinary edits, commits, pushes, tags, and publications are allowed silently

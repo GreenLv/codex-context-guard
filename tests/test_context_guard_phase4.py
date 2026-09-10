@@ -581,10 +581,13 @@ class ProfileLadderTests(Phase4Harness):
         )
 
     def test_runner_envelope_fails_open_with_diagnostic(self) -> None:
-        """The runner envelope is the ONLY ambiguity that reaches the heavy
-        core; standard profile fails open with a classifier_ambiguous
-        diagnostic recorded against usable state."""
+        """Default runner calls stay silent; observe retains diagnostics."""
         self.activate()
+        permission, _ = self.decision("xargs git push origin main")
+        self.assertEqual(permission, "allow")
+        self.assertFalse([entry for entry in self.state()["decision_log"]
+                          if entry.get("outcome") == "classifier_ambiguous"])
+        self.dispatch("UserPromptSubmit", prompt="context-guard observe")
         permission, _ = self.decision("xargs git push origin main")
         self.assertEqual(permission, "allow")
         entries = [
@@ -2862,6 +2865,8 @@ class GithubReleaseTargetBindingTests(Phase4Harness):
             "GH_HOST=github.com gh release create v1.2.3"
         )
         self.assertEqual(default_host["repository"], "github:greenlv/demo")
+        _requested, implicit_repo = self.concrete_target("gh release create v1.2.3")
+        self.assertEqual(implicit_repo["repository"], "github:greenlv/demo")
         for command, repo in (
             ("GH_REPO=o/r gh release create v1.2.3", "github:o/r"),
             ("env GH_REPO=o/r gh release create v1.2.3", "github:o/r"),
@@ -2879,8 +2884,7 @@ class GithubReleaseTargetBindingTests(Phase4Harness):
         _requested, enterprise = self.concrete_target(
             "GH_HOST=enterprise.example gh release create v1.2.3"
         )
-        self.assertIn("enterprise.example", enterprise["repository"])
-        self.assertNotEqual(enterprise["repository"], "github:greenlv/demo")
+        self.assertEqual(enterprise["repository"], "github:enterprise.example/greenlv/demo")
         self.release_denies("GH_HOST=enterprise.example gh release create v1.2.3")
 
 

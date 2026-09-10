@@ -41,6 +41,34 @@ delivery = _load("cg_delivery_module", ROOT / "scripts" / "cg_delivery.py")
 class CanonicalVectorTests(unittest.TestCase):
     """Frozen response-delivery/v1 canonicalization vectors (plan 4.5)."""
 
+    def test_persisted_identity_must_be_strict_and_canonical(self) -> None:
+        inputs = dict(session_id="s", turn_id="t", work_unit_id="WU1",
+                      requirement_ids=["R001", "R002"], source="stop_final_reply",
+                      reply_sha256="a" * 64, delivery="delivered")
+        for field in ("session_id", "turn_id", "work_unit_id"):
+            for value in (True, 1, 1.5, [], {}, "\ud800"):
+                with self.subTest(field=field, value=repr(value)):
+                    with self.assertRaises(delivery.DeliveryValueError):
+                        delivery.canonical_projection(**{**inputs, field: value})
+        projection = delivery.canonical_projection(**inputs)
+        record = delivery.build_record(projection, resolution="open", sequence=1,
+                                       recorded_at="2026-09-10T00:00:00Z")
+        for field, value in (("version", "wrong"), ("session_id", True),
+                             ("requirement_ids", ["R002", "R001"]),
+                             ("requirement_ids", ["R001", "R001", "R002"])):
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(delivery.DeliveryValueError):
+                    delivery.validate_record({**record, field: value})
+        for ids in (["\ud800"], ["R" * 201], ["R\n1"]):
+            with self.assertRaises(delivery.DeliveryValueError):
+                delivery.canonical_projection(**{**inputs, "requirement_ids": ids})
+        for ledger in (
+            {"schema": delivery.DELIVERY_SCHEMA, "sequence": 0, "records": [record]},
+            {"schema": delivery.DELIVERY_SCHEMA, "sequence": 1, "records": [record], "extra": True},
+        ):
+            with self.assertRaises(delivery.DeliveryValueError):
+                delivery.validate_ledger(ledger)
+
     def test_known_digest_vector_is_stable(self) -> None:
         projection = delivery.canonical_projection(
             session_id="session-A",
@@ -178,6 +206,41 @@ class QuestionAnswerLifecycleTests(DeliveryLifecycleHarness):
     QUESTION_A = "Context Guard 是这个插件的名称吗？"
     ANSWER_A = "是的，Context Guard 是这个插件的名称。"
     QUESTION_B = "这个插件的恢复包里有什么内容？"
+
+    def test_delayed_or_unbound_stop_cannot_answer_a_new_question(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt=self.QUESTION_A, turn="t1"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt=self.QUESTION_B, turn="t2"))
+        for turn in ("t1", None):
+            self.cg.dispatch(self.payload("Stop", turn=turn, last_assistant_message=self.ANSWER_A))
+            current = [item for item in self.state()["requirements"] if item["text"] == self.QUESTION_B]
+            self.assertEqual(current[0]["status"], "pending")
+            record = self.ledger()["records"][-1]
+            self.assertEqual(record["delivery"], "delivery_unknown")
+            self.assertEqual(record["requirement_ids"], [])
+        self.cg.dispatch(self.payload("Stop", turn="t2", last_assistant_message="恢复包包含需求和验收条件。"))
+        current = [item for item in self.state()["requirements"] if item["text"] == self.QUESTION_B]
+        self.assertEqual(current[0]["status"], "answered")
+
+    def test_subagent_and_malformed_reply_sources_remain_unknown(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt=self.QUESTION_A, turn="t1"))
+        for extra in ({"agent_id": "child-1"}, {"response": 7},
+                      {"response": "different reply"}):
+            self.cg.dispatch(self.payload("Stop", turn="t1",
+                last_assistant_message=self.ANSWER_A, **extra))
+            question = next(i for i in self.state()["requirements"] if i["text"] == self.QUESTION_A)
+            self.assertEqual(question["status"], "pending")
+            self.assertEqual(self.ledger()["records"][-1]["delivery"], "delivery_unknown")
+
+    def test_promise_or_explicit_remaining_answer_does_not_close_question(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt=self.QUESTION_A, turn="t1"))
+        for reply in ("我会继续核实这个问题。", "是的，但仍需核实后半部分。"):
+            self.cg.dispatch(self.payload("Stop", turn="t1", last_assistant_message=reply))
+            question = next(i for i in self.state()["requirements"] if i["text"] == self.QUESTION_A)
+            self.assertEqual(question["status"], "pending")
+            self.assertEqual(self.ledger()["records"][-1]["delivery"], "delivered")
 
     def test_delivered_answer_closes_question_and_survives_compaction(self) -> None:
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
