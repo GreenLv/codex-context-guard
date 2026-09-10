@@ -173,8 +173,12 @@ runtime never falls back to “the previous requirement” when the target is
 ambiguous. A generic correction word embedded in an operational noun phrase is
 not a supersession act: Chinese `修正` is considered a correction verb only
 when a requirement-like target appears before or after the correction verb;
-an explicit correction with no unique target remains a fail-closed
-clarification.
+an explicit correction with no unique target leaves the old records intact.
+In 0.13.2, this unresolved mechanical association does not force the executing
+agent to re-confirm clear user authorization. The agent follows the latest
+explicit instructions and asks only when the conversation leaves the intended
+change unclear. Suggested old targets exclude the current instruction and
+terminal items; no unknown target is silently superseded.
 
 ### L2: bounded work state and evidence
 

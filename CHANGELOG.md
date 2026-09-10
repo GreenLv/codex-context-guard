@@ -24,7 +24,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-Version 0.13.2 is an unreleased source candidate. Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 errors and 11 capability skips, plus repository/privacy checks, baseline transition audit, self-test, Ruff and compilation. Fresh installation and native acceptance are pending. Earlier 0.13.1 source and macOS portable results retain their original identities. Its native run exposed an answered question retained in recovery when an unrelated wait existed; this candidate separates question closure from inherited waits. CI and publication remain pending.
+Version 0.13.2 is an unreleased source candidate. Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 errors and 11 capability skips, plus repository/privacy checks, baseline transition audit, self-test, Ruff and compilation. Exact-commit macOS portable installation, strict second no-op, runtime parity and installed smoke pass at `9039fa7`; native acceptance remains pending. Earlier 0.13.1 source and macOS portable results retain their original identities. Its native run exposed an answered question retained in recovery when an unrelated wait existed; this candidate separates question closure from inherited waits. CI and publication remain pending.
 
 ## 0.12.4 - 2026-09-09
 

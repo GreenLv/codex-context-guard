@@ -58,8 +58,9 @@ The mode profile values are unchanged on the wire (`standard`, `strict`,
 profiles enforce. Candidate protocol identities are: schema 12, Stop protocol
 4.0.0, Execution protocol 3.0.0, Work-unit protocol 3.0.0, Proof protocol
 1.0.0, classifier 3.3.0, and the new `response-delivery/v1` dimension. The 0.13.2 source suite passes on macOS: 1,076 tests, 0 failures, 0 errors
-and 11 capability skips. Fresh portable installation and native acceptance
-are pending.
+and 11 capability skips. Exact-commit macOS portable installation, strict
+no-op, runtime parity and installed smoke pass at `9039fa7`. Native-host
+acceptance and Windows portable validation remain pending.
 The 0.13.1 source and macOS portable results retain that version and commit;
 they do not establish acceptance for changed runtime bytes. CI and publication
 remain pending.

@@ -8,8 +8,13 @@ Context Guard. The current release is `0.12.4`. Release history includes `0.12.4
 
 Source checks pass on macOS with Python 3.12.2: 1,076 tests across 35 modules,
 0 failures, 0 errors and 11 capability skips, repository/privacy checks,
-baseline transition audit, self-test, Ruff and compilation. Fresh installed
-runtime and native-host acceptance remain pending. A synthetic
+baseline transition audit, self-test, Ruff and compilation. The macOS portable
+entrypoint passes all five gates and cleanup on exact commit
+`9039fa71089a5426a2fcc2838facc8e00887dd92`, with runtime-tree SHA-256
+`b9c4dc41348fad7ef3baee626e18512db5c7db9177e3878c1c696b13420fa444` and
+result SHA-256
+`d5b99a1b1f627abf5c3f72333dfa561caefa73697b45237ee477e9ea16faabb3`.
+Native-host acceptance remains pending. A synthetic
 regression independently reproduces the 0.13.1 native finding: a delivered
 pure question stayed pending because an existing wait supplied Stop actions.
 The repair closes only the question; inherited waits and execution duties
