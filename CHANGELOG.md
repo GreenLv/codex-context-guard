@@ -23,7 +23,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-Version 0.13.1 is an unreleased source candidate. Source validation on macOS (Python 3.12) passes: 1,074 current-behavior tests with 0 failures, 0 errors and 11 capability skips, repository/privacy checks, the frozen-baseline transition audit, self-test, Ruff and compilation. Isolated installation, native macOS and Windows acceptance, CI and publication remain pending. The installed 0.13.0 candidate is preserved unchanged and was never published. Earlier evidence is not relabeled as a 0.13.1 run.
+Version 0.13.1 is an unreleased source candidate. Source validation on macOS (Python 3.12) passes: 1,074 current-behavior tests with 0 failures, 0 errors and 11 capability skips, repository/privacy checks, the frozen-baseline transition audit, self-test, Ruff and compilation. The macOS portable run at `24a81a6` also passes isolated installation, strict second no-op, runtime-tree parity and installed smoke. Fresh trusted-Hook behavior on macOS and Windows, CI and publication remain pending. The installed 0.13.0 candidate is preserved unchanged and was never published. Earlier evidence is not relabeled as a 0.13.1 run.
 
 ## 0.12.4 - 2026-09-09
 

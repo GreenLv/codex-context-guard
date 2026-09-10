@@ -58,8 +58,9 @@ The mode profile values are unchanged on the wire (`standard`, `strict`,
 profiles enforce. Candidate protocol identities are: schema 12, Stop protocol
 4.0.0, Execution protocol 3.0.0, Work-unit protocol 3.0.0, Proof protocol
 1.0.0, classifier 3.3.0, and the new `response-delivery/v1` dimension. Full macOS source checks pass for this repair (1,074 tests, 11 capability skips).
-Native, isolated-install and publication evidence remain pending and are not
-inferred from CI.
+macOS portable installation/no-op/parity/smoke also pass for the runtime bound
+to commit `24a81a6`. Fresh trusted-Hook behavior, Windows acceptance and
+publication remain pending and are not inferred from CI.
 
 ## 0.12.4 release scope
 

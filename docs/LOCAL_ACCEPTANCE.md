@@ -13,8 +13,18 @@ the frozen-baseline transition audit, Hook self-test, Ruff and compilation.
 Five controlled before/after probes fail on 9f265cf and pass on this repair:
 implicit delivery identity coercion, wrong delivery version, delayed reply
 association, default PreToolUse locking, and release failure downgrade.
-Isolated installation, native macOS and Windows runs, CI and publication for
-the repaired candidate remain pending. Prior-version results
+The macOS `portable_runtime` run on exact clean commit
+`24a81a62d9bbe0c0d8ce5d61cbd86d4dea6a4a9e` passes source identity, isolated
+installation, strict second no-op, runtime-tree parity and installed lifecycle
+smoke. Its runtime-tree SHA-256 is
+`4b4725538d4ea9d384e68ab7fdc76da617cda4efa53e745b3898778f7a0e90e0`;
+the redacted result SHA-256 is
+`c844a69adc2a87ac4b5da544778412bccb2629b705e3ba65c078373f10e03fbd`.
+This is macOS portable/install evidence with Python 3.12.2 and Codex 0.153.4,
+not fresh trusted-Hook behavior. macOS/Windows real-host trust, compact/resume,
+T11 host integration, Windows portable acceptance, CI and publication remain
+pending. Subsequent non-packaged documentation edits do not change the bound
+runtime tree. Prior-version results
 below retain their original subjects and are not 0.13.1 acceptance evidence.
 
 ## 0.12.4 release acceptance (2026-09-09)
