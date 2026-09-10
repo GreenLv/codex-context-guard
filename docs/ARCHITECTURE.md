@@ -8,7 +8,7 @@ release advances the same model with enforcement profiles, an
 explicit work-unit lifecycle (schema 10), Stop protocol 3.0.0, and silent
 success paths. Sections marked *0.12 release* describe behavior introduced in
 0.12.0; unmarked sections describe the published releases that preceded it.
-The unreleased `0.13.1` candidate (schema 12, Stop protocol 4.0.0,
+The unreleased `0.13.2` candidate (schema 12, Stop protocol 4.0.0,
 Execution and Work-unit protocols 3.0.0) moves execution-approval
 responsibility out of the default path; sections marked *0.13 candidate*
 describe that candidate.
@@ -70,7 +70,7 @@ editable plan.
 
 ## Enforcement profiles (0.12 release)
 
-The profiles were introduced in 0.12.0; the unreleased 0.13.1 candidate
+The profiles were introduced in 0.12.0; the unreleased 0.13.2 candidate
 changes what the default profiles enforce, and the rows below state the
 current candidate behavior.
 
@@ -308,7 +308,7 @@ assistant response.
 
 ### Stop protocol 4.0.0 delivery semantics (0.13 candidate)
 
-The unreleased 0.13.1 candidate advances this line to Stop protocol 4.0.0
+The unreleased 0.13.2 candidate advances this line to Stop protocol 4.0.0
 and splits delivery from acceptance. When the trusted final reply verifiably
 answers a pure question, Stop records a bounded `response-delivery/v1`
 record (owned by `scripts/cg_delivery.py`: session/turn ids, root work-unit
@@ -620,7 +620,7 @@ surfaces.
 
 ### Candidate commit scope and target facts (0.12.4)
 
-This section describes the published 0.12.4 runtime. The unreleased 0.13.1
+This section describes the published 0.12.4 runtime. The unreleased 0.13.2
 candidate removes the edit-provenance chain and push-binding gates from the
 default path; the records and helpers described here survive only as
 schema-11 migration and validator inputs.
@@ -649,7 +649,7 @@ mapping must resolve uniquely; pathspecs, parent symlink escapes and unsupported
 path bytes fail closed. Native Windows filesystem behavior remains a separate
 gate from synthetic parser coverage.
 
-### Read-only action routing in 0.13.1
+### Read-only action routing in 0.13.2
 
 Before a candidate tool call, the core reads the last verified profile without
 locking, migrating or repairing the main state. A separate release latch is

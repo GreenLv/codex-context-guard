@@ -4,6 +4,18 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.12.4`. Release history includes `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.2 candidate status (unreleased)
+
+Source checks pass on macOS with Python 3.12.2: 1,076 tests across 35 modules,
+0 failures, 0 errors and 11 capability skips, repository/privacy checks,
+baseline transition audit, self-test, Ruff and compilation. Fresh installed
+runtime and native-host acceptance remain pending. A synthetic
+regression independently reproduces the 0.13.1 native finding: a delivered
+pure question stayed pending because an existing wait supplied Stop actions.
+The repair closes only the question; inherited waits and execution duties
+remain open. The regression also preserves promises and explicit unfinished
+answers as pending. Real repeated questioning was not observed.
+
 ## 0.13.1 candidate status (unreleased)
 
 Version 0.13.1 is an unreleased source candidate that repairs the consumed,

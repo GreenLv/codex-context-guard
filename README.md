@@ -14,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.12.4`. See the [release notes](docs/releases/v0.12.4.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
-> Version `0.13.1` is an unreleased source candidate: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. Its native acceptance and publication are pending; see the [changelog](CHANGELOG.md).
+> Version `0.13.2` is an unreleased source candidate: the default Context Guard stops gating ordinary edits, commits, pushes, tags, and publications with its own authorization prompts, and keeps only requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity. Its native acceptance and publication are pending; see the [changelog](CHANGELOG.md).
 >
 > Version `0.12.4` fixes lost task limits, unrelated confirmations clearing pauses, incomplete recovery text, and commit-and-push target mistakes. See the [changelog](CHANGELOG.md) for changes and the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for platform checks.
 
@@ -40,9 +40,9 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them; installed caches are immutable, and 0.13.1 never refreshes a consumed copy.
+Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them; installed caches are immutable, and 0.13.2 never refreshes a consumed copy.
 
-Version 0.13.1 (unreleased source candidate) changes responsibilities: the default guard no longer asks for execution authorization, so it no longer prompts you to approve edits, commits, or pushes. Codex and repository approval rules still apply. Private state migrates from schemas 11, 10, and 9 to schema 12. Pending questions from old sessions without trusted delivery facts show a "historical answer-delivery uncertain" note instead of being mechanically re-asked, and old natural-language authorization records are preserved as history that never blocks anything. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
+Version 0.13.2 (unreleased source candidate) changes responsibilities: the default guard no longer asks for execution authorization, so it no longer prompts you to approve edits, commits, or pushes. Codex and repository approval rules still apply. Private state migrates from schemas 11, 10, and 9 to schema 12. Pending questions from old sessions without trusted delivery facts show a "historical answer-delivery uncertain" note instead of being mechanically re-asked, and old natural-language authorization records are preserved as history that never blocks anything. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); detailed behavior and remaining host-dependent checks are in the [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md).
 

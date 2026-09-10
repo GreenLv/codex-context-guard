@@ -263,6 +263,14 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.13.2` repairs answered-question recovery when unrelated waits remain.
+  It evaluates answer closure from the current reply while keeping inherited
+  waits and execution obligations open. Unresolved supersession hints retain
+  history but defer conversational clarification to the executing agent; they
+  do not force re-confirmation of clear authorization. Protocols and schema
+  are unchanged.
+  Both 0.13.0 and 0.13.1 were consumed without publication; their caches stay
+  immutable. This successor remains an unreleased source candidate.
 - `0.13.1` is the unreleased successor to the consumed, unpublished 0.13.0
   candidate. It strictly validates delivery identities and canonical records,
   avoids default PreToolUse state writes and locks, and preserves explicit

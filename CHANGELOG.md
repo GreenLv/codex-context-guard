@@ -4,7 +4,7 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.12.4` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.13.1 - Unreleased
+## 0.13.2 - Unreleased
 
 ### Highlights
 
@@ -15,7 +15,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Changes
 
-- This candidate folds in the consumed, unpublished 0.13.0 implementation. Its installed cache remains unchanged. Start a fresh task after upgrading to load 0.13.1.
+- An unresolved mechanical requirement replacement no longer forces confirmation of a clear user authorization. The executing agent follows the current conversation and asks only about real ambiguity; prior requirements are preserved, and the current instruction and answered questions are excluded from suggested old targets.
+- This candidate folds in the consumed, unpublished 0.13.0 and 0.13.1 implementations. Their installed caches remain unchanged. Start a fresh task after upgrading to load 0.13.2.
 - Standard and strict PreToolUse routes read mode metadata without state writes, locks, recovery or Git subprocesses. Observe records diagnostics; release verification activates only through an adopted release contract or explicit `context-guard release`, never merely from a file or selected Skill.
 - Delivery records use bounded string identities, canonical requirement associations and domain-separated SHA-256 digests. A record from a different turn cannot answer the current prompt; unknown delivery never supplies completion evidence. Reply text is not copied into this ledger.
 - GitHub Enterprise release targets keep the separator between hostname and repository. A release command without `--repo` uses a verified GitHub origin when available; an unresolved target does not establish release readiness.
@@ -23,7 +24,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-Version 0.13.1 is an unreleased source candidate. Source validation on macOS (Python 3.12) passes: 1,074 current-behavior tests with 0 failures, 0 errors and 11 capability skips, repository/privacy checks, the frozen-baseline transition audit, self-test, Ruff and compilation. The macOS portable run at `24a81a6` also passes isolated installation, strict second no-op, runtime-tree parity and installed smoke. Fresh trusted-Hook behavior on macOS and Windows, CI and publication remain pending. The installed 0.13.0 candidate is preserved unchanged and was never published. Earlier evidence is not relabeled as a 0.13.1 run.
+Version 0.13.2 is an unreleased source candidate. Source validation on macOS passes: 1,076 current-behavior tests, 0 failures, 0 errors and 11 capability skips, plus repository/privacy checks, baseline transition audit, self-test, Ruff and compilation. Fresh installation and native acceptance are pending. Earlier 0.13.1 source and macOS portable results retain their original identities. Its native run exposed an answered question retained in recovery when an unrelated wait existed; this candidate separates question closure from inherited waits. CI and publication remain pending.
 
 ## 0.12.4 - 2026-09-09
 

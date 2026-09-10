@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.1"
+PRODUCT_VERSION = "0.13.2"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -11832,12 +11832,17 @@ def handle_user_prompt(
                 candidates = [
                     bounded(str(item.get("text", "")), 32)
                     for item in state["requirements"]
-                    if item.get("status") != "superseded"
+                    if item.get("id") != requirement_id
+                    and item.get("status") not in TERMINAL_ITEM_STATUSES
                 ][-3:]
                 context += (
                     " Supersession target is ambiguous; prior requirements"
-                    " remain active. Ask the root user which existing"
-                    " requirement should be replaced: "
+                    " remain recorded without an automatic replacement."
+                    " Follow the latest explicit user instructions; do not"
+                    " re-confirm a clear authorization because this mechanical"
+                    " association is unresolved. Ask for clarification only"
+                    " if the intended change is unclear from the conversation."
+                    " Prior unresolved requirements: "
                     + " | ".join(f"“{candidate}”" for candidate in candidates)
                     + ". Do not demand internal IDs as the answer format."
                 )
@@ -13354,11 +13359,18 @@ def handle_stop(
             if delivery_mod.idempotency_key(prior) == key:
                 # Same-event replay: no state growth, no closure rerun.
                 return
+        # Existing work-unit waits still govern overall completion, but are
+        # not claims that this turn's answer remains unfinished. Inspect the
+        # reply itself so inherited waits neither veto an answer nor mask an
+        # explicit promise/non-completion statement in it.
+        reply_observation = classify_stop_decision(
+            text, authoritative_prompt, prompt_integrity=prompt_integrity
+        )
         answer_can_close = (
             status == "delivered"
-            and not observed.get("actions")
+            and not reply_observation.get("actions")
             and "explicit_non_completion_without_actionable_detail"
-            not in observed.get("reason_codes", [])
+            not in reply_observation.get("reason_codes", [])
         )
         if answer_can_close:
             for item in state.get("requirements", []):

@@ -207,6 +207,50 @@ class QuestionAnswerLifecycleTests(DeliveryLifecycleHarness):
     ANSWER_A = "是的，Context Guard 是这个插件的名称。"
     QUESTION_B = "这个插件的恢复包里有什么内容？"
 
+    def test_scope_update_does_not_force_reauthorization_or_offer_self(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", turn="t0",
+            prompt="暂时不要提交或推送。稍后收到代号再创建待办文件。"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", turn="t1", prompt=self.QUESTION_A))
+        self.cg.dispatch(self.payload("Stop", turn="t1", last_assistant_message=self.ANSWER_A))
+        self.cg.dispatch(self.payload("UserPromptSubmit", turn="t2",
+            prompt="现在只列出尚未完成事项，不改文件。"))
+        result = self.cg.dispatch(self.payload("UserPromptSubmit", turn="t3", prompt=
+            "更新操作范围：允许一次本地提交，以及只向临时本机 bare remote 的 main 做一次普通推送；"
+            "这替代此前对应的提交和推送禁令。请更新 sample.txt、提交并推送；其他限制继续有效。"))
+        context = json.dumps(result, ensure_ascii=False)
+        self.assertNotIn("Ask the root user which existing", context)
+        self.assertNotIn("“更新操作范围", context)
+        self.assertNotIn("“" + self.QUESTION_A, context)
+        state = self.state()
+        self.assertEqual(state["requirements"][0]["status"], "pending")
+        self.assertEqual(state["supersedes"], [])
+
+    def test_answer_with_inherited_wait_closes_only_question(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", turn="t0", prompt=
+            "请修复恢复模块。在我确认模型更换完成前，本任务保持等待。必须运行测试验证。不要推送。"))
+        self.cg.dispatch(self.payload("Stop", turn="t0", last_assistant_message="已按要求暂停等待确认。"))
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt=self.QUESTION_A, turn="t1"))
+        before = self.state()
+        self.assertTrue(self.cg.current_scope_projection(before)["waiting_conditions"])
+        for reply in ("我会继续核实这个问题。", "仍未完成。", "是的，但仍需核实后半部分。"):
+            self.cg.dispatch(self.payload("Stop", turn="t1", last_assistant_message=reply))
+            question = next(i for i in self.state()["requirements"] if i["text"] == self.QUESTION_A)
+            self.assertEqual(question["status"], "pending")
+        self.assertEqual(self.cg.dispatch(self.payload("Stop", turn="t1",
+            last_assistant_message=self.ANSWER_A)), {})
+        after = self.state()
+        question = next(i for i in after["requirements"] if i["text"] == self.QUESTION_A)
+        self.assertEqual(question["status"], "answered")
+        self.assertEqual(after["wait_conditions"], before["wait_conditions"])
+        self.assertEqual(after["requirements"][0]["status"], "pending")
+        self.assertNotEqual(self.ledger()["records"][-1]["resolution"], "verified")
+        self.cg.dispatch(self.payload("PreCompact", turn="t1"))
+        packet = json.dumps(self.cg.dispatch(self.payload("SessionStart", source="compact", turn="t1")), ensure_ascii=False)
+        self.assertNotIn(self.QUESTION_A, packet)
+        self.assertIn("修复恢复模块", packet)
+
     def test_delayed_or_unbound_stop_cannot_answer_a_new_question(self) -> None:
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt=self.QUESTION_A, turn="t1"))
