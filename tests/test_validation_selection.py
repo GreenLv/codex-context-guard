@@ -99,6 +99,11 @@ class ValidationSelectionTests(unittest.TestCase):
         self.assertTrue(runner_plan["full_required"])
         self.assertEqual(runner_plan["gates"], ["full_candidate"])
 
+    def test_uv_lock_requires_full_candidate(self) -> None:
+        plan = self.classify("uv.lock")
+        self.assertTrue(plan["full_required"])
+        self.assertEqual(plan["gates"], ["full_candidate"])
+
     def test_overlapping_rules_are_additive(self) -> None:
         plan = self.classify("docs/SEMANTIC_COMPATIBILITY.md")
         self.assertEqual(plan["gates"], ["contract_tests", "docs_contract", "focused_tests"])

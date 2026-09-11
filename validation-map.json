@@ -96,7 +96,7 @@
     },
     {
       "id": "validation_infrastructure",
-      "paths": [".github/**", "scripts/check_phase3_transition.py", "scripts/run_current_behavior_suite.py", "tools/validation/**", "tests/test_public_contract.py", "tests/test_required_jobs.py", "tests/test_selected_validation.py", "tests/test_validation_selection.py", "validation-map.json"],
+      "paths": [".github/**", "scripts/check_phase3_transition.py", "scripts/run_current_behavior_suite.py", "tools/validation/**", "tests/test_public_contract.py", "tests/test_required_jobs.py", "tests/test_selected_validation.py", "tests/test_validation_selection.py", "uv.lock", "validation-map.json"],
       "gates": ["full_candidate"],
       "invalidates": ["candidate_matrix"],
       "contracts": [],
