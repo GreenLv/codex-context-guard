@@ -180,16 +180,12 @@ class PublicContractTests(unittest.TestCase):
             (root / "note.md").write_text("token abc123x\n", encoding="utf-8")
             self.assertEqual(audit.findings(root, ["abc123"]), ["note.md: forbidden private literal"])
 
-    def test_hol_badge_links_to_canonical_listing(self) -> None:
+    def test_readmes_omit_stale_hol_registry_badge(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
-        badge = (
-            "[![HOL Guard](https://img.shields.io/endpoint?url="
-            "https%3A%2F%2Fhol.org%2Fapi%2Fregistry%2Fbadges%2Fplugin%3Fslug%3D"
-            "gerui-lv%252Fcontext-guard%26metric%3Dtrust)]"
-            "(https://hol.org/registry/plugins/gerui-lv%2Fcontext-guard)"
-        )
-        self.assertIn(badge, english)
-        self.assertNotIn("hol.org/go/guard/", english)
+        chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+        for readme in (english, chinese):
+            self.assertNotIn("[![HOL Guard]", readme)
+            self.assertNotIn("hol.org/go/guard/", readme)
 
     def test_readmes_keep_bilingual_diagram_and_example_parity(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -211,6 +207,9 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 在受保护任务中可能看到什么", chinese)
         self.assertIn("## Who decides what", english)
         self.assertIn("## 谁决定什么", chinese)
+        for readme in (english, chinese):
+            self.assertIn("context-guard standard\\|strict\\|release\\|observe", readme)
+            self.assertIn("context-guard adopt <project-relative-json>", readme)
         for term in ("selected Skills", "Codex Plan", "image", "public-page readbacks"):
             self.assertIn(term, english)
         for term in ("已选择的 Skill", "Codex Plan", "图片", "公开页面"):
@@ -224,11 +223,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.13.2`.",
+            "> Current release: `0.13.3`.",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.13.2`。",
+            "> 当前正式版本：`0.13.3`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -327,10 +326,10 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current release: `0.13.2` (2026-09-10)",
+            "Current release: `0.13.3` (2026-09-11)",
             compatibility,
         )
-        self.assertIn("Published release baseline: `0.13.2`", compatibility)
+        self.assertIn("Published release baseline: `0.13.3`", compatibility)
         self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
         self.assertNotIn(
             "Current published Context Guard release: `0.11.0`", compatibility

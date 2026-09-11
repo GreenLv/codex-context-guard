@@ -10,9 +10,8 @@ review and P4 candidate gates must include this behavior.
 
 ## Baselines
 
-- Current release: `0.13.2` (2026-09-10)
-- Published release baseline: `0.13.2`
-- Current source candidate: `0.13.3` (Unreleased); its runtime implementation passed portable acceptance independently on macOS and Windows, while the validation-tool successor awaits exact-commit portable reruns. Real-host evidence remains under its original 0.13.2 identity.
+- Current release: `0.13.3` (2026-09-11)
+- Published release baseline: `0.13.3`
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -20,13 +19,25 @@ review and P4 candidate gates must include this behavior.
 - Execution protocol: `3.0.0`
 - Diagnostic classifier: `3.3.0` (position-aware PreToolUse)
 - Python: `3.10+`
-- Codex CLI tested for the 0.13.3 portable candidate: `0.153.4` on macOS and `0.150.1` in Windows CI
+- Codex CLI tested for 0.13.3 portable acceptance: `0.153.4` on macOS, `0.149.0` on native Windows, and `0.150.1` in Windows CI
 - Runtime dependencies: Python standard library only
 
 Earlier releases retain their own tested Codex versions. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.
 
-## 0.13.2 release scope
+## 0.13.3 release scope
+
+Version 0.13.3 keeps the 0.13.2 schema, protocols, activation rules and host
+permission boundary. It checks whether an action belongs to release enforcement
+before reading or validating private release state. Ordinary commits and single
+branch pushes therefore remain available when an active release ledger is
+unreadable; tags, package uploads, GitHub Releases, mutation runners and
+restricted compound calls retain fail-closed release checks. Exact commit
+`7e5212e` passed Candidate CI and HOL plus independent portable acceptance on
+macOS and Windows. The 0.13.2 real-host evidence remains under its original
+version identity and is not relabeled as 0.13.3 evidence.
+
+## 0.13.2 baseline scope
 
 Version 0.13.2 changes the published baseline from 0.12.4. Its default-path behavior change is a contract change, not a
 bugfix: the `standard` and `strict` profiles no longer execute

@@ -263,7 +263,7 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
-- `0.13.3` is an unreleased compatible source patch. Release enforcement
+- `0.13.3` is the 2026-09-11 compatible release-scope patch. Release enforcement
   first identifies whether the action belongs to its scope; unreadable release
   state cannot block ordinary commits or single branch pushes. Publication,
   restricted compound calls and mutation runners retain fail-closed checks.

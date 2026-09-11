@@ -2,9 +2,9 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.13.2` 是当前最新发布版本。前一正式版本 `0.12.1` 的 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.13.3` 是当前最新发布版本。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.13.3 - Unreleased
+## 0.13.3 - 2026-09-11
 
 ### Highlights
 
@@ -15,10 +15,11 @@
 ### Changes
 
 - 先判断动作是否属于发布检查范围，再读取或校验私有状态；直接调用和异常回退采用相同边界。状态结构、票据格式、模式启用条件和宿主权限均未改变。
+- 完整复核 0.13.3 中英文 README：在用户控制表补齐保护级别选择与合同采用入口，使维护者验证命令与仓库合同一致，并移除目标页仍展示旧包版本的外部 registry 徽章。CI、HOL scanner、release 和 license 徽章继续有效。
 
 ### Validation
 
-macOS 源码检查已通过，包括 1,079 项 current-behavior 测试和针对旧实现的回归验证。运行时实现已在 Ubuntu、macOS、Windows 的 Python 3.10–3.13 Candidate CI、HOL 以及独立 macOS/Windows portable 检查中通过。随后又把宿主行为验证器的默认版本与插件清单对齐；由于验收工具身份发生变化，最终后继提交仍需精确提交 CI/HOL 和 portable 复跑。0.13.2 的真实宿主结果保留原版本身份，不改标为 0.13.3 证据。当前读者文档冷读已通过；tag、GitHub Release 和公开回读仍待完成。详见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+macOS 源码检查已通过，包括 1,079 项 current-behavior 测试和针对旧实现的回归验证。精确提交 `7e5212e` 已通过 Ubuntu、macOS、Windows 的 Python 3.10–3.13 Candidate CI、必需汇总门、HOL 以及独立 macOS/Windows portable 检查；两个原生平台的五项 portable 门禁与清理均通过。最终文档冻结不改变插件运行时字节，打 tag 前仍须通过自身精确提交 CI 与 HOL，但无需再次运行 portable 验收。0.13.2 的真实宿主结果保留原版本身份，不改标为 0.13.3 证据。读者文档另行通过精确字节冷读；tag、GitHub Release 和公开回读是相互独立的发布门禁。详见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.13.2 - 2026-09-10
 

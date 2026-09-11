@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.2` is the latest release. The preceding `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.3` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.13.3 - Unreleased
+## 0.13.3 - 2026-09-11
 
 ### Highlights
 
@@ -15,10 +15,11 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Changes
 
 - Check whether an action belongs to release enforcement before reading or validating its private state, including direct-handler and error-fallback paths. No state schema, ticket format, profile activation or host permission changes.
+- Refresh the complete bilingual README for 0.13.3: document profile selection and contract adoption in the user-control table, align the maintainer validation commands with the repository contract, and remove an external registry badge whose target still advertises an older package version. The CI, HOL scanner, release and license badges remain live.
 
 ### Validation
 
-Source checks pass on macOS, including 1,079 current-behavior tests and regressions against the previous implementation. The runtime implementation passed Candidate CI on Ubuntu, macOS and Windows with Python 3.10–3.13, HOL, and independent macOS/Windows portable checks. A later correction aligns the host-behavior validator's default version with the plugin manifest; because that changes acceptance-tool identity, the final successor still needs exact-commit CI/HOL and portable reruns before publication. The 0.13.2 real-host results retain their original version identity and are not relabeled as 0.13.3 evidence. The current reader-document cold review passes; tag, GitHub Release and public readback remain pending. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Source checks pass on macOS, including 1,079 current-behavior tests and regressions against the previous implementation. Exact commit `7e5212e` passes Candidate CI on Ubuntu, macOS and Windows with Python 3.10–3.13, the required summary, HOL, and independent macOS/Windows portable checks. All five portable gates and cleanup pass on each native platform. The final documentation-only freeze does not change plugin runtime bytes and must pass its own exact-commit CI and HOL before tagging; it does not require another portable run. The 0.13.2 real-host results retain their original version identity and are not relabeled as 0.13.3 evidence. Reader documentation passes a separate exact-byte cold review; tag, GitHub Release and public readback remain separate publication gates. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.2 - 2026-09-10
 

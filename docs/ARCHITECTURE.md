@@ -86,7 +86,7 @@ suggest a profile but never enable one implicitly.
 | `observe` | maintainer or canary configuration | computes the identical would-be decision and records bounded diagnostics | never blocks; not for real high-risk publication |
 | `off` / inactive | `context-guard off`, or no activation | prompt journaling only | no action or completion gating; corrupt private state cannot deny ordinary tools |
 
-The unreleased 0.13.3 source checks release scope before private-state access
+Version 0.13.3 checks release scope before private-state access
 in dispatch, direct handling and error fallback. Ordinary commits and single
 branch pushes return silently even if an active release ledger is unreadable.
 Publication, mutation runners and restricted compound calls retain their
