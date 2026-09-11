@@ -4,6 +4,23 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.3` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## Unreleased - 0.13.4 source candidate
+
+### Highlights
+
+- Refresh the pinned HOL scanner used by repository validation, and keep its version in the local lockfile and public-repository validator aligned.
+- Add an explicit manual registry-refresh switch that can submit the current scan metadata without filing another catalog PR for the existing listing.
+
+### Changes
+
+- Pin the scanner action to its reviewed immutable `v1.2.664` commit and write the registry payload during scans. A dispatch with `refresh_registry` is the only path that requests HOL resubmission.
+- The Hook schema, protocols, activation rules, and decision behavior are unchanged. This source candidate has not been tagged, released, or accepted as a replacement for 0.13.3.
+
+### Validation
+
+- The local source candidate passes repository validation, public-tree audit, phase-transition audit, Ruff, compilation, the nine-Hook self-test, and the locked 58-package validation closure. An isolated `0.13.4` install, strict second no-op, source/cache parity, and installed lifecycle smoke also pass.
+- The current-behavior suite exercises 1,079 tests: 1,061 pass and 15 are capability-aware skips. Three Windows `commandWindows` Hook tests remain blocked by this host's `Restricted` PowerShell execution policy; that is not native Windows acceptance. HOL ingestion, public metadata readback, tag, and GitHub Release remain separate pending boundaries.
+
 ## 0.13.3 - 2026-09-11
 
 ### Highlights

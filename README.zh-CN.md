@@ -14,6 +14,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > 当前正式版本：`0.13.3`。详见[发布说明](docs/releases/v0.13.3.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 >
+> 源码候选：`0.13.4`（未发布）。它更新 HOL scanner 固定版本和注册表刷新路径，尚未创建 tag 或发布。
+>
 > `0.13.3`：即使已启用的发布账本无法读取，普通提交和单次分支推送仍可继续，发布操作则继续 fail-closed。它是兼容性补丁，不改变 schema、协议、启用条件或宿主权限。
 >
 > `0.13.2` 将普通执行授权移出 Context Guard，只保留需求恢复、任务状态连续、诚实完成核对、答复送达跟踪和私有控制完整性。

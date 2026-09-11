@@ -263,6 +263,11 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
+- `0.13.4` is an unreleased source candidate that aligns the repository's HOL
+  scanner action, validation-tool lock, and explicit registry-refresh path.
+  It keeps the schema, protocols, activation rules, and Hook decision behavior of the
+  published `0.13.3` release. It requires its own source and workflow evidence
+  before any tag, Release, or registry readback can be claimed.
 - `0.13.3` is the 2026-09-11 compatible release-scope patch. Release enforcement
   first identifies whether the action belongs to its scope; unreadable release
   state cannot block ordinary commits or single branch pushes. Publication,

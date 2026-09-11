@@ -2098,11 +2098,18 @@ class RegistryMonorepoTableTests(Phase4Harness):
     def test_publish_tarball_source_must_match_the_bound_source(self) -> None:
         self._metadata("authorized-pkg", "1.0.0")
         _operation, root_target = self.concrete_target("npm publish")
-        _operation, tarball = self.concrete_target("npm publish /tmp/anywhere/pkg-9.9.9.tgz")
-        self.assertEqual(tarball["source"], "/tmp/anywhere/pkg-9.9.9.tgz")
+        tarball_source = "/tmp/anywhere/pkg-9.9.9.tgz"
+        _operation, tarball = self.concrete_target(f"npm publish {tarball_source}")
+        # The mapper canonicalizes a source through the native filesystem.
+        # Keep the identity assertion portable instead of pinning POSIX text
+        # on a Windows-native test run.
+        self.assertEqual(
+            tarball["source"],
+            os.path.abspath(os.path.join(str(self.project), tarball_source)),
+        )
         self.assertNotEqual(tarball["source"], root_target["source"])
         self.activate_release()
-        self.release_denies("npm publish /tmp/anywhere/pkg-9.9.9.tgz")
+        self.release_denies(f"npm publish {tarball_source}")
 
     def test_mcp_registry_methods_do_not_collapse(self) -> None:
         self.activate_release()

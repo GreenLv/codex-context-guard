@@ -4,6 +4,27 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.3`. Release history includes `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.4 source-candidate status (2026-09-11)
+
+This source candidate refreshes the HOL scanner action and its
+locked validation closure, and adds an explicit registry-refresh dispatch path.
+It does not change the published 0.13.3 schema, protocols, activation rules or
+Hook decision behavior.
+
+On this Windows host, repository validation, tracked-tree privacy audit,
+phase-transition audit, Ruff, compilation, the nine-Hook self-test, and the
+locked 58-package validation closure pass. The current-behavior suite covers
+1,079 tests: 1,061 pass, 15 are capability-aware skips, and three fail because
+the local `Restricted` PowerShell execution policy prevents the test harness
+from loading `run-context-guard.ps1`. That native-host restriction is recorded
+as a limitation, not acceptance. It was not bypassed or changed.
+
+A versioned portable run on the exact candidate commit passes source identity,
+isolated installation, strict second no-op, runtime-tree parity, and installed
+lifecycle smoke. Candidate CI, HOL ingestion, registry/public readback, tag,
+GitHub Release, and real trusted-Hook acceptance remain separate pending
+boundaries.
+
 ## 0.13.3 release acceptance (2026-09-11)
 
 The current-behavior suite passes on macOS: 1,079 tests, no failures or errors,

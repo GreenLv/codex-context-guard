@@ -12,6 +12,7 @@ review and P4 candidate gates must include this behavior.
 
 - Current release: `0.13.3` (2026-09-11)
 - Published release baseline: `0.13.3`
+- Current source candidate: `0.13.4` (unreleased; HOL scanner and registry-refresh maintenance only)
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -36,6 +37,23 @@ restricted compound calls retain fail-closed release checks. Exact commit
 `7e5212e` passed Candidate CI and HOL plus independent portable acceptance on
 macOS and Windows. The 0.13.2 real-host evidence remains under its original
 version identity and is not relabeled as 0.13.3 evidence.
+
+## 0.13.4 source-candidate scope
+
+Version 0.13.4 updates repository-maintenance tooling only: the pinned HOL
+scanner action, its locked validation closure, and an explicit manual
+registry-refresh route. It keeps the schema, protocols, activation rules and
+Hook decision behavior of the published 0.13.3 runtime.
+
+On this Windows host, repository validation, public-tree audit, phase-transition
+audit, Ruff, compilation, nine-Hook self-test, the locked 58-package closure,
+and isolated install/no-op/parity/lifecycle checks pass for the source
+candidate. Its 1,079-test current-behavior run has 1,061 passes, 15
+capability skips, and three failures because this host's `Restricted`
+PowerShell policy prevents the test harness from loading `.ps1` Hook commands.
+Those failures are a native-host limitation, not a passing Windows acceptance.
+Candidate CI, HOL, registry ingestion, public readback, tag, and GitHub Release
+remain pending and are not implied by these local results.
 
 ## 0.13.2 baseline scope
 

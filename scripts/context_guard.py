@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.3"
+PRODUCT_VERSION = "0.13.4"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only

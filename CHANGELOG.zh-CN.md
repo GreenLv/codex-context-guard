@@ -4,6 +4,23 @@
 
 以下版本从新到旧排列，未发布候选会明确标注。`0.13.3` 是当前最新发布版本。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 未发布 - 0.13.4 源码候选
+
+### Highlights
+
+- 更新仓库验证使用的 HOL scanner 固定版本，并让本地锁文件与公开仓库验证器保持一致。
+- 增加显式的手动注册表刷新开关，可提交当前扫描元数据，而无需为已有目录条目重复创建 catalog PR。
+
+### Changes
+
+- 将 scanner action 固定到已审查的 `v1.2.664` 不变提交，并在扫描时写出注册表 payload。只有带 `refresh_registry` 的手动触发才会请求 HOL 重新提交。
+- Hook schema、协议、启用规则和决策行为均未改变。该源码候选尚未创建 tag、发布，也不能替代已发布的 0.13.3 验收结论。
+
+### Validation
+
+- 本地源码候选已通过仓库验证、公开树审计、阶段迁移审计、Ruff、编译、九个 Hook 自检和锁定的 58 包验证闭包。隔离的 `0.13.4` 安装、严格的第二次 no-op、源码/缓存一致性和已安装生命周期 smoke 也已通过。
+- 当前行为套件覆盖 1,079 项测试：1,061 项通过，15 项为具备能力边界的跳过。3 个 Windows `commandWindows` Hook 测试仍被本机 `Restricted` PowerShell 执行策略阻断；这不构成原生 Windows 验收。HOL 摄取、公开元数据回读、tag 和 GitHub Release 仍是彼此独立的待办边界。
+
 ## 0.13.3 - 2026-09-11
 
 ### Highlights

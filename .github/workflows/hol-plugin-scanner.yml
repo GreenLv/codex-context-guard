@@ -1,6 +1,13 @@
 name: HOL Plugin Scanner
 
 on:
+  workflow_dispatch:
+    inputs:
+      refresh_registry:
+        description: "Submit the current scan metadata to HOL for registry refresh"
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
@@ -16,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: HOL Plugin Scanner
-        uses: hashgraph-online/ai-plugin-scanner-action@fc91f16ca4e6c0c919e807238f27b329dd828cbe # v1
+        uses: hashgraph-online/ai-plugin-scanner-action@094edf51a9aa3764ad8404896f7448bc7d10487e # v1.2.664
         with:
           plugin_dir: "."
           mode: scan
@@ -24,3 +31,6 @@ jobs:
           fail_on_severity: high
           format: sarif
           upload_sarif: true
+          registry_payload_output: hol-registry-payload.json
+          submission_enabled: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_registry }}
+          submission_token: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_registry && secrets.AWESOME_CODEX_PLUGINS_TOKEN || '' }}

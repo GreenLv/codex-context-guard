@@ -14,6 +14,8 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.13.3`. See the [release notes](docs/releases/v0.13.3.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
+> Source candidate: `0.13.4` (unreleased). It updates the HOL scanner pin and registry-refresh path; it has not been tagged or published.
+>
 > Version `0.13.3` keeps ordinary commits and single branch pushes available even when an active release ledger is unreadable, while publication actions remain fail-closed. It is a compatible patch with no schema, protocol, activation, or host-permission change.
 >
 > Version `0.13.2` moved ordinary execution authorization out of Context Guard and kept requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity.

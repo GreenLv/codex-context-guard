@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.13.3"
+VERSION = "0.13.4"
 # Stop protocol 4.0 / schema 12 (0.13.2): the public contract pins the runtime
 # constants and the one-way safety contract fragments below.
 SCHEMA_VERSION = 12
@@ -60,6 +60,7 @@ REQUIRED_FILES = {
     "CHANGELOG.md",
     "CHANGELOG.zh-CN.md",
     "requirements-lock.txt",
+    "uv.lock",
     "assets/icon.svg",
     "assets/state.schema.json",
     "docs/ARCHITECTURE.md",
@@ -422,8 +423,16 @@ def validate(root: Path) -> list[str]:
         if "dependencies = []" not in project:
             errors.append("Hook runtime project dependencies must remain empty")
         lock = (root / "requirements-lock.txt").read_text(encoding="utf-8")
-        if "ruff==0.16.1" not in lock or "plugin-scanner==2.0.1015" not in lock:
+        if "ruff==0.16.1" not in lock or "plugin-scanner==3.0.157" not in lock:
             errors.append("validation-tool lock must pin Ruff and HOL scanner")
+        if (
+            "[dependency-groups]" not in project
+            or "ruff==0.16.1" not in project
+            or "plugin-scanner==3.0.157" not in project
+        ):
+            errors.append("validation dependency group must pin Ruff and HOL scanner")
+        if not (root / "uv.lock").is_file():
+            errors.append("validation dependency closure must include uv.lock")
     except OSError as exc:
         errors.append(f"invalid project metadata or validation lock: {exc}")
 

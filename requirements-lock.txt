@@ -1,3 +1,3 @@
-# Repository validation tools. The Hook runtime itself has no third-party dependencies.
+# Direct validation tools; uv.lock records their resolved closure. The Hook runtime has no third-party dependencies.
 ruff==0.16.1
-plugin-scanner==2.0.1015
+plugin-scanner==3.0.157
