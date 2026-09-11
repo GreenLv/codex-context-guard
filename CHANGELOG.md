@@ -18,7 +18,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-Source checks pass on macOS, including the current-behavior suite and regression checks against the previous implementation. No 0.13.3 installation, CI, native-platform acceptance or publication is claimed; see the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Source checks pass on macOS, including 1,079 current-behavior tests and regressions against the previous implementation. The runtime implementation passed Candidate CI on Ubuntu, macOS and Windows with Python 3.10–3.13, HOL, and independent macOS/Windows portable checks. A later correction aligns the host-behavior validator's default version with the plugin manifest; because that changes acceptance-tool identity, the final successor still needs exact-commit CI/HOL and portable reruns before publication. The 0.13.2 real-host results retain their original version identity and are not relabeled as 0.13.3 evidence. The current reader-document cold review passes; tag, GitHub Release and public readback remain pending. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.2 - 2026-09-10
 

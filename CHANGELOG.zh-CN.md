@@ -18,7 +18,7 @@
 
 ### Validation
 
-macOS 源码检查已通过，包括当前行为测试和针对旧实现的回归验证。尚未进行 0.13.3 安装、CI、原生平台验收或发布；详见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+macOS 源码检查已通过，包括 1,079 项 current-behavior 测试和针对旧实现的回归验证。运行时实现已在 Ubuntu、macOS、Windows 的 Python 3.10–3.13 Candidate CI、HOL 以及独立 macOS/Windows portable 检查中通过。随后又把宿主行为验证器的默认版本与插件清单对齐；由于验收工具身份发生变化，最终后继提交仍需精确提交 CI/HOL 和 portable 复跑。0.13.2 的真实宿主结果保留原版本身份，不改标为 0.13.3 证据。当前读者文档冷读已通过；tag、GitHub Release 和公开回读仍待完成。详见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.13.2 - 2026-09-10
 

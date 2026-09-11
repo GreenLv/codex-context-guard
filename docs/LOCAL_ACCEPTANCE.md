@@ -6,7 +6,7 @@ Context Guard. The current release is `0.13.2`. Release history includes `0.13.2
 
 ## 0.13.3 source candidate (Unreleased)
 
-The current-behavior suite passes on macOS: 1,078 tests, no failures or errors,
+The current-behavior suite passes on macOS: 1,079 tests, no failures or errors,
 and 11 capability skips. The final 15-test default-path group was rechecked
 after its regression assertions were refined. New tests fail on the previous
 implementation and pass on the repair: ordinary commits and single pushes
@@ -14,8 +14,44 @@ continue with damaged release state or failed dispatch; publication, runner
 and restricted compound calls remain denied across the router, direct handler
 and error fallback. Repository/privacy checks, the historical baseline
 transition audit, self-test, Ruff and compilation also pass.
-No 0.13.3 CI, installed runtime, native-platform or public-release evidence has
-been established. The 0.13.2 results below retain their original subjects.
+
+The runtime implementation commit passed 1,078 tests. The documentation and
+validation-tool successor adds one contract test that keeps the host-behavior
+default plugin version aligned with `.codex-plugin/plugin.json`; its 1,079-test
+result is local source evidence and does not change the accepted runtime bytes.
+
+Runtime implementation commit `23db62814e0ae7adbe98ce8513dc04dd271e4e65`
+passes Candidate CI run `34460517810`: all twelve Ubuntu, macOS and Windows
+Python 3.10–3.13 lanes, the required summary, and the Windows portable
+installed-runtime job pass. HOL run `34460517130` passes independently. The
+Windows portable result has SHA-256
+`8f170fe64a81a32904d28306042543b903ecc71e36c7a5ab5c6266418ae7bd37`
+and runtime-tree SHA-256
+`1386277389f1ff5be2e0598378b5bb571568c4c85296076fc4e2e1b39333ac81`;
+it used Python 3.12.10 and Codex CLI 0.150.1. A separate macOS portable run on
+the same commit passes source identity, isolated installation, strict second
+no-op, runtime parity, installed lifecycle smoke and cleanup with no remaining
+IDs. Its result SHA-256 is
+`33407c291fa3242dbbd500398aa254d3a0d7796a8c513be9bd518a570214dcf7`
+and its platform-local runtime-tree SHA-256 is
+`e7a645457138fd1fdd3425e3432af85869f3c09d51e34556c9db8322967ee05d`;
+it used Python 3.12.2 and Codex CLI 0.153.4. The two platform-local runtime
+digests reflect their native filesystems and each matches its own installed
+tree; they are not expected to be identical across platforms.
+
+The behavior fix changes runtime bytes, so the 0.13.2 portable results are not
+reused. The later validation-tool version-default correction does not change
+the runtime tree, but it changes an input to the native acceptance entrypoint.
+The implementation-commit portable results therefore retain their original
+runtime subject and do not certify the tool successor. The final release commit
+requires its own Candidate CI and HOL, including the Windows portable lane, and
+a macOS portable rerun with the final tool bytes. Subsequent documentation-only
+edits do not require another portable run. The current reader documents pass a
+hash-bound bilingual cold review; any later edit invalidates that receipt. The
+0.13.2 real-host trust, continuity, compact/resume, Git and cleanup
+results remain historical evidence for 0.13.2; no fresh 0.13.3 real-host run is
+claimed. No tag, GitHub Release, public readback or normal-user runtime upgrade
+has been performed.
 
 ## 0.13.2 release acceptance (2026-09-10)
 

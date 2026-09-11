@@ -12,7 +12,7 @@ review and P4 candidate gates must include this behavior.
 
 - Current release: `0.13.2` (2026-09-10)
 - Published release baseline: `0.13.2`
-- Current source candidate: `0.13.3` (Unreleased); source checks do not establish native acceptance.
+- Current source candidate: `0.13.3` (Unreleased); its runtime implementation passed portable acceptance independently on macOS and Windows, while the validation-tool successor awaits exact-commit portable reruns. Real-host evidence remains under its original 0.13.2 identity.
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -20,7 +20,7 @@ review and P4 candidate gates must include this behavior.
 - Execution protocol: `3.0.0`
 - Diagnostic classifier: `3.3.0` (position-aware PreToolUse)
 - Python: `3.10+`
-- Codex CLI tested for 0.13.2 native acceptance: `0.153.4`
+- Codex CLI tested for the 0.13.3 portable candidate: `0.153.4` on macOS and `0.150.1` in Windows CI
 - Runtime dependencies: Python standard library only
 
 Earlier releases retain their own tested Codex versions. Hook schemas and plugin installation

@@ -599,6 +599,12 @@ class CleanupFactTests(unittest.TestCase):
 
 
 class ResultContractTests(unittest.TestCase):
+    def test_default_plugin_version_tracks_manifest(self) -> None:
+        manifest = json.loads(
+            (ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(HB.PLUGIN_VERSION_DEFAULT, manifest["version"])
+
     def test_result_kinds_validate_against_v2_schema(self) -> None:
         schema = json.loads(
             (ROOT / "tools" / "validation" / "native-acceptance-v2.schema.json")
