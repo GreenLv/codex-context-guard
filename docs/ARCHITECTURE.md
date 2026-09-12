@@ -20,10 +20,8 @@ control Codex-native orchestration.
 
 ## Responsibility boundary
 
-The 0.13.5 source candidate extends reply delivery to imperative explanations
-such as "explain this repository". Every coordinated request must remain
-reply-only; execution, normative acceptance and unknown instructions retain
-their obligations. Existing historical delivery records are not reinterpreted.
+The 0.13.6 source candidate extends reply delivery to imperative explanations
+such as "explain this repository". The complete request must match a bounded reply-only grammar; execution, normative acceptance and unrecognized wording retain their obligations. How-to operations and their topics are parsed together, without a second operation-keyword veto. This deliberately limits automatic closure to supported wording rather than claiming arbitrary semantic classification. A supported how-to answer may contain complete imperative tutorial steps; delivery distinguishes those from an assistant promise without changing the general Stop action classifier. Existing historical delivery records are not reinterpreted.
 A direct execution-resume request uses the existing one-correction budget only
 when the reply still identifies authorized assistant work. This does not change
 default tool access, release enforcement, Codex compaction or host permissions.

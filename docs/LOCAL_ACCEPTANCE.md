@@ -4,6 +4,18 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.3`. Release history includes `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.6 local source freeze (2026-09-13)
+
+This source candidate supersedes the unpublished 0.13.5 information classifier. Whole-request matching preserves unknown execution tails; supported how-to questions and complete tutorial replies can close on delivery. Basic question and determiner/subject variants retain their answer path. Unknown wording remains pending, and promises or actual waits cannot use the tutorial exception. A separate bounded read-only review found no remaining reproducible P1/P2 in this changed family.
+
+On macOS with Python 3.12.2, the final current-behavior suite ran 1,105 tests: 1,094 passed and 11 capability skips, with no failures or errors. The focused delivery, information and Stop-subject groups pass all 61 tests. Regression replay against the earlier source detects the repaired failures. Earlier repair-loop full runs retain their own inputs; the final run is bound to the frozen runtime and test files.
+
+Repository validation, tracked-tree privacy audit, historical transition audit, nine-Hook self-test, Ruff, compilation and diff whitespace checks pass. The English and Simplified Chinese README/changelog plus candidate release notes passed a hash-bound reader review. The repository-documentation audit passes; its existing introductory-density and version-sensitive-claim warnings remain advisory after cold review.
+
+A disposable installation preflight passes first install, an unchanged second check, parity for all 30 runtime files, installed lifecycle smoke and cleanup. Its runtime-tree SHA-256 is `646a6d312e1af15e012b486cea53647bbfb8a0701e0b0e54d2ee93ef236f4e36`. This is a temporary preflight against prepared source, not a committed artifact or a change to the daily installation.
+
+This section records evidence before the local candidate commit. Subsequent commit-bound portable results are separate versioned native annexes. Windows acceptance, fresh trusted-Hook behavior, exact-commit CI/HOL, final release-document reconciliation, tag and publication are independent release gates; this source record does not claim them. No old session ledger or consumed runtime cache is rewritten.
+
 ## 0.13.5 source-candidate status (2026-09-12)
 
 The uncommitted 0.13.5 source adds answer-delivery and bounded continuation fixes

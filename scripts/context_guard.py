@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.5"
+PRODUCT_VERSION = "0.13.6"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -676,37 +676,6 @@ PRIMARY_CLAUSE_ACTIONS = {
     "remote_publish",
     "artifact_work",
 }
-# Information-delivery requests: the deliverable is the reply itself rather
-# than an artifact or a state change. They are the imperative counterpart of
-# a direct question ("explain X" beside "what is X?"), so the response-delivery
-# path may close them as ``answered`` once a final reply is verifiably
-# delivered. Execution obligations stay evidence-bound: a prompt carrying any
-# producing operation, an explicit run/execute command, or an affirmative
-# visual mutation keeps its evidence requirement even when it also asks for an
-# explanation.
-INFORMATION_REQUEST_RE = re.compile(
-    r"(?:讲解|讲述|讲一下|讲讲|介绍一下|介绍|说明|解释|阐述|概述|综述|总结|梳理|归纳|"
-    r"列出|罗列|对比|比较|分析|评估|点评|科普|"
-    r"看(?:看|一下|下)|查一下|找一下|了解一下|"
-    r"\b(?:explain|describe|summari[sz]e|outline|overview|list|compare|"
-    r"analy[sz]e|illustrate|walk\s+me\s+through|tell\s+me\s+about)\b)",
-    re.IGNORECASE,
-)
-# An explicit imperative to run something. Only the command form counts, so an
-# information request *about* a test run ("how do the tests run?") stays
-# deliverable while "run the tests and summarize" keeps its obligation.
-EXECUTION_COMMAND_RE = re.compile(
-    r"(?:运行|执行|重跑|触发|启动)(?!的|之)|跑\s*(?:一下|一遍|一轮)?\s*"
-    r"(?:测试|校验|验证|脚本|命令|构建|流水线|CI|pipeline)"
-    r"|\b(?:run|execute|rerun|invoke)\s+(?:the\s+)?\S+",
-    re.IGNORECASE,
-)
-INFORMATION_ACTION_COORDINATION_RE = re.compile(
-    r"\b(?:and|then|also|but)\b|然后|随后|并且|并|再", re.IGNORECASE
-)
-EXECUTION_EXPLANATION_RE = re.compile(
-    r"(?:如何|怎样|怎么)|\bhow\b", re.IGNORECASE
-)
 EXECUTION_RESUME_RE = re.compile(
     r"^(?:请|你|您|帮我|麻烦)?\s*(?:继续(?:执行|推进|工作)|"
     r"按(?:照)?(?:你(?:的)?|刚刚|现在|上述|之前|这个|该|既定|和|与|\s)*"
@@ -6778,30 +6747,74 @@ DELIVERY_ALLOWED_STOP_REASON_CODES = frozenset(
 )
 
 
-_OPERATION_MENTION_TAIL = ("的", "之")
-_OPERATION_MENTION_HEAD_RE = re.compile(
-    r"(?:\b(?:the|a|an|this|that|these|those|your|our|its|their)\s+)$", re.IGNORECASE
+# Reply delivery is a positive, whole-input language, not the complement of
+# an execution-verb dictionary. Unconsumed syntax (including unknown actions)
+# stays pending. Keep this grammar bounded: expanding its vocabulary must not
+# introduce an arbitrary trailing-text wildcard.
+_INFORMATION_ZH_MODIFIER = (
+    r"(?:这个|那个|这段|这|那|本|该|它|它们|其|全部|所有|主要|核心|当前|"
+    r"新的|旧的|的|一下|里|中|运行的|实现的|部署的|发布的|修改的|配置的|恢复的|验证的)"
 )
-
-
-def _acting_operations(text: str) -> set[str]:
-    """Operations the prompt asks for, not nouns that merely name one.
-
-    "讲一下实现的核心逻辑" names an implementation; it does not request one.
-    "实现这个功能" does. The distinction is structural — an attributive ``的``
-    after the verb, or a determiner before an English verb — so the same
-    canonical prompt always yields the same answer.
-    """
-    operations: set[str] = set()
-    for clause in _protected_prompt_clauses(text):
-        for category, pattern in ACTION_PATTERNS:
-            for match in pattern.finditer(clause):
-                if clause[match.end():match.end() + 1] in _OPERATION_MENTION_TAIL:
-                    continue
-                if _OPERATION_MENTION_HEAD_RE.search(clause[:match.start()]):
-                    continue
-                operations.add(category)
-    return operations
+_INFORMATION_ZH_NOUN = (
+    r"(?:仓库|项目|插件|模块|代码|配置文件|文件|版本|应用|程序|脚本|命令|功能|标签|函数|"
+    r"恢复包|部署流程|发布流程|目录结构|结构|核心逻辑|逻辑|原理|主要内容|内容|流程|结果|"
+    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法)"
+)
+_INFORMATION_EN_NOUN = (
+    r"(?:project|repository|repo|plugin|module|code|files?|version|application|"
+    r"program|script|command|feature|config file|configuration file|tag|function|recovery packet|directory structure|"
+    r"structure|core logic|logic|principle|content|workflow|results?|tests?|"
+    r"test coverage|vulnerabilities|name|differences?|mechanism|plan|problem|claim)"
+)
+_INFORMATION_IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_.:/-]*|(?-i:[A-Z][a-z]+(?: [A-Z][a-z]+){1,3}))"
+# Quotation is a topic only when it consumes the entire subject. Delimiters
+# cannot hide a second root request or change where coordination is parsed.
+_INFORMATION_QUOTED = r"(?:`[^`\n]+`|“[^“”\n]+”|\"[^\"\n]+\"|'[^'\n]+')"
+_INFORMATION_ZH_TOPIC = (
+    rf"(?:(?:{_INFORMATION_ZH_MODIFIER})*{_INFORMATION_ZH_NOUN}"
+    rf"(?:的(?:{_INFORMATION_ZH_MODIFIER})*{_INFORMATION_ZH_NOUN})*"
+    rf"|{_INFORMATION_IDENTIFIER}|{_INFORMATION_QUOTED})"
+)
+_INFORMATION_EN_TOPIC = (
+    rf"(?:(?:(?:the|a|an|this|that|its|their|our|your|all|current|core|main)\s+)*"
+    rf"(?:{_INFORMATION_EN_NOUN}|{_INFORMATION_IDENTIFIER})|{_INFORMATION_QUOTED})"
+)
+_INFORMATION_TOPIC = rf"(?:{_INFORMATION_ZH_TOPIC}|{_INFORMATION_EN_TOPIC})"
+_INFORMATION_ZH_HEAD = (
+    r"(?:讲解|讲述|讲一下|讲讲|介绍|说明|解释|阐述|概述|综述|总结|梳理|归纳|"
+    r"列出|罗列|对比|比较|分析|评估|点评|科普|看看|看一下|查一下|找一下)"
+)
+_INFORMATION_EN_HEAD = (
+    r"(?:explain|describe|summari[sz]e|outline|overview|list|compare|analy[sz]e|"
+    r"illustrate|walk\s+me\s+through|tell\s+me\s+about)"
+)
+_INFORMATION_HOW = (
+    rf"(?:(?:如何|怎样|怎么)\s*(?:运行|执行|修改|配置|发布|部署|验证|测试)\s*"
+    rf"{_INFORMATION_TOPIC}|how\s+(?:to|do\s+(?:i|we|you))\s+"
+    rf"(?:run|execute|modify|configure|publish|deploy|verify|test)\s+{_INFORMATION_TOPIC})"
+)
+_INFORMATION_CLAUSE_RE = re.compile(
+    rf"(?:{_INFORMATION_ZH_HEAD}(?:一下)?\s*(?:{_INFORMATION_HOW}|{_INFORMATION_TOPIC})"
+    rf"|{_INFORMATION_ZH_HEAD}(?:一下)?{_INFORMATION_ZH_TOPIC}怎么跑"
+    rf"|{_INFORMATION_EN_HEAD}\s+(?:{_INFORMATION_HOW}|{_INFORMATION_TOPIC})"
+    rf"|{_INFORMATION_HOW}"
+    rf"|{_INFORMATION_ZH_TOPIC}(?:是做什么的|是什么|怎么跑|如何运行|怎样运行|有没有测试覆盖)"
+    rf"|{_INFORMATION_ZH_TOPIC}(?:里|中)?有什么(?:内容)?"
+    rf"|{_INFORMATION_TOPIC}\s*是{_INFORMATION_ZH_TOPIC}吗"
+    rf"|(?:what\s+(?:is|are)|where\s+(?:is|are)|why)\s+{_INFORMATION_EN_TOPIC}"
+    rf"|how\s+(?:does|do)\s+{_INFORMATION_EN_TOPIC}\s+work"
+    rf"|what\s+(?:does|do)\s+{_INFORMATION_EN_TOPIC}\s+do"
+    rf"|{_INFORMATION_ZH_TOPIC}(?:在哪里|在哪|(?:如何|怎样|怎么)(?:工作|运作))"
+    rf"|when\s+(?:does|do)\s+{_INFORMATION_EN_TOPIC}\s+run"
+    rf"|which\s+version\s+supports\s+{_INFORMATION_TOPIC}"
+    rf"|哪个版本支持\s*{_INFORMATION_TOPIC}|什么时候运行\s*{_INFORMATION_TOPIC}"
+    rf"|(?:{_INFORMATION_ZH_HEAD}(?:一下)?)?有没有漏洞)",
+    re.IGNORECASE,
+)
+_INFORMATION_COORDINATION_RE = re.compile(
+    r"[\n。！？!?；;，,]+|\b(?:and|then|also|but)\b|然后|随后|并且|并|以及",
+    re.IGNORECASE,
+)
 
 
 def explicit_execution_resume(text: str) -> bool:
@@ -6809,78 +6822,73 @@ def explicit_execution_resume(text: str) -> bool:
     return any(EXECUTION_RESUME_RE.search(clause) for clause in control_speech_clauses(text))
 
 
-def _execution_requested(text: str) -> bool:
-    if explicit_execution_resume(text):
-        return True
-    for clause in _protected_prompt_clauses(text):
-        for segment in INFORMATION_ACTION_COORDINATION_RE.split(clause):
-            for match in EXECUTION_COMMAND_RE.finditer(segment):
-                # A how-to question describes an operation. Coordination starts
-                # a new request: "explain how to run X and execute Y" keeps Y.
-                if not EXECUTION_EXPLANATION_RE.search(segment[:match.start()]):
-                    return True
-    return False
-
-
 def _reply_only_request_shape(text: str) -> bool:
-    """Every coordinated request must be informational; unknown work stays open.
+    """Recognize complete reply-only clauses; unknown residuals never close.
 
-    An information word somewhere in a mixed prompt is insufficient. This
-    deliberately declines unknown coordinated imperatives rather than relying
-    on a complete dictionary of commands, executables or mutation verbs.
+    Temporal tails, unfamiliar connectors, commands and unknown modifiers are
+    not silently consumed as topic text. How-to operations share this parser,
+    so an independent keyword scan cannot turn their subjects into actions.
+    This is deliberately a supported language, not arbitrary semantic proof.
     """
-    segments = re.split(
-        r"[\n。！？!?；;，,]+|\b(?:and|then|also|but)\b|然后|随后|并且|并|以及",
-        text, flags=re.I,
-    )
-    segments = [part.strip() for part in segments if part.strip()]
-    if not segments:
+    if not text or len(text) > 2000:
+        return False
+    segments = [s.strip() for s in _INFORMATION_COORDINATION_RE.split(text) if s.strip()]
+    if not segments or len(segments) > 32:
         return False
     for index, segment in enumerate(segments):
         body = re.sub(
-            r"^(?:(?:请|帮我|麻烦|你|您|给我)\s*|please\s+)+", "", segment, flags=re.I
+            r"^(?:(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)\s*|"
+            r"please\s+|(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
         )
-        if INFORMATION_REQUEST_RE.match(body):
+        if _INFORMATION_CLAUSE_RE.fullmatch(body):
             continue
-        if re.search(r"^(?:how|why|what|which|where|when)\b|^(?:为什么|如何|怎样)", body, re.I):
-            continue
-        if index == 0 and clause_is_interrogative(text) and not re.search(
-            r"^(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)|"
-            r"^(?:can|could|would|will)\s+you\b", segment, re.I
-        ):
-            continue
-        # An attributive continuation names the subject of an explanation,
-        # e.g. "主要内容，以及实现的核心逻辑"; it is not a second action.
-        if index and re.fullmatch(r"[^。！？!?；;，,]+的(?:核心)?(?:逻辑|原理|内容|结构|区别)", body):
+        # Coordinated topic lists inherit only the information operator from
+        # a complete earlier clause, never an arbitrary fragment or action.
+        if (index and re.fullmatch(_INFORMATION_TOPIC, body, re.I)
+                and re.match(r"(?:这个|那个|主要|核心|实现的|部署的|发布的)|"
+                             r"(?:the|its|their|our|your)\s+", body, re.I)):
             continue
         return False
     return True
 
 
-def _information_delivery_item(item: dict[str, Any]) -> bool:
-    """True when a legacy item's deliverable is the delivered reply itself.
+_INFORMATION_TUTORIAL_STEP_RE = re.compile(
+    rf"(?:(?:先|然后|再|接下来|你需要(?:先)?)\s*)*"
+    rf"(?:运行|执行|打开|修改|创建|发布|部署|配置|验证)\s*{_INFORMATION_TOPIC}"
+    rf"|(?:(?:first|next|then)\s+|you\s+(?:need\s+to|should)\s+)*"
+    rf"(?:run|execute|open|modify|create|publish|deploy|configure|verify)\s+{_INFORMATION_TOPIC}",
+    re.IGNORECASE,
+)
 
-    Both phrasings of the same request count: a direct question
-    (``这个仓库是做什么的？``) and its imperative counterpart
-    (``帮我讲一下这个仓库``). Execution work never qualifies — a producing
-    operation, an explicit run/execute command, or an affirmative visual
-    mutation keeps the item on the evidence path, and an unresolved asset
-    reference stays open because the reply cannot stand in for the asset.
+
+def _information_tutorial_reply(prompt: str, reply: str) -> bool:
+    """A complete recipe answers a supported how-to, not an assistant promise.
+
+    This narrow delivery-only exception consumes every step. A promise, wait,
+    non-completion statement or unknown suffix fails the recipe grammar and
+    keeps the ordinary Stop observation. It grants no execution authority and
+    never changes completion proof or delivery-identity checks.
     """
+    if (not _reply_only_request_shape(prompt)
+            or not re.search(r"如何|怎样|怎么|\bhow\b", prompt, re.I)
+            or len(reply) > 2000):
+        return False
+    body = re.sub(r"^(?:修改|操作|发布|运行|配置)?步骤(?:是|如下)?[:：]\s*", "", reply)
+    steps = [s.strip() for s in _INFORMATION_COORDINATION_RE.split(body) if s.strip()]
+    return bool(steps) and len(steps) <= 32 and all(
+        _INFORMATION_TUTORIAL_STEP_RE.fullmatch(step) for step in steps
+    )
+
+
+def _information_delivery_item(item: dict[str, Any]) -> bool:
+    """A supported reply-only request, with existing proof safeguards intact."""
     text = str(item.get("text") or "")
-    if not text:
-        return False
-    if not (clause_is_interrogative(text) or INFORMATION_REQUEST_RE.search(text)):
-        return False
-    if not _reply_only_request_shape(text):
-        return False
     contract = item.get("verification_contract")
     if isinstance(contract, dict) and contract.get("reason") == "asset_reference_unresolved":
         return False
-    if (visual_mutation_requested(text) or _execution_requested(text)
-            or ACCEPTANCE_NORMATIVE_RE.search(text)):
+    if ACCEPTANCE_NORMATIVE_RE.search(text):
         return False
-    return not (_acting_operations(text) & PRIMARY_CLAUSE_ACTIONS)
+    return _reply_only_request_shape(text)
 
 
 def _delivable_question(
@@ -13593,7 +13601,8 @@ def handle_stop(
         )
         answer_can_close = (
             status == "delivered"
-            and not reply_observation.get("actions")
+            and (not reply_observation.get("actions")
+                 or _information_tutorial_reply(authoritative_prompt, text))
             and "explicit_non_completion_without_actionable_detail"
             not in reply_observation.get("reason_codes", [])
         )

@@ -14,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.13.3`. See the [release notes](docs/releases/v0.13.3.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 >
-> Source candidate: `0.13.5` (unreleased). It fixes answer-delivery tracking and bounded continuation feedback, and includes the HOL scanner and registry-refresh updates. It has not been tagged or published.
+> Source candidate: `0.13.6` (unreleased). It fixes answer-delivery tracking and bounded continuation feedback, and includes the HOL scanner and registry-refresh updates. It has not been tagged or published. Automatic answer closure accepts supported English/Chinese information requests; unfamiliar wording stays pending. See the [candidate notes](docs/releases/v0.13.6.md).
 >
 > Version `0.13.3` keeps ordinary commits and single branch pushes available even when an active release ledger is unreadable, while publication actions remain fail-closed. It is a compatible patch with no schema, protocol, activation, or host-permission change.
 >

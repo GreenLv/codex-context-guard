@@ -4,18 +4,19 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.3` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## Unreleased - 0.13.5 source candidate
+## Unreleased - 0.13.6 source candidate
 
 ### Highlights
 
-- A delivered explanation can close a reply-only request such as "explain this repository". Adding "run pytest and summarize" keeps the execution requirement open until evidence supports it.
+- Keep unfinished execution requests in recovery even when an explanation comes first: "list the files then delete temporary files" cannot close on an answer alone.
+- A delivered explanation can close a supported reply-only request, including "how do I publish a version?". Operation names inside a how-to explanation no longer create unfinished work by themselves.
 - Preserve validation requests phrased politely or as questions. After an explicit request to continue, a reply that still proposes authorized assistant work receives at most one correction; genuine user and external waits remain available.
 - Include the unpublished 0.13.4 HOL scanner and manual registry-refresh updates. That version was consumed in isolated installation and is not overwritten.
 
 ### Changes
 
 - Pin the scanner action to its reviewed immutable `v1.2.664` commit and write the registry payload during scans. A dispatch with `refresh_registry` is the only path that requests HOL resubmission.
-- Unknown coordinated instructions stay pending rather than being treated as explanations. Historical answer-delivery reconstruction is unchanged; existing open items are not retroactively certified.
+- Reply-only classification must match the whole request using a bounded English/Chinese grammar. Unrecognized wording remains pending; an explanation prefix never absorbs an unknown tail. This favors retaining uncertain work over silently discarding it. Historical answer-delivery reconstruction is unchanged; existing open items are not retroactively certified.
 - Schema, public protocols, activation rules, default tool access and release enforcement are unchanged. The new runtime uses a new plugin version; existing tasks keep their immutable caches.
 
 ### Validation

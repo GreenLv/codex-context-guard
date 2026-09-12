@@ -177,6 +177,135 @@ class EvidencePathIsPreservedTests(InformationDeliveryHarness):
                 self.assertEqual(self.answer(prompt)["status"], "answered")
 
 
+class WholeRequestGrammarTests(InformationDeliveryHarness):
+    def assert_delivery(self, prompt, expected, *, turn="t1"):
+        item = self.answer(prompt, reply="说明如下。", turn=turn)
+        self.assertEqual(item["status"], expected, prompt)
+        self.cg.dispatch(self.payload("PreCompact", turn=turn))
+        self.cg.dispatch(self.payload("SessionStart", source="compact", turn=turn))
+        current = self.cg.current_scope_projection(self.state())["current_item_ids"]
+        self.assertEqual(item["id"] in current, expected == "pending", prompt)
+
+    def test_unknown_execution_tails_survive_delivery_and_recovery(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        # Vary syntax and unknown operations, not just a growing verb blacklist.
+        cases = [
+            "列出文件后删除临时文件", "介绍一下项目后清理临时目录",
+            "Explain the project before deleting temporary files",
+            "Explain the project & frobnicate the workspace",
+        ]
+        for connector in (" and ", " then ", " & ", " before ", " / ", " plus ", " "):
+            for action in ("frobnicate the workspace", "sanitize the files", "delete the cache"):
+                cases.append("Explain the project" + connector + action)
+        for index, prompt in enumerate(cases):
+            with self.subTest(prompt=prompt):
+                self.assert_delivery(prompt, "pending", turn=f"mixed-{index}")
+
+    def test_how_to_and_operation_topics_close_without_execution(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        cases = (
+            "如何发布版本？", "说明如何修改代码", "Explain how to configure the application",
+            "介绍一下部署流程", "如何运行 pytest？", "说明如何执行 pytest",
+            "Explain how to run pytest", "Explain how to modify the code",
+            "说明如何修改代码，并说明如何运行测试", "Explain the code and describe the files",
+        )
+        for index, prompt in enumerate(cases):
+            with self.subTest(prompt=prompt):
+                self.assert_delivery(prompt, "answered", turn=f"how-{index}")
+
+    def test_how_to_scope_does_not_absorb_a_second_action(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for index, prompt in enumerate((
+            "说明如何修改代码后删除文件", "说明如何运行测试并执行脚本",
+            "Explain how to configure the application and execute pytest",
+            "Explain how to run pytest & sanitize the workspace",
+            "Explain the code and validate all tests", "请说明结果并验证全部测试",
+        )):
+            with self.subTest(prompt=prompt):
+                self.assert_delivery(prompt, "pending", turn=f"escape-{index}")
+
+    def test_unknown_topics_are_not_silently_classified_as_information(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for index, prompt in enumerate((
+            "Explain the project frobnicate", "介绍项目顺便整理文件",
+            "Explain the unusually complicated custom machinery",
+            "Explain `project` erase files", "Explain the code and frobnicate",
+        )):
+            with self.subTest(prompt=prompt):
+                self.assert_delivery(prompt, "pending", turn=f"unknown-{index}")
+
+    def test_basic_questions_keep_their_delivery_path(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for index, prompt in enumerate((
+            "How does the plugin work?", "Where is the config file?",
+            "What does the plugin do?", "配置文件在哪里？", "这个插件怎么工作？",
+            "When does the script run?", "Which version supports Windows?",
+            "哪个版本支持 Windows？", "能否说明这个项目？", "Can you explain the code?",
+            "What is the hook?", "How does the hook work?",
+            "When does the hook run?", "Where is the configuration?",
+        )):
+            with self.subTest(prompt=prompt):
+                self.assert_delivery(prompt, "answered", turn=f"basic-{index}")
+
+    def test_determiners_do_not_require_a_per_subject_vocabulary_patch(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for index, (determiner, subject) in enumerate(
+            (d, s) for d in ("the", "a", "this", "its")
+            for s in ("hook", "configuration", "scheduler", "frobnicator")
+        ):
+            self.assert_delivery(f"Explain {determiner} {subject}", "answered", turn=f"noun-{index}")
+            self.assert_delivery(f"Explain {determiner} {subject} delete files", "pending", turn=f"tail-{index}")
+
+    def test_actual_how_to_steps_are_not_unfinished_assistant_actions(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        cases = (
+            ("如何发布版本？", "先运行测试，然后创建标签并发布版本。"),
+            ("如何发布版本？", "你需要先运行测试，然后发布版本。"),
+            ("说明如何修改代码", "修改步骤是：打开文件，修改函数，然后运行测试。"),
+            ("Explain how to publish the version", "First run the tests, then create the tag and publish the version"),
+        )
+        for index, (prompt, reply) in enumerate(cases):
+            with self.subTest(prompt=prompt, reply=reply):
+                turn = f"recipe-{index}"
+                item = self.answer(prompt, reply=reply, turn=turn)
+                self.assertEqual(item["status"], "answered")
+                self.cg.dispatch(self.payload("PreCompact", turn=turn))
+                self.cg.dispatch(self.payload("SessionStart", source="compact", turn=turn))
+                self.assertNotIn(item["id"], self.cg.current_scope_projection(self.state())["current_item_ids"])
+
+    def test_tutorial_with_a_promise_or_handoff_stays_pending(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for index, reply in enumerate((
+            "先运行测试，然后发布版本。我会继续核实这个问题。",
+            "先运行测试，然后发布版本。仍未完成。",
+            "需要你登录后告诉我，我会继续。",
+            "我会运行测试，然后发布版本。",
+            "First run the tests. I will continue checking the answer.",
+            "我还没回答完，下一步会运行测试。", "请先提供配置文件，我再解释。",
+            "等待维护者回复后我再说明。", "I need to run tests before I can answer.",
+        )):
+            with self.subTest(reply=reply):
+                self.assertEqual(self.answer("如何发布版本？", reply=reply, turn=f"promise-{index}")["status"], "pending")
+
+    def test_delivery_does_not_override_enforced_or_asset_contracts(self):
+        state = {"acceptance_items": []}
+        for contract in (
+            {"mode": "enforced"},
+            {"mode": "legacy_fallback", "reason": "asset_reference_unresolved"},
+        ):
+            item = {"text": "Explain the code", "status": "pending", "verification_contract": contract}
+            self.assertFalse(self.cg._delivable_question(item, state))
+
+    def test_normative_requirements_do_not_become_delivered_answers(self):
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for index, prompt in enumerate((
+            "请说明结果并确保测试通过", "Explain the code; tests must pass",
+            "请验证全部测试，可以吗？", "Explain the code and do not modify the files",
+        )):
+            with self.subTest(prompt=prompt):
+                self.assert_delivery(prompt, "pending", turn=f"normative-{index}")
+
+
 class AcceptanceExtractionTests(InformationDeliveryHarness):
     def test_casual_questions_do_not_become_acceptance_items(self) -> None:
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
