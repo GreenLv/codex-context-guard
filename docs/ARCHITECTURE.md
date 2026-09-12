@@ -20,6 +20,14 @@ control Codex-native orchestration.
 
 ## Responsibility boundary
 
+The 0.13.5 source candidate extends reply delivery to imperative explanations
+such as "explain this repository". Every coordinated request must remain
+reply-only; execution, normative acceptance and unknown instructions retain
+their obligations. Existing historical delivery records are not reinterpreted.
+A direct execution-resume request uses the existing one-correction budget only
+when the reply still identifies authorized assistant work. This does not change
+default tool access, release enforcement, Codex compaction or host permissions.
+
 | Concern | Codex owns | Context Guard owns | Context Guard does not do |
 | --- | --- | --- | --- |
 | Conversation | transcript and compaction | pre-compact correctness snapshot and bounded recovery | copy the full transcript or rewrite the compact prompt |

@@ -12,7 +12,7 @@ review and P4 candidate gates must include this behavior.
 
 - Current release: `0.13.3` (2026-09-11)
 - Published release baseline: `0.13.3`
-- Current source candidate: `0.13.4` (unreleased; HOL scanner and registry-refresh maintenance only)
+- Current source candidate: `0.13.5` (unreleased; answer delivery, bounded continuation feedback and HOL maintenance)
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -38,9 +38,25 @@ restricted compound calls retain fail-closed release checks. Exact commit
 macOS and Windows. The 0.13.2 real-host evidence remains under its original
 version identity and is not relabeled as 0.13.3 evidence.
 
-## 0.13.4 source-candidate scope
+## 0.13.5 source-candidate scope
 
-Version 0.13.4 updates repository-maintenance tooling only: the pinned HOL
+Version 0.13.5 closes reply-only explanation requests on delivered answers while
+retaining mixed execution and validation requirements. Unknown coordinated
+instructions stay pending. A direct request to resume execution draws at most
+one Stop correction when the reply itself still identifies authorized assistant
+work; user-only input and external waits remain available. This is completion
+feedback, not a new tool-authorization gate. Schema, protocols, activation,
+default tool access and release enforcement are unchanged.
+
+Historical delivery reconstruction is unchanged and does not repair already-open
+items from earlier tasks. The new tests use isolated synthetic Hook payloads;
+they do not establish the current desktop's native compaction behavior or a
+fresh trusted installation. Changed runtime bytes invalidate earlier artifact
+and installation evidence. See [local acceptance](LOCAL_ACCEPTANCE.md).
+
+## 0.13.4 historical source-candidate scope
+
+The consumed, unpublished 0.13.4 candidate updated repository-maintenance tooling only: the pinned HOL
 scanner action, its locked validation closure, and an explicit manual
 registry-refresh route. It keeps the schema, protocols, activation rules and
 Hook decision behavior of the published 0.13.3 runtime.

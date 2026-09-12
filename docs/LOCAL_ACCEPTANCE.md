@@ -4,7 +4,33 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.3`. Release history includes `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
-## 0.13.4 source-candidate status (2026-09-11)
+## 0.13.5 source-candidate status (2026-09-12)
+
+The uncommitted 0.13.5 source adds answer-delivery and bounded continuation fixes
+to the earlier HOL maintenance candidate. Focused source tests cover mixed
+execution requests, polite and interrogative acceptance requirements, unknown
+coordinated commands, compact/resume and the single-correction limit. They also
+preserve real user/external waits and historical delivery reconstruction.
+
+On Windows with Python 3.12.10 and process-local UTF-8 mode, the full source
+suite ran 1,095 tests: 1,076 passed, 15 skipped and four failed. Three failures
+are the existing `Restricted` PowerShell policy boundary for `.ps1` Hooks.
+The fourth exposed a stale default version in the host acceptance tool. After
+updating that default to 0.13.5, all 81 tests in the host acceptance, native
+entrypoint and public-contract groups passed. This is full-run evidence plus a
+focused repair check, not a fresh all-green full run or native acceptance.
+
+The 15-test information-delivery regression group passes, and selected new
+regressions fail against the old implementation. Repository validation, the
+tracked-tree privacy audit, historical transition audit, nine-Hook self-test,
+Ruff, compilation and diff whitespace checks pass. Bilingual candidate release
+notes and README entry paths passed an exact-byte reader review.
+
+Earlier 0.13.4 installation, parity and portable results remain historical;
+none is reused for this runtime. Native trusted-Hook acceptance, other native
+platforms, CI, HOL ingestion, tag and publication remain separate gates.
+
+## 0.13.4 historical source-candidate status (2026-09-11)
 
 This source candidate refreshes the HOL scanner action and its
 locked validation closure, and adds an explicit registry-refresh dispatch path.

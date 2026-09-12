@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.4"
+PRODUCT_VERSION = "0.13.5"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -676,6 +676,46 @@ PRIMARY_CLAUSE_ACTIONS = {
     "remote_publish",
     "artifact_work",
 }
+# Information-delivery requests: the deliverable is the reply itself rather
+# than an artifact or a state change. They are the imperative counterpart of
+# a direct question ("explain X" beside "what is X?"), so the response-delivery
+# path may close them as ``answered`` once a final reply is verifiably
+# delivered. Execution obligations stay evidence-bound: a prompt carrying any
+# producing operation, an explicit run/execute command, or an affirmative
+# visual mutation keeps its evidence requirement even when it also asks for an
+# explanation.
+INFORMATION_REQUEST_RE = re.compile(
+    r"(?:讲解|讲述|讲一下|讲讲|介绍一下|介绍|说明|解释|阐述|概述|综述|总结|梳理|归纳|"
+    r"列出|罗列|对比|比较|分析|评估|点评|科普|"
+    r"看(?:看|一下|下)|查一下|找一下|了解一下|"
+    r"\b(?:explain|describe|summari[sz]e|outline|overview|list|compare|"
+    r"analy[sz]e|illustrate|walk\s+me\s+through|tell\s+me\s+about)\b)",
+    re.IGNORECASE,
+)
+# An explicit imperative to run something. Only the command form counts, so an
+# information request *about* a test run ("how do the tests run?") stays
+# deliverable while "run the tests and summarize" keeps its obligation.
+EXECUTION_COMMAND_RE = re.compile(
+    r"(?:运行|执行|重跑|触发|启动)(?!的|之)|跑\s*(?:一下|一遍|一轮)?\s*"
+    r"(?:测试|校验|验证|脚本|命令|构建|流水线|CI|pipeline)"
+    r"|\b(?:run|execute|rerun|invoke)\s+(?:the\s+)?\S+",
+    re.IGNORECASE,
+)
+INFORMATION_ACTION_COORDINATION_RE = re.compile(
+    r"\b(?:and|then|also|but)\b|然后|随后|并且|并|再", re.IGNORECASE
+)
+EXECUTION_EXPLANATION_RE = re.compile(
+    r"(?:如何|怎样|怎么)|\bhow\b", re.IGNORECASE
+)
+EXECUTION_RESUME_RE = re.compile(
+    r"^(?:请|你|您|帮我|麻烦)?\s*(?:继续(?:执行|推进|工作)|"
+    r"按(?:照)?(?:你(?:的)?|刚刚|现在|上述|之前|这个|该|既定|和|与|\s)*"
+    r"(?:计划|建议)(?:继续)?执行)"
+    r"|^(?:please\s+)?(?:continue\s+(?:working|executing)|"
+    r"continue\s+(?:(?:the|this|whole|entire|release|remaining)\s+)*plan|"
+    r"(?:proceed|execute)\s+(?:with\s+)?(?:the\s+)?(?:plan|recommendations))\b",
+    re.IGNORECASE,
+)
 REPLY_ACTION_NEGATION_PREFIX_RE = re.compile(
     r"\b(?:do\s+not|don't|does\s+not|doesn't|will\s+not|won't|never|"
     r"without|avoid(?:s|ed|ing)?)\b.{0,48}$|"
@@ -6738,14 +6778,128 @@ DELIVERY_ALLOWED_STOP_REASON_CODES = frozenset(
 )
 
 
-def _delivable_question(item: dict[str, Any], state: dict[str, Any]) -> bool:
+_OPERATION_MENTION_TAIL = ("的", "之")
+_OPERATION_MENTION_HEAD_RE = re.compile(
+    r"(?:\b(?:the|a|an|this|that|these|those|your|our|its|their)\s+)$", re.IGNORECASE
+)
+
+
+def _acting_operations(text: str) -> set[str]:
+    """Operations the prompt asks for, not nouns that merely name one.
+
+    "讲一下实现的核心逻辑" names an implementation; it does not request one.
+    "实现这个功能" does. The distinction is structural — an attributive ``的``
+    after the verb, or a determiner before an English verb — so the same
+    canonical prompt always yields the same answer.
+    """
+    operations: set[str] = set()
+    for clause in _protected_prompt_clauses(text):
+        for category, pattern in ACTION_PATTERNS:
+            for match in pattern.finditer(clause):
+                if clause[match.end():match.end() + 1] in _OPERATION_MENTION_TAIL:
+                    continue
+                if _OPERATION_MENTION_HEAD_RE.search(clause[:match.start()]):
+                    continue
+                operations.add(category)
+    return operations
+
+
+def explicit_execution_resume(text: str) -> bool:
+    """A direct root continuation request, never a quote or example."""
+    return any(EXECUTION_RESUME_RE.search(clause) for clause in control_speech_clauses(text))
+
+
+def _execution_requested(text: str) -> bool:
+    if explicit_execution_resume(text):
+        return True
+    for clause in _protected_prompt_clauses(text):
+        for segment in INFORMATION_ACTION_COORDINATION_RE.split(clause):
+            for match in EXECUTION_COMMAND_RE.finditer(segment):
+                # A how-to question describes an operation. Coordination starts
+                # a new request: "explain how to run X and execute Y" keeps Y.
+                if not EXECUTION_EXPLANATION_RE.search(segment[:match.start()]):
+                    return True
+    return False
+
+
+def _reply_only_request_shape(text: str) -> bool:
+    """Every coordinated request must be informational; unknown work stays open.
+
+    An information word somewhere in a mixed prompt is insufficient. This
+    deliberately declines unknown coordinated imperatives rather than relying
+    on a complete dictionary of commands, executables or mutation verbs.
+    """
+    segments = re.split(
+        r"[\n。！？!?；;，,]+|\b(?:and|then|also|but)\b|然后|随后|并且|并|以及",
+        text, flags=re.I,
+    )
+    segments = [part.strip() for part in segments if part.strip()]
+    if not segments:
+        return False
+    for index, segment in enumerate(segments):
+        body = re.sub(
+            r"^(?:(?:请|帮我|麻烦|你|您|给我)\s*|please\s+)+", "", segment, flags=re.I
+        )
+        if INFORMATION_REQUEST_RE.match(body):
+            continue
+        if re.search(r"^(?:how|why|what|which|where|when)\b|^(?:为什么|如何|怎样)", body, re.I):
+            continue
+        if index == 0 and clause_is_interrogative(text) and not re.search(
+            r"^(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)|"
+            r"^(?:can|could|would|will)\s+you\b", segment, re.I
+        ):
+            continue
+        # An attributive continuation names the subject of an explanation,
+        # e.g. "主要内容，以及实现的核心逻辑"; it is not a second action.
+        if index and re.fullmatch(r"[^。！？!?；;，,]+的(?:核心)?(?:逻辑|原理|内容|结构|区别)", body):
+            continue
+        return False
+    return True
+
+
+def _information_delivery_item(item: dict[str, Any]) -> bool:
+    """True when a legacy item's deliverable is the delivered reply itself.
+
+    Both phrasings of the same request count: a direct question
+    (``这个仓库是做什么的？``) and its imperative counterpart
+    (``帮我讲一下这个仓库``). Execution work never qualifies — a producing
+    operation, an explicit run/execute command, or an affirmative visual
+    mutation keeps the item on the evidence path, and an unresolved asset
+    reference stays open because the reply cannot stand in for the asset.
+    """
+    text = str(item.get("text") or "")
+    if not text:
+        return False
+    if not (clause_is_interrogative(text) or INFORMATION_REQUEST_RE.search(text)):
+        return False
+    if not _reply_only_request_shape(text):
+        return False
+    contract = item.get("verification_contract")
+    if isinstance(contract, dict) and contract.get("reason") == "asset_reference_unresolved":
+        return False
+    if (visual_mutation_requested(text) or _execution_requested(text)
+            or ACCEPTANCE_NORMATIVE_RE.search(text)):
+        return False
+    return not (_acting_operations(text) & PRIMARY_CLAUSE_ACTIONS)
+
+
+def _delivable_question(
+    item: dict[str, Any],
+    state: dict[str, Any],
+    *,
+    allow_information_request: bool = True,
+) -> bool:
     """A question-type requirement whose deliverable is the reply itself.
 
-    Deterministic inputs only: interrogative phrasing, a non-enforced
-    verification contract (no deterministic obligation was ever extracted),
-    no enforced acceptance item derived from the same root prompt, and not
-    a session-scope persistent constraint. Unknown shapes stay open —
+    Deterministic inputs only: interrogative or information-request phrasing,
+    a non-enforced verification contract (no deterministic obligation was ever
+    extracted), no enforced acceptance item derived from the same root prompt,
+    and not a session-scope persistent constraint. Unknown shapes stay open —
     delivery never fabricates completion for execution work (INV-07).
+
+    ``allow_information_request`` is False on the migration path, which keeps
+    the historical reconstruction limited to the strict interrogative shape it
+    was frozen with; the live delivery path accepts both phrasings.
     """
     if item.get("status") != "pending" or item.get("constraint_scope") == "session":
         return False
@@ -6753,7 +6907,12 @@ def _delivable_question(item: dict[str, Any], state: dict[str, Any]) -> bool:
     if not isinstance(contract, dict) or contract.get("mode") == "enforced":
         return False
     text = str(item.get("text") or "")
-    if not text or not clause_is_interrogative(text):
+    if not text:
+        return False
+    if allow_information_request:
+        if not _information_delivery_item(item):
+            return False
+    elif not clause_is_interrogative(text):
         return False
     prompt_id = item.get("prompt_id")
     for candidate in state.get("acceptance_items", []):
@@ -6806,7 +6965,9 @@ def _migrate_response_delivery_history(state: dict[str, Any]) -> dict[str, Any]:
     consumed: set[int] = set()
     sequence = 0
     for item in state.get("requirements", []):
-        if not isinstance(item, dict) or not _delivable_question(item, state):
+        if not isinstance(item, dict) or not _delivable_question(
+            item, state, allow_information_request=False
+        ):
             continue
         prompt_at = prompt_created.get(str(item.get("prompt_id")) or "", "")
         matched_index = None
@@ -8028,6 +8189,7 @@ def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
     positive_text = "\n".join(positive_clauses)
     broad = bool(
         BROAD_EXECUTION_PROMPT_RE.search(positive_text)
+        or explicit_execution_resume(prompt_text)
         or re.search(
             r"\bimplement\s+(?:(?:the|this)\s+)?(?:proposed\s+)?plan\b|"
             r"(?:实施|实现|执行|完成).{0,12}(?:既定|上述|这个|该|完整|发布)?计划",
@@ -8201,6 +8363,7 @@ def deferred_action_bindings(
 
 def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
     scope = prompt_action_scope(prompt_text)
+    resume_requested = explicit_execution_resume(prompt_text)
     actions: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     explicit_assistant_facts: set[tuple[str, str, str]] = set()
@@ -8246,7 +8409,18 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
         # remains blocked on the user and may end safely.
         if user_handoff and (not assistant_future or user_dependent_future):
             continue
-        remaining_marker = bool(REMAINING_WORK_RE.search(clause) or re.search(r"仍有|尚有", clause, re.I))
+        resumed_next_action = bool(
+            resume_requested
+            and re.search(
+                r"(?:后续|下一步|接下来|合理的顺序|建议的顺序).{0,32}(?:应|需要|建议|可以|是)|"
+                r"\bnext\s+(?:step\s+)?(?:should|needs?\s+to|is\s+to)\b",
+                clause, re.I,
+            )
+        )
+        remaining_marker = bool(
+            REMAINING_WORK_RE.search(clause) or re.search(r"仍有|尚有", clause, re.I)
+            or resumed_next_action
+        )
         remaining = bool(
             remaining_marker
             or NON_COMPLETION_RE.search(clause)
@@ -8661,18 +8835,36 @@ def score_complexity(text: str) -> tuple[int, list[str]]:
     return score, reasons
 
 
+# An acceptance criterion states a checkable rule. Prose that only asks the
+# assistant a question is not a criterion, so a bare keyword hit ("测试",
+# "确认") must not create a pending acceptance item on its own.
+ACCEPTANCE_NORMATIVE_RE = re.compile(
+    r"\b(?:must|should|shall|never|required|do\s+not|don't)\b|"
+    r"(?:必须|不得|禁止|务必|应当|应该|不要|严禁|确保|保证)",
+    re.IGNORECASE,
+)
+
+
 def extract_acceptance(text: str) -> list[str]:
     items: list[str] = []
     for raw_line in text.splitlines():
         line = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", raw_line).strip()
         if not line or len(line) < 6 or len(line) > 500:
             continue
-        if re.search(
+        if not re.search(
             r"(must|should|verify|validate|test|accept|do not|不得|必须|确认|验证|测试|验收|门禁|不进入|不保存)",
             line,
             re.I,
         ):
-            items.append(line)
+            continue
+        # Politeness and question punctuation never erase an obligation.
+        # Only a reply-only inquiry with no normative constraint is excluded.
+        inquiry = _information_delivery_item({"text": line}) or bool(re.search(
+            r"^(?:帮我|请)?确认一下.{0,80}(?:对不对|是否属实)$", line
+        ))
+        if not ACCEPTANCE_NORMATIVE_RE.search(line) and inquiry:
+            continue
+        items.append(line)
     return list(dict.fromkeys(items))[:32]
 
 
@@ -9637,6 +9829,18 @@ def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]
     """Completion and diagnostic callers consume the same applicable projection."""
     projection = current_scope_projection(state)
     return projection["scoped_item_ids"], projection["ancestor_constraint_ids"]
+
+
+def pending_scoped_item_count(state: dict[str, Any], scoped_ids: set[str]) -> int:
+    """Count the non-terminal required items inside one completion scope."""
+    return sum(
+        1
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict)
+        and item.get("id") in scoped_ids
+        and item.get("status") not in TERMINAL_ITEM_STATUSES
+    )
 
 
 def supersession_control_clauses(text: str) -> list[str]:
@@ -13584,14 +13788,7 @@ def handle_stop(
         # Acceptance-D: the default feedback carries the current unit's
         # pending-item COUNT, never IDs (those live in diagnose/--full).
         scoped_now, _ = checkpoint_scope_item_ids(state)
-        pending_count = sum(
-            1
-            for collection in ("requirements", "acceptance_items")
-            for item in state.get(collection, [])
-            if isinstance(item, dict)
-            and item["id"] in scoped_now
-            and item.get("status") not in TERMINAL_ITEM_STATUSES
-        )
+        pending_count = pending_scoped_item_count(state, scoped_now)
         feedback = stop3_mod.bounded_stop_feedback(pending_count, reason, next_step)
         decision["outcome"] = "visible_correction"
         return finish({"decision": "block", "reason": feedback}, *codes)
@@ -13633,9 +13830,16 @@ def handle_stop(
         authoritative_prompt
         and USER_PERSISTENCE_RE.search(authoritative_prompt)
     )
+    # A brief resume is not an unlimited persistence mandate. Correct it only
+    # when the reply itself identifies authorized assistant work still to do.
+    resumed_actionable_work = bool(
+        explicit_execution_resume(authoritative_prompt)
+        and any(a["owner"] == "assistant" and a["authorization"] == "authorized"
+                for a in interpretation["actions"])
+    )
     facts = {
         "whole_completion_claim": completion_claim,
-        "explicit_persistence": explicit_persistence,
+        "explicit_persistence": explicit_persistence or resumed_actionable_work,
         "authorized_assistant_actions_available": (
             any(a["owner"] == "assistant" and a["authorization"] == "authorized" for a in interpretation["actions"])
         ),
@@ -13723,6 +13927,15 @@ def handle_stop(
                 "authorized work remains and the user required persistence",
                 "Continue the authorized work",
                 "explicit_user_persistence",
+            )
+        # A claim that no deterministic obligation gated and that no unique
+        # evidence could support ends silently by design, but the reason stays
+        # diagnosable: an uncertified claim over pending scoped items is not
+        # the same fact as "no work remained", and only the decision log and
+        # ``context-guard diagnose`` can tell the two apart.
+        if pending_scoped_item_count(state, scoped_ids):
+            decision.setdefault("reason_codes", []).append(
+                "completion_claim_uncertified_pending_items"
             )
         # A claim without deterministic pending work never continues; the
         # owner ladder decides whether the boundary is assistant-pending or

@@ -263,7 +263,15 @@ not as a measure of code volume.
   checkpoint time, narrows UI wording detection, and binds task, file, and
   Windows-path evidence to the exact item read. Visual or otherwise
   non-deterministic checks still require explicit proof registration.
-- `0.13.4` is an unreleased source candidate that aligns the repository's HOL
+- `0.13.5` is an unreleased answer-delivery and continuation candidate. It accepts
+  reply-only imperative explanations without dropping mixed execution work or
+  politely phrased acceptance criteria. A direct execution-resume request can
+  trigger the existing single Stop correction when the reply still names
+  authorized assistant work. Genuine waits remain available. Schema, public
+  protocols, default tool access and release enforcement remain unchanged.
+  Historical delivery reconstruction does not retroactively close open items.
+  Runtime bytes differ from consumed 0.13.4, whose caches stay immutable.
+- `0.13.4` is a consumed, unpublished source candidate that aligns the repository's HOL
   scanner action, validation-tool lock, and explicit registry-refresh path.
   It keeps the schema, protocols, activation rules, and Hook decision behavior of the
   published `0.13.3` release. It requires its own source and workflow evidence

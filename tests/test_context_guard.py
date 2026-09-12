@@ -2508,7 +2508,7 @@ class ContextGuardTests(unittest.TestCase):
                 )
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
-    def test_broad_execution_prompt_without_persistence_defaults_to_safe_yield(
+    def test_explicit_resume_corrects_once_while_broad_requests_yield(
         self,
     ) -> None:
         cases = (
@@ -2519,6 +2519,7 @@ class ContextGuardTests(unittest.TestCase):
                     "验证均通过。下一阶段仍需创建 PRIVATE 远程仓库、"
                     "推送并运行 CI。"
                 ),
+                True,
             ),
             (
                 "$context-guard\nContinue the whole release plan, push, and run CI.",
@@ -2527,6 +2528,7 @@ class ContextGuardTests(unittest.TestCase):
                     "The next phase still requires creating the private remote, "
                     "pushing, and running CI."
                 ),
+                True,
             ),
             (
                 "$context-guard\nReview the local checkpoint only. "
@@ -2537,6 +2539,7 @@ class ContextGuardTests(unittest.TestCase):
                     "The next phase still requires creating the private remote, "
                     "pushing, and running CI."
                 ),
+                False,
             ),
             (
                 "$context-guard\n不要跳过推送，继续执行完整发布计划。",
@@ -2545,9 +2548,10 @@ class ContextGuardTests(unittest.TestCase):
                     "验证均通过。下一阶段仍需创建 PRIVATE 远程仓库、"
                     "推送并运行 CI。"
                 ),
+                True,
             ),
         )
-        for prompt, message in cases:
+        for prompt, message, correction_expected in cases:
             with self.subTest(prompt=prompt):
                 self.prompt(prompt)
                 self.assertFalse(cg.reports_non_completion(message, prompt))
@@ -2559,8 +2563,15 @@ class ContextGuardTests(unittest.TestCase):
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
                 )
-                self.assertEqual(result, {})
-                self.assertEqual(self.state()["continuation_attempts"], 0)
+                if correction_expected:
+                    self.assertEqual(result.get("decision"), "block")
+                    self.assertEqual(self.state()["continuation_attempts"], 1)
+                    self.assertEqual(cg.dispatch(
+                        self.payload("Stop", last_assistant_message=message)
+                    ), {})
+                else:
+                    self.assertEqual(result, {})
+                    self.assertEqual(self.state()["continuation_attempts"], 0)
                 self.assertTrue(self.state()["open_items"])
 
     def test_structured_boundary_classifier_covers_regression_session_cases(self) -> None:
