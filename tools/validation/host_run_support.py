@@ -321,7 +321,8 @@ def bundle(args: argparse.Namespace, item: dict) -> None:
         "gates": [{"id": gate["id"], "status": gate["status"]}
                   for gate in gates],
         "cleanup": {"status": result.get("cleanup", {}).get("status"),
-                    "remaining_count": len(result.get("cleanup", {}).get("remaining_ids", []))},
+                    "remaining_count": (None if result["cleanup"]["status"] == "observed_facts_required"
+                                        else len(result["cleanup"].get("remaining_ids", [])))},
         "toolchain": {name: {"sha256": value["sha256"], "version": value["version"]}
                       for name, value in item["toolchain"].items()},
         "stages": {name: record["status"] for name, record in item["stages"].items()},

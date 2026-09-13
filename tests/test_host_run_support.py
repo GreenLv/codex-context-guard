@@ -173,7 +173,7 @@ class HostRunSupportTests(unittest.TestCase):
             summary = (out / "summary.json").read_text(encoding="utf-8")
             self.assertNotIn("must not export", summary)
             self.assertNotIn("private-session-id", summary)
-            self.assertIn('"remaining_count": 1', summary)
+            self.assertIn('"remaining_count": null', summary)
             extra = out / "private.txt"
             extra.write_bytes(b"must not export")
             with self.assertRaisesRegex(RUN.RunError, "unexpected"):
