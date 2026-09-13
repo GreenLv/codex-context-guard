@@ -153,7 +153,9 @@ def advance(args: argparse.Namespace, item: dict) -> None:
                                             "context-guard-reviewed-host-continuity/v1"}
                 or manifest.get("subject", {}).get("runtime_tree_sha256") != item["runtime"]["sha256"]
                 or manifest.get("subject", {}).get("plugin_version") != item["runtime"]["plugin_version"]
-                or not manifest.get("reviewed_at")):
+                or not args.reviewed
+                or (manifest.get("schema") == "context-guard-reviewed-host-mapping/v1"
+                    and not manifest.get("reviewed_at"))):
             raise RunError("mapping is not a reviewed manifest for pinned runtime")
     if stage == "export":
         if proof.name != "manifest.json":
@@ -248,6 +250,10 @@ def fixture_git(args: argparse.Namespace, item: dict) -> None:
 
     git("init", "--bare", str(remote))
     git("-C", str(work), "init", "-b", "main")
+    git("-C", str(work), "config", "user.name", "Context Guard Fixture")
+    git("-C", str(work), "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
+    git("-C", str(work), "config", "commit.gpgsign", "false")
+    git("-C", str(work), "config", "core.autocrlf", "false")
     target = work / "artifact.txt"
     target.write_bytes(b"baseline\n")
     git("-C", str(work), "-c", "core.autocrlf=false", "add", "artifact.txt")
@@ -255,10 +261,9 @@ def fixture_git(args: argparse.Namespace, item: dict) -> None:
         "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com",
         "-c", "commit.gpgsign=false", "commit", "-m", "baseline")
     git("-C", str(work), "remote", "add", "origin", str(remote))
-    git("-C", str(work), "push", "origin", "HEAD:refs/heads/main")
     baseline = git("-C", str(work), "rev-parse", "HEAD")
-    if git("--git-dir", str(remote), "rev-parse", "refs/heads/main") != baseline:
-        raise RunError("local remote readback differs from fixture baseline")
+    if git("--git-dir", str(remote), "for-each-ref"):
+        raise RunError("local remote must remain empty for the first-push mapping")
     target.write_bytes(b"candidate\n")
     write_new(folder / "commands.draft.json", {
         "schema": "context-guard-git-fixture-draft/v1", "reviewed": False,
