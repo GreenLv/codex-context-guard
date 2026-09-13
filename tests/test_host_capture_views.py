@@ -252,10 +252,11 @@ class CaptureViewTests(unittest.TestCase):
                 f.run()
             self.assertEqual(C.capture_inventory(f.sink), f.original)
 
-    def test_manifest_schema_v1_v2_contract(self):
+    def test_manifest_schema_v1_v2_v3_contract(self):
         schema = json.loads((Path(C.__file__).parent / "host-composite-manifest.schema.json").read_bytes())
-        self.assertEqual(schema["properties"]["schema"]["enum"], [C.MANIFEST_SCHEMA, C.VIEW_MANIFEST_SCHEMA])
+        self.assertEqual(schema["properties"]["schema"]["enum"], [C.MANIFEST_SCHEMA, C.VIEW_MANIFEST_SCHEMA, C.HOOK_VIEW_MANIFEST_SCHEMA])
         self.assertIn("capture_views", schema["allOf"][0]["then"]["required"])
+        self.assertIn("hook_views", schema["allOf"][1]["then"]["required"])
         with tempfile.TemporaryDirectory() as d:
             f = ViewFixture(Path(d))
             f.m["schema"] = C.MANIFEST_SCHEMA

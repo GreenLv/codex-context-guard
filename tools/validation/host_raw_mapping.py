@@ -413,15 +413,13 @@ def _trust(
     ).measure_runtime(installed_root)
     if measured != runtime_digest or measured_version != plugin_version:
         raise MappingError("reviewed product Hooks do not bind the inspected runtime")
-    installed_collector = installed_root / "tools/validation/host_capture.py"
-    if expected_count == 16:
-        setup, _ = _read_json(user_config_path, "capture Hook configuration")
-        recorder_tokens = shlex.split(setup["hooks"]["PreToolUse"][0]["hooks"][0]["command"], posix=True)
-        if len(recorder_tokens) != 9:
-            raise MappingError("capture recorder argv differs")
-        installed_collector = Path(recorder_tokens[1])
-        if not installed_collector.is_absolute() or installed_collector.resolve(strict=True) != installed_collector:
-            raise MappingError("standalone recorder path is not canonical")
+    setup, _ = _read_json(user_config_path, "capture Hook configuration")
+    recorder_tokens = shlex.split(setup["hooks"]["PreToolUse"][0]["hooks"][0]["command"], posix=True)
+    if len(recorder_tokens) != 9:
+        raise MappingError("capture recorder argv differs")
+    installed_collector = Path(recorder_tokens[1])
+    if not installed_collector.is_absolute() or installed_collector.resolve(strict=True) != installed_collector:
+        raise MappingError("standalone recorder path is not canonical")
     if (
         installed_collector.is_symlink()
         or not installed_collector.is_file()
@@ -479,20 +477,23 @@ def _trust(
             raise MappingError("capture Hook command is not parseable") from exc
         if not tokens:
             raise MappingError("capture Hook command is empty")
-        expected = [
+        legacy_expected = [
             tokens[0], str(installed_collector), "record",
             "--capture-dir", str(capture_dir),
             "--runtime-root", str(installed_root),
             "--expected-event", event,
         ]
-        if expected_count == 16:
-            expected = [tokens[0], str(installed_collector), "record", "--expected-event", event,
-                        "--capture-dir", str(capture_dir), "--runtime-root", str(installed_root)]
-            _verify_windows_command(hook.get("commandWindows"), expected)
+        prepared_expected = [tokens[0], str(installed_collector), "record",
+                             "--expected-event", event, "--capture-dir", str(capture_dir),
+                             "--runtime-root", str(installed_root)]
+        if expected_count == 16 or hook.get("commandWindows") is not None:
+            _verify_windows_command(hook.get("commandWindows"), prepared_expected)
+        prepared = tokens == prepared_expected
+        legacy = expected_count == 11 and tokens == legacy_expected
         if (
-            tokens != expected
+            not (prepared or legacy)
             or hook.get("type") != "command"
-            or hook.get("timeout") != (3 if expected_count == 16 else 10)
+            or hook.get("timeout") != (3 if prepared else 10)
             or not Path(tokens[0]).is_file()
         ):
             raise MappingError("capture Hook command does not bind recorder/runtime/capture")

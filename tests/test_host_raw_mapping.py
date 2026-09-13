@@ -162,28 +162,12 @@ class Fixture:
 
     def _trust_review(self) -> None:
         self.home.mkdir()
-        def capture_command(event: str) -> str:
-            return shlex.join((
-                sys.executable,
-                str(ROOT / "tools/validation/host_capture.py"),
-                "record", "--capture-dir", str(self.capture),
-                "--runtime-root", str(ROOT), "--expected-event", event,
-            ))
-        user_config = {
-            "description": "Synthetic reviewed mapping fixture.",
-            "hooks": {
-                event: [{
-                    "matcher": ".*",
-                    "hooks": [{
-                        "type": "command", "command": capture_command(event),
-                        "timeout": 10,
-                    }],
-                }]
-                for event in ("PreToolUse", "PostToolUse")
-            },
-        }
         user_path = self.home / "hooks.json"
-        user_path.write_text(json.dumps(user_config, sort_keys=True))
+        CAPTURE.prepare_hooks(
+            user_path, python=Path(sys.executable), capture_dir=self.capture,
+            runtime_root=ROOT, events=("PreToolUse", "PostToolUse"),
+        )
+        user_config = json.loads(user_path.read_text())
 
         def records_from(
             config: dict[str, object], source: str, plugin_id: str | None,
@@ -597,7 +581,7 @@ class ReviewedRawMappingTests(unittest.TestCase):
             hooks = json.loads((fixture.home / "hooks.json").read_text())
             hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"] += " --extra"
             (fixture.home / "hooks.json").write_text(json.dumps(hooks, sort_keys=True))
-            with self.assertRaisesRegex(MAPPING.MappingError, "does not bind recorder"):
+            with self.assertRaisesRegex(MAPPING.MappingError, "recorder argv differs"):
                 fixture.adapt()
         with tempfile.TemporaryDirectory() as temp:
             fixture = self.fixture(temp)

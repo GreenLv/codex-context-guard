@@ -122,6 +122,70 @@ class Fixture:
 
 
 class CompositeTests(unittest.TestCase):
+    def hook_view_fixture(self, root):
+        f = Fixture(root)
+        home = f.root / "isolated-home"
+        home.mkdir()
+        current = home / "hooks.json"
+        current.write_bytes(b'{"hooks":"original"}')
+        views = {}
+        for child in f.children:
+            kind = child["kind"]
+            snapshot = f.root / (kind + "-hooks.json")
+            snapshot.write_bytes((kind + "-reviewed-hooks").encode())
+            views[kind] = {"snapshot": str(snapshot), "sha256": C.sha(snapshot.read_bytes())}
+            manifest = json.loads(Path(child["manifest"]).read_text())
+            if kind == "git_trust":
+                trust = f.root / "git-trust.json"
+                trust.write_text(json.dumps({"selected_home": str(home)}))
+                manifest["evidence"] = {"trust_review": str(trust),
+                                        "trust_review_sha256": C.sha(trust.read_bytes())}
+            else:
+                manifest["capture"]["selected_home"] = str(home)
+            Path(child["manifest"]).write_text(json.dumps(manifest))
+            child["manifest_sha256"] = C.sha(Path(child["manifest"]).read_bytes())
+            adapter = Path(child["carrier_root"]) / "tools/validation" / C.ADAPTERS[kind]
+            adapter.write_text(
+                "from pathlib import Path\n"
+                "def adapt(path, runtime, expected):\n"
+                f"    assert Path({str(current)!r}).read_bytes() == {(kind + '-reviewed-hooks').encode()!r}\n"
+                '    return {"subject": {}}, {"fresh_test_token": True}\n'
+            )
+            child["tool_sha256"][adapter.name] = C.sha(adapter.read_bytes())
+        f.m["schema"] = C.HOOK_VIEW_MANIFEST_SCHEMA
+        f.m["hook_views"] = {"schema": "offline-hook-views/v1", "path": str(current),
+                             "original_sha256": C.sha(current.read_bytes()), "children": views}
+        return f, current, views
+
+    def test_two_hook_snapshots_replay_and_restore_original(self):
+        with tempfile.TemporaryDirectory() as d:
+            f, current, _ = self.hook_view_fixture(Path(d))
+            original = current.read_bytes()
+            result = f.run()
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(current.read_bytes(), original)
+
+    def test_changed_hook_snapshot_rejects_without_changing_original(self):
+        with tempfile.TemporaryDirectory() as d:
+            f, current, views = self.hook_view_fixture(Path(d))
+            original = current.read_bytes()
+            Path(views["git_trust"]["snapshot"]).write_bytes(b"changed")
+            with self.assertRaisesRegex(C.CompositeError, "snapshot bytes"):
+                f.run()
+            self.assertEqual(current.read_bytes(), original)
+
+    def test_failed_child_replay_restores_original_hook_configuration(self):
+        with tempfile.TemporaryDirectory() as d:
+            f, current, _ = self.hook_view_fixture(Path(d))
+            original = current.read_bytes()
+            child = next(item for item in f.children if item["kind"] == "continuity")
+            adapter = Path(child["carrier_root"]) / "tools/validation" / C.ADAPTERS["continuity"]
+            adapter.write_text("def adapt(path, runtime, expected):\n    raise RuntimeError('synthetic replay failure')\n")
+            child["tool_sha256"][adapter.name] = C.sha(adapter.read_bytes())
+            with self.assertRaisesRegex(C.CompositeError, "fresh continuity replay rejected"):
+                f.run()
+            self.assertEqual(current.read_bytes(), original)
+
     def test_fresh_two_child_replays_cover_six_distinct_gates(self):
         with tempfile.TemporaryDirectory() as d:
             result = Fixture(Path(d)).run()

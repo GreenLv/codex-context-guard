@@ -4,8 +4,9 @@
 Each child is replayed by its original adapter and Validator in an isolated
 Python process. A stored result/receipt never replaces replay authority. No
 Hook execution, installation, Git mutation, network, or model action is performed here.
-The optional v2 manifest explicitly stages offline capture views at their original
-canonical path and restores the original directory; v1 remains read-only.
+The optional v2 manifest stages offline capture views. The v3 manifest stages
+two reviewed user Hook configurations at their shared isolated HOME path while
+replaying the children, then restores the original bytes. v1 remains read-only.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from typing import Any
 
 MANIFEST_SCHEMA = "context-guard-host-composite-manifest/v1"
 VIEW_MANIFEST_SCHEMA = "context-guard-host-composite-manifest/v2"
+HOOK_VIEW_MANIFEST_SCHEMA = "context-guard-host-composite-manifest/v3"
 RESULT_SCHEMA = "host-behavior-composite/v1"
 GATES = (
     "hook_trust",
@@ -128,13 +130,15 @@ def normalize_platform(value: dict[str, Any]) -> dict[str, str]:
     return {"os": system, "python": toolchain["python"], "codex": codex}
 
 
-def verify_manifest(path: Path, expected: str) -> dict[str, Any]:
+def verify_manifest(path: Path, expected: str, selected_hook_kind: str | None = None) -> dict[str, Any]:
     m = read(str(path), expected)
     keys = {"schema", "validator_sha256", "subject", "platform", "children"}
     if m.get("schema") == VIEW_MANIFEST_SCHEMA:
         keys.add("capture_views")
+    if m.get("schema") == HOOK_VIEW_MANIFEST_SCHEMA:
+        keys.add("hook_views")
     exact(m, keys, "manifest")
-    if m["schema"] not in {MANIFEST_SCHEMA, VIEW_MANIFEST_SCHEMA} or m["validator_sha256"] != sha(
+    if m["schema"] not in {MANIFEST_SCHEMA, VIEW_MANIFEST_SCHEMA, HOOK_VIEW_MANIFEST_SCHEMA} or m["validator_sha256"] != sha(
         Path(__file__).read_bytes()
     ):
         raise CompositeError("composite validator identity differs")
@@ -186,6 +190,8 @@ def verify_manifest(path: Path, expected: str) -> dict[str, Any]:
         raise CompositeError("children must replay against the same runtime root")
     if m["schema"] == VIEW_MANIFEST_SCHEMA:
         verify_capture_views(m)
+    if m["schema"] == HOOK_VIEW_MANIFEST_SCHEMA:
+        verify_hook_views(m, selected_hook_kind)
     return m
 
 
@@ -280,6 +286,90 @@ def verify_capture_views(m: dict[str, Any]) -> None:
             target = Path(c[key])
             if sink == target or sink in target.parents or target in sink.parents:
                 raise CompositeError("capture sink overlaps replay inputs")
+
+
+def verify_hook_views(m: dict[str, Any], selected_kind: str | None = None) -> None:
+    views = exact(m["hook_views"], {"schema", "path", "original_sha256", "children"}, "Hook views")
+    if views["schema"] != "offline-hook-views/v1":
+        raise CompositeError("Hook view schema differs")
+    target = file(views["path"])
+    if selected_kind is not None and selected_kind not in PARTITIONS:
+        raise CompositeError("unknown selected Hook view")
+    snapshots = exact(views["children"], set(PARTITIONS), "Hook view children")
+    expected_current = (views["original_sha256"] if selected_kind is None else
+                        snapshots[selected_kind]["sha256"])
+    if target.name != "hooks.json" or sha(target.read_bytes()) != expected_current:
+        raise CompositeError("original isolated Hook configuration changed")
+    if target.stat().st_nlink != 1:
+        raise CompositeError("Hook configuration hard links are not allowed")
+    sources = []
+    for child in m["children"]:
+        kind = child["kind"]
+        view = exact(snapshots[kind], {"snapshot", "sha256"}, "Hook snapshot")
+        snapshot = file(view["snapshot"])
+        if snapshot == target or snapshot.stat().st_nlink != 1 or sha(snapshot.read_bytes()) != view["sha256"]:
+            raise CompositeError("Hook snapshot bytes or identity changed")
+        sources.append(snapshot)
+        child_manifest = read(child["manifest"], child["manifest_sha256"])
+        selected = (child_manifest.get("evidence", {}).get("trust_review") if kind == "git_trust"
+                    else child_manifest.get("capture", {}).get("selected_home"))
+        if kind == "git_trust":
+            review = read(selected, child_manifest["evidence"]["trust_review_sha256"])
+            selected = review.get("selected_home")
+        if selected != str(target.parent):
+            raise CompositeError("Hook snapshot selected HOME differs")
+    if len(set(sources)) != len(PARTITIONS):
+        raise CompositeError("Hook snapshots must be independent files")
+
+
+@contextmanager
+def hook_view(m: dict[str, Any], kind: str):
+    """Temporarily select one captured Hook config; preserve and restore bytes."""
+    verify_hook_views(m)
+    views = m["hook_views"]
+    target = file(views["path"])
+    original_sha = views["original_sha256"]
+    view = views["children"][kind]
+    snapshot = file(view["snapshot"])
+    lock = target.with_name(target.name + ".offline-replay.lock")
+    fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(canonical({"schema": "offline-hook-replay-lock/v1", "pid": os.getpid()}))
+    lock_bytes = lock.read_bytes()
+    transaction = Path(tempfile.mkdtemp(prefix=".hook-replay-", dir=target.parent)).resolve()
+    backup = transaction / "original-hooks.json"
+    preserved = transaction / "replayed-hooks.json"
+    switched = False
+    try:
+        if sha(target.read_bytes()) != original_sha or sha(snapshot.read_bytes()) != view["sha256"]:
+            raise CompositeError("Hook configuration changed before replay")
+        rename_exclusive(target, backup)
+        if target.exists() or target.is_symlink():
+            raise CompositeError("Hook replay target occupied; original preserved at " + str(backup))
+        with target.open("xb") as stream:
+            stream.write(snapshot.read_bytes())
+        switched = True
+        if sha(target.read_bytes()) != view["sha256"]:
+            raise CompositeError("selected Hook snapshot differs")
+        yield
+        if sha(target.read_bytes()) != view["sha256"] or sha(snapshot.read_bytes()) != view["sha256"]:
+            raise CompositeError("Hook snapshot changed during replay")
+    finally:
+        if backup.exists():
+            if sha(backup.read_bytes()) != original_sha:
+                raise CompositeError("preserved Hook configuration changed; recovery required at " + str(transaction))
+            if switched:
+                if preserved.exists() or preserved.is_symlink() or not target.exists():
+                    raise CompositeError("Hook replay restore conflict; recovery required at " + str(transaction))
+                rename_exclusive(target, preserved)
+            elif target.exists() or target.is_symlink():
+                raise CompositeError("Hook replay restore target occupied; recovery required at " + str(transaction))
+            rename_exclusive(backup, target)
+            if sha(target.read_bytes()) != original_sha:
+                raise CompositeError("original Hook configuration was not restored")
+        if file(str(lock)).read_bytes() != lock_bytes:
+            raise CompositeError("Hook replay lock changed")
+        lock.unlink()
 
 
 def rename_exclusive(source: Path, destination: Path) -> None:
@@ -495,7 +585,9 @@ def compose(path: Path, expected: str) -> dict[str, Any]:
     gates = {}
     sessions = []
     for c in m["children"]:
-        context = capture_view(m, c["kind"]) if m["schema"] == VIEW_MANIFEST_SCHEMA else nullcontext(None)
+        context = (capture_view(m, c["kind"]) if m["schema"] == VIEW_MANIFEST_SCHEMA
+                   else hook_view(m, c["kind"]) if m["schema"] == HOOK_VIEW_MANIFEST_SCHEMA
+                   else nullcontext(None))
         with context as view_receipt:
             fresh = run_worker(path, expected, c["kind"])
         r = fresh["result"]
@@ -564,7 +656,9 @@ def compose(path: Path, expected: str) -> dict[str, Any]:
         "sessions": sessions,
         "gates": [gates[g] for g in GATES],
         "validation": {
-            "schema": RESULT_SCHEMA if m["schema"] == MANIFEST_SCHEMA else "host-behavior-composite/v2",
+            "schema": (RESULT_SCHEMA if m["schema"] == MANIFEST_SCHEMA else
+                       "host-behavior-composite/v2" if m["schema"] == VIEW_MANIFEST_SCHEMA else
+                       "host-behavior-composite/v3"),
             "validator_sha256": m["validator_sha256"],
             "composite_manifest_sha256": expected,
             "children": children,
@@ -615,7 +709,7 @@ def main() -> int:
     try:
         if args.replay_child:
             result = replay_child(
-                verify_manifest(args.manifest, args.sha256), args.replay_child
+                verify_manifest(args.manifest, args.sha256, args.replay_child), args.replay_child
             )
             print(json.dumps(result, sort_keys=True))
         else:
