@@ -4,6 +4,105 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.3`. Release history includes `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.8 Windows SessionEnd repair candidate (2026-09-13)
+
+The 0.13.7 diagnostic installation in an isolated, already logged-in HOME
+exposed a Codex CLI 0.153.4 warning: SessionEnd is clamped to three seconds,
+so its requested ten seconds were ineffective. Its real trusted Hook entry
+started, but did not return; a copied-state replay measured 2.540 seconds,
+exit code 1, and a PowerShell `StandardErrorEncoding` error when the broken
+WindowsApps `python3.exe` alias was probed. The private state was unchanged.
+PowerShell 5.1 in this environment is `Restricted` and would not load the
+script at all; the live trace proves the failing 0.13.7 run did enter the
+PowerShell 7 script, so this is a separate compatibility boundary. The live
+model request also encountered an `UnknownIssuer` transport error; this does
+not establish Hook completion or failure, and the failed run is retained.
+
+The 0.13.8 source declares the actual three-second limit, probes a working
+generic Python before broken launcher aliases, catches optional probe errors,
+and invokes the stateful core directly for SessionEnd on POSIX and Windows.
+Three copied-state Windows PowerShell replays of the direct path returned 0,
+changed the state, and took 1.892, 2.385 and 1.861 seconds. These are
+diagnostic replays, not trusted-host acceptance. The 0.13.6 and 0.13.7 caches,
+their raw captures, and failed results remain immutable. New portable, host,
+macOS, CI, HOL and publication gates have their own exact-source identities.
+
+An isolated 0.13.8 installation reused the already logged-in HOME, passed a
+strict second no-op, matched all 30 source runtime files, and passed the
+installed lifecycle smoke. Its runtime-tree SHA-256 is
+`761729e6437305860c6899ef9dc247f3b63721771bd4482b65f70f4787f7bcc6`;
+the retained 0.13.6 and 0.13.7 cache digests remained unchanged. Preflight
+pinned standalone Codex CLI 0.153.4, Python 3.12.10, and PowerShell 7.6.5 by
+absolute path, version and executable SHA-256. The real Hook review activated
+the product's nine events and each scenario's separately reviewed capture
+Hooks without bypassing trust. An existing public Windows root certificate
+was exported to a disposable PEM for process-local TLS trust; model requests
+then completed. The certificate store and daily installation were not changed.
+
+Two independent Git/trust sessions captured PreToolUse against the installed
+0.13.8 runtime, but Codex's nested `exec_command` failed before process
+creation with `Failed to create unified exec process: no home dir`. Supplying
+the actual user HOME in the second session did not change this result. Neither
+session captured PostToolUse or changed its local bare remote from the fixture
+baseline, so the three Git/trust host gates remain pending. Both sessions
+exited normally and the product wrote `ended_at` to their private state.
+Their raw captures and isolated configuration snapshots remain available for
+diagnosis; a successful PreToolUse capture is not a successful Git command.
+
+A separate continuity session captured two SessionStart, three
+UserPromptSubmit, three Stop, one PreCompact and one SessionEnd events. A
+manual compact produced one product compaction; a follow-up recovered the
+synthetic marker. At normal exit the current session had `ended_at` set and
+`integrity=ok`. This is real 0.13.8 Windows Hook-state evidence, but the
+tool-channel failure prevented independent command witnesses and the run did
+not create or verify a fresh expired-session cleanup fixture. The three
+continuity gates, including cleanup, therefore remain pending. The isolated
+HOME Hook configuration was restored to its pre-run SHA-256 afterward. No raw
+capture, private state or trust record was edited to obtain a pass.
+
+## 0.13.7 consumed diagnostic candidate (2026-09-13)
+
+The 0.13.6 Windows portable run passed five gates and cleanup under Python
+3.12.10 and standalone Codex 0.153.4. Its Git/trust host child passed three
+gates. A separate continuity session captured SessionEnd, but `ended_at`
+remained null and the expired fixture remained. The earlier npm 0.149.0
+launcher mismatch did not by itself explain this: a new standalone 0.153.4
+session repeated the same noncompletion. Replaying the genuine event into
+copies of private state through the installed Windows PowerShell entry
+completed in 2.828, 2.854 and 2.790 seconds, all above the old two-second
+SessionEnd host limit; direct Python entry completed in 0.661–0.712 seconds.
+These are diagnostic copies, not host-pass evidence. The 0.13.7 candidate
+requested ten seconds for SessionEnd and added opt-in private boundary
+telemetry. Codex clamped the request to three seconds, and real execution
+revealed an interpreter-probe failure; this candidate did not pass host
+cleanup. The old capture (including an orphan raw
+file), state, results, and consumed 0.13.6 cache remain unchanged. All new
+candidate gates require fresh exact-byte results; macOS host results are old
+candidate evidence until independently rerun.
+
+For this Windows candidate, `tools/validation/host_run_support.py preflight`
+stores the exact Codex, Python and PowerShell paths, versions and file digests,
+the runtime-tree digest, and a no-CRLF runtime-text check in an external
+`run.json`. `verify`, `launch`, and subsequent stage actions refuse drift;
+`launch` puts the pinned Python and PowerShell directories first on its child
+PATH without changing the daily environment.
+`login-status` checks the pinned Codex in the same isolated `CODEX_HOME`
+without copying credentials or requiring another login. `draft --scenario`
+uses the existing capture tool to produce deterministic event commands and a
+mapping draft explicitly marked `reviewed: false`; the continuity draft also
+binds synthetic prompts and `/compact`/`/exit` commands by SHA-256. A separate
+`fixture-git` creates a local bare remote, baseline and changed file with an
+unreviewed command draft. These steps do not activate a Hook or grant trust.
+`stage` binds separate login, trust, scenario, reviewed mapping,
+validation and export receipts by SHA-256 and preserves completed stages on
+retry. Trust requires an actual clean Hook readback and explicit operator
+review. Git/trust and continuity use separate Codex sessions, capture
+directories and configuration snapshots even when they share the logged-in
+isolated HOME. `bundle` allowlists a redacted result summary and a file
+manifest; `verify-bundle` checks its bytes independently and rejects extra
+files. None of these
+support steps replaces the existing host mapping or native validators.
+
 ## 0.13.6 local source freeze (2026-09-13)
 
 This source candidate supersedes the unpublished 0.13.5 information classifier. Whole-request matching preserves unknown execution tails; supported how-to questions and complete tutorial replies can close on delivery. Basic question and determiner/subject variants retain their answer path. Unknown wording remains pending, and promises or actual waits cannot use the tutorial exception. A separate bounded read-only review found no remaining reproducible P1/P2 in this changed family.

@@ -12,7 +12,7 @@ review and P4 candidate gates must include this behavior.
 
 - Current release: `0.13.3` (2026-09-11)
 - Published release baseline: `0.13.3`
-- Current source candidate: `0.13.6` (unreleased; answer delivery, bounded continuation feedback and HOL maintenance)
+- Current source candidate: `0.13.8` (unreleased; answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance)
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -38,14 +38,22 @@ restricted compound calls retain fail-closed release checks. Exact commit
 macOS and Windows. The 0.13.2 real-host evidence remains under its original
 version identity and is not relabeled as 0.13.3 evidence.
 
-## 0.13.6 source-candidate scope
+## 0.13.8 source-candidate scope
 
-Version 0.13.6 closes reply-only explanation requests on delivered answers while
+Version 0.13.8 closes reply-only explanation requests on delivered answers while
 retaining mixed execution and validation requirements. The entire request must match a bounded English/Chinese information grammar. Unknown trailing instructions and unsupported topic wording stay pending, including some complex pure consultations. How-to questions can name operations without requesting execution. A direct request to resume execution draws at most
 one Stop correction when the reply itself still identifies authorized assistant
 work; user-only input and external waits remain available. This is completion
 feedback, not a new tool-authorization gate. Schema, protocols, activation,
-default tool access and release enforcement are unchanged.
+default tool access and release enforcement are unchanged. Codex CLI 0.153.4
+clamps SessionEnd to three seconds. The consumed 0.13.7 candidate requested
+ten seconds, but the host still allowed only three; it also reached a broken
+WindowsApps Python alias after `py -3.12` exited 112. Version 0.13.8 declares
+three seconds, tries the verified generic Python earlier, treats launcher
+probe errors as negative probes, and routes SessionEnd directly to the heavy
+core on both platforms. An opt-in private Windows trace distinguishes entry,
+product return and interruption without recording input. Copied-state replay
+does not establish fresh trusted-host completion.
 
 Historical delivery reconstruction is unchanged and does not repair already-open
 items from earlier tasks. The new tests use isolated synthetic Hook payloads;

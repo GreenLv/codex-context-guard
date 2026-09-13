@@ -120,16 +120,25 @@ def prior_managed_marketplace_root(
     value: str | Path, codex_home: Path, repo_root: Path
 ) -> bool:
     """Recognize a previous pinned checkout or its sanitized staging root."""
-    candidate = Path(value).expanduser().resolve()
+    supplied = Path(value).expanduser()
+    if supplied.is_symlink():
+        return False
+    candidate = supplied.resolve()
     managed_parent = (
         codex_home.expanduser().resolve() / "upstreams" / PLUGIN_NAME
     )
     if candidate.parent != managed_parent or not candidate.is_dir():
         return False
-    if not (
+    pinned_checkout = bool(
         re.fullmatch(r"[0-9a-f]{40}(?:\.marketplace)?", candidate.name)
         or candidate.name == f"{MARKETPLACE}.marketplace"
-    ):
+    )
+    named_staging = bool(
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.marketplace", candidate.name)
+    )
+    if not (pinned_checkout or named_staging):
+        return False
+    if named_staging and embedded_git_metadata(candidate) is not None:
         return False
     expected_repository = plugin_repository(repo_root)
     return bool(

@@ -794,7 +794,8 @@ class CliTests(unittest.TestCase):
                     "--output", str(Path(directory) / "result.json"),
                 ],
                 cwd=ROOT, capture_output=True, text=True,
-                env={"PATH": "/nonexistent"},
+                env={"PATH": "/nonexistent", "PYTHONDONTWRITEBYTECODE": "1",
+                     "PYTHONUTF8": "1"},
             )
             self.assertNotEqual(completed.returncode, 0)
             self.assertFalse((Path(directory) / "result.json").exists())

@@ -6289,7 +6289,11 @@ class ContextGuardTests(unittest.TestCase):
                         hook["commandWindows"],
                     )
                     if hook is hooks["SessionEnd"][0]["hooks"][0]:
-                        self.assertLessEqual(hook["timeout"], 3)
+                        # Codex CLI 0.153.4 clamps SessionEnd to 3s. The
+                        # direct core entry avoids the router subprocess.
+                        self.assertEqual(hook["timeout"], 3)
+                        self.assertTrue(hook["command"].endswith("hook SessionEnd'"))
+                        self.assertTrue(hook["commandWindows"].endswith("hook SessionEnd"))
         skill_text = (
             MODULE_PATH.parent.parent
             / "skills"
@@ -6409,6 +6413,52 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS context-guard self-test", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Hook trace check")
+    def test_windows_session_end_trace_marks_product_return_without_input(self) -> None:
+        launcher = MODULE_PATH.parent / "run-context-guard.ps1"
+        trace_dir = self.root / "hook-trace"
+        trace_dir.mkdir()
+        private = self.root / "trace-private"
+        private.mkdir()
+        shell = shutil.which("pwsh") or shutil.which("powershell")
+        self.assertIsNotNone(shell)
+        payload = {
+            "hook_event_name": "SessionEnd",
+            "session_id": "trace-session",
+            "cwd": str(self.root),
+            "reason": "user_exit",
+            "prompt": "private input sentinel",
+        }
+        env = {**os.environ,
+               "CONTEXT_GUARD_DATA_DIR": str(private),
+               "CONTEXT_GUARD_HOOK_TRACE_DIR": str(trace_dir),
+               "PYTHONIOENCODING": "utf-8"}
+        # Keep the WindowsApps python3 alias later on PATH. The previous
+        # launcher reached it after py -3.12 failed and raised a terminating
+        # StandardErrorEncoding error before the real Python could run.
+        env["PATH"] = os.pathsep.join((str(Path(sys.executable).parent),
+                                       env.get("PATH", "")))
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command",
+             f"& '{launcher}' hook SessionEnd"],
+            input=json.dumps(payload), text=True, encoding="utf-8",
+            errors="replace", capture_output=True,
+            env=env, timeout=30, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        files = list(trace_dir.glob("*.jsonl"))
+        self.assertEqual(len(files), 1)
+        raw = files[0].read_text(encoding="utf-8")
+        lines = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([line["phase"] for line in lines], ["start", "end"])
+        self.assertEqual(lines[-1]["exit_code"], 0)
+        self.assertGreaterEqual(lines[-1]["elapsed_ms"], 0)
+        self.assertNotIn("private input sentinel", raw)
+        self.assertNotIn(str(self.root), raw)
+        state = json.loads((private / "sessions" / "trace-session" / "state.json")
+                           .read_text(encoding="utf-8"))
+        self.assertIsNotNone(state["session"]["ended_at"])
 
     def _installed_hook_command(self, key: str) -> str:
         hooks_path = MODULE_PATH.parent.parent / "hooks" / "hooks.json"
@@ -6600,7 +6650,7 @@ class ContextGuardTests(unittest.TestCase):
         environment["PLUGIN_ROOT"] = str(cache / "0.9.0")
         environment["CODEX_HOME"] = str(home)
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            [shutil.which("pwsh") or "powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input="{}",
             text=True,
             capture_output=True,
@@ -6616,7 +6666,7 @@ class ContextGuardTests(unittest.TestCase):
         missing_environment["PLUGIN_ROOT"] = str(self.root / "missing" / "9.9.9")
         missing_environment["CODEX_HOME"] = str(self.root / "empty-home")
         failed = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            [shutil.which("pwsh") or "powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input="{}",
             text=True,
             capture_output=True,
@@ -6643,7 +6693,7 @@ class ContextGuardTests(unittest.TestCase):
         environment["PLUGIN_ROOT"] = str(cache / "9.9.9")
         environment["CODEX_HOME"] = str(home)
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            [shutil.which("pwsh") or "powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input="{}",
             text=True,
             capture_output=True,
@@ -6794,15 +6844,21 @@ class ContextGuardTests(unittest.TestCase):
         environment.pop("CLAUDE_PLUGIN_DATA", None)
         environment["PLUGIN_ROOT"] = str(MODULE_PATH.parent.parent)
         environment["PLUGIN_DATA"] = str(self.root / "powershell-private")
+        environment["PATH"] = os.pathsep.join((
+            str(Path(sys.executable).parent),
+            str(Path(environment.get("SystemRoot", r"C:\Windows")) / "System32"),
+        ))
         payload = self.payload(
             "UserPromptSubmit",
             session="powershell-windows-session",
             prompt="synthetic PowerShell hook command test",
         )
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            [shutil.which("pwsh") or "powershell", "-NoProfile", "-NonInteractive", "-Command", command],
             input=json.dumps(payload),
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             env=environment,
             timeout=30,

@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.13.6"
+VERSION = "0.13.8"
 # Stop protocol 4.0 / schema 12 (0.13.2): the public contract pins the runtime
 # constants and the one-way safety contract fragments below.
 SCHEMA_VERSION = 12
@@ -233,13 +233,17 @@ def validate(root: Path) -> list[str]:
             errors.append("hooks.json must define the exact nine-event lifecycle")
         posix_commands: list[str] = []
         windows_commands: list[str] = []
+        session_end_commands: tuple[str, str] | None = None
         for event, groups in hooks.items():
             for group in groups:
                 for hook in group.get("hooks", []):
                     command = hook.get("command", "")
                     command_windows = hook.get("commandWindows", "")
-                    posix_commands.append(command)
-                    windows_commands.append(command_windows)
+                    if event == "SessionEnd":
+                        session_end_commands = (command, command_windows)
+                    else:
+                        posix_commands.append(command)
+                        windows_commands.append(command_windows)
                     if "$PLUGIN_ROOT" not in command:
                         errors.append(f"{event}: POSIX command must use PLUGIN_ROOT")
                     if "$env:PLUGIN_ROOT" not in command_windows:
@@ -270,10 +274,14 @@ def validate(root: Path) -> list[str]:
                             f"{event}: Windows fallback must match only strictly "
                             "semver versioned trees"
                         )
-        if len(set(posix_commands)) != 1 or len(set(windows_commands)) != 1:
+        if (len(set(posix_commands)) != 1 or len(set(windows_commands)) != 1
+                or session_end_commands is None
+                or not posix_commands[0].endswith('hook\'')
+                or session_end_commands[0] != posix_commands[0][:-5] + "hook SessionEnd'"
+                or session_end_commands[1] != windows_commands[0] + " SessionEnd"):
             errors.append(
-                "all nine Hook events must share one POSIX and one Windows "
-                "fallback command shape"
+                "Hook events must share one strict fallback, with only the "
+                "SessionEnd direct-core argument differing"
             )
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid hooks document: {exc}")

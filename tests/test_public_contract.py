@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import re
 import subprocess
@@ -39,6 +40,18 @@ identity = load(
 class PublicContractTests(unittest.TestCase):
     def test_repository_contract(self) -> None:
         self.assertEqual(contract.validate(ROOT), [])
+
+    def test_session_end_direct_core_is_the_only_hook_command_variant(self) -> None:
+        hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "hooks" / "hooks.json"
+            target.parent.mkdir()
+            end = hooks["hooks"]["SessionEnd"][0]["hooks"][0]
+            end["commandWindows"] += " extra"
+            target.write_bytes((json.dumps(hooks) + "\n").encode("utf-8"))
+            self.assertTrue(any("only the SessionEnd direct-core argument"
+                                in issue for issue in contract.validate(root)))
 
     def test_ci_lanes_are_independent_with_one_static_gate_and_summary(self) -> None:
         caller = (ROOT / ".github" / "workflows" / "ci.yml").read_text(

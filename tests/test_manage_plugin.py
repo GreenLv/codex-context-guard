@@ -777,6 +777,44 @@ class SafePluginInstallTests(unittest.TestCase):
         staging = manager.marketplace_staging_root(self.codex_home, current)
         self.assertTrue(manager.same_path(self.marketplace_state["root"], staging))
 
+    def test_ensure_marketplace_migrates_prior_checkout_named_staging(self) -> None:
+        self.write_source("0.1.3")
+        previous = (self.codex_home / "upstreams" / manager.PLUGIN_NAME
+                    / "windows-native-0136-checkout.marketplace")
+        previous_manifest = previous / ".codex-plugin" / "plugin.json"
+        previous_manifest.parent.mkdir(parents=True)
+        previous_manifest.write_text(json.dumps({
+            "name": manager.PLUGIN_NAME,
+            "version": "0.1.2",
+            "repository": "https://github.com/GreenLv/codex-context-guard",
+        }), encoding="utf-8")
+        self.marketplace_state = {"root": str(previous),
+                                  "marketplaceSource": {"source": str(previous)}}
+        with self.assertRaisesRegex(RuntimeError, "--apply"):
+            self.ensure_marketplace(apply=False)
+        self.assertEqual(self.run_calls, [])
+        self.assertTrue(self.ensure_marketplace(apply=True))
+        self.assertTrue(manager.same_path(
+            self.marketplace_state["root"],
+            manager.marketplace_staging_root(self.codex_home, self.repo_root),
+        ))
+
+    def test_named_staging_with_git_metadata_is_not_migration_authority(self) -> None:
+        self.write_source("0.1.3")
+        previous = (self.codex_home / "upstreams" / manager.PLUGIN_NAME
+                    / "untrusted-checkout.marketplace")
+        previous_manifest = previous / ".codex-plugin" / "plugin.json"
+        previous_manifest.parent.mkdir(parents=True)
+        previous_manifest.write_bytes(
+            (self.repo_root / ".codex-plugin" / "plugin.json").read_bytes()
+        )
+        (previous / ".git").mkdir()
+        self.marketplace_state = {"root": str(previous),
+                                  "marketplaceSource": {"source": str(previous)}}
+        with self.assertRaisesRegex(RuntimeError, "points elsewhere"):
+            self.ensure_marketplace(apply=True)
+        self.assertEqual(self.run_calls, [])
+
     def test_ensure_marketplace_migrates_legacy_named_managed_staging(self) -> None:
         current = self.codex_home / "upstreams" / manager.PLUGIN_NAME / ("b" * 40)
         self.repo_root = current

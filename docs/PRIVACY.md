@@ -17,6 +17,16 @@ execution should use the Codex-provided data directory.
 
 No plugin runtime state belongs in this Git repository.
 
+For opt-in Windows native acceptance only, `CONTEXT_GUARD_HOOK_TRACE_DIR`
+may point to an already-created private directory outside the repository.
+The PowerShell Hook entry writes one file per invocation containing a start
+boundary and, if the product returns, an end boundary with elapsed
+milliseconds and exit code. It does not write Hook stdin, prompts, paths or
+credentials. An incomplete trace is diagnostic evidence of interruption,
+not a successful Hook result. The host-run support journal and raw captures
+also remain private and outside this repository; its shareable result bundle
+allowlists status, gate names, digests and tool versions only.
+
 The optional maintainer incident corpus is also outside this repository and is
 not plugin runtime state. Its command-line tool keeps directories at `0700`
 and files at `0600` on POSIX. On Windows it uses the native PowerShell ACL
