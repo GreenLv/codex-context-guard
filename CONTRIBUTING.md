@@ -16,7 +16,10 @@ Thank you for helping improve Context Guard.
   `@users.noreply.github.com` address. CI audits every candidate commit while
   redacting any rejected identity value from its logs.
 - A Hook definition, state schema, or observable runtime behavior change
-  requires a plugin version change and release-note entry.
+  relative to a published release requires a plugin version change and release-note
+  entry. Unpublished candidate repairs may share a version while full commits
+  and runtime digests identify revisions. Use fresh isolated homes for changed
+  candidate bytes; never overwrite a consumed cache.
 
 ## Validation
 

@@ -65,12 +65,14 @@ authoritative.
 - Keep all nine Hook events and both POSIX and Windows command forms aligned
   unless an intentional versioned contract change says otherwise.
 - A Hook definition, state schema, observable behavior, runtime byte, or
-  installed lifecycle change requires a new plugin version and release-note
-  entry. Keep `pyproject.toml`, `.codex-plugin/plugin.json`, validator constants,
+  installed lifecycle change relative to a published release requires a new
+  plugin version and release-note entry. Unpublished candidate repairs may
+  keep one version: distinguish revisions by full commit and runtime digest,
+  retain prior evidence, and install changed bytes in a fresh isolated HOME. Keep `pyproject.toml`, `.codex-plugin/plugin.json`, validator constants,
   protocol documentation, and compatibility claims consistent.
 - Installed versioned plugin caches are immutable. Never refresh or repair an
-  already consumed version from new source bytes. Advance the patch version and
-  preserve old caches for open tasks.
+  already consumed cache from new source bytes. Preserve old caches for open
+  tasks; same-version candidate revisions use separate isolated homes.
 - Use the safe installer for cache and archive operations. Do not hand-copy into
   a live cache, delete historical caches automatically, or treat an unindexed or
   hash-mismatched archive as repair authority.

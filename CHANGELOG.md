@@ -16,6 +16,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Changes
 
+- Release a unique user confirmation wait even when its task remains active before Stop parks it. Ambiguous waits and external dependencies retain their existing release requirements.
+
 - Preserve validation requests phrased politely or as questions. After an explicit request to continue, a reply that still proposes authorized assistant work receives at most one correction; genuine user and external waits remain available.
 - Include the unpublished 0.13.4 HOL scanner and manual registry-refresh updates. That version was consumed in isolated installation and is not overwritten.
 

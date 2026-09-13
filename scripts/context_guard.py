@@ -9556,10 +9556,17 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
     )
     if (
         current is not None
-        and current.get("status") in stop3().WAITING_UNIT_STATUSES
+        and (
+            current.get("status") in stop3().WAITING_UNIT_STATUSES
+            or (
+                current.get("status") == "active"
+                and waiting_conditions_for_unit(state, str(current["id"]))
+            )
+        )
     ):
-        # The unit is parked behind typed wait conditions. Only the matching
-        # unique user-controlled condition is released by this prompt; a
+        # A typed wait can exist before Stop parks the active unit. Resolve
+        # that condition independently of the unit's presentation status.
+        # Only the matching unique user-controlled condition is released by this prompt; a
         # release reopens the unit only when no condition remains waiting.
         # Explicit switches open a sibling root and leave the parked unit
         # and its conditions untouched; external dependencies never release

@@ -28,6 +28,17 @@ transition checks pass. New native acceptance remains a separate gate. Earlier p
 to `30404100033c032a082597a1a7941014b30396bd` and the 0.13.8 runtime;
 they are not executions of 0.13.9. CI, HOL, tagging and publication are pending.
 
+The first 0.13.9 revision, `5b4864774c7ef6df8c4d17c8bf591497a50ec874`,
+passed macOS portable acceptance, including cleanup. Its real macOS session
+classified the explicit wait correctly and retained it across compaction,
+but failed to release it: the unit was still active, and the release path
+only examined parked units. This result remains a failed host observation.
+The next revision retains version 0.13.9 and resolves typed waits in active
+units through the same matching rules as parked units. All 88 focused wait,
+recovery and continuation tests pass; full checks and fresh native evidence
+for the changed bytes remain pending. Earlier 1,125-test and portable results
+belong to the first revision and do not certify this later runtime.
+
 ## 0.13.8 Windows SessionEnd repair candidate (2026-09-13)
 
 The 0.13.7 diagnostic installation in an isolated, already logged-in HOME

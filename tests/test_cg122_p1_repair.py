@@ -508,3 +508,43 @@ class PauseTokenBoundaryTests(P0Harness):
         self.prompt('Continue.')
         self.assertEqual(self.state()['wait_conditions'][0]['status'], 'waiting')
         self.assertEqual(self.state()['wait_conditions'][0]['condition_type'], 'external_dependency')
+
+
+class ActiveWaitReleaseTests(P0Harness):
+    def test_confirmation_releases_before_stop_parks_unit(self):
+        for compact in (False, True):
+            session = f'active-wait-{compact}'
+            self.activate(session)
+            self.prompt('Wait for my explicit next message before completing the task.', session)
+            self.assertEqual(self.state(session)['work_units'][0]['status'], 'active')
+            if compact:
+                self.dispatch('PreCompact', session=session)
+                self.dispatch('SessionStart', session=session, source='compact')
+            self.prompt('Continue.', session)
+            state = self.state(session)
+            self.assertEqual(state['wait_conditions'][0]['status'], 'released')
+            self.assertEqual(state['wait_conditions'][0]['released_by_kind'], 'root_user_confirmation')
+            self.assertEqual(state['work_units'][0]['status'], 'active')
+
+    def test_active_wait_rejects_non_authoritative_resume(self):
+        for index, text in enumerate(('Do not continue.', 'Can we continue?',
+                                      '> Continue.', 'The test should say Continue.')):
+            session = f'active-negative-{index}'
+            self.activate(session)
+            self.prompt('Wait for my explicit next message.', session)
+            self.prompt(text, session)
+            self.assertEqual(self.state(session)['wait_conditions'][0]['status'], 'waiting')
+
+    def test_active_external_wait_is_not_released_by_speech(self):
+        self.activate()
+        self.prompt('Wait for CI to finish.')
+        self.assertEqual(self.state()['work_units'][0]['status'], 'active')
+        self.prompt('Continue.')
+        self.assertEqual(self.state()['wait_conditions'][0]['status'], 'waiting')
+
+    def test_active_ambiguous_waits_are_not_released_by_generic_resume(self):
+        self.activate()
+        self.prompt('在我确认模型更换完成前，本任务保持等待。在我确认文件校验完成前，本任务保持等待。')
+        self.assertEqual(len(self.state()['wait_conditions']), 2)
+        self.prompt('继续。')
+        self.assertTrue(all(w['status'] == 'waiting' for w in self.state()['wait_conditions']))

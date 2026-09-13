@@ -7,6 +7,19 @@ The completed 0.9 release work is recorded in the authoritative
 Context Guard uses pre-1.0 semantic versioning as a product-contract signal,
 not as a measure of code volume.
 
+## Candidate revisions
+
+Keep compatible repairs within one unpublished candidate version until the
+candidate converges. Each revision is identified by its full source commit
+and runtime-tree digest, not by the version string alone. New runtime bytes
+invalidate artifact-bound evidence and must use a fresh isolated HOME for
+installation and native checks. Prior caches and evidence stay unchanged.
+A published version remains immutable and requires a new version for runtime
+changes. The consumed-version entries below describe historical candidates;
+they do not require a patch increment for each future repair iteration.
+
+## Historical version contracts
+
 - `0.4.x` is the compatible correctness, security, Hook/API compatibility,
   test, and documentation line. It does not add a state schema, diagnostic
   interface, or cache-lifecycle guarantee.
