@@ -12,7 +12,7 @@ review and P4 candidate gates must include this behavior.
 
 - Current release: `0.13.3` (2026-09-11)
 - Published release baseline: `0.13.3`
-- Current source candidate: `0.13.8` (unreleased; answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance)
+- Current source candidate: `0.13.9` (unreleased; answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance)
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -37,6 +37,18 @@ restricted compound calls retain fail-closed release checks. Exact commit
 `7e5212e` passed Candidate CI and HOL plus independent portable acceptance on
 macOS and Windows. The 0.13.2 real-host evidence remains under its original
 version identity and is not relabeled as 0.13.3 evidence.
+
+## 0.13.9 source-candidate scope
+
+The root pause classifier requires complete English dependency tokens, with
+bounded ordinary inflections. Embedded fragments in words such as `explicit`
+or `preview` no longer create external waits. Chinese dependency phrases and
+adjacent `CI` retain their meaning. Existing persisted wait types are unchanged;
+use a fresh test session to validate the corrected classification.
+The native continuity draft now emits the supported `Continue.` resume signal.
+No default execution approval, schema or external-fact requirement changes.
+Earlier 0.13.8 results retain their original identities and do not establish
+native acceptance of this new runtime.
 
 ## 0.13.8 source-candidate scope
 

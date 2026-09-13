@@ -157,6 +157,12 @@ class HostRunSupportTests(unittest.TestCase):
             self.assertFalse(commands["reviewed"])
             self.assertEqual(mapping["command_draft_sha256"], RUN.sha(folder / "commands.draft.json"))
             self.assertEqual(commands["runtime_tree_sha256"], item["runtime"]["sha256"])
+            spec = importlib.util.spec_from_file_location("draft_core", ROOT / "scripts/context_guard.py")
+            assert spec and spec.loader
+            core = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(core)
+            self.assertEqual(core.detect_root_pause(commands["prompts"][0]), "confirmation")
+            self.assertTrue(core.has_root_resume_intent(commands["prompts"][1]))
             with self.assertRaisesRegex(RUN.RunError, "already exists"):
                 RUN.draft(args, item)
 

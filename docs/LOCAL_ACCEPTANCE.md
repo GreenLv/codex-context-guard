@@ -4,6 +4,30 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.3`. Release history includes `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.9 confirmation-wait repair candidate (2026-09-13)
+
+Windows host work on `73e37a38a419fab8f99d3cdc83fe7f930cee7ec5`
+retained the 0.13.8 runtime digest but reproduced a classification defect:
+`explicit` contained an unbounded, case-insensitive `CI` match. The six
+formal host gates remained unpassed. Native-account subprocess creation
+worked; Git writes encountered sandbox/process errors. These observations
+do not establish that the earlier isolated-account execution problem is
+universally resolved, or that Hook trust, compact recovery and cleanup have
+passed their formal mappings.
+
+The 0.13.9 repair matches complete English dependency tokens with bounded
+ordinary inflections, while accepting CI adjacent to Chinese text. Synthetic
+regressions cover embedded substrings, genuine external dependencies, and
+confirmation release after Stop and compact/resume. Existing persisted waits
+are not reclassified. The continuity draft now uses the runtime's supported
+`Continue.` signal; a caller/runtime integration assertion guards that draft.
+All 42 focused repair and host-helper tests pass. The full macOS source suite
+runs 1,125 tests: 1,113 pass, 12 capability skips, and no failures or errors.
+Repository validation, privacy audit, Ruff, compile, self-test and historical
+transition checks pass. New native acceptance remains a separate gate. Earlier portable results remain bound
+to `30404100033c032a082597a1a7941014b30396bd` and the 0.13.8 runtime;
+they are not executions of 0.13.9. CI, HOL, tagging and publication are pending.
+
 ## 0.13.8 Windows SessionEnd repair candidate (2026-09-13)
 
 The 0.13.7 diagnostic installation in an isolated, already logged-in HOME

@@ -4,18 +4,20 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.3` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## Unreleased - 0.13.8 source candidate
+## Unreleased - 0.13.9 source candidate
 
 ### Highlights
 
+- Keep explicit user confirmation waits releasable: English dependency words must match complete tokens, so `explicit` and `specific` no longer count as CI. Actual CI and external waits retain their evidence requirements.
 - Persist Windows `SessionEnd` state within Codex CLI's three-second limit: skip the router's extra Python process, and probe the working Python before broken `py` or WindowsApps aliases. The expired-session cleanup gate still needs a complete host readback. The 0.13.7 diagnostic cache remains untouched.
 - Reuse a logged-in isolated HOME across new candidate checkouts: the managed installer now recognizes its own prior checkout-named sanitized marketplace staging root while rejecting unrelated or Git-bearing directories.
 - Keep unfinished execution requests in recovery even when an explanation comes first: "list the files then delete temporary files" cannot close on an answer alone.
 - A delivered explanation can close a supported reply-only request, including "how do I publish a version?". Operation names inside a how-to explanation no longer create unfinished work by themselves.
-- Preserve validation requests phrased politely or as questions. After an explicit request to continue, a reply that still proposes authorized assistant work receives at most one correction; genuine user and external waits remain available.
-- Include the unpublished 0.13.4 HOL scanner and manual registry-refresh updates. That version was consumed in isolated installation and is not overwritten.
 
 ### Changes
+
+- Preserve validation requests phrased politely or as questions. After an explicit request to continue, a reply that still proposes authorized assistant work receives at most one correction; genuine user and external waits remain available.
+- Include the unpublished 0.13.4 HOL scanner and manual registry-refresh updates. That version was consumed in isolated installation and is not overwritten.
 
 - `SessionEnd` declares the host's actual three-second maximum instead of asking for a deadline Codex silently clamps. Its POSIX and Windows launchers invoke the stateful core directly for this event; all other Hook routing remains unchanged.
 - An opt-in Windows Hook trace writes start and end boundaries, elapsed milliseconds and exit code to a private acceptance directory. It records no Hook input, user text or credentials; a start without an end remains an interrupted or errored boundary, not a pass.

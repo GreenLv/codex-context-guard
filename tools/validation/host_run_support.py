@@ -201,7 +201,7 @@ def draft(args: argparse.Namespace, item: dict) -> None:
         prompts = [
             "For this isolated continuity test, remember the marker " + marker
             + ". Wait for my explicit next message before completing the task. Do not use tools or change files.",
-            "Continue the synthetic task now. State the marker from my earlier message, then stop. Do not use tools or change files.",
+            "Continue.",
             "What marker did I ask you to remember before the compact? Answer with the marker only. Do not use tools.",
         ]
         write_new(commands, {

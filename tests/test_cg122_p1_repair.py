@@ -466,3 +466,45 @@ class FinalBoundaryTests(P0Harness):
                     state['wait_conditions'][0][key] = value
                 with self.assertRaises(cg.StateIntegrityError):
                     cg.validate_wait_conditions(state)
+
+
+class PauseTokenBoundaryTests(P0Harness):
+    def test_embedded_english_fragments_do_not_create_external_waits(self):
+        for word in ('explicit', 'specific', 'decision', 'precision', 'lucid',
+                     'preview', 'rebuildable', 'CI_REPORT', 'ci2'):
+            with self.subTest(word=word):
+                self.assertEqual(cg.detect_root_pause(f'Wait for my {word} message.'),
+                                 'confirmation')
+
+    def test_external_tokens_and_inflections_keep_external_provenance(self):
+        for subject in ('CI', 'ci', 'CI/CD', 'build', 'builds', 'building',
+                        'deploy', 'deployment', 'deployments', 'deployed',
+                        'review', 'reviews', 'reviewing', 'pipeline', 'pipelines',
+                        'subagent', 'subagents', 'external result'):
+            with self.subTest(subject=subject):
+                self.assertEqual(cg.detect_root_pause(f'Wait for {subject} to finish.'),
+                                 'external_dependency')
+        self.assertEqual(cg.detect_root_pause('等待CI完成后再继续。'),
+                         'external_dependency')
+
+    def test_generated_confirmation_releases_across_compaction(self):
+        self.activate()
+        self.prompt('Wait for my explicit next message before completing the task.')
+        self.assertEqual(self.state()['wait_conditions'][0]['condition_type'], 'confirmation')
+        self.dispatch('Stop', last_assistant_message='Waiting for your next message.')
+        self.dispatch('PreCompact')
+        self.dispatch('SessionStart', source='compact')
+        self.prompt('Continue the synthetic task now.')
+        self.assertEqual(self.state()['wait_conditions'][0]['status'], 'waiting')
+        self.prompt('Continue.')
+        condition = self.state()['wait_conditions'][0]
+        self.assertEqual(condition['status'], 'released')
+        self.assertEqual(condition['released_by_kind'], 'root_user_confirmation')
+
+    def test_real_ci_wait_is_not_released_by_user_continue(self):
+        self.activate()
+        self.prompt('Wait for CI to finish before continuing.')
+        self.dispatch('Stop', last_assistant_message='Waiting for CI.')
+        self.prompt('Continue.')
+        self.assertEqual(self.state()['wait_conditions'][0]['status'], 'waiting')
+        self.assertEqual(self.state()['wait_conditions'][0]['condition_type'], 'external_dependency')

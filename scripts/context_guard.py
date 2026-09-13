@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.8"
+PRODUCT_VERSION = "0.13.9"
 SCHEMA_VERSION = 12
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -940,7 +940,13 @@ ROOT_PAUSE_RE = re.compile(
     re.I,
 )
 ROOT_PAUSE_EXTERNAL_RE = re.compile(
-    r"(?:CI|构建|部署|审核|审批|发布|流水线|外部|子任务|子代理|subagent|external|build|deploy|review|pipeline)",
+    # English dependency words must be complete ASCII tokens, including a
+    # bounded set of ordinary inflections. Chinese text can adjoin CI without
+    # whitespace, so Unicode word boundaries would reject genuine waits.
+    r"(?:构建|部署|审核|审批|发布|流水线|外部|子任务|子代理|"
+    r"(?<![A-Za-z0-9_])(?:CI|subagents?|external(?:ly)?|build(?:s|ing)?|"
+    r"deploy(?:s|ed|ing|ments?)?|review(?:s|ed|ing|ers?)?|pipelines?)"
+    r"(?![A-Za-z0-9_]))",
     re.I,
 )
 # Bounded release semantics (plan 3.2: only the unique matching user-
