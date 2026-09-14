@@ -1,5 +1,8 @@
 # Context Guard 0.9 development plan
 
+> Historical, completed 0.9-line plan. Its checkpoint-only design is not the current default Stop contract. Use [current compatibility](COMPATIBILITY.md) and [current architecture](ARCHITECTURE.md) for maintained behavior.
+
+
 Status: **Completed**
 
 Target: plugin `0.9.4`, Stop protocol `2.0.0`

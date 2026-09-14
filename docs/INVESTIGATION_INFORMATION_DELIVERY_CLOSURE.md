@@ -1,6 +1,6 @@
 # Information delivery and execution continuity
 
-Status: 0.13.6 source-candidate investigation. This document describes synthetic reproductions and source changes, not installed or native-host acceptance.
+Status: historical investigation of the 0.13.6–0.13.9 information-delivery changes. Those versions are released; exact acceptance belongs to LOCAL_ACCEPTANCE.md. Remaining complex-request and conditional Stop-feedback defects are tracked in [the next-version follow-up](NEXT_VERSION_SEMANTIC_FOLLOWUP.md). This page is rationale and regression history, not a new candidate or native-host receipt.
 
 ## Defect and scope
 

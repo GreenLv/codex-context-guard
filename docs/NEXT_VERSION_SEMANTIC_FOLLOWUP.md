@@ -44,3 +44,46 @@ Codex 普通执行路径在 0.13.2/0.13.3 后不再依赖 Guard 重建授权链�
 5. 若行为进入共享语义，依 [SEMANTIC_COMPATIBILITY.md](SEMANTIC_COMPATIBILITY.md) 先形成中立合成用例，再更新 DSH 的精确镜像与原生验证。
 
 本轮只记录问题和待办，不修改 Codex 运行时、缓存、Hook、版本或共享 fixture。下一次实施应先冻结此处的边界与反例，再选择协议和迁移方案；当前文档可继续补充实际观察与验收结果。
+
+## 新增：Stop 对条件后续动作与时间等待的误反馈
+
+2026-09-14 收到用户手动转交的 Windows 本机只读诊断回执，覆盖截至当日 07:51:19 UTC 的 session 与 decision 记录，共两次可见 Hook 反馈。以下为转交证据，协调端未直接重读原文件。两次均为 `visible_correction`，观察分类为 `gate_authorized_remaining_work`，动作为 `generic_work / assistant / authorized`，原因含 `assistant_actionable_work_remains` 与 `explicit_user_persistence`。反馈项指向 0.13.9；事前 doctor 核验 `0.13.9@1575c41d318b4c348387532110526f4a63801f07`，Stop 协议 4.0.0、分类器 3.3.0。缺少事发瞬间脚本哈希；decision 未保存 whole_completion_claim，该值保持 unknown。
+
+- 第一次（06:22 UTC）：总结仍包含环境检查；反馈后继续只读检查依赖与证据边界，没有应用运行时或提交推送。按回执可认定有合理纠正依据，但分类未分开即时检查和须另行授权的步骤。
+- 第二次（07:25 UTC）：总结混合未来观察窗口复评与宿主警告处理；反馈后复核了可比任务门槛，还创建定时复评，后被用户要求删除。即时门槛复核是否属于此前尚未完成的必要工作不够明确，故整次误反馈仍未确认。创建自动化属于助手后续范围判断，不能由 Stop 反馈推导授权，也不能反证纠正合理。
+
+两次分类链同类，不等于两次均是误报。期间存在正常静默外部等待的 decision，没有证据支持持续状态残留或版本错配。
+不过，同路径的中立合成反例在提交 `569de15181a2f6f90b400cbb1424e1b292a6f5b6` 上确认了产品缺陷。以下使用独立临时状态、直接生产 `UserPromptSubmit → Stop` 分发，不读取或修改真实任务账本。用户输入均为“按照你的建议执行”，每例仅第一次 Stop：
+
+| 合成最终回复 | 当前结果 | 应有边界 |
+| --- | --- | --- |
+| 源码部分已完成，完整验收尚未通过。下一步须经单独授权应用运行时策略。 | `generic_work / assistant / authorized`，block | 无可独立执行工作时静默保留 pending；缺授权不能被当成已授权 |
+| 源码修复和测试已完成。后续需要等待观察窗口满十四天。 | `generic_work / assistant / authorized`，block | 时间尚未到期不能靠继续调用工具补齐；未验证时间条件可保持 unknown，不能伪造 actionable |
+| 源码修复和测试已完成。请你授权应用运行时策略；收到授权后我再继续。 | `user_action / user / user_only`，静默 | 正常用户交接对照 |
+| 源码修复和测试已完成。下一步是运行剩余测试。 | `test_verify / assistant / authorized`，block | 正常继续工作对照，不应随修复放过 |
+
+### 根因链
+
+1. `remaining_action_facts` 以有限的 `USER_HANDOFF_RE`、`USER_DEPENDENT_ASSISTANT_RE` 和 `EXTERNAL_WAIT_RE` 判断条件。间接表达“经单独授权”和自然时间等待不一定匹配。
+2. 后续动作标记仍能匹配；当具体动作没有识别出来时，函数生成 `generic_work`。此时未知语义被升级为助手动作，而非保留未知。
+3. `prompt_action_scope` 将简短执行续接视为 broad，`_action_authorization` 又把 broad 或模糊范围映射成 authorized。这里是 Stop 内部推断，不是真正授予工具执行权限；它也没有在这个调用中解析完整历史授权边界。
+4. `handle_stop` 将“执行续接 + inferred authorized assistant action”设为继续工作信号。`cg_stop3.resolve_waiting_owner` 优先选择 assistant，最终消耗一次纠正预算。反馈说用户要求持续执行，未区分明确持续要求和续接推断，诊断也不够精确。
+
+这是跨平台的 Python 分类与 Stop 决策问题，Windows 只是观察来源。不是 DSH prepare 的 JSON 序列化错误，也不是普通工具授权否决。单次纠正预算仍有效；本轮没有证明无限循环或越权执行。
+
+### 下版修复与验收
+
+- 为每个后续动作保留原文跨度、条件、主体、范围和是否可立即执行；“未知动作”不能仅凭 broad 续接被提升为 actionable。时间条件不明时保留 pending/unknown，不自动创建已验证外部等待事实。
+- 分开记录 `explicit_user_persistence` 与 `resume_with_actionable_work` 的诊断来源。只在有实际可执行工作时使用现有一次纠正预算。
+- 同一句中的独立检查、用户授权后的动作与时间条件分开判断，不能用一个等待词压掉仍可执行的测试，也不能用一个动作词消除其前置条件。
+- 补齐上表、中文间接授权、英文 subject-to-approval、被动表达、跨句条件、短续接继承限制、可并行独立动作、历史/引用、阶段完成及单次预算的生产分发回归。
+- 已取得转交的真实事件诊断；后续回归须验证逐动作条件归属及第二次事件是否尚有必要即时工作。不得把缺失的事发哈希或 whole_completion_claim 补写为已知。
+- 先形成回归与修复候选，再决定版本和 native 验收；不得通过无限扩展关键词、关闭 pending 或恢复默认工具否决来规避问题。
+
+现有信息交付调查文档规定了正确等待应静默，但没有记录这个 `generic_work` 回退与续接推断组合的反例。该条因此并入本页的后续语义工作，而不是另立一个重复的大方案。状态为“合成缺陷已确认、两次真实分类链已核对、第二次是否整体误报仍未确认、运行时尚未修复”。
+
+### 分句对照与事故库
+
+收到回执后，在同一源码提交上补跑四个中立改写、独立临时状态的生产 Hook 用例：即时环境检查与待授权应用的混合句得到 local_review；未来复评与环境警告的混合句得到 generic_work；删除环境警告后的纯未来复评仍得到 generic_work；单独即时环境检查得到 local_review。四例均 block。改写不是原事件逐字重放，只用于隔离因素；纯未来例证明误判仍存在，混合例说明不能凭整句结果确定每个动作都可执行。
+
+context-guard-effectiveness 的 `CGI-20260914-codex-conditional-wait-stop` 保留 macOS 合成复现；`CGI-20260914-codex-windows-stop-feedback-confirmed-chain` 修订此前待取证记录，状态仍为 unresolved，表示第二次误报性质未定。DSH prepare 的根因和 0.5.3 源修复见 `CGI-20260914-dsh-prepare-output-root-cause`。案例不计入效果估计分母，转交 Windows 观察不等于 Windows 修复验收通过。

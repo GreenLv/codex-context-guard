@@ -1,5 +1,8 @@
 # 0.12.4 behavior baseline
 
+> Historical 0.12.4 baseline, retained for release provenance and existing links. It is not the current default behavior. Use [current compatibility](COMPATIBILITY.md); next-version issues are tracked in [the follow-up](NEXT_VERSION_SEMANTIC_FOLLOWUP.md).
+
+
 Status: **0.12.4 release baseline — 2026-09-09** (private state schema 11,
 Stop protocol 3.0.0, classifier 3.2.1, Proof 1.0.0, Execution 2.0.0, nine Hook
 events, Python 3.10+ standard-library runtime). This document is the current
