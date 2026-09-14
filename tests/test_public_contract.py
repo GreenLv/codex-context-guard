@@ -199,7 +199,7 @@ class PublicContractTests(unittest.TestCase):
         badge = (
             "[![HOL Guard](https://img.shields.io/endpoint?url="
             "https%3A%2F%2Fhol.org%2Fapi%2Fregistry%2Fbadges%2Fplugin%3Fslug%3D"
-            "greenlv%252Fcodex-context-guard%26metric%3Dtrust)]"
+            "greenlv%252Fcodex-context-guard%26metric%3Dtrust&label=HOL%20trust)]"
             "(https://hol.org/registry/plugins/greenlv%2Fcodex-context-guard)"
         )
         for readme in (english, chinese):
