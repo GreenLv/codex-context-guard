@@ -4,6 +4,19 @@ This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.3`. Release history includes `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
+## 0.13.9 native acceptance closeout (2026-09-14)
+
+The accepted runtime-tree SHA-256 is `6719501aa37601ad7f9db9a2f7672214f1c96a41cc300f6a85be2a22ba9d491d`. Version 0.13.9 remains an unpublished candidate. Compatible local repairs retain this version; commits and runtime digests distinguish revisions, and consumed caches remain unchanged.
+
+- **Windows:** two independent real sessions at `1106f7c022accbecc38440c41d709d655fdc25f2` passed all six host gates. Portable acceptance also passed all five gates and cleanup at that execution commit. Tool-only commit `3b079250dd7c3eb88f713719a5efd5585c0d0d73` revalidated the original capture; it is not a new host or installation run. The redacted delivery ZIP has SHA-256 `882855da0047156d6d69468372ec9af1477d5ee4cde73ee3de3df2140e75f97a`. The coordinator verified the ZIP and nested file identities. Private before/after cleanup witnesses were recomputed on Windows; the redacted ZIP alone cannot independently prove deletion. The separate cleanup attestation has SHA-256 `288d9aeb9b24ec154cb6102c8d9419a911d212820b538c4c29d204421680537d`.
+- **macOS:** two independent real sessions at `3b079250dd7c3eb88f713719a5efd5585c0d0d73`, using Codex CLI 0.153.4 and Python 3.12.2, passed Hook trust, confirmation-wait release, compact/resume, commit observation, local push readback and cleanup. The composite result has SHA-256 `1d3bef472cfe73210946ee1c244aecdb525bc23c8658ef2db6984f610c56cb9e`. Raw state witnesses establish that one expired fixture was removed, the current session ended, and all other retained sessions were unchanged. The previously passed macOS portable run remains bound to `1106f7c022accbecc38440c41d709d655fdc25f2` and this same runtime digest.
+
+macOS replay exposed an overly strict tool check of JSON event-key order. The corrected adapter accepts reordered object keys while still requiring the exact seven events and exact per-event commands, timeouts and hashes. Its 70-test focused mapping/composite suite passes, including a regression that fails before the repair and missing, extra, wrong-case and malformed event-set rejection. The composite above uses this repaired adapter; the real sessions were not rerun or relabeled as execution of the tool repair. Runtime bytes are unchanged.
+
+The final macOS current-behavior suite runs 1,133 tests: 1,121 pass, 12 capability skips, and no failures or errors. Repository validation, tracked-tree privacy audit, identity audit, historical transition audit, self-test, Ruff and compilation pass. The candidate reader documents also pass their hash-bound bilingual review.
+
+Normal per-command approvals handled the macOS sandbox process restriction; failed attempts remain in the private capture and do not count as successful operations. Isolated Hook configuration was restored after replay. Daily installations were unchanged. Final-source CI, HOL, tag and Release publication remain pending.
+
 ## 0.13.9 confirmation-wait repair candidate (2026-09-13)
 
 Windows host work on `73e37a38a419fab8f99d3cdc83fe7f930cee7ec5`
@@ -35,8 +48,7 @@ but failed to release it: the unit was still active, and the release path
 only examined parked units. This result remains a failed host observation.
 The next revision retains version 0.13.9 and resolves typed waits in active
 units through the same matching rules as parked units. All 88 focused wait,
-recovery and continuation tests pass; full checks and fresh native evidence
-for the changed bytes remain pending. Earlier 1,125-test and portable results
+recovery and continuation tests pass. The closeout above records the later full checks and native evidence. Earlier 1,125-test and portable results
 belong to the first revision and do not certify this later runtime.
 
 ## 0.13.8 Windows SessionEnd repair candidate (2026-09-13)

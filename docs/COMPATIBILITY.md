@@ -48,7 +48,7 @@ use a fresh test session to validate the corrected classification.
 The native continuity draft now emits the supported `Continue.` resume signal.
 No default execution approval, schema or external-fact requirement changes.
 Earlier 0.13.8 results retain their original identities and do not establish
-native acceptance of this new runtime.
+native acceptance of this new runtime. The accepted 0.13.9 runtime now has independent Windows and macOS six-gate host results and portable results; see [exact execution and replay identities](LOCAL_ACCEPTANCE.md#0139-native-acceptance-closeout-2026-09-14).
 
 ## 0.13.8 source-candidate scope
 

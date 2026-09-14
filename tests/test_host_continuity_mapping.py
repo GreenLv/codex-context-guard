@@ -661,6 +661,26 @@ class ContinuityMappingTests(unittest.TestCase):
 
 
 class WindowsCommandCanonicalTests(unittest.TestCase):
+    def test_event_object_order_is_irrelevant_but_membership_is_exact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(Path(temp))
+            setup = json.loads(fixture.setup.read_bytes())
+            setup["hooks"] = dict(reversed(list(setup["hooks"].items())))
+            self.assertTrue(MAPPING._verify_setup(setup, fixture.capture, ROOT))
+            for change in ("missing", "extra", "wrong_case", "not_object"):
+                with self.subTest(change=change):
+                    altered = copy.deepcopy(setup)
+                    if change == "missing":
+                        del altered["hooks"]["Stop"]
+                    elif change == "extra":
+                        altered["hooks"]["SubagentStop"] = altered["hooks"]["Stop"]
+                    elif change == "wrong_case":
+                        altered["hooks"]["stop"] = altered["hooks"].pop("Stop")
+                    else:
+                        altered["hooks"] = list(altered["hooks"])
+                    with self.assertRaises(MAPPING.ContinuityMappingError):
+                        MAPPING._verify_setup(altered, fixture.capture, ROOT)
+
     def test_generated_command_and_noncanonical_expressions(self):
         with tempfile.TemporaryDirectory() as temp:
             fixture = Fixture(Path(temp))

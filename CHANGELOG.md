@@ -9,7 +9,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Highlights
 
 - Keep explicit user confirmation waits releasable: English dependency words must match complete tokens, so `explicit` and `specific` no longer count as CI. Actual CI and external waits retain their evidence requirements.
-- Persist Windows `SessionEnd` state within Codex CLI's three-second limit: skip the router's extra Python process, and probe the working Python before broken `py` or WindowsApps aliases. The expired-session cleanup gate still needs a complete host readback. The 0.13.7 diagnostic cache remains untouched.
+- Persist Windows `SessionEnd` state within Codex CLI's three-second limit: skip the router's extra Python process, and probe the working Python before broken `py` or WindowsApps aliases. The 0.13.7 diagnostic cache remains untouched.
 - Reuse a logged-in isolated HOME across new candidate checkouts: the managed installer now recognizes its own prior checkout-named sanitized marketplace staging root while rejecting unrelated or Git-bearing directories.
 - Keep unfinished execution requests in recovery even when an explanation comes first: "list the files then delete temporary files" cannot close on an answer alone.
 - A delivered explanation can close a supported reply-only request, including "how do I publish a version?". Operation names inside a how-to explanation no longer create unfinished work by themselves.
@@ -28,6 +28,8 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - Schema, public protocols, activation rules, default tool access and release enforcement are unchanged. The new runtime uses a new plugin version; consumed 0.13.6, 0.13.7 and older caches remain immutable.
 
 ### Validation
+
+- Native Windows and macOS each pass all six real-host gates for the accepted 0.13.9 runtime; portable installation and cleanup also pass. Tool repairs are replayed against original captures without relabeling their execution commits. Exact-source CI, HOL and publication remain pending; see [acceptance boundaries](docs/LOCAL_ACCEPTANCE.md).
 
 - Focused synthetic Hook tests cover mixed requests, question-shaped acceptance criteria, compact/resume, bounded corrections and genuine waits. Full candidate results and limitations are recorded in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 - The earlier 0.13.4 installation and source results retain their original identity. They do not validate these changed runtime bytes. Native trusted-Hook acceptance, CI, HOL ingestion and publication remain separate gates.

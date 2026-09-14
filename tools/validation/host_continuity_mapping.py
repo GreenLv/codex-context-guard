@@ -252,7 +252,9 @@ def _verify_setup(setup: dict[str, Any], capture_dir: Path,
         raise ContinuityMappingError("capture setup shape differs")
     events = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact",
               "SessionStart", "Stop", "SessionEnd"]
-    if list(setup.get("hooks", {})) != events:
+    # JSON object member order does not order distinct Hook events. Keep the
+    # exact event set and each event's handler contract, independent of order.
+    if not isinstance(setup.get("hooks"), dict) or set(setup["hooks"]) != set(events):
         raise ContinuityMappingError("capture setup does not select the exact lifecycle events")
     collector = Path(__file__).with_name("host_capture.py").resolve(strict=True)
     for event in events:
