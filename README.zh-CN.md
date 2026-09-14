@@ -12,9 +12,9 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前正式版本：`0.13.3`。详见[发布说明](docs/releases/v0.13.3.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 当前正式版本：`0.13.9`。详见[发布说明](docs/releases/v0.13.9.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 >
-> 源码候选：`0.13.9`（未发布）。它修复 `explicit` 等词被误判为 CI 等待、回答交付记录、有界的继续执行提醒和 Windows `SessionEnd` 清理入口，并包含 HOL scanner 与注册表刷新更新，尚未创建 tag 或发布。自动答复关闭仅覆盖受支持的中英文信息请求，无法识别的措辞继续保留待办；详见[候选说明](docs/releases/v0.13.9.md)。
+> `0.13.9`：它修复 `explicit` 等词被误判为 CI 等待、回答交付记录、有界的继续执行提醒和 Windows `SessionEnd` 清理入口，并包含 HOL scanner 与注册表刷新更新。自动答复关闭仅覆盖受支持的中英文信息请求，无法识别的措辞继续保留待办；详见[发布说明](docs/releases/v0.13.9.md)。
 >
 > `0.13.3`：即使已启用的发布账本无法读取，普通提交和单次分支推送仍可继续，发布操作则继续 fail-closed。它是兼容性补丁，不改变 schema、协议、启用条件或宿主权限。
 >

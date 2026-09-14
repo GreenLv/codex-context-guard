@@ -10,9 +10,9 @@ review and P4 candidate gates must include this behavior.
 
 ## Baselines
 
-- Current release: `0.13.3` (2026-09-11)
-- Published release baseline: `0.13.3`
-- Current source candidate: `0.13.9` (unreleased; answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance)
+- Current release: `0.13.9` (2026-09-14)
+- Published release baseline: `0.13.9`
+- Current release scope: `0.13.9` (answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance)
 - Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
 - Proof protocol: `1.0.0`
 - Stop protocol: `4.0.0`
@@ -38,7 +38,7 @@ restricted compound calls retain fail-closed release checks. Exact commit
 macOS and Windows. The 0.13.2 real-host evidence remains under its original
 version identity and is not relabeled as 0.13.3 evidence.
 
-## 0.13.9 source-candidate scope
+## 0.13.9 release scope
 
 The root pause classifier requires complete English dependency tokens, with
 bounded ordinary inflections. Embedded fragments in words such as `explicit`

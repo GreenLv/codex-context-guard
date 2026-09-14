@@ -242,11 +242,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.13.3`.",
+            "> Current release: `0.13.9`.",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.13.3`。",
+            "> 当前正式版本：`0.13.9`。",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -345,10 +345,10 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current release: `0.13.3` (2026-09-11)",
+            "Current release: `0.13.9` (2026-09-14)",
             compatibility,
         )
-        self.assertIn("Published release baseline: `0.13.3`", compatibility)
+        self.assertIn("Published release baseline: `0.13.9`", compatibility)
         self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
         self.assertNotIn(
             "Current published Context Guard release: `0.11.0`", compatibility

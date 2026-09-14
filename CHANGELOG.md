@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.3` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.9` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## Unreleased - 0.13.9 source candidate
+## 0.13.9 - 2026-09-14
 
 ### Highlights
 
@@ -29,7 +29,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- Native Windows and macOS each pass all six real-host gates for the accepted 0.13.9 runtime; portable installation and cleanup also pass. Tool repairs are replayed against original captures without relabeling their execution commits. Exact-source CI, HOL and publication remain pending; see [acceptance boundaries](docs/LOCAL_ACCEPTANCE.md).
+- Native Windows and macOS each pass all six real-host gates for the accepted 0.13.9 runtime; portable installation and cleanup also pass. Tool repairs are replayed against original captures without relabeling their execution commits. Exact-source CI, HOL and public release readback are recorded separately; see [acceptance boundaries](docs/LOCAL_ACCEPTANCE.md).
 
 - Focused synthetic Hook tests cover mixed requests, question-shaped acceptance criteria, compact/resume, bounded corrections and genuine waits. Full candidate results and limitations are recorded in [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 - The earlier 0.13.4 installation and source results retain their original identity. They do not validate these changed runtime bytes. Native trusted-Hook acceptance, CI, HOL ingestion and publication remain separate gates.

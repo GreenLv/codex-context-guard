@@ -2,9 +2,9 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.13.3` 是当前最新发布版本。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列，未发布候选会明确标注。`0.13.9` 是当前最新发布版本。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 未发布 - 0.13.9 源码候选
+## 0.13.9 - 2026-09-14
 
 ### Highlights
 
@@ -29,7 +29,7 @@
 
 ### Validation
 
-- Windows 和 macOS 均已通过当前 0.13.9 运行时的六项真实宿主门禁，portable 安装及清理也通过。验收工具修复复用原始捕获，不改写实际执行提交。精确源码的 CI、HOL 和发布仍待完成，详见[验收边界](docs/LOCAL_ACCEPTANCE.md)。
+- Windows 和 macOS 均已通过当前 0.13.9 运行时的六项真实宿主门禁，portable 安装及清理也通过。验收工具修复复用原始捕获，不改写实际执行提交。精确源码的 CI、HOL 和公开发布回读分别记录，详见[验收边界](docs/LOCAL_ACCEPTANCE.md)。
 
 - 合成 Hook 回归覆盖混合请求、操作讲解、未知尾部、问句验收、压缩恢复、单次纠正和真实等待。候选验证结果及限制见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 - 早期候选的安装和源码结果保留原有身份，不用于证明此次运行时。真实信任 Hook、跨平台验收、CI、HOL 收录和发布分别记录。
