@@ -20,6 +20,23 @@ control Codex-native orchestration.
 
 ## Responsibility boundary
 
+The unreleased 0.14.0 source candidate records schema-13 append sequence
+numbers for root prompts and observed host calls/results. Stop 5.0.0 projects
+only current, source-bound work through the shared core v2 reference; wall
+clock timestamps and reply wording cannot backfill an earlier Stop. A mixed
+root retains its whole requirement while independently deliverable information
+spans carry UTF-8 source offsets and can close on a trusted final reply.
+Unknown and execution spans remain pending. A combined edit and test has
+separate required children: a structured patch with changed file readback
+supports the edit, while an attributable test result supports the test.
+For a uniquely sourced repository, a later commit and push use the same
+current work unit and require commit parent/tree/branch and remote-ref
+readbacks. One shell exit cannot substitute for these separate effects,
+an explicit proof contract, or a host Goal completion. The
+ordinary business tool remains under Codex host control. Root-imposed external
+dependencies and registered external operations have distinct provenance;
+assistant reply text alone creates neither.
+
 The 0.13.8 source candidate retains the 0.13.6 reply delivery behavior.
 For SessionEnd, whose Codex CLI host deadline is at most three seconds, both
 launchers invoke the stateful core directly instead of starting the router
@@ -326,6 +343,11 @@ metadata.
 
 The completion gate is bound to the current turn. Only successful evidence
 already captured by the Hook may satisfy a requirement or acceptance item.
+In schema 13, an available UserPromptSubmit turn ID is captured in the
+hash-bound immutable prompt record. A late PostToolUse result may bind to
+that original turn's unique root; its arrival sequence does not prove that
+the call began after a later root. Missing or conflicting turn identity
+remains unknown, and the default PreToolUse path keeps zero state I/O.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 

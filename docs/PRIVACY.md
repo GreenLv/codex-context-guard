@@ -17,6 +17,20 @@ execution should use the Codex-provided data directory.
 
 No plugin runtime state belongs in this Git repository.
 
+The unreleased schema-13 candidate adds a private monotonic event watermark,
+per-prompt and per-host-call/result append numbers, UTF-8 byte offsets for
+information and bounded execution children, and the root event's canonical
+locator base/flavor in its immutable, hashed private prompt record (used only
+for relative target identity).
+Structured Git readback observations may retain commit, parent and tree OIDs,
+branch and remote/refspec in private evidence; no Git command is executed by
+the Guard. Stop diagnostics retain
+bounded core predicate/coverage states and target digests, not a second raw
+prompt copy. These fields stay in the existing private session directory and
+follow its retention and redaction rules. Legacy events without append numbers
+remain historical; migration does not infer a trustworthy sequence from
+timestamps or assistant prose.
+
 For opt-in Windows native acceptance only, `CONTEXT_GUARD_HOOK_TRACE_DIR`
 may point to an already-created private directory outside the repository.
 The PowerShell Hook entry writes one file per invocation containing a start
@@ -50,6 +64,11 @@ Recovery and diagnosis keep compact checkpoints, delegated-result summaries, pro
 Context Guard does not copy complete root or delegated-agent transcripts, chain-of-thought, full tool output, file contents, image bytes, credentials, authorization headers, plaintext private tokens, or URL query values into its ledger. Diagnostic Stop records keep hashes and bounded enums rather than raw assistant replies.
 
 This distinction is important: user prompt bodies are saved privately for recovery, but the surrounding transcript and the model's hidden reasoning are not duplicated into plugin state.
+For schema 13 provenance, the immutable prompt record also retains the Host
+turn identifier when provided, covered by its record hash. This bounded
+identity lets a late tool result be associated with its originating root;
+legacy prompts without it remain unknown. No PreToolUse transcript or tool
+content is added for this association.
 
 ## Minimization
 

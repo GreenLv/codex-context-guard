@@ -9,6 +9,14 @@ not as a measure of code volume.
 
 ## Candidate revisions
 
+The unreleased 0.14.0 candidate advances private state to schema 13 and
+Stop diagnostics to protocol 5.0.0. It retains schema-12 history without
+promoting old generic actions, reply-derived waits, or prematurely closed
+mixed requirements. New root/host events use a persisted append watermark;
+the shared core v2 reference is identified by exact paths and SHA-256 values.
+An immutable source commit identifies the implementation; downstream mirror
+verification, a formal consumer pin, and release identity remain separate.
+
 Keep compatible repairs within one unpublished candidate version until the
 candidate converges. Each revision is identified by its full source commit
 and runtime-tree digest, not by the version string alone. New runtime bytes
@@ -503,3 +511,15 @@ PostToolUse correlation fields, and emits only a non-authoritative structural
 report. The probe lives under `tools/validation/` and changes no installed
 Hook, runtime tree, state schema, or public protocol, so it does not consume a
 new plugin version by itself. The later validation-tools candidate adds reviewed raw-to-gate mappings and a composite validator. The accepted macOS and Windows composites each cover all six `host_behavior` gates for the original runtime, while preserving their original child sessions, raw evidence and tool identities. Windows current-tool portable acceptance separately passes. The Windows composite preserves R3 historical executable-evidence limits; version compatibility does not establish shared executable bytes. Tooling and documentation changes create a different full-source identity and do not establish new full-source install parity or authorize overwriting a consumed cache.
+# 0.14.0 source candidate (unreleased)
+
+Private schema 13 and Stop 5.0.0 identify the provisional shared-core v2
+projection and source-bound continuation diagnosis. The runtime keeps the
+execution/work-unit 3.0.0 and proof 1.0.0 contracts. Schema-12 state is read
+with its original journal, certificates and delivery identities. An old mixed
+`answered` item whose full text or enforced proof does not support answer-only
+closure becomes `legacy_review` for current certification; old assistant-text
+waits remain historical and do not register an external operation. Repeated
+migration is idempotent. An old runtime cannot read schema 13; rollback needs
+the preserved schema-12 state snapshot. This candidate is not an installed
+cache, tag or release.

@@ -287,9 +287,10 @@ class P0Harness(unittest.TestCase):
 
     def park_awaiting_user(self, stop_message: str = AWAIT_USER_STOP_MESSAGE,
                            session: str = "p0",
-                           expected_status: str = "awaiting_user") -> None:
+                           expected_status: str = "awaiting_user",
+                           root_prompt: str | None = None) -> None:
         """Drive one real task into a parked waiting boundary."""
-        self.prompt("请修复恢复模块。必须运行测试验证。", session=session)
+        self.prompt(root_prompt or "等我确认方案 B 后再继续。请修复恢复模块。必须运行测试验证。", session=session)
         self.dispatch("Stop", session=session, last_assistant_message=stop_message)
         self.assertEqual(
             self.state(session)["work_units"][0]["status"], expected_status
@@ -703,7 +704,7 @@ class WaitCounterexampleTests(P0Harness):
         answers preserve the original requirement)."""
         self.activate()
         self.park_awaiting_user()
-        self.prompt("选择方案 B。必须运行测试验证。")
+        self.prompt("方案 B 已确认。必须运行测试验证。")
         state = self.state()
         self.assertEqual(state["work_state"]["active_work_unit_id"], "WU0001")
         self.assertEqual(self.unit(state, "WU0001")["status"], "active")

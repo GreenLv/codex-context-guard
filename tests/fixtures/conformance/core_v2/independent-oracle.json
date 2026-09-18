@@ -1,0 +1,43 @@
+{
+  "schema": "independent-core-oracle/v1",
+  "basis": "Public plan.2 AC01-AC12, AC05.1/A13, S01-S12, and redacted CGI-20260918 incident; expectations set before candidate implementation output review.",
+  "as_of_rule": "Only root requirements and trusted facts observed at or before this Stop waterline may justify its decision; later prompts cannot backfill it.",
+  "core_cases": [
+    {"id":"K01","root":"按既定计划执行本轮修复。","final":"本轮修复和回归验证已完成。实际收益仍需后续使用观察。改动保持未提交。","expected":{"current_actions":[],"registered_external_operation":false,"explicit_user_persistence":false,"resume_with_actionable_work":false,"stop":"ordinary_end","certificate":"predicate-dependent"}},
+    {"id":"K02","root":"按既定计划执行本轮修复。","final":"本轮修改已完成，长期稳定性尚待真实使用检验。","expected":{"current_actions":[],"registered_external_operation":false,"stop":"ordinary_end"}},
+    {"id":"K03","root":"按既定计划执行本轮修复并运行测试。","trusted_facts":"edit observed, required tests not run; test inputs ready","final":"本地修改已完成。我接下来需要运行测试。","expected":{"current_actions":["test_verify"],"owner":"assistant","resume_with_actionable_work":true,"explicit_user_persistence":false,"stop":"bounded_correction_if_premature_end"}},
+    {"id":"K04","root":"按既定计划执行本轮修复。","final":"本轮修改已完成，测试未运行。","expected":{"current_actions":[],"certificate":"unsatisfied_or_insufficient","stop":"ordinary_end_or_proof_correction_if_whole_completion_claim"},"note":"Absent an adopted test predicate or necessary substep with evidence, the assistant's mere mention of unrun tests does not grant scope."},
+    {"id":"K05","root":"现在评估这次修改的效果并给出结果。","trusted_facts":"evaluation not performed; required inputs ready","final":"修改完成，效果以后观察。","expected":{"current_actions":["evaluate_current_effect"],"owner":"assistant","stop":"bounded_correction_if_premature_end"}},
+    {"id":"K06","root":"按既定计划修复。","final":"修复完毕。以后可考虑改进监控。","expected":{"current_actions":[],"stop":"ordinary_end"}},
+    {"id":"K07","root":"持续执行直到本轮修复和测试完成。","trusted_facts":"edit observed, required tests not run; test inputs ready","resume_prompt":"继续。","final":"修改完成。","expected":{"current_actions":["test_verify"],"explicit_user_persistence":true,"resume_with_actionable_work":true,"reason_codes":"separate"}},
+    {"id":"K08","root":"完成本轮修复。","trusted_facts":"no concrete current action basis","resume_prompt":"继续。","final":"完成。","expected":{"current_actions":[],"explicit_user_persistence":false,"resume_with_actionable_work":false,"stop":"ordinary_end"}},
+    {"id":"K09","root":"完成本轮修复。","final":"修改完成，尚未提交。","expected":{"registered_external_operation":false,"typed_wait":false,"stop":"ordinary_end_or_independent_completion_correction"}},
+    {"id":"K10","root":"提交到已登记的外部审批流程，收到结果后再继续。","trusted_facts":"actual correlated external operation registration observed; still pending","final":"已提交，等待审批结果。","expected":{"registered_external_operation":true,"typed_wait":true,"current_actions":[]}},
+    {"id":"K11","root":"本轮只修复并测试。","final":"修复和测试完成；后续可提交推送。","later_root":"现在提交并推送。","expected":{"first_stop_current_actions":[],"later_unit_current_actions":["commit","push"],"later_authorization_does_not_backfill_first_stop":true}},
+    {"id":"K12","root":"修复文件 A 并运行测试 B。","trusted_facts":"file A modified and read back, process B exited zero but contained one failed inner command","final":"全部完成。","expected":{"effect":"partial_or_unknown","certificate":"unsatisfied","stop":"bounded_correction_if_whole_completion_claim"}},
+    {"id":"K13","root":"解释安装流程，不执行安装。","final":"安装流程解释已在当前最终回答交付。","expected":{"delivery":"delivered","effect":"not_observed","current_actions":[],"stop":"ordinary_end","ordinary_guard_approval":false}},
+    {"id":"K14","root":"修改文件 A，运行测试 B，并回读结果。","trusted_facts":"host tool edit A, exact readback A, test B pass with attributable result","final":"A 已修改，B 通过。","expected":{"effect":"success","proof":"satisfied_if_predicates_match","stop":"ordinary_end","ordinary_guard_approval":false}},
+    {"id":"K15","root":"修改文件 A，运行测试 B。","trusted_facts":"successful unrelated tool operation on C","final":"完成。","expected":{"effect":"not_satisfied_for_A_B","certificate":"unsatisfied","ordinary_guard_approval":false}},
+    {"id":"K16","root":"完成当前 Goal 的全部必需项。","trusted_facts":"one required descendant lacks proof","event":"adopted Guard-mediated Goal complete","expected":{"goal_complete":"refused_with_gap","ordinary_chat_end":"independent"}},
+    {"id":"K17","root":"普通提交并推送当前工作对象。","trusted_facts":"unique sourced work object in current unit; exact git readback","expected":{"target":"that_sourced_object","guard_release_ticket":false,"ordinary_guard_approval":false,"certificate":"predicate-dependent"}},
+    {"id":"K18","root":"采用 release 契约，发布精确制品 X。","trusted_facts":"contract adopted, identity mismatched or ticket stale","expected":{"controlled_effect":"rejected_before_effect","ordinary_shell_bypass_certification":"unavailable","reason":"identity_or_ticket"}},
+    {"id":"K19","root":"继续旧 0.6.3/0.13.9 会话。","trusted_facts":"legacy generic action/text-derived wait/answered item without source","expected":{"migrated_action_trusted":false,"migrated_wait_registered":false,"new_certificate":"needs_review","ordinary_tool_approval":false,"ordinary_end":"permitted_if_honest"}}
+  ],
+  "holdout_cases": [
+    {"id":"H01","root":"修好这次问题即可。","final":"问题已修好；可靠性要等实际使用一段时间才能判断。","expected_current_actions":[]},
+    {"id":"H02","root":"Please fix this issue and run the focused tests.","trusted_facts":"fix observed, focused tests not run, inputs ready","final":"The fix is in place; I still need to run the focused tests.","expected_current_actions":["test_verify"]},
+    {"id":"H03","root":"Please fix this issue.","final":"Fixed. Whether it helps over time will be learned from future use.","expected_current_actions":[]},
+    {"id":"H04","root":"立刻测量本次改动的吞吐收益。","trusted_facts":"measurement not done, environment ready","final":"已改动；吞吐收益有待评估。","expected_current_actions":["evaluate_current_effect"]},
+    {"id":"H05","root":"完成修改和测试。","trusted_facts":"edit done, tests not run, inputs ready","final":"修改已完成。长期效果以后看；测试仍未运行。","expected_current_actions":["test_verify"]},
+    {"id":"H06","root":"解释方案并修改文件 A。","trusted_facts":"final answer delivered, A not modified","final":"方案已解释。","expected":{"delivery":"explanation_only","execution":"unsatisfied"}}
+  ],
+  "review_lenses": {
+    "authority":"No ordinary execution grants or inferred root permissions; persistence and resume facts remain separate; release needs explicit adoption.",
+    "identity":"Root constraint, allowed implementation choice, host selection, executed target and observed target are distinct; no cwd/model selector privilege; complete release identity tuple.",
+    "state_effect_readback":"Delivery, action event, current state outcome, proof, Stop and Goal are distinct; trusted producer/readback and per-predicate evidence required.",
+    "canonicalization":"Freeze UTF-8 half-open spans, Unicode/number/order/hash domain and old digest immutability; Python/TS parity must compare independent expected projection.",
+    "platform_feasibility":"Inventory actual host call/result and persistence surfaces; mark unavailable predicates, preserve ordinary positive path and disclose opaque release channels.",
+    "migration_versioning":"Version semantic state; legacy generic/text wait never upgrades to trusted fact; preserve original journal and certificate provenance; transactional replay and rollback boundary.",
+    "verification_release_boundary":"Pure core, raw-language entry, production Stop/Goal, persisted replay, synthetic host and real-model/native/artifact/publication are separate evidence tiers."
+  }
+}

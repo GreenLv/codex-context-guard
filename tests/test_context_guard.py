@@ -848,7 +848,10 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("取消 R001，改为实现新方案并测试。")
         state = self.state()
         self.assertEqual(state["supersedes"][0]["old_id"], "R001")
-        self.assertEqual(state["supersedes"][0]["new_id"], "R002")
+        new_id = state["supersedes"][0]["new_id"]
+        successor = next(item for item in state["requirements"] if item["id"] == new_id)
+        self.assertEqual(successor["text"], "取消 R001，改为实现新方案并测试。")
+        self.assertIsNone(successor.get("parent_id"))
         self.assertEqual(state["requirements"][0]["status"], "superseded")
 
     def test_negated_supersession_preserves_existing_requirement(self) -> None:
@@ -1241,7 +1244,9 @@ class ContextGuardTests(unittest.TestCase):
                         last_assistant_message="Progress is recorded; work remains.",
                     )
                 )
-                self.assertEqual(result["decision"], "block")
+                # Persistence wording alone cannot manufacture a concrete
+                # current action basis.
+                self.assertEqual(result, {})
 
         session = "session-persist-deferred"
         self.prompt(
@@ -1257,7 +1262,7 @@ class ContextGuardTests(unittest.TestCase):
                 last_assistant_message="Push and CI are deferred.",
             )
         )
-        self.assertEqual(result["decision"], "block")
+        self.assertEqual(result, {})
 
         session = "session-persist-user-wait"
         self.prompt(
@@ -1324,10 +1329,8 @@ class ContextGuardTests(unittest.TestCase):
                         "silent_yield_preserve_pending",
                     )
                 else:
-                    self.assertEqual(result["decision"], "block")
-                    self.assertEqual(
-                        self.state(session)["continuation_attempts"], 1
-                    )
+                    self.assertEqual(result, {})
+                    self.assertEqual(self.state(session)["continuation_attempts"], 0)
 
     def test_service_stop_negation_is_not_agent_persistence(self) -> None:
         cases = (
@@ -1823,10 +1826,10 @@ class ContextGuardTests(unittest.TestCase):
 
         self.assertEqual(result, {})
         latest = self.state()["decision_log"][-1]
-        # Stop 3.0: structured facts are authoritative; the staged deferred
-        # boundary yields silently and preserves the pending items.
+        # A staged deferral cannot turn reply text into a registered wait.
         self.assertEqual(latest["decision_source"], "stop3_structured")
-        self.assertEqual(latest["outcome"], "silent_yield_preserve_pending")
+        self.assertEqual(latest["outcome"], "silent_end_owner_ambiguous")
+        self.assertEqual(self.state()["wait_conditions"], [])
 
     def test_stop_rejects_whitespace_obfuscated_private_token_shape(self) -> None:
         self.prompt("$context-guard\n审查本地实现并报告仍需下一轮修复的问题。")
@@ -2048,8 +2051,8 @@ class ContextGuardTests(unittest.TestCase):
             {},
         )
         decision = self.state()["decision_log"][-1]
-        self.assertEqual(decision["observed_outcome"], "allow_external_wait")
-        self.assertEqual(decision["outcome"], "silent_yield_preserve_pending")
+        self.assertEqual(decision["observed_outcome"], "allow_neutral")
+        self.assertEqual(decision["outcome"], "silent_end_owner_ambiguous")
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
     def test_classifier_22_whole_completion_plurals_questions_and_attribution(
@@ -2096,13 +2099,11 @@ class ContextGuardTests(unittest.TestCase):
 
         actionable = "我会继续配置运行时并修改仓库。"
         actionable_decision = cg.classify_stop_decision(actionable, prompt)
-        self.assertEqual(
-            actionable_decision["outcome"], "gate_authorized_remaining_work"
-        )
+        self.assertEqual(actionable_decision["outcome"], "allow_neutral")
         self.assertTrue(
             any(
                 action["category"] == "artifact_work"
-                and action["authorization"] == "authorized"
+                and action["authorization"] == "unknown"
                 for action in actionable_decision["actions"]
             )
         )
@@ -2302,13 +2303,11 @@ class ContextGuardTests(unittest.TestCase):
         for reply in gated:
             with self.subTest(reply=reply):
                 decision = cg.classify_stop_decision(reply, broad_prompt)
-                self.assertEqual(
-                    decision["outcome"], "gate_authorized_remaining_work"
-                )
+                self.assertEqual(decision["outcome"], "allow_user_handoff")
                 self.assertTrue(
                     any(
                         action["owner"] == "assistant"
-                        and action["authorization"] == "authorized"
+                        and action["authorization"] == "unknown"
                         for action in decision["actions"]
                     )
                 )
@@ -2371,7 +2370,7 @@ class ContextGuardTests(unittest.TestCase):
             ),
             (
                 "继续完成全部认证修复，修改仓库并推送。",
-                "gate_authorized_remaining_work",
+                "allow_user_handoff",
             ),
         )
         for prompt, expected in cases:
@@ -2429,11 +2428,11 @@ class ContextGuardTests(unittest.TestCase):
                 prompt = "$context-guard\n完成仍由代理负责的发布和仓库更新。"
                 self.prompt(prompt)
                 self.assertFalse(cg.reports_non_completion(message))
-                self.assertTrue(
-                    cg.classify_stop_decision(message, prompt)["outcome"].startswith(
-                        "gate_"
-                    )
-                )
+                diagnosis = cg.classify_stop_decision(message, prompt)
+                self.assertEqual(diagnosis["outcome"], "allow_neutral")
+                self.assertTrue(any(a["owner"] == "assistant" for a in diagnosis["actions"]))
+                self.assertFalse(any(a.get("authorization") == "authorized"
+                                     for a in diagnosis["actions"]))
                 self.assertFalse(cg.claims_completion(message))
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
@@ -2449,11 +2448,8 @@ class ContextGuardTests(unittest.TestCase):
             "Marketplace 这一项已完成并验证通过。整体推广计划仍有 HOL 审核、"
             "Showcase、博客及社区发帖等后续项。"
         )
-        self.assertTrue(
-            cg.classify_stop_decision(message, prompt)["outcome"].startswith(
-                "gate_"
-            )
-        )
+        self.assertEqual(cg.classify_stop_decision(message, prompt)["outcome"],
+                         "allow_neutral")
         self.assertFalse(cg.claims_completion(message))
         result = cg.dispatch(
             self.payload("Stop", last_assistant_message=message)
@@ -2498,6 +2494,11 @@ class ContextGuardTests(unittest.TestCase):
         for prompt, message in cases:
             with self.subTest(prompt=prompt):
                 self.prompt(prompt)
+                diagnosis = cg.classify_stop_decision(message, prompt)
+                self.assertFalse(any(a.get("authorization") == "authorized"
+                                     for a in diagnosis["actions"]))
+                # Deferred/out-of-scope text can report unfinished work,
+                # while still providing no current authorized action.
                 self.assertTrue(cg.reports_non_completion(message, prompt))
                 self.assertFalse(cg.claims_completion(message, prompt))
                 self.assertEqual(
@@ -2555,17 +2556,18 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.prompt(prompt)
                 self.assertFalse(cg.reports_non_completion(message, prompt))
-                self.assertEqual(
-                    cg.classify_stop_decision(message, prompt)["outcome"],
-                    "gate_authorized_remaining_work",
-                )
+                diagnosis = cg.classify_stop_decision(message, prompt)
+                self.assertEqual(diagnosis["outcome"], "allow_neutral")
+                self.assertFalse(any(a.get("authorization") == "authorized"
+                                     for a in diagnosis["actions"]))
                 self.assertFalse(cg.claims_completion(message, prompt))
                 result = cg.dispatch(
                     self.payload("Stop", last_assistant_message=message)
                 )
                 if correction_expected:
-                    self.assertEqual(result.get("decision"), "block")
-                    self.assertEqual(self.state()["continuation_attempts"], 1)
+                    # No trusted remote readiness or exact target is present.
+                    self.assertEqual(result, {})
+                    self.assertEqual(self.state()["continuation_attempts"], 0)
                     self.assertEqual(cg.dispatch(
                         self.payload("Stop", last_assistant_message=message)
                     ), {})
@@ -2604,12 +2606,12 @@ class ContextGuardTests(unittest.TestCase):
             (
                 "提交 PR 并处理后续审查意见。",
                 "PR 已提交；下一阶段仍需处理审查意见。",
-                "gate_authorized_remaining_work",
+                "allow_neutral",
             ),
             (
                 "完成发布并等待外部审核。",
                 "PR仍待外部审核；与此同时我接下来会修改仓库并发布博客。验证已通过。",
-                "gate_authorized_remaining_work",
+                "allow_external_wait",
             ),
         )
         for prompt, reply, expected in cases:
@@ -2617,15 +2619,17 @@ class ContextGuardTests(unittest.TestCase):
                 decision = cg.classify_stop_decision(reply, prompt)
                 self.assertEqual(decision["outcome"], expected)
         mixed = cg.classify_stop_decision(cases[-1][1], cases[-1][0])
-        self.assertIn("mixed_external_and_assistant_work", mixed["reason_codes"])
+        self.assertTrue(any(a["owner"] == "external" for a in mixed["actions"]))
+        self.assertFalse(any(a.get("authorization") == "authorized"
+                             for a in mixed["actions"]))
 
     def test_boundary_classifier_is_scope_metamorphic_and_handles_double_negation(self) -> None:
         reply = "本地验证已完成；推送和 CI 将在后续单独处理。"
         cases = (
             ("只做本地检查。", "allow_out_of_scope_deferred"),
             ("暂不推送，也不跑 CI。", "allow_out_of_scope_deferred"),
-            ("继续执行完整发布计划，推送并运行 CI。", "gate_authorized_remaining_work"),
-            ("不要跳过推送，继续执行完整发布计划。", "gate_authorized_remaining_work"),
+            ("继续执行完整发布计划，推送并运行 CI。", "allow_neutral"),
+            ("不要跳过推送，继续执行完整发布计划。", "allow_neutral"),
         )
         for prompt, expected in cases:
             with self.subTest(prompt=prompt):
@@ -2708,10 +2712,9 @@ class ContextGuardTests(unittest.TestCase):
             with self.subTest(message=message):
                 prompt = "$context-guard\n继续完成仍由代理负责的发布工作。"
                 self.prompt(prompt)
-                self.assertTrue(
-                    cg.classify_stop_decision(message, prompt)["outcome"].startswith(
-                        "gate_"
-                    )
+                self.assertIn(
+                    cg.classify_stop_decision(message, prompt)["outcome"],
+                    {"gate_authorized_remaining_work", "allow_neutral"},
                 )
                 self.assertFalse(cg.claims_completion(message))
                 result = cg.dispatch(
@@ -3100,7 +3103,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("继续验证迁移后的私有状态。")
 
         migrated = self.state()
-        self.assertEqual(cg.SCHEMA_VERSION, 12)
+        self.assertEqual(cg.SCHEMA_VERSION, 13)
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["evidence_sequence"], 1)
         self.assertEqual(migrated["work_state"]["plan_snapshot"], None)
@@ -5608,7 +5611,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(latest["observed_outcome"], "allow_user_handoff")
         # Stop 3.0: the user-handoff boundary yields silently; the staged
         # continue is advisory and consumed.
-        self.assertEqual(latest["outcome"], "silent_yield_preserve_pending")
+        self.assertEqual(latest["outcome"], "silent_end_owner_ambiguous")
         self.assertNotIn("consume_checkpoint", latest["reason_codes"])
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
@@ -5626,8 +5629,8 @@ class ContextGuardTests(unittest.TestCase):
                 last_assistant_message="Progress is recorded; work remains.",
             )
         )
-        self.assertEqual(blocked["decision"], "block")
-        self.assertIn(
+        self.assertEqual(blocked, {})
+        self.assertNotIn(
             "explicit_user_persistence",
             self.state(session)["decision_log"][-1]["reason_codes"],
         )

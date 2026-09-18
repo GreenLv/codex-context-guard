@@ -68,12 +68,15 @@ class InformationDeliveryHarness(unittest.TestCase):
         return self.cg.load_state(self.session_dir(), self.payload("Stop"))
 
     def answer(self, prompt: str, *, reply: str = ANSWER, turn: str = "t1"):
-        """One complete question/answer turn; returns the requirement record."""
+        """One complete turn; return its whole-root requirement, not a child span."""
         self.cg.dispatch(self.payload("UserPromptSubmit", turn=turn, prompt=prompt))
         self.cg.dispatch(
             self.payload("Stop", turn=turn, last_assistant_message=reply)
         )
-        return self.state()["requirements"][-1]
+        items = self.state()["requirements"]
+        prompt_id = items[-1]["prompt_id"]
+        return next(item for item in items if item["prompt_id"] == prompt_id
+                    and "parent_id" not in item)
 
 
 class DeliveredInformationRequestTests(InformationDeliveryHarness):
@@ -340,7 +343,7 @@ class AcceptanceExtractionTests(InformationDeliveryHarness):
 
 
 class ExecutionResumeTests(InformationDeliveryHarness):
-    def test_compact_resume_preserves_request_and_corrects_unfinished_action(self) -> None:
+    def test_compact_resume_preserves_request_without_inventing_an_action(self) -> None:
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
         for index, prompt in enumerate(("你继续执行", "按你的计划执行", "Proceed with the plan")):
             turn = f"resume-{index}"
@@ -350,10 +353,12 @@ class ExecutionResumeTests(InformationDeliveryHarness):
             self.assertIn(prompt, json.dumps(packet, ensure_ascii=False))
             reply = "下一步应该修改模块并运行测试。此次只做了核查。"
             first = self.cg.dispatch(self.payload("Stop", turn=turn, last_assistant_message=reply))
-            self.assertEqual(first.get("decision"), "block")
+            self.assertEqual(first, {})
             second = self.cg.dispatch(self.payload("Stop", turn=turn, last_assistant_message=reply))
             self.assertEqual(second, {})
             self.assertEqual(self.state()["requirements"][-1]["status"], "pending")
+            self.assertNotIn("explicit_user_persistence",
+                             self.state()["decision_log"][-1]["reason_codes"])
 
     def test_real_wait_and_informational_answers_do_not_trigger_resume_correction(self) -> None:
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))

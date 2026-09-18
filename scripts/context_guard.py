@@ -25,14 +25,14 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-PRODUCT_VERSION = "0.13.9"
-SCHEMA_VERSION = 12
+PRODUCT_VERSION = "0.14.0"
+SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
 # compatibility inputs. Schema 11 keeps every durable record and gains the
 # response-delivery ledger plus the historical marking of pre-0.13
 # authorization records.
-FULL_MIGRATION_SOURCE_SCHEMAS = {9, 10, 11}
+FULL_MIGRATION_SOURCE_SCHEMAS = {9, 10, 11, 12}
 SCHEMA_11_WORK_UNIT_PROTOCOL = "2.0.0"
 LEGACY_EXECUTION_PROTOCOLS = frozenset({"1.0.0", SCHEMA_11_WORK_UNIT_PROTOCOL})
 READ_ONLY_COMPATIBILITY_SCHEMAS = {7, 8}
@@ -43,7 +43,7 @@ WAIT_CONDITION_RAISE_KINDS = ("root_user", "assistant", "external")
 WAIT_CONDITION_STATUSES = ("waiting", "released")
 WAIT_RELEASE_KINDS = ("root_user_confirmation", "external_fact")
 MIGRATED_WAIT_CONDITION_KIND = "migrated_unresolved"
-STOP_PROTOCOL_VERSION = "4.0.0"
+STOP_PROTOCOL_VERSION = "5.0.0"
 CLASSIFIER_VERSION = "3.3.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "3.0.0"
@@ -185,6 +185,7 @@ PROCESS_SESSION_LOCKS_GUARD = threading.Lock()
 PROCESS_SESSION_LOCKS: dict[str, threading.Lock] = {}
 STATE_REQUIRED_KEYS = {
     "schema_version",
+    "core_event_sequence",
     "session",
     "mode",
     "prompts",
@@ -306,6 +307,7 @@ FORBIDDEN_EXECUTION_KEYS = {
 ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/\\])(?:/[\w.@+~\-\u0080-\uffff][^\s,;，；。!?！？'\"<>]*)"
 )
+RELATIVE_FILE_RE = re.compile(r"(?<![\w:/\\])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+")
 URL_RE = re.compile(
     r"(?:https?://[^\s,;，；。!?！？'\"<>]+|codex://threads/[0-9a-f-]{20,})",
     re.IGNORECASE,
@@ -654,8 +656,8 @@ POLICY_HOLD_RE = re.compile(
 # action, not the surrounding natural-language clause, so decision_log never
 # needs to retain raw prompt or reply text.
 ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("local_review", re.compile(r"\b(?:review|audit|inspect|check)\b|(?:审查|审核|检查|评估)", re.I)),
-    ("local_edit", re.compile(r"\b(?:edit|modify|implement|update\s+(?:the\s+)?(?:code|repository))\b|(?:实现|修改|更新)(?:.{0,10}(?:代码|仓库|项目))?", re.I)),
+    ("local_review", re.compile(r"\b(?:review|audit|inspect|check|evaluate|measure)\b|(?:审查|审核|检查|核对|评估|测量|测出)", re.I)),
+    ("local_edit", re.compile(r"\b(?:edit|modify|implement|fix|correct|repair|update\s+(?:the\s+)?(?:code|repository)|(?:finish|complete)\s+(?:the\s+|this\s+)?(?:patch|repair))\b|(?:实现|修改|更新|修正|修复|修好)(?:.{0,10}(?:代码|仓库|项目))?|完成(?:这次|本轮|当前)?(?:补丁|修复)", re.I)),
     ("local_commit", re.compile(r"\bcommit(?:ted|ting)?\b|(?:本地提交|提交(?:改动|变更|代码))", re.I)),
     ("remote_create", re.compile(r"\bcreat(?:e|ing).{0,18}(?:remote|repo(?:sitory)?)\b|创建.{0,12}(?:远端|仓库)", re.I)),
     ("remote_push", re.compile(r"\bpush(?:ed|ing)?\b|推送", re.I)),
@@ -677,12 +679,8 @@ PRIMARY_CLAUSE_ACTIONS = {
     "artifact_work",
 }
 EXECUTION_RESUME_RE = re.compile(
-    r"^(?:请|你|您|帮我|麻烦)?\s*(?:继续(?:执行|推进|工作)|"
-    r"按(?:照)?(?:你(?:的)?|刚刚|现在|上述|之前|这个|该|既定|和|与|\s)*"
-    r"(?:计划|建议)(?:继续)?执行)"
-    r"|^(?:please\s+)?(?:continue\s+(?:working|executing)|"
-    r"continue\s+(?:(?:the|this|whole|entire|release|remaining)\s+)*plan|"
-    r"(?:proceed|execute)\s+(?:with\s+)?(?:the\s+)?(?:plan|recommendations))\b",
+    json.loads((Path(__file__).resolve().parent.parent / "assets/core-intent-v2.json")
+               .read_text(encoding="utf-8"))["patterns"]["EXECUTION_RESUME_RE"],
     re.IGNORECASE,
 )
 REPLY_ACTION_NEGATION_PREFIX_RE = re.compile(
@@ -3573,7 +3571,7 @@ def _shell_actions(
     ``branch_cwd`` resolves a bare ``git push`` refspec to the current
     branch; purity callers pass None (``unknown``).
     """
-    actions: list[dict[str, str]] = []
+    actions: list[dict[str, Any]] = []
     for executable, args, env in command_invocations_full(command, posix=posix):
         state, action = _invocation_state(
             executable, args, env, branch_cwd=branch_cwd
@@ -6154,7 +6152,7 @@ def validate_wait_conditions(state: dict[str, Any]) -> None:
     """
     version = state.get("schema_version")
     conditions = state.get("wait_conditions")
-    if version not in {SCHEMA_VERSION, 11}:
+    if version not in {SCHEMA_VERSION, 11, 12}:
         if conditions:
             raise StateIntegrityError(
                 "wait conditions require the current private state schema"
@@ -6279,7 +6277,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
         raise StateIntegrityError("private work-unit ledger exceeds its record limit")
     if not isinstance(sequence, int) or sequence < 0:
         raise StateIntegrityError("private work-unit sequence is invalid")
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, 12}:
         protocol = WORK_UNIT_PROTOCOL_VERSION
         statuses = stop3().WORK_UNIT_STATUSES
         optional_keys: set[str] = {
@@ -6321,7 +6319,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
             raise StateIntegrityError("private work-unit kind is invalid")
         if record.get("status") not in statuses:
             raise StateIntegrityError("private work-unit status is invalid")
-        if version in {SCHEMA_VERSION, 10, 11}:
+        if version in {SCHEMA_VERSION, 10, 11, 12}:
             seq = record.get("last_active_seq")
             if seq is not None and not isinstance(seq, int):
                 raise StateIntegrityError("private work-unit activity sequence is invalid")
@@ -6336,7 +6334,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
                     "only waiting units may carry the resume-pending flag"
                 )
         _execution_time(record.get("created_at"), "work_units.created_at")
-        if version in {SCHEMA_VERSION, 10, 11}:
+        if version in {SCHEMA_VERSION, 10, 11, 12}:
             _validate_unit_authorizations(unit_id, record.get("authorizations"))
             _validate_commit_context(record.get("commit_context"))
         _execution_time(record.get("closed_at"), "work_units.closed_at", nullable=True)
@@ -6404,6 +6402,8 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         }
     else:
         required = STATE_REQUIRED_KEYS
+    if version != SCHEMA_VERSION:
+        required = required - {"core_event_sequence"}
     missing = sorted(required - set(state))
     if missing:
         raise StateIntegrityError(
@@ -6477,7 +6477,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                     raise StateIntegrityError("private verification contract is invalid")
                 if 'constraint_scope' in item or 'source_span' in item:
                     span = item.get('source_span')
-                    if (version not in {SCHEMA_VERSION, 11} or item.get('constraint_scope') != 'session'
+                    if (version not in {SCHEMA_VERSION, 11, 12} or item.get('constraint_scope') != 'session'
                             or not isinstance(span, list) or len(span) != 2
                             or any(type(v) is not int for v in span) or not 0 <= span[0] < span[1]):
                         raise StateIntegrityError('private persistent constraint source is invalid')
@@ -6498,6 +6498,28 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                             + obligations_fault
                         )
         if version == SCHEMA_VERSION:
+            watermark = state.get("core_event_sequence")
+            if type(watermark) is not int or watermark < 0:
+                raise StateIntegrityError("private core event watermark is invalid")
+            used_sequence: set[int] = set()
+            for prompt in state.get("prompts", []):
+                seq = prompt.get("core_event_seq") if isinstance(prompt, dict) else None
+                if seq is None:
+                    continue  # Historical source remains unpromoted after migration.
+                if type(seq) is not int or not 0 < seq <= watermark or seq in used_sequence:
+                    raise StateIntegrityError("private prompt event sequence is invalid")
+                used_sequence.add(seq)
+            for event in state.get("evidence", []):
+                if not isinstance(event, dict):
+                    continue
+                call_seq, result_seq = event.get("core_call_seq"), event.get("core_result_seq")
+                if call_seq is None and result_seq is None:
+                    continue
+                if (type(call_seq) is not int or type(result_seq) is not int
+                        or not 0 < call_seq < result_seq <= watermark
+                        or call_seq in used_sequence or result_seq in used_sequence):
+                    raise StateIntegrityError("private host event sequence is invalid")
+                used_sequence.update((call_seq, result_seq))
             if "response_delivery" not in state:
                 raise StateIntegrityError(
                     "private state is missing required field: response_delivery"
@@ -6635,6 +6657,7 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "supersedes": [],
         "evidence": [],
         "evidence_sequence": 0,
+        "core_event_sequence": 0,
         "assets": [],
         "asset_sequence": 0,
         "proofs": [],
@@ -6763,14 +6786,15 @@ _INFORMATION_ZH_MODIFIER = (
 )
 _INFORMATION_ZH_NOUN = (
     r"(?:仓库|项目|插件|模块|代码|配置文件|文件|版本|应用|程序|脚本|命令|功能|标签|函数|"
-    r"恢复包|部署流程|发布流程|目录结构|结构|核心逻辑|逻辑|原理|主要内容|内容|流程|结果|"
-    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法)"
+    r"恢复包|[\u4e00-\u9fff]{1,12}(?:流程|步骤|方法|机制)|目录结构|结构|核心逻辑|逻辑|原理|主要内容|内容|流程|结果|"
+    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法|宿主|步骤|安装步骤|重启流程)"
 )
 _INFORMATION_EN_NOUN = (
     r"(?:project|repository|repo|plugin|module|code|files?|version|application|"
     r"program|script|command|feature|config file|configuration file|tag|function|recovery packet|directory structure|"
     r"structure|core logic|logic|principle|content|workflow|results?|tests?|"
-    r"test coverage|vulnerabilities|name|differences?|mechanism|plan|problem|claim)"
+    r"test coverage|vulnerabilities|name|differences?|mechanism|plan|problem|claim|host|steps?|"
+    r"(?:[a-z][a-z-]{1,20}\s+){1,3}(?:steps?|workflow|process)|installation|restart)"
 )
 _INFORMATION_IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_.:/-]*|(?-i:[A-Z][a-z]+(?: [A-Z][a-z]+){1,3}))"
 # Quotation is a topic only when it consumes the entire subject. Delimiters
@@ -6795,9 +6819,9 @@ _INFORMATION_EN_HEAD = (
     r"illustrate|walk\s+me\s+through|tell\s+me\s+about)"
 )
 _INFORMATION_HOW = (
-    rf"(?:(?:如何|怎样|怎么)\s*(?:运行|执行|修改|配置|发布|部署|验证|测试)\s*"
+    rf"(?:(?:如何|怎样|怎么)\s*(?:运行|执行|修改|配置|发布|部署|验证|测试|安装|重启)\s*"
     rf"{_INFORMATION_TOPIC}|how\s+(?:to|do\s+(?:i|we|you))\s+"
-    rf"(?:run|execute|modify|configure|publish|deploy|verify|test)\s+{_INFORMATION_TOPIC})"
+    rf"(?:run|execute|modify|configure|publish|deploy|verify|test|install|restart)\s+{_INFORMATION_TOPIC})"
 )
 _INFORMATION_CLAUSE_RE = re.compile(
     rf"(?:{_INFORMATION_ZH_HEAD}(?:一下)?\s*(?:{_INFORMATION_HOW}|{_INFORMATION_TOPIC})"
@@ -6846,6 +6870,16 @@ def _reply_only_request_shape(text: str) -> bool:
             r"^(?:(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)\s*|"
             r"please\s+|(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
         )
+        # The leading communication verb governs its object. Words such as
+        # configure or deploy inside that object do not request execution.
+        # Independent coordinated clauses are still parsed separately below.
+        explanatory = bool(
+            re.fullmatch(r"(?:先\s*)?(?:解释|说明)\s*(?:怎样|如何|怎么|原因)\S{0,100}", body, re.I)
+            or re.fullmatch(r"describe\s+the\s+[^。！？.!?;；,，]{1,60}\s+procedure\s+for\s+[^。！？.!?;；,，]{1,80}", body, re.I)
+        )
+        subsequent = re.search(r"(?:后|之后|然后|随后|再|\bthen\b).+$", body, re.I)
+        if explanatory and not subsequent:
+            continue
         if _INFORMATION_CLAUSE_RE.fullmatch(body):
             continue
         # Coordinated topic lists inherit only the information operator from
@@ -6929,6 +6963,8 @@ def _delivable_question(
     elif not clause_is_interrogative(text):
         return False
     prompt_id = item.get("prompt_id")
+    if item.get("information_source_span") is not None:
+        return True
     for candidate in state.get("acceptance_items", []):
         if (
             isinstance(candidate, dict)
@@ -7129,6 +7165,7 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             "backup_file": None,
         }
     state.setdefault("evidence_sequence", 0)
+    state.setdefault("core_event_sequence", 0)
     state.setdefault("assets", [])
     state.setdefault("asset_sequence", 0)
     state.setdefault("proofs", [])
@@ -7282,6 +7319,18 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                 if isinstance(record, dict):
                     record["participation"] = "historical"
         state["response_delivery"] = _migrate_response_delivery_history(state)
+        state["schema_version"] = 12
+    if version in {9, 10, 11, 12}:
+        # Historical delivery and terminal decisions retain their original
+        # meaning. Old mixed answers cannot be upgraded to verified closure.
+        for item in state.get("requirements", []):
+            if not isinstance(item, dict) or item.get("status") != "answered":
+                continue
+            contract = item.get("verification_contract")
+            if (isinstance(contract, dict) and contract.get("mode") == "enforced") or not _reply_only_request_shape(str(item.get("text") or "")):
+                item["status"] = "legacy_review"
+        # Existing text-derived waits retain their old bytes and are ignored
+        # as current trusted owner facts by the schema-13 Stop adapter.
         state["schema_version"] = SCHEMA_VERSION
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
@@ -8317,7 +8366,7 @@ def _reply_action_match(
         if future_matches:
             prefix = prefix[future_matches[-1].start() :]
         suffix = text[match.end() : match.end() + 32]
-        if REPLY_ACTION_NEGATION_PREFIX_RE.search(prefix):
+        if REPLY_ACTION_NEGATION_PREFIX_RE.search(prefix) and not _incomplete_action_clause(text):
             continue
         if (
             match.group(0).casefold() == "configuration"
@@ -8328,15 +8377,826 @@ def _reply_action_match(
     return None
 
 
+def _incomplete_action_clause(text: str) -> bool:
+    """A past action explicitly unperformed is an unmet predicate, not a ban."""
+    return bool(re.search(
+        r"(?:尚未|还未|未曾|没有).{0,32}(?:运行|执行|完成|进行|做)|"
+        r"(?:未运行|未执行|未完成|未进行)|"
+        r"\b(?:not\s+yet|have\s+not|has\s+not|was\s+not|were\s+not)\b.{0,40}"
+        r"\b(?:run|performed|executed|completed|done)\b|"
+        r"\b(?:not\s+run|not\s+performed|not\s+executed)\b",
+        text, re.I,
+    ))
+
+
+def _action_ready(action: dict[str, Any]) -> bool:
+    return action.get("actionability") == "current_ready" and isinstance(
+        action.get("basis"), dict
+    )
+
+
+def _action_deferred(action: dict[str, Any]) -> bool:
+    return action.get("actionability") in {"denied", "out_of_scope", "deferred"} or (
+        "actionability" not in action
+        and action.get("authorization") in {"denied", "out_of_scope"}
+    )
+
+
 def _action_authorization(category: str, scope: dict[str, Any]) -> str:
     if category in scope["denied"]:
         return "denied"
     if category in scope["authorized"] or scope["broad"]:
-        return "authorized"
+        return "unknown"
     if scope["bounded"]:
         return "out_of_scope"
-    # Ambiguous task scopes fail toward continuation, not silent completion.
-    return "authorized"
+    # Text-only scope describes a request; it cannot supply a current
+    # predicate, Host readiness, or an as-of action basis. A standalone
+    # classifier therefore never grants execution authority.
+    return "unknown"
+
+
+def _root_action_condition(
+    source: str, action_match: re.Match[str]
+) -> tuple[str, str] | None:
+    """A source-bound unmet antecedent before an action, not a reply wait.
+
+    A host file preflight cannot release a root schedule or external approval.
+    Without a trusted clock/approval fact at this Stop watermark it stays
+    pending. These forms describe clause structure, not named incident words.
+    """
+    prefix = source[:action_match.start()].strip()
+    if not prefix:
+        return None
+    if re.search(r"(?:后|之后|以后)\s*$|\b(?:after|once|when|until)\b", prefix, re.I):
+        kind = "external_dependency" if re.search(
+            r"外部|第三方|平台|审批|审核|批准|\b(?:external|third[- ]party|platform|approval|review)\b",
+            prefix, re.I,
+        ) else "predicate"
+        return prefix, kind
+    if re.search(
+        r"(?:上|下|本|明|后|第\d+|\d{4}年)?\d*(?:周|星期|月|年|季度|天|日)\s*$"
+        r"|\b(?:next|following)\s+(?:week|month|year|quarter|day)\b"
+        r"|\b\d{4}-\d{2}-\d{2}\b",
+        prefix, re.I,
+    ):
+        return prefix, "predicate"
+    return None
+
+
+def _root_action_head(source: str, pattern: re.Pattern[str]) -> re.Match[str]:
+    """Choose the effect after an antecedent, not an action word within it."""
+    matches = list(pattern.finditer(source))
+    for match in reversed(matches):
+        if _root_action_condition(source, match):
+            return match
+    return matches[0]
+
+
+def _current_action_basis(
+    state: dict[str, Any] | None, category: str, reply_clause: str,
+    session_dir: Path | None = None, *, include_satisfied: bool = False,
+) -> dict[str, Any] | None:
+    """Bind a candidate action to an unmet, current root requirement.
+
+    This is Stop diagnosis, never permission to run a tool. Historical and
+    terminal rows cannot become current work through reply wording.
+    """
+    if state is None or session_dir is None or category == "generic_work":
+        return None
+    current_ids = current_scope_projection(state)["scoped_item_ids"]
+    active_id = state.get("work_state", {}).get("active_work_unit_id")
+    units = {str(u.get("id")): u for u in state.get("work_units", []) if isinstance(u, dict)}
+    reply_subjects = {str(s["id"]) for s in prompt_subjects(reply_clause)}
+    pattern = dict(ACTION_PATTERNS).get(category)
+    if pattern is None:
+        return None
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            if not isinstance(item, dict) or item.get("id") not in current_ids:
+                continue
+            if item.get("status") in TERMINAL_ITEM_STATUSES or item.get("status") == "legacy_review":
+                continue
+            unit = units.get(str(item.get("work_unit_id")))
+            if not unit or unit.get("status") in {"completed", "historical_unresolved"}:
+                continue
+            prompt = next((p for p in state.get("prompts", []) if p.get("id") == item.get("prompt_id")
+                           and p.get("origin", "human") == "human"), None)
+            if prompt is None:
+                continue
+            roots = {
+                str(p["id"]): record
+                for p in state.get("prompts", [])
+                if isinstance(p, dict) and p.get("origin", "human") == "human"
+                and (record := read_prompt_record(session_dir, p)) is not None
+            }
+            root_record = roots.get(str(item.get("prompt_id")))
+            if root_record is None:
+                continue
+            root_text = root_record["text"]
+            if item.get("execution_source_span") is None and any(
+                child.get("parent_id") == item.get("id")
+                and child.get("execution_source_span") is not None
+                for child in state.get("requirements", []) if isinstance(child, dict)
+            ):
+                continue
+            # Preserve dotted locators across the existing quote-aware root
+            # speech splitter, then restore the exact source text.
+            protected = WINDOWS_UNC_PATH_RE.sub(
+                lambda match: match.group(0).replace(".", "\u241f"), root_text
+            )
+            protected = WINDOWS_DRIVE_PATH_RE.sub(
+                lambda match: match.group(0).replace(".", "\u241f"), protected
+            )
+            protected = ABSOLUTE_PATH_RE.sub(
+                lambda match: match.group(0).replace(".", "\u241f"), protected
+            )
+            protected = RELATIVE_FILE_RE.sub(
+                lambda match: match.group(0).replace(".", "\u241f"), protected
+            )
+            clauses = [c.replace("\u241f", ".") for c in control_speech_clauses(protected)]
+            if item.get("execution_source_span") is not None:
+                span = item["execution_source_span"]
+                if (not isinstance(span, list) or len(span) != 2
+                        or any(type(value) is not int for value in span)):
+                    continue
+                try:
+                    child_scope = root_text.encode("utf-8")[span[0]:span[1]].decode("utf-8")
+                except (UnicodeDecodeError, IndexError):
+                    continue
+                if (sha256_text(child_scope) != item.get("execution_source_sha256")
+                        or item.get("execution_kind") != category):
+                    continue
+                clauses = [child_scope]
+            sources = [c for c in clauses if pattern.search(c)
+                       and not CLAUSE_NEGATION_RE.search(c)
+                       and not DESCRIPTION_FRAME_RE.search(c)]
+            if len(sources) != 1:
+                continue
+            source = sources[0]
+            source_at = root_text.find(source)
+            dependent_readback = False
+            if category == "local_edit" and source_at >= 0:
+                following = root_text[source_at + len(source):]
+                if re.fullmatch(
+                    r"\s*[,，;；]?\s*(?:并|然后|and)?\s*"
+                    r"(?:检查|核对)(?:改动后(?:的)?文件|文件内容)\s*[。.!！]?\s*"
+                    r"|\s*[,，;；]?\s*(?:and\s+)?verify\s+(?:the\s+)?changed\s+file\s*[.!]?\s*",
+                    following, re.I,
+                ):
+                    source = root_text[source_at:].strip()
+                    dependent_readback = True
+            if category == "local_review" and source_at >= 0 and re.search(
+                r"\bmeasure\b|测量|测出", source, re.I
+            ):
+                following = root_text[source_at + len(source):]
+                if re.fullmatch(r"\s*[,，;；]\s*(?:并|然后)?\s*报告(?:数值|结果)\s*[。.!！]?\s*"
+                                r"|\s*[,，;；]\s*(?:and\s+)?report\s+(?:the\s+)?(?:value|result)\s*[.!]?\s*",
+                                following, re.I):
+                    source = root_text[source_at:].strip()
+            if source_at >= 0:
+                sentence_start = max(root_text.rfind(mark, 0, source_at)
+                                     for mark in "\n。！？!?；;") + 1
+                candidate = root_text[sentence_start:source_at + len(source)].strip()
+                candidate_action = _root_action_head(candidate, pattern) if pattern.search(candidate) else None
+                if (candidate_action is not None
+                        and candidate.count(",") + candidate.count("，") > 0
+                        and _root_action_condition(candidate, candidate_action)):
+                    source = candidate
+            condition_scope = _root_action_condition(source, _root_action_head(source, pattern))
+            # A changed byte digest proves only an unconstrained edit. A
+            # requested replacement, preservation condition, or other
+            # postcondition needs its own sourced predicate and readback.
+            if category == "local_edit":
+                generic_edit = source
+                if dependent_readback:
+                    generic_edit = re.sub(
+                        r"\s*[,，;；]\s*(?:并|然后)?\s*(?:检查|核对)(?:改动后(?:的)?文件|文件内容)\s*[。.!！]?\s*$",
+                        "", generic_edit,
+                    )
+                for locator in (*ABSOLUTE_PATH_RE.findall(source),
+                                *WINDOWS_DRIVE_PATH_RE.findall(source),
+                                *RELATIVE_FILE_RE.findall(source)):
+                    generic_edit = generic_edit.replace(locator, "", 1)
+                if not re.fullmatch(
+                    r"\s*(?:(?:请|帮我|先|再|完成|只)\s*)*(?:修改|编辑|更新|修复|修正|修好|实现)"
+                    r"\s*[^,，;；。.!?？]{0,55}?(?:\s*(?:并|然后)\s*核对(?:文件)?内容)?\s*"
+                    r"|\s*(?:本轮)?完成(?:补丁|修复)\s*"
+                    r"|\s*请在\s*[^,，;；。.!?？]{1,70}\s*范围内\s*(?:修好|修复|修正|修改)[^,，;；。.!?？]{0,55}\s*"
+                    r"|\s*(?:please\s+)?(?:edit|modify|update|fix|correct|repair)"
+                    r"\s*[^,，;；。!?？]{0,70}?(?:\s+and\s+verify\s+the\s+changed\s+file)?\s*",
+                    generic_edit, re.I,
+                ) or re.search(r"改为|替换为|写入|不得覆盖|no[- ]overwrite|replace\s+with", source, re.I):
+                    continue
+            # A single sentence can carry independent effects. One host test
+            # result cannot interpret and close an adjacent edit/review verb.
+            if any(other != category and not (
+                category == "local_edit" and other in {"local_review", "test_verify"}
+                and (dependent_readback or re.search(r"(?:并|然后)\s*核对(?:文件)?内容|\band\s+verify\s+the\s+changed\s+file\b", source, re.I))
+            ) and any(
+                not source[match.end():].startswith("的")
+                for match in other_pattern.finditer(source)
+            ) for other, other_pattern in ACTION_PATTERNS):
+                continue
+            if WINDOWS_UNC_PATH_RE.search(source):
+                continue  # An explicit unsupported locator cannot become a work-unit choice.
+            targets = [match.group(0).rstrip(".") for pattern in
+                       (ABSOLUTE_PATH_RE, WINDOWS_DRIVE_PATH_RE)
+                       for match in pattern.finditer(source)]
+            relative_targets = [match.group(0) for match in RELATIVE_FILE_RE.finditer(source)
+                                if ".." not in Path(match.group(0)).parts]
+            normalized_ids = {str(s["id"]) for s in prompt_subjects(source)}
+            eligible_targets = [target for target in targets
+                                if any(str(s["id"]) in normalized_ids
+                                       for s in prompt_subjects(target))]
+            resolved_constraint = None
+            if eligible_targets:
+                if len(set(eligible_targets)) != 1:
+                    continue
+                root_constraint = eligible_targets[0]
+                if WINDOWS_ABSOLUTE_PATH_RE.match(root_constraint):
+                    target, unsupported = canonical_windows_locator(root_constraint)
+                    if unsupported is not None or target is None or target != root_constraint:
+                        continue
+                else:
+                    target = root_constraint
+                constraint_kind = "exact"
+            else:
+                # The root names the current work but delegates an object
+                # choice. Accept only a unique, observed host readiness
+                # selection from this exact work unit/revision.
+                root_relative_target = None
+                relative_kind = None
+                if relative_targets:
+                    if len(set(relative_targets)) != 1:
+                        continue
+                    cwd = root_record.get("locator_base")
+                    literal = relative_targets[0]
+                    if (not isinstance(cwd, str) or not Path(cwd).is_absolute()
+                            or any(part in {"", ".", ".."} for part in literal.split("/"))
+                            or literal.startswith(("~", "$", "%"))):
+                        continue
+                    root_relative_target = str(Path(cwd) / literal)
+                    relative_kind = "directory" if re.search(
+                        rf"{re.escape(literal)}\s*(?:范围内|目录内|之下)|\bunder\s+{re.escape(literal)}\b",
+                        source, re.I,
+                    ) else "exact"
+                allowed_predicates = ({"edit_applied", "content_hash"} if category == "local_edit"
+                                      else {"file_exists", "test_passed"} if category in {"test_verify", "local_review"}
+                                      else {"repo_identity", "commit_identity", "branch_identity", "remote_ref"})
+                selections = {
+                    (obs.get("canonical_target") if root_relative_target is not None else obs["target"])
+                    for evidence in state.get("evidence", [])
+                    if isinstance(evidence, dict)
+                    and isinstance((obs := evidence.get("core_observation")), dict)
+                    and obs.get("kind") in {"readiness", "state_readback", "action_event", "git_readback"}
+                    and obs.get("outcome") == "success"
+                    and obs.get("unit") == item.get("work_unit_id")
+                    and obs.get("prompt_id") in roots
+                    and type(evidence.get("core_call_seq")) is int
+                    and type(root_record.get("core_event_seq")) is int
+                    and evidence["core_call_seq"] > root_record["core_event_seq"]
+                    and obs.get("predicate") in allowed_predicates
+                    and isinstance(obs.get("target"), str)
+                    and (root_relative_target is None or isinstance(obs.get("canonical_target"), str))
+                    and (root_relative_target is None
+                         or (obs["canonical_target"].startswith(root_relative_target + "/")
+                             if relative_kind == "directory"
+                             else obs["canonical_target"] == root_relative_target))
+                }
+                if len(selections) != 1:
+                    if not (include_satisfied and relative_kind == "exact"
+                            and not selections and root_relative_target is not None):
+                        continue
+                    target = root_relative_target
+                else:
+                    target = next(iter(selections))
+                if root_relative_target is not None:
+                    # Lexical containment is necessary but insufficient when
+                    # a symlink can redirect the actual Host target elsewhere.
+                    if selections:
+                        try:
+                            if str(Path(target).resolve(strict=True)) != target:
+                                continue
+                        except (OSError, RuntimeError):
+                            continue
+                    root_constraint = relative_targets[0]
+                    constraint_kind = relative_kind
+                    resolved_constraint = root_relative_target
+                else:
+                    root_constraint = None
+                    constraint_kind = "work_unit"
+                    resolved_constraint = None
+                if category in {"local_commit", "remote_push"}:
+                    prior_targets = {
+                        match.group(0).rstrip(".")
+                        for prior_item in state.get("requirements", [])
+                        if isinstance(prior_item, dict)
+                        and prior_item.get("work_unit_id") == item.get("work_unit_id")
+                        and (prior_root := roots.get(str(prior_item.get("prompt_id")))) is not None
+                        and type(prior_root.get("core_event_seq")) is int
+                        and prior_root["core_event_seq"] < root_record["core_event_seq"]
+                        for match in ABSOLUTE_PATH_RE.finditer(prior_root["text"])
+                    }
+                    if prior_targets != {target}:
+                        continue
+            target_ids = {str(s["id"]) for s in prompt_subjects(target)}
+            if reply_subjects and not reply_subjects.issubset(target_ids):
+                continue
+            # A current root review/evaluation is due at this work unit's
+            # watermark. Its object is selected by host provenance; topic
+            # nouns and time adverbs in the reply are never authority.
+            action_name = (
+                "measure_current_effect" if category == "local_review"
+                and re.search(r"\bmeasure\b|测量|测出", source, re.I)
+                else "evaluate_current_effect" if category == "local_review" else category
+            )
+            predicate_name = "measurement_and_report" if action_name == "measure_current_effect" else None
+            from cg_codex_core_adapter import project_current_action
+            try:
+                snapshot = project_current_action(
+                    state, roots, item=item, action=action_name, target=target,
+                    turn=str((state.get("completion_attempt") or {}).get("turn_id") or "stop"),
+                    constraint_kind=constraint_kind,
+                    root_constraint=root_constraint,
+                    resolved_constraint=resolved_constraint,
+                    root_scope=source,
+                    condition_scope=condition_scope,
+                    predicate_name=predicate_name,
+                    return_snapshot=True,
+                    resume_prefix=bool(
+                        (prefix := root_text.split(source, 1)[0].strip(" \t\r\n,，。.!?？；;：:"))
+                        and (resume_match := EXECUTION_RESUME_RE.search(prefix)) is not None
+                        and resume_match.end() == len(prefix)
+                        and len(control_speech_clauses(prefix)) == 1
+                        and not any(p.search(prefix) for _, p in ACTION_PATTERNS)
+                    ),
+                )
+                from cg_core_v2 import project as project_core
+                projected = project_core(snapshot)
+            except (ValueError, KeyError, TypeError):
+                continue
+            actionable = any(a["requirement_id"] == item["id"] for a in projected["current_actions"])
+            satisfied = projected["predicates"].get(item["id"]) == "satisfied"
+            if (not actionable and not condition_scope and not (include_satisfied and satisfied)
+                    and not (include_satisfied and constraint_kind == "exact"
+                             and resolved_constraint is not None)):
+                continue
+            return {
+                "schema": "current-action-basis/v1", "requirement_id": str(item["id"]),
+                "unit": str(item.get("work_unit_id") or active_id),
+                "revision": str(unit.get("scope_sha256") or ""),
+                "source_prompt_id": str(prompt["id"]), "source_sha256": str(prompt.get("sha256") or ""),
+                "action": action_name, "target": target,
+                "predicate": predicate_name or {"test_verify": "test_passed", "local_commit": "commit_verified",
+                              "remote_push": "push_verified"}.get(category, "state_matches"),
+                "owner": "assistant", "readiness": (
+                    "root_condition_pending" if condition_scope else "trusted_host_observation"
+                ),
+                "as_of": projected["as_of"],
+                "predicate_state": projected["predicates"].get(item["id"], "insufficient"),
+                "current_due": category == "local_review" and not condition_scope,
+                "root_condition": (
+                    {"kind": condition_scope[1],
+                     "source_sha256": sha256_text(condition_scope[0])}
+                    if condition_scope else None
+                ),
+                "core_projection": projected,
+                "core_snapshot": snapshot,
+            }
+    return None
+
+
+def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[dict[str, Any]]:
+    """Read-only current Stop status from genuine root and host observations."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    bases: list[dict[str, Any]] = []
+    for category, _ in ACTION_PATTERNS:
+        basis = _current_action_basis(state, category, "", session_dir,
+                                      include_satisfied=True)
+        if basis is None or basis["requirement_id"] in seen:
+            continue
+        seen.add(basis["requirement_id"])
+        bases.append(basis)
+        projected = basis["core_projection"]
+        rows.append({
+            "requirement_id": basis["requirement_id"],
+            "unit": basis["unit"], "as_of": basis["as_of"],
+            "source_sha256": basis["source_sha256"],
+            "target_sha256": sha256_text(basis["target"]),
+            "predicate": basis["predicate"],
+            "predicate_state": basis["predicate_state"],
+            "conditions": projected["conditions"],
+            "root_condition": basis["root_condition"],
+            "certifiable": bool(projected["certifiable"]),
+            "unknown_coverage_count": len(projected["unknown_coverage"]),
+            "coverage_error_count": len(projected["coverage_errors"]),
+        })
+        if len(rows) >= 16:
+            break
+    execution_items = {item["id"]: item for item in state.get("requirements", [])
+                       if isinstance(item, dict) and item.get("execution_source_span") is not None}
+    paired = [basis for basis in bases if basis["requirement_id"] in execution_items]
+    pair_kind = {basis["action"] for basis in paired}
+    if len(paired) == 2 and pair_kind in (
+        {"local_edit", "test_verify"}, {"local_commit", "remote_push"}
+    ):
+        parents = {execution_items[basis["requirement_id"]].get("parent_id") for basis in paired}
+        if len(parents) == 1 and None not in parents:
+            import copy
+
+            from cg_core_v2 import project as project_core
+            combined = copy.deepcopy(paired[0]["core_snapshot"])
+            other = paired[1]["core_snapshot"]
+            suffix = paired[1]["requirement_id"] + ":"
+            combined["requirements"].extend(copy.deepcopy(other["requirements"]))
+            for fact in other["facts"]:
+                copied = copy.deepcopy(fact)
+                copied["id"] = suffix + copied["id"]
+                copied["invalidates"] = [suffix + fid for fid in copied["invalidates"]]
+                combined["facts"].append(copied)
+            for action in other["actions"]:
+                copied = copy.deepcopy(action)
+                copied["readiness_fact_ids"] = [suffix + fid for fid in copied["readiness_fact_ids"]]
+                combined["actions"].append(copied)
+            if not combined["conditions"] and not other["conditions"]:
+                source_id = combined["requirements"][0]["source"]["source_id"]
+                root = next((source for source in combined["sources"] if source["id"] == source_id), None)
+                if root is not None:
+                    parent_id = next(iter(parents))
+                    container = copy.deepcopy(combined["requirements"][0])
+                    container.update({
+                        "id": parent_id, "kind": "constraint", "required": False,
+                        "source": {"source_id": source_id, "start": 0,
+                                   "end": root["byte_length"], "sha256": root["sha256"]},
+                        "parent_id": None, "condition_ids": [],
+                    })
+                    combined["requirements"].append(container)
+                    for child in combined["requirements"]:
+                        if child["id"] != parent_id:
+                            child["parent_id"] = parent_id
+                    combined["coverage"] = [coverage for coverage in combined["coverage"]
+                                            if coverage["source"]["source_id"] != source_id]
+                    combined["coverage"].append({
+                        "source": {"source_id": source_id, "start": 0,
+                                   "end": root["byte_length"], "sha256": root["sha256"]},
+                        "kind": "interpreted",
+                    })
+                    try:
+                        aggregate = project_core(combined)
+                    except (ValueError, KeyError, TypeError):
+                        aggregate = None
+                    if aggregate is not None:
+                        rows.append({
+                            "requirement_id": next(iter(parents)),
+                            "unit": paired[0]["unit"], "as_of": aggregate["as_of"],
+                            "predicate": ("edit_and_test" if pair_kind == {"local_edit", "test_verify"}
+                                          else "commit_and_push"),
+                            "predicate_state": "satisfied" if all(
+                                aggregate["predicates"].get(basis["requirement_id"]) == "satisfied"
+                                for basis in paired) else "insufficient",
+                            "certifiable": bool(aggregate["certifiable"]),
+                            "unknown_coverage_count": len(aggregate["unknown_coverage"]),
+                            "coverage_error_count": len(aggregate["coverage_errors"]),
+                        })
+    # A root may contain an exact positive edit followed by a reported
+    # different object and an explicit prohibition on that object. Keep the
+    # prohibition active without treating its mention as another edit or as
+    # unparsed completion debt. This is sourced clause-role interpretation;
+    # the Host effect still has to match the exact positive target.
+    for basis in bases:
+        if basis["action"] != "local_edit":
+            continue
+        snapshot = basis["core_snapshot"]
+        req = snapshot["requirements"][0]
+        if req["target_origin"]["constraint_kind"] != "exact":
+            continue
+        root = next((s for s in snapshot["sources"]
+                     if s["id"] == req["source"]["source_id"]), None)
+        if root is None or root["text"] is None or req["source"]["end"] >= root["byte_length"]:
+            continue
+        raw = root["text"].encode("utf-8")
+        try:
+            remainder = raw[req["source"]["end"]:].decode("utf-8").strip(" \t\r\n。.!?？；;：:")
+        except UnicodeDecodeError:
+            continue
+        metadata = clause_metadata(root["text"])
+        clauses = [str(c.get("clause") or "") for c in metadata.get("clauses", [])]
+        action_text = raw[:req["source"]["end"]].decode("utf-8")
+        trailing = [c for c in clauses if c and c not in action_text]
+        if (len(trailing) != 2 or CLAUSE_NEGATION_RE.search(trailing[0])
+                or not CLAUSE_NEGATION_RE.search(trailing[1])
+                or any(c.get("operation") != "unspecified" for c in metadata.get("clauses", [])
+                       if c.get("clause") in trailing)
+                or any(pattern.search(c) for c in trailing
+                       if not CLAUSE_NEGATION_RE.search(c)
+                       for _, pattern in ACTION_PATTERNS)):
+            continue
+        mentioned = {m.group(0) for m in RELATIVE_FILE_RE.finditer(remainder)}
+        if len(mentioned) != 1 or next(iter(mentioned)) == req["target_origin"]["root_constraint"]:
+            continue
+        forbidden_literal = next(iter(mentioned))
+        base = root.get("locator_base")
+        if not isinstance(base, str) or not Path(base).is_absolute():
+            continue
+        forbidden_target = str(Path(base) / forbidden_literal)
+        if ".." in Path(forbidden_literal).parts:
+            continue
+        forbidden_at = root["text"].find(forbidden_literal, len(action_text))
+        prohibition_at = root["text"].find(trailing[1], len(action_text))
+        if forbidden_at < 0 or prohibition_at < 0:
+            continue
+        forbidden_span = dict(source_id=root["id"],
+                              start=len(root["text"][:forbidden_at].encode("utf-8")),
+                              end=len(root["text"][:forbidden_at + len(forbidden_literal)].encode("utf-8")),
+                              sha256=root["sha256"])
+        prohibition_span = dict(source_id=root["id"],
+                                start=len(root["text"][:prohibition_at].encode("utf-8")),
+                                end=len(root["text"][:prohibition_at + len(trailing[1])].encode("utf-8")),
+                                sha256=root["sha256"])
+        root_seq = root["seq"]
+        source_by_id = {source["id"]: source for source in snapshot["sources"]}
+        def origin_seq(evidence: dict[str, Any]) -> int | None:
+            pid = evidence.get("core_origin_prompt_id")
+            row = source_by_id.get("root:" + str(pid)) if pid else None
+            return row["seq"] if row is not None else None
+        foreign_effects = [evidence for evidence in state.get("evidence", []) if (
+            isinstance(evidence, dict)
+            and isinstance((obs := evidence.get("core_observation")), dict)
+            and obs.get("unit") == basis["unit"]
+            and obs.get("kind") == "action_event"
+            and obs.get("predicate") in {"edit_applied", "mutation_applied"}
+            and obs.get("outcome") == "success"
+            and type(evidence.get("core_call_seq")) is int
+            and root_seq < evidence["core_call_seq"] <= basis["as_of"]
+            and (origin_seq(evidence) is not None
+                 and origin_seq(evidence) >= root_seq)
+            and req["target"] not in {obs.get("target"), obs.get("canonical_target")}
+        )]
+        violating_events = [evidence for evidence in foreign_effects
+                            if forbidden_target in {
+                                evidence["core_observation"].get("target"),
+                                evidence["core_observation"].get("canonical_target")}
+                            and (call := source_by_id.get("call:" + str(evidence["id"]))) is not None
+                            and (result := source_by_id.get("result:" + str(evidence["id"]))) is not None
+                            and call.get("target") == forbidden_target
+                            and call.get("target_kind") == "filesystem"
+                            and result.get("call_id") == call.get("call_id")]
+        crossing_candidates = [evidence for evidence in state.get("evidence", []) if (
+            isinstance(evidence, dict)
+            and isinstance((obs := evidence.get("core_observation")), dict)
+            and obs.get("unit") == basis["unit"]
+            and obs.get("kind") == "action_event"
+            and obs.get("predicate") in {"edit_applied", "mutation_applied"}
+            and obs.get("outcome") == "success"
+            and type(evidence.get("core_call_seq")) is int
+            and type(evidence.get("core_result_seq")) is int
+            and (evidence["core_call_seq"] <= root_seq
+                 or (origin_seq(evidence) is not None and origin_seq(evidence) < root_seq))
+            and root_seq <= evidence["core_result_seq"] <= basis["as_of"]
+            and forbidden_target in {obs.get("target"), obs.get("canonical_target")}
+        )]
+        crossing_events = [evidence for evidence in crossing_candidates
+                           if (call := source_by_id.get("call:" + str(evidence["id"]))) is not None
+                           and (result := source_by_id.get("result:" + str(evidence["id"]))) is not None
+                           and call.get("target") == forbidden_target
+                           and call.get("target_kind") == "filesystem"
+                           and result.get("call_id") == call.get("call_id")]
+        unattributed_mutations = [evidence for evidence in state.get("evidence", [])
+                                  if isinstance(evidence, dict)
+                                  and evidence.get("outcome") == "success"
+                                  and type(evidence.get("core_call_seq")) is int
+                                  and root_seq < evidence["core_call_seq"] <= basis["as_of"]
+                                  and not isinstance(evidence.get("core_observation"), dict)
+                                  and ("apply_patch" in str(evidence.get("tool") or "")
+                                       or tool_is_shell_execution(str(evidence.get("tool") or "")))]
+        uncertain_origin_events = [evidence for evidence in state.get("evidence", [])
+                                   if isinstance(evidence, dict)
+                                   and isinstance((obs := evidence.get("core_observation")), dict)
+                                   and obs.get("unit") == basis["unit"]
+                                   and obs.get("kind") == "action_event"
+                                   and obs.get("predicate") in {"edit_applied", "mutation_applied"}
+                                   and obs.get("outcome") == "success"
+                                   and origin_seq(evidence) is None
+                                   and type(evidence.get("core_call_seq")) is int
+                                   and root_seq < evidence["core_call_seq"] <= basis["as_of"]
+                                   and forbidden_target in {obs.get("target"), obs.get("canonical_target")}]
+        import copy
+
+        from cg_core_v2 import project as project_core
+        combined = copy.deepcopy(snapshot)
+        container = copy.deepcopy(req)
+        container.update(id="scope:" + req["id"], kind="constraint",
+                         required=bool(len(foreign_effects) > len(violating_events)
+                                       or len(crossing_candidates) > len(crossing_events)
+                                       or unattributed_mutations or uncertain_origin_events),
+                         parent_id=None, condition_ids=[],
+                         status="legacy_review" if len(foreign_effects) > len(violating_events)
+                         or len(crossing_candidates) > len(crossing_events)
+                         or unattributed_mutations or uncertain_origin_events else "pending",
+                         source=dict(source_id=root["id"], start=0,
+                                     end=root["byte_length"], sha256=root["sha256"]))
+        container["target_origin"].update(
+            implementation_choice=None, host_selection=None, observed=None)
+        combined["requirements"].append(container)
+        forbidden_req = copy.deepcopy(req)
+        forbidden_req.update(id="prohibition:" + req["id"], kind="constraint",
+                             action="forbidden_mutation", target=forbidden_target,
+                             predicate="no_mutation", evidence_kind="action_event",
+                             required=True, status="pending", parent_id=None,
+                             condition_ids=[], source=prohibition_span,
+                             target_origin=dict(
+                                 root_constraint=forbidden_literal,
+                                 subject_kind="filesystem",
+                                 resolved_constraint=forbidden_target,
+                                 implementation_choice=None,
+                                 host_selection=None,
+                                 resolved=forbidden_target,
+                                 observed=None,
+                                 root_constraint_source=forbidden_span,
+                                 constraint_kind="exact",
+                                 selection_source_id=None))
+        combined["requirements"].append(forbidden_req)
+        source_by_id = {source["id"]: source for source in combined["sources"]}
+        for evidence in violating_events + crossing_events:
+            eid = str(evidence["id"])
+            call, result = source_by_id.get("call:" + eid), source_by_id.get("result:" + eid)
+            if call is None or result is None:
+                continue
+            combined["facts"].append(dict(
+                id="forbidden_mutation:" + eid, seq=result["seq"],
+                unit=forbidden_req["unit"], revision=forbidden_req["revision"],
+                source_id=result["id"], call_source_id=call["id"],
+                kind="action_event", target=forbidden_target,
+                predicate="mutation_applied", outcome="success",
+                operation_id=None, requirement_id=forbidden_req["id"],
+                condition_id=None, invalidates=[]))
+        combined["coverage"] = [c for c in combined["coverage"]
+                                if c["source"]["source_id"] != root["id"]]
+        combined["coverage"].append(dict(
+            source=dict(source_id=root["id"], start=0,
+                        end=root["byte_length"], sha256=root["sha256"]),
+            kind="interpreted"))
+        try:
+            aggregate = project_core(combined)
+        except (ValueError, KeyError, TypeError):
+            continue
+        rows.append(dict(requirement_id=req["id"], unit=basis["unit"],
+                         as_of=aggregate["as_of"], predicate="edit_with_prohibition",
+                         predicate_state=aggregate["predicates"].get(req["id"]),
+                         constraint_state=aggregate["predicates"].get(forbidden_req["id"]),
+                         certifiable=bool(aggregate["certifiable"]),
+                         violating_host_event_ids=[str(e["id"]) for e in violating_events],
+                         crossing_host_event_ids=[str(e["id"]) for e in crossing_events],
+                         unattributed_host_event_ids=[str(e["id"]) for e in unattributed_mutations + uncertain_origin_events],
+                         unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                         coverage_error_count=len(aggregate["coverage_errors"])))
+    return rows
+
+
+def delivered_mixed_core_projection(
+    state: dict[str, Any], session_dir: Path, delivery_record: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Join one actual final delivery with its independent current edit effect.
+
+    The reply ledger supplies delivery identity; the existing Host adapter
+    supplies the edit/readback facts. Root byte coverage is complete only when
+    the two sourced clauses plus their separators exhaust the immutable root.
+    """
+    if (delivery_record.get("delivery") != "delivered"
+            or not delivery_record.get("reply_sha256")
+            or delivery_record.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id")):
+        return None
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    basis = _current_action_basis(state, "local_edit", "", session_dir,
+                                  include_satisfied=True)
+    if basis is None or basis["predicate_state"] != "satisfied":
+        return None
+    item = next((r for r in state.get("requirements", [])
+                 if isinstance(r, dict) and r.get("id") == basis["requirement_id"]), None)
+    if item is None:
+        return None
+    children = [r for r in state.get("requirements", [])
+                if isinstance(r, dict) and r.get("parent_id") == item.get("parent_id", item.get("id"))
+                and r.get("information_source_span") is not None
+                and r.get("prompt_id") == item.get("prompt_id")]
+    # An unsplit execution parent may itself be the edit item. Its information
+    # child is attached to that parent; a split edit child shares the parent.
+    if not children:
+        children = [r for r in state.get("requirements", [])
+                    if isinstance(r, dict) and r.get("parent_id") == item.get("id")
+                    and r.get("information_source_span") is not None
+                    and r.get("prompt_id") == item.get("prompt_id")]
+    if not children:
+        return None
+    snapshot = copy.deepcopy(basis["core_snapshot"])
+    action_req = snapshot["requirements"][0]
+    root_id = action_req["source"]["source_id"]
+    root = next((s for s in snapshot["sources"] if s["id"] == root_id), None)
+    if root is None or root["text"] is None:
+        return None
+    event_seq = state.get("core_event_sequence")
+    if type(event_seq) is not int or event_seq < snapshot["as_of"]:
+        return None
+    delivery_id = "final_delivery:" + delivery_record["delivery_sha256"]
+    snapshot["sources"].append(dict(
+        id=delivery_id, seq=event_seq, kind="final_delivery",
+        unit=action_req["unit"], revision=action_req["revision"],
+        sha256=delivery_record["reply_sha256"], byte_length=0,
+        text=None, call_id=None, turn=snapshot["turn"],
+    ))
+    spans = [(action_req["source"]["start"], action_req["source"]["end"])]
+    for child in children:
+        bounds = child["information_source_span"]
+        if (not isinstance(bounds, list) or len(bounds) != 2
+                or not all(type(n) is int for n in bounds)
+                or not 0 <= bounds[0] < bounds[1] <= root["byte_length"]):
+            return None
+        raw = root["text"].encode("utf-8")
+        try:
+            subject = raw[bounds[0]:bounds[1]].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if (subject != child.get("text")
+                or hashlib.sha256(subject.encode("utf-8")).hexdigest()
+                != child.get("information_source_sha256")):
+            return None
+        span = dict(source_id=root_id, start=bounds[0], end=bounds[1],
+                    sha256=root["sha256"])
+        info_req = copy.deepcopy(action_req)
+        info_req.update(id=child["id"], source=span, kind="information",
+                        action="deliver_information", target=subject,
+                        predicate="answer_delivered", evidence_kind="delivery",
+                        parent_id=None, status="pending", condition_ids=[],
+                        target_origin=dict(
+                            root_constraint=subject, subject_kind="opaque",
+                            implementation_choice=subject, host_selection=subject,
+                            resolved=subject, observed=subject,
+                            root_constraint_source=span, constraint_kind="exact",
+                            selection_source_id=None))
+        snapshot["requirements"].append(info_req)
+        if (child.get("status") == "answered"
+                and child["id"] in delivery_record.get("requirement_ids", [])):
+            snapshot["facts"].append(dict(
+                id="delivery_fact:" + child["id"], seq=event_seq,
+                unit=action_req["unit"], revision=action_req["revision"],
+                source_id=delivery_id, call_source_id=None, kind="delivery",
+                target=subject, predicate="answer_delivered", outcome="success",
+                operation_id=None, requirement_id=child["id"],
+                condition_id=None, invalidates=[],
+            ))
+        spans.append((bounds[0], bounds[1]))
+    spans.sort()
+    if spans[0][0] < 0 or spans[-1][1] > root["byte_length"]:
+        return None
+    segments = []
+    cursor = 0
+    raw = root["text"].encode("utf-8")
+    for begin, end in spans:
+        if begin < cursor:
+            return None
+        if begin > cursor:
+            try:
+                gap = raw[cursor:begin].decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            # Only separators between independently sourced clauses are
+            # interpreted. Other text remains unknown and blocks a certificate.
+            segments.append((cursor, begin, "interpreted" if not gap.strip(
+                " \t\r\n,，。.!?？；;：:、") else "unknown"))
+        segments.append((begin, end, "interpreted"))
+        cursor = end
+    if cursor < len(raw):
+        gap = raw[cursor:].decode("utf-8")
+        segments.append((cursor, len(raw), "interpreted" if not gap.strip(
+            " \t\r\n,，。.!?？；;：:、") else "unknown"))
+    snapshot["coverage"] = [c for c in snapshot["coverage"]
+                            if c["source"]["source_id"] != root_id] + [dict(source=dict(source_id=root_id, start=a,
+                                              end=b, sha256=root["sha256"]), kind=k)
+                            for a, b, k in segments]
+    container = copy.deepcopy(action_req)
+    container.update(id="scope:" + action_req["id"], kind="constraint",
+                     required=False, parent_id=None, condition_ids=[],
+                     source=dict(source_id=root_id, start=0,
+                                 end=root["byte_length"], sha256=root["sha256"]))
+    snapshot["requirements"].append(container)
+    snapshot["as_of"] = event_seq
+    try:
+        aggregate = project_core(snapshot)
+    except (ValueError, KeyError, TypeError):
+        return None
+    return dict(requirement_id=item.get("parent_id") or item["id"],
+                unit=basis["unit"], as_of=aggregate["as_of"],
+                predicate="information_and_edit",
+                predicate_state="satisfied" if all(
+                    aggregate["predicates"].get(r["id"]) == "satisfied"
+                    for r in snapshot["requirements"] if r["required"]) else "insufficient",
+                certifiable=bool(aggregate["certifiable"]),
+                unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                coverage_error_count=len(aggregate["coverage_errors"]))
 
 
 def deferred_action_bindings(
@@ -8375,7 +9235,10 @@ def deferred_action_bindings(
     return list(dict.fromkeys(bound))
 
 
-def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
+def remaining_action_facts(
+    text: str, prompt_text: str, *, state: dict[str, Any] | None = None,
+    session_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     scope = prompt_action_scope(prompt_text)
     resume_requested = explicit_execution_resume(prompt_text)
     actions: list[dict[str, str]] = []
@@ -8386,16 +9249,16 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
         if user_handoff:
             fact = ("user_action", "user", "user_only")
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "user_input_needed"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
         if EXTERNAL_WAIT_RE.search(clause):
             fact = ("external_wait", "external", "external_dependency")
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "unregistered_wait"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
             # A single clause can still contain an explicit assistant future
             # after an external status, so do not return early here.
@@ -8412,9 +9275,9 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
         if user_dependent_future and not user_handoff:
             fact = ("user_action", "user", "user_only")
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "user_input_needed"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
             user_handoff = True
         # A pure user handoff owns every action in the clause. An explicit
@@ -8435,9 +9298,15 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             REMAINING_WORK_RE.search(clause) or re.search(r"仍有|尚有", clause, re.I)
             or resumed_next_action
         )
+        incomplete_operation = bool(
+            re.search(r"(?:尚未|还未|未)\s*[^，。;；]{0,20}", clause)
+            and any(pattern.search(clause) for _, pattern in ACTION_PATTERNS)
+        )
         remaining = bool(
             remaining_marker
+            or incomplete_operation
             or NON_COMPLETION_RE.search(clause)
+            or _incomplete_action_clause(clause)
             or re.search(r"\b(?:next|then)\s+i\s+(?:will|need\s+to)\b", clause, re.I)
             or assistant_future
         )
@@ -8455,26 +9324,73 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             ):
                 continue
             authorization = _action_authorization(category, scope)
+            basis = _current_action_basis(state, category, assistant_clause, session_dir)
+            if state is not None and basis is None:
+                completed_basis = _current_action_basis(
+                    state, category, assistant_clause, session_dir, include_satisfied=True
+                )
+                if completed_basis is not None and completed_basis["predicate_state"] == "satisfied":
+                    continue
+            if state is not None:
+                authorization = (
+                    "authorized" if basis is not None
+                    else authorization if authorization in {"denied", "out_of_scope"}
+                    else "unknown"
+                )
             fact = (category, "assistant", authorization)
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                action: dict[str, Any] = {"category": fact[0], "owner": fact[1]}
+                if state is None:
+                    action["authorization"] = fact[2]
+                else:
+                    action["actionability"] = (
+                        "deferred" if basis is not None and
+                        basis["readiness"] == "root_condition_pending" else
+                        "current_ready" if basis is not None else fact[2]
+                    )
+                if basis is not None:
+                    action["basis"] = basis
+                actions.append(action)
                 seen.add(fact)
             if assistant_future:
                 explicit_assistant_facts.add(fact)
             matched = True
         generic_future = assistant_future and bool(re.search(r"继续|\bcontinue\b", assistant_clause, re.I))
-        if not matched and (remaining_marker or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
-            authorization = _action_authorization("generic_work", scope)
+        if not matched and (remaining_marker or incomplete_operation or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
+            # A reply may name an unfinished predicate without repeating the
+            # root's verb. Resolve it only when exactly one live, sourced,
+            # ready root action exists; never upgrade a stored generic row.
+            live_bases = [basis for category, _ in ACTION_PATTERNS
+                          if (basis := _current_action_basis(state, category, "", session_dir))
+                          is not None] if state is not None else []
+            unique_bases = {basis["requirement_id"]: basis for basis in live_bases}
+            if len(unique_bases) == 1:
+                basis = next(iter(unique_bases.values()))
+                actions.append({"category": basis["action"], "owner": "assistant",
+                                "actionability": "current_ready", "basis": basis})
+                matched = True
+        if not matched and (remaining_marker or incomplete_operation or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
+            authorization = "unknown"
             fact = ("generic_work", "assistant", authorization)
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "insufficient"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
             if assistant_future:
                 explicit_assistant_facts.add(fact)
+    if state is not None and resume_requested:
+        # A short resume inherits only still-actionable requirements in the
+        # same live unit. The resume text itself supplies no new target or
+        # predicate, and completed/future rows cannot become work.
+        existing_ids = {a.get("basis", {}).get("requirement_id") for a in actions}
+        for category, _ in ACTION_PATTERNS:
+            basis = _current_action_basis(state, category, "", session_dir)
+            if basis is None or basis["requirement_id"] in existing_ids:
+                continue
+            actions.append({"category": basis["action"], "owner": "assistant",
+                            "actionability": "current_ready", "basis": basis})
+            existing_ids.add(basis["requirement_id"])
     if any(item["owner"] == "user" for item in actions):
         actions = [
             item
@@ -8483,18 +9399,30 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             or (
                 item["category"],
                 item["owner"],
-                item["authorization"],
+                item.get("authorization", item.get("actionability", "unknown")),
             )
             in explicit_assistant_facts
         ]
+    if state is not None and session_dir is not None and re.search(
+        r"(?:以后|后续|未来|将来|尚待|有待|\b(?:later|future|eventually|remains? to be)\b)",
+        text, re.I,
+    ):
+        basis = _current_action_basis(state, "local_review", text, session_dir)
+        if basis is not None and basis["action"] == "evaluate_current_effect":
+            if not any(a.get("basis", {}).get("requirement_id") == basis["requirement_id"]
+                       for a in actions):
+                actions.append({"category": "evaluate_current_effect",
+                                "owner": "assistant", "actionability": "current_ready",
+                                "basis": basis})
     return actions
 
 
 def classify_stop_decision(
     text: str, prompt_text: str = "", *, prompt_integrity: bool = True,
-    state: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None, session_dir: Path | None = None,
 ) -> dict[str, Any]:
-    interpretation = interpret_stop_reply(text, prompt_text, state=state)
+    interpretation = interpret_stop_reply(text, prompt_text, state=state,
+                                          session_dir=session_dir)
     if not prompt_integrity:
         outcome = "fail_closed_integrity"
         reasons = ["prompt_integrity_unavailable"]
@@ -8507,17 +9435,18 @@ def classify_stop_decision(
         authorized = [
             item
             for item in assistant_actions
-            if item["authorization"] == "authorized"
+            if _action_ready(item)
         ]
         if interpretation["whole_completion_claim"]:
             outcome = "gate_completion_claim"
             reasons = ["current_unit_whole_completion"]
         elif authorized:
-            outcome = "gate_authorized_remaining_work"
+            outcome = ("gate_current_actionable_work" if state is not None
+                       else "gate_authorized_remaining_work")
             reasons = ["assistant_actionable_work_remains"]
             if any(item["owner"] == "external" for item in actions):
                 reasons.append("mixed_external_and_assistant_work")
-        elif assistant_actions:
+        elif any(_action_deferred(item) for item in assistant_actions):
             outcome = "allow_out_of_scope_deferred"
             reasons = ["remaining_work_denied_or_out_of_scope"]
         elif any(item["owner"] == "user" for item in actions):
@@ -8701,7 +9630,8 @@ def _stop_claim_subject(
     return "current_work_unit", "reply_subject"
 
 
-def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, Any] | None = None) -> dict[str, Any]:
+def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, Any] | None = None,
+                         session_dir: Path | None = None) -> dict[str, Any]:
     """One bounded semantic projection; unknown subjects never auto-complete.
 
     This is deterministic clause/subject interpretation, not semantic proof.
@@ -8735,27 +9665,37 @@ def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, A
                            "speech_act": _stop_claim_speech_act(text, match, regions),
                            "source": source, "clause_sha256": sha256_text(match.group(0))})
     action_text = authoritative_supersession_text(text)
-    actions = remaining_action_facts(action_text, prompt_text)
+    actions = remaining_action_facts(action_text, prompt_text, state=state,
+                                     session_dir=session_dir)
     owner_source = "reply_action"
-    if not actions and (POLICY_HOLD_RE.search(action_text) or EXPLICIT_HOLD_RE.search(action_text)):
+    # The standalone compatibility classifier reports wording. A production
+    # Stop never treats that report as a registered lifecycle operation.
+    if state is None and not actions and (POLICY_HOLD_RE.search(action_text) or EXPLICIT_HOLD_RE.search(action_text)):
         actions = [{"category": "external_wait", "owner": "external", "authorization": "external_dependency"}]
         owner_source = "reply_hold"
     if state is not None and not actions:
         waits = current_scope_projection(state)["waiting_conditions"]
         for wait in waits:
+            if wait.get("raised_by_kind") not in {"root_user", "external"}:
+                continue
+            if wait.get("kind") == MIGRATED_WAIT_CONDITION_KIND:
+                continue
             external = wait.get("condition_type") == "external_dependency"
             action = {"category": "external_wait" if external else "user_action",
                       "owner": "external" if external else "user",
-                      "authorization": "external_dependency" if external else "user_only"}
+                      "actionability": "registered_wait" if external else "user_input_needed"}
             if action not in actions:
                 actions.append(action)
         if actions:
             owner_source = "current_wait"
+    trusted_waits = current_scope_projection(state)["waiting_conditions"] if state is not None else []
     owner = stop3().resolve_waiting_owner({
-        "authorized_assistant_actions_available": any(a["owner"] == "assistant" and a["authorization"] == "authorized" for a in actions),
-        "missing_user_only_input_or_approval": any(a["owner"] == "user" for a in actions),
-        "registered_external_operation": any(a["owner"] == "external" for a in actions),
-        "deferred_by_scope_or_authority": any(a["owner"] == "assistant" and a["authorization"] != "authorized" for a in actions),
+        "authorized_assistant_actions_available": any(a["owner"] == "assistant" and _action_ready(a) for a in actions),
+        "missing_user_only_input_or_approval": any(w.get("raised_by_kind") == "root_user"
+            and w.get("condition_type") != "external_dependency" for w in trusted_waits),
+        "registered_external_operation": any(w.get("raised_by_kind") == "external"
+            and w.get("external_source_sha256") for w in trusted_waits),
+        "deferred_by_scope_or_authority": any(a["owner"] == "assistant" and _action_deferred(a) for a in actions),
     })
     return {"whole_completion_claim": whole, "claims": claims, "remaining_action_owner": owner,
             "omitted_claim_count": max(0, count - len(claims)), "actions": actions,
@@ -8888,7 +9828,7 @@ def is_control_prompt(text: str) -> bool:
         stripped.startswith(INTERNAL_CONTINUATION_PREFIX)
         or re.fullmatch(
             r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover|adopt"
-            r"|standard|strict|release|observe)(?:\s+.+)?)?",
+            r"|standard|strict|release|observe|goal-adopt)(?:\s+.+)?)?",
             stripped,
             re.I,
         )
@@ -8899,7 +9839,7 @@ def control_action(text: str) -> tuple[str | None, str | None]:
     stripped = text.strip()
     match = re.fullmatch(
         r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover|adopt"
-        r"|standard|strict|release|observe)(?:\s+(.+))?)?",
+        r"|standard|strict|release|observe|goal-adopt)(?:\s+(.+))?)?",
         stripped,
         re.I,
     )
@@ -8949,6 +9889,8 @@ def append_prompt(
     origin: str = "human",
     authority: str = "user",
     actor_id: str | None = None,
+    locator_base: str | None = None,
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     sequences = [
         int(match.group(1))
@@ -8972,6 +9914,13 @@ def append_prompt(
         "authority": authority,
         "actor_id": actor_id,
     }
+    if turn_id:
+        record["turn_id"] = turn_id
+    if locator_base is not None:
+        record["locator_base"] = locator_base
+        record["locator_flavor"] = "windows" if WINDOWS_ABSOLUTE_PATH_RE.match(locator_base) else "posix"
+    state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
+    record["core_event_seq"] = state["core_event_sequence"]
     record["record_sha256"] = prompt_record_hash(record)
     if path.exists():
         raise RuntimeError(f"immutable prompt already exists: {path}")
@@ -8987,7 +9936,10 @@ def append_prompt(
         "authority": authority,
         "actor_id": actor_id,
         "record_sha256": record["record_sha256"],
+        "core_event_seq": record["core_event_seq"],
     }
+    if turn_id:
+        metadata["turn_id"] = turn_id
     state["prompts"].append(metadata)
     journal = state.setdefault("prompt_journal", {"version": 1, "entries": []})
     entries = journal.setdefault("entries", []) if isinstance(journal, dict) else []
@@ -9143,6 +10095,105 @@ def append_requirement(
             requested_surface=primary.get("requestedSurface"),
         )
     return requirement_id
+
+
+def append_information_children(
+    state: dict[str, Any], prompt: dict[str, Any], text: str,
+    parent_id: str, work_unit_id: str,
+) -> None:
+    """Keep independently deliverable root spans visible in mixed requests.
+
+    The original root requirement remains pending; a recognized information
+    span can be answered without granting closure to execution or unknown
+    neighboring bytes. The span is measured over the immutable UTF-8 root.
+    """
+    if _reply_only_request_shape(text):
+        return
+    start = 0
+    candidates: list[tuple[int, int, str]] = []
+    for separator in re.finditer(
+        r"(?<=[.!?])\s+|" + _INFORMATION_COORDINATION_RE.pattern, text, re.I
+    ):
+        fragment = text[start:separator.start()]
+        trimmed = fragment.strip().rstrip(".!?。！？")
+        if trimmed:
+            offset = len(fragment) - len(fragment.lstrip())
+            begin = start + offset
+            candidates.append((begin, begin + len(trimmed), trimmed))
+        start = separator.end()
+    fragment = text[start:]
+    trimmed = fragment.strip().rstrip(".!?。！？")
+    if trimmed:
+        begin = start + len(fragment) - len(fragment.lstrip())
+        candidates.append((begin, begin + len(trimmed), trimmed))
+    if len(candidates) < 2 or len(candidates) > 32:
+        return
+    for begin, end, fragment in candidates:
+        if not _information_delivery_item({"text": fragment}):
+            continue
+        append_requirement(state, prompt, fragment, work_unit_id=work_unit_id)
+        child = state["requirements"][-1]
+        child["parent_id"] = parent_id
+        child["information_source_span"] = [
+            len(text[:begin].encode("utf-8")), len(text[:end].encode("utf-8"))
+        ]
+        child["information_source_sha256"] = hashlib.sha256(
+            text[begin:end].encode("utf-8")
+        ).hexdigest()
+
+
+def append_execution_children(
+    state: dict[str, Any], prompt: dict[str, Any], text: str,
+    parent_id: str, work_unit_id: str,
+) -> None:
+    """Split two independently verifiable effects without closing the parent.
+
+    This bounded compositional form needs two complete affirmative clauses,
+    one edit and one test, and one unique root locator. Anything else remains
+    the unsplit pending root; a test result never certifies an adjacent edit.
+    """
+    separators = list(re.finditer(r"[,，;；]\s*(?:并|and)?|\b(?:and|then)\b|并且|并|然后|随后|和", text, re.I))
+    if len(separators) != 1:
+        return
+    cut = separators[0]
+    raw_parts = [(0, cut.start()), (cut.end(), len(text))]
+    # A changed-file readback is one edit predicate, not a regression suite.
+    if re.fullmatch(r"\s*verify\s+(?:the\s+)?changed\s+file[.。!！]?\s*",
+                    text[cut.end():], re.I):
+        return
+    parts: list[tuple[int, int, str, str]] = []
+    for begin, end in raw_parts:
+        fragment = text[begin:end]
+        offset = len(fragment) - len(fragment.lstrip())
+        begin += offset
+        value = fragment.strip(" \t\r\n。.!?？")
+        if not value or CLAUSE_NEGATION_RE.search(value) or DESCRIPTION_FRAME_RE.search(value):
+            return
+        classes = [category for category, pattern in ACTION_PATTERNS if pattern.search(value)]
+        if len(classes) != 1 or classes[0] not in {
+            "local_edit", "test_verify", "local_commit", "remote_push"
+        }:
+            return
+        parts.append((begin, begin + len(value), value, classes[0]))
+    pair = {part[3] for part in parts}
+    if pair not in ({"local_edit", "test_verify"}, {"local_commit", "remote_push"}):
+        return
+    targets = {match.group(0).rstrip(".") for pattern in
+               (ABSOLUTE_PATH_RE, WINDOWS_DRIVE_PATH_RE)
+               for match in pattern.finditer(text)}
+    if pair == {"local_edit", "test_verify"} and len(targets) > 1:
+        return
+    if pair == {"local_commit", "remote_push"} and len(targets) > 1:
+        return
+    for begin, end, fragment, category in parts:
+        append_requirement(state, prompt, fragment, work_unit_id=work_unit_id)
+        child = state["requirements"][-1]
+        child["parent_id"] = parent_id
+        child["execution_kind"] = category
+        child["execution_source_span"] = [
+            len(text[:begin].encode("utf-8")), len(text[:end].encode("utf-8"))
+        ]
+        child["execution_source_sha256"] = sha256_text(fragment)
 
 
 def append_session_constraints(state: dict[str, Any], prompt: dict[str, Any], text: str, unit_id: str) -> None:
@@ -10046,8 +11097,15 @@ def replay_prompt_record(
         "authority": authority,
         "actor_id": record.get("actor_id"),
         "record_sha256": record.get("record_sha256"),
+        "core_event_seq": record.get("core_event_seq"),
     }
+    if isinstance(record.get("turn_id"), str) and record["turn_id"]:
+        metadata["turn_id"] = record["turn_id"]
     state["prompts"].append(metadata)
+    if isinstance(record.get("core_event_seq"), int):
+        state["core_event_sequence"] = max(
+            int(state.get("core_event_sequence") or 0), record["core_event_seq"]
+        )
     if origin != "human":
         return
     action, _ = control_action(text)
@@ -10204,13 +11262,19 @@ def append_decision_log(
             {
                 "category": bounded(item.get("category", "unknown"), 80),
                 "owner": bounded(item.get("owner", "unknown"), 40),
-                "authorization": bounded(
-                    item.get("authorization", "unknown"), 40
+                **(
+                    {"actionability": bounded(item.get("actionability", "insufficient"), 40),
+                     "basis_requirement_id": item.get("basis", {}).get("requirement_id"),
+                     "basis_as_of": item.get("basis", {}).get("as_of")}
+                    if decision.get("protocol_version") == STOP_PROTOCOL_VERSION
+                    else {"authorization": bounded(item.get("authorization", "unknown"), 40)}
                 ),
             }
             for item in decision.get("actions", [])[:16]
             if isinstance(item, dict)
         ],
+        **({"core_projections": decision.get("core_projections", [])[:16]}
+           if decision.get("protocol_version") == STOP_PROTOCOL_VERSION else {}),
     }
     state.setdefault("decision_log", []).append(record)
     state["decision_log"] = state["decision_log"][-DECISION_LOG_LIMIT:]
@@ -10248,6 +11312,7 @@ def status_context(state: dict[str, Any]) -> str:
         f"execution_contract={execution_state}, "
         f"execution_mode={execution_mode}, "
         f"execution_drift={drift_count}, "
+        "goal_host_completion=capability_unavailable, "
         f"last_decision={last_decision}, "
         f"requirements={len(state['requirements'])}, "
         f"acceptance={len(state['acceptance_items'])}, "
@@ -10602,6 +11667,8 @@ def read_prompt_record(session_dir: Path, metadata: dict[str, Any]) -> dict[str,
         or not isinstance(text, str)
         or digest != sha256_text(text)
         or digest != metadata.get("sha256")
+        or value.get("core_event_seq") != metadata.get("core_event_seq")
+        or value.get("turn_id") != metadata.get("turn_id")
         or (
             value.get("record_sha256") is not None
             and value.get("record_sha256") != prompt_record_hash(value)
@@ -11955,6 +13022,13 @@ def handle_user_prompt(
 ) -> dict[str, Any]:
     text = prompt_text(payload)
     origin, authority, actor_id = classify_prompt_origin(state, payload, text)
+    supplied_cwd = payload.get("cwd")
+    locator_base = None
+    if isinstance(supplied_cwd, str) and Path(supplied_cwd).is_absolute():
+        try:
+            locator_base = str(Path(supplied_cwd).resolve(strict=True))
+        except (OSError, RuntimeError):
+            pass
     prompt = append_prompt(
         session_dir,
         state,
@@ -11963,6 +13037,9 @@ def handle_user_prompt(
         origin=origin,
         authority=authority,
         actor_id=actor_id,
+        locator_base=locator_base,
+        turn_id=(str(payload["turn_id"]) if isinstance(payload.get("turn_id"), str)
+                 and payload["turn_id"] else None),
     )
     asset_ids = discover_assets(
         state, payload, prompt_id=prompt["id"], source="hook_payload"
@@ -12006,6 +13083,12 @@ def handle_user_prompt(
             context = adopt_execution_contract(state, prompt, argument)
         except (OSError, StateIntegrityError, ValueError) as exc:
             context = "Execution contract adoption rejected: " + bounded(str(exc), 400)
+    elif action == "goal-adopt":
+        context = (
+            "Goal host-completion adoption rejected: capability_unavailable. "
+            "No verified synchronous PreToolUse route exists for host "
+            "update_goal completion; Guard proof and whole-completion checks remain separate."
+        )
     elif action == "export":
         export_requested = True
     elif action == "rollover":
@@ -12037,6 +13120,8 @@ def handle_user_prompt(
         requirement_id = append_requirement(
             state, prompt, text, asset_ids, work_unit_id=work_unit_id
         )
+        append_information_children(state, prompt, text, requirement_id, work_unit_id)
+        append_execution_children(state, prompt, text, requirement_id, work_unit_id)
         acceptance_count = len(state["acceptance_items"])
         append_acceptance(
             state, prompt["id"], text, asset_ids, work_unit_id=work_unit_id
@@ -12454,6 +13539,239 @@ def tool_is_shell_execution(tool_name: str) -> bool:
         normalized in {"bash", "shell", "exec_command"}
         or normalized.endswith("_exec_command")
     )
+
+
+def core_shell_observation(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str,
+    outcome_basis: str,
+) -> dict[str, str] | None:
+    """Extract only one attributable shell operation from a host result.
+
+    A compound command, raw prose, or an unstructured success never becomes
+    a readiness or effect fact. The full command stays in the host payload;
+    the durable record stores only a digest and exact target.
+    """
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return None
+    if outcome_basis != "structured_exit_code":
+        return None
+    command = _shell_command(payload.get("tool_input"))
+    if not command or shell_control_operator_present(command):
+        return None
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if len(parts) == 3 and parts[:2] == ["test", "-f"]:
+        kind, predicate, raw_target = "readiness", "file_exists", parts[2]
+    elif len(parts) == 2 and parts[0] == "cat":
+        response = payload.get("tool_response")
+        if not isinstance(response, dict) or not isinstance(response.get("output"), str):
+            return None
+        kind, predicate, raw_target = "state_readback", "content_hash", parts[1]
+    elif len(parts) == 2 and parts[0] in {"pytest", "py.test"}:
+        kind, predicate, raw_target = "action_event", "test_passed", parts[1]
+    elif len(parts) == 4 and parts[0] in {"python", "python3"} and parts[1:3] == ["-m", "pytest"]:
+        kind, predicate, raw_target = "action_event", "test_passed", parts[3]
+    else:
+        return None
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        target, unsupported = canonical_windows_locator(raw_target)
+        if unsupported is not None or target is None:
+            return None
+    elif raw_target.startswith(("\\\\", "//")):
+        return None  # UNC/device paths have no supported lexical identity.
+    else:
+        cwd = str(state.get("session", {}).get("cwd") or "")
+        tool_input = payload.get("tool_input")
+        if isinstance(tool_input, dict) and isinstance(tool_input.get("workdir"), str):
+            cwd = tool_input["workdir"]
+        if not cwd or not Path(cwd).is_absolute():
+            return None
+        candidate = Path(raw_target)
+        if ".." in candidate.parts:
+            return None
+        candidate = candidate if candidate.is_absolute() else Path(cwd) / candidate
+        try:
+            physical_target = str(candidate.resolve(strict=True))
+        except (OSError, RuntimeError):
+            return None
+        target = str(candidate)
+    active_unit = state.get("work_state", {}).get("active_work_unit_id")
+    if not active_unit:
+        return None
+    unit = next((u for u in state.get("work_units", []) if u.get("id") == active_unit), None)
+    if not isinstance(unit, dict) or not unit.get("prompt_id"):
+        return None
+    current_prompt_id = next((str(item["prompt_id"]) for item in
+                              reversed(state.get("requirements", []))
+                              if item.get("work_unit_id") == active_unit
+                              and item.get("prompt_id")), str(unit["prompt_id"]))
+    observation = {
+        "kind": kind, "predicate": predicate, "target": target,
+        "outcome": "success" if outcome == "success" else "failure",
+        "unit": str(active_unit),
+        "prompt_id": current_prompt_id,
+        "turn": str(payload.get("turn_id") or ""),
+        "call_sha256": sha256_text(command),
+    }
+    if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        observation["canonical_target"] = physical_target
+    if kind == "state_readback":
+        observation["content_sha256"] = sha256_text(payload["tool_response"]["output"])
+    return observation
+
+
+def core_host_origin_prompt(state: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    """Bind a result to the one immutable root of its Host turn, if known.
+
+    A PostToolUse append position is only a result-arrival watermark. It does
+    not establish when an earlier turn's call began. Legacy prompts without
+    a captured turn, or competing roots for that turn, remain unattributed.
+    """
+    turn = payload.get("turn_id")
+    if not isinstance(turn, str) or not turn:
+        return None
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    root_ids = {str(row.get("prompt_id")) for row in state.get("requirements", [])
+                if isinstance(row, dict) and row.get("work_unit_id") == active}
+    matching = [row for row in state.get("prompts", [])
+                if isinstance(row, dict) and row.get("id") in root_ids
+                and row.get("turn_id") == turn
+                and type(row.get("core_event_seq")) is int]
+    return str(matching[0]["id"]) if len(matching) == 1 else None
+
+
+def core_patch_observation(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str,
+    outcome_basis: str,
+) -> dict[str, str] | None:
+    """One structured successful/failed host patch, never patch prose."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower()).strip("_")
+    if normalized not in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}:
+        return None
+    if outcome_basis not in {"structured_status", "structured_exit_code"}:
+        return None
+    tool_input = payload.get("tool_input")
+    patch = tool_input.get("patch") if isinstance(tool_input, dict) else tool_input
+    if not isinstance(patch, str) or not patch.startswith("*** Begin Patch\n") or not patch.rstrip().endswith("*** End Patch"):
+        return None
+    mutations = re.findall(r"^\*\*\* (Update|Add|Delete) File: (.+)$", patch, re.M)
+    if (len(mutations) != 1 or re.search(r"^\*\*\* Move to:", patch, re.M)):
+        return None
+    mutation_kind, raw_target = mutations[0]
+    raw_target = raw_target.strip()
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        target, unsupported = canonical_windows_locator(raw_target)
+        if unsupported is not None or target is None:
+            return None
+    elif raw_target.startswith("/") and ".." not in Path(raw_target).parts:
+        try:
+            physical_target = (str(Path(raw_target).parent.resolve(strict=True) / Path(raw_target).name)
+                               if mutation_kind == "Delete" else str(Path(raw_target).resolve(strict=True)))
+        except (OSError, RuntimeError):
+            return None
+        target = raw_target
+    else:
+        return None
+    active_unit = state.get("work_state", {}).get("active_work_unit_id")
+    unit = next((u for u in state.get("work_units", []) if u.get("id") == active_unit), None)
+    if not isinstance(unit, dict) or not unit.get("prompt_id"):
+        return None
+    current_prompt_id = next((str(item["prompt_id"]) for item in
+                              reversed(state.get("requirements", []))
+                              if item.get("work_unit_id") == active_unit
+                              and item.get("prompt_id")), str(unit["prompt_id"]))
+    observation = {
+        "kind": "action_event",
+        "predicate": "edit_applied" if mutation_kind == "Update" else "mutation_applied",
+        "target": target,
+        "outcome": "success" if outcome == "success" else "failure",
+        "unit": str(active_unit), "prompt_id": current_prompt_id,
+        "turn": str(payload.get("turn_id") or ""),
+        "call_sha256": sha256_text(patch),
+    }
+    if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        observation["canonical_target"] = physical_target
+    return observation
+
+
+def core_git_observation(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str,
+    outcome_basis: str,
+) -> dict[str, Any] | None:
+    """Record exact local Git call/result identity without executing Git."""
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return None
+    if outcome_basis != "structured_exit_code":
+        return None
+    command = _shell_command(payload.get("tool_input"))
+    if not command or shell_control_operator_present(command):
+        return None
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    if len(parts) < 5 or parts[:2] != ["git", "-C"]:
+        return None
+    raw_target = parts[2]
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        target, unsupported = canonical_windows_locator(raw_target)
+        if unsupported is not None or target is None:
+            return None
+    elif raw_target.startswith("/") and ".." not in Path(raw_target).parts:
+        target = str(Path(raw_target))
+    else:
+        return None
+    tail = parts[3:]
+    response = payload.get("tool_response")
+    output = response.get("output") if isinstance(response, dict) else None
+    if not isinstance(output, str):
+        return None
+    kind, predicate, git_data = None, None, {}
+    oid = r"[0-9a-f]{40}"
+    if tail == ["rev-parse", "--show-toplevel"]:
+        if output.strip() != target:
+            return None
+        kind, predicate = "readiness", "repo_selected"
+    elif tail == ["show", "-s", "--format=%H%n%P%n%T", "HEAD"]:
+        lines = output.strip().splitlines()
+        if len(lines) != 3 or not re.fullmatch(oid, lines[0]) or not re.fullmatch(oid, lines[2]):
+            return None
+        if lines[1] and not re.fullmatch(oid, lines[1]):
+            return None
+        kind, predicate = "git_readback", "commit_identity"
+        git_data = {"oid": lines[0], "parent": lines[1], "tree": lines[2]}
+    elif tail == ["symbolic-ref", "--short", "HEAD"]:
+        branch = output.strip()
+        if not branch or not _is_valid_git_branch_name(branch):
+            return None
+        kind, predicate, git_data = "git_readback", "branch_identity", {"branch": branch}
+    elif tail[:1] == ["commit"] and "--dry-run" not in tail:
+        kind, predicate = "action_event", "commit_attempt"
+    elif tail == ["push", "origin", "main"]:
+        kind, predicate, git_data = "action_event", "push_attempt", {"remote": "origin", "refspec": "main"}
+    elif tail == ["ls-remote", "origin", "refs/heads/main"]:
+        match = re.fullmatch(rf"({oid})\s+refs/heads/main\s*", output)
+        if match is None:
+            return None
+        kind, predicate, git_data = "git_readback", "remote_ref", {
+            "oid": match.group(1), "remote": "origin", "refspec": "main",
+        }
+    else:
+        return None
+    active_unit = state.get("work_state", {}).get("active_work_unit_id")
+    current_prompt_id = next((str(item["prompt_id"]) for item in
+                              reversed(state.get("requirements", []))
+                              if item.get("work_unit_id") == active_unit
+                              and item.get("prompt_id")), None)
+    if not active_unit or not current_prompt_id:
+        return None
+    return {"kind": kind, "predicate": predicate, "target": target,
+            "outcome": "success" if outcome == "success" else "failure",
+            "unit": str(active_unit), "prompt_id": current_prompt_id,
+            "turn": str(payload.get("turn_id") or ""),
+            "call_sha256": sha256_text(command), "git": git_data}
 
 
 def private_control_command_intent(payload: dict[str, Any]) -> bool:
@@ -12966,6 +14284,18 @@ def handle_post_tool(
             "adapter_identity": str(tool_identity.get("identity")),
             "capabilities": sorted(capabilities),
         }
+        state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 2
+        evidence["core_call_seq"] = state["core_event_sequence"] - 1
+        evidence["core_result_seq"] = state["core_event_sequence"]
+        core_fact = (core_shell_observation(state, payload, outcome, outcome_basis)
+                     or core_patch_observation(state, payload, outcome, outcome_basis)
+                     or core_git_observation(state, payload, outcome, outcome_basis))
+        if core_fact is not None:
+            origin_prompt_id = core_host_origin_prompt(state, payload)
+            if origin_prompt_id is not None:
+                evidence["core_origin_prompt_id"] = origin_prompt_id
+                core_fact["prompt_id"] = origin_prompt_id
+            evidence["core_observation"] = core_fact
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
         trim_evidence(state)
@@ -13524,9 +14854,11 @@ def handle_stop(
     )
     prompt_integrity = bool(authoritative_prompt) or not state.get("requirements")
     observed = classify_stop_decision(
-        text, authoritative_prompt, prompt_integrity=prompt_integrity, state=state
+        text, authoritative_prompt, prompt_integrity=prompt_integrity, state=state,
+        session_dir=session_dir,
     )
     decision: dict[str, Any] = dict(observed)
+    decision["core_projections"] = current_core_projections(state, session_dir)
     decision.update(
         {
             "protocol_version": STOP_PROTOCOL_VERSION,
@@ -13580,7 +14912,7 @@ def handle_stop(
             return "delivery_unknown", None
         return "delivered", sha256_text(text_value)
 
-    def record_delivery() -> None:
+    def record_delivery() -> dict[str, Any] | None:
         status, reply_digest = _final_reply_fact()
         projection = delivery_mod.canonical_projection(
             session_id=str(state.get("session", {}).get("id") or "unknown-session"),
@@ -13604,7 +14936,7 @@ def handle_stop(
                 continue
             if delivery_mod.idempotency_key(prior) == key:
                 # Same-event replay: no state growth, no closure rerun.
-                return
+                return existing
         # Existing work-unit waits still govern overall completion, but are
         # not claims that this turn's answer remains unfinished. Inspect the
         # reply itself so inherited waits neither veto an answer nor mask an
@@ -13612,22 +14944,22 @@ def handle_stop(
         reply_observation = classify_stop_decision(
             text, authoritative_prompt, prompt_integrity=prompt_integrity
         )
-        answer_can_close = (
-            status == "delivered"
-            and (not reply_observation.get("actions")
-                 or _information_tutorial_reply(authoritative_prompt, text))
-            and "explicit_non_completion_without_actionable_detail"
-            not in reply_observation.get("reason_codes", [])
-        )
-        if answer_can_close:
-            for item in state.get("requirements", []):
-                if (
-                    isinstance(item, dict)
-                    and item.get("id") in turn_requirement_ids
-                    and _delivable_question(item, state)
-                ):
-                    item["status"] = "answered"
-                    item["answer_state"] = "answered"
+        for item in state.get("requirements", []):
+            if not (isinstance(item, dict) and item.get("id") in turn_requirement_ids
+                    and _delivable_question(item, state)):
+                continue
+            answer_can_close = (
+                status == "delivered"
+                and (item.get("information_source_span") is not None
+                     or not reply_observation.get("actions")
+                     or _information_tutorial_reply(authoritative_prompt, text))
+                and (item.get("information_source_span") is not None
+                     or "explicit_non_completion_without_actionable_detail"
+                     not in reply_observation.get("reason_codes", []))
+            )
+            if answer_can_close:
+                item["status"] = "answered"
+                item["answer_state"] = "answered"
         outcome = str(decision.get("outcome") or "")
         if outcome in {"consume_checkpoint", "auto_complete_verified"}:
             resolution = "verified"
@@ -13649,10 +14981,12 @@ def handle_stop(
                 recorded_at=utc_now(),
             )
         except delivery_mod.DeliveryValueError:
-            return
+            return None
         records.append(record)
         del records[:-delivery_mod.MAX_DELIVERY_RECORDS]
         ledger["sequence"] = sequence
+        state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
+        return record
 
     def finish(result: dict[str, Any], *reason_codes: str) -> dict[str, Any]:
         codes = list(decision.get("reason_codes", []))
@@ -13665,7 +14999,12 @@ def handle_stop(
         # reply un-delivered (plan section 4.5).
         if result == {} and decision.get("decision_source") != "integrity":
             try:
-                record_delivery()
+                delivered_record = record_delivery()
+                if delivered_record is not None:
+                    mixed = delivered_mixed_core_projection(
+                        state, session_dir, delivered_record)
+                    if mixed is not None:
+                        decision.setdefault("core_projections", []).append(mixed)
             except delivery_mod.DeliveryValueError:
                 pass
         # Protocol envelope consumption: the heavy path routes its terminal
@@ -13834,7 +15173,11 @@ def handle_stop(
 
     interpretation = observed["interpretation"]
     completion_claim = bool(interpretation["whole_completion_claim"])
-    current_waits = current_scope_projection(state)["waiting_conditions"]
+    current_waits = [
+        wait for wait in current_scope_projection(state)["waiting_conditions"]
+        if wait.get("raised_by_kind") == "root_user"
+        or (wait.get("raised_by_kind") == "external" and wait.get("external_source_sha256"))
+    ]
     if current_waits and completion_claim:
         return visible_correction(
             "a current waiting condition has not been released",
@@ -13850,29 +15193,53 @@ def handle_stop(
     }
     explicit_persistence = bool(
         authoritative_prompt
-        and USER_PERSISTENCE_RE.search(authoritative_prompt)
+        and any(USER_PERSISTENCE_RE.search(clause)
+                for clause in control_speech_clauses(authoritative_prompt))
     )
     # A brief resume is not an unlimited persistence mandate. Correct it only
     # when the reply itself identifies authorized assistant work still to do.
     resumed_actionable_work = bool(
         explicit_execution_resume(authoritative_prompt)
-        and any(a["owner"] == "assistant" and a["authorization"] == "authorized"
+        and any(a["owner"] == "assistant" and _action_ready(a)
                 for a in interpretation["actions"])
+    )
+    current_due_action_omitted = bool(
+        re.search(r"(?:以后|后续|未来|将来|\b(?:later|future|eventually)\b)", text, re.I)
+        and
+        any(a.get("basis", {}).get("current_due")
+            and a.get("basis", {}).get("predicate_state") != "satisfied"
+            for a in interpretation["actions"] if a.get("owner") == "assistant")
     )
     facts = {
         "whole_completion_claim": completion_claim,
-        "explicit_persistence": explicit_persistence or resumed_actionable_work,
+        "explicit_persistence": explicit_persistence,
+        "resume_with_actionable_work": resumed_actionable_work,
+        "current_due_action_omitted": current_due_action_omitted,
         "authorized_assistant_actions_available": (
-            any(a["owner"] == "assistant" and a["authorization"] == "authorized" for a in interpretation["actions"])
+            any(a["owner"] == "assistant" and _action_ready(a) for a in interpretation["actions"])
         ),
-        "missing_user_only_input_or_approval": (
-            any(a["owner"] == "user" for a in interpretation["actions"])
+        "missing_user_only_input_or_approval": any(
+            w.get("raised_by_kind") == "root_user"
+            and w.get("condition_type") != "external_dependency"
+            and w.get("kind") != MIGRATED_WAIT_CONDITION_KIND
+            for w in current_waits
         ),
-        "registered_external_operation": (
-            any(a["owner"] == "external" for a in interpretation["actions"])
+        "registered_external_operation": any(
+            w.get("raised_by_kind") == "external"
+            and w.get("condition_type") == "external_dependency"
+            and w.get("external_source_sha256")
+            and w.get("kind") != MIGRATED_WAIT_CONDITION_KIND
+            for w in current_waits
         ),
-        "deferred_by_scope_or_authority": (
-            observed["outcome"] == "allow_out_of_scope_deferred"
+        "root_external_dependency": any(
+            w.get("raised_by_kind") == "root_user"
+            and w.get("condition_type") == "external_dependency"
+            and w.get("kind") != MIGRATED_WAIT_CONDITION_KIND
+            for w in current_waits
+        ),
+        "deferred_by_scope_or_authority": any(
+            a["owner"] == "assistant" and _action_deferred(a)
+            for a in interpretation["actions"]
         ),
     }
     decision["waiting_owner"] = stop3_mod.resolve_waiting_owner(facts)
@@ -13894,9 +15261,11 @@ def handle_stop(
 
     def persistence_gate_blocks() -> bool:
         return bool(
-            explicit_persistence
+            facts["authorized_assistant_actions_available"]
+            and (explicit_persistence or resumed_actionable_work or current_due_action_omitted)
             and not persistence_allows_deferred
             and declared_disposition not in {"user_wait", "external_wait"}
+            and not current_waits
         )
 
     if completion_claim:
@@ -13946,9 +15315,10 @@ def handle_stop(
             )
         if persistence_gate_blocks():
             return visible_correction(
-                "authorized work remains and the user required persistence",
+                "a current sourced action remains",
                 "Continue the authorized work",
-                "explicit_user_persistence",
+                "explicit_user_persistence" if explicit_persistence else (
+                    "resume_with_actionable_work" if resumed_actionable_work else "current_due_action_omitted"),
             )
         # A claim that no deterministic obligation gated and that no unique
         # evidence could support ends silently by design, but the reason stays
@@ -13967,10 +15337,13 @@ def handle_stop(
         )
         decision["outcome"] = outcome
         if outcome == stop3_mod.OUTCOME_SINGLE_BOUNDED_CORRECTION:
+            correction_code = ("explicit_user_persistence" if explicit_persistence
+                               else "resume_with_actionable_work" if resumed_actionable_work
+                               else "current_due_action_omitted")
             return visible_correction(
-                "authorized work remains and the user required persistence",
+                "a current sourced action remains",
                 "Continue the authorized work",
-                "explicit_user_persistence",
+                correction_code,
             )
         if outcome == stop3_mod.OUTCOME_SILENT_YIELD_PRESERVE_PENDING:
             status_map = {
@@ -13986,19 +15359,23 @@ def handle_stop(
 
     if persistence_gate_blocks():
         return visible_correction(
-            "authorized work remains and the user required persistence",
+            "a current sourced action remains",
             "Continue the authorized work",
-            "explicit_user_persistence",
+            "explicit_user_persistence" if explicit_persistence else (
+                "resume_with_actionable_work" if resumed_actionable_work else "current_due_action_omitted"),
         )
     outcome = stop3_mod.plan_waiting_outcome(
         facts, declared_disposition, interruption_index=interruption_index
     )
     decision["outcome"] = outcome
     if outcome == stop3_mod.OUTCOME_SINGLE_BOUNDED_CORRECTION:
+        correction_code = ("explicit_user_persistence" if explicit_persistence
+                           else "resume_with_actionable_work" if resumed_actionable_work
+                           else "current_due_action_omitted")
         return visible_correction(
-            "authorized work remains and the user required persistence",
+            "a current sourced action remains",
             "Continue the authorized work",
-            "explicit_user_persistence",
+            correction_code,
         )
     if outcome == stop3_mod.OUTCOME_SILENT_YIELD_PRESERVE_PENDING:
         status_map = {

@@ -454,7 +454,8 @@ class Schema12MigrationTests(DefaultPathHarness):
     def test_migration_reconstructs_delivery_and_marks_legacy_authority(self) -> None:
         self.build_schema11_state()
         migrated = self.state()
-        self.assertEqual(migrated["schema_version"], 12)
+        self.assertEqual(migrated["schema_version"], 13)
+        self.assertIsInstance(migrated["core_event_sequence"], int)
         # Trusted reconstruction: the question's allowed stop correlates.
         question = migrated["requirements"][0]
         self.assertEqual(question["status"], "answered")

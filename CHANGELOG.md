@@ -4,6 +4,26 @@
 
 Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.9` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.14.0 — Unreleased source candidate
+
+### Highlights
+
+- A completed repair can end with “long-term benefit still needs observation” without a false prompt to keep working. An explicitly unfinished current test or evaluation remains a specific open requirement; a short resume, an incorrect whole-completion claim, or deferring current evaluation can trigger one bounded correction when its input is ready.
+- A short “continue” resumes the current task without becoming an unlimited persistence demand. A wait described in the reply does not register an external operation.
+- Mixed requests can deliver the explanation while keeping an unfinished file edit or unknown tail open.
+
+### Changes
+
+- Schema 13 and Stop 5.0.0 retain prior journal and delivery history. Old mixed answered rows require review; old reply-derived waits do not become trusted lifecycle facts.
+- The provisional shared core v2 schema and reference projection bind Stop diagnosis to the current root requirement, host-selected target, and observed result. A future time or unmet prerequisite keeps an evaluation deferred even if its input file exists.
+- Mixed requests can deliver an information span while the original execution and unknown scope stays pending. Root and host append numbers keep Stop decisions at their own event watermark even when timestamps tie or move backward.
+- A combined edit and test retain separate required outcomes. A later commit and push can bind the same uniquely sourced repository, with commit lineage and remote-ref readback checked separately. Host Goal-completion interception reports unavailable until a synchronous Hook route is verified.
+- Ordinary business tools remain host-owned; explicit proof and adopted release checks keep their existing gates.
+
+### Validation
+
+- Earlier source bytes passed the current-behavior suite and isolated install lifecycle. The final combined-chain source repair has focused synthetic Hook coverage; exact-input final validation and its capability limits are recorded separately in the [acceptance record](docs/LOCAL_ACCEPTANCE.md). Daily installation, native, CI, package, tag, and release results are not claimed.
+
 ## 0.13.9 - 2026-09-14
 
 ### Highlights

@@ -73,13 +73,23 @@ EXPECTED_FIXED_TARGETS = [
     "SimulationBaselineTests.test_dry_run_variants_are_treated_as_real_mutations",
     "StopCascadeBaselineTests.test_correction_budget_is_one_visible_block",
     "StopCascadeBaselineTests.test_disposition_comparator_treats_waits_equivalently",
-    "WaitingOwnerStructuredTests.test_assistant_owner_terminal_persistent_completion_gates",
     "WorkUnitLifecycleBaselineTests.test_new_independent_request_starts_a_sibling_root",
 ]
 
 # Phase-4-scope 0.12 targets: intentionally still expected failures.
 # Empty tripwire — any entry must correspond to a real planned deferral.
 EXPECTED_REMAINING_TARGETS: list[str] = []
+
+# 0.14 source-bound Stop supersedes two frozen 0.12 lexical owner claims.
+# That fixture offers a broad three-part request and a shell success with no
+# attributable current target, predicate or preflight. It must not create a
+# ready action or make a whole-claim correction on that lexical basis alone.
+# The frozen tests remain byte-identical; current positive controls with real
+# host selection/readback are in test_stop_v5 and the current suite.
+SUPERSEDED_STOP_ASSERTIONS = [
+    "WaitingOwnerStructuredTests.test_assistant_owner_terminal_persistent_completion_gates",
+    "WaitingOwnerStructuredTests.test_assistant_owner_terminal_false_completion_claim",
+]
 
 # UX-05 legacy wire assertion, superseded by frozen plan section 4.4.
 # The pin's AUTHORIZATION semantics (explicit root-user statement in the
@@ -131,6 +141,14 @@ SUPERSEDED_DEFAULT_GATE_ASSERTIONS = [
 
 # 0.11.x defect pins whose frozen observation Phase 3 legitimately inverts.
 EXPECTED_INVERTED_PINS = [
+    (
+        "WaitingOwnerFactTableTests.test_structured_fact_table_is_stable",
+        "AC05.1 text-only actions cannot authorize",
+    ),
+    (
+        "WaitingOwnerStructuredTests.test_structured_facts_rank_assistant_above_user_and_external",
+        "AC05.1 text-only assistant priority cannot create a current action",
+    ),
     (
         "AdapterBindingBaselineTests.test_qualified_thread_read_binds_no_subject",
         "UX-09",
@@ -234,6 +252,10 @@ def main() -> int:
     transferred_ids = {
         item for item, _family, _note in SUPERSEDED_DEFAULT_GATE_ASSERTIONS
     }
+    stop_ids = set(SUPERSEDED_STOP_ASSERTIONS)
+    observed_stop = sorted(
+        item for item in (expected_failures + observed_inverted) if item in stop_ids
+    )
     observed_superseded = sorted(
         item for item in (all_errors + expected_failures) if item in superseded_ids
     )
@@ -244,8 +266,9 @@ def main() -> int:
         item for item in all_errors if item not in superseded_ids | transferred_ids
     ]
     observed_remaining = [
-        item for item in observed_remaining if item not in superseded_ids
+        item for item in observed_remaining if item not in superseded_ids | stop_ids
     ]
+    observed_inverted = [item for item in observed_inverted if item not in stop_ids]
 
     deltas: list[str] = []
     superseded_families = {
@@ -269,6 +292,8 @@ def main() -> int:
             deltas.append(f"missing from {label} set: {item}")
     for test_id in observed_errors:
         deltas.append(f"unexpected error: {test_id}")
+    for item in sorted(stop_ids - set(observed_stop)):
+        deltas.append(f"missing superseded 0.14 Stop assertion: {item}")
     for label, observed, expected in (
         (
             "superseded wire assertion not observed as an error",
@@ -309,6 +334,7 @@ def main() -> int:
             for item, _family, note in SUPERSEDED_DEFAULT_GATE_ASSERTIONS
             if item in observed_transferred
         ],
+        "superseded_stop_assertions": observed_stop,
         "inverted_defect_pins": observed_inverted,
         "errors": observed_errors,
         "inverted_pin_families": sorted(
@@ -330,6 +356,7 @@ def main() -> int:
                 "remaining_expected_failures": len(observed_remaining),
                 "superseded_wire_assertions": len(observed_superseded),
                 "superseded_default_gate_assertions": len(observed_transferred),
+                "superseded_stop_assertions": len(observed_stop),
                 "inverted_defect_pins": len(observed_inverted),
                 "errors": len(observed_errors),
                 "matches_manifest": not deltas,

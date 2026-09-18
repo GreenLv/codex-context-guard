@@ -1,0 +1,8 @@
+{
+  "schema": "core-intent-rules/v1",
+  "origin": "unchanged 0.13.9 intent recognizers; not execution authority",
+  "patterns": {
+    "USER_PERSISTENCE_RE": "\\b(?:(?:do\\s+not|don't|never)\\s+(?:stop|pause|yield|end)\\s+(?:working|on\\s+(?:this|the)\\s+(?:task|work)|while\\s+.{0,24}remains?|until\\s+.{0,64}(?:done|complete[dn]?|finish(?:ed|es)?))|(?:keep\\s+(?:going|working)|continue\\s+(?:working\\s+)?).{0,40}(?:until|through\\s+to).{0,40}(?:done|complete[dn]?|finished))\\b|(?:不要|不得|别|切勿|不能).{0,12}(?:停止|停下|停|暂停|中止|结束).{0,32}(?:直到|直至).{0,32}(?:完成|结束)|(?:持续|继续|一直).{0,24}(?:执行|推进|工作).{0,32}(?:直到|直至).{0,32}(?:完成|结束)|(?:不要|不得|别|切勿).{0,24}(?:工作|任务|事项).{0,24}(?:仍|还|尚).{0,8}(?:可执行|未完成).{0,16}(?:停止|结束)",
+    "EXECUTION_RESUME_RE": "^(?:请|你|您|帮我|麻烦)?\\s*(?:继续(?:执行|推进|工作)|继续(?=\\s*[。.!！]?\\s*$)|按(?:照)?(?:你(?:的)?|刚刚|现在|上述|之前|这个|该|既定|和|与|\\s)*(?:计划|建议)(?:继续)?执行)|^(?:please\\s+)?(?:continue(?=\\s*[。.!！]?\\s*$)|continue\\s+(?:working|executing)|continue\\s+(?:(?:the|this|whole|entire|release|remaining)\\s+)*plan|(?:proceed|execute)\\s+(?:with\\s+)?(?:the\\s+)?(?:plan|recommendations))\\b"
+  }
+}

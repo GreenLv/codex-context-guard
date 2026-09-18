@@ -126,19 +126,17 @@ class WaitLifecycleTests(P0Harness):
             if isinstance(item, dict) and item.get("status") == "released"
         ]
 
-    def test_assistant_question_records_honest_raise_kind(self) -> None:
-        """[WAIT] A parked A/B question is an ASSISTANT-raised choice wait:
-        the record names the assistant raise kind, the unit's own prompt as
-        bounded source, and the choice type — no invented root provenance."""
+    def test_root_pause_records_honest_raise_kind(self) -> None:
+        """A root-imposed pause keeps its root source across a Stop reply."""
         self.activate()
         self.park_awaiting_user()
         state = self.state()
         waiting = self.waiting(state)
         self.assertEqual(len(waiting), 1)
         record = waiting[0]
-        self.assertEqual(str(record.get("raised_by_kind")), "assistant")
+        self.assertEqual(str(record.get("raised_by_kind")), "root_user")
         self.assertEqual(str(record.get("raised_by_source")), "P0002")
-        self.assertEqual(str(record.get("condition_type")), "choice")
+        self.assertEqual(str(record.get("condition_type")), "confirmation")
         self.assertEqual(str(record.get("status")), "waiting")
         self.assertIsNone(record.get("released_by_source"))
 
@@ -147,7 +145,7 @@ class WaitLifecycleTests(P0Harness):
         and records a root-user release bound to the answering prompt."""
         self.activate()
         self.park_awaiting_user()
-        self.prompt("选择方案 B。必须运行测试验证。")
+        self.prompt("方案 B 已确认。必须运行测试验证。")
         state = self.state()
         self.assertEqual(state["work_state"]["active_work_unit_id"], "WU0001")
         released = self.released(state)
@@ -164,6 +162,7 @@ class WaitLifecycleTests(P0Harness):
         self.park_awaiting_user(
             stop_message=EXTERNAL_WAIT_STOP_MESSAGE,
             expected_status="awaiting_external",
+            root_prompt="等 CI 构建完成后再继续。请修复恢复模块。必须运行测试验证。",
         )
         self.prompt("模型已换好，继续。")
         state = self.state()
@@ -183,6 +182,7 @@ class WaitLifecycleTests(P0Harness):
         self.park_awaiting_user(
             stop_message=EXTERNAL_WAIT_STOP_MESSAGE,
             expected_status="awaiting_external",
+            root_prompt="等 CI 构建完成后再继续。请修复恢复模块。必须运行测试验证。",
         )
         self.prompt("继续刚才的任务。")
         state = self.state()

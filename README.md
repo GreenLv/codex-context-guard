@@ -13,14 +13,8 @@ Context Guard keeps important requirements from disappearing during a long Codex
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
 > Current release: `0.13.9`. See the [release notes](docs/releases/v0.13.9.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
->
-> Version `0.13.9`. It fixes false CI waits inside words such as `explicit`, answer-delivery tracking, bounded continuation feedback, and Windows `SessionEnd` cleanup startup; it also includes the HOL scanner and registry-refresh updates. Automatic answer closure accepts supported English/Chinese information requests; unfamiliar wording stays pending. See the [release notes](docs/releases/v0.13.9.md).
->
-> Version `0.13.3` keeps ordinary commits and single branch pushes available even when an active release ledger is unreadable, while publication actions remain fail-closed. It is a compatible patch with no schema, protocol, activation, or host-permission change.
->
-> Version `0.13.2` moved ordinary execution authorization out of Context Guard and kept requirement recovery, task continuity, honest completion checking, answer-delivery tracking, and private-control integrity.
->
-> Version `0.12.4` fixes lost task limits, unrelated confirmations clearing pauses, incomplete recovery text, and commit-and-push target mistakes. See the [changelog](CHANGELOG.md) for changes and the [acceptance record](docs/LOCAL_ACCEPTANCE.md) for platform checks.
+
+> Source candidate: `0.14.0` (unreleased; not installed in the daily host). If a completed repair ends with “its long-term benefit needs observation,” Guard no longer turns that future observation into a task to do now. If the user says “continue and run the tests,” an unfinished test stays visible when the current request and actual tool input identify it; honest reporting that a current measurement remains unrun can end the turn, while a short resume with ready work can receive one bounded correction. A short “continue” is not treated as a demand to keep working indefinitely. Ordinary edits and tests still run through Codex tools; Guard records their results for completion checks. Host Goal-complete interception is unavailable until its Hook path is verified. This candidate uses Schema 13, Stop 5.0.0, and a provisional shared core v2 identity. See the [changelog](CHANGELOG.md) for earlier versions.
 
 ## Install
 

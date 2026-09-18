@@ -1,5 +1,24 @@
 # Local Release Acceptance
 
+## 0.14.0 local source candidate (Unreleased)
+
+This source candidate has no release, daily-host installation,
+native-platform, CI, HOL, tag, or public-readback evidence. Its source tests
+exercise the protocol 5 Stop path and the shared core v2 projection with
+synthetic, structured Host Hook inputs. A single-file edit requires an
+attributable patch plus before/after content readback; a test requires its own
+attributable result. Future observations and short resume wording cannot
+create current work or registered external operations. An omitted current
+test or evaluation remains visible when its input is host-selected and ready.
+The combined edit/test and unique-repository commit/push chains are exercised
+through synthetic structured Hook replays; the latter does not execute Git.
+An attempted host Goal-completion adoption reports `capability_unavailable`
+until a synchronous host tool route and deny/readback are verified.
+The projection does not itself discharge the independent whole-completion,
+explicit-proof, Goal, or adopted-release contracts. Final exact-input local
+results and provisional shared-file SHA-256 identities are recorded in the
+development handoff outside this public source tree.
+
 This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.9`. Release history includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.

@@ -3,6 +3,18 @@
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 
+The unreleased 0.14.0 source candidate uses schema 13 and Stop 5.0.0. Local
+synthetic Hook tests include lexical Windows drive-path binding and unsupported
+UNC/device-path controls; they are not Windows-native Hook acceptance. The
+shared core v2 files have a provisional file-list/SHA-256 binding until the
+downstream mirror and formal consumer pin are independently verified. No
+daily-host, CI, native-platform, or release status is inferred from these
+source checks. The candidate can reject an
+attempt to adopt host Goal-complete interception with `capability_unavailable`:
+its current Hook matcher does not cover a verified synchronous `update_goal`
+route. Guard-owned proof and whole-completion checks remain active; native
+Goal interception requires a separate host capture and readback.
+
 Version 0.12.4 also includes CG122-08: subordinate or local completion
 reports no longer enter root completion proof selection. Its source regressions
 are distinct from coordinator acceptance and actual-host validation; P3 reader

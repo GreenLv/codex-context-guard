@@ -165,7 +165,8 @@
             "pending",
             "pass",
             "superseded",
-            "answered"
+            "answered",
+            "legacy_review"
           ]
         },
         "evidence": {
@@ -188,6 +189,32 @@
             "type": "integer",
             "minimum": 0
           }
+        },
+        "information_source_span": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"type": "integer", "minimum": 0},
+          "description": "UTF-8 byte span of an independently deliverable information child in the immutable mixed root."
+        },
+        "information_source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "execution_source_span": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"type": "integer", "minimum": 0},
+          "description": "UTF-8 byte span of one required execution child in the immutable root."
+        },
+        "execution_source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "execution_kind": {
+          "enum": ["local_edit", "test_verify", "local_commit", "remote_push"]
+        },
+        "parent_id": {
+          "type": "string"
         },
         "answer_state": {
           "enum": [
@@ -846,6 +873,7 @@
   },
   "required": [
     "schema_version",
+    "core_event_sequence",
     "session",
     "mode",
     "prompts",
@@ -881,7 +909,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 12
+      "const": 13
     },
     "wait_conditions": {
       "type": "array",
@@ -1172,6 +1200,11 @@
     "evidence_sequence": {
       "type": "integer",
       "minimum": 0
+    },
+    "core_event_sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Persisted append-order watermark for new root and host events; legacy events have no trusted sequence."
     },
     "assets": {
       "type": "array",
@@ -1653,7 +1686,7 @@
           ],
           "properties": {
             "protocol_version": {
-              "const": "4.0.0"
+              "const": "5.0.0"
             },
             "turn_id": {
               "type": "string"

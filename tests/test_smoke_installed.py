@@ -29,6 +29,9 @@ REQUIRED_MODULES = [
     ROOT / "scripts" / "cg_protocol.py",
     ROOT / "scripts" / "cg_release_adapter.py",
     ROOT / "scripts" / "cg_stop3.py",
+    ROOT / "scripts" / "cg_core_v2.py",
+    ROOT / "scripts" / "cg_core_v2_schema.py",
+    ROOT / "scripts" / "cg_codex_core_adapter.py",
 ]
 
 
@@ -42,6 +45,10 @@ class InstalledSmokeTests(unittest.TestCase):
             for module_path in REQUIRED_MODULES:
                 if module_path.is_file():
                     shutil.copy2(module_path, scripts / module_path.name)
+            assets = plugin_root / "assets"
+            assets.mkdir()
+            for name in ("core-intent-v2.json", "core-observation-v2.schema.json"):
+                shutil.copy2(ROOT / "assets" / name, assets / name)
 
             environment = os.environ.copy()
             environment.pop("PYTHONDONTWRITEBYTECODE", None)

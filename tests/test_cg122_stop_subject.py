@@ -43,16 +43,14 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
     def test_subordinate_handoff_does_not_derive_ambiguous_proof(self):
         self.build_single_read_task()
         state = self.state()
-        second = dict(state['evidence'][-1])
-        second['id'] = 'E9999'
-        state['evidence'].append(second)
-        state['evidence_sequence'] = 9999
+        phase3.append_distinct_host_evidence(state)
         cg.save_state(self.root / 'private' / 'sessions' / 'p3', state)
         reply = 'Atlas 任务已结束，但结果正文为空，尚无法确认验收结果。请提供最终回复，我收到后继续验收。'
         for _ in range(2):
             self.assertEqual(self.dispatch('Stop', turn='t1', last_assistant_message=reply), {})
         state = self.state()
-        self.assertEqual(state['work_units'][0]['status'], 'awaiting_user')
+        self.assertEqual(state['work_units'][0]['status'], 'active')
+        self.assertEqual(state['wait_conditions'], [])
         self.assertEqual(state['requirements'][0]['status'], 'pending')
         self.assertIsNone(state['completion_checkpoint'])
         self.assertEqual(state['continuation_attempts'], 0)
@@ -63,10 +61,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
     def test_whole_completion_with_unrelated_wait_still_blocks_ambiguity(self):
         self.build_single_read_task()
         state = self.state()
-        second = dict(state['evidence'][-1])
-        second['id'] = 'E9999'
-        state['evidence'].append(second)
-        state['evidence_sequence'] = 9999
+        phase3.append_distinct_host_evidence(state)
         cg.save_state(self.root / 'private' / 'sessions' / 'p3', state)
         reply = '当前整个任务已完成。另一个任务等待外部审核。'
         self.assertEqual(self.dispatch('Stop', turn='t1', last_assistant_message=reply).get('decision'), 'block')
@@ -119,24 +114,28 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
         self.assertIn('waiting_condition_pending', self.state()['decision_log'][-1]['reason_codes'])
         self.assertEqual(self.state()['requirements'][0]['status'], 'pending')
 
-    def test_local_milestone_never_fabricates_user_wait_for_actionable_work(self):
+    def test_local_milestone_text_only_future_never_fabricates_user_wait(self):
         prompt = '$context-guard\n请修复模块并运行测试。持续工作直到任务完成。'
         self.prompt(prompt, turn='t1')
         reply = '局部任务已完成。接下来我会继续修复模块并运行测试。'
         observed = cg.classify_stop_decision(reply, prompt)
         self.assertFalse(observed['interpretation']['whole_completion_claim'])
-        self.assertEqual(observed['interpretation']['remaining_action_owner'], 'assistant')
+        self.assertEqual(observed['interpretation']['remaining_action_owner'], 'unknown')
+        self.assertTrue(any(action['owner'] == 'assistant'
+                            and action.get('authorization') == 'unknown'
+                            for action in observed['actions']))
         result = self.dispatch('Stop', turn='t1', last_assistant_message=reply)
-        self.assertEqual(result.get('decision'), 'block')
+        self.assertEqual(result, {})
         self.assertNotEqual(self.state()['work_units'][0]['status'], 'awaiting_user')
+        self.assertEqual(self.state()['requirements'][0]['status'], 'pending')
 
-    def test_real_whole_completion_does_not_hide_actionable_business_work(self):
+    def test_real_whole_completion_ignores_unrelated_future_work(self):
         self.build_single_read_task()
         reply = '当前任务已完成。接下来我会继续修改文档。'
         result = self.dispatch('Stop', turn='t1', last_assistant_message=reply)
-        self.assertEqual(result.get('decision'), 'block')
-        self.assertIn('assistant_actionable_work_remains', self.state()['decision_log'][-1]['reason_codes'])
-        self.assertIsNone(self.state()['completion_checkpoint'])
+        self.assertEqual(result, {})
+        self.assertIn('auto_verified_completion', self.state()['decision_log'][-1]['reason_codes'])
+        self.assertIsNotNone(self.state()['completion_checkpoint'])
 
     def test_unknown_named_subject_does_not_auto_complete_from_available_evidence(self):
         self.build_single_read_task()
@@ -209,10 +208,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
                 try:
                     h.build_single_read_task()
                     state = h.state()
-                    duplicate = dict(state['evidence'][-1])
-                    duplicate['id'] = 'E9999'
-                    state['evidence'].append(duplicate)
-                    state['evidence_sequence'] = 9999
+                    phase3.append_distinct_host_evidence(state)
                     cg.save_state(h.root / 'private' / 'sessions' / 'p3', state)
                     self.assertEqual(h.dispatch('Stop', turn='t1', last_assistant_message=reply), {})
                     self.assertEqual(h.state()['requirements'][0]['status'], 'pending')
@@ -242,10 +238,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
                 try:
                     h.build_single_read_task()
                     state = h.state()
-                    duplicate = dict(state['evidence'][-1])
-                    duplicate['id'] = 'E9999'
-                    state['evidence'].append(duplicate)
-                    state['evidence_sequence'] = 9999
+                    phase3.append_distinct_host_evidence(state)
                     cg.save_state(h.root / 'private' / 'sessions' / 'p3', state)
                     self.assertEqual(h.dispatch('Stop', turn='t1', last_assistant_message=reply).get('decision'), 'block')
                     self.assertIn('evidence_ambiguous', h.state()['decision_log'][-1]['reason_codes'])
