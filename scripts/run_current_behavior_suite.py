@@ -30,6 +30,11 @@ TESTS_DIR = ROOT / "tests"
 EXCLUDED_HISTORICAL_BASELINE = "test_context_guard_012_baseline"
 
 
+def console_failure_summary(failure: str) -> str:
+    """Keep failed test IDs printable on Windows' legacy console encoding."""
+    return failure.encode("ascii", "backslashreplace").decode("ascii")
+
+
 def discover_current_modules(tests_dir: Path | None = None) -> list[str]:
     """Closed-world discovery over ``test_*.py`` minus the frozen baseline.
 
@@ -127,7 +132,7 @@ def main() -> int:
         )
     )
     for failure in aggregate_failures:
-        print("!", failure)
+        print("!", console_failure_summary(failure))
     return 1 if aggregate_failures else 0
 
 

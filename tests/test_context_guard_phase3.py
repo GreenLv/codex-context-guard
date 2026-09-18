@@ -78,7 +78,9 @@ class Phase3TestCase(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        # The Windows temp API can return an 8.3 alias. Host fixtures use a
+        # physical root-time spelling so the file evidence has one identity.
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.project = self.root / "project"
         self.project.mkdir()
         environment = mock.patch.dict(
@@ -1624,6 +1626,19 @@ class RunnerDiscoveryEvidenceTests(Phase3TestCase):
         self.assertIn("test_context_guard_phase3", modules)
         self.assertEqual(modules, sorted(modules))
         self.assertEqual(len(modules), len(set(modules)))
+
+    def test_failure_summary_survives_legacy_windows_console(self) -> None:
+        import io
+
+        from run_current_behavior_suite import console_failure_summary
+
+        self.assertEqual(console_failure_summary("test_a: FAIL"), "test_a: FAIL")
+        failure = "test_stop_v5: FAIL root='现在评估这次修改的效果。'"
+        stream = io.BytesIO()
+        console = io.TextIOWrapper(stream, encoding="cp1252", write_through=True)
+        console.write("! " + console_failure_summary(failure) + "\n")
+        self.assertIn(b"\\u73b0", stream.getvalue())
+        self.assertIn(b"test_stop_v5: FAIL", stream.getvalue())
 
     def test_new_failing_module_is_discovered_and_propagates(self) -> None:
         from run_current_behavior_suite import discover_current_modules

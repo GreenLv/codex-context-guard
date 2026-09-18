@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -11,6 +12,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import context_guard as cg
 from cg_codex_core_adapter import project_current_action
+
+
+@contextmanager
+def physical_tempdir(*, prefix: str):
+    """Give positive Host replays a root-time physical path spelling."""
+    with tempfile.TemporaryDirectory(prefix=prefix) as raw:
+        yield str(Path(raw).resolve(strict=True)) if os.name == "nt" else raw
 
 
 class StopV5Tests(unittest.TestCase):
@@ -91,6 +99,28 @@ class StopV5Tests(unittest.TestCase):
                     self.assertIsNone(cg.core_shell_observation(
                         state, payload(shell), "success", "structured_exit_code"))
                     verify.assert_not_called()
+
+    def test_drive_absolute_root_to_host_fact_needs_physical_identity(self):
+        target = r"D:\work\suite.py"
+        root = f"继续执行，运行 {target} 的测试。"
+        def ready(_cg, event, _cwd):
+            cg.dispatch(event("PostToolUse", tool_name="exec_command",
+                        tool_input={"cmd": f"test -f {target}", "shell": "pwsh"},
+                        tool_response={"exit_code": 0, "output": ""}))
+        with mock.patch.object(cg, "_verified_windows_target", return_value=target):
+            result, decision, state = self.replay(
+                root, "测试尚未运行。", preparation=ready, include_state=True)
+        self.assertEqual(result.get("decision"), "block")
+        self.assertEqual(len(decision["core_projections"]), 1)
+        self.assertEqual(decision["actions"][0]["actionability"], "current_ready")
+        self.assertTrue(any(e.get("core_observation", {}).get("target") == target
+                            for e in state["evidence"]))
+        with mock.patch.object(cg, "_verified_windows_target", return_value=None):
+            result, decision, state = self.replay(
+                root, "测试尚未运行。", preparation=ready, include_state=True)
+        self.assertEqual(result, {})
+        self.assertEqual(decision["core_projections"], [])
+        self.assertFalse(any(e.get("core_observation") for e in state["evidence"]))
 
     def test_windows_physical_alias_is_not_a_file_fact(self):
         class PhysicalPath:
@@ -287,7 +317,7 @@ class StopV5Tests(unittest.TestCase):
         self.assertFalse(any(r["certifiable"] for r in ambiguous["core_projections"]))
 
     def test_existing_root_speech_act_keeps_information_questions_out_of_edit_basis(self):
-        with tempfile.TemporaryDirectory(prefix="core-question-role-") as tmp:
+        with physical_tempdir(prefix="core-question-role-") as tmp:
             selected = Path(tmp) / "parser.py"
             selected.write_text("before\n", encoding="utf-8")
             def readback(_cg, event, _cwd):
@@ -305,11 +335,7 @@ class StopV5Tests(unittest.TestCase):
                     self.assertEqual(decision["core_projections"], [])
 
     def replay(self, root: str, final: str, *, preparation=None, include_state=False):
-        with tempfile.TemporaryDirectory(prefix="stop-v5-") as tmp:
-            # Windows tempfile may hand back an 8.3 alias. Positive Host
-            # fixtures must use the same physical spelling as file readback.
-            if os.name == "nt":
-                tmp = str(Path(tmp).resolve(strict=True))
+        with physical_tempdir(prefix="stop-v5-") as tmp:
             if callable(root):
                 root = root(tmp)
             previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
@@ -363,7 +389,7 @@ class StopV5Tests(unittest.TestCase):
         self.assertEqual(state["wait_conditions"], [])
 
     def test_host_goal_adoption_reports_unavailable_without_creating_work(self):
-        with tempfile.TemporaryDirectory(prefix="core-goal-capability-") as tmp:
+        with physical_tempdir(prefix="core-goal-capability-") as tmp:
             previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
             os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
             try:
@@ -439,7 +465,7 @@ class StopV5Tests(unittest.TestCase):
                                      for a in decision["actions"]))
 
     def test_trusted_preflight_makes_unrun_test_actionable(self):
-        with tempfile.TemporaryDirectory(prefix="core-input-") as tmp:
+        with physical_tempdir(prefix="core-input-") as tmp:
             suite = Path(tmp) / "suite.py"
             suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
             def preparation(_cg, event, _cwd):
@@ -453,7 +479,7 @@ class StopV5Tests(unittest.TestCase):
             self.assertNotIn("explicit_user_persistence", decision["reason_codes"])
 
     def test_one_test_fact_cannot_close_a_combined_edit_and_test(self):
-        with tempfile.TemporaryDirectory(prefix="core-combined-") as tmp:
+        with physical_tempdir(prefix="core-combined-") as tmp:
             suite = Path(tmp) / "suite.py"
             suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
             def observed(_cg, event, _cwd):
@@ -474,7 +500,7 @@ class StopV5Tests(unittest.TestCase):
                                 for i in state["requirements"]))
 
     def test_combined_edit_and_test_have_distinct_sourced_children(self):
-        with tempfile.TemporaryDirectory(prefix="core-combined-positive-") as tmp:
+        with physical_tempdir(prefix="core-combined-positive-") as tmp:
             suite = Path(tmp) / "suite.py"
             suite.write_text("before\n", encoding="utf-8")
             patch = (f"*** Begin Patch\n*** Update File: {suite}\n@@\n"
@@ -512,7 +538,7 @@ class StopV5Tests(unittest.TestCase):
 
     def test_later_commit_push_synthetic_host_lineage_reuses_sourced_repo(self):
         """Structured Hook replay only: this test never runs Git commands."""
-        with tempfile.TemporaryDirectory(prefix="core-git-replay-") as tmp:
+        with physical_tempdir(prefix="core-git-replay-") as tmp:
             root = Path(tmp)
             repo_a, repo_b = root / "A", root / "B"
             repo_a.mkdir()
@@ -562,7 +588,7 @@ class StopV5Tests(unittest.TestCase):
 
     def test_git_target_requires_unique_prior_root_and_current_host_selection(self):
         for mode in ("wrong_target", "ambiguous_prior", "stale_selection", "reply_only"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="core-git-negative-") as tmp:
+            with self.subTest(mode=mode), physical_tempdir(prefix="core-git-negative-") as tmp:
                 root = Path(tmp)
                 repo_a, repo_b, repo_c = (root / name for name in ("A", "B", "C"))
                 for repo in (repo_a, repo_b, repo_c):
@@ -598,7 +624,7 @@ class StopV5Tests(unittest.TestCase):
     def test_git_readback_does_not_certify_wrong_parent_tree_branch_or_remote(self):
         """No Git effect: adversarial structured Hook captures only."""
         for defect in ("parent", "tree", "branch", "remote", "no_commit", "no_push"):
-            with self.subTest(defect=defect), tempfile.TemporaryDirectory(prefix="core-git-effect-") as tmp:
+            with self.subTest(defect=defect), physical_tempdir(prefix="core-git-effect-") as tmp:
                 root, repo = Path(tmp), Path(tmp) / "B"
                 repo.mkdir()
                 previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
@@ -639,7 +665,7 @@ class StopV5Tests(unittest.TestCase):
                         os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
 
     def test_successful_test_projection_is_persisted_at_stop(self):
-        with tempfile.TemporaryDirectory(prefix="core-success-") as tmp:
+        with physical_tempdir(prefix="core-success-") as tmp:
             suite = Path(tmp) / "suite.py"
             suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
             def observed(_cg, event, _cwd):
@@ -659,7 +685,7 @@ class StopV5Tests(unittest.TestCase):
             self.assertEqual(state["requirements"][-1]["status"], "pending")
 
     def test_edit_needs_structured_patch_and_changed_readback(self):
-        with tempfile.TemporaryDirectory(prefix="core-edit-") as tmp:
+        with physical_tempdir(prefix="core-edit-") as tmp:
             target = Path(tmp) / "module.py"
             target.write_text("before\n", encoding="utf-8")
             patch = (f"*** Begin Patch\n*** Update File: {target}\n@@\n"
@@ -695,7 +721,7 @@ class StopV5Tests(unittest.TestCase):
                                         for row in constrained["core_projections"]))
 
     def test_edit_is_not_proven_by_patch_or_exit_zero_alone(self):
-        with tempfile.TemporaryDirectory(prefix="core-edit-negative-") as tmp:
+        with physical_tempdir(prefix="core-edit-negative-") as tmp:
             target = Path(tmp) / "module.py"
             target.write_text("before\n", encoding="utf-8")
             patch = (f"*** Begin Patch\n*** Update File: {target}\n@@\n"
@@ -737,7 +763,7 @@ class StopV5Tests(unittest.TestCase):
                 self.assertEqual(decision["core_projections"], [])
 
     def test_current_effect_is_due_only_from_root_scope_and_host_selection(self):
-        with tempfile.TemporaryDirectory(prefix="core-eval-") as tmp:
+        with physical_tempdir(prefix="core-eval-") as tmp:
             selected = Path(tmp) / "benchmark.py"
             selected.write_text("def measure(): return 1\n", encoding="utf-8")
             def ready(_cg, event, _cwd):
@@ -763,7 +789,7 @@ class StopV5Tests(unittest.TestCase):
             self.assertEqual(result, {})
 
     def test_root_time_and_antecedent_keep_review_deferred(self):
-        with tempfile.TemporaryDirectory(prefix="core-condition-") as tmp:
+        with physical_tempdir(prefix="core-condition-") as tmp:
             selected = Path(tmp) / "benchmark.py"
             selected.write_text("def measure(): return 1\n", encoding="utf-8")
             def ready(_cg, event, _cwd):
@@ -797,7 +823,7 @@ class StopV5Tests(unittest.TestCase):
             self.assertEqual(decision["actions"][0]["actionability"], "current_ready")
 
     def test_event_sequence_survives_same_timestamp_and_clock_rollback(self):
-        with tempfile.TemporaryDirectory(prefix="stop-v5-seq-") as tmp:
+        with physical_tempdir(prefix="stop-v5-seq-") as tmp:
             previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
             os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
             try:
@@ -846,7 +872,7 @@ class StopV5Tests(unittest.TestCase):
                     os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
 
     def test_late_prior_turn_result_cannot_violate_later_root(self):
-        with tempfile.TemporaryDirectory(prefix="stop-v5-late-") as tmp:
+        with physical_tempdir(prefix="stop-v5-late-") as tmp:
             previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
             os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
             try:
