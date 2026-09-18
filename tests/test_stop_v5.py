@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import context_guard as cg
@@ -12,6 +14,117 @@ from cg_codex_core_adapter import project_current_action
 
 
 class StopV5Tests(unittest.TestCase):
+    @staticmethod
+    def root_file(cwd, relative):
+        # Windows relative root constraints are explicitly unsupported in
+        # core/v2; keep this positive Host replay on an exact absolute root.
+        return str(Path(cwd) / relative) if os.name == "nt" else relative
+
+    def test_windows_drive_host_commands_keep_typed_targets(self):
+        state = {
+            "session": {"cwd": "D:\\work"},
+            "work_state": {"active_work_unit_id": "w"},
+            "work_units": [{"id": "w", "prompt_id": "P0001"}],
+            "requirements": [{"work_unit_id": "w", "prompt_id": "P0001"}],
+        }
+        for command, target, predicate in (
+            (r"test -f D:\work\suite.py", r"D:\work\suite.py", "file_exists"),
+            (r'cat "D:\work\a file.ts"', r"D:\work\a file.ts", "content_hash"),
+            (r"pytest D:\work\suite.py", r"D:\work\suite.py", "test_passed"),
+        ):
+            with self.subTest(command=command):
+                payload = {"tool_name": "exec_command", "tool_input": {"cmd": command},
+                           "tool_response": {"exit_code": 0, "output": "ok"},
+                           "turn_id": "turn"}
+                # A lexical drive path and a claimed successful tool result
+                # alone never establish physical identity on this host.
+                self.assertIsNone(cg.core_shell_observation(
+                    state, payload, "success", "structured_exit_code"))
+                with mock.patch.object(cg, "_verified_windows_target", return_value=target):
+                    observation = cg.core_shell_observation(
+                        state, payload, "success", "structured_exit_code")
+                self.assertIsNotNone(observation)
+                self.assertEqual(observation["target"], target)
+                self.assertEqual(observation["predicate"], predicate)
+        git_payload = {"tool_name": "exec_command",
+                       "tool_input": {"cmd": r"git -C D:\repo rev-parse --show-toplevel"},
+                       "tool_response": {"exit_code": 0, "output": "D:\\repo\n"},
+                       "turn_id": "turn"}
+        self.assertIsNone(cg.core_git_observation(
+            state, git_payload, "success", "structured_exit_code"))
+        with mock.patch.object(cg, "_verified_windows_target", return_value=r"D:\repo"):
+            git = cg.core_git_observation(
+                state, git_payload, "success", "structured_exit_code")
+        self.assertIsNotNone(git)
+        self.assertEqual(git["target"], r"D:\repo")
+        for command in (r"test -f D:\work\suite.py; echo ok",
+                        r"test -f \\server\share\suite.py"):
+            with self.subTest(rejected=command):
+                self.assertIsNone(cg.core_shell_observation(
+                    state,
+                    {"tool_name": "exec_command", "tool_input": {"cmd": command},
+                     "tool_response": {"exit_code": 0, "output": ""}},
+                    "success", "structured_exit_code",
+                ))
+
+    def test_observation_uses_declared_shell_dialect(self):
+        state = {
+            "session": {"cwd": r"D:\work"},
+            "work_state": {"active_work_unit_id": "w"},
+            "work_units": [{"id": "w", "prompt_id": "P0001"}],
+            "requirements": [{"work_unit_id": "w", "prompt_id": "P0001"}],
+        }
+        command = r"test -f D:\work\suite.py"
+        def payload(shell):
+            return {"tool_name": "exec_command",
+                    "tool_input": {"cmd": command, "shell": shell},
+                    "tool_response": {"exit_code": 0, "output": ""},
+                    "turn_id": "turn"}
+        with mock.patch.object(cg, "_verified_windows_target", return_value=r"D:\work\suite.py") as verify:
+            observed = cg.core_shell_observation(
+                state, payload("pwsh"), "success", "structured_exit_code")
+            self.assertIsNotNone(observed)
+            self.assertEqual(observed["target"], r"D:\work\suite.py")
+            verify.reset_mock()
+            for shell in ("bash", "fish", ""):
+                with self.subTest(shell=shell):
+                    self.assertIsNone(cg.core_shell_observation(
+                        state, payload(shell), "success", "structured_exit_code"))
+                    verify.assert_not_called()
+
+    def test_windows_physical_alias_is_not_a_file_fact(self):
+        class PhysicalPath:
+            def __init__(self, resolved, links):
+                self.resolved = resolved
+                self.links = links
+
+            def resolve(self, *, strict):
+                self_test.assertTrue(strict)
+                return self.resolved
+
+            def is_file(self):
+                return True
+
+            def stat(self):
+                return SimpleNamespace(st_nlink=self.links)
+
+        self_test = self
+        with mock.patch.object(cg.os, "name", "nt"):
+            for physical, links, expected in (
+                (r"D:\work\file.ts", 1, r"D:\work\file.ts"),
+                (r"D:\real\file.ts", 1, None),
+                (r"D:\Work\file.ts", 1, None),
+                (r"D:\work\file.ts", 2, None),
+            ):
+                with self.subTest(physical=physical, links=links), mock.patch.object(
+                    cg, "Path", return_value=PhysicalPath(physical, links)
+                ):
+                    self.assertEqual(
+                        cg._verified_windows_target(r"D:\work\file.ts"), expected
+                    )
+            self.assertIsNone(cg._verified_windows_target(r"\\server\share\file.ts"))
+            self.assertIsNone(cg._verified_windows_target(r"D:work\file.ts"))
+
     def test_text_only_owner_roles_do_not_create_current_readiness(self):
         prompt = "请运行本轮测试。"
         cases = (
@@ -45,7 +158,8 @@ class StopV5Tests(unittest.TestCase):
                               tool_input={"cmd": f"cat {target}"},
                               tool_response={"exit_code": 0, "output": "after\n"}))
         result, decision, state = self.replay(
-            "先说明原因，再修正 src/queue.ts 并核对文件内容。",
+            lambda cwd: ("先说明原因，再修正 "
+                         f"{self.root_file(cwd, 'src/queue.ts')} 并核对文件内容。"),
             "原因已说明，文件已修正并回读。", preparation=observed, include_state=True)
         self.assertEqual(result, {})
         self.assertTrue(any(r.get("information_source_span") is not None and
@@ -72,8 +186,12 @@ class StopV5Tests(unittest.TestCase):
             cg.dispatch(event("PostToolUse", tool_name="exec_command",
                               tool_input={"cmd": f"cat {target}"},
                               tool_response={"exit_code": 0, "output": "after\n"}))
-        root = ("请只修改 packages/api/src/request.ts。错误日志还提到了 "
-                "packages/web/src/request.ts，但本轮不要动后者。")
+        def root(cwd):
+            return (
+                f"请只修改 {self.root_file(cwd, 'packages/api/src/request.ts')}。"
+                "错误日志还提到了 "
+                f"{self.root_file(cwd, 'packages/web/src/request.ts')}，但本轮不要动后者。"
+            )
         result, decision = self.replay(root, "API 文件已修改并核对。", preparation=observed)
         self.assertEqual(result, {})
         rows = [r for r in decision["core_projections"]
@@ -158,7 +276,7 @@ class StopV5Tests(unittest.TestCase):
         self.assertEqual(alias_row["violating_host_event_ids"], [])
         # An extra unresolved positive request must remain open even when the
         # exact edit and prohibition are otherwise identical.
-        _, unresolved = self.replay(root + " 同时完成未命名的迁移。",
+        _, unresolved = self.replay(lambda cwd: root(cwd) + " 同时完成未命名的迁移。",
                                     "API 文件已修改并核对。", preparation=observed)
         self.assertFalse(any(r["certifiable"] for r in unresolved["core_projections"]))
         competing = ("请只修改 packages/api/src/request.ts。日志还提到了 "
@@ -188,6 +306,12 @@ class StopV5Tests(unittest.TestCase):
 
     def replay(self, root: str, final: str, *, preparation=None, include_state=False):
         with tempfile.TemporaryDirectory(prefix="stop-v5-") as tmp:
+            # Windows tempfile may hand back an 8.3 alias. Positive Host
+            # fixtures must use the same physical spelling as file readback.
+            if os.name == "nt":
+                tmp = str(Path(tmp).resolve(strict=True))
+            if callable(root):
+                root = root(tmp)
             previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
             os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
             try:
@@ -594,7 +718,7 @@ class StopV5Tests(unittest.TestCase):
             self.assertNotEqual(decision["core_projections"][0]["predicate_state"], "satisfied")
             self.assertFalse(decision["core_projections"][0]["certifiable"])
 
-    def test_windows_drive_locator_has_lexical_provenance_without_native_claim(self):
+    def test_windows_drive_locator_does_not_certify_without_physical_identity(self):
         target = r"C:\Repo\suite.py"
         def observed(_cg, event, _cwd):
             for command in (f"test -f '{target}'", f"pytest '{target}'"):
@@ -604,8 +728,7 @@ class StopV5Tests(unittest.TestCase):
         _, decision, _ = self.replay(
             f"继续执行，运行 {target} 的测试。", "测试通过。",
             preparation=observed, include_state=True)
-        self.assertEqual(decision["core_projections"][0]["predicate_state"], "satisfied")
-        self.assertTrue(decision["core_projections"][0]["certifiable"])
+        self.assertFalse(any(row["certifiable"] for row in decision["core_projections"]))
         for unsupported in (r"\\server\share\suite.py", r"C:\Repo\CON\suite.py"):
             with self.subTest(unsupported=unsupported):
                 _, decision, _ = self.replay(

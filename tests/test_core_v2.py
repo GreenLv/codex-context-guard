@@ -385,7 +385,7 @@ class CoreTests(unittest.TestCase):
 
     def test_normative_event_vectors(self):
         path = Path(__file__).parent / "fixtures/conformance/core_v2/events.json"
-        for case in json.loads(path.read_text())["cases"]:
+        for case in json.loads(path.read_text(encoding="utf-8"))["cases"]:
             with self.subTest(case=case["id"]):
                 if "expected_error" in case:
                     with self.assertRaisesRegex(ValueError, case["expected_error"]):
@@ -401,7 +401,7 @@ class CoreTests(unittest.TestCase):
             Path(__file__).parent
             / "fixtures/conformance/core_v2/independent-oracle.json"
         )
-        oracle = json.loads(path.read_text())
+        oracle = json.loads(path.read_text(encoding="utf-8"))
         self.assertGreaterEqual(len(oracle["core_cases"]), 19)
         self.assertGreaterEqual(len(oracle["holdout_cases"]), 6)
 

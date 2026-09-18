@@ -8893,15 +8893,21 @@ def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[d
                        for _, pattern in ACTION_PATTERNS)):
             continue
         mentioned = {m.group(0) for m in RELATIVE_FILE_RE.finditer(remainder)}
+        mentioned.update(m.group(0) for m in WINDOWS_DRIVE_PATH_RE.finditer(remainder))
         if len(mentioned) != 1 or next(iter(mentioned)) == req["target_origin"]["root_constraint"]:
             continue
         forbidden_literal = next(iter(mentioned))
-        base = root.get("locator_base")
-        if not isinstance(base, str) or not Path(base).is_absolute():
-            continue
-        forbidden_target = str(Path(base) / forbidden_literal)
-        if ".." in Path(forbidden_literal).parts:
-            continue
+        if WINDOWS_ABSOLUTE_PATH_RE.match(forbidden_literal):
+            forbidden_target, unsupported = canonical_windows_locator(forbidden_literal)
+            if unsupported is not None or forbidden_target != forbidden_literal:
+                continue
+        else:
+            base = root.get("locator_base")
+            if not isinstance(base, str) or not Path(base).is_absolute():
+                continue
+            forbidden_target = str(Path(base) / forbidden_literal)
+            if ".." in Path(forbidden_literal).parts:
+                continue
         forbidden_at = root["text"].find(forbidden_literal, len(action_text))
         prohibition_at = root["text"].find(trailing[1], len(action_text))
         if forbidden_at < 0 or prohibition_at < 0:
@@ -13541,6 +13547,45 @@ def tool_is_shell_execution(tool_name: str) -> bool:
     )
 
 
+def _core_observation_tokens(command: str, tool_input: Any) -> list[str]:
+    """Tokenize one observed command without erasing Windows drive separators."""
+    shell = tool_input.get("shell") if isinstance(tool_input, dict) else None
+    if shell is not None:
+        if not isinstance(shell, str) or not shell.strip():
+            return []
+        name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        if name in {"bash", "zsh", "sh"}:
+            # A drive spelling in a POSIX shell is not a Windows file identity.
+            if WINDOWS_DRIVE_PATH_RE.search(command):
+                return []
+            return _command_tokens(command, posix=True)
+        if name in {"powershell", "pwsh"}:
+            return _command_tokens(command, posix=False, _windows_shell="powershell")
+        if name == "cmd":
+            return _command_tokens(command, posix=False, _windows_shell="cmd")
+        return []
+    if os.name == "nt" or WINDOWS_DRIVE_PATH_RE.search(command):
+        return _command_tokens(command, posix=False, _windows_shell="powershell")
+    return _command_tokens(command, posix=True)
+
+
+def _verified_windows_target(raw_target: str, *, deleted: bool = False) -> str | None:
+    """Require an exact local drive spelling and physical path identity."""
+    target, unsupported = canonical_windows_locator(raw_target)
+    if unsupported is not None or target != raw_target or os.name != "nt":
+        return None
+    path = Path(raw_target)
+    try:
+        physical = (path.parent.resolve(strict=True) / path.name
+                    if deleted else path.resolve(strict=True))
+        if not deleted and path.is_file() and path.stat().st_nlink != 1:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    resolved, unsupported = canonical_windows_locator(str(physical))
+    return target if unsupported is None and resolved == target else None
+
+
 def core_shell_observation(
     state: dict[str, Any], payload: dict[str, Any], outcome: str,
     outcome_basis: str,
@@ -13558,10 +13603,7 @@ def core_shell_observation(
     command = _shell_command(payload.get("tool_input"))
     if not command or shell_control_operator_present(command):
         return None
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return None
+    parts = _core_observation_tokens(command, payload.get("tool_input"))
     if len(parts) == 3 and parts[:2] == ["test", "-f"]:
         kind, predicate, raw_target = "readiness", "file_exists", parts[2]
     elif len(parts) == 2 and parts[0] == "cat":
@@ -13576,8 +13618,8 @@ def core_shell_observation(
     else:
         return None
     if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
-        target, unsupported = canonical_windows_locator(raw_target)
-        if unsupported is not None or target is None:
+        target = _verified_windows_target(raw_target)
+        if target is None:
             return None
     elif raw_target.startswith(("\\\\", "//")):
         return None  # UNC/device paths have no supported lexical identity.
@@ -13662,8 +13704,8 @@ def core_patch_observation(
     mutation_kind, raw_target = mutations[0]
     raw_target = raw_target.strip()
     if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
-        target, unsupported = canonical_windows_locator(raw_target)
-        if unsupported is not None or target is None:
+        target = _verified_windows_target(raw_target, deleted=mutation_kind == "Delete")
+        if target is None:
             return None
     elif raw_target.startswith("/") and ".." not in Path(raw_target).parts:
         try:
@@ -13708,16 +13750,13 @@ def core_git_observation(
     command = _shell_command(payload.get("tool_input"))
     if not command or shell_control_operator_present(command):
         return None
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return None
+    parts = _core_observation_tokens(command, payload.get("tool_input"))
     if len(parts) < 5 or parts[:2] != ["git", "-C"]:
         return None
     raw_target = parts[2]
     if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
-        target, unsupported = canonical_windows_locator(raw_target)
-        if unsupported is not None or target is None:
+        target = _verified_windows_target(raw_target)
+        if target is None:
             return None
     elif raw_target.startswith("/") and ".." not in Path(raw_target).parts:
         target = str(Path(raw_target))

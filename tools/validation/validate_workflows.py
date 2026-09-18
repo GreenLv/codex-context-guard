@@ -40,6 +40,24 @@ def validate_action_pins(workflows: Path) -> list[str]:
     return errors
 
 
+def validate_lane_failure_propagation(lane: str) -> list[str]:
+    """A later successful command must not mask a failed regression suite."""
+    steps = re.split(r"(?=^      - )", lane, flags=re.MULTILINE)
+    commands = (
+        "python scripts/run_current_behavior_suite.py",
+        "python scripts/check_phase3_transition.py",
+    )
+    owners = [
+        [index for index, step in enumerate(steps) if command in step]
+        for command in commands
+    ]
+    if any(len(indices) != 1 for indices in owners) or owners[0] == owners[1]:
+        return ["current-behavior and phase3 must run in distinct CI steps"]
+    if any("continue-on-error:" in steps[indices[0]] for indices in owners):
+        return ["current-behavior and phase3 CI steps must propagate failures"]
+    return []
+
+
 def validate(root: Path) -> list[str]:
     errors: list[str] = []
     workflows = root / ".github" / "workflows"
@@ -51,6 +69,7 @@ def validate(root: Path) -> list[str]:
         return [f"invalid CI workflow: {exc}"]
 
     errors.extend(validate_action_pins(workflows))
+    errors.extend(validate_lane_failure_propagation(lane))
     if "strategy:" in candidate or "matrix:" in candidate:
         errors.append("candidate lanes must remain independent jobs")
     reusable_call = "uses: ./.github/workflows/ci-lane.yml"
