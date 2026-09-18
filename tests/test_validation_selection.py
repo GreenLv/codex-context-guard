@@ -9,6 +9,21 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
+NEW_014_PATHS = (
+    "assets/core-intent-v2.json",
+    "assets/core-observation-v2.schema.json",
+    "docs/CORE_ALIGNMENT_CONTRACT_V2.md",
+    "docs/CORE_V2_HOST_CAPABILITIES.md",
+    "docs/CORE_V2_WIRE.md",
+    "scripts/cg_codex_core_adapter.py",
+    "scripts/cg_core_v2.py",
+    "scripts/cg_core_v2_schema.py",
+    "tests/fixtures/conformance/core_v2/events.json",
+    "tests/fixtures/conformance/core_v2/independent-oracle.json",
+    "tests/fixtures/conformance/core_v2/observation.schema.json",
+    "tests/test_core_v2.py",
+    "tests/test_stop_v5.py",
+)
 SPEC = importlib.util.spec_from_file_location(
     "select_validation", ROOT / "tools" / "validation" / "select_validation.py"
 )
@@ -43,6 +58,33 @@ class ValidationSelectionTests(unittest.TestCase):
         module_plan = self.classify("scripts/cg_actions.py")
         self.assertIn("runtime_tests", module_plan["gates"])
         self.assertIn("native_runtime", module_plan["invalidates"])
+
+    def test_shared_core_assets_select_runtime_and_peer_contract_checks(self) -> None:
+        for path in NEW_014_PATHS[:2]:
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertEqual(plan["unknown_paths"], [])
+                self.assertIn("runtime_tests", plan["gates"])
+                self.assertIn("contract_tests", plan["gates"])
+                self.assertIn("native_runtime", plan["invalidates"])
+                self.assertIn("cross_repository_contract", plan["invalidates"])
+                self.assertEqual(plan["contracts"], ["context_guard_core_v2"])
+                self.assertEqual(
+                    plan["peer_gates"],
+                    {"dsh_context_guard": ["contract_tests"]},
+                )
+
+    def test_all_014_new_paths_are_tracked_and_mapped(self) -> None:
+        paths = set(
+            subprocess.run(
+                ["git", "-C", str(ROOT), "ls-files"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.splitlines()
+        )
+        self.assertTrue(set(NEW_014_PATHS).issubset(paths))
+        self.assertEqual(self.classify(*NEW_014_PATHS)["unknown_paths"], [])
 
     def test_packaging_invalidates_artifact_and_downstream_evidence(self) -> None:
         plan = self.classify("pyproject.toml")
