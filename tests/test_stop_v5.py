@@ -122,6 +122,40 @@ class StopV5Tests(unittest.TestCase):
         self.assertEqual(decision["core_projections"], [])
         self.assertFalse(any(e.get("core_observation") for e in state["evidence"]))
 
+    def test_drive_absolute_prohibition_uses_root_target_and_host_effect(self):
+        api = r"D:\work\packages\api\src\request.ts"
+        web = r"D:\work\packages\web\src\request.ts"
+        root = f"请只修改 {api}。错误日志还提到了 {web}，但本轮不要动后者。"
+
+        def observed(_cg, event, _cwd, *, change_web=False):
+            for target in ((api, web) if change_web else (api,)):
+                cg.dispatch(event("PostToolUse", tool_name="exec_command",
+                                  tool_input={"cmd": f"cat {target}", "shell": "pwsh"},
+                                  tool_response={"exit_code": 0, "output": "before\n"}))
+                cg.dispatch(event("PostToolUse", tool_name="apply_patch",
+                                  tool_input={"patch": f"*** Begin Patch\n*** Update File: {target}\n@@\n-before\n+after\n*** End Patch\n"},
+                                  tool_response={"success": True}))
+                cg.dispatch(event("PostToolUse", tool_name="exec_command",
+                                  tool_input={"cmd": f"cat {target}", "shell": "pwsh"},
+                                  tool_response={"exit_code": 0, "output": "after\n"}))
+
+        with mock.patch.object(cg, "_verified_windows_target", side_effect=lambda raw, **_: raw):
+            for change_web, expected in ((False, "constraint_active"),
+                                         (True, "constraint_violated")):
+                with self.subTest(change_web=change_web):
+                    _, decision = self.replay(
+                        root, "API 文件已修改并核对。",
+                        preparation=lambda a, b, c: observed(a, b, c, change_web=change_web))
+                    row = next(r for r in decision["core_projections"]
+                               if r["predicate"] == "edit_with_prohibition")
+                    self.assertEqual(row["constraint_state"], expected)
+                    self.assertEqual(row["certifiable"], not change_web)
+                    self.assertEqual(bool(row["violating_host_event_ids"]), change_web)
+            _, claim = self.replay(root, "API 和 web 文件都改了。", preparation=observed)
+        row = next(r for r in claim["core_projections"]
+                   if r["predicate"] == "edit_with_prohibition")
+        self.assertEqual(row["constraint_state"], "constraint_active")
+
     def test_windows_physical_alias_is_not_a_file_fact(self):
         class PhysicalPath:
             def __init__(self, resolved, links):
@@ -554,7 +588,9 @@ class StopV5Tests(unittest.TestCase):
                                       tool_input={"cmd": f"git -C {repo_b} {command}"},
                                       tool_response={"exit_code": 0, "output": output}))
                 cg.dispatch(event("UserPromptSubmit", prompt="context-guard on"))
-                cg.dispatch(event("UserPromptSubmit", prompt=f"请在 {repo_b} 仓库工作。"))
+                prior = (f'请在 "{repo_b}" 仓库工作。' if os.name == "nt"
+                         else f"请在 {repo_b} 仓库工作。")
+                cg.dispatch(event("UserPromptSubmit", prompt=prior))
                 cg.dispatch(event("UserPromptSubmit", prompt="提交改动，并推送 origin main。"))
                 old, new = "a" * 40, "b" * 40
                 observed("rev-parse --show-toplevel", str(repo_b) + "\n")
@@ -586,6 +622,68 @@ class StopV5Tests(unittest.TestCase):
                 else:
                     os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
 
+    def test_quoted_windows_repo_root_never_authorizes_prefix_selection(self):
+        """Structured Hook replay only; no Git command is executed."""
+        full = r"D:\Work Space\repo"
+        old, new = "a" * 40, "b" * 40
+        self.assertEqual(cg.root_absolute_locator_mentions(f'请在 "{full}" 工作。'),
+                         ({full}, False))
+        self.assertEqual(cg.root_absolute_locator_mentions(r"请在 D:\Work。"),
+                         ({r"D:\Work"}, False))
+        for malformed in (
+            r"D:\Work Space\repo", r"D:\Work Space", r"D:\Work\..\repo",
+            r"D:\Work?bad", r"D:\Work]bad", r"D:\Work[bad",
+            r"D:\Work<bad", r"D:\Work|bad", r"D:\Work*bad",
+            r'"D:\Work"^suffix', r'"D:\Work"?bad',
+        ):
+            with self.subTest(malformed=malformed):
+                targets, _ = cg.root_absolute_locator_mentions(f"请在 {malformed} 仓库工作。")
+                self.assertNotIn(r"D:\Work", targets)
+        cases = (
+            (f'请在 "{full}" 仓库工作。', full, True),
+            (f'请在 "{full}" 仓库工作。', r"D:\Work", False),
+            (r"请在 D:\Work。", r"D:\Work", True),
+            (f'请在 "{full}" 与 "D:\\Work?bad" 仓库工作。', full, False),
+        )
+        for prior_text, selected, expected in cases:
+            with self.subTest(prior_text=prior_text, selected=selected), physical_tempdir(prefix="win-git-root-") as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    def event(kind, **fields):
+                        return dict(hook_event_name=kind, session_id="win-git-v5",
+                                    cwd=tmp, turn_id="turn", **fields)
+                    def observed(command, output):
+                        cg.dispatch(event("PostToolUse", tool_name="exec_command",
+                                          tool_input={"cmd": f'git -C "{selected}" {command}',
+                                                      "shell": "pwsh"},
+                                          tool_response={"exit_code": 0, "output": output}))
+                    with mock.patch.object(cg, "_verified_windows_target",
+                                           side_effect=lambda raw, **_: raw):
+                        cg.dispatch(event("UserPromptSubmit", prompt="context-guard on"))
+                        cg.dispatch(event("UserPromptSubmit", prompt=prior_text))
+                        cg.dispatch(event("UserPromptSubmit", prompt="提交改动，并推送 origin main。"))
+                        observed("rev-parse --show-toplevel", selected + "\n")
+                        observed("show -s --format=%H%n%P%n%T HEAD",
+                                 f"{old}\n\n{'1' * 40}\n")
+                        observed("commit -m change", "[main bbbbbbb] change\n")
+                        observed("show -s --format=%H%n%P%n%T HEAD",
+                                 f"{new}\n{old}\n{'2' * 40}\n")
+                        observed("symbolic-ref --short HEAD", "main\n")
+                        observed("push origin main", "To local fixture\n")
+                        observed("ls-remote origin refs/heads/main",
+                                 f"{new}\trefs/heads/main\n")
+                        cg.dispatch(event("Stop", last_assistant_message="提交并推送完成。"))
+                    state = cg.load_state(Path(tmp) / "private/sessions/win-git-v5", event("Stop"))
+                    predicates = {r["predicate"] for r in state["decision_log"][-1]["core_projections"]}
+                    self.assertEqual(predicates == {
+                        "commit_verified", "push_verified", "commit_and_push"}, expected)
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
     def test_git_target_requires_unique_prior_root_and_current_host_selection(self):
         for mode in ("wrong_target", "ambiguous_prior", "stale_selection", "reply_only"):
             with self.subTest(mode=mode), physical_tempdir(prefix="core-git-negative-") as tmp:
@@ -604,8 +702,10 @@ class StopV5Tests(unittest.TestCase):
                                           tool_input={"cmd": f"git -C {target} rev-parse --show-toplevel"},
                                           tool_response={"exit_code": 0, "output": str(target) + "\n"}))
                     cg.dispatch(event("UserPromptSubmit", prompt="context-guard on"))
-                    first = (f"请在 {repo_b} 与 {repo_c} 仓库工作。" if mode == "ambiguous_prior"
-                             else f"请在 {repo_b} 仓库工作。")
+                    quote = '"' if os.name == "nt" else ""
+                    first = (f"请在 {quote}{repo_b}{quote} 与 {quote}{repo_c}{quote} 仓库工作。"
+                             if mode == "ambiguous_prior"
+                             else f"请在 {quote}{repo_b}{quote} 仓库工作。")
                     cg.dispatch(event("UserPromptSubmit", prompt=first))
                     if mode == "stale_selection":
                         selected(repo_b)
@@ -638,7 +738,9 @@ class StopV5Tests(unittest.TestCase):
                                           tool_input={"cmd": f"git -C {repo} {command}"},
                                           tool_response={"exit_code": 0, "output": output}))
                     cg.dispatch(event("UserPromptSubmit", prompt="context-guard on"))
-                    cg.dispatch(event("UserPromptSubmit", prompt=f"请在 {repo} 仓库工作。"))
+                    prior = (f'请在 "{repo}" 仓库工作。' if os.name == "nt"
+                             else f"请在 {repo} 仓库工作。")
+                    cg.dispatch(event("UserPromptSubmit", prompt=prior))
                     cg.dispatch(event("UserPromptSubmit", prompt="提交改动，并推送 origin main。"))
                     old, new = "a" * 40, "b" * 40
                     observed("rev-parse --show-toplevel", str(repo) + "\n")
@@ -890,8 +992,13 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("PreToolUse", tool_name="apply_patch",
                                   tool_use_id="earlier-call", tool_input={"patch": web_patch}))
                 web.write_text("new\n", encoding="utf-8")
-                root = ("请只修改 packages/api/src/request.ts。错误日志还提到了 "
-                        "packages/web/src/request.ts，但本轮不要动后者。")
+                # Windows relative root locators are unavailable in core/v2;
+                # the causal late-result check uses the exact physical A/B
+                # identity there, while POSIX keeps the relative control.
+                api_root = str(api) if os.name == "nt" else "packages/api/src/request.ts"
+                web_root = str(web) if os.name == "nt" else "packages/web/src/request.ts"
+                root = (f"请只修改 {api_root}。错误日志还提到了 "
+                        f"{web_root}，但本轮不要动后者。")
                 cg.dispatch(event("UserPromptSubmit", "current", prompt=root))
                 cg.dispatch(event("PostToolUse", tool_name="apply_patch",
                                   tool_use_id="earlier-call", tool_input={"patch": web_patch},

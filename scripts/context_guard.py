@@ -7670,6 +7670,8 @@ def canonical_windows_locator(raw: str) -> tuple[str | None, str | None]:
     if raw_components and raw_components[-1] == "":
         raw_components = raw_components[:-1]
     for component in raw_components:
+        if any(char in '<>"|?*' or ord(char) < 32 for char in component):
+            return None, "invalid_character"
         if component in {".", ".."}:
             continue
         if component != component.rstrip(" "):
@@ -8452,6 +8454,63 @@ def _root_action_head(source: str, pattern: re.Pattern[str]) -> re.Match[str]:
     return matches[0]
 
 
+def root_absolute_locator_mentions(text: str) -> tuple[set[str], bool]:
+    """Read complete root locators; a quoted path never grants its prefix."""
+    targets: set[str] = set()
+    ambiguous = bool(WINDOWS_UNC_PATH_RE.search(text))
+    quoted: list[tuple[int, int]] = []
+    for match in re.finditer(r"([\"'])(.*?)\1", text):
+        quoted.append(match.span())
+        candidate = match.group(2)
+        tail = text[match.end():]
+        delimited = (not tail or tail[0].isspace() or tail[0] in "。；，"
+                     or (tail[0] in ".,;!?！？):]}"
+                         and (len(tail) == 1 or tail[1].isspace()
+                              or tail[1] in "。；，")))
+        if not delimited:
+            ambiguous |= bool(WINDOWS_ABSOLUTE_PATH_RE.match(candidate) or candidate.startswith("/"))
+            continue
+        if WINDOWS_ABSOLUTE_PATH_RE.match(candidate):
+            if canonical_windows_locator(candidate) == (candidate, None):
+                targets.add(candidate)
+            else:
+                ambiguous = True
+        elif candidate.startswith("/") and ".." not in Path(candidate).parts:
+            targets.add(candidate)
+        elif candidate.startswith("/"):
+            ambiguous = True
+    for match in WINDOWS_DRIVE_PATH_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in quoted):
+            continue
+        # The regex locates a drive path but may stop before a forbidden
+        # character. Consume the whole nonspace lexeme before validation.
+        end = match.start()
+        while (end < len(text) and not text[end].isspace()
+               and text[end] not in "。；，！？"):
+            end += 1
+        token = text[match.start():end]
+        if token.endswith(("?", ".", ",")) and (end == len(text) or text[end].isspace()):
+            token = token[:-1]
+        # An unquoted space can separate a path component or prose. It does
+        # not establish an exact repository identity.
+        if end < len(text) and text[end].isspace() and text[end:].strip():
+            ambiguous = True
+            continue
+        if canonical_windows_locator(token) == (token, None):
+            targets.add(token)
+        else:
+            ambiguous = True
+    for match in ABSOLUTE_PATH_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in quoted):
+            continue
+        candidate = match.group(0).rstrip(".")
+        if ".." in Path(candidate).parts:
+            ambiguous = True
+        else:
+            targets.add(candidate)
+    return targets, ambiguous
+
+
 def _current_action_basis(
     state: dict[str, Any] | None, category: str, reply_clause: str,
     session_dir: Path | None = None, *, include_satisfied: bool = False,
@@ -8687,17 +8746,21 @@ def _current_action_basis(
                     constraint_kind = "work_unit"
                     resolved_constraint = None
                 if category in {"local_commit", "remote_push"}:
-                    prior_targets = {
-                        match.group(0).rstrip(".")
-                        for prior_item in state.get("requirements", [])
-                        if isinstance(prior_item, dict)
-                        and prior_item.get("work_unit_id") == item.get("work_unit_id")
-                        and (prior_root := roots.get(str(prior_item.get("prompt_id")))) is not None
-                        and type(prior_root.get("core_event_seq")) is int
-                        and prior_root["core_event_seq"] < root_record["core_event_seq"]
-                        for match in ABSOLUTE_PATH_RE.finditer(prior_root["text"])
-                    }
-                    if prior_targets != {target}:
+                    prior_targets: set[str] = set()
+                    ambiguous_prior = False
+                    for prior_item in state.get("requirements", []):
+                        if not isinstance(prior_item, dict):
+                            continue
+                        prior_root = roots.get(str(prior_item.get("prompt_id")))
+                        if (prior_item.get("work_unit_id") != item.get("work_unit_id")
+                                or prior_root is None
+                                or type(prior_root.get("core_event_seq")) is not int
+                                or prior_root["core_event_seq"] >= root_record["core_event_seq"]):
+                            continue
+                        found, unknown = root_absolute_locator_mentions(prior_root["text"])
+                        prior_targets.update(found)
+                        ambiguous_prior |= unknown
+                    if ambiguous_prior or prior_targets != {target}:
                         continue
             target_ids = {str(s["id"]) for s in prompt_subjects(target)}
             if reply_subjects and not reply_subjects.issubset(target_ids):
@@ -9014,7 +9077,6 @@ def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[d
                              target_origin=dict(
                                  root_constraint=forbidden_literal,
                                  subject_kind="filesystem",
-                                 resolved_constraint=forbidden_target,
                                  implementation_choice=None,
                                  host_selection=None,
                                  resolved=forbidden_target,
@@ -9022,6 +9084,8 @@ def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[d
                                  root_constraint_source=forbidden_span,
                                  constraint_kind="exact",
                                  selection_source_id=None))
+        if not WINDOWS_ABSOLUTE_PATH_RE.match(forbidden_literal) and not forbidden_literal.startswith("/"):
+            forbidden_req["target_origin"]["resolved_constraint"] = forbidden_target
         combined["requirements"].append(forbidden_req)
         source_by_id = {source["id"]: source for source in combined["sources"]}
         for evidence in violating_events + crossing_events:
