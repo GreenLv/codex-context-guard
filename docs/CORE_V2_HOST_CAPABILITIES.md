@@ -42,3 +42,13 @@ The observed Add FileChange carries post-image content; the observed Update
 carries a unified diff instead. The adapter validates each against the one
 Hook patch operation and requires a separate current file readback for
 completion. Native Delete FileChange shape is not established by these inputs.
+
+For an absolute Windows drive file, PowerShell `cat` is not assumed to preserve
+bytes. A single full-form `[System.Console]::Write([System.IO.File]::ReadAllText(...))`
+expression with one literal path may produce the existing file-readback fact
+only when the same-call Host terminal confirms PowerShell, zero exit, and
+stdout identical to stable current physical file bytes. The expression is a
+bounded producer, not a general PowerShell parser. UTF-8 BOM removal, newline
+conversion, path aliases, extra operations, or missing Host records leave the
+readback unavailable. A separate Windows shell primitive probe established
+LF, CRLF and BOM behavior; it is not new-runtime native Hook acceptance.

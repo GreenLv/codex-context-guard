@@ -162,6 +162,88 @@ class HostTerminalWireTests(unittest.TestCase):
                                        tool_input={"command": command}, tool_response="done"))
                 self.assertEqual(self.state()["evidence"][-1]["outcome"], expected)
 
+    def test_powershell_literal_readback_needs_host_shell_and_identical_bytes(self):
+        raw_target = r"C:\Work\module.txt"
+        command = (
+            "[System.Console]::Write([System.IO.File]::ReadAllText("
+            f"'{raw_target}'))"
+        )
+        suite = self.cwd / "suite.py"
+        suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        local_file = self.cwd / "module.txt"
+        local_file.write_bytes(b"line\n")
+        self.start(f"请运行 {suite} 的测试。")
+        cases = (
+            ("lf", command, "pwsh.exe", "line\n", b"line\n", True),
+            ("crlf", command, "pwsh.exe", "line\r\n", b"line\r\n", True),
+            ("unicode", command, "pwsh.exe", "中文😀\n", "中文😀\n".encode(), True),
+            ("bom", command, "pwsh.exe", "line\n", b"\xef\xbb\xbfline\n", False),
+            ("cat-normalized", f"cat {raw_target}", "pwsh.exe", "line\r\n", b"line\n", False),
+            ("wrong-shell", command, "bash", "line\n", b"line\n", False),
+            ("wrong-target", command.replace("module.txt", "other.txt"),
+             "pwsh.exe", "line\n", b"line\n", False),
+            ("relative-target", command.replace(raw_target, "module.txt"),
+             "pwsh.exe", "line\n", b"line\n", False),
+            ("posix-target", command.replace(raw_target, str(local_file)),
+             "pwsh.exe", "line\n", b"line\n", False),
+            ("variable", command.replace(f"'{raw_target}'", "$path"),
+             "pwsh.exe", "line\n", b"line\n", False),
+            ("extra-operation", command + "; Write-Output done",
+             "pwsh.exe", "line\n", b"line\n", False),
+            ("trailing-output", command + " extra",
+             "pwsh.exe", "line\n", b"line\n", False),
+        )
+        for label, script, shell, stdout, current_bytes, accepted in cases:
+            with self.subTest(label=label):
+                call_id = f"ps-read-{label}"
+                self.completed(call_id, {
+                    "type": "CommandExecution", "status": "completed", "exit_code": 0,
+                    "command": [shell, "-Command" if shell != "bash" else "-lc", script],
+                    "parsed_cmd": [{"type": "unknown", "cmd": script}],
+                    "cwd": self.cwd.as_uri(), "stdout": stdout,
+                })
+                with (mock.patch.object(cg, "_verified_windows_target",
+                                        side_effect=lambda path: path if path == raw_target else None),
+                      mock.patch.object(cg, "_stable_host_file_bytes",
+                                        return_value=current_bytes)):
+                    cg.dispatch(self.event(
+                        "PostToolUse", tool_name="Bash", tool_use_id=call_id,
+                        tool_input={"command": script, "shell": "pwsh"},
+                        tool_response="text result is not proof",
+                    ))
+                evidence = self.state()["evidence"][-1]
+                self.assertEqual("core_observation" in evidence, accepted)
+                if accepted:
+                    self.assertEqual(evidence["core_observation"]["predicate"],
+                                     "content_hash")
+        with mock.patch.object(cg, "_verified_windows_target", return_value=raw_target):
+            cg.dispatch(self.event(
+                "PostToolUse", tool_name="Bash", tool_use_id="ps-no-host",
+                tool_input={"command": command, "shell": "pwsh"},
+                tool_response={"exit_code": 0, "output": "line\n"},
+            ))
+        self.assertNotIn("core_observation", self.state()["evidence"][-1])
+
+    @unittest.skipUnless(os.name == "nt", "physical drive-path binding is Windows-native")
+    def test_powershell_literal_readback_binds_real_windows_file(self):
+        target = self.cwd / "module.txt"
+        target.write_bytes(b"line\n")
+        command = (
+            "[System.Console]::Write([System.IO.File]::ReadAllText("
+            f"'{target}'))"
+        )
+        self.start(f"请修改 {target} 并回读内容。")
+        self.completed("ps-native", {
+            "type": "CommandExecution", "status": "completed", "exit_code": 0,
+            "command": ["pwsh.exe", "-Command", command],
+            "parsed_cmd": [{"type": "unknown", "cmd": command}],
+            "cwd": self.cwd.as_uri(), "stdout": "line\n",
+        })
+        cg.dispatch(self.event("PostToolUse", tool_name="Bash", tool_use_id="ps-native",
+                               tool_input={"command": command}, tool_response="line\n"))
+        self.assertEqual(self.state()["evidence"][-1]["core_observation"]["predicate"],
+                         "content_hash")
+
     def test_foreign_conflicting_or_unsafe_transcript_is_unknown(self):
         target = self.cwd / "suite.py"
         target.write_text("def test_ok(): assert True\n", encoding="utf-8")

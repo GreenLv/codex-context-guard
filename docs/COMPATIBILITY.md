@@ -11,7 +11,12 @@ item from its bounded session transcript when PostToolUse carries only text.
 It recognizes supported single-file FileChange, focused pytest and exact cat
 results; arbitrary command output is not an execution receipt. The repair's
 current source checks do not establish a new installed or native result. The
-shared core v2 files are maintained here; each downstream mirror and consumer
+Windows PowerShell path additionally accepts one exact literal-path
+`[System.Console]::Write([System.IO.File]::ReadAllText(...))` file readback only when the verified
+Host stdout equals the stable current file bytes. PowerShell `cat` output is
+not normalized into success; BOM and physical-path uncertainty remain unknown.
+The Windows shell primitive has an independent byte probe, not a candidate
+native Hook pass. The shared core v2 files are maintained here; each downstream mirror and consumer
 pin needs an independent exact-commit and file-SHA-256 check. No
 daily-host, CI, native-platform, or release status is inferred from these
 source checks. The candidate can reject an

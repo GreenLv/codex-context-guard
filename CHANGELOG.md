@@ -20,6 +20,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - A combined edit and test retain separate required outcomes. A later commit and push can bind the same uniquely sourced repository, with commit lineage and remote-ref readback checked separately. Host Goal-completion interception reports unavailable until a synchronous Hook route is verified.
 - Ordinary business tools remain host-owned; explicit proof and adopted release checks keep their existing gates.
 - When Codex supplies a text-only Bash or apply_patch Hook response, completion evidence requires the matching Host terminal record already present for that call. A failed command, a quoted success message, or missing Host status cannot certify a test, edit, or readback. Supported single-file patches, focused pytest commands, and exact file reads remain separate checks.
+- On Windows, PowerShell `cat` can rewrite line endings. A single exact `Console.Write(File.ReadAllText(...))` expression may supply file readback only when the Host ran PowerShell and its output matches the current physical file byte for byte; a BOM, alias, extra operation, or changed file remains unverified.
 
 ### Validation
 

@@ -13645,7 +13645,8 @@ def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict
         if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT:
             return None
         return {"type": "command", "outcome": "success" if code == 0 else "failed",
-                "basis": "host_transcript_exit_code", "exit_code": code, "stdout": stdout}
+                "basis": "host_transcript_exit_code", "exit_code": code,
+                "stdout": stdout, "shell": shell}
     if item.get("type") == "FileChange" and re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_") in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}:
         patch = (tool_input.get("command", tool_input.get("patch"))
                  if isinstance(tool_input, dict) else tool_input)
@@ -13931,9 +13932,14 @@ def _verified_windows_target(raw_target: str, *, deleted: bool = False) -> str |
     return target if unsupported is None and resolved == target else None
 
 
+_POWERSHELL_BYTE_READBACK_RE = re.compile(
+    r"\[System\.Console\]::Write\(\[System\.IO\.File\]::ReadAllText\('([^'\r\n]+)'\)\)"
+)
+
+
 def core_shell_observation(
     state: dict[str, Any], payload: dict[str, Any], outcome: str,
-    outcome_basis: str,
+    outcome_basis: str, host_terminal: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     """Extract only one attributable shell operation from a host result.
 
@@ -13948,8 +13954,24 @@ def core_shell_observation(
     command = _shell_command(payload.get("tool_input"))
     if not command or shell_control_operator_present(command):
         return None
+    byte_readback = _POWERSHELL_BYTE_READBACK_RE.fullmatch(command)
     parts = _core_observation_tokens(command, payload.get("tool_input"))
-    if len(parts) == 3 and parts[:2] == ["test", "-f"]:
+    if byte_readback is not None:
+        # This is one measured PowerShell expression, never a general parser.
+        # The Host transcript, not tool_input.shell or reply text, identifies
+        # the process that interpreted it.  Exact stdout/file bytes are
+        # checked below; ReadAllText's BOM removal cannot certify that file.
+        if (outcome_basis != "host_transcript_exit_code" or outcome != "success"
+                or not isinstance(host_terminal, dict)
+                or host_terminal.get("type") != "command"
+                or host_terminal.get("shell") not in {
+                    "pwsh", "pwsh.exe", "powershell", "powershell.exe"
+                } or not WINDOWS_ABSOLUTE_PATH_RE.match(byte_readback.group(1))):
+            return None
+        kind, predicate, raw_target = (
+            "state_readback", "content_hash", byte_readback.group(1)
+        )
+    elif len(parts) == 3 and parts[:2] == ["test", "-f"]:
         kind, predicate, raw_target = "readiness", "file_exists", parts[2]
     elif len(parts) == 2 and parts[0] == "cat":
         response = payload.get("tool_response")
@@ -14716,7 +14738,7 @@ def handle_post_tool(
                 "exit_code": host_terminal["exit_code"],
                 "output": host_terminal["stdout"],
             }
-        core_fact = (core_shell_observation(state, core_payload, outcome, outcome_basis)
+        core_fact = (core_shell_observation(state, core_payload, outcome, outcome_basis, host_terminal)
                      or core_patch_observation(state, payload, outcome, outcome_basis, host_terminal)
                      or core_git_observation(state, core_payload, outcome, outcome_basis))
         if core_fact is not None:

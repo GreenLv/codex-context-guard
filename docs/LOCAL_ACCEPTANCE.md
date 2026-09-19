@@ -22,6 +22,12 @@ development handoff outside this public source tree.
 The later Host-wire repair has focused synthetic replays of the CLI 0.153.4
 string PostToolUse shape: it correlates an already-visible Host terminal item
 for supported Bash and apply_patch operations and keeps missing status unknown.
+An independent Windows PowerShell shell primitive probe found that `cat`
+changed LF bytes to CRLF, while a full-form literal `[System.Console]::Write([System.IO.File]::ReadAllText(...))`
+preserved LF, CRLF, and UTF-8 text without a BOM. UTF-8 BOM bytes were lost, so
+the new bounded readback producer requires exact Host stdout/current-file byte
+equality and leaves that case unavailable. Source tests do not establish the
+new runtime's Windows-native Hook completion path.
 The native transcript that exposed the defect belongs to earlier runtime
 bytes; source tests on this repair do not establish a fresh installed or
 native ordinary-completion pass.
