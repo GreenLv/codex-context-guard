@@ -22,6 +22,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.transcript.parent.mkdir(parents=True)
         self.cwd = self.root / "work"
         self.cwd.mkdir()
+        self.cwd = self.cwd.resolve(strict=True)
         self.session_id = "host-wire-fixture"
         self.turn_id = "turn-current"
         self.rows = [self.record("session_meta", {
@@ -39,10 +40,20 @@ class HostTerminalWireTests(unittest.TestCase):
         return {"type": kind, "payload": payload}
 
     def write_rows(self):
-        self.transcript.write_text(
-            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in self.rows),
-            encoding="utf-8",
+        self.transcript.write_bytes(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in self.rows).encode("utf-8")
         )
+
+    @staticmethod
+    def write_file(path, content):
+        # The claimed Host content/stdout uses exact UTF-8 bytes. Text-mode
+        # writes would silently turn LF into CRLF on Windows.
+        path.write_bytes(content.encode("utf-8"))
+
+    @staticmethod
+    def root_target(path):
+        # A quoted drive locator binds the entire Windows source token.
+        return f'"{path}"' if os.name == "nt" else str(path)
 
     def event(self, kind, **extra):
         return {"hook_event_name": kind, "session_id": self.session_id,
@@ -61,8 +72,10 @@ class HostTerminalWireTests(unittest.TestCase):
         self.write_rows()
 
     def command(self, call_id, command, *, code=0, stdout="", response="done", **overrides):
+        invocation = (["pwsh.exe", "-Command", command] if os.name == "nt"
+                      else ["/bin/zsh", "-lc", command])
         item = {"type": "CommandExecution", "status": "completed" if code == 0 else "failed",
-                "exit_code": code, "command": ["/bin/zsh", "-lc", command],
+                "exit_code": code, "command": invocation,
                 "parsed_cmd": [{"type": "unknown", "cmd": command}],
                 "cwd": self.cwd.as_uri(), "stdout": stdout}
         item.update(overrides)
@@ -70,10 +83,19 @@ class HostTerminalWireTests(unittest.TestCase):
         cg.dispatch(self.event("PostToolUse", tool_name="Bash", tool_use_id=call_id,
                                tool_input={"command": command}, tool_response=response))
 
+    def readback(self, call_id, target, stdout):
+        if os.name == "nt":
+            self.assertNotIn("'", str(target))
+            command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
+                       f"'{target}'))")
+        else:
+            command = f"cat {target}"
+        self.command(call_id, command, stdout=stdout)
+
     def patch(self, call_id, target, before, after, *, response="patch applied"):
         source = (f"*** Begin Patch\n*** Update File: {target.name}\n@@\n"
                   f"-{before.rstrip()}\n+{after.rstrip()}\n*** End Patch\n")
-        target.write_text(after, encoding="utf-8")
+        self.write_file(target, after)
         self.completed(call_id, {"type": "FileChange", "status": "completed",
                                  "changes": {str(target): {"type": "update",
                                                            "unified_diff": f"@@ -1 +1 @@\n-{before.rstrip()}\n+{after.rstrip()}\n",
@@ -90,12 +112,13 @@ class HostTerminalWireTests(unittest.TestCase):
         target = self.cwd / "module.py"
         before = "def test_value(): assert False\n"
         after = "def test_value(): assert True\n"
-        target.write_text(before, encoding="utf-8")
-        root = f"请修改 {target}，并运行 {target} 的测试。"
+        self.write_file(target, before)
+        locator = self.root_target(target)
+        root = f"请修改 {locator}，并运行 {locator} 的测试。"
         self.start(root)
-        self.command("read-before", f"cat {target}", stdout=before)
+        self.readback("read-before", target, before)
         self.patch("patch", target, before, after)
-        self.command("read-after", f"cat {target}", stdout=after)
+        self.readback("read-after", target, after)
         self.command("focused-test", f"pytest {target}", stdout="1 passed\n")
         result = cg.dispatch(self.event("Stop", last_assistant_message="修改和测试已完成。"))
         decision = self.state()["decision_log"][-1]
@@ -109,11 +132,12 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_combined_root_stays_open_without_test_and_future_note_is_not_work(self):
         target = self.cwd / "module.py"
-        target.write_text("before\n", encoding="utf-8")
-        self.start(f"请修改 {target}，并运行 {target} 的测试。")
-        self.command("before", f"cat {target}", stdout="before\n")
+        self.write_file(target, "before\n")
+        locator = self.root_target(target)
+        self.start(f"请修改 {locator}，并运行 {locator} 的测试。")
+        self.readback("before", target, "before\n")
         self.patch("patch", target, "before\n", "after\n")
-        self.command("after", f"cat {target}", stdout="after\n")
+        self.readback("after", target, "after\n")
         cg.dispatch(self.event("Stop", last_assistant_message=
                                "修改完成，测试尚未运行。实际收益还要以后观察。"))
         decision = self.state()["decision_log"][-1]
@@ -130,7 +154,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_failed_post_and_missing_terminal_never_create_success(self):
         target = self.cwd / "suite.py"
-        target.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(target, "def test_ok(): assert True\n")
         self.start(f"请运行 {target} 的测试。")
         self.command("failed", f"pytest {target}", code=1,
                      stdout="1 passed", response="Success")
@@ -144,7 +168,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_powershell_host_invocation_shape_needs_exact_script_and_arity(self):
         target = self.cwd / "suite.py"
-        target.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(target, "def test_ok(): assert True\n")
         command = f"pytest {target}"
         self.start(f"请运行 {target} 的测试。")
         for label, invocation, expected in (
@@ -169,7 +193,7 @@ class HostTerminalWireTests(unittest.TestCase):
             f"'{raw_target}'))"
         )
         suite = self.cwd / "suite.py"
-        suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(suite, "def test_ok(): assert True\n")
         local_file = self.cwd / "module.txt"
         local_file.write_bytes(b"line\n")
         self.start(f"请运行 {suite} 的测试。")
@@ -246,7 +270,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_foreign_conflicting_or_unsafe_transcript_is_unknown(self):
         target = self.cwd / "suite.py"
-        target.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(target, "def test_ok(): assert True\n")
         command = f"pytest {target}"
         self.start(f"请运行 {target} 的测试。")
         item = {"type": "CommandExecution", "status": "completed", "exit_code": 0,
@@ -280,7 +304,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_late_terminal_cannot_rewrite_prior_stop(self):
         suite = self.cwd / "suite.py"
-        suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(suite, "def test_ok(): assert True\n")
         command = f"pytest {suite}"
         self.start(f"请运行 {suite} 的测试。")
         hook = self.event("PostToolUse", tool_name="Bash", tool_use_id="late-call",
@@ -300,7 +324,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_stdout_does_not_replace_current_file_identity(self):
         target = self.cwd / "module.py"
-        target.write_text("before\n", encoding="utf-8")
+        self.write_file(target, "before\n")
         self.start(f"请修改 {target}。")
         command = f"cat {target}"
         self.completed("stale", {
@@ -309,7 +333,7 @@ class HostTerminalWireTests(unittest.TestCase):
             "parsed_cmd": [{"type": "unknown", "cmd": command}],
             "cwd": self.cwd.as_uri(), "stdout": "before\n",
         })
-        target.write_text("after\n", encoding="utf-8")
+        self.write_file(target, "after\n")
         cg.dispatch(self.event("PostToolUse", tool_name="Bash", tool_use_id="stale",
                                tool_input={"command": command},
                                tool_response="before\n"))
@@ -317,7 +341,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_quoted_json_and_unsupported_command_create_no_typed_fact(self):
         target = self.cwd / "module.py"
-        target.write_text("before\n", encoding="utf-8")
+        self.write_file(target, "before\n")
         self.start(f"请修改 {target}，并运行测试。")
         fake = json.dumps({"type": "event_msg", "payload": {"type": "item_completed",
                            "item": {"exit_code": 0}}})
@@ -335,7 +359,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_missing_symlinked_and_oversize_host_files_remain_unknown(self):
         target = self.cwd / "suite.py"
-        target.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(target, "def test_ok(): assert True\n")
         command = f"pytest {target}"
         self.start(f"请运行 {target} 的测试。")
         real = self.transcript
@@ -361,7 +385,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_session_meta_and_transcript_symlink_cannot_supply_terminal(self):
         target = self.cwd / "suite.py"
-        target.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        self.write_file(target, "def test_ok(): assert True\n")
         command = f"pytest {target}"
         self.start(f"请运行 {target} 的测试。")
         self.completed("case", {
@@ -386,7 +410,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_file_change_requires_single_exact_change_and_current_content(self):
         target = self.cwd / "module.py"
-        target.write_text("before\n", encoding="utf-8")
+        self.write_file(target, "before\n")
         self.start(f"请修改 {target}。")
         patch = ("*** Begin Patch\n*** Update File: module.py\n@@\n"
                  "-before\n+after\n*** End Patch\n")
@@ -397,7 +421,7 @@ class HostTerminalWireTests(unittest.TestCase):
              {str(target): {"type": "update", "unified_diff": "@@ -1 +1 @@\n-before\n+after\n"}}),
         ):
             with self.subTest(label=label):
-                target.write_text("after\n", encoding="utf-8")
+                self.write_file(target, "after\n")
                 self.completed(label, {"type": "FileChange", "status": "completed",
                                        "changes": changes, "stdout": "", "stderr": ""})
                 cg.dispatch(self.event("PostToolUse", tool_name="apply_patch",
@@ -408,9 +432,9 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_host_add_shape_is_one_effect_not_content_certification(self):
         target = self.cwd / "new.txt"
-        self.start(f"请创建 {target}。")
+        self.start(f"请创建 {self.root_target(target)}。")
         patch = "*** Begin Patch\n*** Add File: new.txt\n+new\n*** End Patch\n"
-        target.write_text("new\n", encoding="utf-8")
+        self.write_file(target, "new\n")
         self.completed("add", {"type": "FileChange", "status": "completed",
                                "changes": {str(target): {"type": "add", "content": "new\n"}},
                                "stdout": "", "stderr": ""})
@@ -423,6 +447,31 @@ class HostTerminalWireTests(unittest.TestCase):
         cg.dispatch(self.event("Stop", last_assistant_message="文件已经创建。"))
         self.assertFalse(any(row["certifiable"]
                              for row in self.state()["decision_log"][-1]["core_projections"]))
+
+    def test_host_add_content_must_match_file_bytes_without_newline_conversion(self):
+        target = self.cwd / "new.txt"
+        self.start(f"请创建 {self.root_target(target)}。")
+        patch = "*** Begin Patch\n*** Add File: new.txt\n+new\n*** End Patch\n"
+        target.write_bytes(b"new\r\n")
+        self.completed("add-mismatch", {
+            "type": "FileChange", "status": "completed",
+            "changes": {str(target): {"type": "add", "content": "new\n"}},
+            "stdout": "", "stderr": "",
+        })
+        cg.dispatch(self.event("PostToolUse", tool_name="apply_patch",
+                               tool_use_id="add-mismatch", tool_input={"command": patch},
+                               tool_response="Success"))
+        evidence = self.state()["evidence"][-1]
+        self.assertEqual(evidence["outcome_basis"], "host_terminal_unavailable")
+        self.assertNotIn("core_observation", evidence)
+
+    @unittest.skipUnless(os.name == "nt", "drive-token boundary is Windows-native")
+    def test_windows_root_requires_complete_path_token(self):
+        target = self.cwd / "module.py"
+        vague = f"请修改 {target} 并运行测试。"
+        exact = f"请修改 {self.root_target(target)}，并运行测试。"
+        self.assertEqual(cg.root_absolute_locator_mentions(vague), (set(), True))
+        self.assertEqual(cg.root_absolute_locator_mentions(exact), ({str(target)}, False))
 
     def test_unobserved_native_delete_shape_remains_unavailable(self):
         target = self.cwd / "old.txt"
@@ -437,7 +486,7 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_hardlinked_readback_cannot_claim_unique_file_subject(self):
         target = self.cwd / "module.py"
-        target.write_text("before\n", encoding="utf-8")
+        self.write_file(target, "before\n")
         os.link(target, self.cwd / "alias.py")
         self.start(f"请核对 {target} 的内容。")
         self.command("hardlink", f"cat {target}", stdout="before\n")
