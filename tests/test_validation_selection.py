@@ -86,6 +86,11 @@ class ValidationSelectionTests(unittest.TestCase):
         self.assertTrue(set(NEW_014_PATHS).issubset(paths))
         self.assertEqual(self.classify(*NEW_014_PATHS)["unknown_paths"], [])
 
+    def test_host_terminal_wire_regression_is_mapped(self) -> None:
+        path = "tests/test_host_terminal_wire.py"
+        self.assertTrue((ROOT / path).is_file())
+        self.assertEqual(self.classify(path)["unknown_paths"], [])
+
     def test_packaging_invalidates_artifact_and_downstream_evidence(self) -> None:
         plan = self.classify("pyproject.toml")
         self.assertEqual(

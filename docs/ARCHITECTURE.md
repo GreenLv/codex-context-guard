@@ -37,6 +37,17 @@ ordinary business tool remains under Codex host control. Root-imposed external
 dependencies and registered external operations have distinct provenance;
 assistant reply text alone creates neither.
 
+Codex CLI may report an ordinary Bash or apply_patch result to PostToolUse as
+unstructured text. The 0.14.0 adapter uses a bounded, session-bound Host
+transcript terminal item only when it is already present during that Post
+observation and matches the call, turn, command or single changed target, and
+cwd. A failed Bash command also uses PostToolUse, so the event name or output
+text cannot prove success. The adapter keeps missing or conflicting Host
+status unknown; a later transcript append does not revise an earlier Stop.
+Supported single-suite pytest, one-file patch and exact cat readback remain
+separate facts, and current file bytes must corroborate a cat result. Arbitrary
+npm or Python command output does not become a test or readback fact.
+
 The 0.13.8 source candidate retains the 0.13.6 reply delivery behavior.
 For SessionEnd, whose Codex CLI host deadline is at most three seconds, both
 launchers invoke the stateful core directly instead of starting the router

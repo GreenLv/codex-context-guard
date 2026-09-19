@@ -16,8 +16,15 @@ An attempted host Goal-completion adoption reports `capability_unavailable`
 until a synchronous host tool route and deny/readback are verified.
 The projection does not itself discharge the independent whole-completion,
 explicit-proof, Goal, or adopted-release contracts. Final exact-input local
-results and provisional shared-file SHA-256 identities are recorded in the
+results and exact shared-file SHA-256 identities are recorded in the
 development handoff outside this public source tree.
+
+The later Host-wire repair has focused synthetic replays of the CLI 0.153.4
+string PostToolUse shape: it correlates an already-visible Host terminal item
+for supported Bash and apply_patch operations and keeps missing status unknown.
+The native transcript that exposed the defect belongs to earlier runtime
+bytes; source tests on this repair do not establish a fresh installed or
+native ordinary-completion pass.
 
 This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.9`. Release history includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,

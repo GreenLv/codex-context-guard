@@ -6,8 +6,13 @@ platform does not prove a fresh installed runtime on another platform.
 The unreleased 0.14.0 source candidate uses schema 13 and Stop 5.0.0. Local
 synthetic Hook tests include lexical Windows drive-path binding and unsupported
 UNC/device-path controls; they are not Windows-native Hook acceptance. The
-shared core v2 files have a provisional file-list/SHA-256 binding until the
-downstream mirror and formal consumer pin are independently verified. No
+CLI 0.153.4 Host-wire adapter can read an already-present, same-call terminal
+item from its bounded session transcript when PostToolUse carries only text.
+It recognizes supported single-file FileChange, focused pytest and exact cat
+results; arbitrary command output is not an execution receipt. The repair's
+current source checks do not establish a new installed or native result. The
+shared core v2 files are maintained here; each downstream mirror and consumer
+pin needs an independent exact-commit and file-SHA-256 check. No
 daily-host, CI, native-platform, or release status is inferred from these
 source checks. The candidate can reject an
 attempt to adopt host Goal-complete interception with `capability_unavailable`:

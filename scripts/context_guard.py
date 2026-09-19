@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import ntpath
 import os
 import re
 import secrets
@@ -24,6 +25,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import unquote, urlparse
 
 PRODUCT_VERSION = "0.14.0"
 SCHEMA_VERSION = 13
@@ -7426,6 +7428,10 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
             )
     session = state.setdefault("session", {})
     for key in ("cwd", "model", "permission_mode", "transcript_path"):
+        # The first Host session path is the transcript identity.  A later
+        # Hook payload may observe that file, but cannot replace its source.
+        if key == "transcript_path" and session.get(key):
+            continue
         if payload.get(key) is not None:
             session[key] = payload[key]
     state["open_items"] = open_item_ids(state)
@@ -13421,6 +13427,281 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
     return "unknown", "unstructured_text"
 
 
+HOST_TRANSCRIPT_LIMIT = 32 * 1024 * 1024
+HOST_TRANSCRIPT_LINE_LIMIT = 1024 * 1024
+
+
+def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read only the current Host session transcript snapshot, never tool prose.
+
+    A missing or oversized Host record is an unavailable observation.  The
+    whole bounded snapshot is inspected so an earlier conflicting terminal
+    record cannot be hidden by a more convenient tail entry.
+    """
+    session = state.get("session")
+    if not isinstance(session, dict):
+        return []
+    session_id = session.get("id")
+    raw_path = payload.get("transcript_path")
+    if (not isinstance(session_id, str) or not session_id
+            or payload.get("session_id") != session_id
+            or not isinstance(raw_path, str)
+            or raw_path != session.get("transcript_path")):
+        return []
+    root = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().absolute() / "sessions"
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        return []
+    try:
+        relative = path.relative_to(root)
+        if not relative.parts or relative.suffix != ".jsonl":
+            return []
+        if root.is_symlink() or root.parent.is_symlink():
+            return []
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return []
+        path_before = path.lstat()
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_size > HOST_TRANSCRIPT_LIMIT):
+                return []
+            raw = handle.read(HOST_TRANSCRIPT_LIMIT + 1)
+            after = os.fstat(handle.fileno())
+        path_after = path.lstat()
+        if (len(raw) != before.st_size or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or (path_before.st_dev, path_before.st_ino) != (before.st_dev, before.st_ino)
+                or (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino)
+                or len(raw) > HOST_TRANSCRIPT_LIMIT or not raw.endswith(b"\n")):
+            return []
+        lines = raw.splitlines(keepends=True)
+        if not lines or any(len(line) > HOST_TRANSCRIPT_LINE_LIMIT for line in lines):
+            return []
+        records = [json.loads(line.decode("utf-8")) for line in lines]
+    except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+        return []
+    first = records[0]
+    if (not isinstance(first, dict) or first.get("type") != "session_meta"
+            or not isinstance(first.get("payload"), dict)
+            or first["payload"].get("id") != session_id
+            or first["payload"].get("session_id") != session_id):
+        return []
+    call_id = payload.get("tool_use_id")
+    turn_id = payload.get("turn_id")
+    if not isinstance(call_id, str) or not call_id or not isinstance(turn_id, str) or not turn_id:
+        return []
+    matches = []
+    for record in records[1:]:
+        if not isinstance(record, dict) or record.get("type") != "event_msg":
+            continue
+        event = record.get("payload")
+        if not isinstance(event, dict) or event.get("type") != "item_completed":
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("id") == call_id:
+            matches.append({"event": event, "item": item})
+    if len(matches) != 1:
+        return []
+    event = matches[0]["event"]
+    if event.get("thread_id") != session_id or event.get("turn_id") != turn_id:
+        return []
+    return matches
+
+
+def _host_item_cwd(item: dict[str, Any]) -> Path | None:
+    raw = item.get("cwd")
+    if not isinstance(raw, str):
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+        return None
+    value = unquote(parsed.path)
+    if os.name == "nt" and re.match(r"^/[A-Za-z]:/", value):
+        value = value[1:]
+    try:
+        return Path(value).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _stable_host_file_bytes(path: Path) -> bytes | None:
+    """Bounded present-time file readback; no symlink/hardlink alias claim."""
+    try:
+        if path.is_symlink() or path.resolve(strict=True) != path:
+            return None
+        path_before = path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_size > HOST_TRANSCRIPT_LINE_LIMIT):
+                return None
+            content = handle.read(HOST_TRANSCRIPT_LINE_LIMIT + 1)
+            after = os.fstat(handle.fileno())
+        path_after = path.lstat()
+        if (len(content) != before.st_size or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or after.st_ino != before.st_ino or after.st_dev != before.st_dev):
+            return None
+        if ((path_before.st_dev, path_before.st_ino) != (before.st_dev, before.st_ino)
+                or (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino)):
+            return None
+        return content
+    except (OSError, RuntimeError):
+        return None
+
+
+def _single_host_patch(patch: str) -> tuple[str, str] | None:
+    """Accept one bounded operation, not an embedded second patch command."""
+    if len(patch.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT:
+        return None
+    lines = patch.splitlines()
+    if len(lines) < 3 or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        return None
+    match = re.fullmatch(r"\*\*\* (Update|Add|Delete) File: (.+)", lines[1])
+    if match is None:
+        return None
+    kind, raw_target = match.groups()
+    body = lines[2:-1]
+    if (not raw_target.strip() or raw_target != raw_target.strip()
+            or any(line.startswith("***") for line in body)):
+        return None
+    if kind == "Update":
+        if (not any(line.startswith("@@") for line in body)
+                or not any(line.startswith("+") for line in body)
+                or not any(line.startswith("-") for line in body)
+                or not all(line.startswith(("@@", " ", "+", "-", "\\")) for line in body)):
+            return None
+    elif kind == "Add":
+        if not body or not all(line.startswith("+") for line in body):
+            return None
+    elif body:
+        return None
+    return kind, raw_target
+
+
+def _patch_change_lines(text: str) -> list[str] | None:
+    """Compare changed lines, not a human-readable success statement."""
+    result = []
+    for line in text.splitlines():
+        if line.startswith(("@@", "--- ", "+++ ", " ", "\\")):
+            continue
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            result.append(line)
+        else:
+            return None
+    return result
+
+
+def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+    """A structured terminal result corroborated by the current Hook call."""
+    matches = _host_transcript_items(state, payload)
+    if not matches:
+        return None
+    item = matches[0]["item"]
+    tool_name = str(payload.get("tool_name") or "")
+    tool_input = payload.get("tool_input")
+    if item.get("type") == "CommandExecution" and tool_is_shell_execution(tool_name):
+        command = _shell_command(tool_input)
+        invoked = item.get("command")
+        parsed = item.get("parsed_cmd")
+        cwd = payload.get("cwd")
+        shell = (ntpath.basename(invoked[0]).lower()
+                 if isinstance(invoked, list) and len(invoked) == 3
+                 and isinstance(invoked[0], str) else "")
+        shell_flag = invoked[1] if isinstance(invoked, list) and len(invoked) == 3 else None
+        supported_invocation = (
+            (shell in {"sh", "bash", "zsh"} and shell_flag in {"-c", "-lc", "-ic"})
+            or (shell in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}
+                and isinstance(shell_flag, str) and shell_flag.lower() == "-command")
+        )
+        if (not command or not isinstance(invoked, list) or len(invoked) != 3
+                or not supported_invocation or invoked[-1] != command
+                or not isinstance(parsed, list) or len(parsed) != 1
+                or not isinstance(parsed[0], dict) or parsed[0].get("cmd") != command
+                or not isinstance(cwd, str)):
+            return None
+        try:
+            expected_cwd = Path(cwd).resolve(strict=True)
+            requested_workdir = tool_input.get("workdir") if isinstance(tool_input, dict) else None
+            if isinstance(requested_workdir, str):
+                expected_cwd = Path(requested_workdir).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        if _host_item_cwd(item) != expected_cwd:
+            return None
+        raw_code = item.get("exit_code")
+        code = raw_code if type(raw_code) is int else None
+        status = item.get("status")
+        if code is None or (code == 0 and status != "completed") or (code != 0 and status != "failed"):
+            return None
+        stdout = item.get("stdout")
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT:
+            return None
+        return {"type": "command", "outcome": "success" if code == 0 else "failed",
+                "basis": "host_transcript_exit_code", "exit_code": code, "stdout": stdout}
+    if item.get("type") == "FileChange" and re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_") in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}:
+        patch = (tool_input.get("command", tool_input.get("patch"))
+                 if isinstance(tool_input, dict) else tool_input)
+        if not isinstance(patch, str):
+            return None
+        mutation = _single_host_patch(patch)
+        changes = item.get("changes")
+        if mutation is None or not isinstance(changes, dict) or len(changes) != 1:
+            return None
+        kind, raw_target = mutation
+        if kind == "Delete":
+            # A native Delete FileChange shape and pre-object identity have
+            # not been observed.  The structured legacy producer is separate.
+            return None
+        if ".." in Path(raw_target).parts:
+            return None
+        cwd = payload.get("cwd")
+        if not isinstance(cwd, str):
+            return None
+        try:
+            target = Path(raw_target) if Path(raw_target).is_absolute() else Path(cwd) / raw_target
+            changed_path, change = next(iter(changes.items()))
+            if (not isinstance(change, dict) or str(target) != changed_path
+                    or change.get("type") != kind.lower()
+                    or change.get("move_path") not in (None, "")):
+                return None
+            physical = (target.parent.resolve(strict=True) / target.name
+                        if kind == "Delete" else target.resolve(strict=True))
+            if physical != target:
+                return None
+            if kind == "Add":
+                claimed_content = change.get("content")
+                if (not isinstance(claimed_content, str)
+                        or _stable_host_file_bytes(target) != claimed_content.encode("utf-8")):
+                    return None
+            elif kind == "Update":
+                host_diff = change.get("unified_diff")
+                if (not isinstance(host_diff, str)
+                        or len(host_diff.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT
+                        or _patch_change_lines(host_diff) != _patch_change_lines(
+                            "\n".join(patch.splitlines()[2:-1]))
+                        or _stable_host_file_bytes(target) is None):
+                    return None
+            elif target.exists():
+                return None
+        except (OSError, RuntimeError):
+            return None
+        status = item.get("status")
+        if status not in ("completed", "failed"):
+            return None
+        return {"type": "file_change", "outcome": "success" if status == "completed" else "failed",
+                "basis": "host_transcript_file_change", "target": str(target),
+                "kind": kind, "patch": patch}
+    return None
+
+
 def tool_outcome(payload: dict[str, Any]) -> str:
     return tool_outcome_details(payload)[0]
 
@@ -13662,7 +13943,7 @@ def core_shell_observation(
     """
     if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
         return None
-    if outcome_basis != "structured_exit_code":
+    if outcome_basis not in {"structured_exit_code", "host_transcript_exit_code"}:
         return None
     command = _shell_command(payload.get("tool_input"))
     if not command or shell_control_operator_present(command):
@@ -13724,6 +14005,17 @@ def core_shell_observation(
     if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
         observation["canonical_target"] = physical_target
     if kind == "state_readback":
+        if outcome_basis == "host_transcript_exit_code":
+            # Transcript stdout is a historical Host result.  It is usable as
+            # current readback only while the exact physical file still has
+            # those bytes; a later change must not borrow the old output.
+            try:
+                file_path = Path(target)
+                actual = _stable_host_file_bytes(file_path)
+                if actual != payload["tool_response"]["output"].encode("utf-8"):
+                    return None
+            except UnicodeError:
+                return None
         observation["content_sha256"] = sha256_text(payload["tool_response"]["output"])
     return observation
 
@@ -13750,16 +14042,17 @@ def core_host_origin_prompt(state: dict[str, Any], payload: dict[str, Any]) -> s
 
 def core_patch_observation(
     state: dict[str, Any], payload: dict[str, Any], outcome: str,
-    outcome_basis: str,
+    outcome_basis: str, host_terminal: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     """One structured successful/failed host patch, never patch prose."""
     normalized = re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower()).strip("_")
     if normalized not in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}:
         return None
-    if outcome_basis not in {"structured_status", "structured_exit_code"}:
+    if outcome_basis not in {"structured_status", "structured_exit_code", "host_transcript_file_change"}:
         return None
     tool_input = payload.get("tool_input")
-    patch = tool_input.get("patch") if isinstance(tool_input, dict) else tool_input
+    patch = (tool_input.get("patch", tool_input.get("command"))
+             if isinstance(tool_input, dict) else tool_input)
     if not isinstance(patch, str) or not patch.startswith("*** Begin Patch\n") or not patch.rstrip().endswith("*** End Patch"):
         return None
     mutations = re.findall(r"^\*\*\* (Update|Add|Delete) File: (.+)$", patch, re.M)
@@ -13767,6 +14060,12 @@ def core_patch_observation(
         return None
     mutation_kind, raw_target = mutations[0]
     raw_target = raw_target.strip()
+    if outcome_basis == "host_transcript_file_change":
+        if (not isinstance(host_terminal, dict) or host_terminal.get("type") != "file_change"
+                or host_terminal.get("patch") != patch
+                or host_terminal.get("kind") != mutation_kind):
+            return None
+        raw_target = str(host_terminal["target"])
     if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
         target = _verified_windows_target(raw_target, deleted=mutation_kind == "Delete")
         if target is None:
@@ -13809,7 +14108,7 @@ def core_git_observation(
     """Record exact local Git call/result identity without executing Git."""
     if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
         return None
-    if outcome_basis != "structured_exit_code":
+    if outcome_basis not in {"structured_exit_code", "host_transcript_exit_code"}:
         return None
     command = _shell_command(payload.get("tool_input"))
     if not command or shell_control_operator_present(command):
@@ -14238,6 +14537,26 @@ def handle_post_tool(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
     outcome, outcome_basis = tool_outcome_details(payload)
+    host_terminal = None
+    execution = state.get("execution")
+    in_flight = (
+        any(isinstance(ticket, dict) and ticket.get("state") == "in_flight"
+            and ticket.get("tool_use_id") == payload.get("tool_use_id")
+            for ticket in execution.get("action_tickets", []))
+        if isinstance(execution, dict) else False
+    )
+    if (isinstance(payload.get("tool_response"), str)
+            and (state.get("mode", {}).get("active") or in_flight)
+            and not private_control_command_intent(payload)):
+        host_terminal = host_terminal_result(state, payload)
+        if host_terminal is not None:
+            outcome, outcome_basis = host_terminal["outcome"], host_terminal["basis"]
+        elif (tool_is_shell_execution(str(payload.get("tool_name") or ""))
+              or re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower()).strip("_")
+              in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}):
+            # A textual marker, even on PostToolUse, is not a process exit or
+            # FileChange receipt.  Preserve the result as unstructured.
+            outcome, outcome_basis = "unknown", "host_terminal_unavailable"
     settle_pre_tool_ticket(state, payload, outcome)
     if state["mode"]["active"]:
         require_usable_state(state)
@@ -14390,9 +14709,16 @@ def handle_post_tool(
         state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 2
         evidence["core_call_seq"] = state["core_event_sequence"] - 1
         evidence["core_result_seq"] = state["core_event_sequence"]
-        core_fact = (core_shell_observation(state, payload, outcome, outcome_basis)
-                     or core_patch_observation(state, payload, outcome, outcome_basis)
-                     or core_git_observation(state, payload, outcome, outcome_basis))
+        core_payload = payload
+        if host_terminal is not None and host_terminal["type"] == "command":
+            core_payload = dict(payload)
+            core_payload["tool_response"] = {
+                "exit_code": host_terminal["exit_code"],
+                "output": host_terminal["stdout"],
+            }
+        core_fact = (core_shell_observation(state, core_payload, outcome, outcome_basis)
+                     or core_patch_observation(state, payload, outcome, outcome_basis, host_terminal)
+                     or core_git_observation(state, core_payload, outcome, outcome_basis))
         if core_fact is not None:
             origin_prompt_id = core_host_origin_prompt(state, payload)
             if origin_prompt_id is not None:

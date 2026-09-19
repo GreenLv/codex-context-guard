@@ -15,10 +15,11 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 ### Changes
 
 - Schema 13 and Stop 5.0.0 retain prior journal and delivery history. Old mixed answered rows require review; old reply-derived waits do not become trusted lifecycle facts.
-- The provisional shared core v2 schema and reference projection bind Stop diagnosis to the current root requirement, host-selected target, and observed result. A future time or unmet prerequisite keeps an evaluation deferred even if its input file exists.
+- The shared core v2 schema and reference projection bind Stop diagnosis to the current root requirement, host-selected target, and observed result. A future time or unmet prerequisite keeps an evaluation deferred even if its input file exists. Downstream mirror and pin validation is a separate identity check.
 - Mixed requests can deliver an information span while the original execution and unknown scope stays pending. Root and host append numbers keep Stop decisions at their own event watermark even when timestamps tie or move backward.
 - A combined edit and test retain separate required outcomes. A later commit and push can bind the same uniquely sourced repository, with commit lineage and remote-ref readback checked separately. Host Goal-completion interception reports unavailable until a synchronous Hook route is verified.
 - Ordinary business tools remain host-owned; explicit proof and adopted release checks keep their existing gates.
+- When Codex supplies a text-only Bash or apply_patch Hook response, completion evidence requires the matching Host terminal record already present for that call. A failed command, a quoted success message, or missing Host status cannot certify a test, edit, or readback. Supported single-file patches, focused pytest commands, and exact file reads remain separate checks.
 
 ### Validation
 
