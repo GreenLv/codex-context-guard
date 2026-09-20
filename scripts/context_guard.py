@@ -8625,6 +8625,49 @@ def root_absolute_locator_mentions(text: str) -> tuple[set[str], bool]:
     return targets, ambiguous
 
 
+def _action_source_clauses(text: str) -> list[str]:
+    """Keep a quoted filesystem *object* inside its governing instruction.
+
+    The ordinary authority filter must still discard a quoted command or a
+    report of somebody else's command. Only a complete quoted locator is
+    shielded while that filter splits the root into speech clauses.
+    """
+    marker_open, marker_close = "\ue000", "\ue001"
+    if marker_open in text or marker_close in text:
+        return control_speech_clauses(text)
+    replacements: list[str] = []
+
+    def shield(match: re.Match[str]) -> str:
+        candidate = match.group(2)
+        if match.group(1) == "`":
+            valid = (WINDOWS_ABSOLUTE_PATH_RE.match(candidate) is not None
+                     and canonical_windows_locator(candidate) == (candidate, None)) or (
+                         candidate.startswith("/") and ".." not in Path(candidate).parts)
+        else:
+            found, ambiguous = root_absolute_locator_mentions(match.group(0))
+            valid = not ambiguous and found == {candidate}
+        if not valid:
+            return match.group(0)
+        index = len(replacements)
+        replacements.append(match.group(0))
+        return f"{marker_open}{index}{marker_close}"
+
+    shielded = re.sub(r"([\"'`])([^\n]*?)\1", shield, text)
+    # Preserve dots in unquoted locators as well. A quoted locator is already
+    # one opaque token, including any spaces or punctuation in its filename.
+    for pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+        shielded = pattern.sub(lambda match: match.group(0).replace(".", "\u241f"), shielded)
+    clauses = control_speech_clauses(shielded)
+    restored = []
+    for clause in clauses:
+        clause = clause.replace("\u241f", ".")
+        for index, original in enumerate(replacements):
+            clause = clause.replace(f"{marker_open}{index}{marker_close}", original)
+        restored.append(clause)
+    return restored
+
+
 def _current_action_basis(
     state: dict[str, Any] | None, category: str, reply_clause: str,
     session_dir: Path | None = None, *, include_satisfied: bool = False,
@@ -8686,21 +8729,7 @@ def _current_action_basis(
                 for child in state.get("requirements", []) if isinstance(child, dict)
             ):
                 continue
-            # Preserve dotted locators across the existing quote-aware root
-            # speech splitter, then restore the exact source text.
-            protected = WINDOWS_UNC_PATH_RE.sub(
-                lambda match: match.group(0).replace(".", "\u241f"), root_text
-            )
-            protected = WINDOWS_DRIVE_PATH_RE.sub(
-                lambda match: match.group(0).replace(".", "\u241f"), protected
-            )
-            protected = ABSOLUTE_PATH_RE.sub(
-                lambda match: match.group(0).replace(".", "\u241f"), protected
-            )
-            protected = RELATIVE_FILE_RE.sub(
-                lambda match: match.group(0).replace(".", "\u241f"), protected
-            )
-            clauses = [c.replace("\u241f", ".") for c in control_speech_clauses(protected)]
+            clauses = _action_source_clauses(root_text)
             if item.get("execution_source_span") is not None:
                 span = item["execution_source_span"]
                 if (not isinstance(span, list) or len(span) != 2
@@ -8778,7 +8807,9 @@ def _current_action_basis(
                         r"\s*[,，;；]\s*(?:并|然后)?\s*(?:检查|核对)(?:改动后(?:的)?文件|文件内容)\s*[。.!！]?\s*$",
                         "", generic_edit,
                     )
-                for locator in (*ABSOLUTE_PATH_RE.findall(source),
+                full_locators, _ = root_absolute_locator_mentions(source)
+                for locator in (*full_locators,
+                                *ABSOLUTE_PATH_RE.findall(source),
                                 *WINDOWS_DRIVE_PATH_RE.findall(source),
                                 *RELATIVE_FILE_RE.findall(source)):
                     generic_edit = generic_edit.replace(locator, "", 1)
@@ -8808,15 +8839,13 @@ def _current_action_basis(
                 continue
             if WINDOWS_UNC_PATH_RE.search(source):
                 continue  # An explicit unsupported locator cannot become a work-unit choice.
-            targets = [match.group(0).rstrip(".") for pattern in
-                       (ABSOLUTE_PATH_RE, WINDOWS_DRIVE_PATH_RE)
-                       for match in pattern.finditer(source)]
+            source_targets, ambiguous_source_target = root_absolute_locator_mentions(source)
+            if ambiguous_source_target:
+                continue
+            targets = sorted(source_targets)
             relative_targets = [match.group(0) for match in RELATIVE_FILE_RE.finditer(source)
                                 if ".." not in Path(match.group(0)).parts]
-            normalized_ids = {str(s["id"]) for s in prompt_subjects(source)}
-            eligible_targets = [target for target in targets
-                                if any(str(s["id"]) in normalized_ids
-                                       for s in prompt_subjects(target))]
+            eligible_targets = targets
             resolved_constraint = None
             if eligible_targets:
                 if len(set(eligible_targets)) != 1:

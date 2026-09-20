@@ -1154,7 +1154,8 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
     def prepare_ready_persistence(self, *, turn: str) -> None:
         target = self.project / "suite.py"
         target.write_text("def test_ok(): assert True\n", encoding="utf-8")
-        self.prompt(f"运行 {target} 的测试。不要停止,一直推进直到完成。", turn=turn)
+        locator = f'"{target}"' if os.name == "nt" else str(target)
+        self.prompt(f"运行 {locator} 的测试。不要停止,一直推进直到完成。", turn=turn)
         self.dispatch("PostToolUse", turn=turn, tool_name="exec_command",
                       tool_input={"cmd": f"test -f {target}"},
                       tool_response={"exit_code": 0, "output": ""})

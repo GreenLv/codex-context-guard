@@ -1,7 +1,9 @@
 """Real-shape Host terminal records paired with string PostToolUse responses."""
 
+import hashlib
 import json
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -89,7 +91,7 @@ class HostTerminalWireTests(unittest.TestCase):
             command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
                        f"'{target}'))")
         else:
-            command = f"cat {target}"
+            command = f"cat {shlex.quote(str(target))}"
         self.command(call_id, command, stdout=stdout)
 
     def patch(self, call_id, target, before, after, *, response="patch applied",
@@ -145,6 +147,57 @@ class HostTerminalWireTests(unittest.TestCase):
         self.assertEqual(rows[0]["predicate_state"], "satisfied")
         self.assertEqual(rows[0]["unknown_coverage_count"], 0)
         self.assertTrue(rows[0]["certifiable"])
+
+    def test_direct_quoted_filesystem_object_with_space_can_close(self):
+        target = self.cwd / "A File.ts"
+        self.write_file(target, "before\n")
+        self.start(f'请修改 "{target}"，并核对改动后的文件。')
+        self.patch("quoted-patch", target, "before\n", "after\n")
+        self.readback("quoted-read", target, "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="已修改并核对文件。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["target_sha256"],
+                         hashlib.sha256(str(target).encode()).hexdigest())
+        self.assertTrue(rows[0]["certifiable"])
+
+    def test_quoted_same_file_edit_and_test_remain_distinct(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        locator = f'"{target}"'
+        self.start(f"请修改 {locator}，并运行 {locator} 的测试。")
+        self.patch("quoted-patch", target, "before\n", "after\n")
+        self.readback("quoted-read", target, "after\n")
+        self.command("quoted-test", f"pytest {locator}", stdout="1 passed\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="修改和测试已完成。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertEqual({row["predicate"] for row in rows},
+                         {"state_matches", "test_passed", "edit_and_test"})
+        self.assertTrue(all(row["predicate_state"] == "satisfied" for row in rows))
+        self.assertTrue(next(row for row in rows
+                             if row["predicate"] == "edit_and_test")["certifiable"])
+
+    def test_quoted_statement_report_and_negation_do_not_become_edit(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        for index, root in enumerate((
+            f'"修改 {target}。"',
+            f'日志写着："修改 {target}。"',
+            f'不要修改 "{target}"。',
+        )):
+            with self.subTest(root=root):
+                with mock.patch.object(self, "session_id", f"quoted-negative-{index}"):
+                    self.rows = [self.record("session_meta", {
+                        "id": self.session_id, "session_id": self.session_id})]
+                    self.write_rows()
+                    self.start(root)
+                    self.command("ready", f"test -f {shlex.quote(str(target))}")
+                    cg.dispatch(self.event("Stop", last_assistant_message="文件尚未修改。"))
+                    decision = self.state()["decision_log"][-1]
+                    self.assertFalse(any(a.get("category") == "local_edit"
+                                         and a.get("actionability") == "current_ready"
+                                         for a in decision["actions"]))
+                    self.assertEqual(decision["core_projections"], [])
 
     def test_frozen_projection_does_not_reread_later_disk_bytes(self):
         target = self.cwd / "module.py"

@@ -22,6 +22,11 @@ def physical_tempdir(*, prefix: str):
         yield str(Path(raw).resolve(strict=True)) if os.name == "nt" else raw
 
 
+def root_locator(path: Path) -> str:
+    """Give Windows root speech one complete drive-path token."""
+    return f'"{path}"' if os.name == "nt" else str(path)
+
+
 class StopV5Tests(unittest.TestCase):
     def test_subjectless_compound_control_uses_only_same_root_task(self):
         cases = (
@@ -78,7 +83,7 @@ class StopV5Tests(unittest.TestCase):
                     return dict(hook_event_name="UserPromptSubmit", session_id=session,
                                 cwd=tmp, turn_id=turn, prompt=prompt)
                 cg.dispatch(event("t0", "context-guard on"))
-                cg.dispatch(event("t1", f"修改 {target} 并运行 {target} 的测试。不要停止,一直推进直到完成。"))
+                cg.dispatch(event("t1", f"修改 {root_locator(target)} 并运行 {root_locator(target)} 的测试。不要停止,一直推进直到完成。"))
                 directory = Path(tmp) / "private/sessions" / session
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id=session, cwd=tmp, turn_id="t1"))
@@ -115,8 +120,8 @@ class StopV5Tests(unittest.TestCase):
                     return dict(hook_event_name="UserPromptSubmit", session_id=session,
                                 cwd=tmp, turn_id=turn, prompt=prompt)
                 cg.dispatch(event("t0", "context-guard on"))
-                cg.dispatch(event("t1", f"修改 {target}，并运行 {target} 的单元测试，"
-                          f"并运行 {target} 的回归测试。不要停止,一直推进直到完成。"))
+                cg.dispatch(event("t1", f"修改 {root_locator(target)}，并运行 {root_locator(target)} 的单元测试，"
+                          f"并运行 {root_locator(target)} 的回归测试。不要停止,一直推进直到完成。"))
                 directory = Path(tmp) / "private/sessions" / session
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id=session, cwd=tmp, turn_id="t1"))
@@ -255,7 +260,7 @@ class StopV5Tests(unittest.TestCase):
 
     def test_drive_absolute_root_to_host_fact_needs_physical_identity(self):
         target = r"D:\work\suite.py"
-        root = f"继续执行，运行 {target} 的测试。"
+        root = f'继续执行，运行 "{target}" 的测试。'
         def ready(_cg, event, _cwd):
             cg.dispatch(event("PostToolUse", tool_name="exec_command",
                         tool_input={"cmd": f"test -f {target}", "shell": "pwsh"},
@@ -274,6 +279,29 @@ class StopV5Tests(unittest.TestCase):
         self.assertEqual(result, {})
         self.assertEqual(decision["core_projections"], [])
         self.assertFalse(any(e.get("core_observation") for e in state["evidence"]))
+        with mock.patch.object(cg, "_verified_windows_target", return_value=target):
+            result, decision = self.replay(
+                f"继续执行，运行 {target} 的测试。", "测试尚未运行。",
+                preparation=ready)
+        self.assertEqual(result, {})
+        self.assertEqual(decision["core_projections"], [])
+        self.assertFalse(any(a.get("actionability") == "current_ready"
+                             for a in decision["actions"]))
+
+    def test_unquoted_windows_path_with_space_never_selects_prefix(self):
+        root = r"修改 C:\Work Space\A.ts 并运行测试。"
+        self.assertTrue(cg.root_absolute_locator_mentions(root)[1])
+        prefix = r"C:\Work"
+        def ready(_cg, event, _cwd):
+            cg.dispatch(event("PostToolUse", tool_name="exec_command",
+                              tool_input={"cmd": f"test -f {prefix}", "shell": "pwsh"},
+                              tool_response={"exit_code": 0, "output": ""}))
+        with mock.patch.object(cg, "_verified_windows_target", return_value=prefix):
+            result, decision = self.replay(root, "修改和测试尚未完成。", preparation=ready)
+        self.assertEqual(result, {})
+        self.assertEqual(decision["core_projections"], [])
+        self.assertFalse(any(a.get("actionability") == "current_ready"
+                             for a in decision["actions"]))
 
     def test_drive_absolute_prohibition_uses_root_target_and_host_effect(self):
         api = r"D:\work\packages\api\src\request.ts"
@@ -571,8 +599,8 @@ class StopV5Tests(unittest.TestCase):
                         return dict(hook_event_name=kind, session_id="interlude-fixture",
                                     cwd=tmp, turn_id=turn, **fields)
                     cg.dispatch(event("UserPromptSubmit", "control", prompt="context-guard on"))
-                    root = (f"请运行 {target} 的测试并持续执行直到任务完成。" if persistent
-                            else f"请运行 {target} 的测试。")
+                    root = (f"请运行 {root_locator(target)} 的测试并持续执行直到任务完成。" if persistent
+                            else f"请运行 {root_locator(target)} 的测试。")
                     cg.dispatch(event("UserPromptSubmit", "t1", prompt=root))
                     if ready:
                         cg.dispatch(event(
@@ -630,7 +658,7 @@ class StopV5Tests(unittest.TestCase):
                 target.write_bytes(b"before\n")
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                 cg.dispatch(event("UserPromptSubmit", "t1",
-                                  prompt=f"请修改 {target}，并运行 {target} 的测试。"))
+                                  prompt=f"请修改 {root_locator(target)}，并运行 {root_locator(target)} 的测试。"))
                 cg.dispatch(event("UserPromptSubmit", "t2",
                                   prompt="持续执行直到当前任务完成。"))
                 state = cg.load_state(session_dir, event("Stop", "t2"))
@@ -754,7 +782,7 @@ class StopV5Tests(unittest.TestCase):
                 target.write_bytes(b"old\n")
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                 cg.dispatch(event("UserPromptSubmit", "t1",
-                                  prompt=f"请修改 {target}，并运行 {target} 的测试。"))
+                                  prompt=f"请修改 {root_locator(target)}，并运行 {root_locator(target)} 的测试。"))
                 cg.dispatch(event("UserPromptSubmit", "t2",
                                   prompt="持续执行直到当前任务完成。"))
                 directory = Path(tmp) / "private/sessions/drop-child-v5"
@@ -936,7 +964,7 @@ class StopV5Tests(unittest.TestCase):
                 target.write_bytes(b"old\n")
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                 cg.dispatch(event("UserPromptSubmit", "t1",
-                                  prompt=f"请修复 {target}，并运行 {target} 的测试。"))
+                                  prompt=f"请修复 {root_locator(target)}，并运行 {root_locator(target)} 的测试。"))
                 cg.dispatch(event("UserPromptSubmit", "t2", prompt="暂停这项修复。"))
                 directory = Path(tmp) / "private/sessions/parent-control-v5"
                 state = cg.load_state(directory, event("Stop", "t2"))
@@ -1025,8 +1053,8 @@ class StopV5Tests(unittest.TestCase):
                 other.write_bytes(b"old\n")
                 cg.dispatch(event("repair-graph-positive", "t0", "context-guard on"))
                 cg.dispatch(event("repair-graph-positive", "t1", (
-                    f"请修复 {target}，运行 {target} 的单元测试，"
-                    f"然后运行 {target} 的回归测试。")))
+                    f"请修复 {root_locator(target)}，运行 {root_locator(target)} 的单元测试，"
+                    f"然后运行 {root_locator(target)} 的回归测试。")))
                 cg.dispatch(event("repair-graph-positive", "t2", "暂停这项修复。"))
                 directory = Path(tmp) / "private/sessions/repair-graph-positive"
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
@@ -1050,7 +1078,7 @@ class StopV5Tests(unittest.TestCase):
 
                 cg.dispatch(event("repair-graph-negative", "t0", "context-guard on"))
                 cg.dispatch(event("repair-graph-negative", "t1", (
-                    f"请修复 {target}，并运行 {other} 的测试。")))
+                    f"请修复 {root_locator(target)}，并运行 {root_locator(other)} 的测试。")))
                 cg.dispatch(event("repair-graph-negative", "t2", "暂停这项修复。"))
                 other_state = cg.load_state(
                     Path(tmp) / "private/sessions/repair-graph-negative",
@@ -1234,7 +1262,7 @@ class StopV5Tests(unittest.TestCase):
                     cg.dispatch(event("PostToolUse", tool_name="exec_command",
                                       tool_input={"cmd": command},
                                       tool_response={"exit_code": 0, "output": "1 passed"}))
-            root = f"请修改 {suite}，并运行 {suite} 的测试。"
+            root = f"请修改 {root_locator(suite)}，并运行 {root_locator(suite)} 的测试。"
             _, decision, state = self.replay(
                 root, "测试通过，但修改尚未完成。",
                 preparation=observed, include_state=True)
@@ -1268,7 +1296,7 @@ class StopV5Tests(unittest.TestCase):
                                       tool_input={"cmd": cmd},
                                       tool_response={"exit_code": 0, "output": output}))
             _, decision, state = self.replay(
-                f"请修改 {suite}，并运行 {suite} 的测试。", "修改和测试已完成。",
+                f"请修改 {root_locator(suite)}，并运行 {root_locator(suite)} 的测试。", "修改和测试已完成。",
                 preparation=observed, include_state=True)
             current = [i for i in state["requirements"]
                        if i.get("prompt_id") == state["prompts"][-1]["id"]]
