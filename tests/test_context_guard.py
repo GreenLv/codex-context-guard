@@ -6982,6 +6982,54 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(contract["mode"], "legacy_fallback")
         self.assertEqual(contract["reason"], "asset_reference_unresolved")
 
+    def test_plain_file_locator_words_do_not_create_visual_asset_debt(self) -> None:
+        plain_roots = (
+            '请修改 "/work/visualizations/config.txt"，然后回读文件内容。',
+            'Run `pytest "/work/images/current_suite.py"` and report the result.',
+            'Read the exact bytes of "/work/visualizations/image_notes.txt".',
+            'Edit "C:\\Work Space\\visualizations\\config.txt" and read it back.',
+            'Read https://visual.example.com/files/notes.txt and report its bytes.',
+        )
+        for root in plain_roots:
+            with self.subTest(root=root):
+                contract = cg.verification_contract("R001", root, {"assets": []}, [])
+                self.assertNotEqual(contract.get("reason"), "asset_reference_unresolved")
+                self.assertFalse(any(obligation["kind"] == "input_asset_inspection"
+                                     for obligation in contract["obligations"]))
+        for root in (
+            '请根据截图修改界面，但当前附件无法读取。',
+            'Inspect the attached image "/work/images/logo.png" visually.',
+            'Edit "/work/visualizations/config.txt" and verify the screenshot visually.',
+            '这张图片显示了什么？',
+            'What is in this image?',
+            'Can you describe the attached image?',
+            'Inspect https://visual.example.com/images/logo.png visually.',
+        ):
+            with self.subTest(root=root):
+                contract = cg.verification_contract("R001", root, {"assets": []}, [])
+                self.assertEqual((contract["mode"], contract["reason"]),
+                                 ("legacy_fallback", "asset_reference_unresolved"))
+
+        for root in (
+            'The document asks, "What is in this image?" Explain why.',
+            '文档写着“这张图片显示了什么？”，请解释这句话。',
+        ):
+            with self.subTest(root=root):
+                contract = cg.verification_contract("R001", root, {"assets": []}, [])
+                self.assertNotEqual(contract.get("reason"), "asset_reference_unresolved")
+
+        image = self.write_png("question-image.png", 9, 9)
+        asset = cg.asset_candidate(str(image))
+        assert asset is not None
+        state = cg.new_state(self.payload("UserPromptSubmit"))
+        asset_id = cg.add_asset(state, "P0001", asset, "hook_payload")
+        for root in ('这张图片显示了什么？', 'Can you describe the attached image?'):
+            with self.subTest(root=root, asset=True):
+                contract = cg.verification_contract("R001", root, state, [asset_id])
+                self.assertEqual(contract["mode"], "enforced")
+                self.assertIn("input_asset_inspection",
+                              {obligation["kind"] for obligation in contract["obligations"]})
+
     def test_transcript_tail_can_upgrade_fallback_without_downgrading_contract(self) -> None:
         image = self.write_png("transcript-input.png", 20, 30)
         text = "$context-guard\n请根据截图修复界面。"

@@ -8148,6 +8148,43 @@ def visual_mutation_requested(text: str) -> bool:
     return False
 
 
+def visual_reference_source_text(text: str) -> str:
+    """Remove ordinary locator bytes before reading visual source language.
+
+    A pathname or URL component named ``images`` or ``visualizations`` is a
+    typed object, not an instruction to inspect an attached image. Keep actual
+    image-file locators visible, and keep words outside each locator intact.
+    The caller first selects directly governed clauses so reported commands
+    cannot supply visual authority through this lexical step.
+    """
+    hidden = [False] * len(text)
+
+    def ordinary_locator(value: str) -> bool:
+        candidate = value.rstrip(")]}>.,;，；。!?！？")
+        if candidate.lower().startswith(("https://", "http://")):
+            candidate = urlparse(candidate).path
+        return ntpath.splitext(candidate)[1].lower() not in IMAGE_SUFFIXES
+
+    def mask(start: int, end: int) -> None:
+        for index in range(start, end):
+            hidden[index] = True
+
+    # A quoted absolute locator may contain spaces or punctuation. Its whole
+    # value is one object even where a prose path scanner would stop early.
+    for match in re.finditer(r"([\"'])([^\r\n]*?)\1", text):
+        value = match.group(2)
+        if (value.startswith("/") or WINDOWS_ABSOLUTE_PATH_RE.match(value)
+                or value.lower().startswith(("https://", "http://"))):
+            if ordinary_locator(value):
+                mask(*match.span(2))
+    for pattern in (URL_RE, WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+        for match in pattern.finditer(text):
+            if ordinary_locator(match.group(0)):
+                mask(*match.span())
+    return "".join(" " if hidden[index] else char for index, char in enumerate(text))
+
+
 def verification_contract(
     item_id: str,
     text: str,
@@ -8179,7 +8216,28 @@ def verification_contract(
             contract_operation = operation
     assets = [item for item in state.get("assets", []) if item.get("id") in asset_ids]
     subjects = prompt_subjects(positive_text) if positive_text else []
-    if IMAGE_REFERENCE_RE.search(positive_text) and not assets:
+    direct_clauses = [clause for clause in _action_source_clauses(positive_text)
+                      if not _stop_outer_reporting_frame(clause)
+                      and not DESCRIPTION_FRAME_RE.search(clause)
+                      and not clause_is_interrogative(clause)]
+    # Information requests about an image remain asset obligations even when
+    # the ordinary mutation-authority filter excludes their question form.
+    # A reported/quoted question does not become this user's visual request.
+    direct_visual_questions = []
+    for clause in positive_clauses:
+        if not (clause_is_interrogative(clause) and re.match(
+            r"\s*(?:can|could|would|will|what|which|how)\b", clause, re.I
+        )):
+            continue
+        if _stop_outer_reporting_frame(clause) or DESCRIPTION_FRAME_RE.search(clause):
+            continue
+        if _stop_quotation_regions(clause):
+            continue
+        direct_visual_questions.append(clause)
+    visual_source = visual_reference_source_text(
+        "\n".join([*direct_clauses, *direct_visual_questions])
+    )
+    if IMAGE_REFERENCE_RE.search(visual_source) and not assets:
         return {
             "protocol_version": PROOF_PROTOCOL_VERSION,
             "mode": "legacy_fallback",
@@ -8193,11 +8251,6 @@ def verification_contract(
             "reason": "asset_unavailable",
             "obligations": [],
         }
-    direct_clauses = [clause for clause in _action_source_clauses(positive_text)
-                      if not _stop_outer_reporting_frame(clause)
-                      and not DESCRIPTION_FRAME_RE.search(clause)
-                      and not clause_is_interrogative(clause)]
-
     def explicit_file_readback(clause: str) -> bool:
         parsed = _direct_shell_command_object(clause)
         if parsed is not None and parsed[0] == "state_readback":
@@ -8294,8 +8347,8 @@ def verification_contract(
 
     for asset in assets:
         add("input_asset_inspection", "visual", [str(asset["id"])])
-    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(positive_text))
-    if visual_signal and visual_mutation_requested(positive_text or text):
+    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(visual_source))
+    if visual_signal and visual_mutation_requested(visual_source):
         add("result_visual_readback", "ui", [str(item["id"]) for item in assets])
     # A path used as input by a test process is not itself a file-content
     # readback request. For a test root with a separate readback clause, only

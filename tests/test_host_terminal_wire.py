@@ -168,6 +168,60 @@ class HostTerminalWireTests(unittest.TestCase):
         self.assertEqual(rows[0]["unknown_coverage_count"], 0)
         self.assertTrue(rows[0]["certifiable"])
 
+    def test_plain_file_under_visual_named_directories_survives_reload(self):
+        self.cwd = self.root / "visualizations" / "images" / "work"
+        self.cwd.mkdir(parents=True)
+        self.cwd = self.cwd.resolve(strict=True)
+        target = self.cwd / "config.txt"
+        self.write_file(target, "before\n")
+        self.start(f'请修改 "{target}"，并核对改动后的文件。')
+        contract = self.state()["requirements"][0]["verification_contract"]
+        self.assertNotEqual(contract.get("reason"), "asset_reference_unresolved")
+        self.patch("plain-edit", target, "before\n", "after\n")
+        self.readback("plain-readback", target, "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="已修改并核对文件。"))
+        state = self.state()
+        row = next(row for row in state["decision_log"][-1]["core_projections"]
+                   if row["predicate"] == "state_matches")
+        self.assertEqual(row["unknown_coverage_count"], 0)
+        self.assertTrue(row["certifiable"])
+        self.assertEqual(self.state()["decision_log"][-1]["core_projections"],
+                         state["decision_log"][-1]["core_projections"])
+
+    def test_plain_visual_named_path_edit_readback_report_retires_after_reload(self):
+        self.cwd = self.root / "visualizations" / "work"
+        self.cwd.mkdir(parents=True)
+        self.cwd = self.cwd.resolve(strict=True)
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=off\n")
+        command = self.readback_command(target)
+        shell = "PowerShell" if os.name == "nt" else "Bash"
+        root = (f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                '请把它改为恰好 mode=on 加一个换行；'
+                f'然后用独立的宿主 {shell} 调用 `{command}` 完整回读并报告内容。')
+        self.start(root)
+        contract = self.state()["requirements"][0]["verification_contract"]
+        self.assertNotEqual(contract.get("reason"), "asset_reference_unresolved")
+        self.patch("edit", target, "mode=off\n", "mode=on\n")
+        self.readback("read", target, "mode=on\n")
+        final = ("已完成修改。独立 Bash `cat` 完整回读结果为：\n\n"
+                 "```text\nmode=on\n```\n\n实际文件内容恰好为 `mode=on` 加一个换行。"
+                 if os.name != "nt" else
+                 "已完成修改。实际文件内容恰好为 `mode=on` 加一个换行。"
+                 "我实际回读当前文件得到 mode=on 加一个换行。")
+        cg.dispatch(self.event("Stop", last_assistant_message=final))
+        state = self.state()
+        aggregate = next(row for row in state["decision_log"][-1]["core_projections"]
+                         if row["predicate"] == "edit_readback_and_report")
+        self.assertTrue(aggregate["certifiable"])
+        self.assertEqual(aggregate["unknown_coverage_count"], 0)
+        item = next(row for row in state["requirements"]
+                    if row["id"] == aggregate["requirement_id"])
+        self.assertEqual(item["status"], "pass")
+        self.assertEqual(self.state()["requirements"], state["requirements"])
+        cg.dispatch(self.event("Stop", last_assistant_message=final))
+        self.assertEqual(self.state()["requirements"], state["requirements"])
+
     def test_direct_quoted_filesystem_object_with_space_can_close(self):
         target = self.cwd / "A File.ts"
         self.write_file(target, "before\n")
@@ -244,6 +298,25 @@ class HostTerminalWireTests(unittest.TestCase):
         rows = self.state()["decision_log"][-1]["core_projections"]
         self.assertTrue(any(row["predicate"] == "test_run_completed"
                             and row["predicate_state"] == "satisfied" for row in rows))
+
+    def test_plain_images_directory_test_can_close_current_run_report(self):
+        self.cwd = self.root / "images" / "work"
+        self.cwd.mkdir(parents=True)
+        self.cwd = self.cwd.resolve(strict=True)
+        suite = self.cwd / "current_suite.py"
+        self.write_file(suite, "def test_current(): assert True\n")
+        command = f"pytest '{suite}'"
+        shell = "PowerShell" if os.name == "nt" else "Bash"
+        root = f"现在通过宿主 {shell} 单独运行 `{command}`，并根据本次真实退出结果报告测试。"
+        self.start(root)
+        contract = self.state()["requirements"][0]["verification_contract"]
+        self.assertNotEqual(contract.get("reason"), "asset_reference_unresolved")
+        self.command("current-test", command, stdout="1 passed\n", response="1 passed\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="测试成功。退出码 0，通过 1。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        aggregate = next(row for row in rows if row["predicate"] == "test_and_report")
+        self.assertEqual(aggregate["unknown_coverage_count"], 0)
+        self.assertTrue(aggregate["certifiable"])
 
     def test_direct_backtick_cat_object_binds_independent_current_readback(self):
         target = self.cwd / "config.txt"
