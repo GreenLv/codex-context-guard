@@ -8894,7 +8894,7 @@ def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
         return None
     command = match.group(1)
     if (shell_control_operator_present(command)
-            or any(mark in command for mark in "<>$*?~")):
+            or any(mark in command for mark in "<>$*?")):
         return None
     # A root does not name a shell. Select the one lexical grammar warranted
     # by its absolute target spelling; Host execution later proves the actual
@@ -15799,9 +15799,14 @@ def _host_parsed_display_matches(command: str, display: Any, shell: str) -> bool
     if shell not in {"sh", "bash", "zsh"} or not isinstance(display, str):
         return False
     if (shell_control_operator_present(command) or shell_control_operator_present(display)
-            or any(mark in command + display for mark in "<>$*?~")):
+            or any(mark in command + display for mark in "<>$*?")):
         return False
     tokens = _command_tokens(command, posix=True)
+    # A tilde inside a complete absolute filename is literal. A leading
+    # tilde still denotes shell home expansion and cannot be bound to the
+    # lexical target captured by the Hook.
+    if len(tokens) >= 2 and tokens[-1].startswith("~"):
+        return False
     if not (
         len(tokens) == 2 and tokens[0] in {"cat", "pytest", "py.test"}
         or len(tokens) == 3 and tokens[:2] == ["test", "-f"]
@@ -15809,10 +15814,11 @@ def _host_parsed_display_matches(command: str, display: Any, shell: str) -> bool
                                                 ["python3", "-m", "pytest"])
     ):
         return False
-    # shlex.join is the deterministic POSIX rendering of the complete argv.
-    # A displayed prefix, another target, or a whitespace-ambiguous path
-    # cannot equal this full rendering.
-    return shlex.join(tokens) == display
+    # The Host display may elide ordinary quotes even around a literal
+    # tilde within an absolute filename. Compare the entire bounded argv,
+    # not a canonical rendering: a shortened command, wrong target, or
+    # whitespace-ambiguous path still differs.
+    return _command_tokens(display, posix=True) == tokens
 
 
 def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -16224,7 +16230,7 @@ def core_shell_observation(
         if not cwd or not Path(cwd).is_absolute():
             return None
         candidate = Path(raw_target)
-        if ".." in candidate.parts:
+        if raw_target.startswith("~") or ".." in candidate.parts:
             return None
         candidate = candidate if candidate.is_absolute() else Path(cwd) / candidate
         try:

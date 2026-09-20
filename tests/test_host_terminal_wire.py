@@ -238,6 +238,41 @@ class HostTerminalWireTests(unittest.TestCase):
         self.assertTrue(any(row["predicate"] == "readback_complete"
                             and row["predicate_state"] == "satisfied" for row in rows))
 
+    def test_tilde_inside_absolute_filename_remains_a_literal_host_target(self):
+        directory = self.cwd / "RUNNER~1"
+        directory.mkdir()
+        self.cwd = directory.resolve(strict=True)
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=off\n")
+        target = target.resolve(strict=True)
+        command = f"cat '{target}'"
+        self.assertEqual(cg._direct_shell_command_object(
+            f"请调用 `{command}` 完整回读该文件。"),
+            ("state_readback", str(target), f"`{command}`"))
+        if os.name != "nt":
+            self.assertTrue(cg._host_parsed_display_matches(
+                command, f"cat {target}", "zsh"))
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("tilde-edit", target, "mode=off\n", "mode=on\n")
+        self.readback("tilde-read", target, "mode=on\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="已修改并核对文件。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["certifiable"])
+        self.assertEqual(rows[0]["predicate_state"], "satisfied")
+
+    def test_home_tilde_and_command_control_stay_unattributed(self):
+        self.assertIsNone(cg._direct_shell_command_object(
+            "请调用 `cat ~/config.txt` 完整回读该文件。"))
+        self.assertIsNone(cg._direct_shell_command_object(
+            "请调用 `cat '/tmp/RUNNER~1/config.txt'; echo done` 完整回读。"))
+        self.assertFalse(cg._host_parsed_display_matches(
+            "cat '~/config.txt'", "cat ~/config.txt", "zsh"))
+        self.start("请核对当前文件内容。")
+        self.command("home-expansion", "cat ~/config.txt", stdout="mode=on\n",
+                     response="mode=on\n")
+        self.assertNotIn("core_observation", self.state()["evidence"][-1])
+
     def test_single_same_root_file_referent_binds_later_direct_edit(self):
         target = self.cwd / "config.txt"
         self.write_file(target, "mode=off\n")
