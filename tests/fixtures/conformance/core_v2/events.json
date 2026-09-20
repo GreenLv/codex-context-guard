@@ -22354,6 +22354,838 @@
         ],
         "explicit_user_persistence": false
       }
+    },
+    {
+      "id": "test_run_completed_nonzero_terminal",
+      "input": {
+        "schema": "core-observation/v2",
+        "unit": "u",
+        "revision": 1,
+        "as_of": 3,
+        "turn": "t",
+        "units": [
+          {
+            "id": "u",
+            "parent_id": null,
+            "required": true,
+            "source_id": "root"
+          }
+        ],
+        "sources": [
+          {
+            "id": "root",
+            "seq": 1,
+            "kind": "root",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": "继续执行，运行测试 test-suite。",
+            "call_id": null,
+            "turn": "t"
+          },
+          {
+            "id": "call",
+            "seq": 2,
+            "kind": "host_call",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": null,
+            "call_id": "c",
+            "turn": "t",
+            "target": "test-suite",
+            "target_kind": "opaque"
+          },
+          {
+            "id": "result",
+            "seq": 3,
+            "kind": "host_result",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": null,
+            "call_id": "c",
+            "turn": "t"
+          }
+        ],
+        "requirements": [
+          {
+            "id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 1,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "kind": "execution",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "scope_sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "required": true,
+            "status": "pending",
+            "parent_id": null,
+            "evidence_kind": "action_event",
+            "condition_ids": [],
+            "target_origin": {
+              "root_constraint": "test-suite",
+              "root_constraint_source": {
+                "source_id": "root",
+                "start": 28,
+                "end": 38,
+                "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+              },
+              "implementation_choice": "test-suite",
+              "host_selection": "test-suite",
+              "resolved": "test-suite",
+              "observed": "test-suite",
+              "constraint_kind": "exact",
+              "selection_source_id": null,
+              "subject_kind": "opaque"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "id": "ready",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "readiness",
+            "target": "test-suite",
+            "predicate": "inputs_ready",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          },
+          {
+            "id": "tested",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "action_event",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          }
+        ],
+        "actions": [
+          {
+            "schema": "current-action-basis/v1",
+            "requirement_id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 3,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "scope_sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "owner": "assistant",
+            "relation": "direct",
+            "readiness_fact_ids": [
+              "ready"
+            ],
+            "state": "current"
+          }
+        ],
+        "intent": {
+          "source": {
+            "source_id": "root",
+            "start": 0,
+            "end": 41,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+          },
+          "kind": "resume"
+        },
+        "completion_claim": false,
+        "proof_violation": false,
+        "corrections_used": 0,
+        "progress_changed": true,
+        "goal_contract_adopted": true,
+        "release_state": "not_adopted",
+        "conditions": [],
+        "coverage": [
+          {
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "kind": "interpreted"
+          }
+        ]
+      },
+      "expected": {
+        "actions": [],
+        "certifiable": true,
+        "stop": "ordinary_end",
+        "goal_complete_allowed": true
+      }
+    },
+    {
+      "id": "test_run_completed_no_terminal",
+      "input": {
+        "schema": "core-observation/v2",
+        "unit": "u",
+        "revision": 1,
+        "as_of": 3,
+        "turn": "t",
+        "units": [
+          {
+            "id": "u",
+            "parent_id": null,
+            "required": true,
+            "source_id": "root"
+          }
+        ],
+        "sources": [
+          {
+            "id": "root",
+            "seq": 1,
+            "kind": "root",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": "继续执行，运行测试 test-suite。",
+            "call_id": null,
+            "turn": "t"
+          },
+          {
+            "id": "call",
+            "seq": 2,
+            "kind": "host_call",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": null,
+            "call_id": "c",
+            "turn": "t",
+            "target": "test-suite",
+            "target_kind": "opaque"
+          },
+          {
+            "id": "result",
+            "seq": 3,
+            "kind": "host_result",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": null,
+            "call_id": "c",
+            "turn": "t"
+          }
+        ],
+        "requirements": [
+          {
+            "id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 1,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "kind": "execution",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "scope_sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "required": true,
+            "status": "pending",
+            "parent_id": null,
+            "evidence_kind": "action_event",
+            "condition_ids": [],
+            "target_origin": {
+              "root_constraint": "test-suite",
+              "root_constraint_source": {
+                "source_id": "root",
+                "start": 28,
+                "end": 38,
+                "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+              },
+              "implementation_choice": "test-suite",
+              "host_selection": "test-suite",
+              "resolved": "test-suite",
+              "observed": "test-suite",
+              "constraint_kind": "exact",
+              "selection_source_id": null,
+              "subject_kind": "opaque"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "id": "ready",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "readiness",
+            "target": "test-suite",
+            "predicate": "inputs_ready",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          }
+        ],
+        "actions": [
+          {
+            "schema": "current-action-basis/v1",
+            "requirement_id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 3,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "scope_sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "owner": "assistant",
+            "relation": "direct",
+            "readiness_fact_ids": [
+              "ready"
+            ],
+            "state": "current"
+          }
+        ],
+        "intent": {
+          "source": {
+            "source_id": "root",
+            "start": 0,
+            "end": 41,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+          },
+          "kind": "resume"
+        },
+        "completion_claim": false,
+        "proof_violation": false,
+        "corrections_used": 0,
+        "progress_changed": true,
+        "goal_contract_adopted": true,
+        "release_state": "not_adopted",
+        "conditions": [],
+        "coverage": [
+          {
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "kind": "interpreted"
+          }
+        ]
+      },
+      "expected": {
+        "actions": [
+          "test_verify"
+        ],
+        "certifiable": false,
+        "stop": "bounded_correction",
+        "explicit_user_persistence": false,
+        "resume_with_actionable_work": true
+      }
+    },
+    {
+      "id": "test_pass_required_terminal_failure",
+      "input": {
+        "schema": "core-observation/v2",
+        "unit": "u",
+        "revision": 1,
+        "as_of": 3,
+        "turn": "t",
+        "units": [
+          {
+            "id": "u",
+            "parent_id": null,
+            "required": true,
+            "source_id": "root"
+          }
+        ],
+        "sources": [
+          {
+            "id": "root",
+            "seq": 1,
+            "kind": "root",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": "继续执行，运行测试 test-suite。",
+            "call_id": null,
+            "turn": "t"
+          },
+          {
+            "id": "call",
+            "seq": 2,
+            "kind": "host_call",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": null,
+            "call_id": "c",
+            "turn": "t",
+            "target": "test-suite",
+            "target_kind": "opaque"
+          },
+          {
+            "id": "result",
+            "seq": 3,
+            "kind": "host_result",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "byte_length": 41,
+            "text": null,
+            "call_id": "c",
+            "turn": "t"
+          }
+        ],
+        "requirements": [
+          {
+            "id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 1,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "kind": "execution",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_passed",
+            "scope_sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "required": true,
+            "status": "pending",
+            "parent_id": null,
+            "evidence_kind": "action_event",
+            "condition_ids": [],
+            "target_origin": {
+              "root_constraint": "test-suite",
+              "root_constraint_source": {
+                "source_id": "root",
+                "start": 28,
+                "end": 38,
+                "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+              },
+              "implementation_choice": "test-suite",
+              "host_selection": "test-suite",
+              "resolved": "test-suite",
+              "observed": "test-suite",
+              "constraint_kind": "exact",
+              "selection_source_id": null,
+              "subject_kind": "opaque"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "id": "ready",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "readiness",
+            "target": "test-suite",
+            "predicate": "inputs_ready",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          },
+          {
+            "id": "tested",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "action_event",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          }
+        ],
+        "actions": [
+          {
+            "schema": "current-action-basis/v1",
+            "requirement_id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 3,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "scope_sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_passed",
+            "owner": "assistant",
+            "relation": "direct",
+            "readiness_fact_ids": [
+              "ready"
+            ],
+            "state": "current"
+          }
+        ],
+        "intent": {
+          "source": {
+            "source_id": "root",
+            "start": 0,
+            "end": 41,
+            "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+          },
+          "kind": "resume"
+        },
+        "completion_claim": false,
+        "proof_violation": false,
+        "corrections_used": 0,
+        "progress_changed": true,
+        "goal_contract_adopted": true,
+        "release_state": "not_adopted",
+        "conditions": [],
+        "coverage": [
+          {
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 41,
+              "sha256": "299b109535f18d686ac0bde4823552b4da12e21fc5d35290f5fa1f4620f3fc7c"
+            },
+            "kind": "interpreted"
+          }
+        ]
+      },
+      "expected": {
+        "actions": [
+          "test_verify"
+        ],
+        "certifiable": false,
+        "stop": "bounded_correction",
+        "resume_with_actionable_work": true
+      }
+    },
+    {
+      "id": "test_run_completed_honest_failure_report",
+      "input": {
+        "schema": "core-observation/v2",
+        "unit": "u",
+        "revision": 1,
+        "as_of": 4,
+        "turn": "t",
+        "units": [
+          {
+            "id": "u",
+            "parent_id": null,
+            "required": true,
+            "source_id": "root"
+          }
+        ],
+        "sources": [
+          {
+            "id": "root",
+            "seq": 1,
+            "kind": "root",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "byte_length": 56,
+            "text": "运行测试 test-suite，并报告本次真实结果。",
+            "call_id": null,
+            "turn": "t"
+          },
+          {
+            "id": "call",
+            "seq": 2,
+            "kind": "host_call",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "byte_length": 56,
+            "text": null,
+            "call_id": "c",
+            "turn": "t",
+            "target": "test-suite",
+            "target_kind": "opaque"
+          },
+          {
+            "id": "result",
+            "seq": 3,
+            "kind": "host_result",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "byte_length": 56,
+            "text": null,
+            "call_id": "c",
+            "turn": "t"
+          },
+          {
+            "id": "final",
+            "seq": 4,
+            "kind": "final_delivery",
+            "unit": "u",
+            "revision": 1,
+            "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "byte_length": 0,
+            "text": null,
+            "call_id": null,
+            "turn": "t"
+          }
+        ],
+        "requirements": [
+          {
+            "id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 1,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 23,
+              "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+            },
+            "kind": "execution",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "scope_sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "required": true,
+            "status": "pending",
+            "parent_id": null,
+            "evidence_kind": "action_event",
+            "condition_ids": [],
+            "target_origin": {
+              "root_constraint": "test-suite",
+              "root_constraint_source": {
+                "source_id": "root",
+                "start": 13,
+                "end": 23,
+                "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+              },
+              "implementation_choice": "test-suite",
+              "host_selection": "test-suite",
+              "resolved": "test-suite",
+              "observed": "test-suite",
+              "constraint_kind": "exact",
+              "selection_source_id": null,
+              "subject_kind": "opaque"
+            }
+          },
+          {
+            "id": "report",
+            "unit": "u",
+            "revision": 1,
+            "seq": 1,
+            "source": {
+              "source_id": "root",
+              "start": 26,
+              "end": 56,
+              "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+            },
+            "kind": "information",
+            "action": "deliver_information",
+            "target": "报告本次真实结果",
+            "predicate": "answer_delivered",
+            "scope_sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "required": true,
+            "status": "pending",
+            "parent_id": null,
+            "evidence_kind": "delivery",
+            "condition_ids": [],
+            "target_origin": {
+              "constraint_kind": "exact",
+              "subject_kind": "opaque",
+              "selection_source_id": null,
+              "root_constraint": "报告本次真实结果",
+              "root_constraint_source": {
+                "source_id": "root",
+                "start": 29,
+                "end": 53,
+                "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+              },
+              "implementation_choice": "报告本次真实结果",
+              "host_selection": "报告本次真实结果",
+              "resolved": "报告本次真实结果",
+              "observed": "报告本次真实结果"
+            }
+          }
+        ],
+        "facts": [
+          {
+            "id": "ready",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "readiness",
+            "target": "test-suite",
+            "predicate": "inputs_ready",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          },
+          {
+            "id": "tested",
+            "seq": 3,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "result",
+            "call_source_id": "call",
+            "kind": "action_event",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "r",
+            "condition_id": null,
+            "invalidates": []
+          },
+          {
+            "id": "delivered",
+            "seq": 4,
+            "unit": "u",
+            "revision": 1,
+            "source_id": "final",
+            "call_source_id": null,
+            "kind": "delivery",
+            "target": "报告本次真实结果",
+            "predicate": "answer_delivered",
+            "outcome": "success",
+            "operation_id": null,
+            "requirement_id": "report",
+            "condition_id": null,
+            "invalidates": []
+          }
+        ],
+        "actions": [
+          {
+            "schema": "current-action-basis/v1",
+            "requirement_id": "r",
+            "unit": "u",
+            "revision": 1,
+            "seq": 3,
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 23,
+              "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+            },
+            "scope_sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24",
+            "action": "test_verify",
+            "target": "test-suite",
+            "predicate": "test_run_completed",
+            "owner": "assistant",
+            "relation": "direct",
+            "readiness_fact_ids": [
+              "ready"
+            ],
+            "state": "current"
+          }
+        ],
+        "intent": {
+          "source": {
+            "source_id": "root",
+            "start": 0,
+            "end": 56,
+            "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+          },
+          "kind": "none"
+        },
+        "completion_claim": false,
+        "proof_violation": false,
+        "corrections_used": 0,
+        "progress_changed": true,
+        "goal_contract_adopted": true,
+        "release_state": "not_adopted",
+        "conditions": [],
+        "coverage": [
+          {
+            "source": {
+              "source_id": "root",
+              "start": 0,
+              "end": 23,
+              "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+            },
+            "kind": "interpreted"
+          },
+          {
+            "source": {
+              "source_id": "root",
+              "start": 23,
+              "end": 26,
+              "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+            },
+            "kind": "interpreted"
+          },
+          {
+            "source": {
+              "source_id": "root",
+              "start": 26,
+              "end": 56,
+              "sha256": "f3a48b65362d32e7a3f53500a723fbb8ca044ff7a48e7a65e0b678d632889e24"
+            },
+            "kind": "interpreted"
+          }
+        ]
+      },
+      "expected": {
+        "actions": [],
+        "certifiable": true,
+        "stop": "ordinary_end"
+      }
     }
   ]
 }

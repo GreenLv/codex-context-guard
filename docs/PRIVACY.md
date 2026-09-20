@@ -58,6 +58,18 @@ For an attributable Host FileChange Update, schema-13 evidence may also retain
 the SHA-256 of the stable post-image observed at PostToolUse. The later
 independent readback stores its own hash and event sequence; neither record
 copies the file bytes into the session state.
+When a supported ordinary edit/readback/report or test/run/report root closes,
+the item stores a bounded completion basis: the named predicate, event
+watermark, Host evidence IDs, delivery digest, and shared-core projection
+digest. The result text and file contents are not copied into that basis.
+Recovery validates its Host and delivery references; missing historical
+lineage cannot be inferred from a later reply or file state.
+The ordinary completion store retains one source-bound result/delivery pair
+for each distinct completed ordinary result while its item remains closed.
+Thirty-two unreferenced diagnostic decisions and 512 unreferenced delivery
+records may rotate; referenced pairs remain available for reload validation.
+Their count is constrained by the completed items already in the session,
+not an additional completion quota. No reply text or file contents are pinned.
 
 For images and other binary inputs, the store keeps a redacted basename or type, media facts such as byte count and dimensions, and hashes of the locator and content. It does not keep the image bytes or data-URL body.
 

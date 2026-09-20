@@ -238,6 +238,19 @@ children block certification but do not block ordinary host tools or honest
 ending. Constraints remain active without becoming pending actions. Goal
 completion is checked only under an adopted completion contract.
 
+For a request to **run a named test and report its result**, the execution
+requirement uses `test_run_completed`: its successful `action_event` means a
+trusted Host call for that exact suite reached an attributable terminal test
+result. A nonzero pytest result can satisfy *run completed* when the Host
+result proves pytest ran; a missing executable, approval denial, absent
+terminal result, or arbitrary output cannot. A separate information
+requirement and current-turn delivery fact cover the accurate report. Neither
+predicate asserts that the test passed or authorizes repair. A root that
+explicitly requires the test to pass or a failure to be fixed instead uses
+`test_passed`; the same nonzero terminal run cannot satisfy that predicate.
+These are ordinary named predicates in the existing schema, matched by the
+same unit, revision, target, source, and Host event lineage as other effects.
+
 Release uses existing adopted/reserved/consumed/unknown states and exact
 product adapters. This core grants no ticket and never executes business work.
 DSH's compatibility action/effect entries produce migration diagnostics without

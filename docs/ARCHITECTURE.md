@@ -65,6 +65,13 @@ status unknown; a later transcript append does not revise an earlier Stop.
 Supported single-suite pytest, one-file patch and exact cat readback remain
 separate facts, and current file bytes must corroborate a cat result. Arbitrary
 npm or Python command output does not become a test or readback fact.
+An ordinary test input path alone does not derive an artifact-content proof;
+an independent request to read that file still does. The shared projection
+distinguishes a trustworthy terminal test run from a passing test. A current
+final report must match that same Host result. A fully sourced ordinary
+edit/readback/report or run/report closure persists its bounded Host and
+delivery references so resume does not restore a completed business item.
+Enforced proof, Goal, and adopted release contracts retain their own gates.
 
 The 0.13.8 source candidate retains the 0.13.6 reply delivery behavior.
 For SessionEnd, whose Codex CLI host deadline is at most three seconds, both
@@ -594,9 +601,11 @@ The retained schema-6 task ledger contains:
 - one turn-bound completion attempt with protocol version, token hash, staging
   timestamp, and a single checkpoint-or-disposition `staged_control`;
 - a checkpoint-derived completion record;
-- at most 32 hash-only Stop decision records with protocol/classifier versions,
-  decision source, disposition and outcome enums, bounded reason/action enums,
-  prompt/reply SHA-256, and no raw reply text;
+- 32 recent unreferenced hash-only Stop decisions, plus source-bound result
+  rows still needed to validate passed ordinary completion items. Each keeps
+  protocol/classifier versions, decision source, disposition and outcome
+  enums, bounded reason/action enums, prompt/reply SHA-256, and no raw reply
+  text;
 - integrity status and a canonical content hash.
 
 Default checkpoint status is scoped to the current work unit and its

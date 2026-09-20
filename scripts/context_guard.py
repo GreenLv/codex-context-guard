@@ -6361,6 +6361,126 @@ def validate_work_units(state: dict[str, Any]) -> None:
         raise StateIntegrityError("private work-unit sequence trails its records")
 
 
+def _ordinary_completion_basis_valid(
+    state: dict[str, Any], item: dict[str, Any], watermark: int,
+) -> bool:
+    """Check persisted ordinary closure against retained Host and result facts."""
+    basis = item.get("completion_basis")
+    if not isinstance(basis, dict) or set(basis) != {
+        "schema", "predicate", "as_of", "delivery_sha256",
+        "core_sha256", "host_evidence_ids",
+    }:
+        return False
+    ids = basis["host_evidence_ids"]
+    predicate = basis["predicate"]
+    if (basis["schema"] != "ordinary-core-completion/v1"
+            or predicate not in {"edit_readback_and_report", "test_and_report"}
+            or type(basis["as_of"]) is not int
+            or not 0 < basis["as_of"] <= watermark
+            or any(not isinstance(basis[name], str)
+                   or not re.fullmatch(r"[0-9a-f]{64}", basis[name])
+                   for name in ("delivery_sha256", "core_sha256"))
+            or not isinstance(ids, list)
+            or len(ids) != (2 if predicate == "edit_readback_and_report" else 1)
+            or len(set(ids)) != len(ids)
+            or item.get("status") != "pass"
+            or item.get("evidence") != ids
+            or item.get("verification_contract", {}).get("mode") not in {
+                "legacy_fallback", "enforced"}):
+        return False
+    if (item.get("verification_contract", {}).get("mode") == "enforced"
+            and unresolved_proof_obligations(state).get(str(item.get("id")))):
+        return False
+    by_evidence = {str(e.get("id")): e for e in state.get("evidence", [])
+                   if isinstance(e, dict)}
+    observations = []
+    for eid in ids:
+        event = by_evidence.get(eid)
+        if (not isinstance(eid, str) or not EVIDENCE_ID_RE.fullmatch(eid)
+                or not isinstance(event, dict)
+                or event.get("core_result_seq", watermark + 1) > basis["as_of"]
+                or event.get("core_call_seq", 0) >= event.get("core_result_seq", 0)):
+            return False
+        observed = event.get("core_observation")
+        if (not isinstance(observed, dict)
+                or observed.get("unit") != item.get("work_unit_id")
+                or observed.get("prompt_id") != item.get("prompt_id")
+                or observed.get("outcome") != "success"):
+            return False
+        observations.append((event, observed))
+    if predicate == "edit_readback_and_report":
+        edit_event, edit = observations[0]
+        read_event, read = observations[1]
+        if (edit_event.get("outcome") != "success"
+                or read_event.get("outcome") != "success"
+                or edit.get("kind") != "action_event"
+                or edit.get("predicate") != "edit_applied"
+                or read.get("kind") != "state_readback"
+                or read.get("predicate") != "content_hash"
+                or edit.get("target") != read.get("target")
+                or edit.get("post_content_sha256") != read.get("content_sha256")
+                or edit_event["core_result_seq"] >= read_event["core_call_seq"]):
+            return False
+    else:
+        event, observed = observations[0]
+        if (observed.get("kind") != "action_event"
+                or observed.get("predicate") not in {"test_run_completed", "test_passed"}):
+            return False
+        if event.get("outcome") != "success" and not (
+            event.get("outcome") == "failed"
+            and observed.get("predicate") == "test_run_completed"
+            and type(observed.get("terminal_exit_code")) is int
+            and observed["terminal_exit_code"] > 0
+        ):
+            return False
+    ledger = state.get("response_delivery", {})
+    records = [record for record in ledger.get("records", [])
+               if record.get("delivery_sha256") == basis["delivery_sha256"]]
+    if len(records) != 1:
+        return False
+    record = records[0]
+    related = any(
+        candidate.get("id") in record.get("requirement_ids", [])
+        and candidate.get("prompt_id") == item.get("prompt_id")
+        and candidate.get("text") == item.get("text")
+        for candidate in state.get("requirements", [])
+        if isinstance(candidate, dict)
+    )
+    if (record.get("resolution") != "verified"
+            or record.get("delivery") != "delivered"
+            or (item.get("id") not in record.get("requirement_ids", [])
+                and not related)):
+        return False
+    for decision in state.get("decision_log", []):
+        if (not isinstance(decision, dict)
+                or decision.get("reply_sha256") != record.get("reply_sha256")
+                or decision.get("turn_id") != record.get("turn_id")):
+            continue
+        for row in decision.get("core_projections", []):
+            if (not isinstance(row, dict)
+                    or row.get("predicate") != predicate
+                    or row.get("as_of") != basis["as_of"]
+                    or row.get("delivery_sha256") != basis["delivery_sha256"]
+                    or row.get("host_evidence_ids") != ids
+                    or row.get("certifiable") is not True
+                    or row.get("predicate_state") != "satisfied"
+                    or row.get("unknown_coverage_count") != 0
+                    or row.get("coverage_error_count") != 0
+                    or not isinstance(row.get("core_projection"), dict)
+                    or sha256_text(canonical_json(row["core_projection"]))
+                    != basis["core_sha256"]):
+                continue
+            source = next((candidate for candidate in state.get("requirements", [])
+                           if isinstance(candidate, dict)
+                           and candidate.get("id") == row.get("requirement_id")), None)
+            if (isinstance(source, dict)
+                    and source.get("prompt_id") == item.get("prompt_id")
+                    and source.get("text") == item.get("text")
+                    and source.get("work_unit_id") == item.get("work_unit_id")):
+                return True
+    return False
+
+
 def validate_state_integrity(state: dict[str, Any]) -> None:
     version = state.get("schema_version")
     if version not in {
@@ -6620,12 +6740,36 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                 raise StateIntegrityError(
                     "private state is missing required field: response_delivery"
                 )
+            pins = _ordinary_completion_pins(state)
+            pinned_digests = {digest for digest, _ in pins}
             try:
-                delivery().validate_ledger(state.get("response_delivery"))
+                delivery().validate_ledger(
+                    state.get("response_delivery"),
+                    retained_completion_digests=pinned_digests)
             except delivery().DeliveryValueError as exc:
                 raise StateIntegrityError(
                     f"private response-delivery ledger is invalid: {exc}"
                 ) from exc
+            unpinned_decisions = 0
+            for entry in state.get("decision_log", []):
+                if not isinstance(entry, dict):
+                    raise StateIntegrityError("private decision record is invalid")
+                retained = any(
+                    isinstance(row, dict)
+                    and isinstance(row.get("core_projection"), dict)
+                    and (row.get("delivery_sha256"), sha256_text(canonical_json(
+                        row["core_projection"]))) in pins
+                    for row in entry.get("core_projections", [])
+                )
+                if not retained:
+                    unpinned_decisions += 1
+            if unpinned_decisions > DECISION_LOG_LIMIT:
+                raise StateIntegrityError("private decision log exceeds its unreferenced limit")
+            for collection in ("requirements", "acceptance_items"):
+                for item in state.get(collection, []):
+                    if (isinstance(item, dict) and "completion_basis" in item
+                            and not _ordinary_completion_basis_valid(state, item, watermark)):
+                        raise StateIntegrityError("private ordinary completion basis is invalid")
             validate_wait_conditions(state)
             for entry in state.get("evidence", []):
                 evidence_fault = stop3().evidence_record_reason(entry)
@@ -8029,12 +8173,77 @@ def verification_contract(
             "reason": "asset_unavailable",
             "obligations": [],
         }
+    direct_clauses = [clause for clause in _action_source_clauses(positive_text)
+                      if not _stop_outer_reporting_frame(clause)
+                      and not DESCRIPTION_FRAME_RE.search(clause)
+                      and not clause_is_interrogative(clause)]
+
+    def explicit_file_readback(clause: str) -> bool:
+        parsed = _direct_shell_command_object(clause)
+        if parsed is not None and parsed[0] == "state_readback":
+            return True
+        if re.fullmatch(
+            r"\s*(?:(?:and|then)\s*)?(?:(?:please|must)\s+)?read\s+"
+            r"(?:(?:the\s+)?(?:complete|full)\s+(?:file\s+)?"
+            r"(?:contents?|bytes)\s+of\s+.+|.+\s+(?:in\s+full|completely))"
+            r"\s*[.!?]?\s*", clause, re.I,
+        ):
+            return True
+        return bool(re.match(
+            r"\s*(?:(?:并|然后|再)\s*)?(?:请|必须)?\s*"
+            r"(?:完整)?(?:读取|回读|核对)\s*.+?\s*"
+            r"(?:的)?(?:完整)?(?:文件内容|内容|字节)"
+            r"(?=\s*(?:$|[，,；;]|并|然后|再))",
+            clause,
+        ))
+
+    def verification_role_clauses(clause: str) -> list[str]:
+        """Separate coordinated read and test acts without splitting quoted commands."""
+        containers = _stop_quotation_regions(clause)
+        cuts = [match.start() for match in re.finditer(
+            r"(?:并|然后|再|\band\b|\bthen\b)\s*"
+            r"(?=(?:(?:请|必须|please|must)\s*)?(?:完整)?"
+            r"(?:读取|回读|核对|运行|执行|read\b|run\b))",
+            clause, re.I)
+            if not any(start <= match.start() < end
+                       for start, end, _kind in containers)]
+        return [clause[start:end].strip() for start, end in
+                zip([0, *cuts], [*cuts, len(clause)]) if clause[start:end].strip()]
+
+    role_clauses = [part for clause in direct_clauses
+                    for part in verification_role_clauses(clause)]
+
+    # Remove only the quantity attached to a direct file-content read. A
+    # coordinated or trailing all-project/unknown proof clause remains in the
+    # source text even when the read and proof share a sentence.
+    def without_readback_quantity(clause: str) -> str:
+        parsed = _direct_shell_command_object(clause)
+        if parsed is not None and parsed[0] == "state_readback":
+            clause = re.sub(r"完整(?=\s*(?:回读|读取|核对))", "", clause, count=1)
+            clause = re.sub(
+                r"\b(?:complete|full)\s+(?=readback\b|read\s+back\b)",
+                "", clause, count=1, flags=re.I,
+            )
+        if not re.match(
+            r"^\s*(?:(?:并|然后|再|and|then)\s*)?(?:请|必须|please|must)?"
+            r"\s*(?:先)?(?:读取|回读|核对|read\b)", clause, re.I,
+        ):
+            return clause
+        clause = re.sub(r"完整(?=\s*(?:文件)?(?:内容|字节))", "", clause, count=1)
+        clause = re.sub(
+            r"\b(?:complete|full)\s+(?=(?:file\s+)?(?:contents?|bytes)\b)",
+            "", clause, count=1, flags=re.I,
+        )
+        return re.sub(r"\bin\s+full\b(?=\s*(?:$|[.!?。]|\band\b|\bthen\b))",
+                      "", clause, count=1, flags=re.I)
+
+    scope_text = "\n".join(without_readback_quantity(c) for c in role_clauses)
     full_scope_requested = bool(
-        FULL_SCOPE_RE.search(positive_text)
-        and not FULL_SCOPE_NEGATION_RE.search(positive_text)
+        FULL_SCOPE_RE.search(scope_text)
+        and not FULL_SCOPE_NEGATION_RE.search(scope_text)
     )
     scope_spec = (
-        deterministic_scope_spec(positive_text or text, subjects, assets)
+        deterministic_scope_spec(scope_text, subjects, assets)
         if full_scope_requested
         else None
     )
@@ -8068,13 +8277,46 @@ def verification_contract(
     visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(positive_text))
     if visual_signal and visual_mutation_requested(positive_text or text):
         add("result_visual_readback", "ui", [str(item["id"]) for item in assets])
-    if subjects:
+    # A path used as input by a test process is not itself a file-content
+    # readback request. For a test root with a separate readback clause, only
+    # subjects of that independently sourced clause enter this obligation.
+    read_as_primary_action = any(re.match(
+        r"^\s*(?:(?:并|然后|再|and|then)\s*)?(?:请|必须|please|must)?"
+        r"\s*(?:先|完整)?"
+        r"(?:读取|回读|核对|Read\b)", clause, re.I)
+        for clause in role_clauses)
+    direct_test_role = any(re.match(
+        r"^\s*(?:(?:并|然后|再|and|then)\s*)?(?:请|必须|please|must)?\s*"
+        r"(?:运行|执行|run)\s*(?:`?pytest\b|测试|test\b)", clause, re.I)
+        for clause in role_clauses)
+    test_input_only = (
+        contract_operation == "test_verify" and not read_as_primary_action
+    ) or direct_test_role or any(
+        (parsed := _direct_shell_command_object(clause)) is not None
+        and parsed[0] == "test_verify" for clause in role_clauses)
+    # A discarded quoted command cannot lend its subjects to the remaining
+    # bare verb (for example, "run" with no selected command object).
+    direct_subjects = prompt_subjects("\n".join(role_clauses)) if role_clauses else []
+    readback_subjects = direct_subjects
+    if test_input_only:
+        readback_subjects = []
+        for clause in role_clauses:
+            if explicit_file_readback(clause):
+                named = prompt_subjects(clause)
+                if (not named and len(subjects) == 1
+                        and re.search(r"该文件|这个文件|this file\b", clause, re.I)):
+                    # The readback clause refers to the sole earlier file
+                    # object in this same root. Multiple objects stay unknown.
+                    named = subjects
+                readback_subjects.extend(named)
+        readback_subjects = list({item["id"]: item for item in readback_subjects}.values())
+    if readback_subjects:
         readback_surface = "ui" if UI_SURFACE_RE.search(positive_text) else "artifact"
         readback = {
             "id": f"O-{item_id}-{len(obligations) + 1:03d}",
             "kind": "subject_readback",
             "surface": readback_surface,
-            "subject_ids": [item["id"] for item in subjects],
+            "subject_ids": [item["id"] for item in readback_subjects],
             "operation": contract_operation,
             "requested_surface": readback_surface,
         }
@@ -8625,6 +8867,345 @@ def root_absolute_locator_mentions(text: str) -> tuple[set[str], bool]:
     return targets, ambiguous
 
 
+_DIRECT_COMMAND_GOVERNOR_RE = re.compile(
+    r"(?:运行|调用|执行|run|execute|invoke)\s*$", re.I,
+)
+
+
+def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
+    """A literal command *object* governed by this root's direct speech act.
+
+    This identifies a bounded requested operation; it does not attest that a
+    Host command ran or that its result satisfies the request.
+    """
+    matches = list(re.finditer(r"`([^`\n]+)`", clause))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    prefix = clause[:match.start()].strip()
+    suffix = clause[match.end():].strip()
+    governed_read = bool(re.search(
+        r"(?:通过|使用)(?:独立的|单独的)?\s*$|\b(?:with|using)\s+(?:a\s+)?(?:separate|independent)\s*$",
+        prefix, re.I,
+    ) and re.search(r"^(?:读取|回读|核对|调用|call\b|to\s+read\b)", suffix, re.I))
+    if (not (_DIRECT_COMMAND_GOVERNOR_RE.search(prefix) or governed_read)
+            or CLAUSE_NEGATION_RE.search(prefix) or NEGATED_CLAUSE_RE.search(prefix)
+            or DESCRIPTION_FRAME_RE.search(prefix) or clause_is_interrogative(clause)):
+        return None
+    command = match.group(1)
+    if (shell_control_operator_present(command)
+            or any(mark in command for mark in "<>$*?~")):
+        return None
+    # A root does not name a shell. Select the one lexical grammar warranted
+    # by its absolute target spelling; Host execution later proves the actual
+    # shell and the exact command independently.
+    windows = bool(WINDOWS_DRIVE_PATH_RE.search(command))
+    tokens = _command_tokens(command, posix=not windows,
+                             _windows_shell="powershell" if windows else None)
+    if len(tokens) != 2 or tokens[0] not in {"cat", "pytest", "py.test"}:
+        return None
+    target = tokens[1]
+    if windows:
+        if canonical_windows_locator(target) != (target, None):
+            return None
+    elif not target.startswith("/") or ".." in Path(target).parts:
+        return None
+    kind = "test_verify" if tokens[0] in {"pytest", "py.test"} else "state_readback"
+    return kind, target, match.group(0)
+
+
+def _direct_anaphoric_edit(clause: str) -> bool:
+    """A present edit imperative with an object pronoun, not an object choice."""
+    if (CLAUSE_NEGATION_RE.search(clause) or NEGATED_CLAUSE_RE.search(clause)
+            or DESCRIPTION_FRAME_RE.search(clause) or clause_is_interrogative(clause)):
+        return False
+    if not re.match(r"\s*(?:现在)?\s*(?:请|随后|然后|再|把|将|please\b|then\b|change\b)", clause, re.I):
+        return False
+    return bool(re.search(
+        r"(?:把|将)\s*(?:它|该文件(?:内容)?|这个文件|此文件|其内容)\s*"
+        r"(?:改为|修改为|替换为|更新为|写成)|"
+        r"(?:请|随后|然后|再)\s*修成|"
+        r"\b(?:change|replace|edit|update)\s+(?:it|that\s+file)\s+(?:to|with)\b",
+        clause, re.I,
+    ))
+
+
+def _same_root_anaphoric_target(root_text: str, source: str) -> str | None:
+    """Resolve only a unique preceding filesystem object in this one root."""
+    if not _direct_anaphoric_edit(source):
+        return None
+    source_at = root_text.find(source)
+    if source_at < 0 or root_text.find(source, source_at + len(source)) >= 0:
+        return None
+    preceding = root_text[:source_at]
+    if re.search(r"(?:如果|假如|若|仅当|今后|未来|以后|下周|\bif\b|\bwhen\b|\bonce\b)",
+                 preceding, re.I):
+        return None
+    targets, ambiguous = root_absolute_locator_mentions(preceding)
+    if ambiguous or len(targets) != 1:
+        return None
+    return next(iter(targets))
+
+
+def _explicit_file_postimage(source: str) -> str | None:
+    """Hash a bounded literal replacement, including its stated line ending.
+
+    This is a narrow, source-derived postcondition. Other replacements remain
+    unverified; a successful edit or a readback alone cannot invent the bytes
+    requested by the user.
+    """
+    match = re.search(
+        r"(?:改为|改成|替换为|更新为|修成|写成|\bto\b|\bwith\b)\s*"
+        r"(?:恰好|正好|exactly\s+)?\s*"
+        r"(?P<literal>[\w=:+-]{1,256})\s*"
+        r"(?:加一个换行|加换行|后跟换行|plus\s+(?:a\s+)?newline|followed\s+by\s+a\s+newline)\s*$",
+        source, re.I,
+    )
+    if match is None:
+        return None
+    return hashlib.sha256((match.group("literal") + "\n").encode("utf-8")).hexdigest()
+
+
+def _test_completion_predicate(source: str) -> str:
+    """A request to run and report differs from a requirement to pass.
+
+    The explicit success target is sourced from the governing test clause.
+    A later honest failure report neither creates repair work nor satisfies
+    a user requirement to make tests pass.
+    """
+    if re.search(
+        r"(?:确保|保证|必须|直到|修到|修至).{0,32}(?:测试|用例).{0,12}(?:通过|全绿)|"
+        r"(?:使|让)(?:测试|用例).{0,12}(?:通过|全绿)|"
+        r"\b(?:make|ensure|must|get)\b.{0,32}\btests?\b.{0,16}\bpass\b|"
+        r"\bfix\b.{0,32}\b(?:failing\s+tests?|tests?\s+to\s+pass)\b",
+        source, re.I,
+    ):
+        return "test_passed"
+    return "test_run_completed"
+
+
+def _reported_file_postimage(reply: str, target: str) -> str | None:
+    """Bind a direct current-file report to its complete reported bytes.
+
+    The Host readback is checked separately. A literal requested value, a
+    quoted example, or an assertion about a different object is not a report
+    of that readback. Fenced output is a value, and every reported value must
+    agree; selecting one convenient sentence from conflicting prose is unsafe.
+    """
+    if re.search(
+        r"(?:未|没有|尚未|无法|不能).{0,24}(?:回读|读取|读到|查看|核验|确认|报告)|"
+        r"(?:文件|内容|回读|结果).{0,16}(?:未|没有|尚未)(?:回读|读取|查看|核验|确认)|"
+        r"\b(?:not|never|cannot|couldn't|didn't)\b.{0,32}\b(?:read|check|verify|report)\b",
+        reply, re.I,
+    ):
+        return None
+    fences = list(re.finditer(r"(?m)^```(?:text)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*$", reply))
+    if "```" in reply and len(fences) * 2 != reply.count("```"):
+        return None
+    prose = reply
+    for match in reversed(fences):
+        prose = prose[:match.start()] + "\n" + prose[match.end():]
+    basename = re.escape(Path(target).name)
+    # The subject grammar is deliberately bounded. In particular, a bare
+    # read verb followed by an unbound object ("another file", a document,
+    # test output) cannot use this root's unique target as its subject.
+    headers = (
+        rf"(?:我|我们)?\s*核对了本次\s+{basename}\s+的(?:完整)?回读",
+        rf"(?:我|我们)?\s*实际回读\s*(?:{basename}|当前文件|该文件|这个文件)",
+        r"独立\s+Bash\s+`cat`\s+完整回读结果为",
+        r"(?:已|已经)?\s*(?:独立)?回读\s*(?:当前文件|该文件|这个文件|本次文件)?\s*(?=[:：，,]|读到|得到|结果|内容|$)",
+        r"已修改并回读\s*(?=[:：，,]|当前文件|该文件|这个文件|读到|$)",
+        r"实际文件内容\s*(?:恰好|确实)?\s*(?:是|为|等于)",
+        r"(?:I|we)\s+(?:have\s+)?(?:read|checked|verified)\s+(?:the\s+)?(?:current|same)\s+file",
+    )
+    def direct_clause(clause: str) -> re.Match[str] | None:
+        clause = clause.strip()
+        if not clause or clause.startswith((">", "'", '"', "“", "‘")):
+            return None
+        if clause_is_interrogative(clause) or _stop_outer_reporting_frame(clause):
+            return None
+        return next((match for pattern in headers
+                     if (match := re.match(r"^\s*" + pattern, clause, re.I))), None)
+
+    # A claim belongs to the clause that asserts it. A preceding, detached
+    # "I read the file" sentence cannot lend its subject to a later example.
+    value_re = re.compile(
+        r"`?(?P<literal>[\w=:+-]{1,256})`?\s*(?:加一个换行|加换行|后跟换行|"
+        r"[,，]\s*末尾有一个换行|plus\s+(?:a\s+)?newline|"
+        r"followed\s+by\s+a\s+newline)", re.I)
+    claims: list[str] = []
+    for clause in re.split(r"[。；;!！\n]+", prose):
+        clause = clause.strip()
+        values = list(value_re.finditer(clause))
+        if values:
+            subject = direct_clause(clause)
+            if subject is None:
+                # A separate claim about another object supplies no bytes
+                # for this file. An unowned "actual content" assertion after
+                # a current-file report is ambiguous and cannot be ignored.
+                possessor = re.match(r"^(.{1,80}?)的(?:实际)?(?:内容|示例)", clause)
+                if (possessor is not None
+                        and not re.search(r"当前|该文件|这个文件|本次|" + basename,
+                                          possessor.group(1), re.I)):
+                    continue
+                return None
+            if any(not re.fullmatch(
+                r"[\s:：,，]*(?:(?:文件)?内容\s*(?:是|为|等于)|"
+                r"读到|得到|结果\s*(?:是|为))?[\s:：,，]*",
+                clause[subject.end():value.start()], re.I)
+                for value in values):
+                return None
+            claims.extend(hashlib.sha256((value.group("literal") + "\n").encode("utf-8")).hexdigest()
+                          for value in values)
+    for fence in fences:
+        # The immediately governing clause must itself assert that the fence
+        # is this file's actual readback. Whitespace may separate Markdown
+        # blocks; another sentence, report object, or example may not.
+        prefix = reply[:fence.start()].rstrip()
+        governing = re.split(r"[。；;!！]", prefix)[-1].strip()
+        subject = direct_clause(governing)
+        if subject is None:
+            continue
+        if not re.fullmatch(r"[\s:：]*", governing[subject.end():]):
+            return None
+        claims.append(hashlib.sha256(fence.group(1).encode("utf-8")).hexdigest())
+    if not claims or len(set(claims)) != 1:
+        return None
+    if re.search(r"(?:没有|无|不含|缺少)\s*(?:末尾)?换行|\b(?:no|without|missing)\s+(?:final\s+)?newline\b",
+                 prose, re.I):
+        return None
+    return claims[0]
+
+
+def _reported_current_test_result(reply: str, target: str, observed: dict[str, Any]) -> bool:
+    """Check a present-tense report against one already verified Host test.
+
+    This only validates delivery. The current test effect, exit status, suite
+    identity, and event watermark must have been proved independently.
+    """
+    exit_code = observed.get("terminal_exit_code")
+    passed_count = observed.get("passed_count")
+    failed_count = observed.get("failed_count")
+    if type(exit_code) is not int or exit_code < 0:
+        return False
+    # Interpret only the assistant's direct result statement and its adjacent
+    # metric lines. A blockquote, example, or later future observation cannot
+    # provide a missing exit/count, nor poison an already complete report.
+    excluded = [(begin, end) for begin, end, kind in _stop_quotation_regions(reply)
+                if kind in {"quote", "blockquote"}]
+    statement = re.compile(r"^(?:测试(?:成功|通过|失败|未通过)|"
+                           r"(?:\d+\s+)?tests?\s+(?:passed|failed)|"
+                           r"\d+\s+(?:passed|failed))", re.I)
+    metric = re.compile(r"^(?:退出码|退出状态|exit\s*(?:code|status)|"
+                        r"收集(?:测试)?|collected|通过|失败|passed|failed)", re.I)
+    selected: list[str] = []
+    active = False
+    offset = 0
+    for line in reply.splitlines(keepends=True):
+        line_end = offset + len(line)
+        if any(begin < line_end and offset < end for begin, end in excluded):
+            active = False
+            offset = line_end
+            continue
+        for clause in re.split(r"[。；;!！]|(?<!\d)\.(?!\d)", line):
+            clause = re.sub(r"^\s*[-*+]\s*", "", clause.strip()).strip()
+            if not clause:
+                continue
+            if _stop_outer_reporting_frame(clause):
+                active = False
+            elif statement.match(clause):
+                selected.append(clause)
+                active = True
+            elif active and metric.match(clause):
+                selected.append(clause)
+            else:
+                active = False
+        offset = line_end
+    if not selected:
+        return False
+    reply = "\n".join(selected)
+    # Inline Markdown renders a numeric result without changing its value.
+    # It does not supply any Host fact or turn identity.
+    reply = re.sub(r"`(\d+)`", r"\1", reply)
+    if re.search(r"(?:以后|稍后|将来|计划|建议)\s*(?:运行|测试|报告)|"
+                 r"\b(?:later|future|plan|would|will)\b.{0,32}\b(?:test|report|run)\b",
+                 reply, re.I):
+        return False
+    if re.search(r"(?:另一个|其他|别的)(?:测试|套件|文件)|\b(?:other|another)\s+(?:test|suite|file)\b",
+                 reply, re.I):
+        return False
+    mentioned, ambiguous = root_absolute_locator_mentions(reply)
+    if ambiguous or mentioned - {target}:
+        return False
+    # A quoted example or third-party report is not this assistant's result.
+    if _stop_outer_reporting_frame(reply):
+        return False
+    codes = [int(value) for value in re.findall(
+        r"(?:退出码|退出状态|exit\s*(?:code|status))\s*[:：=]?\s*(\d+)", reply, re.I)]
+    if any(code != exit_code for code in codes):
+        return False
+    counts = [int(value) for match in re.findall(
+        r"(?:通过|passed?)\s*[:：]?\s*(\d+)|\b(\d+)\s+passed\b", reply, re.I)
+        for value in match if value]
+    collected = [int(value) for value in re.findall(
+        r"(?:收集(?:测试)?|collected)\s*[:：]?\s*(\d+)", reply, re.I)]
+    if exit_code == 0:
+        if (type(passed_count) is not int or passed_count < 1
+                or any(count != passed_count for count in counts + collected)
+                or re.search(r"测试失败|未通过|运行失败|\b(?:failed|failure|not passed)\b",
+                             reply, re.I)):
+            return False
+        return bool(re.search(r"测试(?:成功|通过)|\b\d+\s+passed\b", reply, re.I)) \
+            and bool(codes or counts)
+    if (type(failed_count) is not int or failed_count < 1
+            or re.search(r"测试(?:成功|通过)|\b\d+\s+passed\b", reply, re.I)
+            or any(count != failed_count for count in collected)):
+        return False
+    reported_failed = [int(value) for match in re.findall(
+        r"(?:失败|failed?)\s*[:：]?\s*(\d+)|\b(\d+)\s+failed\b", reply, re.I)
+        for value in match if value]
+    return bool(codes and (reported_failed or re.search(r"测试(?:失败|未通过)|\bfailed\b", reply, re.I))) \
+        and all(count == failed_count for count in reported_failed)
+
+
+def _append_current_result_delivery(
+    snapshot: dict[str, Any], source_req: dict[str, Any],
+    report_span: dict[str, Any], report_text: str,
+    delivery_record: dict[str, Any], event_seq: int,
+) -> str:
+    """Add the same source-bound delivery relation for edit and test reports."""
+    import copy
+
+    report_id = "report:" + source_req["id"]
+    report_req = copy.deepcopy(source_req)
+    report_req.update(id=report_id, source=report_span, kind="information",
+                      action="deliver_information", target=report_text,
+                      predicate="answer_delivered", evidence_kind="delivery",
+                      target_origin=dict(root_constraint=report_text, subject_kind="opaque",
+                                         implementation_choice=report_text,
+                                         host_selection=report_text, resolved=report_text,
+                                         observed=report_text, root_constraint_source=report_span,
+                                         constraint_kind="exact", selection_source_id=None))
+    snapshot["requirements"].append(report_req)
+    delivery_id = "final_delivery:" + delivery_record["delivery_sha256"]
+    snapshot["sources"].append(dict(
+        id=delivery_id, seq=event_seq, kind="final_delivery",
+        unit=source_req["unit"], revision=source_req["revision"],
+        sha256=delivery_record["reply_sha256"], byte_length=0,
+        text=None, call_id=None, turn=snapshot["turn"],
+    ))
+    snapshot["facts"].append(dict(
+        id="delivery_fact:" + report_id, seq=event_seq,
+        unit=source_req["unit"], revision=source_req["revision"],
+        source_id=delivery_id, call_source_id=None, kind="delivery",
+        target=report_text, predicate="answer_delivered", outcome="success",
+        operation_id=None, requirement_id=report_id, condition_id=None,
+        invalidates=[],
+    ))
+    snapshot["as_of"] = event_seq
+    return report_id
+
+
 def _action_source_clauses(text: str) -> list[str]:
     """Keep a quoted filesystem *object* inside its governing instruction.
 
@@ -8640,9 +9221,14 @@ def _action_source_clauses(text: str) -> list[str]:
     def shield(match: re.Match[str]) -> str:
         candidate = match.group(2)
         if match.group(1) == "`":
-            valid = (WINDOWS_ABSOLUTE_PATH_RE.match(candidate) is not None
-                     and canonical_windows_locator(candidate) == (candidate, None)) or (
-                         candidate.startswith("/") and ".." not in Path(candidate).parts)
+            sentence_start = max(text.rfind(mark, 0, match.start()) for mark in
+                                 "\n。！？!?；;，,") + 1
+            governed = _direct_shell_command_object(text[sentence_start:])
+            valid = governed is not None or (
+                (WINDOWS_ABSOLUTE_PATH_RE.match(candidate) is not None
+                 and canonical_windows_locator(candidate) == (candidate, None)) or
+                (candidate.startswith("/") and ".." not in Path(candidate).parts)
+            )
         else:
             found, ambiguous = root_absolute_locator_mentions(match.group(0))
             valid = not ambiguous and found == {candidate}
@@ -8666,6 +9252,61 @@ def _action_source_clauses(text: str) -> list[str]:
             clause = clause.replace(f"{marker_open}{index}{marker_close}", original)
         restored.append(clause)
     return restored
+
+
+def _result_report_clause(clause: str) -> bool:
+    """A report of the result is delivery, not another requested action."""
+    return bool(re.fullmatch(
+        r"\s*(?:(?:并|然后|再)\s*)?(?:根据|按照)\s*[^,，;；。.!?？]{0,48}"
+        r"(?:结果|退出|输出)\s*(?:报告|说明)(?:本次)?(?:测试|结果|状态)?\s*|"
+        r"\s*(?:(?:and|then)\s+)?report\s+(?:the\s+)?(?:result|output|exit\s+status)\s*",
+        clause, re.I,
+    ))
+
+
+def _readback_clause_roles(clause: str, command_span: str) -> tuple[bool, bool]:
+    """Validate the whole readback tail; an adjacent action stays unknown."""
+    suffix = clause.split(command_span, 1)[1].strip().rstrip("。.!！").strip()
+    zh = re.fullmatch(
+        r"(?:(?:完整)?(?:回读|读取|核对)(?:该文件|文件|它|内容)?|调用)?"
+        r"(?:并(?:说明|报告|告知)(?:读到的|实际)?(?:内容|结果))?",
+        suffix,
+    )
+    en = re.fullmatch(
+        r"(?:call|separately|to\s+read\s+it)?"
+        r"(?:\s+and\s+report\s+(?:what\s+it\s+returned|the\s+actual\s+bytes|the\s+result))?",
+        suffix, re.I,
+    )
+    valid = bool(zh or en)
+    report = bool(re.search(r"(?:说明|报告|告知|\breport\b)", suffix, re.I))
+    return valid, report
+
+
+def _pure_readback_report_clause(clause: str) -> bool:
+    return bool(re.fullmatch(
+        r"\s*(?:(?:并|然后|再)\s*)?(?:根据|按照)(?:本次)?(?:真实)?(?:回读|读取|结果|退出|输出)"
+        r"(?:的)?(?:结果)?(?:报告|说明)(?:本次)?(?:实际)?(?:内容|结果|状态)?\s*|"
+        r"\s*(?:(?:并|然后|再)\s*)?据实(?:报告|告知|说明)(?:实际)?(?:内容|结果)?\s*|"
+        r"\s*(?:(?:and|then)\s+)?report\s+(?:the\s+)?(?:actual\s+bytes|result|output|content)\s*",
+        clause, re.I,
+    ))
+
+
+def _literal_old_file_context(clause: str, target: str) -> bool:
+    """A stated old literal is context, with no bundled preservation rule."""
+    locators, ambiguous = root_absolute_locator_mentions(clause)
+    if ambiguous or locators != {target} or clause.count(target) != 1:
+        return False
+    contextual = clause.replace(target, "对象", 1)
+    return bool(re.fullmatch(
+        r"\s*已知\s*[\"“]?对象[\"”]?\s*(?:的原内容恰好为|当前是)\s*"
+        r"[\w=:+-]{1,256}\s*(?:加一个换行|加换行|后跟换行)\s*|"
+        r"\s*这个文件\s*[\"“]?对象[\"”]?\s*原为\s*"
+        r"[\w=:+-]{1,256}\s*(?:加一个换行|加换行|后跟换行)\s*|"
+        r"\s*The\s+file\s*[\"“]?对象[\"”]?\s+currently\s+says\s*"
+        r"[\w=:+-]{1,256}\s+followed\s+by\s+a\s+newline\s*",
+        contextual, re.I,
+    ))
 
 
 def _current_action_basis(
@@ -8694,7 +9335,9 @@ def _current_action_basis(
     reply_subjects = {str(s["id"]) for s in prompt_subjects(reply_clause)}
     pattern = dict(ACTION_PATTERNS).get(category)
     if pattern is None:
-        return None
+        if category != "state_readback":
+            return None
+        pattern = re.compile(r"(?!)")  # The audited command object supplies this action.
     for collection in ("requirements", "acceptance_items"):
         for item in state.get(collection, []):
             if not isinstance(item, dict) or item.get("id") not in current_ids:
@@ -8743,12 +9386,18 @@ def _current_action_basis(
                         or item.get("execution_kind") != category):
                     continue
                 clauses = [child_scope]
-            sources = [c for c in clauses if pattern.search(c)
+            sources = [c for c in clauses
+                       if (pattern.search(c)
+                           or category == "local_edit" and _direct_anaphoric_edit(c)
+                           or (command_object := _direct_shell_command_object(c)) is not None
+                           and command_object[0] == category)
+                       and not _result_report_clause(c)
                        and not CLAUSE_NEGATION_RE.search(c)
                        and not DESCRIPTION_FRAME_RE.search(c)]
             if len(sources) != 1:
                 continue
             source = sources[0]
+            direct_command = _direct_shell_command_object(source)
             source_at = root_text.find(source)
             dependent_readback = False
             if category == "local_edit" and source_at >= 0:
@@ -8778,7 +9427,10 @@ def _current_action_basis(
                         and candidate.count(",") + candidate.count("，") > 0
                         and _root_action_condition(candidate, candidate_action)):
                     source = candidate
-            condition_scope = _root_action_condition(source, _root_action_head(source, pattern))
+            condition_scope = (_root_action_condition(source, _root_action_head(source, pattern))
+                               if pattern.search(source) else None)
+            requested_postimage = (_explicit_file_postimage(source)
+                                   if category == "local_edit" else None)
             # A changed byte digest proves only an unconstrained edit. A
             # requested replacement, preservation condition, or other
             # postcondition needs its own sourced predicate and readback.
@@ -8813,7 +9465,7 @@ def _current_action_basis(
                                 *WINDOWS_DRIVE_PATH_RE.findall(source),
                                 *RELATIVE_FILE_RE.findall(source)):
                     generic_edit = generic_edit.replace(locator, "", 1)
-                if not (governed_repair_child or governed_successor) and (not re.fullmatch(
+                simple_edit = bool(re.fullmatch(
                     r"\s*(?:(?:请|帮我|先|再|完成|只)\s*)*(?:修改|编辑|更新|修复|修正|修好|实现)"
                     r"\s*[^,，;；。.!?？]{0,55}?(?:\s*(?:并|然后)\s*核对(?:文件)?内容)?\s*"
                     r"|\s*(?:本轮)?完成(?:补丁|修复)\s*"
@@ -8821,11 +9473,17 @@ def _current_action_basis(
                     r"|\s*(?:please\s+)?(?:edit|modify|update|fix|correct|repair)"
                     r"\s*[^,，;；。!?？]{0,70}?(?:\s+and\s+verify\s+the\s+changed\s+file)?\s*",
                     generic_edit, re.I,
-                ) or re.search(r"改为|替换为|写入|不得覆盖|no[- ]overwrite|replace\s+with", source, re.I)):
+                )) or (_direct_anaphoric_edit(source) and requested_postimage is not None)
+                constrained_edit = bool(re.search(
+                    r"改为|替换为|写入|不得覆盖|no[- ]overwrite|replace\s+with",
+                    source, re.I,
+                ))
+                if (not (governed_repair_child or governed_successor)
+                        and (not simple_edit or constrained_edit and requested_postimage is None)):
                     continue
             # A single sentence can carry independent effects. One host test
             # result cannot interpret and close an adjacent edit/review verb.
-            semantic_source = source
+            semantic_source = re.sub(r"`[^`\n]+`", "对象", source)
             for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
                                     ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
                 semantic_source = locator_pattern.sub("对象", semantic_source)
@@ -8839,9 +9497,21 @@ def _current_action_basis(
                 continue
             if WINDOWS_UNC_PATH_RE.search(source):
                 continue  # An explicit unsupported locator cannot become a work-unit choice.
-            source_targets, ambiguous_source_target = root_absolute_locator_mentions(source)
+            source_without_command = (source.replace(direct_command[2], "对象", 1)
+                                      if direct_command is not None else source)
+            source_targets, ambiguous_source_target = root_absolute_locator_mentions(
+                source_without_command)
             if ambiguous_source_target:
                 continue
+            if direct_command is not None:
+                source_targets.add(direct_command[1])
+            anaphoric_target = (_same_root_anaphoric_target(root_text, source)
+                                if category == "local_edit" and _direct_anaphoric_edit(source)
+                                else None)
+            if category == "local_edit" and _direct_anaphoric_edit(source):
+                if anaphoric_target is None:
+                    continue
+                source_targets.add(anaphoric_target)
             targets = sorted(source_targets)
             relative_targets = [match.group(0) for match in RELATIVE_FILE_RE.finditer(source)
                                 if ".." not in Path(match.group(0)).parts]
@@ -8879,7 +9549,8 @@ def _current_action_basis(
                         source, re.I,
                     ) else "exact"
                 allowed_predicates = ({"edit_applied", "content_hash"} if category == "local_edit"
-                                      else {"file_exists", "test_passed"} if category in {"test_verify", "local_review"}
+                                      else {"content_hash"} if category == "state_readback"
+                                      else {"file_exists", "test_passed", "test_run_completed"} if category in {"test_verify", "local_review"}
                                       else {"repo_identity", "commit_identity", "branch_identity", "remote_ref"})
                 selections = {
                     (obs.get("canonical_target") if root_relative_target is not None else obs["target"])
@@ -8952,7 +9623,10 @@ def _current_action_basis(
                 and re.search(r"\bmeasure\b|测量|测出", source, re.I)
                 else "evaluate_current_effect" if category == "local_review" else category
             )
-            predicate_name = "measurement_and_report" if action_name == "measure_current_effect" else None
+            predicate_name = ("measurement_and_report" if action_name == "measure_current_effect"
+                              else "readback_complete" if action_name == "state_readback"
+                              else _test_completion_predicate(source)
+                              if category == "test_verify" else None)
             from cg_codex_core_adapter import project_current_action
             try:
                 snapshot = project_current_action(
@@ -8964,6 +9638,7 @@ def _current_action_basis(
                     root_scope=source,
                     condition_scope=condition_scope,
                     predicate_name=predicate_name,
+                    requested_postimage_sha256=requested_postimage,
                     return_snapshot=True,
                     resume_prefix=bool(
                         (prefix := root_text.split(source, 1)[0].strip(" \t\r\n,，。.!?？；;：:"))
@@ -9463,7 +10138,7 @@ def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[d
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     bases: list[dict[str, Any]] = []
-    for category, _ in ACTION_PATTERNS:
+    for category, _ in (*ACTION_PATTERNS, ("state_readback", re.compile(r"(?!)"))):
         basis = _current_action_basis(state, category, "", session_dir,
                                       include_satisfied=True)
         if basis is None or basis["requirement_id"] in seen:
@@ -9898,6 +10573,408 @@ def delivered_mixed_core_projection(
                 coverage_error_count=len(aggregate["coverage_errors"]))
 
 
+def delivered_exact_edit_readback_projection(
+    state: dict[str, Any], session_dir: Path, delivery_record: dict[str, Any], reply_text: str,
+) -> dict[str, Any] | None:
+    """Close a bounded edit, independent full readback, and actual report.
+
+    Each clause retains its own root span. The user-supplied old value is
+    context, never a fabricated before-file observation. Unrecognized clauses
+    or another open obligation keep whole certification unavailable.
+    """
+    if (delivery_record.get("delivery") != "delivered"
+            or delivery_record.get("reply_sha256") != sha256_text(reply_text)
+            or delivery_record.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id")):
+        return None
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    basis = _current_action_basis(state, "local_edit", "", session_dir,
+                                  include_satisfied=True)
+    if basis is None or basis["predicate_state"] != "satisfied":
+        return None
+    item_id = basis["requirement_id"]
+    if item_id not in delivery_record.get("requirement_ids", []):
+        return None
+    scoped = current_scope_projection(state)["scoped_item_ids"]
+    if scoped - {item_id}:
+        return None
+    snapshot = copy.deepcopy(basis["core_snapshot"])
+    edit_req = snapshot["requirements"][0]
+    root_id = edit_req["source"]["source_id"]
+    root = next((s for s in snapshot["sources"] if s["id"] == root_id), None)
+    if root is None or not isinstance(root.get("text"), str):
+        return None
+    root_text = root["text"]
+    edit_bytes = root_text.encode("utf-8")[edit_req["source"]["start"]:edit_req["source"]["end"]]
+    try:
+        edit_clause = edit_bytes.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    target = basis["target"]
+    requested = _explicit_file_postimage(edit_clause)
+    if requested is None or _reported_file_postimage(reply_text, target) != requested:
+        return None
+    # The existing state_matches fact already requires an audited FileChange
+    # postimage followed by the separate matching readback. Link its exact
+    # readback Host result to this root's requested cat operation.
+    successful_state = [f for f in snapshot["facts"]
+                        if f["requirement_id"] == item_id
+                        and f["kind"] == "state_outcome"
+                        and f["predicate"] == "state_matches"
+                        and f["outcome"] == "success"]
+    if not successful_state:
+        return None
+    latest_state = max(successful_state, key=lambda f: f["seq"])
+    read_fact = next((f for f in snapshot["facts"]
+                      if f["kind"] == "readiness" and f["seq"] == latest_state["seq"]
+                      and f["source_id"] == latest_state["source_id"]
+                      and f["target"] == target and f["outcome"] == "success"), None)
+    if read_fact is None:
+        return None
+    read_eid = read_fact["source_id"].removeprefix("result:")
+    edit_ids = [fact["source_id"].removeprefix("result:")
+                for fact in snapshot["facts"]
+                if fact["requirement_id"] == item_id
+                and fact["kind"] == "action_event"
+                and fact["predicate"] == "edit_applied"
+                and fact["outcome"] == "success"
+                and fact["seq"] < read_fact["seq"]]
+    if not edit_ids:
+        return None
+    observed = next((e.get("core_observation") for e in state.get("evidence", [])
+                     if isinstance(e, dict) and str(e.get("id")) == read_eid), None)
+    if (not isinstance(observed, dict)
+            or observed.get("kind") != "state_readback"
+            or observed.get("predicate") != "content_hash"
+            or observed.get("content_sha256") != requested
+            or observed.get("target") != target):
+        return None
+    clauses = _action_source_clauses(root_text)
+    pieces: list[tuple[int, int, str]] = []
+    cursor = 0
+    read_clause: tuple[str, int, int] | None = None
+    report_clause: tuple[str, int, int] | None = None
+    seen_edit = False
+    for clause in clauses:
+        at = root_text.find(clause, cursor)
+        if at < cursor:
+            return None
+        end = at + len(clause)
+        if at > cursor:
+            gap = root_text[cursor:at]
+            if gap.strip(" \t\r\n,，。.!?？；;：:、"):
+                return None
+            pieces.append((cursor, at, "interpreted"))
+        kind = "unknown"
+        command = _direct_shell_command_object(clause)
+        if clause == edit_clause and not seen_edit:
+            kind = "interpreted"
+            seen_edit = True
+        elif command is not None and command[:2] == ("state_readback", target):
+            if read_clause is not None:
+                return None
+            valid_read, embedded_report = _readback_clause_roles(clause, command[2])
+            if valid_read:
+                kind = "interpreted"
+                read_clause = (clause, at, end)
+                if embedded_report:
+                    report_clause = (clause, at, end)
+        elif _literal_old_file_context(clause, target):
+            kind = "interpreted"
+        elif re.fullmatch(r"\s*无需(?:编辑前)?读取\s*", clause):
+            kind = "interpreted"
+        elif _pure_readback_report_clause(clause):
+            kind = "interpreted"
+            report_clause = (clause, at, end)
+        pieces.append((at, end, kind))
+        cursor = end
+    if cursor < len(root_text):
+        gap = root_text[cursor:]
+        pieces.append((cursor, len(root_text), "interpreted" if not gap.strip(
+            " \t\r\n,，。.!?？；;：:、") else "unknown"))
+    if not seen_edit or read_clause is None or report_clause is None:
+        return None
+    def span_for(at: int, end: int) -> dict[str, Any]:
+        return dict(source_id=root_id, start=len(root_text[:at].encode("utf-8")),
+                    end=len(root_text[:end].encode("utf-8")), sha256=root["sha256"])
+    read_text, read_at, read_end = read_clause
+    report_text, report_at, report_end = report_clause
+    read_span = span_for(read_at, read_end)
+    report_span = span_for(report_at, report_end)
+    target_at = root_text.find(target, read_at, read_end)
+    if target_at < read_at:
+        return None
+    read_origin = copy.deepcopy(edit_req["target_origin"])
+    read_origin["root_constraint_source"] = span_for(target_at, target_at + len(target))
+    read_id, report_id = f"readback:{item_id}", f"report:{item_id}"
+    read_req = copy.deepcopy(edit_req)
+    read_req.update(id=read_id, source=read_span, action="state_readback",
+                    predicate="readback_complete", evidence_kind="action_event",
+                    target_origin=read_origin)
+    snapshot["requirements"].append(read_req)
+    readback_fact = copy.deepcopy(read_fact)
+    readback_fact.update(id=f"complete:{read_eid}", requirement_id=read_id,
+                         kind="action_event", predicate="readback_complete")
+    snapshot["facts"].append(readback_fact)
+    container = copy.deepcopy(edit_req)
+    container.update(id="scope:" + item_id, kind="constraint", required=False,
+                     parent_id=None, condition_ids=[],
+                     source=dict(source_id=root_id, start=0,
+                                 end=root["byte_length"], sha256=root["sha256"]))
+    snapshot["requirements"].append(container)
+    event_seq = state.get("core_event_sequence")
+    if type(event_seq) is not int or event_seq < snapshot["as_of"]:
+        return None
+    _append_current_result_delivery(
+        snapshot, edit_req, report_span, report_text, delivery_record, event_seq)
+    coverage = []
+    for at, end, kind in pieces:
+        if at < end:
+            coverage.append(dict(source=span_for(at, end), kind=kind))
+    snapshot["coverage"] = [c for c in snapshot["coverage"]
+                            if c["source"]["source_id"] != root_id] + coverage
+    try:
+        aggregate = project_core(snapshot)
+    except (ValueError, KeyError, TypeError):
+        return None
+    return dict(requirement_id=item_id, unit=basis["unit"], as_of=aggregate["as_of"],
+                predicate="edit_readback_and_report",
+                predicate_state="satisfied" if all(
+                    aggregate["predicates"].get(rid) == "satisfied"
+                    for rid in (item_id, read_id, report_id)) else "insufficient",
+                certifiable=bool(aggregate["certifiable"]),
+                host_evidence_ids=[edit_ids[-1], read_eid],
+                delivery_sha256=delivery_record["delivery_sha256"],
+                unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                coverage_error_count=len(aggregate["coverage_errors"]),
+                core_projection=aggregate)
+
+
+def delivered_current_test_projection(
+    state: dict[str, Any], session_dir: Path,
+    delivery_record: dict[str, Any], reply_text: str,
+) -> dict[str, Any] | None:
+    """Join a current, attributable pytest result with its actual final report.
+
+    The report has its own root span and delivery fact. A test exit alone
+    cannot interpret a separately requested report, and a success sentence
+    cannot substitute for the Host test result.
+    """
+    if (delivery_record.get("delivery") != "delivered"
+            or delivery_record.get("reply_sha256") != sha256_text(reply_text)
+            or delivery_record.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id")):
+        return None
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    basis = _current_action_basis(state, "test_verify", "", session_dir,
+                                  include_satisfied=True)
+    if basis is None or basis["predicate_state"] != "satisfied":
+        return None
+    item_id = basis["requirement_id"]
+    corresponding_acceptance = {
+        str(item["id"]) for item in state.get("acceptance_items", [])
+        if isinstance(item, dict)
+        and item.get("prompt_id") == basis["source_prompt_id"]
+        and item.get("text") == next((s.get("text") for s in basis["core_snapshot"]["sources"]
+                                      if s.get("id") == basis["core_snapshot"]["requirements"][0]["source"]["source_id"]), None)
+        and isinstance(item.get("verification_contract"), dict)
+        and (item["verification_contract"].get("mode") == "legacy_fallback"
+             or item["verification_contract"].get("clause_operation") == "test_verify")
+    }
+    if (item_id not in delivery_record.get("requirement_ids", [])
+            or current_scope_projection(state)["scoped_item_ids"]
+            - {item_id} - corresponding_acceptance):
+        return None
+    snapshot = copy.deepcopy(basis["core_snapshot"])
+    req = snapshot["requirements"][0]
+    root_id = req["source"]["source_id"]
+    root = next((s for s in snapshot["sources"] if s["id"] == root_id), None)
+    if root is None or not isinstance(root.get("text"), str):
+        return None
+    root_text = root["text"]
+    test_facts = [fact for fact in snapshot["facts"]
+                  if fact["requirement_id"] == item_id
+                  and fact["predicate"] == basis["predicate"]
+                  and fact["kind"] == "action_event"
+                  and fact["outcome"] == "success"]
+    if not test_facts:
+        return None
+    latest = max(test_facts, key=lambda fact: fact["seq"])
+    eid = latest["source_id"].removeprefix("result:")
+    observed = next((e.get("core_observation") for e in state.get("evidence", [])
+                     if isinstance(e, dict) and str(e.get("id")) == eid), None)
+    if (not isinstance(observed, dict)
+            or observed.get("target") != basis["target"]
+            or not _reported_current_test_result(
+                reply_text, basis["target"], observed)):
+        return None
+    pieces: list[tuple[int, int, str]] = []
+    cursor = 0
+    test_seen = False
+    report_clause: tuple[str, int, int] | None = None
+    for clause in _action_source_clauses(root_text):
+        at = root_text.find(clause, cursor)
+        if at < cursor:
+            return None
+        end = at + len(clause)
+        if at > cursor:
+            gap = root_text[cursor:at]
+            pieces.append((cursor, at, "interpreted" if not gap.strip(
+                " \t\r\n,，。.!?？；;：:、") else "unknown"))
+        kind = "unknown"
+        direct = _direct_shell_command_object(clause)
+        if (not test_seen and direct is not None
+                and direct[:2] == ("test_verify", basis["target"])
+                and re.search(r"(?:运行|执行|run|execute)", clause, re.I)):
+            kind = "interpreted"
+            test_seen = True
+        elif _result_report_clause(clause) and report_clause is None:
+            kind = "interpreted"
+            report_clause = (clause, at, end)
+        pieces.append((at, end, kind))
+        cursor = end
+    if cursor < len(root_text):
+        tail = root_text[cursor:]
+        pieces.append((cursor, len(root_text), "interpreted" if not tail.strip(
+            " \t\r\n,，。.!?？；;：:、") else "unknown"))
+    if not test_seen or report_clause is None:
+        return None
+    def span_for(at: int, end: int) -> dict[str, Any]:
+        return dict(source_id=root_id, start=len(root_text[:at].encode("utf-8")),
+                    end=len(root_text[:end].encode("utf-8")), sha256=root["sha256"])
+    report_text, report_at, report_end = report_clause
+    container = copy.deepcopy(req)
+    container.update(id="scope:" + item_id, kind="constraint", required=False,
+                     parent_id=None, condition_ids=[],
+                     source=dict(source_id=root_id, start=0,
+                                 end=root["byte_length"], sha256=root["sha256"]))
+    snapshot["requirements"].append(container)
+    event_seq = state.get("core_event_sequence")
+    if type(event_seq) is not int or event_seq < snapshot["as_of"]:
+        return None
+    report_id = _append_current_result_delivery(
+        snapshot, req, span_for(report_at, report_end), report_text,
+        delivery_record, event_seq)
+    snapshot["coverage"] = [c for c in snapshot["coverage"]
+                            if c["source"]["source_id"] != root_id]
+    snapshot["coverage"].extend(dict(source=span_for(at, end), kind=kind)
+                                for at, end, kind in pieces if at < end)
+    try:
+        aggregate = project_core(snapshot)
+    except (ValueError, KeyError, TypeError):
+        return None
+    return dict(requirement_id=item_id, unit=basis["unit"], as_of=aggregate["as_of"],
+                predicate="test_and_report",
+                predicate_state="satisfied" if all(
+                    aggregate["predicates"].get(rid) == "satisfied"
+                    for rid in (item_id, report_id)) else "insufficient",
+                certifiable=bool(aggregate["certifiable"]),
+                host_evidence_ids=[eid],
+                delivery_sha256=delivery_record["delivery_sha256"],
+                unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                coverage_error_count=len(aggregate["coverage_errors"]),
+                core_projection=aggregate)
+
+
+def retire_verified_ordinary_core_result(
+    state: dict[str, Any], row: dict[str, Any], delivered_record: dict[str, Any],
+) -> bool:
+    """Persist one fully sourced ordinary result without touching adopted gates.
+
+    A test process that terminates unsuccessfully can fulfill a *run and
+    report* requirement, but its failed Host evidence cannot fulfill a
+    separate pass target. The typed core fact and exact report establish that
+    distinction before this function is called.
+    """
+    if (not row.get("certifiable") or row.get("predicate_state") != "satisfied"
+            or row.get("unknown_coverage_count") != 0
+            or row.get("coverage_error_count") != 0
+            or row.get("delivery_sha256") != delivered_record.get("delivery_sha256")
+            or row.get("predicate") not in {"edit_readback_and_report", "test_and_report"}):
+        return False
+    item_id = row.get("requirement_id")
+    requirement = next((item for item in state.get("requirements", [])
+                        if isinstance(item, dict) and item.get("id") == item_id), None)
+    if not isinstance(requirement, dict) or requirement.get("status") != "pending":
+        return False
+    scoped = current_scope_projection(state)
+    associated = []
+    if row["predicate"] == "test_and_report":
+        associated = [item for item in state.get("acceptance_items", [])
+                      if isinstance(item, dict)
+                      and item.get("prompt_id") == requirement.get("prompt_id")
+                      and item.get("text") == requirement.get("text")]
+    items = [requirement, *associated]
+    if (scoped["scoped_item_ids"] != {str(item.get("id")) for item in items}
+            or scoped["waiting_conditions"]
+            or any(item.get("status") != "pending"
+                   or item.get("work_unit_id") != row.get("unit")
+                   or not isinstance(item.get("verification_contract"), dict)
+                   or item["verification_contract"].get("mode") not in {
+                       "legacy_fallback", "enforced"}
+                   for item in items)):
+        return False
+    evidence_ids = row.get("host_evidence_ids")
+    expected_count = 2 if row["predicate"] == "edit_readback_and_report" else 1
+    by_evidence = {str(e.get("id")): e for e in state.get("evidence", [])
+                   if isinstance(e, dict)}
+    if (not isinstance(evidence_ids, list) or len(evidence_ids) != expected_count
+            or len(set(evidence_ids)) != expected_count):
+        return False
+    for evidence_id in evidence_ids:
+        evidence = by_evidence.get(evidence_id)
+        if not isinstance(evidence, dict):
+            return False
+        if evidence.get("outcome") != "success":
+            observation = evidence.get("core_observation")
+            if not (row["predicate"] == "test_and_report"
+                    and evidence.get("outcome") == "failed"
+                    and isinstance(observation, dict)
+                    and observation.get("kind") == "action_event"
+                    and observation.get("predicate") == "test_run_completed"
+                    and observation.get("outcome") == "success"
+                    and type(observation.get("terminal_exit_code")) is int
+                    and observation["terminal_exit_code"] > 0):
+                return False
+    # An adopted/enforced proof remains a separate gate. Ordinary readback
+    # proof may be deterministically derived from its own registered Host
+    # input, but an unmatched visual, scope, or explicit proof cannot be
+    # replaced by the aggregate's certifiable bit.
+    proof_mark = len(state.get("proofs", []))
+    sequence_mark = int(state.get("proof_sequence") or 0)
+    try:
+        for manifest in derive_ordinary_proofs(state):
+            if manifest.get("item_id") in {item["id"] for item in items}:
+                append_normalized_proof(state, manifest)
+    except (ValueError, TypeError, KeyError):
+        del state["proofs"][proof_mark:]
+        state["proof_sequence"] = sequence_mark
+        return False
+    if any(unresolved_proof_obligations(state).get(item["id"])
+           for item in items):
+        del state["proofs"][proof_mark:]
+        state["proof_sequence"] = sequence_mark
+        return False
+    basis = {
+        "schema": "ordinary-core-completion/v1",
+        "predicate": row["predicate"],
+        "as_of": row["as_of"],
+        "delivery_sha256": delivered_record["delivery_sha256"],
+        "core_sha256": sha256_text(canonical_json(row["core_projection"])),
+        "host_evidence_ids": list(evidence_ids),
+    }
+    for item in items:
+        item["status"] = "pass"
+        item["evidence"] = list(evidence_ids)
+        item["completion_basis"] = {**basis, "host_evidence_ids": list(evidence_ids)}
+    delivered_record["resolution"] = "verified"
+    return True
+
+
 def deferred_action_bindings(
     reply_text: str, scope: dict[str, Any]
 ) -> list[str]:
@@ -10218,7 +11295,7 @@ def _stop_outer_reporting_frame(prefix: str) -> bool:
     return bool(
         re.search(r"\b(?:example|sample|illustration)\s*[:：]|\b(?:for example|as an example)\b|(?:示例|举例)\s*[:：]|(?:^|[,，:：])\s*例如", outer, re.I)
         or re.search(r"\b(?:said|says|wrote|writes|reported|states|claimed)\b|\baccording\s+to\b|据.{0,24}(?:说|称|报道)", outer, re.I)
-        or re.search(r"(?:报告|文档|他|她|它|有人).{0,24}(?:写道|写着|说|称|表示)|"
+        or re.search(r"(?:报告|文档|日志|他|她|它|有人).{0,24}(?:写道|写着|说|称|表示)|"
                      r"\b(?:report|reviewer|team|docs?|they)\b.{0,48}\b(?:says?|said|states?|reported|wrote)\b", outer, re.I)
     )
 
@@ -12384,7 +13461,56 @@ def append_decision_log(
            if decision.get("protocol_version") == STOP_PROTOCOL_VERSION else {}),
     }
     state.setdefault("decision_log", []).append(record)
-    state["decision_log"] = state["decision_log"][-DECISION_LOG_LIMIT:]
+    pinned = _ordinary_completion_pins(state)
+    keep: set[int] = set()
+    for index, entry in enumerate(state["decision_log"]):
+        if any(isinstance(row, dict)
+               and (row.get("delivery_sha256"), sha256_text(canonical_json(
+                   row["core_projection"]))) in pinned
+               for row in entry.get("core_projections", [])
+               if isinstance(row.get("core_projection"), dict)):
+            keep.add(index)
+    recent = 0
+    for index in range(len(state["decision_log"]) - 1, -1, -1):
+        if index in keep:
+            continue
+        if recent >= DECISION_LOG_LIMIT:
+            break
+        keep.add(index)
+        recent += 1
+    state["decision_log"] = [entry for index, entry in enumerate(state["decision_log"])
+                             if index in keep]
+
+
+def _ordinary_completion_pins(state: dict[str, Any]) -> set[tuple[str, str]]:
+    """Bounded references to result/delivery records still closing an item."""
+    return {
+        (basis["delivery_sha256"], basis["core_sha256"])
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict) and item.get("status") == "pass"
+        for basis in [item.get("completion_basis")]
+        if isinstance(basis, dict)
+        and isinstance(basis.get("delivery_sha256"), str)
+        and isinstance(basis.get("core_sha256"), str)
+    }
+
+
+def _trim_response_delivery(state: dict[str, Any]) -> None:
+    records = state["response_delivery"]["records"]
+    pinned_digests = {digest for digest, _ in _ordinary_completion_pins(state)}
+    keep = {index for index, record in enumerate(records)
+            if record.get("delivery_sha256") in pinned_digests}
+    recent = 0
+    for index in range(len(records) - 1, -1, -1):
+        if index in keep:
+            continue
+        if recent >= delivery().MAX_DELIVERY_RECORDS:
+            break
+        keep.add(index)
+        recent += 1
+    state["response_delivery"]["records"] = [record for index, record in enumerate(records)
+                                              if index in keep]
 
 
 def status_context(state: dict[str, Any]) -> str:
@@ -14662,6 +15788,33 @@ def _patch_change_lines(text: str) -> list[str] | None:
     return result
 
 
+def _host_parsed_display_matches(command: str, display: Any, shell: str) -> bool:
+    """Accept only a POSIX single-operation display with ordinary quotes elided.
+
+    The Host's invoked script still has to match the Hook input byte for byte.
+    Its parsed display is a second corroboration, not a replacement command.
+    """
+    if display == command:
+        return True
+    if shell not in {"sh", "bash", "zsh"} or not isinstance(display, str):
+        return False
+    if (shell_control_operator_present(command) or shell_control_operator_present(display)
+            or any(mark in command + display for mark in "<>$*?~")):
+        return False
+    tokens = _command_tokens(command, posix=True)
+    if not (
+        len(tokens) == 2 and tokens[0] in {"cat", "pytest", "py.test"}
+        or len(tokens) == 3 and tokens[:2] == ["test", "-f"]
+        or len(tokens) == 4 and tokens[:3] in (["python", "-m", "pytest"],
+                                                ["python3", "-m", "pytest"])
+    ):
+        return False
+    # shlex.join is the deterministic POSIX rendering of the complete argv.
+    # A displayed prefix, another target, or a whitespace-ambiguous path
+    # cannot equal this full rendering.
+    return shlex.join(tokens) == display
+
+
 def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
     """A structured terminal result corroborated by the current Hook call."""
     matches = _host_transcript_items(state, payload)
@@ -14687,7 +15840,8 @@ def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict
         if (not command or not isinstance(invoked, list) or len(invoked) != 3
                 or not supported_invocation or invoked[-1] != command
                 or not isinstance(parsed, list) or len(parsed) != 1
-                or not isinstance(parsed[0], dict) or parsed[0].get("cmd") != command
+                or not isinstance(parsed[0], dict)
+                or not _host_parsed_display_matches(command, parsed[0].get("cmd"), shell)
                 or not isinstance(cwd, str)):
             return None
         try:
@@ -15088,9 +16242,24 @@ def core_shell_observation(
                               reversed(state.get("requirements", []))
                               if item.get("work_unit_id") == active_unit
                               and item.get("prompt_id")), str(unit["prompt_id"]))
+    pytest_terminal = None
+    if predicate == "test_passed" and isinstance(host_terminal, dict):
+        output = host_terminal.get("stdout")
+        code = host_terminal.get("exit_code")
+        if host_terminal.get("type") == "command" and type(code) is int and isinstance(output, str):
+            summaries = re.findall(
+                r"(?m)^\s*(\d+)\s+(passed|failed|error|errors)"
+                r"(?:\s+in\s+[\d.]+s)?\s*$", output)
+            if len(summaries) == 1:
+                pytest_terminal = (code, int(summaries[0][0]), summaries[0][1])
+        if outcome != "success" and (pytest_terminal is None or pytest_terminal[2] == "passed"):
+            return None  # A shell or approval failure did not prove pytest ran.
+    if predicate == "test_passed" and outcome != "success":
+        predicate = "test_run_completed"
     observation = {
         "kind": kind, "predicate": predicate, "target": target,
-        "outcome": "success" if outcome == "success" else "failure",
+        "outcome": "success" if outcome == "success" or (
+            predicate == "test_run_completed" and pytest_terminal is not None) else "failure",
         "unit": str(active_unit),
         "prompt_id": current_prompt_id,
         "turn": str(payload.get("turn_id") or ""),
@@ -15111,6 +16280,12 @@ def core_shell_observation(
             except UnicodeError:
                 return None
         observation["content_sha256"] = sha256_text(payload["tool_response"]["output"])
+    elif predicate in {"test_passed", "test_run_completed"} and pytest_terminal is not None:
+        # The exit status is the success authority. A bounded, unambiguous
+        # pytest summary supplies only the count needed to check a later
+        # user-facing report; arbitrary stdout never supplies test success.
+        observation["terminal_exit_code"] = pytest_terminal[0]
+        observation["passed_count" if pytest_terminal[2] == "passed" else "failed_count"] = pytest_terminal[1]
     return observation
 
 
@@ -16120,7 +17295,12 @@ def checkpoint_issues(
                     issues.append(
                         f"{item_id} references unknown evidence {evidence_id}"
                     )
-                elif evidence.get("outcome") != "success":
+                elif evidence.get("outcome") != "success" and not (
+                    item.get("completion_basis", {}).get("predicate") == "test_and_report"
+                    and evidence_id in item["completion_basis"].get("host_evidence_ids", [])
+                    and _ordinary_completion_basis_valid(
+                        state, item, int(state.get("core_event_sequence") or 0))
+                ):
                     issues.append(
                         f"{item_id} references non-success evidence {evidence_id} "
                         f"(outcome={evidence.get('outcome') or 'unknown'})"
@@ -16529,7 +17709,7 @@ def handle_stop(
         except delivery_mod.DeliveryValueError:
             return None
         records.append(record)
-        del records[:-delivery_mod.MAX_DELIVERY_RECORDS]
+        _trim_response_delivery(state)
         ledger["sequence"] = sequence
         state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
         return record
@@ -16551,6 +17731,22 @@ def handle_stop(
                         state, session_dir, delivered_record)
                     if mixed is not None:
                         decision.setdefault("core_projections", []).append(mixed)
+                    exact_edit = delivered_exact_edit_readback_projection(
+                        state, session_dir, delivered_record, text)
+                    if exact_edit is not None:
+                        decision.setdefault("core_projections", []).append(exact_edit)
+                        if len(decision["core_projections"]) <= 16 and retire_verified_ordinary_core_result(
+                                state, exact_edit, delivered_record):
+                            decision.setdefault("reason_codes", []).append(
+                                "ordinary_core_result_verified")
+                    current_test = delivered_current_test_projection(
+                        state, session_dir, delivered_record, text)
+                    if current_test is not None:
+                        decision.setdefault("core_projections", []).append(current_test)
+                        if len(decision["core_projections"]) <= 16 and retire_verified_ordinary_core_result(
+                                state, current_test, delivered_record):
+                            decision.setdefault("reason_codes", []).append(
+                                "ordinary_core_result_verified")
             except delivery_mod.DeliveryValueError:
                 pass
         # Protocol envelope consumption: the heavy path routes its terminal

@@ -36,6 +36,7 @@ def project_current_action(
     resolved_constraint: str | None = None,
     condition_scope: tuple[str, str] | None = None,
     predicate_name: str | None = None,
+    requested_postimage_sha256: str | None = None,
     return_snapshot: bool = False,
 ) -> dict[str, Any]:
     """Return core projection over the current real root/host event watermark.
@@ -192,6 +193,30 @@ def project_current_action(
                           outcome=observed["outcome"], operation_id=None,
                           requirement_id=str(item["id"]), condition_id=None,
                           invalidates=[]))
+        if (action == "test_verify" and predicate_name == "test_run_completed"
+                and observed["kind"] == "action_event"
+                and observed["predicate"] == "test_passed"
+                and observed["outcome"] == "success"):
+            # A passing test also completed a run. A nonzero terminal run
+            # arrives with its own test_run_completed observation; neither
+            # path turns a failed result into a test_passed fact.
+            facts.append(dict(id=f"run-complete:{eid}", seq=seq, unit=uid,
+                              revision=revision, source_id=key,
+                              call_source_id=f"call:{eid}", kind="action_event",
+                              target=target, predicate="test_run_completed",
+                              outcome="success", operation_id=None,
+                              requirement_id=str(item["id"]), condition_id=None,
+                              invalidates=[]))
+        if (action == "state_readback" and observed["kind"] == "state_readback"
+                and observed.get("predicate") == "content_hash"
+                and isinstance(observed.get("content_sha256"), str)):
+            facts.append(dict(id=f"readback:{eid}", seq=seq, unit=uid,
+                              revision=revision, source_id=key,
+                              call_source_id=f"call:{eid}", kind="action_event",
+                              target=target, predicate="readback_complete",
+                              outcome=observed["outcome"], operation_id=None,
+                              requirement_id=str(item["id"]), condition_id=None,
+                              invalidates=[]))
         if observed["kind"] in {"state_readback", "action_event"}:
             edit_observations.append((seq, eid, observed))
         if kind == "readiness" and observed["outcome"] == "success":
@@ -234,6 +259,9 @@ def project_current_action(
                     # name the same bytes; an earlier read is optional.
                     state_matches = (pending_post == content_hash if pending_post is not None
                                      else content_hash != pending_before)
+                    if requested_postimage_sha256 is not None:
+                        state_matches = (state_matches
+                                         and content_hash == requested_postimage_sha256)
                     facts.append(dict(id=f"edit-state:{eid}", seq=seq, unit=active,
                                       revision=_revision(prompt_id), source_id=f"result:{eid}",
                                       call_source_id=f"call:{eid}", kind="state_outcome",

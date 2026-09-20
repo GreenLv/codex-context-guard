@@ -161,6 +161,647 @@ class HostTerminalWireTests(unittest.TestCase):
                          hashlib.sha256(str(target).encode()).hexdigest())
         self.assertTrue(rows[0]["certifiable"])
 
+    @unittest.skipIf(os.name == "nt", "POSIX Host parsed-command display shape")
+    def test_host_cat_display_may_remove_only_ordinary_posix_quoting(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=on\n")
+        self.start(f"请修改 {target}，并核对改动后的文件。")
+        command = f"cat '{target}'"
+        display = f"cat {target}"
+        self.command("quoted-cat", command, stdout="mode=on\n",
+                     response="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": display,
+                                  "name": target.name, "path": str(target)}])
+        fact = self.state()["evidence"][-1]
+        self.assertEqual(fact["outcome_basis"], "host_transcript_exit_code")
+        self.assertEqual(fact["core_observation"]["predicate"], "content_hash")
+
+    @unittest.skipIf(os.name == "nt", "POSIX Host parsed-command display shape")
+    def test_host_display_cannot_shrink_compound_redirect_or_wrong_target(self):
+        target = self.cwd / "config.txt"
+        other = self.cwd / "other.txt"
+        self.write_file(target, "mode=on\n")
+        self.write_file(other, "else\n")
+        self.start(f"请修改 {target}，并核对改动后的文件。")
+        for index, (command, display) in enumerate((
+            (f"cat '{target}'; echo done", f"cat {target}"),
+            (f"cat '{target}' > {other}", f"cat {target}"),
+            (f"cat '{target}'", f"cat {other}"),
+        )):
+            with self.subTest(index=index):
+                self.command(f"display-{index}", command, stdout="mode=on\n",
+                             response="mode=on\n",
+                             parsed_cmd=[{"type": "read", "cmd": display}])
+                self.assertEqual(self.state()["evidence"][-1]["outcome"], "unknown")
+
+    def test_host_display_does_not_guess_windows_whitespace_argv(self):
+        command = r"cat 'C:\Work Space\config.txt'"
+        display = r"cat C:\Work Space\config.txt"
+        self.assertFalse(cg._host_parsed_display_matches(command, display, "pwsh.exe"))
+
+    @unittest.skipIf(os.name == "nt", "POSIX Host parsed-command display shape")
+    def test_quoted_cat_host_failure_remains_failed(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=on\n")
+        self.start(f"请核对 {target} 的内容。")
+        command = f"cat '{target}'"
+        self.command("failed-quoted-cat", command, code=1, stdout="",
+                     response="cat failed",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}"}])
+        fact = self.state()["evidence"][-1]
+        self.assertEqual(fact["outcome"], "failed")
+        self.assertNotIn("core_observation", fact)
+
+    def test_direct_backtick_pytest_object_binds_current_test(self):
+        suite = self.cwd / "current_suite.py"
+        self.write_file(suite, "def test_current(): assert True\n")
+        command = f"pytest '{suite}'"
+        self.start(f"现在通过宿主 Bash 单独运行 `{command}`，并根据本次真实退出结果报告测试。")
+        self.command("current-test", command, stdout="1 passed\n", response="1 passed\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="本次测试退出码 0，1 passed。"))
+        evidence = self.state()["evidence"][-1]
+        self.assertEqual(evidence["core_observation"]["predicate"], "test_passed")
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertTrue(any(row["predicate"] == "test_run_completed"
+                            and row["predicate_state"] == "satisfied" for row in rows))
+
+    def test_direct_backtick_cat_object_binds_independent_current_readback(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=on\n")
+        command = f"cat '{target}'"
+        self.start(f"请用宿主 Bash 调用 `{command}` 完整回读该文件。")
+        self.command("single-read", command, stdout="mode=on\n", response="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                  "name": target.name, "path": str(target)}])
+        cg.dispatch(self.event("Stop", last_assistant_message="已回读文件。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertTrue(any(row["predicate"] == "readback_complete"
+                            and row["predicate_state"] == "satisfied" for row in rows))
+
+    def test_single_same_root_file_referent_binds_later_direct_edit(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=off\n")
+        root = (f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                '请用宿主文件编辑工具直接把它改为恰好 mode=on 加一个换行，无需编辑前读取；'
+                f"然后用独立的宿主 Bash 调用 `cat '{target}'` 完整回读该文件，并根据真实回读报告实际内容。")
+        self.start(root)
+        self.patch("anaphoric-edit", target, "mode=off\n", "mode=on\n")
+        command = f"cat '{target}'"
+        self.command("anaphoric-read", command, stdout="mode=on\n", response="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                  "name": target.name, "path": str(target)}])
+        cg.dispatch(self.event("Stop", last_assistant_message="已修改并回读：mode=on 加一个换行。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertTrue(any(row["predicate"] == "state_matches"
+                            and row["predicate_state"] == "satisfied" for row in rows))
+        observed = [e["core_observation"] for e in self.state()["evidence"]
+                    if isinstance(e.get("core_observation"), dict)]
+        self.assertEqual([e["predicate"] for e in observed], ["edit_applied", "content_hash"])
+        aggregate = next(row for row in rows if row["predicate"] == "edit_readback_and_report")
+        self.assertEqual(aggregate["predicate_state"], "satisfied")
+        self.assertTrue(aggregate["certifiable"])
+        self.assertEqual(aggregate["unknown_coverage_count"], 0)
+
+    def test_same_root_replacement_requires_exact_postimage_and_independent_readback(self):
+        target = self.cwd / "config.txt"
+        root = (f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行；'
+                f"然后调用 `cat '{target}'` 完整回读并报告。")
+        for index, actual in enumerate(("mode=off\n", "mode=on", "mode=on\n")):
+            with self.subTest(actual=actual):
+                self.session_id = f"postimage-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.write_file(target, "old\n")
+                self.start(root)
+                self.patch(f"postimage-edit-{index}", target, "old\n", actual)
+                self.command(f"postimage-read-{index}", f"cat '{target}'",
+                             stdout=actual, response=actual,
+                             parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                          "name": target.name, "path": str(target)}])
+                basis = cg._current_action_basis(
+                    self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+                    include_satisfied=True, include_unready=True)
+                self.assertIsNotNone(basis)
+                self.assertEqual(basis["predicate_state"],
+                                 "satisfied" if actual == "mode=on\n" else "insufficient")
+
+    def test_later_edit_invalidates_prior_matching_readback(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "old\n")
+        self.start(f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行。')
+        self.patch("first-edit", target, "old\n", "mode=on\n")
+        self.command("first-read", f"cat '{target}'", stdout="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                  "name": target.name, "path": str(target)}])
+        session_dir = self.root / "private/sessions" / self.session_id
+        first = cg._current_action_basis(self.state(), "local_edit", "", session_dir,
+                                         include_satisfied=True)
+        self.assertEqual(first["predicate_state"], "satisfied")
+        self.patch("later-edit", target, "mode=on\n", "changed\n")
+        later = cg._current_action_basis(self.state(), "local_edit", "", session_dir,
+                                         include_satisfied=True, include_unready=True)
+        self.assertEqual(later["predicate_state"], "insufficient")
+        self.assertGreater(later["as_of"], first["as_of"])
+
+    def test_report_clause_does_not_erase_independent_current_review_or_extra_action(self):
+        target = self.cwd / "current_suite.py"
+        other = self.cwd / "other.txt"
+        self.write_file(target, "def test_current(): assert True\n")
+        self.write_file(other, "untouched\n")
+        self.start("现在评估这次修改的效果并报告结果。")
+        self.command("review-ready", f"test -f {target}", response="")
+        session_dir = self.root / "private/sessions" / self.session_id
+        review = cg._current_action_basis(self.state(), "local_review", "", session_dir,
+                                          include_unready=True)
+        self.assertIsNotNone(review)
+        self.assertEqual(review["action"], "evaluate_current_effect")
+        self.session_id = "mixed-extra-action"
+        self.rows = [self.record("session_meta", {
+            "id": self.session_id, "session_id": self.session_id})]
+        self.write_rows()
+        command = f"pytest '{target}'"
+        self.start(f"请运行 `{command}`，并根据结果报告并检查文件 {other}。")
+        self.command("test-only", command, stdout="1 passed\n", response="1 passed\n")
+        test = cg._current_action_basis(
+            self.state(), "test_verify", "", self.root / "private/sessions" / self.session_id,
+            include_satisfied=True)
+        self.assertIsNotNone(test)
+        self.assertFalse(test["core_projection"]["certifiable"])
+        self.assertTrue(test["core_projection"]["unknown_coverage"])
+
+    def test_anaphoric_edit_does_not_promote_report_or_question(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "off\n")
+        roots = (
+            f'日志写着：“已知 "{target}"。请把它改为 mode=on。”',
+            f'已知 "{target}"。不要把它改为 mode=on。',
+            f'如果将来需要处理 "{target}"，再把它改为 mode=on；本轮只解释。',
+            "请把它改为 mode=on。",
+        )
+        for index, root in enumerate(roots):
+            with self.subTest(index=index):
+                self.session_id = f"referent-negative-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.start(root)
+                self.patch(f"negative-edit-{index}", target, "off\n", "mode=on\n")
+                self.assertIsNone(cg._current_action_basis(
+                    self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+                    include_satisfied=True))
+
+    def test_anaphoric_edit_does_not_choose_between_two_same_root_objects(self):
+        first, second = self.cwd / "A.txt", self.cwd / "B.txt"
+        self.write_file(first, "off\n")
+        self.write_file(second, "off\n")
+        self.start(f'已知 "{first}" 和 "{second}"。请把它改为 on。')
+        self.patch("ambiguous-edit", first, "off\n", "on\n")
+        self.assertIsNone(cg._current_action_basis(
+            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            include_satisfied=True))
+        self.session_id = "ambiguous-english"
+        self.rows = [self.record("session_meta", {
+            "id": self.session_id, "session_id": self.session_id})]
+        self.write_rows()
+        self.start(f'Both "{first}" and "{second}" were mode=off. '
+                   'Update it to mode=on plus newline and read it back.')
+        self.patch("ambiguous-english-edit", first, "on\n", "mode=on\n")
+        self.assertIsNone(cg._current_action_basis(
+            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            include_satisfied=True))
+
+    def test_same_root_referent_and_readback_synonyms_close_from_real_host_facts(self):
+        target = self.cwd / "config.txt"
+        roots = (
+            f'已知 "{target}" 当前是 mode=off 后跟换行。现在请将该文件内容更新为 mode=on 后跟换行，'
+            f"随后单独执行 `cat '{target}'` 核对，并据实告知内容。",
+            f'这个文件 "{target}" 原为 mode=off 加换行。请修成 mode=on 加换行，'
+            f"再通过独立的 `cat '{target}'` 读取它并说明读到的内容。",
+            f'The file "{target}" currently says mode=off followed by a newline. '
+            f"Change it to mode=on followed by a newline, then read it with a separate `cat '{target}'` call and report the actual bytes.",
+            f'Please edit "{target}" to mode=on plus newline, then run '
+            f"`cat '{target}'` separately and report what it returned.",
+        )
+        for index, root in enumerate(roots):
+            with self.subTest(index=index):
+                self.session_id = f"synonym-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.write_file(target, "mode=off\n")
+                self.start(root)
+                self.patch(f"synonym-edit-{index}", target, "mode=off\n", "mode=on\n")
+                command = f"cat '{target}'"
+                self.command(f"synonym-read-{index}", command, stdout="mode=on\n",
+                             response="mode=on\n",
+                             parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                          "name": target.name, "path": str(target)}])
+                cg.dispatch(self.event("Stop", last_assistant_message="已回读：mode=on 加一个换行。"))
+                rows = self.state()["decision_log"][-1]["core_projections"]
+                aggregate = next(r for r in rows if r["predicate"] == "edit_readback_and_report")
+                self.assertTrue(aggregate["certifiable"])
+                self.assertEqual(aggregate["unknown_coverage_count"], 0)
+
+    def test_exact_edit_delivery_does_not_claim_unreported_or_extra_work(self):
+        target = self.cwd / "config.txt"
+        other = self.cwd / "other.txt"
+        roots = (
+            (f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行；'
+             f"然后运行 `cat '{target}'` 完整回读并报告。", False),
+            (f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行；'
+             f"然后运行 `cat '{target}'` 完整回读并报告并修复 {other}。", True),
+        )
+        for index, (root, extra_action) in enumerate(roots):
+            with self.subTest(index=index):
+                self.session_id = f"unreported-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.write_file(target, "old\n")
+                self.write_file(other, "untouched\n")
+                self.start(root)
+                self.patch(f"unreported-edit-{index}", target, "old\n", "mode=on\n")
+                self.command(f"unreported-read-{index}", f"cat '{target}'",
+                             stdout="mode=on\n", response="mode=on\n",
+                             parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                          "name": target.name, "path": str(target)}])
+                reply = ("已回读：mode=on 加一个换行。" if extra_action
+                         else "已完成操作。")
+                cg.dispatch(self.event("Stop", last_assistant_message=reply))
+                rows = self.state()["decision_log"][-1]["core_projections"]
+                self.assertFalse(any(r["predicate"] == "edit_readback_and_report"
+                                     and r["certifiable"] for r in rows))
+
+    def test_quoted_target_bytes_are_not_an_actual_readback_report(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "old\n")
+        self.start(f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                   '请把它改为恰好 mode=on 加一个换行；'
+                   f"然后调用 `cat '{target}'` 完整回读并报告内容。")
+        self.patch("edit", target, "old\n", "mode=on\n")
+        self.command("read", f"cat '{target}'", stdout="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                  "name": target.name, "path": str(target)}])
+        cg.dispatch(self.event("Stop", last_assistant_message=(
+            "说明文字里出现 mode=on 加一个换行；实际文件内容我未核验。")))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertFalse(any(r["predicate"] == "edit_readback_and_report"
+                             and r["certifiable"] for r in rows))
+
+    def test_actual_current_file_report_requires_one_attributed_complete_value(self):
+        target = self.cwd / "config.txt"
+        root = (f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                '请把它改为恰好 mode=on 加一个换行；'
+                f"然后调用 `cat '{target}'` 完整回读并报告内容。")
+        actual_model_shape = ("已完成修改。独立 Bash `cat` 完整回读结果为：\n\n"
+                              "```text\nmode=on\n```\n\n"
+                              "实际文件内容恰好为 `mode=on` 加一个换行。")
+        cases = (
+            (actual_model_shape, True),
+            ("我核对了本次 config.txt 的完整回读：文件内容是 mode=on，末尾有一个换行。", True),
+            ("已独立回读当前文件，读到 mode=on 加一个换行。", True),
+            ("已独立回读当前文件，读到 mode=on 加一个换行。以后可以观察另一个文件的变化。", True),
+            ("以后可以观察另一个文件的变化。\n已独立回读当前文件，读到 mode=on 加一个换行。", True),
+            ("已独立回读当前文件，读到 mode=on 加一个换行。另一个文件的内容是 mode=off 加一个换行。", True),
+            ("已独立回读当前文件，读到 mode=off 加一个换行。另一个文件的内容是 mode=on 加一个换行。", False),
+            ("已回读当前文件。\n\n以下是说明文档的示例：\n```text\nmode=on\n```", False),
+            ("已回读当前文件。\n\n另一个文件的内容：\n```text\nmode=on\n```", False),
+            ("已回读当前文件：以下是说明文档的示例：\n```text\nmode=on\n```", False),
+            ("已回读当前文件，另一个文件的内容是 mode=on 加一个换行。", False),
+            ("已回读另一个文件，其中有 mode=on 加一个换行。", False),
+            ("已回读说明文档，示例写着 mode=on 加一个换行。", False),
+            ("实际回读 config.txt 得到 mode=off 加一个换行。", False),
+            ("用户原话是‘请报告 mode=on 加一个换行’；我尚未说明实际读到什么。", False),
+            ("测试输出中包含 mode=on 加一个换行。", False),
+            ("实际回读当前文件：\n```text\nmode=onX\n```\n实际文件内容是 mode=on 加一个换行。", False),
+            ("实际回读当前文件：\n```text\nmode=on```\n实际文件内容是 mode=on 加一个换行。", False),
+            ("我实际回读当前文件得到 mode=on 加一个换行。再次说明：实际内容是 mode=off 加一个换行。", False),
+            ("稍后我会回读并报告 mode=on 加一个换行。", False),
+            ("mode=on 加一个换行。", False),
+            ("另一个文件的实际内容是 mode=on 加一个换行。", False),
+            ("日志引述：‘我已回读当前文件，读到 mode=on 加一个换行。’", False),
+        )
+        for index, (final, expected) in enumerate(cases):
+            with self.subTest(index=index):
+                self.session_id = f"report-attribution-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.write_file(target, "mode=off\n")
+                self.start(root)
+                self.patch(f"edit-{index}", target, "mode=off\n", "mode=on\n")
+                self.readback(f"read-{index}", target, "mode=on\n")
+                cg.dispatch(self.event("Stop", last_assistant_message=final))
+                rows = self.state()["decision_log"][-1]["core_projections"]
+                certified = any(row["predicate"] == "edit_readback_and_report"
+                                and row["certifiable"] for row in rows)
+                self.assertEqual(certified, expected)
+
+    def test_exact_edit_readback_report_completion_survives_reload(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=off\n")
+        self.start(f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                   '请把它改为恰好 mode=on 加一个换行；'
+                   f"然后调用 `cat '{target}'` 完整回读并报告内容。")
+        self.patch("edit", target, "mode=off\n", "mode=on\n")
+        self.readback("read", target, "mode=on\n")
+        final = ("已完成修改。独立 Bash `cat` 完整回读结果为：\n\n"
+                 "```text\nmode=on\n```\n\n"
+                 "实际文件内容恰好为 `mode=on` 加一个换行。")
+        self.assertEqual(cg.dispatch(self.event("Stop", last_assistant_message=final)), {})
+        state = self.state()
+        aggregate = next(row for row in state["decision_log"][-1]["core_projections"]
+                         if row["predicate"] == "edit_readback_and_report")
+        self.assertTrue(aggregate["certifiable"])
+        item = next(row for row in state["requirements"]
+                    if row["id"] == aggregate["requirement_id"])
+        self.assertEqual(item["status"], "pass")
+        self.assertTrue(state["proofs"])
+        self.assertEqual(item["completion_basis"]["host_evidence_ids"], ["E0001", "E0002"])
+        self.assertEqual(state["open_items"], [])
+        self.assertEqual(state["response_delivery"]["records"][-1]["resolution"], "verified")
+        self.assertFalse(cg.current_scope_projection(state)["current_item_ids"])
+        cg.validate_state_integrity(state)
+        self.assertEqual(self.state()["requirements"], state["requirements"])
+        cg.dispatch(self.event("Stop", last_assistant_message=final))
+        reloaded = self.state()
+        self.assertEqual(reloaded["requirements"], state["requirements"])
+        self.assertEqual(reloaded["open_items"], [])
+        for change in ("missing_host", "wrong_delivery", "wrong_core",
+                       "evicted_delivery", "evicted_core", "enforced_contract"):
+            with self.subTest(change=change):
+                altered = json.loads(json.dumps(state))
+                item = altered["requirements"][0]
+                if change == "missing_host":
+                    item["completion_basis"]["host_evidence_ids"] = ["E0999", "E0002"]
+                elif change == "wrong_delivery":
+                    item["completion_basis"]["delivery_sha256"] = "0" * 64
+                elif change == "wrong_core":
+                    item["completion_basis"]["core_sha256"] = "0" * 64
+                elif change == "evicted_delivery":
+                    altered["response_delivery"]["records"] = []
+                    altered["response_delivery"]["sequence"] = 513
+                elif change == "evicted_core":
+                    altered["decision_log"] = []
+                else:
+                    altered["proofs"] = []
+                altered["content_hash"] = cg.state_content_hash(altered)
+                with self.assertRaises(cg.StateIntegrityError):
+                    cg.validate_state_integrity(altered)
+        # Normal bounded diagnostics may rotate repeatedly. They must not
+        # evict the source-bound ordinary result that still closes this item.
+        for index in range(cg.delivery().MAX_DELIVERY_RECORDS + 4):
+            self.turn_id = f"later-turn-{index}"
+            cg.dispatch(self.event("Stop", last_assistant_message="后续说明已交付。"))
+        retained = self.state()
+        self.assertEqual(retained["requirements"], state["requirements"])
+        self.assertEqual(retained["open_items"], [])
+        self.assertTrue(any(record["delivery_sha256"] == item["completion_basis"]["delivery_sha256"]
+                            for record in retained["response_delivery"]["records"]))
+        self.assertEqual(len(retained["response_delivery"]["records"]),
+                         cg.delivery().MAX_DELIVERY_RECORDS + 1)
+        self.assertTrue(any(
+            row.get("core_projection") == aggregate["core_projection"]
+            for decision in retained["decision_log"]
+            for row in decision.get("core_projections", [])))
+        cg.validate_state_integrity(retained)
+
+    def test_seventeen_distinct_ordinary_results_keep_their_completion_sources(self):
+        # The retention policy is per completed source, not a second quota on
+        # how many independent, already-verified work items a session may hold.
+        state = {"requirements": [], "acceptance_items": [],
+                 "decision_log": [], "response_delivery": {"records": []}}
+        for index in range(17):
+            digest = hashlib.sha256(f"delivery-{index}".encode()).hexdigest()
+            core = {"index": index}
+            state["requirements"].append({
+                "status": "pass", "completion_basis": {
+                    "delivery_sha256": digest,
+                    "core_sha256": cg.sha256_text(cg.canonical_json(core))}})
+            state["decision_log"].append({"core_projections": [{
+                "delivery_sha256": digest, "core_projection": core}]})
+            state["response_delivery"]["records"].append({"delivery_sha256": digest})
+        for index in range(40):
+            cg.append_decision_log(state, {}, f"later-{index}")
+            state["response_delivery"]["records"].append({
+                "delivery_sha256": hashlib.sha256(f"later-{index}".encode()).hexdigest()})
+            cg._trim_response_delivery(state)
+        self.assertEqual(len(cg._ordinary_completion_pins(state)), 17)
+        self.assertTrue(all(any(row.get("core_projection") == {"index": index}
+                                for decision in state["decision_log"]
+                                for row in decision.get("core_projections", []))
+                            for index in range(17)))
+        self.assertEqual(len(state["response_delivery"]["records"]), 57)
+
+    def test_current_test_and_actual_result_report_close_together(self):
+        suite = self.cwd / "current_suite.py"
+        self.write_file(suite, "def test_current(): assert True\n")
+        command = f"pytest '{suite}'"
+        root = (f"现在通过宿主 Bash 单独运行 `{command}`，"
+                "并根据本次真实退出结果报告测试。")
+        cases = (
+            (0, "1 passed\n", "测试成功。\n- 退出码 0\n- 收集测试 1\n- 通过 1\n- 耗时0.00s", True),
+            (0, "1 passed\n", "测试成功。\n- 退出码：`0`\n- 收集测试：`1`\n- 通过：`1`\n- 耗时：`0.00s`", True),
+            (1, "1 failed\n", "测试失败。退出码 1，失败 1。", True),
+            (1, "1 failed\n", "测试成功。\n- 退出码 0\n- 通过 1", False),
+            (0, "1 passed\n", "测试成功。\n- 退出码 0\n- 通过 2", False),
+            (0, "1 passed\n", "稍后报告本次测试结果。", False),
+            (0, "1 passed\n", "另一个测试套件成功。退出码 0，通过 1。", False),
+            (0, "1 passed\n", "执行情况另述。\n> 测试成功。退出码 0，通过 1。", False),
+            (0, "1 passed\n", "测试成功。退出码 0，通过 1。Future test speed may warrant observation.", True),
+            (0, "1 passed\n", "Future test speed may warrant observation.\n测试成功。退出码 0，通过 1。", True),
+            (0, "1 passed\n", "测试成功。退出码 0，通过 1。另一个测试套件未来可能需要观察。", True),
+            (0, "1 passed\n", "测试成功。退出码 0，通过 2。另一个测试套件未来可能需要观察。", False),
+        )
+        for index, (code, stdout, final, expected) in enumerate(cases):
+            with self.subTest(index=index):
+                self.session_id = f"test-report-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.start(root)
+                self.command(f"test-{index}", command, code=code, stdout=stdout)
+                cg.dispatch(self.event("Stop", last_assistant_message=final))
+                rows = self.state()["decision_log"][-1]["core_projections"]
+                certified = any(row["predicate"] == "test_and_report"
+                                and row["certifiable"] for row in rows)
+                self.assertEqual(certified, expected)
+                statuses = {item["id"]: item["status"] for item in
+                            self.state()["requirements"] + self.state()["acceptance_items"]}
+                self.assertEqual(set(statuses.values()), {"pass" if expected else "pending"})
+                if expected:
+                    self.assertEqual(self.state()["open_items"], [])
+                    self.assertEqual(self.state()["response_delivery"]["records"][-1]["resolution"],
+                                     "verified")
+                    saved = self.state()
+                    chosen = {item["id"]: list(item["evidence"])
+                              for item in saved["requirements"] + saved["acceptance_items"]}
+                    checkpoint = cg.private_checkpoint(
+                        saved,
+                        {key: value for key, value in chosen.items() if key.startswith("R")},
+                        {key: value for key, value in chosen.items() if key.startswith("A")},
+                    )
+                    self.assertEqual(cg.checkpoint_issues(saved, checkpoint), [])
+
+    def test_test_input_path_does_not_invent_artifact_readback_proof(self):
+        suite = self.cwd / "suite.py"
+        self.write_file(suite, "def test_current(): assert True\n")
+        cases = (
+            (f"请运行 `pytest '{suite}'` 并报告结果。", False),
+            (f"请运行 `pytest '{suite}'`；并读取 {suite} 的完整内容。", True),
+            (f"日志写着：请运行 `pytest '{suite}'`。", False),
+        )
+        for index, (root, explicit_read) in enumerate(cases):
+            with self.subTest(index=index):
+                self.session_id = f"test-proof-source-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.start(root)
+                obligations = [obligation for item in self.state()["requirements"]
+                               for obligation in item["verification_contract"]["obligations"]]
+                self.assertEqual(any(obligation["kind"] == "subject_readback"
+                                     for obligation in obligations), explicit_read)
+
+    def test_coordinated_test_and_read_keep_only_readback_subject(self):
+        suite = self.cwd / "suite.py"
+        other = self.cwd / "other.py"
+        self.write_file(suite, "def test_current(): assert True\n")
+        self.write_file(other, "other\n")
+        cases = (
+            (f"读取 {suite} 的完整文件内容并运行 pytest {suite} 验证。", suite),
+            (f"运行 pytest {suite} 并读取 {suite} 的完整文件内容。", suite),
+            (f"运行 pytest {suite} 并读取 {other} 的完整文件内容。", other),
+            (f"运行 pytest {suite}，然后读取该文件的完整内容。", suite),
+            (f"运行 pytest {suite}。", None),
+            (f"请运行 `pytest {suite} 并读取 {other}`。", None),
+            (f"Run pytest {suite} and read the complete contents of {other}.", other),
+            (f"Read the complete contents of {other} and run pytest {suite}.", other),
+            (f"Run pytest {suite}. Then read {other} in full.", other),
+            (f"Run pytest {suite}.", None),
+            (f"Run `pytest {suite} and read {other}`.", None),
+        )
+        for root, expected in cases:
+            with self.subTest(root=root):
+                contract = cg.verification_contract("R001", root, {"assets": []}, [])
+                readbacks = [obligation for obligation in contract["obligations"]
+                             if obligation["kind"] == "subject_readback"]
+                if expected is None:
+                    self.assertEqual(readbacks, [])
+                else:
+                    self.assertEqual(len(readbacks), 1)
+                    self.assertEqual(readbacks[0]["subject_ids"],
+                                     [cg.prompt_subjects(str(expected))[0]["id"]])
+                self.assertFalse(any(obligation["kind"] == "scope_coverage"
+                                     for obligation in contract["obligations"]))
+
+    def test_file_readback_quantity_does_not_swallow_separate_proof(self):
+        path = "/work/a.txt"
+        roots = (
+            (f"Read the complete contents of {path}.", True),
+            (f"读取 {path} 的完整文件内容。", True),
+            (f"然后调用 `cat '{path}'` 完整回读并报告内容。", True),
+            (f"然后调用 `cat '{path}'` 完整回读并检查项目所有文件。", False),
+            (f"Read the complete contents of {path} and check all files in this project.", False),
+            (f"Read the complete contents of {path}; check all files in this project.", False),
+            (f"读取 {path} 的完整文件内容并检查项目所有文件。", False),
+            (f"读取 {path} 的完整文件内容；检查项目所有文件。", False),
+            (f"Read the complete contents of {path} and prove all generated artifacts "
+             "meet the unspecified acceptance criteria.", False),
+            (f"Read the complete contents of {path}; prove all generated artifacts "
+             "meet the unspecified acceptance criteria.", False),
+            (f"读取 {path} 的完整文件内容，并证明所有生成制品符合尚未提供的验收标准。", False),
+            (f"Run pytest /work/suite.py and read the complete contents of {path}.", True),
+        )
+        for root, readback_only in roots:
+            with self.subTest(root=root):
+                contract = cg.verification_contract("R001", root, {"assets": []}, [])
+                if not readback_only:
+                    self.assertEqual((contract["mode"], contract["reason"]),
+                                     ("legacy_fallback", "scope_not_constructible"))
+                    continue
+                self.assertEqual(contract["mode"], "enforced")
+                self.assertEqual([item["kind"] for item in contract["obligations"]],
+                                 ["subject_readback"])
+                self.assertEqual(contract["obligations"][0]["subject_ids"],
+                                 [cg.prompt_subjects(path)[0]["id"]])
+
+    def test_explicit_pass_target_does_not_accept_terminal_failed_run(self):
+        suite = self.cwd / "current_suite.py"
+        self.write_file(suite, "def test_current(): assert False\n")
+        command = f"pytest '{suite}'"
+        self.start(f"请运行 `{command}` 并确保测试通过。")
+        self.command("failing-test", command, code=1, stdout="1 failed\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="测试失败。退出码 1，失败 1。"))
+        basis = cg._current_action_basis(
+            self.state(), "test_verify", "", self.root / "private/sessions" / self.session_id,
+            include_satisfied=True, include_unready=True)
+        self.assertIsNotNone(basis)
+        self.assertEqual(basis["predicate"], "test_passed")
+        self.assertNotEqual(basis["predicate_state"], "satisfied")
+        self.assertFalse(any(row.get("certifiable") for row in
+                             self.state()["decision_log"][-1]["core_projections"]))
+
+    def test_single_prior_object_cannot_be_the_latter_one(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "old\n")
+        self.start(f'已知 "{target}"。请把后者改为恰好 mode=on 加一个换行。')
+        self.patch("edit", target, "old\n", "mode=on\n")
+        self.command("read", f"cat '{target}'", stdout="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                  "name": target.name, "path": str(target)}])
+        self.assertIsNone(cg._current_action_basis(
+            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            include_satisfied=True))
+
+    def test_context_clause_with_preservation_rule_remains_uninterpreted(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "old\n")
+        self.start(f'已知 "{target}" 且需要保留所有注释。'
+                   '请把它改为恰好 mode=on 加一个换行；'
+                   f"然后运行 `cat '{target}'` 完整回读并报告内容。")
+        self.patch("edit", target, "old\n", "mode=on\n")
+        self.command("read", f"cat '{target}'", stdout="mode=on\n",
+                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
+                                  "name": target.name, "path": str(target)}])
+        cg.dispatch(self.event("Stop", last_assistant_message="已回读：mode=on 加一个换行。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertFalse(any(r["predicate"] == "edit_readback_and_report"
+                             and r["certifiable"] for r in rows))
+
+    def test_anaphoric_edit_does_not_borrow_prior_root_object(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "off\n")
+        self.start(f'已知 "{target}"。')
+        self.turn_id = "later-turn"
+        cg.dispatch(self.event("UserPromptSubmit", prompt="请把它改为 on。"))
+        self.patch("cross-root-edit", target, "off\n", "on\n")
+        self.assertIsNone(cg._current_action_basis(
+            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            include_satisfied=True))
+
+    def test_backtick_test_object_is_not_authority_when_quoted_or_negated(self):
+        suite = self.cwd / "current_suite.py"
+        self.write_file(suite, "def test_current(): assert True\n")
+        command = f"pytest '{suite}'"
+        roots = (
+            f"今后观察 `{command}` 是否变慢；本轮只解释，不运行。",
+            f"日志写着：`{command}`，但我没有要求现在运行。",
+            f"不要运行 `{command}`。",
+            f"`请运行 {command}。`",
+        )
+        for index, root in enumerate(roots):
+            with self.subTest(index=index):
+                self.session_id = f"quote-neg-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                self.start(root)
+                self.assertIsNone(cg._current_action_basis(
+                    self.state(), "test_verify", "", self.root / "private/sessions" / self.session_id,
+                    include_satisfied=True))
+
     def test_quoted_same_file_edit_and_test_remain_distinct(self):
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")
@@ -172,7 +813,7 @@ class HostTerminalWireTests(unittest.TestCase):
         cg.dispatch(self.event("Stop", last_assistant_message="修改和测试已完成。"))
         rows = self.state()["decision_log"][-1]["core_projections"]
         self.assertEqual({row["predicate"] for row in rows},
-                         {"state_matches", "test_passed", "edit_and_test"})
+                         {"state_matches", "test_run_completed", "edit_and_test"})
         self.assertTrue(all(row["predicate_state"] == "satisfied" for row in rows))
         self.assertTrue(next(row for row in rows
                              if row["predicate"] == "edit_and_test")["certifiable"])
@@ -355,7 +996,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.assertEqual(decisions[-2], earlier)
         self.assertTrue(any(row["certifiable"] for row in decisions[-1]["core_projections"]))
 
-    def test_combined_edit_readback_cannot_hide_failed_focused_test(self):
+    def test_combined_edit_readback_preserves_honest_failed_test_result(self):
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")
         locator = self.root_target(target)
@@ -366,7 +1007,8 @@ class HostTerminalWireTests(unittest.TestCase):
         cg.dispatch(self.event("Stop", last_assistant_message="测试未通过。"))
         aggregate = next(row for row in self.state()["decision_log"][-1]["core_projections"]
                          if row["predicate"] == "edit_and_test")
-        self.assertFalse(aggregate["certifiable"])
+        self.assertTrue(aggregate["certifiable"])
+        self.assertEqual(aggregate["predicate_state"], "satisfied")
 
     def test_foreign_turn_file_change_cannot_supply_edit_state(self):
         target = self.cwd / "module.py"

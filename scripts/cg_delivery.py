@@ -266,7 +266,7 @@ def validate_record(raw: Any) -> None:
         raise DeliveryValueError("delivery timestamp is invalid")
 
 
-def validate_ledger(raw: Any) -> None:
+def validate_ledger(raw: Any, *, retained_completion_digests: set[str] | None = None) -> None:
     """Validate the persisted ``response_delivery`` ledger shape."""
     if not isinstance(raw, dict):
         raise DeliveryValueError("response delivery ledger must be an object")
@@ -278,7 +278,10 @@ def validate_ledger(raw: Any) -> None:
     if type(sequence) is not int or sequence < 0:
         raise DeliveryValueError("response delivery ledger sequence is invalid")
     records = raw.get("records")
-    if not isinstance(records, list) or len(records) > MAX_DELIVERY_RECORDS:
+    pinned = retained_completion_digests or set()
+    if (not isinstance(records, list)
+            or sum(record.get("delivery_sha256") not in pinned
+                   for record in records if isinstance(record, dict)) > MAX_DELIVERY_RECORDS):
         raise DeliveryValueError("response delivery ledger exceeds its record limit")
     seen_keys: set[str] = set()
     previous_sequence = 0

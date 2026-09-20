@@ -57,6 +57,22 @@ the persisted observations, even if disk bytes subsequently change without
 a new Host event. Unknown root scope and absent or conflicting readback remain
 uncertified.
 
+The newer source-only ordinary-result slice distinguishes a named pytest
+process reaching a trusted terminal result from a passing test. Synthetic
+Host replays exercise both an honest nonzero run-and-report closure and an
+explicit pass target that stays open. A pure test input path does not create
+an unrelated file-content proof; an independently requested file readback
+still retains it. Exact edit/readback/report and test/run/report closure
+persist bounded evidence and delivery identities, survive reload, and leave
+unsupported extra clauses open. These checks do not reclassify the earlier
+native model capture or establish native behavior of the new bytes.
+The ordinary completion basis must match retained certified core projection
+and verified delivery records. Referenced records survive ordinary bounded
+log rotation; a forged digest or missing record cannot silently certify a
+completed item. The source regression rotates more than the delivery ledger's
+normal recent-record limit without reopening the completed
+requirement.
+
 This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.9`. Release history includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
