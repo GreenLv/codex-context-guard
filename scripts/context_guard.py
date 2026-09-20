@@ -8870,6 +8870,9 @@ def root_absolute_locator_mentions(text: str) -> tuple[set[str], bool]:
 _DIRECT_COMMAND_GOVERNOR_RE = re.compile(
     r"(?:运行|调用|执行|run|execute|invoke)\s*$", re.I,
 )
+_POWERSHELL_BYTE_READBACK_RE = re.compile(
+    r"\[System\.Console\]::Write\(\[System\.IO\.File\]::ReadAllText\('([^'\r\n]+)'\)\)"
+)
 
 
 def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
@@ -8884,6 +8887,11 @@ def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
     match = matches[0]
     prefix = clause[:match.start()].strip()
     suffix = clause[match.end():].strip()
+    if (_stop_outer_reporting_frame(prefix) or any(
+        kind == "quote" and start < match.start() and match.end() < end
+        for start, end, kind in _stop_quotation_regions(clause)
+    )):
+        return None
     governed_read = bool(re.search(
         r"(?:通过|使用)(?:独立的|单独的)?\s*$|\b(?:with|using)\s+(?:a\s+)?(?:separate|independent)\s*$",
         prefix, re.I,
@@ -8893,6 +8901,17 @@ def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
             or DESCRIPTION_FRAME_RE.search(prefix) or clause_is_interrogative(clause)):
         return None
     command = match.group(1)
+    byte_readback = _POWERSHELL_BYTE_READBACK_RE.fullmatch(command)
+    if byte_readback is not None:
+        # This is a literal one-operation source object. The later Host fact
+        # must independently prove PowerShell, physical target, and bytes.
+        # An explicit different shell cannot authorize this expression.
+        if re.search(r"\b(?:bash|zsh|sh|cmd(?:\.exe)?)\b", prefix, re.I):
+            return None
+        target = byte_readback.group(1)
+        if canonical_windows_locator(target) != (target, None):
+            return None
+        return "state_readback", target, match.group(0)
     if (shell_control_operator_present(command)
             or any(mark in command for mark in "<>$*?")):
         return None
@@ -8905,6 +8924,8 @@ def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
     if len(tokens) != 2 or tokens[0] not in {"cat", "pytest", "py.test"}:
         return None
     target = tokens[1]
+    if windows and tokens[0] == "cat" and re.search(r"\b(?:pwsh|powershell|cmd)\b", prefix, re.I):
+        return None
     if windows:
         if canonical_windows_locator(target) != (target, None):
             return None
@@ -16162,11 +16183,6 @@ def _verified_windows_target(raw_target: str, *, deleted: bool = False) -> str |
         return None
     resolved, unsupported = canonical_windows_locator(str(physical))
     return target if unsupported is None and resolved == target else None
-
-
-_POWERSHELL_BYTE_READBACK_RE = re.compile(
-    r"\[System\.Console\]::Write\(\[System\.IO\.File\]::ReadAllText\('([^'\r\n]+)'\)\)"
-)
 
 
 def core_shell_observation(

@@ -85,14 +85,17 @@ class HostTerminalWireTests(unittest.TestCase):
         cg.dispatch(self.event("PostToolUse", tool_name="Bash", tool_use_id=call_id,
                                tool_input={"command": command}, tool_response=response))
 
-    def readback(self, call_id, target, stdout):
+    @staticmethod
+    def readback_command(target):
         if os.name == "nt":
-            self.assertNotIn("'", str(target))
-            command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
-                       f"'{target}'))")
-        else:
-            command = f"cat {shlex.quote(str(target))}"
-        self.command(call_id, command, stdout=stdout)
+            if "'" in str(target):
+                raise ValueError("fixture target is not one literal PowerShell argument")
+            return ("[System.Console]::Write([System.IO.File]::ReadAllText("
+                    f"'{target}'))")
+        return f"cat {shlex.quote(str(target))}"
+
+    def readback(self, call_id, target, stdout):
+        self.command(call_id, self.readback_command(target), stdout=stdout)
 
     def patch(self, call_id, target, before, after, *, response="patch applied",
               status="completed"):
@@ -228,15 +231,54 @@ class HostTerminalWireTests(unittest.TestCase):
     def test_direct_backtick_cat_object_binds_independent_current_readback(self):
         target = self.cwd / "config.txt"
         self.write_file(target, "mode=on\n")
-        command = f"cat '{target}'"
-        self.start(f"请用宿主 Bash 调用 `{command}` 完整回读该文件。")
-        self.command("single-read", command, stdout="mode=on\n", response="mode=on\n",
-                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                  "name": target.name, "path": str(target)}])
+        command = self.readback_command(target)
+        shell = "PowerShell" if os.name == "nt" else "Bash"
+        self.start(f"请用宿主 {shell} 调用 `{command}` 完整回读该文件。")
+        self.readback("single-read", target, "mode=on\n")
         cg.dispatch(self.event("Stop", last_assistant_message="已回读文件。"))
         rows = self.state()["decision_log"][-1]["core_projections"]
         self.assertTrue(any(row["predicate"] == "readback_complete"
                             and row["predicate_state"] == "satisfied" for row in rows))
+
+    def test_powershell_byte_readback_object_requires_one_direct_literal_operation(self):
+        target = r"C:\Work Space\config.txt"
+        command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
+                   f"'{target}'))")
+        direct = f"请用宿主 PowerShell 调用 `{command}` 完整回读该文件。"
+        self.assertEqual(cg._direct_shell_command_object(direct),
+                         ("state_readback", target, f"`{command}`"))
+        for source in (
+            f"请用宿主 Bash 调用 `{command}` 完整回读该文件。",
+            f"请用宿主 PowerShell 调用 `{command}; echo done` 完整回读该文件。",
+            f"请用宿主 PowerShell 调用 `{command.replace(target, '$target')}` 完整回读该文件。",
+            f"请用宿主 PowerShell 调用 `{command.replace(target, 'config.txt')}` 完整回读该文件。",
+            f"请用宿主 PowerShell 调用 `cat '{target}'` 完整回读该文件。",
+            f"不要调用 `{command}`。",
+            f"文档写着：请调用 `{command}` 完整回读。",
+            f"“请调用 `{command}` 完整回读。”",
+        ):
+            with self.subTest(source=source):
+                self.assertIsNone(cg._direct_shell_command_object(source))
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell cat byte semantics")
+    def test_powershell_cat_does_not_prove_exact_lf_readback(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=on\n")
+        command = f"cat '{target}'"
+        self.start(f"请用宿主 PowerShell 调用 `{command}` 完整回读该文件。")
+        self.command("ps-cat", command, stdout="mode=on\r\n", response="mode=on\r\n")
+        self.assertNotIn("core_observation", self.state()["evidence"][-1])
+
+    @unittest.skipUnless(os.name == "nt", "Windows shell attribution")
+    def test_explicit_bash_cat_is_not_fulfilled_by_powershell_readback(self):
+        target = self.cwd / "config.txt"
+        self.write_file(target, "mode=on\n")
+        self.start(f"请用宿主 Bash 调用 `cat '{target}'` 完整回读该文件。")
+        self.readback("different-shell-read", target, "mode=on\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="已完整回读。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertFalse(any(row["predicate"] == "readback_complete"
+                             and row["certifiable"] for row in rows))
 
     def test_tilde_inside_absolute_filename_remains_a_literal_host_target(self):
         directory = self.cwd / "RUNNER~1"
@@ -276,15 +318,14 @@ class HostTerminalWireTests(unittest.TestCase):
     def test_single_same_root_file_referent_binds_later_direct_edit(self):
         target = self.cwd / "config.txt"
         self.write_file(target, "mode=off\n")
+        command = self.readback_command(target)
+        shell = "PowerShell" if os.name == "nt" else "Bash"
         root = (f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
                 '请用宿主文件编辑工具直接把它改为恰好 mode=on 加一个换行，无需编辑前读取；'
-                f"然后用独立的宿主 Bash 调用 `cat '{target}'` 完整回读该文件，并根据真实回读报告实际内容。")
+                f"然后用独立的宿主 {shell} 调用 `{command}` 完整回读该文件，并根据真实回读报告实际内容。")
         self.start(root)
         self.patch("anaphoric-edit", target, "mode=off\n", "mode=on\n")
-        command = f"cat '{target}'"
-        self.command("anaphoric-read", command, stdout="mode=on\n", response="mode=on\n",
-                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                  "name": target.name, "path": str(target)}])
+        self.readback("anaphoric-read", target, "mode=on\n")
         cg.dispatch(self.event("Stop", last_assistant_message="已修改并回读：mode=on 加一个换行。"))
         rows = self.state()["decision_log"][-1]["core_projections"]
         self.assertTrue(any(row["predicate"] == "state_matches"
@@ -299,8 +340,9 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_same_root_replacement_requires_exact_postimage_and_independent_readback(self):
         target = self.cwd / "config.txt"
+        command = self.readback_command(target)
         root = (f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行；'
-                f"然后调用 `cat '{target}'` 完整回读并报告。")
+                f"然后调用 `{command}` 完整回读并报告。")
         for index, actual in enumerate(("mode=off\n", "mode=on", "mode=on\n")):
             with self.subTest(actual=actual):
                 self.session_id = f"postimage-{index}"
@@ -310,10 +352,7 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.write_file(target, "old\n")
                 self.start(root)
                 self.patch(f"postimage-edit-{index}", target, "old\n", actual)
-                self.command(f"postimage-read-{index}", f"cat '{target}'",
-                             stdout=actual, response=actual,
-                             parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                          "name": target.name, "path": str(target)}])
+                self.readback(f"postimage-read-{index}", target, actual)
                 basis = cg._current_action_basis(
                     self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
                     include_satisfied=True, include_unready=True)
@@ -326,9 +365,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.write_file(target, "old\n")
         self.start(f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行。')
         self.patch("first-edit", target, "old\n", "mode=on\n")
-        self.command("first-read", f"cat '{target}'", stdout="mode=on\n",
-                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                  "name": target.name, "path": str(target)}])
+        self.readback("first-read", target, "mode=on\n")
         session_dir = self.root / "private/sessions" / self.session_id
         first = cg._current_action_basis(self.state(), "local_edit", "", session_dir,
                                          include_satisfied=True)
@@ -408,15 +445,16 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_same_root_referent_and_readback_synonyms_close_from_real_host_facts(self):
         target = self.cwd / "config.txt"
+        command = self.readback_command(target)
         roots = (
             f'已知 "{target}" 当前是 mode=off 后跟换行。现在请将该文件内容更新为 mode=on 后跟换行，'
-            f"随后单独执行 `cat '{target}'` 核对，并据实告知内容。",
+            f"随后单独执行 `{command}` 核对，并据实告知内容。",
             f'这个文件 "{target}" 原为 mode=off 加换行。请修成 mode=on 加换行，'
-            f"再通过独立的 `cat '{target}'` 读取它并说明读到的内容。",
+            f"再通过独立的 `{command}` 读取它并说明读到的内容。",
             f'The file "{target}" currently says mode=off followed by a newline. '
-            f"Change it to mode=on followed by a newline, then read it with a separate `cat '{target}'` call and report the actual bytes.",
+            f"Change it to mode=on followed by a newline, then read it with a separate `{command}` call and report the actual bytes.",
             f'Please edit "{target}" to mode=on plus newline, then run '
-            f"`cat '{target}'` separately and report what it returned.",
+            f"`{command}` separately and report what it returned.",
         )
         for index, root in enumerate(roots):
             with self.subTest(index=index):
@@ -427,11 +465,7 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.write_file(target, "mode=off\n")
                 self.start(root)
                 self.patch(f"synonym-edit-{index}", target, "mode=off\n", "mode=on\n")
-                command = f"cat '{target}'"
-                self.command(f"synonym-read-{index}", command, stdout="mode=on\n",
-                             response="mode=on\n",
-                             parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                          "name": target.name, "path": str(target)}])
+                self.readback(f"synonym-read-{index}", target, "mode=on\n")
                 cg.dispatch(self.event("Stop", last_assistant_message="已回读：mode=on 加一个换行。"))
                 rows = self.state()["decision_log"][-1]["core_projections"]
                 aggregate = next(r for r in rows if r["predicate"] == "edit_readback_and_report")
@@ -536,14 +570,22 @@ class HostTerminalWireTests(unittest.TestCase):
     def test_exact_edit_readback_report_completion_survives_reload(self):
         target = self.cwd / "config.txt"
         self.write_file(target, "mode=off\n")
+        command = (self.readback_command(target) if os.name == "nt"
+                   else f"cat '{target}'")
         self.start(f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
                    '请把它改为恰好 mode=on 加一个换行；'
-                   f"然后调用 `cat '{target}'` 完整回读并报告内容。")
+                   f"然后调用 `{command}` 完整回读并报告内容。")
         self.patch("edit", target, "mode=off\n", "mode=on\n")
-        self.readback("read", target, "mode=on\n")
-        final = ("已完成修改。独立 Bash `cat` 完整回读结果为：\n\n"
-                 "```text\nmode=on\n```\n\n"
-                 "实际文件内容恰好为 `mode=on` 加一个换行。")
+        if os.name == "nt":
+            self.readback("read", target, "mode=on\n")
+        else:
+            self.command("read", command, stdout="mode=on\n")
+        final = (("已完成修改。独立 Bash `cat` 完整回读结果为：\n\n"
+                  "```text\nmode=on\n```\n\n"
+                  "实际文件内容恰好为 `mode=on` 加一个换行。")
+                 if os.name != "nt" else
+                 ("已完成修改。实际文件内容恰好为 `mode=on` 加一个换行。"
+                  "我实际回读当前文件得到 mode=on 加一个换行。"))
         self.assertEqual(cg.dispatch(self.event("Stop", last_assistant_message=final)), {})
         state = self.state()
         aggregate = next(row for row in state["decision_log"][-1]["core_projections"]
