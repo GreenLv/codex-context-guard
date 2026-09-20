@@ -183,8 +183,9 @@ class StopV5Tests(unittest.TestCase):
     @staticmethod
     def root_file(cwd, relative):
         # Windows relative root constraints are explicitly unsupported in
-        # core/v2; keep this positive Host replay on an exact absolute root.
-        return str(Path(cwd) / relative) if os.name == "nt" else relative
+        # core/v2; keep this positive Host replay on one complete absolute
+        # root token, including when the physical temp directory has spaces.
+        return root_locator(Path(cwd) / relative) if os.name == "nt" else relative
 
     def test_windows_drive_host_commands_keep_typed_targets(self):
         state = {
@@ -391,16 +392,16 @@ class StopV5Tests(unittest.TestCase):
         def observed(_cg, event, cwd):
             target = Path(cwd) / "src/queue.ts"
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("before\n", encoding="utf-8")
+            target.write_bytes(b"before\n")
             cg.dispatch(event("PostToolUse", tool_name="exec_command",
-                              tool_input={"cmd": f"cat {target}"},
+                              tool_input={"cmd": f"cat {root_locator(target)}"},
                               tool_response={"exit_code": 0, "output": "before\n"}))
-            target.write_text("after\n", encoding="utf-8")
+            target.write_bytes(b"after\n")
             cg.dispatch(event("PostToolUse", tool_name="apply_patch",
                               tool_input={"patch": f"*** Begin Patch\n*** Update File: {target}\n@@\n-before\n+after\n*** End Patch\n"},
                               tool_response={"success": True}))
             cg.dispatch(event("PostToolUse", tool_name="exec_command",
-                              tool_input={"cmd": f"cat {target}"},
+                              tool_input={"cmd": f"cat {root_locator(target)}"},
                               tool_response={"exit_code": 0, "output": "after\n"}))
         result, decision, state = self.replay(
             lambda cwd: ("先说明原因，再修正 "
@@ -508,17 +509,23 @@ class StopV5Tests(unittest.TestCase):
             outside.write_text("before\n", encoding="utf-8")
             forbidden = Path(cwd) / "packages/web/src/request.ts"
             forbidden.parent.mkdir(parents=True, exist_ok=True)
-            forbidden.symlink_to(outside)
+            try:
+                forbidden.symlink_to(outside)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows symlink privilege is unavailable")
+                raise
             outside.write_text("after\n", encoding="utf-8")
             cg.dispatch(event("PostToolUse", tool_name="apply_patch",
                               tool_input={"patch": f"*** Begin Patch\n*** Update File: {forbidden}\n@@\n-before\n+after\n*** End Patch\n"},
                               tool_response={"success": True}))
-        _, alias_effect = self.replay(root, "API 文件已修改并核对。",
-                                      preparation=observed_with_alias_edit)
-        alias_row = next(r for r in alias_effect["core_projections"]
-                         if r["predicate"] == "edit_with_prohibition")
-        self.assertFalse(alias_row["certifiable"])
-        self.assertEqual(alias_row["violating_host_event_ids"], [])
+        with self.subTest(case="symlinked forbidden target"):
+            _, alias_effect = self.replay(root, "API 文件已修改并核对。",
+                                          preparation=observed_with_alias_edit)
+            alias_row = next(r for r in alias_effect["core_projections"]
+                             if r["predicate"] == "edit_with_prohibition")
+            self.assertFalse(alias_row["certifiable"])
+            self.assertEqual(alias_row["violating_host_event_ids"], [])
         # An extra unresolved positive request must remain open even when the
         # exact edit and prohibition are otherwise identical.
         _, unresolved = self.replay(lambda cwd: root(cwd) + " 同时完成未命名的迁移。",
@@ -828,8 +835,8 @@ class StopV5Tests(unittest.TestCase):
                     a.write_bytes(b"a\n")
                     b.write_bytes(b"b\n")
                     cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
-                    cg.dispatch(event("UserPromptSubmit", "t1", prompt=f"请修改 {a}。"))
-                    cg.dispatch(event("UserPromptSubmit", "t2", prompt=f"请运行 {b} 的测试。"))
+                    cg.dispatch(event("UserPromptSubmit", "t1", prompt=f"请修改 {root_locator(a)}。"))
+                    cg.dispatch(event("UserPromptSubmit", "t2", prompt=f"请运行 {root_locator(b)} 的测试。"))
                     cg.dispatch(event("UserPromptSubmit", "t3",
                                       prompt="持续执行直到当前任务完成。"))
                     directory = Path(tmp) / "private/sessions/independent-root-v5"
@@ -883,10 +890,10 @@ class StopV5Tests(unittest.TestCase):
                 a.write_bytes(b"a\n")
                 b.write_bytes(b"b\n")
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
-                cg.dispatch(event("UserPromptSubmit", "t1", prompt=f"请修改 {a}。"))
+                cg.dispatch(event("UserPromptSubmit", "t1", prompt=f"请修改 {root_locator(a)}。"))
                 cg.dispatch(event("UserPromptSubmit", "t2",
                                   prompt="持续执行直到当前任务完成。"))
-                cg.dispatch(event("UserPromptSubmit", "t3", prompt=f"请修改 {b}。"))
+                cg.dispatch(event("UserPromptSubmit", "t3", prompt=f"请修改 {root_locator(b)}。"))
                 directory = Path(tmp) / "private/sessions/unsourced-successor-v5"
                 state = cg.load_state(directory, event("Stop", "t3"))
                 self.assertEqual(state["supersedes"], [])
@@ -927,14 +934,14 @@ class StopV5Tests(unittest.TestCase):
                 a.write_bytes(b"a\n")
                 b.write_bytes(b"b\n")
                 cg.dispatch(event("t0", "context-guard on"))
-                cg.dispatch(event("t1", f"请修改 {a}。"))
+                cg.dispatch(event("t1", f"请修改 {root_locator(a)}。"))
                 cg.dispatch(event("t2", "持续执行直到当前任务完成。"))
                 directory = Path(tmp) / "private/sessions/uncommitted-root-v5"
                 before = cg.load_state(directory, event("t2", ""))
                 self.assertEqual(before["integrity"]["status"], "ok")
                 self.assertIsNotNone(cg.current_root_control_projection(before, directory))
                 new_root = cg.append_prompt(
-                    directory, before, f"请运行 {b} 的测试。", turn_id="t3")
+                    directory, before, f"请运行 {root_locator(b)} 的测试。", turn_id="t3")
                 self.assertTrue(new_root["id"])
                 self.assertFalse((directory / "prompts/units" /
                                   f"{new_root['id']}.json").exists())
@@ -1107,14 +1114,14 @@ class StopV5Tests(unittest.TestCase):
                 a.write_bytes(b"a\n")
                 b.write_bytes(b"b\n")
                 cg.dispatch(event("t0", "context-guard on"))
-                cg.dispatch(event("t1", f"请修改 {a}。"))
+                cg.dispatch(event("t1", f"请修改 {root_locator(a)}。"))
                 cg.dispatch(event("t2", "持续执行直到当前任务完成。"))
                 directory = Path(tmp) / "private/sessions/history-control-v5"
                 earlier = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id="history-control-v5", cwd=tmp, turn_id="t2"))
                 before = cg.current_root_control_projection(earlier, directory)
                 self.assertEqual(before["root_control_states"], {"R001": "persistent"})
-                cg.dispatch(event("t3", f"用修改 {b} 替代 R001。"))
+                cg.dispatch(event("t3", f"用修改 {root_locator(b)} 替代 R001。"))
                 later = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id="history-control-v5", cwd=tmp, turn_id="t3"))
                 self.assertEqual(later["supersedes"][0]["old_id"], "R001")
@@ -1247,7 +1254,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("PostToolUse", tool_name="exec_command",
                                   tool_input={"cmd": f"test -f {suite}"},
                                   tool_response={"exit_code": 0, "output": ""}))
-            root = f"继续执行，运行 {suite} 的测试。"
+            root = f"继续执行，运行 {root_locator(suite)} 的测试。"
             result, decision = self.replay(root, "测试尚未运行。", preparation=preparation)
             self.assertEqual(result.get("decision"), "block")
             self.assertIn("resume_with_actionable_work", decision["reason_codes"])
@@ -1517,7 +1524,7 @@ class StopV5Tests(unittest.TestCase):
                                       tool_input={"cmd": command},
                                       tool_response={"exit_code": 0, "output": "1 passed"}))
             _, decision, state = self.replay(
-                f"继续执行，运行 {suite} 的测试。", "测试通过。",
+                f"继续执行，运行 {root_locator(suite)} 的测试。", "测试通过。",
                 preparation=observed, include_state=True)
             rows = decision["core_projections"]
             self.assertEqual(len(rows), 1)
@@ -1676,7 +1683,7 @@ class StopV5Tests(unittest.TestCase):
                 suite = Path(tmp) / "suite.py"
                 suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
                 cg.dispatch(event("UserPromptSubmit", "control", prompt="context-guard on"))
-                cg.dispatch(event("UserPromptSubmit", prompt=f"继续执行，运行 {suite} 的测试。"))
+                cg.dispatch(event("UserPromptSubmit", prompt=f"继续执行，运行 {root_locator(suite)} 的测试。"))
                 cg.dispatch(event("PostToolUse", tool_name="exec_command",
                                   tool_input={"cmd": f"test -f {suite}"},
                                   tool_response={"exit_code": 0, "output": ""}))

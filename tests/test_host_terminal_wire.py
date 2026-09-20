@@ -652,13 +652,26 @@ class HostTerminalWireTests(unittest.TestCase):
         self.start(f"请运行 {target} 的测试。")
         real = self.transcript
         alias = real.with_name("alias.jsonl")
-        alias.symlink_to(real)
-        for label, path in (("symlink", alias), ("missing", real.with_name("missing.jsonl"))):
-            with self.subTest(label=label):
-                cg.dispatch(self.event("PostToolUse", transcript_path=str(path),
-                                       tool_name="Bash", tool_use_id=label,
+        try:
+            alias.symlink_to(real)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                with self.subTest(label="symlink"):
+                    self.skipTest("Windows symlink privilege is unavailable")
+            else:
+                raise
+        else:
+            with self.subTest(label="symlink"):
+                cg.dispatch(self.event("PostToolUse", transcript_path=str(alias),
+                                       tool_name="Bash", tool_use_id="symlink",
                                        tool_input={"command": command}, tool_response="ok"))
                 self.assertEqual(self.state()["evidence"][-1]["outcome"], "unknown")
+        with self.subTest(label="missing"):
+            cg.dispatch(self.event("PostToolUse",
+                                   transcript_path=str(real.with_name("missing.jsonl")),
+                                   tool_name="Bash", tool_use_id="missing",
+                                   tool_input={"command": command}, tool_response="ok"))
+            self.assertEqual(self.state()["evidence"][-1]["outcome"], "unknown")
         self.completed("too-large", {
             "type": "CommandExecution", "status": "completed", "exit_code": 0,
             "command": ["/bin/zsh", "-lc", command],
@@ -692,9 +705,15 @@ class HostTerminalWireTests(unittest.TestCase):
         self.write_rows()
         real = self.transcript.with_name("original.jsonl")
         self.transcript.rename(real)
-        self.transcript.symlink_to(real)
-        cg.dispatch(hook)
-        self.assertEqual(self.state()["evidence"][-1]["outcome"], "unknown")
+        with self.subTest(label="symlinked transcript"):
+            try:
+                self.transcript.symlink_to(real)
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows symlink privilege is unavailable")
+                raise
+            cg.dispatch(hook)
+            self.assertEqual(self.state()["evidence"][-1]["outcome"], "unknown")
 
     def test_file_change_requires_single_exact_change_and_current_content(self):
         target = self.cwd / "module.py"
