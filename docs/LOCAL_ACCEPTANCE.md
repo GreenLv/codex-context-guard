@@ -6,7 +6,8 @@ This source candidate has no release, daily-host installation,
 native-platform, CI, HOL, tag, or public-readback evidence. Its source tests
 exercise the protocol 5 Stop path and the shared core v2 projection with
 synthetic, structured Host Hook inputs. A single-file edit requires an
-attributable patch plus before/after content readback; a test requires its own
+attributable one-target effect plus independent post-edit content readback;
+a prior read is optional. A test requires its own
 attributable result. Future observations and short resume wording cannot
 create current work or registered external operations. An omitted current
 test or evaluation remains visible when its input is host-selected and ready.
@@ -30,7 +31,12 @@ equality and leaves that case unavailable. Source tests do not establish the
 new runtime's Windows-native Hook completion path.
 The native transcript that exposed the defect belongs to earlier runtime
 bytes; source tests on this repair do not establish a fresh installed or
-native ordinary-completion pass.
+native ordinary-completion pass. The focused source repair records the
+audited Update post-image hash at PostToolUse and compares it with a later
+independent readback. Reprojecting an unchanged session watermark uses only
+the persisted observations, even if disk bytes subsequently change without
+a new Host event. Unknown root scope and absent or conflicting readback remain
+uncertified.
 
 This document records local and remote acceptance evidence for standalone
 Context Guard. The current release is `0.13.9`. Release history includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,

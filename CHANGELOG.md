@@ -21,6 +21,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 - Ordinary business tools remain host-owned; explicit proof and adopted release checks keep their existing gates.
 - When Codex supplies a text-only Bash or apply_patch Hook response, completion evidence requires the matching Host terminal record already present for that call. A failed command, a quoted success message, or missing Host status cannot certify a test, edit, or readback. Supported single-file patches, focused pytest commands, and exact file reads remain separate checks.
 - On Windows, PowerShell `cat` can rewrite line endings. A single exact `Console.Write(File.ReadAllText(...))` expression may supply file readback only when the Host ran PowerShell and its output matches the current physical file byte for byte; a BOM, alias, extra operation, or changed file remains unverified.
+- An audited one-file Update can satisfy its edit outcome after a separate exact post-edit readback, even without a prior read. Missing or conflicting readback remains insufficient and does not imply that the edit should be repeated. Historical Stop projections use the bytes recorded at their event watermark, not later disk state.
 
 ### Validation
 

@@ -54,6 +54,10 @@ reviewed public fixtures and never reads a maintainer's private corpus.
 Context Guard saves the user's prompt text in immutable per-prompt files so that requirements can be recovered after compaction or resume. It also saves the requirements and acceptance items derived from those prompts, together with their revisions and the session or turn identifiers needed to keep records in the right task.
 
 Tool activity is stored as a bounded, redacted summary and outcome, not as complete stdout or file contents. Proofs keep the operation, object, result type, normalized counts, and hashes needed to check that evidence belongs to the user's actual requirement.
+For an attributable Host FileChange Update, schema-13 evidence may also retain
+the SHA-256 of the stable post-image observed at PostToolUse. The later
+independent readback stores its own hash and event sequence; neither record
+copies the file bytes into the session state.
 
 For images and other binary inputs, the store keeps a redacted basename or type, media facts such as byte count and dimensions, and hashes of the locator and content. It does not keep the image bytes or data-URL body.
 

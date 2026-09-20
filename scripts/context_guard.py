@@ -8403,6 +8403,14 @@ def _action_ready(action: dict[str, Any]) -> bool:
     )
 
 
+def _basis_actionability(basis: dict[str, Any]) -> str:
+    if basis["readiness"] == "root_condition_pending":
+        return "deferred"
+    if basis["readiness"] == "evidence_insufficient":
+        return "insufficient"
+    return "current_ready"
+
+
 def _action_deferred(action: dict[str, Any]) -> bool:
     return action.get("actionability") in {"denied", "out_of_scope", "deferred"} or (
         "actionability" not in action
@@ -8806,6 +8814,16 @@ def _current_action_basis(
                 continue
             actionable = any(a["requirement_id"] == item["id"] for a in projected["current_actions"])
             satisfied = projected["predicates"].get(item["id"]) == "satisfied"
+            edit_effects = sorted(
+                (fact for fact in snapshot["facts"]
+                 if fact["requirement_id"] == item["id"]
+                 and fact["kind"] == "action_event"
+                 and fact["predicate"] == "edit_applied"),
+                key=lambda fact: fact["seq"],
+            ) if category == "local_edit" else []
+            effect_needs_verification = bool(
+                edit_effects and edit_effects[-1]["outcome"] == "success" and not satisfied
+            )
             if (not actionable and not condition_scope and not (include_satisfied and satisfied)
                     and not (include_satisfied and constraint_kind == "exact"
                              and resolved_constraint is not None)):
@@ -8819,7 +8837,9 @@ def _current_action_basis(
                 "predicate": predicate_name or {"test_verify": "test_passed", "local_commit": "commit_verified",
                               "remote_push": "push_verified"}.get(category, "state_matches"),
                 "owner": "assistant", "readiness": (
-                    "root_condition_pending" if condition_scope else "trusted_host_observation"
+                    "root_condition_pending" if condition_scope else
+                    "evidence_insufficient" if effect_needs_verification else
+                    "trusted_host_observation"
                 ),
                 "as_of": projected["as_of"],
                 "predicate_state": projected["predicates"].get(item["id"], "insufficient"),
@@ -9420,9 +9440,7 @@ def remaining_action_facts(
                     action["authorization"] = fact[2]
                 else:
                     action["actionability"] = (
-                        "deferred" if basis is not None and
-                        basis["readiness"] == "root_condition_pending" else
-                        "current_ready" if basis is not None else fact[2]
+                        _basis_actionability(basis) if basis is not None else fact[2]
                     )
                 if basis is not None:
                     action["basis"] = basis
@@ -9443,7 +9461,7 @@ def remaining_action_facts(
             if len(unique_bases) == 1:
                 basis = next(iter(unique_bases.values()))
                 actions.append({"category": basis["action"], "owner": "assistant",
-                                "actionability": "current_ready", "basis": basis})
+                                "actionability": _basis_actionability(basis), "basis": basis})
                 matched = True
         if not matched and (remaining_marker or incomplete_operation or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
             authorization = "unknown"
@@ -9465,7 +9483,7 @@ def remaining_action_facts(
             if basis is None or basis["requirement_id"] in existing_ids:
                 continue
             actions.append({"category": basis["action"], "owner": "assistant",
-                            "actionability": "current_ready", "basis": basis})
+                            "actionability": _basis_actionability(basis), "basis": basis})
             existing_ids.add(basis["requirement_id"])
     if any(item["owner"] == "user" for item in actions):
         actions = [
@@ -13657,6 +13675,7 @@ def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict
         if mutation is None or not isinstance(changes, dict) or len(changes) != 1:
             return None
         kind, raw_target = mutation
+        post_content_sha256 = None
         if kind == "Delete":
             # A native Delete FileChange shape and pre-object identity have
             # not been observed.  The structured legacy producer is separate.
@@ -13684,12 +13703,19 @@ def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict
                     return None
             elif kind == "Update":
                 host_diff = change.get("unified_diff")
+                post_bytes = _stable_host_file_bytes(target)
                 if (not isinstance(host_diff, str)
                         or len(host_diff.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT
                         or _patch_change_lines(host_diff) != _patch_change_lines(
                             "\n".join(patch.splitlines()[2:-1]))
-                        or _stable_host_file_bytes(target) is None):
+                        or post_bytes is None):
                     return None
+                changed_lines = _patch_change_lines(host_diff)
+                if (changed_lines is None or
+                    [line[1:] for line in changed_lines if line.startswith("-")]
+                        == [line[1:] for line in changed_lines if line.startswith("+")]):
+                    return None
+                post_content_sha256 = hashlib.sha256(post_bytes).hexdigest()
             elif target.exists():
                 return None
         except (OSError, RuntimeError):
@@ -13699,7 +13725,8 @@ def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict
             return None
         return {"type": "file_change", "outcome": "success" if status == "completed" else "failed",
                 "basis": "host_transcript_file_change", "target": str(target),
-                "kind": kind, "patch": patch}
+                "kind": kind, "patch": patch,
+                "post_content_sha256": post_content_sha256 if status == "completed" else None}
     return None
 
 
@@ -14118,6 +14145,10 @@ def core_patch_observation(
         "turn": str(payload.get("turn_id") or ""),
         "call_sha256": sha256_text(patch),
     }
+    if (mutation_kind == "Update" and outcome == "success"
+            and outcome_basis == "host_transcript_file_change"
+            and isinstance(host_terminal.get("post_content_sha256"), str)):
+        observation["post_content_sha256"] = host_terminal["post_content_sha256"]
     if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
         observation["canonical_target"] = physical_target
     return observation

@@ -92,11 +92,12 @@ class HostTerminalWireTests(unittest.TestCase):
             command = f"cat {target}"
         self.command(call_id, command, stdout=stdout)
 
-    def patch(self, call_id, target, before, after, *, response="patch applied"):
+    def patch(self, call_id, target, before, after, *, response="patch applied",
+              status="completed"):
         source = (f"*** Begin Patch\n*** Update File: {target.name}\n@@\n"
                   f"-{before.rstrip()}\n+{after.rstrip()}\n*** End Patch\n")
         self.write_file(target, after)
-        self.completed(call_id, {"type": "FileChange", "status": "completed",
+        self.completed(call_id, {"type": "FileChange", "status": status,
                                  "changes": {str(target): {"type": "update",
                                                            "unified_diff": f"@@ -1 +1 @@\n-{before.rstrip()}\n+{after.rstrip()}\n",
                                                            "move_path": None}},
@@ -129,6 +130,240 @@ class HostTerminalWireTests(unittest.TestCase):
         self.assertEqual(aggregate["unknown_coverage_count"], 0)
         self.assertEqual({e.get("outcome_basis") for e in self.state()["evidence"]},
                          {"host_transcript_exit_code", "host_transcript_file_change"})
+
+    def test_real_wire_update_then_independent_readback_needs_no_pre_read(self):
+        target = self.cwd / "module.py"
+        before = "before\n"
+        after = "after\n"
+        self.write_file(target, before)
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("patch", target, before, after)
+        self.readback("read-after", target, after)
+        cg.dispatch(self.event("Stop", last_assistant_message="文件已经修改并核对。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["predicate_state"], "satisfied")
+        self.assertEqual(rows[0]["unknown_coverage_count"], 0)
+        self.assertTrue(rows[0]["certifiable"])
+
+    def test_frozen_projection_does_not_reread_later_disk_bytes(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("patch", target, "before\n", "after\n")
+        self.readback("read-after", target, "after\n")
+        state = self.state()
+        session_dir = self.root / "private/sessions" / self.session_id
+        before_projection = cg.current_core_projections(state, session_dir)
+        self.assertTrue(before_projection[0]["certifiable"])
+        # No new Host event or event watermark: a later filesystem change is
+        # outside this immutable as-of projection. A fresh observed readback
+        # would need its own event and could then invalidate the old result.
+        self.write_file(target, "changed-without-host-event\n")
+        after_projection = cg.current_core_projections(state, session_dir)
+        self.assertEqual(after_projection, before_projection)
+
+    def test_prior_root_edit_and_readback_do_not_close_new_root_edit(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        locator = self.root_target(target)
+        self.start(f"请修改 {locator}，并核对改动后的文件。")
+        self.patch("first-patch", target, "before\n", "after\n")
+        self.readback("first-read", target, "after\n")
+        cg.dispatch(self.event("UserPromptSubmit", prompt=f"请修改 {locator}，并核对改动后的文件。"))
+        state = self.state()
+        session_dir = self.root / "private/sessions" / self.session_id
+        roots = {p["id"]: cg.read_prompt_record(session_dir, p)
+                 for p in state["prompts"] if p.get("origin", "human") == "human"}
+        from cg_codex_core_adapter import project_current_action
+        item = state["requirements"][-1]
+        self.assertIn(item["id"], cg.current_scope_projection(state)["scoped_item_ids"])
+        root = roots[item["prompt_id"]]
+        projection = project_current_action(
+            state, roots, item=item, action="local_edit", target=str(target),
+            turn=self.turn_id, root_scope=root["text"])
+        self.assertNotEqual(projection["predicates"].get(item["id"]), "satisfied")
+
+    def test_real_wire_update_without_current_readback_is_evidence_insufficient(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("patch", target, "before\n", "after\n")
+        cg.dispatch(self.event("UserPromptSubmit", prompt="继续。"))
+        cg.dispatch(self.event("Stop", last_assistant_message="修改已经执行，状态尚未核验。"))
+        decision = self.state()["decision_log"][-1]
+        self.assertFalse(any(a.get("category") == "local_edit"
+                             and a.get("actionability") == "current_ready"
+                             for a in decision["actions"]))
+        self.assertFalse(any(row["certifiable"] for row in decision["core_projections"]))
+
+    def test_real_wire_later_update_invalidates_prior_edit_readback(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("patch-one", target, "before\n", "after\n")
+        self.readback("read-after-one", target, "after\n")
+        self.patch("patch-two", target, "after\n", "changed-again\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="之前已核对。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertTrue(rows)
+        self.assertFalse(any(row["certifiable"] for row in rows))
+
+    def test_real_wire_wrong_target_readback_does_not_close_edit(self):
+        target = self.cwd / "module.py"
+        other = self.cwd / "other.py"
+        self.write_file(target, "before\n")
+        self.write_file(other, "other\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("patch", target, "before\n", "after\n")
+        self.readback("wrong-read", other, "other\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="已经核对。"))
+        rows = self.state()["decision_log"][-1]["core_projections"]
+        self.assertFalse(any(row["certifiable"] for row in rows))
+
+    def test_mixed_root_unknown_does_not_reopen_observed_edit_on_resume(self):
+        target = self.cwd / "suite.py"
+        self.write_file(target, "before\n")
+        locator = self.root_target(target)
+        self.start(
+            f"请只修复 {locator} 中多余的一行。"
+            f"请把编辑、测试和回读分成独立宿主调用：编辑 {locator}，"
+            f"运行 pytest {locator}，再回读 {locator}。"
+            "长期收益留待以后观察，不作为本轮任务。"
+        )
+        self.patch("patch", target, "before\n", "after\n")
+        self.command("test", f"pytest {target}", stdout="1 passed\n")
+        self.readback("read-after", target, "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="本轮工具已执行。"))
+        cg.dispatch(self.event("UserPromptSubmit", prompt="继续。"))
+        cg.dispatch(self.event("Stop", last_assistant_message="当前结果已报告。"))
+        decision = self.state()["decision_log"][-1]
+        self.assertFalse(any(a.get("category") == "local_edit"
+                             and a.get("actionability") == "current_ready"
+                             for a in decision["actions"]))
+        self.assertFalse(any(row["certifiable"] for row in decision["core_projections"]))
+
+    def test_unperformed_ready_edit_remains_a_concrete_action(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}。")
+        self.readback("read-before", target, "before\n")
+        cg.dispatch(self.event("UserPromptSubmit", prompt="继续。"))
+        cg.dispatch(self.event("Stop", last_assistant_message="尚未修改文件。"))
+        self.assertTrue(any(a.get("category") == "local_edit"
+                            and a.get("actionability") == "current_ready"
+                            for a in self.state()["decision_log"][-1]["actions"]))
+
+    def test_observed_edit_with_conflicting_poststate_is_not_ready_reedit(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}。")
+        self.patch("patch", target, "before\n", "after\n")
+        # The later independent readback is truthful but no longer names the
+        # postimage attached to the verified FileChange. It cannot certify a
+        # change or turn the missing proof into permission to redo the edit.
+        self.write_file(target, "changed-outside-host\n")
+        self.readback("changed-read", target, "changed-outside-host\n")
+        cg.dispatch(self.event("UserPromptSubmit", prompt="继续。"))
+        cg.dispatch(self.event("Stop", last_assistant_message="修改后的状态仍需核验。"))
+        decision = self.state()["decision_log"][-1]
+        self.assertFalse(any(a.get("category") == "local_edit"
+                             and a.get("actionability") == "current_ready"
+                             for a in decision["actions"]))
+        self.assertFalse(any(row["certifiable"] for row in decision["core_projections"]))
+
+    def test_failed_host_edit_and_truncated_readback_never_close(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("failed-patch", target, "before\n", "after\n", status="failed")
+        self.readback("after-failure", target, "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="状态仍不确定。"))
+        self.assertFalse(any(row["certifiable"] for row in
+                             self.state()["decision_log"][-1]["core_projections"]))
+
+        self.patch("successful-patch", target, "after\n", "new-content\n")
+        self.command("truncated-read", f"cat {target}", stdout="new-content")
+        cg.dispatch(self.event("Stop", last_assistant_message="回读不完整。"))
+        self.assertFalse(any(row["certifiable"] for row in
+                             self.state()["decision_log"][-1]["core_projections"]))
+
+    def test_later_readback_never_backfills_earlier_stop(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        self.patch("patch", target, "before\n", "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="等待核验。"))
+        earlier = json.loads(json.dumps(self.state()["decision_log"][-1]))
+        self.assertFalse(any(row["certifiable"] for row in earlier["core_projections"]))
+        self.readback("later-read", target, "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="文件已经核对。"))
+        decisions = self.state()["decision_log"]
+        self.assertEqual(decisions[-2], earlier)
+        self.assertTrue(any(row["certifiable"] for row in decisions[-1]["core_projections"]))
+
+    def test_combined_edit_readback_cannot_hide_failed_focused_test(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        locator = self.root_target(target)
+        self.start(f"请修改 {locator}，并运行 {locator} 的测试。")
+        self.patch("patch", target, "before\n", "after\n")
+        self.readback("read-after", target, "after\n")
+        self.command("failed-test", f"pytest {target}", code=1, stdout="1 failed\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="测试未通过。"))
+        aggregate = next(row for row in self.state()["decision_log"][-1]["core_projections"]
+                         if row["predicate"] == "edit_and_test")
+        self.assertFalse(aggregate["certifiable"])
+
+    def test_foreign_turn_file_change_cannot_supply_edit_state(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}，并核对改动后的文件。")
+        patch = (f"*** Begin Patch\n*** Update File: {target.name}\n@@\n"
+                 "-before\n+after\n*** End Patch\n")
+        self.write_file(target, "after\n")
+        self.completed("foreign-patch", {"type": "FileChange", "status": "completed",
+                                        "changes": {str(target): {
+                                            "type": "update", "unified_diff": "@@ -1 +1 @@\n-before\n+after\n",
+                                            "move_path": None}}}, turn="prior-turn")
+        cg.dispatch(self.event("PostToolUse", tool_name="apply_patch",
+                               tool_use_id="foreign-patch", tool_input={"command": patch},
+                               tool_response="patch applied"))
+        self.readback("read-after", target, "after\n")
+        cg.dispatch(self.event("Stop", last_assistant_message="文件已经核对。"))
+        self.assertFalse(any(row["certifiable"] for row in
+                             self.state()["decision_log"][-1]["core_projections"]))
+
+    def test_failed_edit_with_ready_target_remains_current_action(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}。")
+        self.readback("read-before", target, "before\n")
+        patch = (f"*** Begin Patch\n*** Update File: {target.name}\n@@\n"
+                 "-before\n+after\n*** End Patch\n")
+        self.completed("failed-patch", {"type": "FileChange", "status": "failed",
+                                        "changes": {str(target): {
+                                            "type": "update", "unified_diff": "@@ -1 +1 @@\n-before\n+after\n",
+                                            "move_path": None}}})
+        cg.dispatch(self.event("PostToolUse", tool_name="apply_patch",
+                               tool_use_id="failed-patch", tool_input={"command": patch},
+                               tool_response="failed"))
+        cg.dispatch(self.event("UserPromptSubmit", prompt="继续。"))
+        cg.dispatch(self.event("Stop", last_assistant_message="编辑失败，尚未完成。"))
+        self.assertTrue(any(a.get("category") == "local_edit"
+                            and a.get("actionability") == "current_ready"
+                            for a in self.state()["decision_log"][-1]["actions"]))
+
+    def test_unrun_selected_focused_test_remains_current_action(self):
+        target = self.cwd / "suite.py"
+        self.write_file(target, "def test_ok(): assert True\n")
+        self.start(f"请运行 {self.root_target(target)} 的测试。")
+        self.readback("selected-file", target, "def test_ok(): assert True\n")
+        cg.dispatch(self.event("UserPromptSubmit", prompt="继续。"))
+        cg.dispatch(self.event("Stop", last_assistant_message="测试尚未运行。"))
+        self.assertTrue(any(a.get("category") == "test_verify"
+                            and a.get("actionability") == "current_ready"
+                            for a in self.state()["decision_log"][-1]["actions"]))
 
     def test_combined_root_stays_open_without_test_and_future_note_is_not_work(self):
         target = self.cwd / "module.py"

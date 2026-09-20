@@ -164,6 +164,15 @@ def project_current_action(
         sources.append(source_row)
         if event["type"] != "result":
             continue
+        # A prior-root edit cannot prove a new edit requirement in the same
+        # work unit. Commit/push lineage is different: its earlier sourced
+        # repository selection is an intentional prerequisite.
+        origin_pid = evidence.get("core_origin_prompt_id")
+        origin_root = roots.get(origin_pid) if isinstance(origin_pid, str) else None
+        if (action == "local_edit" and
+                (origin_root is None or type(origin_root.get("core_event_seq")) is not int
+                 or origin_root["core_event_seq"] < root["core_event_seq"])):
+            continue
         observed_target = (observed.get("canonical_target") if resolved_constraint is not None
                            else observed.get("target"))
         if observed_target != target or uid != active or revision != _revision(prompt_id):
@@ -190,22 +199,26 @@ def project_current_action(
     if action == "local_edit":
         before_hash: str | None = None
         pending_before: str | None = None
+        pending_post: str | None = None
         for seq, eid, observed in sorted(edit_observations):
             if observed["kind"] == "action_event" and observed["predicate"] == "edit_applied":
-                if observed["outcome"] == "success" and before_hash is not None:
-                    pending_before = before_hash
-                else:
-                    pending_before = None
-                    facts.append(dict(id=f"edit-state:{eid}", seq=seq, unit=active,
-                                      revision=_revision(prompt_id), source_id=f"result:{eid}",
-                                      call_source_id=f"call:{eid}", kind="state_outcome",
-                                      target=target, predicate="state_matches", outcome="failure",
-                                      operation_id=None, requirement_id=str(item["id"]),
-                                      condition_id=None, invalidates=[]))
+                pending_before = before_hash if observed["outcome"] == "success" else None
+                post_hash = observed.get("post_content_sha256")
+                pending_post = (post_hash if observed["outcome"] == "success"
+                                and isinstance(post_hash, str)
+                                and re.fullmatch(r"[0-9a-f]{64}", post_hash) else None)
+                # A later edit makes an earlier state readback historical.
+                # The new effect needs its own subsequent current readback.
+                facts.append(dict(id=f"edit-state:{eid}", seq=seq, unit=active,
+                                  revision=_revision(prompt_id), source_id=f"result:{eid}",
+                                  call_source_id=f"call:{eid}", kind="state_outcome",
+                                  target=target, predicate="state_matches", outcome="failure",
+                                  operation_id=None, requirement_id=str(item["id"]),
+                                  condition_id=None, invalidates=[]))
             elif observed["kind"] == "state_readback":
                 content_hash = observed.get("content_sha256")
                 if observed["outcome"] != "success" or not isinstance(content_hash, str):
-                    if pending_before is not None:
+                    if pending_before is not None or pending_post is not None:
                         facts.append(dict(id=f"edit-state:{eid}", seq=seq, unit=active,
                                           revision=_revision(prompt_id), source_id=f"result:{eid}",
                                           call_source_id=f"call:{eid}", kind="state_outcome",
@@ -213,17 +226,24 @@ def project_current_action(
                                           operation_id=None, requirement_id=str(item["id"]),
                                           condition_id=None, invalidates=[]))
                     pending_before = None
+                    pending_post = None
                     continue
-                if pending_before is not None:
+                if pending_before is not None or pending_post is not None:
+                    # A trusted FileChange Update records its stable postimage
+                    # at the same Host result. A separate later readback must
+                    # name the same bytes; an earlier read is optional.
+                    state_matches = (pending_post == content_hash if pending_post is not None
+                                     else content_hash != pending_before)
                     facts.append(dict(id=f"edit-state:{eid}", seq=seq, unit=active,
                                       revision=_revision(prompt_id), source_id=f"result:{eid}",
                                       call_source_id=f"call:{eid}", kind="state_outcome",
                                       target=target, predicate="state_matches",
-                                      outcome="success" if content_hash != pending_before else "failure",
+                                      outcome="success" if state_matches else "failure",
                                       operation_id=None, requirement_id=str(item["id"]),
                                       condition_id=None, invalidates=[]))
                 before_hash = content_hash
                 pending_before = None
+                pending_post = None
     if action in {"local_commit", "remote_push"}:
         rows = sorted(git_observations)
         shows = [(seq, eid, obs) for seq, eid, obs in rows

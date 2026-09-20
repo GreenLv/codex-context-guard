@@ -40,8 +40,13 @@ pairing remains a logical observation, not a persisted independent PreToolUse
 call. The standard/strict PreToolUse fast path remains stateless and silent.
 The observed Add FileChange carries post-image content; the observed Update
 carries a unified diff instead. The adapter validates each against the one
-Hook patch operation and requires a separate current file readback for
-completion. Native Delete FileChange shape is not established by these inputs.
+Hook patch operation. For an Update, it records the stable post-image hash at
+that PostToolUse watermark, then requires a separate later readback of the
+same exact bytes for completion. A prior read is useful but not mandatory.
+Projection of a persisted watermark uses only those recorded facts; reading
+the file again later cannot rewrite the earlier result. A new Host readback
+gets a new event watermark. Native Delete FileChange shape is not established
+by these inputs.
 
 For an absolute Windows drive file, PowerShell `cat` is not assumed to preserve
 bytes. A single full-form `[System.Console]::Write([System.IO.File]::ReadAllText(...))`
