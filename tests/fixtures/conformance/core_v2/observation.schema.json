@@ -89,7 +89,10 @@
             "minLength": 1
           },
           "target_kind": {
-            "enum": ["filesystem", "opaque"]
+            "enum": [
+              "filesystem",
+              "opaque"
+            ]
           },
           "origin_root_source_id": {
             "type": "string",
@@ -100,7 +103,10 @@
             "minLength": 1
           },
           "locator_flavor": {
-            "enum": ["posix", "windows"]
+            "enum": [
+              "posix",
+              "windows"
+            ]
           }
         },
         "required": [
@@ -203,8 +209,22 @@
             "enum": [
               "pending",
               "satisfied",
-              "legacy_review"
+              "legacy_review",
+              "superseded"
             ]
+          },
+          "superseded_at_seq": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "supersession_source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "superseded_by_requirement_id": {
+            "type": "string",
+            "minLength": 1
           },
           "parent_id": {
             "type": [
@@ -236,18 +256,27 @@
                 "minLength": 1
               },
               "subject_kind": {
-                "enum": ["filesystem", "opaque"]
+                "enum": [
+                  "filesystem",
+                  "opaque"
+                ]
               },
               "resolved_constraint": {
                 "type": "string",
                 "minLength": 1
               },
               "implementation_choice": {
-                "type": ["string", "null"],
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "minLength": 1
               },
               "host_selection": {
-                "type": ["string", "null"],
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "minLength": 1
               },
               "resolved": {
@@ -255,7 +284,10 @@
                 "minLength": 1
               },
               "observed": {
-                "type": ["string", "null"],
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "minLength": 1
               },
               "root_constraint_source": {
@@ -560,6 +592,183 @@
           "relation",
           "readiness_fact_ids",
           "state"
+        ]
+      }
+    },
+    "root_controls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "persistence",
+              "pause",
+              "resume",
+              "cancel"
+            ]
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "source_id",
+              "start",
+              "end",
+              "sha256"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "scope_basis": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "current_unit",
+                  "exact",
+                  "directory",
+                  "action_class",
+                  "parent_task"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_source": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "source_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "start": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "end": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "source_id",
+                      "start",
+                      "end",
+                      "sha256"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "target",
+              "target_source"
+            ]
+          },
+          "controlled_requirements": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "requirement_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "unit": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "source_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "seq": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "target": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scope_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "required": [
+                "requirement_id",
+                "unit",
+                "revision",
+                "source_id",
+                "seq",
+                "target",
+                "scope_sha256"
+              ]
+            }
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "source",
+          "seq",
+          "scope_basis",
+          "controlled_requirements"
         ]
       }
     },

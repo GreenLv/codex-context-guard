@@ -183,6 +183,8 @@ MAX_EXECUTION_DEPTH = 8
 MAX_EXECUTION_STRING = 512
 MAX_EXECUTION_RECORDS = 64
 MAX_EXECUTION_TICKETS = 128
+MAX_PERSISTENCE_SCOPES = 64
+MAX_PERSISTENCE_SCOPE_ITEMS = 64
 PROCESS_SESSION_LOCKS_GUARD = threading.Lock()
 PROCESS_SESSION_LOCKS: dict[str, threading.Lock] = {}
 STATE_REQUIRED_KEYS = {
@@ -217,6 +219,7 @@ STATE_REQUIRED_KEYS = {
     "prompt_journal",
     "integrity",
     "content_hash",
+    "root_controls",
 }
 ASSET_ID_RE = re.compile(r"M\d{4,}")
 PROOF_ID_RE = re.compile(r"V\d{4,}")
@@ -937,6 +940,11 @@ ROOT_PAUSE_RE = re.compile(
     r"|(?:暂停|等待)[^。！？\n]{0,10}(?:直到|till\b|until\b)"
     r"|wait(?:ing)? (?:for|until) [^.!?;\n]{0,40}"
     r"|hold (?:off|until) [^.!?;\n]{0,40})",
+    re.I,
+)
+ROOT_DIRECT_PAUSE_RE = re.compile(
+    r"^\s*(?:(?:请|先|请先|现在)\s*)*暂停(?=\S|\s|$)|"
+    r"^\s*(?:please\s+)?(?:pause|hold)\s+(?:the\s+|this\s+)?(?:current\s+)?",
     re.I,
 )
 ROOT_PAUSE_EXTERNAL_RE = re.compile(
@@ -6405,7 +6413,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
     else:
         required = STATE_REQUIRED_KEYS
     if version != SCHEMA_VERSION:
-        required = required - {"core_event_sequence"}
+        required = required - {"core_event_sequence", "root_controls"}
     missing = sorted(required - set(state))
     if missing:
         raise StateIntegrityError(
@@ -6522,6 +6530,92 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                         or call_seq in used_sequence or result_seq in used_sequence):
                     raise StateIntegrityError("private host event sequence is invalid")
                 used_sequence.update((call_seq, result_seq))
+            root_controls = state.get("root_controls", [])
+            if (not isinstance(root_controls, list)
+                    or len(root_controls) > MAX_PERSISTENCE_SCOPES):
+                raise StateIntegrityError("private persistence scope ledger is invalid")
+            prompts_by_id = {str(p.get("id")): p for p in state.get("prompts", [])
+                             if isinstance(p, dict)}
+            items_by_id = {str(i.get("id")): i for i in state.get("requirements", [])
+                           if isinstance(i, dict)}
+            seen_persistence_sources: set[tuple[str, int, int]] = set()
+            for binding in root_controls:
+                old_keys = {"source_prompt_id", "source_record_sha256",
+                            "source_seq", "work_unit_id", "items"}
+                new_keys = old_keys | {"kind", "source_span", "scope_kind",
+                                       "catalog_sha256"}
+                targeted_keys = new_keys | {"scope_target", "scope_target_span"}
+                if not isinstance(binding, dict) or set(binding) not in (
+                        old_keys, new_keys, targeted_keys):
+                    raise StateIntegrityError("private persistence scope binding is invalid")
+                modern = set(binding) != old_keys
+                source_id = binding["source_prompt_id"]
+                source = prompts_by_id.get(source_id)
+                source_seq = binding["source_seq"]
+                bound_items = binding["items"]
+                span = binding.get("source_span") if modern else None
+                position = (source_id, span[0], span[1]) if (
+                    isinstance(span, list) and len(span) == 2
+                    and all(type(n) is int for n in span)) else None
+                if (not isinstance(source_id, str) or position in seen_persistence_sources
+                        or source is None or source.get("origin", "human") != "human"
+                        or source.get("record_sha256") != binding["source_record_sha256"]
+                        or type(source_seq) is not int or source_seq != source.get("core_event_seq")
+                        or binding["work_unit_id"] not in work_unit_ids
+                        or not isinstance(bound_items, list)
+                        or not 0 < len(bound_items) <= MAX_PERSISTENCE_SCOPE_ITEMS
+                        or (modern and (position is None or not 0 <= span[0] < span[1]
+                                        or binding["kind"] not in {"persistence", "pause", "resume", "cancel"}
+                                        or binding["scope_kind"] not in {
+                                            "current_unit", "action_class", "exact", "parent_task"}
+                                        or not re.fullmatch(r"[0-9a-f]{64}", str(binding["catalog_sha256"]))))):
+                    raise StateIntegrityError("private persistence scope source is invalid")
+                if modern and set(binding) == targeted_keys:
+                    target_span = binding["scope_target_span"]
+                    if (binding["scope_kind"] == "current_unit"
+                            or not isinstance(binding["scope_target"], str)
+                            or not binding["scope_target"]
+                            or not isinstance(target_span, list)
+                            or len(target_span) != 2
+                            or any(type(n) is not int for n in target_span)
+                            or not span[0] <= target_span[0] < target_span[1] <= span[1]):
+                        raise StateIntegrityError("private control target span is invalid")
+                elif modern and binding["scope_kind"] in {"exact", "parent_task"}:
+                    raise StateIntegrityError("private control target source is missing")
+                if position is not None:
+                    seen_persistence_sources.add(position)
+                if modern:
+                    catalog = _root_control_catalog(state, binding["work_unit_id"], source_seq)
+                    if (catalog is None or sha256_text(canonical_json(catalog))
+                            != binding["catalog_sha256"]):
+                        raise StateIntegrityError("private root control catalog changed")
+                    expected = _root_control_selected_items(
+                        state, catalog, binding["scope_kind"],
+                        binding.get("scope_target", "test_verify"
+                                    if binding["scope_kind"] == "action_class" else None))
+                    if expected != bound_items:
+                        raise StateIntegrityError("private root control scope changed")
+                seen_items: set[str] = set()
+                for bound in bound_items:
+                    fields = {"id", "prompt_id", "work_unit_id", "source_sha256", "root_seq"}
+                    if modern:
+                        fields.add("action")
+                    if not isinstance(bound, dict) or set(bound) != fields:
+                        raise StateIntegrityError("private persistence scope item is invalid")
+                    item_id = bound["id"]
+                    item = items_by_id.get(item_id)
+                    item_prompt = prompts_by_id.get(bound["prompt_id"])
+                    if (not isinstance(item_id, str) or item_id in seen_items
+                            or item is None or item_prompt is None
+                            or item.get("prompt_id") != bound["prompt_id"]
+                            or item.get("work_unit_id") != bound["work_unit_id"]
+                            or item.get("sha256") != bound["source_sha256"]
+                            or bound["work_unit_id"] != binding["work_unit_id"]
+                            or type(bound["root_seq"]) is not int
+                            or bound["root_seq"] != item_prompt.get("core_event_seq")
+                            or bound["root_seq"] > source_seq):
+                        raise StateIntegrityError("private persistence scope identity is invalid")
+                    seen_items.add(item_id)
             if "response_delivery" not in state:
                 raise StateIntegrityError(
                     "private state is missing required field: response_delivery"
@@ -6660,6 +6754,7 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "evidence": [],
         "evidence_sequence": 0,
         "core_event_sequence": 0,
+        "root_controls": [],
         "assets": [],
         "asset_sequence": 0,
         "proofs": [],
@@ -7168,6 +7263,9 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
         }
     state.setdefault("evidence_sequence", 0)
     state.setdefault("core_event_sequence", 0)
+    # Old schema-13 candidates did not capture this as-of scope. An empty
+    # ledger preserves history without promoting old root text to a binding.
+    state.setdefault("root_controls", [])
     state.setdefault("assets", [])
     state.setdefault("asset_sequence", 0)
     state.setdefault("proofs", [])
@@ -7399,6 +7497,8 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 raise StateIntegrityError("private state root must be an object")
             validate_state_integrity(loaded)
             state = migrate_state(loaded, payload)
+            if not _root_control_decomposition_valid(state, session_dir):
+                raise StateIntegrityError("private root control decomposition changed")
             integrity = state.get("integrity")
             if isinstance(integrity, dict) and integrity.get("status") == "failed":
                 state = rebuild_state_from_prompts(
@@ -8528,6 +8628,8 @@ def root_absolute_locator_mentions(text: str) -> tuple[set[str], bool]:
 def _current_action_basis(
     state: dict[str, Any] | None, category: str, reply_clause: str,
     session_dir: Path | None = None, *, include_satisfied: bool = False,
+    allowed_item_ids: set[str] | None = None,
+    include_unready: bool = False, include_controlled: bool = False,
 ) -> dict[str, Any] | None:
     """Bind a candidate action to an unmet, current root requirement.
 
@@ -8537,6 +8639,13 @@ def _current_action_basis(
     if state is None or session_dir is None or category == "generic_work":
         return None
     current_ids = current_scope_projection(state)["scoped_item_ids"]
+    if include_controlled:
+        current_ids |= {
+            str(ref["id"])
+            for control in state.get("root_controls", [])
+            if isinstance(control, dict) and "kind" in control
+            for ref in control.get("items", []) if isinstance(ref, dict)
+        }
     active_id = state.get("work_state", {}).get("active_work_unit_id")
     units = {str(u.get("id")): u for u in state.get("work_units", []) if isinstance(u, dict)}
     reply_subjects = {str(s["id"]) for s in prompt_subjects(reply_clause)}
@@ -8547,7 +8656,12 @@ def _current_action_basis(
         for item in state.get(collection, []):
             if not isinstance(item, dict) or item.get("id") not in current_ids:
                 continue
-            if item.get("status") in TERMINAL_ITEM_STATUSES or item.get("status") == "legacy_review":
+            if allowed_item_ids is not None and item.get("id") not in allowed_item_ids:
+                continue
+            if ((item.get("status") in TERMINAL_ITEM_STATUSES and
+                 not (include_controlled and item.get("status") in {
+                     "pass", "answered", "superseded"}))
+                    or item.get("status") == "legacy_review"):
                 continue
             unit = units.get(str(item.get("work_unit_id")))
             if not unit or unit.get("status") in {"completed", "historical_unresolved"}:
@@ -8640,6 +8754,24 @@ def _current_action_basis(
             # requested replacement, preservation condition, or other
             # postcondition needs its own sourced predicate and readback.
             if category == "local_edit":
+                governed_repair_child = bool(
+                    item.get("execution_source_span") is not None
+                    and any(
+                        c.get("kind") == "persistence"
+                        and c.get("scope_kind") == "parent_task"
+                        and c.get("source_prompt_id") == item.get("prompt_id")
+                        and any(r.get("id") == item.get("id")
+                                for r in c.get("items", []))
+                        for c in state.get("root_controls", []) if isinstance(c, dict)
+                    )
+                )
+                governed_successor = bool(
+                    include_controlled
+                    and any(link.get("new_id") == item.get("id")
+                            and link.get("old_id") in current_ids
+                            for link in state.get("supersedes", [])
+                            if isinstance(link, dict))
+                )
                 generic_edit = source
                 if dependent_readback:
                     generic_edit = re.sub(
@@ -8650,7 +8782,7 @@ def _current_action_basis(
                                 *WINDOWS_DRIVE_PATH_RE.findall(source),
                                 *RELATIVE_FILE_RE.findall(source)):
                     generic_edit = generic_edit.replace(locator, "", 1)
-                if not re.fullmatch(
+                if not (governed_repair_child or governed_successor) and (not re.fullmatch(
                     r"\s*(?:(?:请|帮我|先|再|完成|只)\s*)*(?:修改|编辑|更新|修复|修正|修好|实现)"
                     r"\s*[^,，;；。.!?？]{0,55}?(?:\s*(?:并|然后)\s*核对(?:文件)?内容)?\s*"
                     r"|\s*(?:本轮)?完成(?:补丁|修复)\s*"
@@ -8658,16 +8790,20 @@ def _current_action_basis(
                     r"|\s*(?:please\s+)?(?:edit|modify|update|fix|correct|repair)"
                     r"\s*[^,，;；。!?？]{0,70}?(?:\s+and\s+verify\s+the\s+changed\s+file)?\s*",
                     generic_edit, re.I,
-                ) or re.search(r"改为|替换为|写入|不得覆盖|no[- ]overwrite|replace\s+with", source, re.I):
+                ) or re.search(r"改为|替换为|写入|不得覆盖|no[- ]overwrite|replace\s+with", source, re.I)):
                     continue
             # A single sentence can carry independent effects. One host test
             # result cannot interpret and close an adjacent edit/review verb.
+            semantic_source = source
+            for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+                semantic_source = locator_pattern.sub("对象", semantic_source)
             if any(other != category and not (
                 category == "local_edit" and other in {"local_review", "test_verify"}
                 and (dependent_readback or re.search(r"(?:并|然后)\s*核对(?:文件)?内容|\band\s+verify\s+the\s+changed\s+file\b", source, re.I))
             ) and any(
-                not source[match.end():].startswith("的")
-                for match in other_pattern.finditer(source)
+                not semantic_source[match.end():].startswith("的")
+                for match in other_pattern.finditer(semantic_source)
             ) for other, other_pattern in ACTION_PATTERNS):
                 continue
             if WINDOWS_UNC_PATH_RE.search(source):
@@ -8824,7 +8960,8 @@ def _current_action_basis(
             effect_needs_verification = bool(
                 edit_effects and edit_effects[-1]["outcome"] == "success" and not satisfied
             )
-            if (not actionable and not condition_scope and not (include_satisfied and satisfied)
+            if (not actionable and not condition_scope and not include_unready
+                    and not (include_satisfied and satisfied)
                     and not (include_satisfied and constraint_kind == "exact"
                              and resolved_constraint is not None)):
                 continue
@@ -8853,6 +8990,443 @@ def _current_action_basis(
                 "core_snapshot": snapshot,
             }
     return None
+
+
+def _root_control_decomposition_valid(
+    state: dict[str, Any], session_dir: Path,
+    additional_prompt_ids: set[str] | None = None,
+) -> bool:
+    """Compare controlled execution children with immutable root bytes."""
+    controls = [c for c in state.get("root_controls", [])
+                if isinstance(c, dict) and "kind" in c]
+    if not controls:
+        return True
+    # Every new human business root carries its own immutable root→unit
+    # companion, including roots whose requirement and acceptance rows have
+    # since been deleted. A survivor-only catalog cannot prove completeness.
+    try:
+        records = prompt_records_from_disk(session_dir)
+    except (OSError, StateIntegrityError, TypeError, ValueError):
+        return False
+    metadata = {str(p.get("id")): p for p in state.get("prompts", [])
+                if isinstance(p, dict)}
+    max_control_seq = max(int(c["source_seq"]) for c in controls)
+    latest_seq = int(state.get("core_event_sequence") or max_control_seq)
+    # The immutable prompt is written before the mutable state transaction.
+    # A crash after that write leaves a real newer root on disk. Do not treat
+    # the older state watermark as an exhaustive view of the user's work.
+    if any(type(record.get("core_event_seq")) is int
+           and record["core_event_seq"] > latest_seq for record in records):
+        return False
+    unit_bindings: dict[str, tuple[str, int]] = {}
+    known_units = {str(u.get("id")) for u in state.get("work_units", [])
+                   if isinstance(u, dict)}
+    for record in records:
+        if record.get("origin", "human") != "human":
+            continue
+        seq = record.get("core_event_seq")
+        if type(seq) is not int or seq > latest_seq:
+            continue
+        item = metadata.get(str(record["id"]))
+        if item is None or item.get("record_sha256") != record.get("record_sha256"):
+            return False
+        if not record.get("unit_binding_required"):
+            # Old roots without a source-bound unit cannot be promoted into
+            # a later whole-unit catalog. Control commands are not business.
+            if not is_control_prompt(record["text"]):
+                return False
+            continue
+        path = session_dir / "prompts" / "units" / f"{record['id']}.json"
+        binding = read_json(path)
+        keys = {"schema", "prompt_id", "prompt_record_sha256",
+                "core_event_seq", "work_unit_id", "record_sha256"}
+        if (not isinstance(binding, dict) or set(binding) != keys
+                or binding["schema"] != "prompt-unit/v1"
+                or binding["prompt_id"] != record["id"]
+                or binding["prompt_record_sha256"] != record["record_sha256"]
+                or binding["core_event_seq"] != seq
+                or binding["work_unit_id"] not in known_units
+                or binding["record_sha256"] != sha256_text(canonical_json(
+                    {key: binding[key] for key in keys - {"record_sha256"}}))):
+            return False
+        unit_bindings[record["id"]] = (binding["work_unit_id"], seq)
+        base = [row for row in state.get("requirements", [])
+                if isinstance(row, dict) and row.get("prompt_id") == record["id"]
+                and row.get("execution_source_span") is None
+                and row.get("information_source_span") is None
+                and row.get("constraint_scope") != "session"]
+        if (len(base) != 1 or base[0].get("work_unit_id") != binding["work_unit_id"]
+                or base[0].get("sha256") != record["sha256"]
+                or base[0].get("text") != bounded(record["text"], 900)):
+            return False
+        if not any(begin == 0 and end == len(record["text"].rstrip("。.!！").encode("utf-8"))
+                   for _, begin, end, _ in _root_control_segments(record["text"])):
+            expected_acceptance = set(extract_acceptance(record["text"]))
+            present_acceptance = {str(row.get("text")) for row in state.get("acceptance_items", [])
+                                  if isinstance(row, dict)
+                                  and row.get("prompt_id") == record["id"]
+                                  and row.get("work_unit_id") == binding["work_unit_id"]}
+            if not expected_acceptance.issubset(present_acceptance):
+                return False
+    for control in controls:
+        if unit_bindings.get(control["source_prompt_id"]) != (
+            control["work_unit_id"], control["source_seq"]
+        ):
+            return False
+        for ref in control["items"]:
+            source = unit_bindings.get(ref["prompt_id"])
+            if source != (control["work_unit_id"], ref["root_seq"]):
+                return False
+    # A later root's arrival proves ordering, not replacement intent. Replay
+    # each link against that root's immutable words and the unit inventory at
+    # that watermark; a rehashed state link cannot revoke an earlier duty.
+    rows_by_id = {str(row.get("id")): row for row in state.get("requirements", [])
+                  if isinstance(row, dict)}
+    if len(rows_by_id) != len(state.get("requirements", [])):
+        return False
+    links_at_root: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for link in state.get("supersedes", []):
+        if not isinstance(link, dict):
+            return False
+        old = rows_by_id.get(str(link.get("old_id")))
+        new = rows_by_id.get(str(link.get("new_id")))
+        if old is None or new is None:
+            return False
+        old_source = unit_bindings.get(str(old.get("prompt_id")))
+        new_source = unit_bindings.get(str(new.get("prompt_id")))
+        if (old_source is None or new_source is None
+                or old_source[0] != new_source[0]
+                or not old_source[1] < new_source[1] <= latest_seq
+                or new.get("execution_source_span") is not None
+                or new.get("information_source_span") is not None):
+            return False
+        links_at_root.append((new_source[1], link, old, new))
+    replaced: set[str] = set()
+    for seq, link, old, new in sorted(links_at_root, key=lambda row: row[0]):
+        if old["id"] in replaced:
+            return False
+        source = next((record for record in records
+                       if record["id"] == new["prompt_id"]), None)
+        if source is None:
+            return False
+        unit = old["work_unit_id"]
+        current = {
+            row_id: row for row_id, row in rows_by_id.items()
+            if row.get("work_unit_id") == unit
+            and (root := unit_bindings.get(str(row.get("prompt_id")))) is not None
+            and root[1] <= seq and row_id not in replaced
+            and row.get("execution_source_span") is None
+            and row.get("information_source_span") is None
+        }
+        if (old["id"] not in current or new["id"] not in current
+                or supersession_target(
+                    source["text"], set(current), new["id"],
+                    {row_id: str(row.get("text") or "") for row_id, row in current.items()}
+                ) != old["id"]):
+            return False
+        replaced.add(old["id"])
+    prompt_rows = {str(p.get("id")): p for p in state.get("prompts", [])
+                   if isinstance(p, dict) and p.get("origin", "human") == "human"}
+    from cg_core_v2 import _action_class_scope_speech, _current_unit_scope_speech
+    for control in controls:
+        prompt = prompt_rows.get(str(control["source_prompt_id"]))
+        record = read_prompt_record(session_dir, prompt) if prompt else None
+        if record is None:
+            return False
+        matches = [clause for kind, begin, end, clause in
+                   _root_control_segments(record["text"])
+                   if (kind == control["kind"]
+                       and [begin, end] == control["source_span"])]
+        if len(matches) != 1:
+            return False
+        clause = matches[0]
+        if (control["scope_kind"] == "current_unit"
+                and not _current_unit_scope_speech(clause, control["kind"])):
+            return False
+        if control["scope_kind"] == "action_class":
+            parsed = _action_class_scope_speech(clause, control["kind"])
+            if (parsed is None or control.get("scope_target") != "test_verify"
+                    or control.get("scope_target_span") != [
+                        control["source_span"][0] + len(clause[:parsed[1]].encode("utf-8")),
+                        control["source_span"][0] + len(clause[:parsed[2]].encode("utf-8"))]):
+                return False
+        if control["scope_kind"] == "exact":
+            bounds = control.get("scope_target_span")
+            if (not isinstance(bounds, list) or len(bounds) != 2
+                    or record["text"].encode("utf-8")[bounds[0]:bounds[1]].decode("utf-8")
+                    != control.get("scope_target")):
+                return False
+    candidate_prompts = (set(unit_bindings)
+                         | {str(c["source_prompt_id"]) for c in controls}
+                         | {str(row["prompt_id"]) for c in controls for row in c["items"]}
+                         | (additional_prompt_ids or set()))
+    for prompt_id in candidate_prompts:
+        prompt = prompt_rows.get(prompt_id)
+        record = read_prompt_record(session_dir, prompt) if prompt else None
+        if record is None:
+            return False
+        expected, related = _execution_child_specs(record["text"])
+        actual = sorted((item for item in state.get("requirements", [])
+                         if isinstance(item, dict) and item.get("prompt_id") == prompt_id
+                         and item.get("execution_source_span") is not None),
+                        key=lambda item: item["execution_source_span"][0])
+        if len(actual) != len(expected):
+            return False
+        repair_id = actual[0]["id"] if related and actual else None
+        for index, (item, (begin, end, fragment, category)) in enumerate(zip(actual, expected)):
+            span = [len(record["text"][:begin].encode("utf-8")),
+                    len(record["text"][:end].encode("utf-8"))]
+            required_for = repair_id if related and index else None
+            if (item.get("execution_source_span") != span
+                    or item.get("execution_source_sha256") != sha256_text(fragment)
+                    or item.get("execution_kind") != category
+                    or item.get("required_for_item_id") != required_for):
+                return False
+    return True
+
+
+def current_root_control_projection(
+    state: dict[str, Any], session_dir: Path,
+) -> dict[str, Any] | None:
+    """Project the full ledger-bound control catalog through the shared core.
+
+    A partial or unselected catalog is unavailable, never a smaller scope.
+    The returned normalized projection is ephemeral; persisted Stop rows use
+    only a bounded hash-free summary of it.
+    """
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    controls = [c for c in state.get("root_controls", [])
+                if isinstance(c, dict) and c.get("work_unit_id") == active
+                and "kind" in c]
+    if not controls or not isinstance(active, str):
+        return None
+    current_catalog = _root_control_catalog(
+        state, active, int(state.get("core_event_sequence") or 0))
+    if current_catalog is None:
+        return None
+    # A candidate cannot silently shrink its inventory and recompute its own
+    # catalog hash: the original user root determines every recognized child.
+    if not _root_control_decomposition_valid(
+        state, session_dir, {str(row["prompt_id"]) for row in current_catalog}
+    ):
+        return None
+    for binding in controls:
+        at_receipt = _root_control_catalog(state, active, binding["source_seq"])
+        if (at_receipt is None or binding["catalog_sha256"] !=
+                sha256_text(canonical_json(at_receipt))):
+            return None
+        selected = _root_control_selected_items(
+            state, at_receipt, binding["scope_kind"],
+            binding.get("scope_target", "test_verify"
+                        if binding["scope_kind"] == "action_class" else None))
+        if binding["items"] != selected:
+            return None
+    all_items = {str(i.get("id")): i for i in state.get("requirements", [])
+                 if isinstance(i, dict) and i.get("work_unit_id") == active}
+    bound_ids = ({str(ref.get("id")) for c in controls for ref in c["items"]}
+                 | {str(row["id"]) for row in current_catalog})
+    snapshots: list[tuple[str, dict[str, Any]]] = []
+    for item_id in sorted(bound_ids):
+        item = all_items.get(item_id)
+        if item is None or (category := _root_control_item_action(item)) is None:
+            return None
+        basis = _current_action_basis(
+            state, category, "", session_dir, include_satisfied=True,
+            allowed_item_ids={item_id}, include_unready=True,
+            include_controlled=True,
+        )
+        if basis is None or basis["requirement_id"] != item_id:
+            return None
+        snapshots.append((item_id, copy.deepcopy(basis["core_snapshot"])))
+    if not snapshots:
+        return None
+    combined = copy.deepcopy(snapshots[0][1])
+    root_sources = {s["id"]: s for s in combined["sources"] if s["kind"] == "root"}
+    root_ids = set(root_sources)
+    combined["requirements"] = []
+    combined["facts"] = []
+    combined["actions"] = []
+    combined["conditions"] = []
+    combined["sources"] = list(root_sources.values())
+    interpreted: dict[str, list[tuple[int, int]]] = {key: [] for key in root_ids}
+    for item_id, part in snapshots:
+        if {s["id"]: s for s in part["sources"] if s["kind"] == "root"} != root_sources:
+            return None
+        prefix = item_id + ":"
+        rename = {s["id"]: prefix + s["id"] for s in part["sources"]
+                  if s["kind"] != "root"}
+        condition_ids = {c["id"]: prefix + c["id"] for c in part["conditions"]}
+        for source in part["sources"]:
+            if source["kind"] == "root":
+                continue
+            row = copy.deepcopy(source)
+            row["id"] = rename[source["id"]]
+            combined["sources"].append(row)
+        for req in part["requirements"]:
+            row = copy.deepcopy(req)
+            selection = row["target_origin"].get("selection_source_id")
+            if selection is not None:
+                row["target_origin"]["selection_source_id"] = rename[selection]
+            row["condition_ids"] = [condition_ids[c] for c in row["condition_ids"]]
+            combined["requirements"].append(row)
+        for fact in part["facts"]:
+            row = copy.deepcopy(fact)
+            row["id"] = prefix + fact["id"]
+            row["source_id"] = rename.get(fact["source_id"], fact["source_id"])
+            if row["call_source_id"] is not None:
+                row["call_source_id"] = rename[row["call_source_id"]]
+            row["invalidates"] = [prefix + fid for fid in row["invalidates"]]
+            if row["condition_id"] is not None:
+                row["condition_id"] = condition_ids[row["condition_id"]]
+            combined["facts"].append(row)
+        for action in part["actions"]:
+            row = copy.deepcopy(action)
+            row["readiness_fact_ids"] = [prefix + fid for fid in row["readiness_fact_ids"]]
+            combined["actions"].append(row)
+        for condition in part["conditions"]:
+            row = copy.deepcopy(condition)
+            row["id"] = condition_ids[condition["id"]]
+            row["fact_ids"] = [prefix + fid for fid in row["fact_ids"]]
+            combined["conditions"].append(row)
+        for coverage in part["coverage"]:
+            span = coverage["source"]
+            if coverage["kind"] == "interpreted" and span["source_id"] in interpreted:
+                interpreted[span["source_id"]].append((span["start"], span["end"]))
+    requirement_by_id = {r["id"]: r for r in combined["requirements"]}
+    if len(requirement_by_id) != len(combined["requirements"]):
+        return None
+    # Preserve historical requirement versions. A later trusted replacement
+    # closes the old interval; it does not erase the old control or make the
+    # replacement inherit it. The source is the actual successor root event.
+    for link in state.get("supersedes", []):
+        old_id, new_id = link.get("old_id"), link.get("new_id")
+        if old_id not in requirement_by_id:
+            continue
+        successor = all_items.get(str(new_id))
+        if successor is None or new_id not in requirement_by_id:
+            return None
+        source = root_sources.get("root:" + str(successor.get("prompt_id")))
+        old = requirement_by_id[old_id]
+        new = requirement_by_id[new_id]
+        if (source is None or source["seq"] <= old["seq"]
+                or source["unit"] != old["unit"] or new["unit"] != old["unit"]
+                or new["revision"] == old["revision"]):
+            return None
+        old.update(status="superseded", superseded_at_seq=source["seq"],
+                   supersession_source_id=source["id"],
+                   superseded_by_requirement_id=new_id)
+    # Only root-time, hash-bound decomposition can establish required-child
+    # edges. A control's selected list cannot manufacture a dependency.
+    for item_id, item in all_items.items():
+        required_for = item.get("required_for_item_id")
+        if required_for is None or item_id not in requirement_by_id:
+            continue
+        if required_for not in requirement_by_id:
+            return None
+        requirement_by_id[item_id]["parent_id"] = required_for
+    canonical_controls = []
+    for binding in controls:
+        root = root_sources.get("root:" + binding["source_prompt_id"])
+        if (root is None or root["seq"] != binding["source_seq"]
+                or binding["scope_kind"] not in {
+                    "current_unit", "action_class", "exact", "parent_task"}):
+            return None
+        begin, end = binding["source_span"]
+        if not 0 <= begin < end <= root["byte_length"]:
+            return None
+        span = dict(source_id=root["id"], start=begin, end=end,
+                    sha256=root["sha256"])
+        interpreted[root["id"]].append((begin, end))
+        basis = dict(kind=binding["scope_kind"], target=None, target_source=None)
+        if binding["scope_kind"] != "current_unit":
+            target_bounds = binding.get("scope_target_span")
+            if (not isinstance(target_bounds, list) or len(target_bounds) != 2
+                    or not begin <= target_bounds[0] < target_bounds[1] <= end):
+                return None
+            basis.update(target=binding["scope_target"], target_source=dict(
+                source_id=root["id"], start=target_bounds[0],
+                end=target_bounds[1],
+                sha256=root["sha256"],
+            ))
+        refs = []
+        for bound in binding["items"]:
+            req = requirement_by_id.get(bound["id"])
+            if req is None:
+                return None  # Never certify a truncated receipt catalog.
+            selected = any(f["requirement_id"] == req["id"]
+                           and f["kind"] == "readiness" and f["outcome"] == "success"
+                           and f["seq"] <= binding["source_seq"]
+                           for f in combined["facts"])
+            ref_target = (None if req["target_origin"]["constraint_kind"] == "work_unit"
+                          and not selected else req["target"])
+            refs.append(dict(requirement_id=req["id"], unit=req["unit"],
+                             revision=req["revision"],
+                             source_id=req["source"]["source_id"], seq=req["seq"],
+                             target=ref_target, scope_sha256=req["scope_sha256"]))
+        canonical_controls.append(dict(
+            id="control:" + binding["source_prompt_id"] + ":" + str(begin),
+            kind=binding["kind"], source=span, seq=binding["source_seq"],
+            scope_basis=basis, controlled_requirements=refs,
+        ))
+    combined["root_controls"] = canonical_controls
+    combined["revision"] = max(s["revision"] for s in root_sources.values()
+                               if s["unit"] == active)
+    combined["as_of"] = state["core_event_sequence"]
+    combined["turn"] = str((state.get("completion_attempt") or {}).get("turn_id") or "stop")
+    combined["intent"] = {"source": None, "kind": "none"}
+    combined["coverage"] = []
+    for root in root_sources.values():
+        if root["unit"] != active:
+            continue
+        intervals = interpreted[root["id"]]
+        boundaries = {0, root["byte_length"]}
+        boundaries.update(n for pair in intervals for n in pair)
+        for start, end in zip(sorted(boundaries), sorted(boundaries)[1:]):
+            if start == end:
+                continue
+            kind = ("interpreted" if any(a <= start and end <= b for a, b in intervals)
+                    else "unknown")
+            combined["coverage"].append(dict(
+                source=dict(source_id=root["id"], start=start, end=end,
+                            sha256=root["sha256"]), kind=kind,
+            ))
+    try:
+        return project_core(combined)
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def current_persistence_actions(
+    state: dict[str, Any], session_dir: Path,
+) -> tuple[bool, list[dict[str, Any]], dict[str, str]]:
+    """Consume shared normalized control states, never a second private fold."""
+    normalized = current_root_control_projection(state, session_dir)
+    if normalized is None or normalized["root_control_errors"]:
+        return False, [], {} if normalized is None else normalized["root_control_states"]
+    requirements = {str(i.get("id")): i for i in state.get("requirements", [])
+                    if isinstance(i, dict)}
+    actions: list[dict[str, Any]] = []
+    for action in normalized["current_actions"]:
+        item_id = action["requirement_id"]
+        if normalized["root_control_states"].get(item_id) != "persistent":
+            continue
+        item = requirements.get(item_id)
+        category = _root_control_item_action(item) if item is not None else None
+        if category is None:
+            continue
+        basis = _current_action_basis(
+            state, category, "", session_dir, allowed_item_ids={item_id},
+        )
+        if (basis is not None and basis["requirement_id"] == item_id
+                and basis["readiness"] == "trusted_host_observation"
+                and basis["predicate_state"] != "satisfied"):
+            actions.append(basis)
+    return (bool(normalized["explicit_user_persistence"]), actions,
+            normalized["root_control_states"])
 
 
 def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[dict[str, Any]]:
@@ -10013,6 +10587,11 @@ def append_prompt(
     if locator_base is not None:
         record["locator_base"] = locator_base
         record["locator_flavor"] = "windows" if WINDOWS_ABSOLUTE_PATH_RE.match(locator_base) else "posix"
+    if origin == "human" and not is_control_prompt(text):
+        # The work-unit choice is made just after this immutable root arrives.
+        # Its required companion is written once then; absent/old companions
+        # cannot later be inferred from surviving requirement rows.
+        record["unit_binding_required"] = True
     state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
     record["core_event_seq"] = state["core_event_sequence"]
     record["record_sha256"] = prompt_record_hash(record)
@@ -10057,6 +10636,20 @@ def append_prompt(
             if value != prompt_id
         ]
     return metadata
+
+
+def append_prompt_unit_binding(
+    session_dir: Path, prompt: dict[str, Any], work_unit_id: str,
+) -> None:
+    path = session_dir / "prompts" / "units" / f"{prompt['id']}.json"
+    if path.exists():
+        raise StateIntegrityError("immutable prompt-unit binding already exists")
+    record = {"schema": "prompt-unit/v1", "prompt_id": prompt["id"],
+              "prompt_record_sha256": prompt["record_sha256"],
+              "core_event_seq": prompt["core_event_seq"],
+              "work_unit_id": work_unit_id}
+    record["record_sha256"] = sha256_text(canonical_json(record))
+    atomic_write_json(path, record)
 
 
 def clause_metadata(text: str) -> dict[str, Any]:
@@ -10236,49 +10829,98 @@ def append_information_children(
         ).hexdigest()
 
 
-def append_execution_children(
-    state: dict[str, Any], prompt: dict[str, Any], text: str,
-    parent_id: str, work_unit_id: str,
-) -> None:
-    """Split two independently verifiable effects without closing the parent.
+def _execution_child_specs(
+    text: str,
+) -> tuple[list[tuple[int, int, str, str]], bool]:
+    """Derive bounded execution spans and dependency shape from root bytes.
 
-    This bounded compositional form needs two complete affirmative clauses,
-    one edit and one test, and one unique root locator. Anything else remains
-    the unsplit pending root; a test result never certifies an adjacent edit.
+    A shared root is not itself a dependency. A test is a required descendant
+    only when its own clause names the same sole object as the repair, or is
+    an object-free test joined to that repair. Controls never create this edge.
     """
-    separators = list(re.finditer(r"[,，;；]\s*(?:并|and)?|\b(?:and|then)\b|并且|并|然后|随后|和", text, re.I))
-    if len(separators) != 1:
-        return
-    cut = separators[0]
-    raw_parts = [(0, cut.start()), (cut.end(), len(text))]
+    from cg_core_v2 import _subjectless_compound_persistence
+
+    source = text
+    controls = [(begin, end) for kind, begin, end, clause in
+                _root_control_segments(text)
+                if kind == "persistence" and _subjectless_compound_persistence(clause)]
+    if len(controls) == 1 and controls[0][0] > 0:
+        # A complete following control clause is not a third edit/test
+        # action. Its source span remains separate from the root-time work.
+        source = text.encode("utf-8")[:controls[0][0]].decode("utf-8")
+    separators = [match for match in re.finditer(
+        r"[,，;；]\s*(?:(?:并且|然后|随后|并|和|and|then)\s*)?"
+        r"|\b(?:and|then)\b|并且|并|然后|随后|和",
+        source, re.I,
+    ) if not (match.group().lstrip().startswith((",", "，"))
+              and re.match(r"\s*(?:直到|直至|until\b)", source[match.end():], re.I))]
+    if not 1 <= len(separators) <= 16:
+        return [], False
+    raw_parts = []
+    start = 0
+    for cut in separators:
+        raw_parts.append((start, cut.start()))
+        start = cut.end()
+    raw_parts.append((start, len(source)))
     # A changed-file readback is one edit predicate, not a regression suite.
-    if re.fullmatch(r"\s*verify\s+(?:the\s+)?changed\s+file[.。!！]?\s*",
-                    text[cut.end():], re.I):
-        return
+    if len(raw_parts) == 2 and re.fullmatch(
+        r"\s*verify\s+(?:the\s+)?changed\s+file[.。!！]?\s*",
+        source[raw_parts[1][0]:], re.I,
+    ):
+        return [], False
     parts: list[tuple[int, int, str, str]] = []
     for begin, end in raw_parts:
-        fragment = text[begin:end]
+        fragment = source[begin:end]
         offset = len(fragment) - len(fragment.lstrip())
         begin += offset
         value = fragment.strip(" \t\r\n。.!?？")
         if not value or CLAUSE_NEGATION_RE.search(value) or DESCRIPTION_FRAME_RE.search(value):
-            return
-        classes = [category for category, pattern in ACTION_PATTERNS if pattern.search(value)]
+            return [], False
+        speech = value
+        for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                                ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+            speech = locator_pattern.sub("对象", speech)
+        classes = [category for category, pattern in ACTION_PATTERNS if pattern.search(speech)]
         if len(classes) != 1 or classes[0] not in {
             "local_edit", "test_verify", "local_commit", "remote_push"
         }:
-            return
+            return [], False
         parts.append((begin, begin + len(value), value, classes[0]))
     pair = {part[3] for part in parts}
-    if pair not in ({"local_edit", "test_verify"}, {"local_commit", "remote_push"}):
-        return
-    targets = {match.group(0).rstrip(".") for pattern in
-               (ABSOLUTE_PATH_RE, WINDOWS_DRIVE_PATH_RE)
-               for match in pattern.finditer(text)}
-    if pair == {"local_edit", "test_verify"} and len(targets) > 1:
-        return
-    if pair == {"local_commit", "remote_push"} and len(targets) > 1:
-        return
+    repair_tests = (parts[0][3] == "local_edit"
+                    and all(part[3] == "test_verify" for part in parts[1:]))
+    commit_push = (len(parts) == 2 and pair == {"local_commit", "remote_push"})
+    if not repair_tests and not commit_push:
+        return [], False
+    clause_targets = []
+    for _, _, fragment, _ in parts:
+        found, ambiguous = root_absolute_locator_mentions(fragment)
+        if ambiguous or len(found) > 1:
+            return [], False
+        clause_targets.append(found)
+    targets = set().union(*clause_targets)
+    if len(targets) > 1:
+        return [], False
+    related_tests = False
+    if repair_tests:
+        if targets:
+            related_tests = all(found == targets for found in clause_targets)
+        else:
+            related_tests = all(re.fullmatch(
+                r"\s*(?:(?:请|再|并|先)\s*)?(?:运行|执行)?\s*(?:回归|单元|集成)?\s*"
+                r"(?:测试|验证)\s*(?:[,，]\s*(?:直到|直至)\s*当前任务完成)?\s*",
+                fragment, re.I,
+            ) for _, _, fragment, _ in parts[1:])
+    return parts, related_tests
+
+
+def append_execution_children(
+    state: dict[str, Any], prompt: dict[str, Any], text: str,
+    parent_id: str, work_unit_id: str,
+) -> None:
+    """Persist individually sourced child effects and root-time relations."""
+    parts, related_tests = _execution_child_specs(text)
+    created: list[dict[str, Any]] = []
     for begin, end, fragment, category in parts:
         append_requirement(state, prompt, fragment, work_unit_id=work_unit_id)
         child = state["requirements"][-1]
@@ -10288,6 +10930,10 @@ def append_execution_children(
             len(text[:begin].encode("utf-8")), len(text[:end].encode("utf-8"))
         ]
         child["execution_source_sha256"] = sha256_text(fragment)
+        created.append(child)
+    if related_tests:
+        for child in created[1:]:
+            child["required_for_item_id"] = created[0]["id"]
 
 
 def append_session_constraints(state: dict[str, Any], prompt: dict[str, Any], text: str, unit_id: str) -> None:
@@ -10579,6 +11225,14 @@ def root_pause_clauses(text: str) -> list[str]:
     authoritative = authoritative_supersession_text(text)
     result = []
     for sentence in re.findall(r"[^\n.!?。！？;；]+[?？]?", authoritative):
+        # A direct pause at the sentence head remains an instruction when a
+        # later comma introduces a separate question in the same sentence.
+        direct_clause = re.split(r"[,，]", sentence, maxsplit=1)[0]
+        direct = ROOT_DIRECT_PAUSE_RE.search(direct_clause)
+        if (direct and not TEST_SPEC_FRAME_RE.search(direct_clause)
+                and not DESCRIPTION_FRAME_RE.search(direct_clause)):
+            result.append(direct_clause.strip())
+            continue
         if (clause_is_interrogative(sentence) or TEST_SPEC_FRAME_RE.search(sentence)
                 or DESCRIPTION_FRAME_RE.search(sentence)
                 or re.search(r"^\s*(?:如果|假如|if\b|suppose\b)", sentence, re.I)):
@@ -10699,6 +11353,13 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
         ),
         None,
     )
+    if (current is not None and current.get("status") == "active"
+            and any(kind == "cancel" and begin == 0
+                    and end == len(text.rstrip("。.!！").encode("utf-8"))
+                    for kind, begin, end, _ in _root_control_segments(text))):
+        # Cancellation applies to the active unit before any later switch.
+        # Opening a sibling first would bind the control to the wrong task.
+        return str(current["id"])
     if (
         current is not None
         and (
@@ -10868,10 +11529,74 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
     and never pass.
     """
     _current, descendants, ancestors = work_unit_relations(state)
+    # Only the exact, receipt-time ordinary execution refs are canceled.
+    # Replaying an entire unit here would wrongly remove information, proof,
+    # Goal, release, and independently sourced acceptance obligations.
+    cancelled: set[str] = set()
+    requirements_by_id = {str(i.get("id")): i for i in state.get("requirements", [])
+                          if isinstance(i, dict)}
+    for control in state.get("root_controls", []):
+        if (not isinstance(control, dict) or control.get("kind") != "cancel"
+                or type(control.get("source_seq")) is not int
+                or control["source_seq"] > int(state.get("core_event_sequence") or 0)):
+            continue
+        catalog = _root_control_catalog(state, control["work_unit_id"], control["source_seq"])
+        selected = (_root_control_selected_items(
+            state, catalog, control["scope_kind"],
+            control.get("scope_target", "test_verify"
+                        if control["scope_kind"] == "action_class" else None))
+                    if catalog is not None else None)
+        if (catalog is None or selected != control.get("items")
+                or sha256_text(canonical_json(catalog)) != control.get("catalog_sha256")):
+            continue
+        for ref in selected:
+            item = requirements_by_id.get(ref["id"])
+            if (item is not None and item.get("constraint_scope") != "session"
+                    and _root_control_item_action(item) == ref["action"]):
+                cancelled.add(ref["id"])
+    # A mixed-root container has no independent effect once every sourced
+    # execution child is canceled. Any information child or other obligation
+    # keeps the original root in the completion scope.
+    for item in state.get("requirements", []):
+        if not isinstance(item, dict) or item.get("id") in cancelled:
+            continue
+        children = [child for child in state.get("requirements", [])
+                    if isinstance(child, dict) and child.get("parent_id") == item.get("id")]
+        if (children and all(child.get("execution_source_span") is not None
+                             and child.get("id") in cancelled for child in children)
+                and item.get("constraint_scope") != "session"):
+            cancelled.add(str(item["id"]))
+            for acceptance in state.get("acceptance_items", []):
+                if (not isinstance(acceptance, dict)
+                        or acceptance.get("prompt_id") != item.get("prompt_id")
+                        or acceptance.get("text") != item.get("text")):
+                    continue
+                obligations = acceptance.get("verification_contract", {}).get("obligations")
+                if (isinstance(obligations, list) and obligations
+                        and all(isinstance(o, dict) and o.get("kind") == "subject_readback"
+                                for o in obligations)):
+                    cancelled.add(str(acceptance["id"]))
     unit_status = {
         str(item.get("id")): str(item.get("status"))
         for item in state.get("work_units", [])
         if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    # Explicit proof and session constraints remain independent of ordinary
+    # work-unit cancellation. Goal and adopted-release contracts have their
+    # separate gates; neither is inferred from this completion scope.
+    protected_ids = {
+        str(item["id"])
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict) and item.get("status") != "superseded"
+        and str(item.get("id")) not in cancelled
+        and (item.get("constraint_scope") == "session" or (
+            isinstance(contract := item.get("verification_contract"), dict)
+            and contract.get("mode") == "enforced"
+            and any(isinstance(obligation, dict)
+                    and obligation.get("kind") != "subject_readback"
+                    for obligation in contract.get("obligations", []))
+        ))
     }
     if not descendants:
         live_ids = {
@@ -10879,16 +11604,16 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
             for collection in ("requirements", "acceptance_items")
             for item in state.get(collection, [])
             if isinstance(item, dict)
-            and item.get("status") != "superseded"
+            and item.get("status") != "superseded" and str(item.get("id")) not in cancelled
             and unit_status.get(str(item.get("work_unit_id"))) == "active"
         }
-        return live_ids, set()
+        return live_ids, protected_ids - live_ids
     scoped = {
         str(item["id"])
         for collection in ("requirements", "acceptance_items")
         for item in state.get(collection, [])
         if isinstance(item, dict)
-        and item.get("status") != "superseded"
+        and item.get("status") != "superseded" and str(item.get("id")) not in cancelled
         and item.get("work_unit_id") in descendants
         and unit_status.get(str(item.get("work_unit_id"))) not in {"historical_unresolved", "completed"}
     }
@@ -10897,7 +11622,7 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
         for collection in ("requirements", "acceptance_items")
         for item in state.get(collection, [])
         if isinstance(item, dict)
-        and item.get("status") != "superseded"
+        and item.get("status") != "superseded" and str(item.get("id")) not in cancelled
         and item.get("work_unit_id") in ancestors
         and unit_status.get(str(item.get("work_unit_id"))) not in {"historical_unresolved", "completed"}
     }
@@ -10906,6 +11631,7 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
         if i.get('constraint_scope') == 'session' and i.get('status') != 'superseded'
         and i.get('id') not in scoped
     )
+    ancestor_constraints.update(protected_ids - scoped)
     return scoped, ancestor_constraints
 
 
@@ -10989,6 +11715,264 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
         "historical_counts": counts,
         "revision": revision,
     }
+
+
+def _root_control_segments(text: str) -> list[tuple[str, int, int, str]]:
+    """Find complete direct control clauses; the shared parser checks governance."""
+    from cg_core_v2 import (
+        _control_speech,
+        _root_sentence_bounds,
+        _subjectless_compound_persistence,
+    )
+
+    rules = json.loads((Path(__file__).resolve().parent.parent /
+                        "assets/core-intent-v2.json").read_text(encoding="utf-8"))["patterns"]
+    starts = {0}
+    for match in re.finditer(r"[。！？;；\n,，]|并", text):
+        starts.add(match.end())
+    result: list[tuple[str, int, int, str]] = []
+    raw = text.encode("utf-8")
+    for start in sorted(starts):
+        tail = text[start:]
+        leading = len(tail) - len(tail.lstrip())
+        start += leading
+        if start >= len(text):
+            continue
+        end = len(text)
+        for mark in re.finditer(r"[。！？;；\n,，]|(?<=[.!?])\s", text[start:]):
+            at = start + mark.start()
+            if text[at] in ",，" and _subjectless_compound_persistence(
+                re.split(r"[。！？;；\n]", text[start:], maxsplit=1)[0]
+            ):
+                continue
+            if text[at] in ",，" and re.match(
+                r"\s*(?:直到|直至|until\b)", text[at + 1:], re.I
+            ):
+                continue
+            end = at
+            break
+        clause = text[start:end].strip()
+        if not clause:
+            continue
+        byte_start = len(text[:start].encode("utf-8"))
+        byte_end = byte_start + len(clause.encode("utf-8"))
+        span = {"source_id": "root", "start": byte_start, "end": byte_end,
+                "sha256": sha256_text(text)}
+        if _root_sentence_bounds(raw, span, rules) is None:
+            continue
+        for kind in ("persistence", "pause", "resume", "cancel"):
+            if _control_speech(clause, kind, rules):
+                result.append((kind, byte_start, byte_end, clause))
+                break
+    return result
+
+
+def _root_control_item_action(item: dict[str, Any]) -> str | None:
+    item_text = str(item.get("text") or "")
+    if any(begin == 0 and end == len(item_text.rstrip("。.!！").encode("utf-8"))
+           for _, begin, end, _ in _root_control_segments(item_text)):
+        return None  # A control sentence is not a test/edit requirement.
+    kind = item.get("execution_kind")
+    if kind in {category for category, _ in ACTION_PATTERNS}:
+        return str(kind)
+    if item.get("information_source_span") is not None or _information_delivery_item(item):
+        return None
+    classes = [category for category, pattern in ACTION_PATTERNS
+               if pattern.search(str(item.get("text") or ""))]
+    return classes[0] if len(classes) == 1 else None
+
+
+def _root_control_catalog(
+    state: dict[str, Any], work_unit_id: str, source_seq: int,
+) -> list[dict[str, Any]] | None:
+    """Replay the whole unit inventory at one root watermark, not one item."""
+    prompts = {str(p.get("id")): p for p in state.get("prompts", [])
+               if isinstance(p, dict)}
+    superseded_at: dict[str, int] = {}
+    cancelled_at: dict[str, int] = {}
+    for control in state.get("root_controls", []):
+        if (isinstance(control, dict) and control.get("kind") == "cancel"
+                and type(control.get("source_seq")) is int):
+            for ref in control.get("items", []):
+                if isinstance(ref, dict) and isinstance(ref.get("id"), str):
+                    cancelled_at[ref["id"]] = min(
+                        cancelled_at.get(ref["id"], control["source_seq"]),
+                        control["source_seq"],
+                    )
+    for link in state.get("supersedes", []):
+        if not isinstance(link, dict):
+            return None
+        new_item = next((i for i in state.get("requirements", [])
+                         if isinstance(i, dict) and i.get("id") == link.get("new_id")), None)
+        new_prompt = prompts.get(str(new_item.get("prompt_id"))) if new_item else None
+        seq = new_prompt.get("core_event_seq") if new_prompt else None
+        if type(seq) is not int:
+            return None  # Old unsequenced supersession never becomes authority.
+        superseded_at[str(link.get("old_id"))] = seq
+    catalog = []
+    for item in state.get("requirements", []):
+        if not isinstance(item, dict) or item.get("work_unit_id") != work_unit_id:
+            continue
+        item_prompt = prompts.get(str(item.get("prompt_id")))
+        seq = item_prompt.get("core_event_seq") if item_prompt else None
+        if type(seq) is not int or seq > source_seq or seq < 1:
+            continue
+        end = superseded_at.get(str(item.get("id")))
+        if end is not None and end <= source_seq:
+            continue
+        cancelled = cancelled_at.get(str(item.get("id")))
+        if cancelled is not None and cancelled < source_seq:
+            continue
+        if item.get("status") == "superseded" and end is None:
+            return None
+        action = _root_control_item_action(item)
+        if action is None:
+            continue
+        catalog.append({"id": item["id"], "prompt_id": item["prompt_id"],
+                        "work_unit_id": work_unit_id,
+                        "source_sha256": item["sha256"], "root_seq": seq,
+                        "action": action})
+    return catalog
+
+
+def _root_control_selected_items(
+    state: dict[str, Any], catalog: list[dict[str, Any]],
+    scope_kind: str, scope_target: str | None,
+) -> list[dict[str, Any]] | None:
+    """Select a sourced subset from the complete at-receipt catalog."""
+    if scope_kind == "current_unit" and scope_target is None:
+        return catalog
+    if scope_kind == "action_class" and scope_target == "test_verify":
+        return [row for row in catalog if row["action"] == "test_verify"]
+    if scope_kind == "exact" and isinstance(scope_target, str):
+        selected = []
+        for row in catalog:
+            item = next((i for i in state.get("requirements", [])
+                         if isinstance(i, dict) and i.get("id") == row["id"]), None)
+            if item is None:
+                return None
+            targets, ambiguous = root_absolute_locator_mentions(str(item.get("text") or ""))
+            if ambiguous:
+                return None
+            if targets == {scope_target}:
+                selected.append(row)
+        return selected
+    if scope_kind == "parent_task" and isinstance(scope_target, str):
+        items = {str(i.get("id")): i for i in state.get("requirements", [])
+                 if isinstance(i, dict)}
+        parent = items.get(scope_target)
+        if parent is None or _root_control_item_action(parent) != "local_edit":
+            return None
+        child_ids = {row["id"] for row in catalog
+                     if items[row["id"]].get("required_for_item_id") == scope_target
+                     and row["action"] == "test_verify"}
+        selected = [row for row in catalog
+                    if row["id"] == scope_target or row["id"] in child_ids]
+        if len(selected) < 2 or not child_ids:
+            return None
+        return selected
+    return None
+
+
+def capture_persistence_scope(
+    state: dict[str, Any], prompt: dict[str, Any], text: str, work_unit_id: str,
+) -> None:
+    """Bind direct root controls to the full current execution catalog.
+
+    This is Stop continuation diagnosis, not permission for ordinary tools.
+    An older candidate without this entry cannot infer it later from prose.
+    """
+    source_seq = prompt.get("core_event_seq")
+    if type(source_seq) is not int or source_seq < 1:
+        return
+    clauses = _root_control_segments(text)
+    if not clauses:
+        return
+    catalog = _root_control_catalog(state, work_unit_id, source_seq)
+    scopes = state.setdefault("root_controls", [])
+    if (catalog is None or not catalog or len(catalog) > MAX_PERSISTENCE_SCOPE_ITEMS
+            or len(scopes) >= MAX_PERSISTENCE_SCOPES):
+        return
+    for kind, begin, end, clause in clauses:
+        from cg_core_v2 import (
+            _action_class_scope_speech,
+            _current_unit_scope_speech,
+            _single_root_task_scope,
+            _subjectless_compound_persistence,
+        )
+        scope_target: str | None = None
+        target_span: list[int] | None = None
+        if _current_unit_scope_speech(clause, kind):
+            scope_kind, selected = "current_unit", catalog
+            if _subjectless_compound_persistence(clause):
+                by_id = {str(row.get("id")): row for row in state["requirements"]
+                         if isinstance(row, dict)}
+                if any(row["prompt_id"] != prompt["id"] for row in catalog):
+                    continue
+                tasks = []
+                for row in catalog:
+                    item = by_id.get(row["id"])
+                    if item is None:
+                        tasks = []
+                        break
+                    targets, ambiguous = root_absolute_locator_mentions(
+                        str(item.get("text") or ""))
+                    if ambiguous or len(targets) > 1:
+                        tasks = []
+                        break
+                    tasks.append({"id": row["id"], "action": row["action"],
+                                  "parent_id": item.get("required_for_item_id"),
+                                  "target": next(iter(targets)) if targets else None})
+                prior = text.encode("utf-8")[:begin].decode("utf-8")
+                if not _single_root_task_scope(prior, tasks):
+                    continue
+        else:
+            typed = _action_class_scope_speech(clause, kind)
+            if typed is not None:
+                scope_kind, scope_target = "action_class", "test_verify"
+                selected = _root_control_selected_items(
+                    state, catalog, scope_kind, scope_target)
+                if typed[0].startswith(("这项", "该项")) and len(selected or []) != 1:
+                    continue
+                target_span = [begin + len(clause[:typed[1]].encode("utf-8")),
+                               begin + len(clause[:typed[2]].encode("utf-8"))]
+            else:
+                mentioned, ambiguous = root_absolute_locator_mentions(clause)
+                if not ambiguous and len(mentioned) == 1:
+                    scope_kind, scope_target = "exact", next(iter(mentioned))
+                    selected = _root_control_selected_items(
+                        state, catalog, scope_kind, scope_target)
+                    at = clause.find(scope_target)
+                    if at < 0:
+                        continue
+                    target_span = [begin + len(clause[:at].encode("utf-8")),
+                                   begin + len(clause[:at + len(scope_target)].encode("utf-8"))]
+                else:
+                    qualified = re.search(
+                        r"(?:本轮|这轮|当前).+?(?:测试|验证)(?=\s*[,，]?\s*(?:直到|直至))"
+                        r"|(?:这项|该项)修复", clause,
+                    )
+                    parents = [row for row in catalog if row["action"] == "local_edit"
+                               and _root_control_selected_items(
+                                   state, catalog, "parent_task", row["id"]) is not None]
+                    if qualified is None or len(parents) != 1:
+                        continue
+                    scope_kind, scope_target = "parent_task", parents[0]["id"]
+                    selected = _root_control_selected_items(
+                        state, catalog, scope_kind, scope_target)
+                    target_span = [begin + len(clause[:qualified.start()].encode("utf-8")),
+                                   begin + len(clause[:qualified.end()].encode("utf-8"))]
+        if not selected or len(scopes) >= MAX_PERSISTENCE_SCOPES:
+            continue
+        binding = {"kind": kind, "source_prompt_id": prompt["id"],
+                   "source_record_sha256": prompt["record_sha256"],
+                   "source_seq": source_seq, "source_span": [begin, end],
+                   "work_unit_id": work_unit_id, "scope_kind": scope_kind,
+                   "catalog_sha256": sha256_text(canonical_json(catalog)),
+                   "items": selected}
+        if target_span is not None:
+            binding.update(scope_target=scope_target, scope_target_span=target_span)
+        scopes.append(binding)
 
 
 def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]]:
@@ -13190,6 +14174,8 @@ def handle_user_prompt(
     if not is_control_prompt(text):
         state["continuation_attempts"] = 0
         work_unit_id = append_work_unit(state, prompt, text)
+        if origin == "human":
+            append_prompt_unit_binding(session_dir, prompt, work_unit_id)
         for pause_clause in root_pause_clauses(text):
             pause_type = (
                 "external_dependency" if ROOT_PAUSE_EXTERNAL_RE.search(pause_clause)
@@ -13216,15 +14202,45 @@ def handle_user_prompt(
         )
         append_information_children(state, prompt, text, requirement_id, work_unit_id)
         append_execution_children(state, prompt, text, requirement_id, work_unit_id)
-        acceptance_count = len(state["acceptance_items"])
-        append_acceptance(
-            state, prompt["id"], text, asset_ids, work_unit_id=work_unit_id
+        control_only = any(
+            begin == 0 and end == len(text.rstrip("。.!！").encode("utf-8"))
+            for _, begin, end, _ in _root_control_segments(text)
         )
+        acceptance_count = len(state["acceptance_items"])
+        if not control_only:
+            append_acceptance(
+                state, prompt["id"], text, asset_ids, work_unit_id=work_unit_id
+            )
         new_acceptance_ids = [
             item["id"] for item in state["acceptance_items"][acceptance_count:]
         ]
-        supersession_result = record_supersession(state, text, requirement_id)
+        supersession_result = (None if control_only else
+                               record_supersession(state, text, requirement_id))
         append_session_constraints(state, prompt, text, work_unit_id)
+        if origin == "human":
+            capture_persistence_scope(state, prompt, text, work_unit_id)
+        from cg_core_v2 import _current_unit_scope_speech
+        if control_only and any(
+            kind == "cancel" and begin == 0
+            and end == len(text.rstrip("。.!！").encode("utf-8"))
+            and _current_unit_scope_speech(clause, "cancel")
+            for kind, begin, end, clause in _root_control_segments(text)
+        ):
+            # The cancel root belongs to the old selected unit. Closing that
+            # unit after the attempted scope binding avoids canceling a
+            # fabricated successor. A missing precise execution catalog does
+            # not turn historical unresolved work into a pass. No rootless
+            # active unit is created: the next real root supplies its identity.
+            old_unit = next(u for u in state["work_units"] if u["id"] == work_unit_id)
+            old_unit["status"] = "historical_unresolved"
+            old_unit["closed_at"] = utc_now()
+            state["work_state"]["active_work_unit_id"] = None
+        if control_only and any(
+            binding.get("source_prompt_id") == prompt["id"]
+            for binding in state.get("root_controls", [])
+        ):
+            next(item for item in state["requirements"]
+                 if item["id"] == requirement_id)["status"] = "answered"
         score, reasons = score_complexity(text)
         goal_requested = bool(
             re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE)
@@ -15341,6 +16357,25 @@ def handle_stop(
     )
     decision: dict[str, Any] = dict(observed)
     decision["core_projections"] = current_core_projections(state, session_dir)
+    normalized_control = current_root_control_projection(state, session_dir)
+    if normalized_control is not None:
+        # The complete projection is available to local conformance replay;
+        # only bounded state names and IDs enter the private decision ledger.
+        decision["core_control_projection"] = {
+            "schema": normalized_control["schema"],
+            "unit": normalized_control["unit"],
+            "revision": normalized_control["revision"],
+            "as_of": normalized_control["as_of"],
+            "predicates": normalized_control["predicates"],
+            "current_action_ids": [row["requirement_id"]
+                                   for row in normalized_control["current_actions"]],
+            "root_control_states": normalized_control["root_control_states"],
+            "root_control_errors": normalized_control["root_control_errors"],
+            "unknown_coverage_count": len(normalized_control["unknown_coverage"]),
+            "coverage_error_count": len(normalized_control["coverage_errors"]),
+            "certifiable": normalized_control["certifiable"],
+            "reason_codes": normalized_control["reason_codes"],
+        }
     decision.update(
         {
             "protocol_version": STOP_PROTOCOL_VERSION,
@@ -15673,16 +16708,29 @@ def handle_stop(
         for item_id, obligations in unresolved_all.items()
         if item_id in scoped_ids
     }
-    explicit_persistence = bool(
-        authoritative_prompt
-        and any(USER_PERSISTENCE_RE.search(clause)
-                for clause in control_speech_clauses(authoritative_prompt))
+    explicit_persistence, persistence_actions, root_control_states = current_persistence_actions(
+        state, session_dir
     )
+    # A later root-user pause is a current control fact for this unit. Keep
+    # the earlier persistence source in history, but do not present its work
+    # as ready until the pause is released by a later sourced event.
+    if current_waits:
+        persistence_actions = []
+    decision["persistence_scope"] = {
+        "in_force": explicit_persistence,
+        "ready_requirement_ids": [b["requirement_id"] for b in persistence_actions],
+        "as_of": state.get("core_event_sequence"),
+    }
+    decision["root_control_states"] = dict(sorted(root_control_states.items()))
+    controlled_out = {key for key, value in root_control_states.items()
+                      if value in {"paused", "persistent_paused", "cancelled"}}
     # A brief resume is not an unlimited persistence mandate. Correct it only
     # when the reply itself identifies authorized assistant work still to do.
     resumed_actionable_work = bool(
         explicit_execution_resume(authoritative_prompt)
+        and not current_waits
         and any(a["owner"] == "assistant" and _action_ready(a)
+                and a.get("basis", {}).get("requirement_id") not in controlled_out
                 for a in interpretation["actions"])
     )
     current_due_action_omitted = bool(
@@ -15697,8 +16745,11 @@ def handle_stop(
         "explicit_persistence": explicit_persistence,
         "resume_with_actionable_work": resumed_actionable_work,
         "current_due_action_omitted": current_due_action_omitted,
-        "authorized_assistant_actions_available": (
-            any(a["owner"] == "assistant" and _action_ready(a) for a in interpretation["actions"])
+        "authorized_assistant_actions_available": not current_waits and (
+            bool(persistence_actions)
+            or any(a["owner"] == "assistant" and _action_ready(a)
+                   and a.get("basis", {}).get("requirement_id") not in controlled_out
+                   for a in interpretation["actions"])
         ),
         "missing_user_only_input_or_approval": any(
             w.get("raised_by_kind") == "root_user"

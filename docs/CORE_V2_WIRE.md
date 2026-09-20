@@ -120,7 +120,104 @@ wording may nominate a candidate; it cannot register an external operation,
 expand root scope, or change the event store. Lack of an action basis permits
 ordinary ending without certification.
 
-Explicit persistence and resume intent are distinct root-derived facts. Either
+`root_controls[]` records a direct root speech act (`persistence`, `pause`,
+`resume`, or `cancel`) separately from the legacy immediate `intent` hint.
+Each control binds an immutable root source, its UTF-8 sentence-leading span,
+event sequence, scope basis, and the exact requirement IDs, unit/revision,
+source IDs/sequences, targets and scope digests present when that root arrived.
+If an ordinary `work_unit` implementation target was not yet selected by the
+Host, a controlled ref records `target: null` at receipt. That null cannot
+stand for a later exact/directory constraint or choose an object; the later
+requirement target still needs its separate trusted Host selection and
+readback. A later model answer cannot fill the old control ref retroactively.
+The reference derives selection-at-receipt from the matched Host call, result
+and successful readiness fact at or before the control sequence. If that
+selection was already complete, the ref must bind its exact target; if the
+result or readiness arrived later, the ref must remain null. A later target
+change cannot rewrite the earlier ref.
+The reference rejects a cropped quotation or reported instruction, an
+ambiguous scope, a target borrowed from another control clause, and refs
+inserted after the control. Quoted punctuation does not create a clause;
+an attached "until complete" after a comma remains part of the same command,
+whereas a coordinated new action is separate. The source span covers the
+complete governing control clause, including its object relation. Even a
+second coordinated persistence predicate may start its own control span when
+the preceding predicate is itself a direct current-work command; a bare
+conjunction, reported speech, negation, quotation, or future observation
+cannot create that boundary. The controlled refs still bind the complete
+at-receipt task scope and cannot acquire later requirements. Even a
+direct compound such as `不要停止,一直推进直到完成` is one control clause: its
+source span includes the negative-stop and positive-until predicates. Its
+omitted object may bind only the unique preceding task scope in that same
+immutable root, either one execution requirement or one root-proven repair
+parent with its required descendants. An earlier root, two independent
+objects, quoted or attributed speech, future observation, or negation of
+continuation cannot supply that scope. A complete control does not itself
+establish Host readiness or authorize ordinary tools. In the Codex adapter,
+a whole-task cancel leaves the old unit historical and unresolved with no
+active unit; only the next real business root can open a new unit with its
+own source. Even a
+singleton current-unit scope needs a sourced whole-task reference or a bare
+pause/resume; an explicit other object cannot be relabeled as the only current
+requirement. Bare cancel has no inferred scope. An exact or directory control
+needs its literal target inside that control span; a directory matches strict
+descendants only. A current-unit control binds the complete eligible ordinary
+execution set at that event, never an adapter-selected subset. For a bare
+pause or resume, the root source's unit must be the unique active task scope
+selected by the Guard's replayable ledger at receipt. Other pending units may
+exist; `snapshot.unit` alone does not prove this selection, and a one-item
+projection cannot attest the catalog is complete. The producer must retain
+the at-sequence unit selection and full scoped requirement inventory through
+save, reload and compaction; absent or conflicting selection is unknown. A typed
+`action_class` basis binds a sourced test-role phrase to all matching
+`test_verify` requirements; a singular "this test" requires a unique match.
+The same test-role basis can carry direct persistence through a sourced
+``until this round's tests finish`` endpoint; the endpoint names the controlled
+test class, while the full at-receipt set and readiness still determine any
+Stop correction. A comma immediately before that endpoint stays in the same
+control clause and cannot absorb an unrelated following action.
+A typed `parent_task` basis binds a unique sourced repair parent and its
+required descendant closure, leaving unrelated same-unit work outside.
+Unproved parent/child relations and unparsed object phrases remain unknown. Proof,
+prohibition, Goal and adopted release contracts are outside ordinary controls.
+
+Controls fold by immutable event sequence and root span. A pause retains the
+obligation but removes its ready action; a later sourced resume can lift that
+pause without creating persistence. Repeated pause is idempotent. Cancellation
+removes only the controlled ordinary requirement from later required closure,
+without rewriting historical effects or earlier Stop decisions. An earlier
+persistence instruction remains a scoped fact during an information interlude
+or a pause, but only a currently unmet, host-ready bound action can cause one
+bounded Stop correction. A future requirement in the same unit never inherits
+that instruction. Legacy `intent.persistence`, old generic actions, and
+unbound migrated prose cannot manufacture a `root_controls[]` entry.
+Supersession retains the old immutable requirement in the catalog with a
+half-open validity window ending at `superseded_at_seq`. The paired
+`supersession_source_id` and `superseded_by_requirement_id` must resolve to
+the later root and its replacement requirement in the same unit, at that
+exact event sequence and a later revision. An earlier control is checked
+against the old requirement while it was in scope; a later control and
+current required closure exclude it. A control at the same sequence as
+supersession has no proved intra-event order and remains unknown. An old
+`superseded` label without these source fields is historical uncertainty,
+not a reconstructed control or new current debt.
+The current-unit catalog can contain still-open requirements from earlier
+revisions. A later information-only root does not hide them: both roots keep
+their own coverage, information delivery remains separate, and each Host fact
+must match its requirement's original revision and target. A trusted
+supersession closes only the named old requirement at its source sequence;
+no fact, control, or coverage from a sibling unit can enter the selected
+unit's projection.
+A required descendant unit keeps its own controls when projected through its
+parent's required-child closure: the child control affects only child refs,
+while the parent and unrelated siblings retain their separate action states.
+Interpreted coverage may span a requirement or verified control clause plus
+only adjacent punctuation and whitespace; a non-separator gap remains unknown.
+For an already superseded root, only a requirement with a verified effective
+interval can explain its historical interpreted span. A final legacy label
+without that interval cannot erase its original coverage uncertainty.
+
+Explicit persistence and resume are distinct root-derived facts. Either
 can request a continuation only with a valid current action basis. Wrong whole
 completion and explicit proof violations are independent correction reasons.
 All reasons share one correction per turn and an unchanged progress fingerprint

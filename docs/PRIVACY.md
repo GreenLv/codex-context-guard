@@ -73,6 +73,24 @@ turn identifier when provided, covered by its record hash. This bounded
 identity lets a late tool result be associated with its originating root;
 legacy prompts without it remain unknown. No PreToolUse transcript or tool
 content is added for this association.
+Schema 13 also retains bounded root-control records for direct persistence,
+pause, resume and cancellation. Each stores the original prompt record hash,
+UTF-8 control and object spans, event sequence, work-unit id, scoped ordinary
+requirement ids, action kinds and a catalog digest. A required test child's
+parent repair id and its own source span/hash are stored with the requirement.
+The original prompt body remains only in its existing private immutable
+record; Stop decisions store a bounded normalized control summary, not another
+copy of the request or Host output. Old states without these source fields do
+not acquire them from later text or migration.
+For a newly recorded human business root, a separate private `prompts/units`
+companion binds the original prompt-record hash and event sequence to its
+work unit. It contains identifiers and hashes, not another prompt body. A
+missing companion, a shortened requirement inventory, or an unsupported
+replacement link cannot be reconstructed from a final status label or a
+rehash of the mutable state; recovery leaves controls untrusted.
+If a crash leaves an immutable prompt record ahead of the last saved state
+watermark, the older catalog is likewise not certified. Recovery replays the
+prompt as an unverified obligation; it does not infer a missing unit binding.
 
 ## Minimization
 

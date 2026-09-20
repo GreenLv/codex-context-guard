@@ -37,6 +37,24 @@ ordinary business tool remains under Codex host control. Root-imposed external
 dependencies and registered external operations have distinct provenance;
 assistant reply text alone creates neither.
 
+Direct user persistence, pause, resume, and cancellation are bound at their
+root event to the then-current ordinary execution catalog. An information
+question does not replace that scope, and later requirements do not inherit
+an earlier persistence demand. A trusted replacement closes the old item's
+effective interval without erasing its historical control. Required test
+children are related to a repair only by the original root decomposition:
+the same sourced object or an object-free test joined to that repair. A later
+control cannot create this parent relation. Repeated pause remains paused;
+resume lifts a pause prospectively but does not revive a canceled item.
+Completion still has separate explicit-proof, Goal, and release checks.
+The private prompt-unit companion fixes a root's work-unit choice at receipt.
+Control projection checks every original root in that unit, including a root
+whose requirement row was later removed from mutable state. A replacement
+link is replayed against its successor root's original words and the prior
+unit inventory; arrival order alone never supplies replacement intent. If
+these source records are missing, recovery preserves the original prompt as
+untrusted work rather than certifying a smaller catalog.
+
 Codex CLI may report an ordinary Bash or apply_patch result to PostToolUse as
 unstructured text. The 0.14.0 adapter uses a bounded, session-bound Host
 transcript terminal item only when it is already present during that Post

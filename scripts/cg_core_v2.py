@@ -85,6 +85,473 @@ def _source_matches(
     )
 
 
+def _control_speech(text: str, kind: str, rules: dict[str, str]) -> bool:
+    """Accept only a direct control utterance, never cited or reported text."""
+    if re.match(r"^\s*(?:```|`|[“‘\"]|>)", text):
+        return False
+    speech = re.sub(
+        r"```[\s\S]*?```|`[^`]*`|“[^”]*”|‘[^’]*’|\"[^\"]*\"",
+        "对象", text.strip(),
+    )
+    speech = re.sub(
+        r"^(?:(?:请(?:先)?|现在|先)\s*|(?:please|now|kindly)\s+)+",
+        "", speech, flags=re.I,
+    )
+    if kind == "persistence" and _subjectless_compound_persistence(speech):
+        return True
+    if re.match(r"^(?:不要|不得|别|切勿|无需|不必|do\s+not\b|don't\b|never\b)", speech, re.I):
+        return False
+    if kind == "persistence":
+        match = re.search(rules["USER_PERSISTENCE_RE"], speech, re.I | re.S)
+        return bool(match and match.start() == 0)
+    if kind == "resume":
+        return bool(re.match(rules["EXECUTION_RESUME_RE"], speech, re.I))
+    if kind == "pause":
+        return bool(re.match(r"^(?:暂停|搁置|pause\b|hold\b)", speech, re.I))
+    if kind == "cancel":
+        return bool(re.match(r"^(?:取消|撤销|不再进行|cancel\b|drop\b)", speech, re.I))
+    return False
+
+
+def _subjectless_compound_persistence(text: str) -> bool:
+    """One direct negative-stop plus positive-until act, with no object NP."""
+    return bool(re.fullmatch(
+        r"\s*(?:(?:请|现在)\s*)?"
+        r"(?:不要|不得|别|切勿)\s*(?:停止|停下|暂停|结束)\s*[,，]\s*"
+        r"(?:持续|继续|一直)\s*(?:执行|推进|工作)\s*"
+        r"(?:直到|直至)\s*(?:完成|结束)\s*[。.!！]?\s*",
+        text,
+    ))
+
+
+def _single_root_task_scope(prefix: str, rows: list[dict]) -> bool:
+    """Resolve an omitted task object only from one preceding root task."""
+    if not rows:
+        return False
+    direct = prefix.strip().rstrip("。.!！")
+    if re.search(r"[。！？;；\n]", direct):
+        return False
+    if len(rows) == 1:
+        return _direct_work_clause(direct)
+    parents = [row for row in rows if row.get("parent_id") is None]
+    if len(parents) != 1 or parents[0].get("action") != "local_edit":
+        return False
+    parent = parents[0]
+    if not all(row is parent or (
+        row.get("parent_id") == parent.get("id")
+        and row.get("action") in {"test_verify", "state_readback"}
+        and row.get("target") == parent.get("target")
+    ) for row in rows):
+        return False
+    clauses = direct.split("并")
+    # The dependency graph, not a fixed number of coordinated clauses,
+    # establishes one task. Every required child must have its own direct
+    # predicate in the same root; an unrelated sibling fails the graph above.
+    return (len(clauses) == len(rows)
+            and len(clauses) >= 2
+            and all(_direct_work_clause(clause) for clause in clauses))
+
+
+def _action_class_scope_speech(text: str, kind: str) -> tuple[str, int, int] | None:
+    """Find a test-class object in one direct, complete control clause.
+
+    This returns a source span, not authority: the caller still validates the
+    immutable root, full receipt-time catalog, and every controlled ref.
+    """
+    noun = r"(?P<noun>(?:本轮|这轮|当前|全部|这项|该项)测试)"
+    if kind == "persistence":
+        pattern = (r"\s*(?:(?:请|请先|先)\s*)?"
+                   r"(?:持续|继续|一直)(?:执行|推进|完成|处理|运行)\s*"
+                   r"(?:(?:本轮|这轮|当前|全部)测试\s*)?[,，]?\s*"
+                   r"(?:直到|直至)\s*" + noun +
+                   r"\s*(?:完成|结束)(?:为止)?\s*[。.!！]?\s*")
+    else:
+        pattern = (r"\s*(?:(?:请|请先|先)\s*)?"
+                   r"(?:暂停|搁置|取消|撤销|继续)\s*" + noun +
+                   r"\s*[。.!！]?\s*")
+    match = re.fullmatch(pattern, text)
+    return (match.group("noun"), match.start("noun"), match.end("noun")) if match else None
+
+
+def _direct_work_clause(text: str) -> bool:
+    """A preceding coordinated predicate, not reported/negated source text."""
+    clause = text.strip().rstrip("，,。.!！")
+    unquoted = re.sub(r"`[^`]*`|“[^”]*”|‘[^’]*’|\"[^\"]*\"", "对象", clause)
+    # A preceding command must be one complete predicate. A comma/colon
+    # introducing another speaker or another predicate, or an earlier
+    # coordination chain, cannot lend its initial imperative to a later 并.
+    if re.search(r"[,，:：;；]|并|然后|随后|\b(?:and|then)\b", unquoted, re.I):
+        return False
+    if re.match(r"^(?:如果|假如|假设|未来|以后|将来|当|若|if|when|later|future)\b", clause, re.I):
+        return False
+    if re.match(r"^(?:不要|不得|别|切勿|无需|不必|do\s+not|don't|never)\b", clause, re.I):
+        return False
+    return bool(re.match(
+        r"^(?:(?:请|请先|先|现在)\s*)?"
+        r"(?:运行|测试|修复|修改|编辑|更新|实现|检查|评估|测量|提交|推送|执行)"
+        r"|^(?:please\s+)?(?:run|test|repair|fix|edit|update|implement|check|evaluate|measure|commit|push)\b",
+        clause, re.I,
+    ))
+
+
+def _root_sentence_bounds(raw: bytes, span: dict, rules: dict[str, str]) -> tuple[int, int] | None:
+    """Return a governing sentence start and same-control-clause end.
+
+    Punctuation inside quoted/code data is never a speech-act boundary.
+    A comma may end a target clause, but cannot itself start a new direct
+    control: reported speech after a comma remains governed by its prefix.
+    """
+    text = raw.decode("utf-8")
+    sentences = [0]
+    delimiters: list[tuple[int, int, str]] = []
+    compound_commas: set[int] = set()
+    offset = 0
+    quoted_by: str | None = None
+    segment_start = 0
+    for index, char in enumerate(text):
+        before = offset
+        offset += len(char.encode("utf-8"))
+        if quoted_by is not None:
+            if char == quoted_by:
+                quoted_by = None
+            continue
+        if char in {"“", "‘", '"', "`"}:
+            quoted_by = {"“": "”", "‘": "’"}.get(char, char)
+            continue
+        if char == "并":
+            preceding = text[segment_start:index]
+            following = text[index + 1:]
+            if (_direct_work_clause(preceding)
+                    and _control_speech(following.split("。", 1)[0], "persistence", rules)):
+                sentences.append(offset)
+                delimiters.append((before, offset, char))
+                segment_start = index + 1
+                continue
+        if char in "。！？;；\n" or (
+            char in ".!?" and (index + 1 == len(text) or text[index + 1].isspace())
+        ):
+            sentences.append(offset)
+            delimiters.append((before, offset, char))
+            segment_start = index + 1
+        elif char in "，,":
+            remainder = re.split(r"[。！？;；\n]", text[index + 1:], maxsplit=1)[0]
+            if _subjectless_compound_persistence(
+                text[segment_start:index] + char + remainder
+            ):
+                compound_commas.add(before)
+            delimiters.append((before, offset, char))
+    start = max((b for b in sentences if b <= span["start"]), default=0)
+    if raw[start:span["start"]].strip():
+        return None
+    clause_end = len(raw)
+    delimiter_end = len(raw)
+    for begin, after, char in delimiters:
+        if begin < span["start"]:
+            continue
+        if begin in compound_commas:
+            continue
+        if char in "，,":
+            following = raw[after:].decode("utf-8").lstrip()
+            # An until-clause is the same persistence command. A coordinated
+            # new action is not, regardless of punctuation wording.
+            if re.match(r"^(?:直到|直至|until\b)", following, re.I):
+                continue
+        clause_end, delimiter_end = begin, after
+        break
+    content_end = clause_end
+    while content_end > start and raw[content_end - 1:content_end].isspace():
+        content_end -= 1
+    if span["end"] not in {content_end, delimiter_end}:
+        return None
+    return start, delimiter_end
+
+
+def _current_unit_scope_speech(text: str, kind: str) -> bool:
+    # A singleton item is not itself a referent: "cancel B" cannot be
+    # relabeled as current_unit merely because only A is in the snapshot.
+    lead = r"\s*(?:(?:请|请先|先)\s*|(?:please|now)\s+)*"
+    end = r"\s*[。.!！]?\s*"
+    scoped = (r"(?:当前|本轮|这轮|全部|整个)"
+              r"(?:任务|工作|事项)")
+    if kind in {"pause", "resume", "cancel"}:
+        verb = {"pause": r"(?:暂停|搁置|pause|hold)",
+                "resume": r"(?:继续|continue)",
+                "cancel": r"(?:取消|撤销|cancel|drop)"}[kind]
+        noun = scoped if kind == "cancel" else r"(?:" + scoped + r")?"
+        return bool(re.fullmatch(lead + verb + r"\s*" + noun + end,
+                                 text, re.I))
+    if kind == "persistence":
+        if _subjectless_compound_persistence(text):
+            return True
+        # Complete current-unit grammar: no unbound object can be inserted
+        # before or after the until-clause and silently govern the snapshot.
+        zh = (lead + r"(?:持续|继续|一直)(?:执行|推进|工作|完成|处理)"
+              r"\s*[,，]?\s*(?:直到|直至)(?:(?:当前|本轮|这轮|全部|整个))?"
+              r"(?:任务|工作|事项)(?:完成|结束)" + end)
+        terminal = r"(?:is\s+)?(?:done|complete|finished)"
+        en_head = r"\s*(?:please\s+)?(?:keep|continue)\s+(?:going|working)"
+        en = (en_head + r"(?:\s+on\s+(?:this|the\s+current)\s+(?:task|work))?"
+              r"\s+until\s+(?:this|the\s+current|current|whole|entire)\s+"
+              r"(?:task|work)\s+" + terminal + end)
+        en_anaphora = (en_head + r"\s+on\s+(?:this|the\s+current)\s+"
+                       r"(?:task|work)\s+until\s+it\s+" + terminal + end)
+        return bool(re.fullmatch(zh, text, re.I) or re.fullmatch(en, text, re.I)
+                    or re.fullmatch(en_anaphora, text, re.I))
+    return False
+
+
+def _explicit_target_speech(prefix: str, suffix: str, kind: str) -> bool:
+    """A single literal object must exhaust a control clause's object role."""
+    if kind in {"pause", "resume", "cancel"}:
+        verb = {"pause": r"(?:暂停|搁置|pause|hold)",
+                "resume": r"(?:继续|continue)",
+                "cancel": r"(?:取消|撤销|cancel|drop)"}[kind]
+        return bool(
+            re.fullmatch(r"\s*(?:(?:请|请先|先)\s*|please\s+)*" + verb
+                         + r"\s*(?:文件|目录|测试|仓库)?\s*[`“\"]?\s*", prefix, re.I)
+            and re.fullmatch(r"\s*[`”\"]?\s*[。.!！]?\s*", suffix)
+        )
+    if kind == "persistence":
+        return bool(
+            re.fullmatch(r"\s*(?:(?:请|请先)\s*|please\s+)*"
+                         r"(?:持续|继续|一直)(?:执行|推进|完成|处理)\s*[`“\"]?\s*",
+                         prefix, re.I)
+            and re.fullmatch(r"\s*[`”\"]?\s*(?:的测试)?\s*(?:直到|直至)"
+                             r"(?:当前|本轮|这轮)?(?:任务|工作|测试)?(?:完成|结束)"
+                             r"\s*[。.!！]?\s*", suffix, re.I)
+        )
+    return False
+
+
+def _scope_open(req: dict, at_seq: int) -> bool:
+    """A supersession closes future scope without erasing earlier controls."""
+    end = req.get("superseded_at_seq")
+    if req["status"] == "superseded" and end is None:
+        return False  # A migrated final label has no trustworthy effective time.
+    return req["seq"] <= at_seq and (end is None or at_seq < end)
+
+
+def _fold_root_controls(
+    snapshot: dict, sources: dict[str, dict], requirements: dict[str, dict],
+    facts: dict[str, dict], units: set[str], watermark: int, rules: dict[str, str],
+) -> tuple[dict[str, str], list[str], set[str], set[str]]:
+    """Fold sourced controls over their exact at-receipt requirement set.
+
+    Invalid/ambiguous controls are diagnostics, never continuation authority.
+    Requirements and controls are distinct from ordinary tool permissions.
+    """
+    states: dict[str, str] = {}
+    errors: list[str] = []
+    represented: set[str] = set()
+    resumed: set[str] = set()
+    controls = snapshot.get("root_controls", [])
+    if len({c["id"] for c in controls}) != len(controls):
+        raise ValueError("duplicate_root_control")
+    ordered = sorted(controls, key=lambda c: (c["seq"], c["source"]["start"], c["id"]))
+    positions: set[tuple[int, str, int]] = set()
+    for control in ordered:
+        if control["seq"] > watermark:
+            continue
+        span = control["source"]
+        source = sources.get(span["source_id"])
+        if source is not None and source["unit"] not in units:
+            continue  # An unrelated sibling cannot affect this closure.
+        control_unit = source["unit"] if source is not None else None
+        position = (control["seq"], span["source_id"], span["start"])
+        valid = bool(
+            source and source["kind"] == "root" and source["unit"] in units
+            and source["seq"] == control["seq"] <= watermark
+            and _source_matches(span, sources, root=True)
+            and position not in positions
+            and sum(s["seq"] == control["seq"] for s in sources.values()) == 1
+        )
+        positions.add(position)
+        if not valid:
+            errors.append(control["id"])
+            continue
+        text = source["text"].encode("utf-8")[span["start"]:span["end"]].decode("utf-8")
+        sentence = _root_sentence_bounds(source["text"].encode("utf-8"), span, rules)
+        if sentence is None or not _control_speech(text, control["kind"], rules):
+            errors.append(control["id"])
+            continue
+        basis = control["scope_basis"]
+        target = basis["target"]
+        target_span = basis["target_source"]
+        scope_kind = basis["kind"]
+        if scope_kind == "current_unit":
+            valid = (target is None and target_span is None
+                     and _current_unit_scope_speech(text, control["kind"]))
+        else:
+            valid = bool(
+                isinstance(target, str) and target and target_span
+                and target_span["source_id"] == span["source_id"]
+                and _source_matches(target_span, sources, root=True)
+                and span["start"] <= target_span["start"] < target_span["end"] <= span["end"]
+                and sentence[0] <= target_span["start"] < target_span["end"] <= sentence[1]
+            )
+            if valid and scope_kind in {"exact", "directory"}:
+                valid = (source["text"].encode("utf-8")[
+                    target_span["start"]:target_span["end"]
+                ].decode("utf-8") == target)
+                if valid:
+                    raw = source["text"].encode("utf-8")
+                    valid = _explicit_target_speech(
+                        raw[span["start"]:target_span["start"]].decode("utf-8"),
+                        raw[target_span["end"]:span["end"]].decode("utf-8"),
+                        control["kind"],
+                    )
+        if not valid:
+            errors.append(control["id"])
+            continue
+        eligible = {
+            key: req for key, req in requirements.items()
+            if req["unit"] == control_unit and _scope_open(req, control["seq"])
+            # Ordinary work controls never cancel proof, prohibition, Goal,
+            # or adopted release contracts.
+            and req["kind"] == "execution"
+            and states.get(key) != "cancelled"
+            and _source_matches(req["source"], sources, root=True)
+        }
+        if any(req["unit"] == control_unit and req["kind"] == "execution"
+               and req.get("superseded_at_seq") == control["seq"]
+               for req in requirements.values()):
+            errors.append(control["id"])
+            continue  # Same event sequence has no proved intra-root ordering.
+        if scope_kind == "current_unit" and _subjectless_compound_persistence(text):
+            prior = source["text"].encode("utf-8")[:span["start"]].decode("utf-8")
+            if (not all(req["source"]["source_id"] == source["id"]
+                        and req["seq"] == control["seq"] for req in eligible.values())
+                    or not _single_root_task_scope(prior, list(eligible.values()))):
+                errors.append(control["id"])
+                continue
+        if scope_kind == "current_unit":
+            selected = eligible
+            # The immutable root's unit is the adapter's receipt-time active
+            # selection. Other pending units do not defeat that selection;
+            # the adapter must replay its whole at-seq ledger and cannot use
+            # this one projection to attest catalog completeness by itself.
+        elif scope_kind == "exact":
+            selected = {key: req for key, req in eligible.items() if req["target"] == target}
+        elif scope_kind == "directory":
+            selected = {key: req for key, req in eligible.items()
+                        if req["target"].startswith(target.rstrip("/") + "/")}
+        elif scope_kind == "action_class":
+            noun = source["text"].encode("utf-8")[
+                target_span["start"]:target_span["end"]
+            ].decode("utf-8")
+            parsed = _action_class_scope_speech(text, control["kind"])
+            valid = bool(target == "test_verify" and parsed and parsed[0] == noun
+                         and span["start"] + len(text[:parsed[1]].encode("utf-8"))
+                         == target_span["start"])
+            selected = {key: req for key, req in eligible.items()
+                        if req["action"] == target} if valid else {}
+            if noun.startswith(("这项", "该项")) and len(selected) != 1:
+                valid = False
+        elif scope_kind == "parent_task":
+            noun = source["text"].encode("utf-8")[
+                target_span["start"]:target_span["end"]
+            ].decode("utf-8")
+            parents = {key: req for key, req in eligible.items()
+                       if req["action"] == "local_edit"
+                       and any(child["parent_id"] == key for child in eligible.values())}
+            if noun in {"这项修复", "该项修复"}:
+                grammar = bool(re.fullmatch(
+                    r"\s*(?:(?:请|请先|先)\s*)?(?:暂停|搁置|取消|撤销|继续)\s*"
+                    + re.escape(noun) + r"\s*[。.!！]?\s*", text,
+                ))
+            else:
+                grammar = bool(
+                    control["kind"] == "persistence"
+                    and re.fullmatch(r"(?:本轮|这轮|当前).{1,48}(?:修复|修改).{0,24}(?:测试|验证)", noun)
+                    and re.fullmatch(r"\s*(?:(?:请|请先)\s*)?(?:持续|继续|一直)(?:完成|推进|执行|处理)\s*"
+                                     + re.escape(noun)
+                                     + r"\s*[,，]?\s*(?:直到|直至)(?:当前|本轮|这轮)"
+                                     r"(?:任务|工作|事项)(?:完成|结束)\s*[。.!！]?\s*", text)
+                )
+                parents = {key: req for key, req in parents.items()
+                           if req["source"]["source_id"] == span["source_id"]}
+            valid = bool(grammar and len(parents) == 1 and target in parents)
+            if valid:
+                selected = {target: parents[target]}
+                while True:
+                    children = {key: req for key, req in eligible.items()
+                                if req["required"] and req["parent_id"] in selected}
+                    children = {key: req for key, req in children.items() if key not in selected}
+                    if not children:
+                        break
+                    selected.update(children)
+            else:
+                selected = {}
+        else:
+            valid = False
+            selected = {}
+        if not valid:
+            errors.append(control["id"])
+            continue
+        refs = control["controlled_requirements"]
+        if not refs or len({ref["requirement_id"] for ref in refs}) != len(refs):
+            errors.append(control["id"])
+            continue
+        ref_ids = {ref["requirement_id"] for ref in refs}
+        if ref_ids != set(selected):
+            errors.append(control["id"])
+            continue
+        for ref in refs:
+            req = selected[ref["requirement_id"]]
+            selected_at_receipt: set[str] = set()
+            if req["target_origin"]["constraint_kind"] == "work_unit":
+                for fact in facts.values():
+                    if (fact["kind"] != "readiness" or fact["outcome"] != "success"
+                            or fact["requirement_id"] != req["id"]
+                            or fact["seq"] > control["seq"]):
+                        continue
+                    call = sources.get(fact["call_source_id"])
+                    result = sources.get(fact["source_id"])
+                    if (call and result and call["kind"] == "host_call"
+                            and result["kind"] == "host_result"
+                            and call["seq"] < result["seq"] <= control["seq"]
+                            and call["target"] == fact["target"]
+                            and call["target_kind"] == req["target_origin"]["subject_kind"]):
+                        selected_at_receipt.add(fact["target"])
+            if (
+                ref["unit"] != req["unit"] or ref["revision"] != req["revision"]
+                or ref["source_id"] != req["source"]["source_id"]
+                or ref["seq"] != req["seq"]
+                or (ref["target"] is None and (
+                    scope_kind in {"exact", "directory"}
+                    or req["target_origin"]["constraint_kind"] != "work_unit"
+                    or bool(selected_at_receipt)))
+                or (ref["target"] is not None and ref["target"] != req["target"])
+                or (req["target_origin"]["constraint_kind"] == "work_unit"
+                    and (len(selected_at_receipt) > 1
+                         or (bool(selected_at_receipt) != (ref["target"] is not None))
+                         or (selected_at_receipt and ref["target"] not in selected_at_receipt)))
+                or ref["scope_sha256"] != req["scope_sha256"]
+                or (req["seq"] == control["seq"]
+                    and req["source"]["source_id"] != span["source_id"])
+            ):
+                valid = False
+                break
+        if not valid:
+            errors.append(control["id"])
+            continue
+        represented.add(span["source_id"])
+        for key in selected:
+            prior = states.get(key, "ordinary")
+            if control["kind"] == "cancel":
+                states[key] = "cancelled"
+            elif control["kind"] == "pause":
+                states[key] = ("persistent_paused" if prior in
+                               {"persistent", "persistent_paused"} else "paused")
+            elif control["kind"] == "resume":
+                if prior in {"paused", "persistent_paused"}:
+                    states[key] = "persistent" if prior == "persistent_paused" else "ordinary"
+                    resumed.add(key)
+            elif control["kind"] == "persistence" and prior != "cancelled":
+                states[key] = "persistent"
+    return states, errors, represented, resumed
+
+
 def project(snapshot: dict) -> dict:
     """Compute predicates/Stop diagnostics, never tool permission or effects."""
     validate_snapshot(snapshot)
@@ -142,12 +609,24 @@ def project(snapshot: dict) -> dict:
         if not added:
             break
         units.update(added)
+    requirements = _index(snapshot["requirements"], watermark)
+    active_root_ids = {
+        key for key, source in sources.items()
+        if source["kind"] == "root" and source["unit"] in units
+        and source["revision"] == revision
+    } | {
+        req["source"]["source_id"] for req in requirements.values()
+        if req["unit"] in units
+    } | {
+        control["source"]["source_id"] for control in snapshot.get("root_controls", [])
+        if control["seq"] <= watermark
+        and control["source"]["source_id"] in sources
+        and sources[control["source"]["source_id"]]["unit"] in units
+    }
     coverage_errors = []
     unknown_coverage = []
     for key, source in sources.items():
-        if source["kind"] != "root" or source["unit"] not in units:
-            continue
-        if source["unit"] == unit and source["revision"] != revision:
+        if source["kind"] != "root" or key not in active_root_ids:
             continue
         spans = sorted(
             (c for c in snapshot["coverage"] if c["source"]["source_id"] == key),
@@ -163,12 +642,33 @@ def project(snapshot: dict) -> dict:
                 unknown_coverage.append(key)
         if cursor != source["byte_length"]:
             coverage_errors.append(key)
-    requirements = _index(snapshot["requirements"], watermark)
     facts = _index(snapshot["facts"], watermark)
+    for req in requirements.values():
+        keys = ("superseded_at_seq", "supersession_source_id",
+                "superseded_by_requirement_id")
+        present = [key in req for key in keys]
+        if any(present) and not all(present):
+            raise ValueError("supersession_identity_incomplete")
+        if not all(present):
+            continue
+        end = req["superseded_at_seq"]
+        if end <= req["seq"] or req["status"] != "superseded":
+            raise ValueError("supersession_interval_invalid")
+        if end > watermark:
+            continue
+        source = sources.get(req["supersession_source_id"])
+        successor = requirements.get(req["superseded_by_requirement_id"])
+        if (source is None or source["kind"] != "root"
+                or source["unit"] != req["unit"] or source["seq"] != end
+                or successor is None or successor["unit"] != req["unit"]
+                or successor["seq"] != end
+                or successor["source"]["source_id"] != source["id"]
+                or successor["revision"] <= req["revision"]):
+            raise ValueError("supersession_source_mismatch")
     current = {
         key: row
         for key, row in requirements.items()
-        if row["unit"] in units and (row["unit"] != unit or row["revision"] == revision)
+        if row["unit"] in units and _scope_open(row, watermark)
     }
     if any(
         r["parent_id"] is not None and r["parent_id"] not in requirements
@@ -243,6 +743,13 @@ def project(snapshot: dict) -> dict:
             for fid in condition["fact_ids"]
         ):
             released.add(key)
+    historical_explained = {
+        key: row for key, row in requirements.items()
+        if row["unit"] in units and row["status"] == "superseded"
+        and row.get("superseded_at_seq") is not None
+        and row["superseded_at_seq"] <= watermark
+        and _source_matches(row["source"], sources, root=True)
+    }
     for coverage in snapshot["coverage"]:
         span = coverage["source"]
         source = sources.get(span["source_id"])
@@ -253,22 +760,33 @@ def project(snapshot: dict) -> dict:
         ):
             continue
         covered = sorted(
-            (r["source"]["start"], r["source"]["end"])
-            for r in current.values()
-            if r["source"]["source_id"] == span["source_id"]
-            and r["source"]["start"] < span["end"]
-            and r["source"]["end"] > span["start"]
+            [(r["source"]["start"], r["source"]["end"])
+             for r in (*current.values(), *historical_explained.values())
+             if r["source"]["source_id"] == span["source_id"]
+             and r["source"]["start"] < span["end"]
+             and r["source"]["end"] > span["start"]]
+            + [(c["source"]["start"], c["source"]["end"])
+               for c in snapshot.get("root_controls", [])
+               if c["seq"] <= watermark
+               and c["source"]["source_id"] == span["source_id"]
+               and _source_matches(c["source"], sources, root=True)]
         )
         cursor = span["start"]
+        raw = source["text"].encode("utf-8")
+        separators = " \t\r\n,，。.!?？；;：:、"
         for start, end in covered:
-            if start > cursor:
+            if start > cursor and raw[cursor:start].decode("utf-8").strip(separators):
                 break
             cursor = max(cursor, end)
-        if cursor < span["end"]:
+        if cursor < span["end"] and raw[cursor:span["end"]].decode("utf-8").strip(separators):
             coverage_errors.append(span["source_id"])
     predicates: dict[str, str] = {}
     delivery: list[str] = []
     for key, req in current.items():
+        if not _scope_open(req, watermark):
+            predicates[key] = ("legacy_review" if req.get("superseded_at_seq") is None
+                               else "superseded")
+            continue
         source = sources.get(req["source"]["source_id"])
         source_valid = (
             _source_matches(req["source"], sources, root=True)
@@ -460,6 +978,7 @@ def project(snapshot: dict) -> dict:
             continue
         valid = bool(
             req
+            and _scope_open(req, watermark)
             and candidate["schema"] == "current-action-basis/v1"
             and candidate["state"] == "current"
             and candidate["owner"] == "assistant"
@@ -555,27 +1074,35 @@ def project(snapshot: dict) -> dict:
             Path(__file__).resolve().parent.parent / "assets/core-intent-v2.json"
         ).read_text(encoding="utf-8")
     )["patterns"]
-    # Quotes and code are data, even when they contain a persistence phrase.
-    speech = re.sub(
-        r"```[\s\S]*?```|`[^`]*`|“[^”]*”|‘[^’]*’|\"[^\"]*\"|(?m:^\s*>.*$)",
-        "",
-        intent_text,
+    control_states, control_errors, control_sources, control_resumed = (
+        _fold_root_controls(snapshot, sources, requirements,
+                            historical_effect_facts, units, watermark, rules)
     )
-    resume_match = bool(re.search(rules["EXECUTION_RESUME_RE"], speech, re.I))
-    persistence_match = bool(
-        re.search(rules["USER_PERSISTENCE_RE"], speech, re.I | re.S)
+    kept_actions = []
+    for candidate in actions:
+        control_state = control_states.get(candidate["requirement_id"])
+        if control_state in {"paused", "persistent_paused", "cancelled"}:
+            rejected.append({"requirement_id": candidate["requirement_id"],
+                             "reason": "root_control_" + control_state})
+        else:
+            kept_actions.append(candidate)
+    actions = kept_actions
+    # The legacy intent label is a speech-act hint only. It cannot attach an
+    # earlier persistence phrase to arbitrary later requirements.
+    persistence = any(state in {"persistent", "persistent_paused"}
+                      and key in requirements and _scope_open(requirements[key], watermark)
+                      for key, state in control_states.items())
+    persistence_ready = any(
+        control_states.get(a["requirement_id"]) == "persistent" for a in actions
     )
-    persistence = bool(
-        intent_valid
-        and persistence_match
-        and intent["kind"] in {"persistence", "persistence_and_resume"}
+    old_resume = bool(
+        intent_valid and intent["kind"] in {"resume", "persistence_and_resume"}
+        and _control_speech(intent_text, "resume", rules)
+        and any(current[a["requirement_id"]]["seq"] <= intent_source["seq"]
+                for a in actions)
     )
-    resumed = bool(
-        intent_valid
-        and resume_match
-        and intent["kind"] in {"resume", "persistence_and_resume"}
-        and actions
-    )
+    resumed = bool(old_resume or any(a["requirement_id"] in control_resumed
+                                      for a in actions))
     external = sorted(
         {
             f["operation_id"]
@@ -596,27 +1123,26 @@ def project(snapshot: dict) -> dict:
     missing = sorted(
         k
         for k, r in current.items()
-        if r["required"] and predicates[k] not in {"satisfied", "constraint_active"}
+        if r["required"] and _scope_open(r, watermark)
+        and control_states.get(k) != "cancelled"
+        and predicates[k] not in {"satisfied", "constraint_active"}
     )
     # A parent cannot certify around required children, nor can an empty
     # interpretation certify an unrepresented root source.
-    represented = {r["source"]["source_id"] for r in current.values()}
-    missing_sources = {
-        key
-        for key, source in sources.items()
-        if source["kind"] == "root"
-        and source["unit"] in units
-        and (source["unit"] != unit or source["revision"] == revision)
-    } - represented
+    represented = ({r["source"]["source_id"] for r in current.values()}
+                   | {r["source"]["source_id"] for r in historical_explained.values()}
+                   | control_sources)
+    missing_sources = active_root_ids - represented
     certifiable = not (
         missing or coverage_errors or unknown_coverage or missing_sources
+        or control_errors
     )
     reasons = []
     if snapshot["completion_claim"] and not certifiable:
         reasons.append("wrong_whole_completion")
     if snapshot["proof_violation"]:
         reasons.append("explicit_proof_unsatisfied")
-    if actions and persistence:
+    if persistence_ready:
         reasons.append("explicit_user_persistence")
     if resumed:
         reasons.append("resume_with_actionable_work")
@@ -639,6 +1165,8 @@ def project(snapshot: dict) -> dict:
         "coverage_errors": sorted(set(coverage_errors)),
         "unknown_coverage": sorted(set(unknown_coverage)),
         "target_origins": {k: r["target_origin"] for k, r in current.items()},
+        "root_control_states": dict(sorted(control_states.items())),
+        "root_control_errors": sorted(control_errors),
         "conditions": {
             k: "released" if k in released else "pending" for k in conditions
         },

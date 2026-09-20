@@ -1,5 +1,6 @@
 """Paired production Stop replays for current-action provenance."""
 
+import copy
 import os
 import sys
 import tempfile
@@ -22,6 +23,158 @@ def physical_tempdir(*, prefix: str):
 
 
 class StopV5Tests(unittest.TestCase):
+    def test_subjectless_compound_control_uses_only_same_root_task(self):
+        cases = (
+            ("unique", ("运行suite测试。不要停止,一直推进直到完成。",), True),
+            ("quoted", ("运行 suite 测试。文档写着：“不要停止，一直推进直到完成。”",), False),
+            ("future", ("运行 suite 测试。以后观察是否要一直推进直到完成。",), False),
+            ("attributed", ("运行 suite 测试。张三说不要停止，一直推进直到完成。",), False),
+            ("independent", ("运行 suiteA 测试并修改 B。不要停止,一直推进直到完成。",), False),
+            ("two-tests", ("运行 suiteA 测试。运行 suiteB 测试。不要停止，一直推进直到完成。",), False),
+            ("cross-root", ("运行 suite 测试。", "不要停止，一直推进直到完成。"), False),
+            ("negated", ("运行suite测试。不要一直推进直到完成。",), False),
+            ("reported", ("运行suite测试。文档提醒：不要停止,一直推进直到完成。",), False),
+        )
+        for label, roots, expected in cases:
+            with self.subTest(label=label), physical_tempdir(prefix="stop-v5-ellipsis-") as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    session = f"ellipsis-{label}"
+                    def event(turn, prompt):
+                        return dict(hook_event_name="UserPromptSubmit", session_id=session,
+                                    cwd=tmp, turn_id=turn, prompt=prompt)
+                    cg.dispatch(event("t0", "context-guard on"))
+                    for index, root in enumerate(roots, start=1):
+                        cg.dispatch(event(f"t{index}", root))
+                    directory = Path(tmp) / "private/sessions" / session
+                    state = cg.load_state(directory, dict(hook_event_name="Stop",
+                        session_id=session, cwd=tmp, turn_id=f"t{len(roots)}"))
+                    controls = [c for c in state["root_controls"]
+                                if c.get("kind") == "persistence"]
+                    self.assertEqual(bool(controls), expected)
+                    if expected:
+                        self.assertEqual(len(controls), 1)
+                        self.assertEqual(len(controls[0]["items"]), 1)
+                        span = controls[0]["source_span"]
+                        self.assertIn("不要停止", roots[-1].encode("utf-8")[
+                            span[0]:span[1]].decode("utf-8"))
+                        self.assertEqual(controls[0]["scope_kind"], "current_unit")
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_subjectless_compound_control_includes_root_proven_repair_children(self):
+        with physical_tempdir(prefix="stop-v5-ellipsis-parent-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                target = Path(tmp) / "A.ts"
+                target.write_bytes(b"old\n")
+                session = "ellipsis-parent"
+                def event(turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit", session_id=session,
+                                cwd=tmp, turn_id=turn, prompt=prompt)
+                cg.dispatch(event("t0", "context-guard on"))
+                cg.dispatch(event("t1", f"修改 {target} 并运行 {target} 的测试。不要停止,一直推进直到完成。"))
+                directory = Path(tmp) / "private/sessions" / session
+                state = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id=session, cwd=tmp, turn_id="t1"))
+                children = [r for r in state["requirements"]
+                            if r.get("execution_source_span") is not None]
+                self.assertEqual({r["execution_kind"] for r in children},
+                                 {"local_edit", "test_verify"})
+                edit = next(r for r in children if r["execution_kind"] == "local_edit")
+                test = next(r for r in children if r["execution_kind"] == "test_verify")
+                self.assertEqual(test["required_for_item_id"], edit["id"])
+                controls = [c for c in state["root_controls"]
+                            if c.get("kind") == "persistence"]
+                self.assertEqual(len(controls), 1)
+                self.assertEqual({r["id"] for r in controls[0]["items"]},
+                                 {edit["id"], test["id"]})
+                normalized = cg.current_root_control_projection(state, directory)
+                self.assertEqual(set(normalized["root_control_states"].values()),
+                                 {"persistent"})
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_subjectless_compound_control_includes_all_required_tests(self):
+        with physical_tempdir(prefix="stop-v5-ellipsis-children-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                target = Path(tmp) / "A.ts"
+                target.write_bytes(b"old\n")
+                session = "ellipsis-children"
+                def event(turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit", session_id=session,
+                                cwd=tmp, turn_id=turn, prompt=prompt)
+                cg.dispatch(event("t0", "context-guard on"))
+                cg.dispatch(event("t1", f"修改 {target}，并运行 {target} 的单元测试，"
+                          f"并运行 {target} 的回归测试。不要停止,一直推进直到完成。"))
+                directory = Path(tmp) / "private/sessions" / session
+                state = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id=session, cwd=tmp, turn_id="t1"))
+                children = [r for r in state["requirements"]
+                            if r.get("execution_source_span") is not None]
+                self.assertEqual(len(children), 3)
+                parent = next(r for r in children if r["execution_kind"] == "local_edit")
+                self.assertEqual({r.get("required_for_item_id") for r in children[1:]},
+                                 {parent["id"]})
+                controls = [c for c in state["root_controls"]
+                            if c.get("kind") == "persistence"]
+                self.assertEqual(len(controls), 1)
+                self.assertEqual({row["id"] for row in controls[0]["items"]},
+                                 {row["id"] for row in children})
+                normalized = cg.current_root_control_projection(state, directory)
+                self.assertEqual(set(normalized["root_control_states"].values()),
+                                 {"persistent"})
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_subjectless_compound_control_does_not_follow_later_task(self):
+        with physical_tempdir(prefix="stop-v5-ellipsis-later-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                session = "ellipsis-later"
+                def event(turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit", session_id=session,
+                                cwd=tmp, turn_id=turn, prompt=prompt)
+                cg.dispatch(event("t0", "context-guard on"))
+                cg.dispatch(event("t1", "运行 suite 测试。不要停止,一直推进直到完成。"))
+                directory = Path(tmp) / "private/sessions" / session
+                before = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id=session, cwd=tmp, turn_id="t1"))
+                prior = next(c for c in before["root_controls"]
+                             if c.get("kind") == "persistence")
+                bound = {row["id"] for row in prior["items"]}
+                self.assertEqual(len(bound), 1)
+                cg.dispatch(event("t2", "另运行 B 的测试。"))
+                after = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id=session, cwd=tmp, turn_id="t2"))
+                retained = next(c for c in after["root_controls"]
+                                if c.get("kind") == "persistence")
+                self.assertEqual({row["id"] for row in retained["items"]}, bound)
+                later = [r for r in after["requirements"]
+                         if r["prompt_id"] != before["root_controls"][0]["source_prompt_id"]
+                         and "B" in r["text"]]
+                self.assertTrue(later)
+                self.assertFalse(bound & {r["id"] for r in later})
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
     @staticmethod
     def root_file(cwd, relative):
         # Windows relative root constraints are explicitly unsupported in
@@ -387,6 +540,566 @@ class StopV5Tests(unittest.TestCase):
                 if include_state:
                     return result, state["decision_log"][-1], state
                 return result, state["decision_log"][-1]
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_persistence_source_survives_information_interlude_only_for_ready_work(self):
+        # The second human root is an information request. It neither grants
+        # test authority nor erases the first root's still-live persistence.
+        # A ready selected test is an actual current action; without the
+        # persistence phrase, the same honest answer may end ordinarily.
+        cases = (
+            (True, True, "顺便解释一下这个函数为什么要处理空输入？", True),
+            (False, True, "顺便解释一下这个函数为什么要处理空输入？", False),
+            (True, False, "顺便解释一下这个函数为什么要处理空输入？", False),
+            (True, True, "先暂停这项测试，只回答这个问题：这个函数为什么处理空输入？", False),
+        )
+        for persistent, ready, interlude, expected_block in cases:
+            with self.subTest(persistent=persistent, ready=ready,
+                              interlude=interlude), physical_tempdir(
+                prefix="stop-v5-persistence-interlude-"
+            ) as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    target = Path(tmp) / "suite.py"
+                    target.write_bytes(b"def test_ok(): assert True\n")
+                    def event(kind, turn, **fields):
+                        return dict(hook_event_name=kind, session_id="interlude-fixture",
+                                    cwd=tmp, turn_id=turn, **fields)
+                    cg.dispatch(event("UserPromptSubmit", "control", prompt="context-guard on"))
+                    root = (f"请运行 {target} 的测试并持续执行直到任务完成。" if persistent
+                            else f"请运行 {target} 的测试。")
+                    cg.dispatch(event("UserPromptSubmit", "t1", prompt=root))
+                    if ready:
+                        cg.dispatch(event(
+                            "PostToolUse", "t1", tool_name="exec_command",
+                            tool_input={"cmd": f"test -f {target}"},
+                            tool_response={"exit_code": 0, "output": ""},
+                        ))
+                    cg.dispatch(event("UserPromptSubmit", "t2",
+                                      prompt=interlude))
+                    result = cg.dispatch(event(
+                        "Stop", "t2", last_assistant_message="空输入需要返回默认结果。"))
+                    state = cg.load_state(Path(tmp) / "private/sessions/interlude-fixture",
+                                          event("Stop", "t2"))
+                    decision = state["decision_log"][-1]
+                    basis = cg._current_action_basis(
+                        state, "test_verify", "",
+                        Path(tmp) / "private/sessions/interlude-fixture")
+                    self.assertEqual(result.get("decision") == "block", expected_block,
+                                     (decision["outcome"], decision["reason_codes"], decision["actions"],
+                                      None if basis is None else {
+                                          "requirement_id": basis["requirement_id"],
+                                          "readiness": basis["readiness"],
+                                          "predicate_state": basis["predicate_state"],
+                                      }, [(w["status"], w["owner_work_unit_id"])
+                                          for w in state["wait_conditions"]],
+                                      [(w["status"], w["raised_by_kind"])
+                                       for w in cg.current_scope_projection(state)["waiting_conditions"]]))
+                    if expected_block:
+                        self.assertIn("explicit_user_persistence", decision["reason_codes"])
+                        normalized = cg.current_root_control_projection(
+                            state, Path(tmp) / "private/sessions/interlude-fixture")
+                        self.assertIsNotNone(normalized)
+                        self.assertIn("persistent", normalized["root_control_states"].values())
+                        self.assertEqual([a["requirement_id"] for a in normalized["current_actions"]],
+                                         [basis["requirement_id"]])
+                    if not ready:
+                        self.assertFalse(any(a.get("actionability") == "current_ready"
+                                             for a in decision["actions"]))
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_root_controls_bind_full_edit_test_catalog_through_reload(self):
+        with physical_tempdir(prefix="stop-v5-control-catalog-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(kind, turn, **fields):
+                    return dict(hook_event_name=kind, session_id="control-catalog-v5",
+                                cwd=tmp, turn_id=turn, **fields)
+                session_dir = Path(tmp) / "private/sessions/control-catalog-v5"
+                target = Path(tmp) / "a.py"
+                target.write_bytes(b"before\n")
+                cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                cg.dispatch(event("UserPromptSubmit", "t1",
+                                  prompt=f"请修改 {target}，并运行 {target} 的测试。"))
+                cg.dispatch(event("UserPromptSubmit", "t2",
+                                  prompt="持续执行直到当前任务完成。"))
+                state = cg.load_state(session_dir, event("Stop", "t2"))
+                first = state["root_controls"][-1]
+                self.assertEqual(first["kind"], "persistence")
+                self.assertEqual({row["action"] for row in first["items"]},
+                                 {"local_edit", "test_verify"})
+                self.assertEqual(
+                    cg.sha256_text(cg.canonical_json(cg._root_control_catalog(
+                        state, first["work_unit_id"], first["source_seq"]
+                    ))), first["catalog_sha256"])
+                normalized = cg.current_root_control_projection(state, session_dir)
+                self.assertIsNotNone(normalized)
+                self.assertEqual(set(normalized["root_control_states"]),
+                                 {row["id"] for row in first["items"]})
+                tampered = copy.deepcopy(state)
+                tampered["requirements"] = [row for row in tampered["requirements"]
+                                            if row["id"] != first["items"][-1]["id"]]
+                self.assertNotEqual(
+                    cg.sha256_text(cg.canonical_json(cg._root_control_catalog(
+                        tampered, first["work_unit_id"], first["source_seq"]
+                    ))), first["catalog_sha256"])
+                cg.dispatch(event("UserPromptSubmit", "t3", prompt="暂停本轮测试。"))
+                state = cg.load_state(session_dir, event("Stop", "t3"))
+                _, _, folded = cg.current_persistence_actions(state, session_dir)
+                self.assertEqual({folded[row["id"]] for row in first["items"]},
+                                 {"persistent", "persistent_paused"})
+                cg.dispatch(event("UserPromptSubmit", "t4", prompt="继续。"))
+                state = cg.load_state(session_dir, event("Stop", "t4"))
+                _, _, folded = cg.current_persistence_actions(state, session_dir)
+                self.assertEqual({folded[row["id"]] for row in first["items"]},
+                                 {"persistent"})
+                cg.dispatch(event("UserPromptSubmit", "t5", prompt="取消当前任务。"))
+                state = cg.load_state(session_dir, event("Stop", "t5"))
+                in_force, actions, folded = cg.current_persistence_actions(state, session_dir)
+                self.assertFalse(in_force)
+                self.assertEqual(actions, [])
+                self.assertEqual(folded, {})
+                self.assertEqual(state["work_units"][0]["status"], "historical_unresolved")
+                self.assertIsNone(state["work_state"]["active_work_unit_id"])
+                self.assertEqual(state["root_controls"][-1]["kind"], "cancel")
+                self.assertEqual({row["id"] for row in state["root_controls"][-1]["items"]},
+                                 {row["id"] for row in first["items"]})
+                self.assertEqual(cg.pending_scoped_item_count(
+                    state, cg.current_scope_projection(state)["scoped_item_ids"]), 0)
+                protected = copy.deepcopy(state)
+                proof_item = copy.deepcopy(protected["acceptance_items"][0])
+                proof_item.update(id="A999", text="提交显式 proof 证据", status="pending")
+                proof_item["verification_contract"] = {
+                    "mode": "enforced", "obligations": [
+                        {"kind": "input_asset_inspection", "surface": "visual"}
+                    ],
+                }
+                protected["acceptance_items"].append(proof_item)
+                protected_scope = cg.current_scope_projection(protected)
+                self.assertIn("A999", protected_scope["ancestor_constraint_ids"])
+                self.assertNotIn(protected["acceptance_items"][0]["id"],
+                                 protected_scope["scoped_item_ids"])
+                cg.dispatch(event("UserPromptSubmit", "t6", prompt="暂停当前任务。"))
+                after_cancel = cg.load_state(session_dir, event("Stop", "t6"))
+                _, _, folded = cg.current_persistence_actions(after_cancel, session_dir)
+                self.assertEqual(folded, {})
+                self.assertEqual(after_cancel["work_units"][0]["status"],
+                                 "historical_unresolved")
+                self.assertEqual(after_cancel["root_controls"][-1]["kind"], "cancel")
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_exact_cancel_uses_sourced_target_and_wrong_target_stays_pending(self):
+        for matching in (True, False):
+            with self.subTest(matching=matching), physical_tempdir(
+                prefix="stop-v5-exact-control-"
+            ) as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    def event(kind, turn, **fields):
+                        return dict(hook_event_name=kind, session_id="exact-control-v5",
+                                    cwd=tmp, turn_id=turn, **fields)
+                    target = Path(tmp) / "B.py"
+                    other = Path(tmp) / "A.py"
+                    target.write_bytes(b"old\n")
+                    cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                    cg.dispatch(event("UserPromptSubmit", "t1",
+                                      prompt=f"请修改 {target}。"))
+                    cg.dispatch(event("UserPromptSubmit", "t2",
+                                      prompt=f"取消 {target if matching else other}。"))
+                    directory = Path(tmp) / "private/sessions/exact-control-v5"
+                    state = cg.load_state(directory, event("Stop", "t2"))
+                    bindings = [c for c in state["root_controls"] if c.get("kind") == "cancel"]
+                    self.assertEqual(bool(bindings), matching)
+                    if matching:
+                        self.assertEqual(bindings[0]["scope_kind"], "exact")
+                        normalized = cg.current_root_control_projection(state, directory)
+                        self.assertIsNotNone(normalized)
+                        self.assertEqual(normalized["root_control_states"],
+                                         {bindings[0]["items"][0]["id"]: "cancelled"})
+                        self.assertEqual(cg.pending_scoped_item_count(
+                            state, cg.current_scope_projection(state)["scoped_item_ids"]), 0)
+                    else:
+                        self.assertGreater(cg.pending_scoped_item_count(
+                            state, cg.current_scope_projection(state)["scoped_item_ids"]), 0)
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_rehashed_drop_child_recovers_as_untrusted_not_complete_subset(self):
+        with physical_tempdir(prefix="stop-v5-drop-child-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(kind, turn, **fields):
+                    return dict(hook_event_name=kind, session_id="drop-child-v5",
+                                cwd=tmp, turn_id=turn, **fields)
+                target = Path(tmp) / "a.py"
+                target.write_bytes(b"old\n")
+                cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                cg.dispatch(event("UserPromptSubmit", "t1",
+                                  prompt=f"请修改 {target}，并运行 {target} 的测试。"))
+                cg.dispatch(event("UserPromptSubmit", "t2",
+                                  prompt="持续执行直到当前任务完成。"))
+                directory = Path(tmp) / "private/sessions/drop-child-v5"
+                state = cg.load_state(directory, event("Stop", "t2"))
+                tampered = copy.deepcopy(state)
+                binding = tampered["root_controls"][0]
+                removed = binding["items"].pop()
+                tampered["requirements"] = [row for row in tampered["requirements"]
+                                            if row["id"] != removed["id"]]
+                binding["catalog_sha256"] = cg.sha256_text(cg.canonical_json(
+                    cg._root_control_catalog(tampered, binding["work_unit_id"],
+                                             binding["source_seq"])))
+                tampered["open_items"] = cg.open_item_ids(tampered)
+                tampered["content_hash"] = cg.state_content_hash(tampered)
+                self.assertFalse(cg._root_control_decomposition_valid(tampered, directory))
+                (directory / "state.json").write_text(
+                    cg.canonical_json(tampered), encoding="utf-8")
+                recovered = cg.load_state(directory, event("Stop", "t2"))
+                self.assertEqual(recovered["integrity"]["status"],
+                                 "recovered_from_prompts")
+                self.assertEqual(recovered["root_controls"], [])
+                self.assertIsNone(cg.current_root_control_projection(recovered, directory))
+                self.assertGreater(cg.pending_scoped_item_count(
+                    recovered, cg.current_scope_projection(recovered)["scoped_item_ids"]), 0)
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_independent_root_and_missing_unit_binding_cannot_shrink_catalog(self):
+        for missing_binding in (False, True):
+            with self.subTest(missing_binding=missing_binding), physical_tempdir(
+                prefix="stop-v5-independent-root-"
+            ) as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    def event(kind, turn, **fields):
+                        return dict(hook_event_name=kind, session_id="independent-root-v5",
+                                    cwd=tmp, turn_id=turn, **fields)
+                    a, b = Path(tmp) / "a.py", Path(tmp) / "b.py"
+                    a.write_bytes(b"a\n")
+                    b.write_bytes(b"b\n")
+                    cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                    cg.dispatch(event("UserPromptSubmit", "t1", prompt=f"请修改 {a}。"))
+                    cg.dispatch(event("UserPromptSubmit", "t2", prompt=f"请运行 {b} 的测试。"))
+                    cg.dispatch(event("UserPromptSubmit", "t3",
+                                      prompt="持续执行直到当前任务完成。"))
+                    directory = Path(tmp) / "private/sessions/independent-root-v5"
+                    state = cg.load_state(directory, event("Stop", "t3"))
+                    self.assertEqual(state["integrity"]["status"], "ok")
+                    self.assertEqual(len(state["root_controls"][0]["items"]), 2)
+                    self.assertIsNotNone(cg.current_root_control_projection(state, directory))
+                    if missing_binding:
+                        (directory / "prompts/units/P0003.json").unlink()
+                    else:
+                        tampered = copy.deepcopy(state)
+                        control = tampered["root_controls"][0]
+                        removed = next(row for row in control["items"]
+                                       if row["action"] == "test_verify")
+                        control["items"] = [row for row in control["items"]
+                                            if row["id"] != removed["id"]]
+                        tampered["requirements"] = [row for row in tampered["requirements"]
+                                                    if row["id"] != removed["id"]]
+                        tampered["acceptance_items"] = [row for row in tampered["acceptance_items"]
+                                                       if row.get("prompt_id") != removed["prompt_id"]]
+                        control["catalog_sha256"] = cg.sha256_text(cg.canonical_json(
+                            cg._root_control_catalog(tampered, control["work_unit_id"],
+                                                     control["source_seq"])))
+                        tampered["open_items"] = cg.open_item_ids(tampered)
+                        tampered["content_hash"] = cg.state_content_hash(tampered)
+                        self.assertFalse(cg._root_control_decomposition_valid(tampered, directory))
+                        (directory / "state.json").write_text(
+                            cg.canonical_json(tampered), encoding="utf-8")
+                    recovered = cg.load_state(directory, event("Stop", "t3"))
+                    self.assertEqual(recovered["integrity"]["status"],
+                                     "recovered_from_prompts")
+                    self.assertEqual(recovered["root_controls"], [])
+                    self.assertIsNone(cg.current_root_control_projection(recovered, directory))
+                    self.assertGreater(cg.pending_scoped_item_count(
+                        recovered, cg.current_scope_projection(recovered)["scoped_item_ids"]), 0)
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_unsourced_later_root_cannot_forge_supersession_of_persistent_work(self):
+        with physical_tempdir(prefix="stop-v5-unsourced-successor-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(kind, turn, **fields):
+                    return dict(hook_event_name=kind, session_id="unsourced-successor-v5",
+                                cwd=tmp, turn_id=turn, **fields)
+                a, b = Path(tmp) / "a.py", Path(tmp) / "b.py"
+                a.write_bytes(b"a\n")
+                b.write_bytes(b"b\n")
+                cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                cg.dispatch(event("UserPromptSubmit", "t1", prompt=f"请修改 {a}。"))
+                cg.dispatch(event("UserPromptSubmit", "t2",
+                                  prompt="持续执行直到当前任务完成。"))
+                cg.dispatch(event("UserPromptSubmit", "t3", prompt=f"请修改 {b}。"))
+                directory = Path(tmp) / "private/sessions/unsourced-successor-v5"
+                state = cg.load_state(directory, event("Stop", "t3"))
+                self.assertEqual(state["supersedes"], [])
+                self.assertEqual(state["integrity"]["status"], "ok")
+                self.assertIsNotNone(cg.current_root_control_projection(state, directory))
+                tampered = copy.deepcopy(state)
+                old, new = tampered["requirements"][0], tampered["requirements"][-1]
+                tampered["supersedes"].append({
+                    "old_id": old["id"], "new_id": new["id"],
+                    "created_at": cg.utc_now(), "reason": "replacement",
+                })
+                old["status"] = "superseded"
+                tampered["open_items"] = cg.open_item_ids(tampered)
+                tampered["content_hash"] = cg.state_content_hash(tampered)
+                self.assertFalse(cg._root_control_decomposition_valid(tampered, directory))
+                (directory / "state.json").write_text(
+                    cg.canonical_json(tampered), encoding="utf-8")
+                recovered = cg.load_state(directory, event("Stop", "t3"))
+                self.assertEqual(recovered["integrity"]["status"], "recovered_from_prompts")
+                self.assertEqual(recovered["supersedes"], [])
+                self.assertIsNone(cg.current_root_control_projection(recovered, directory))
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_uncommitted_new_root_after_prompt_write_invalidates_old_catalog(self):
+        with physical_tempdir(prefix="stop-v5-uncommitted-root-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit",
+                                session_id="uncommitted-root-v5", cwd=tmp,
+                                turn_id=turn, prompt=prompt)
+                a, b = Path(tmp) / "a.py", Path(tmp) / "b.py"
+                a.write_bytes(b"a\n")
+                b.write_bytes(b"b\n")
+                cg.dispatch(event("t0", "context-guard on"))
+                cg.dispatch(event("t1", f"请修改 {a}。"))
+                cg.dispatch(event("t2", "持续执行直到当前任务完成。"))
+                directory = Path(tmp) / "private/sessions/uncommitted-root-v5"
+                before = cg.load_state(directory, event("t2", ""))
+                self.assertEqual(before["integrity"]["status"], "ok")
+                self.assertIsNotNone(cg.current_root_control_projection(before, directory))
+                new_root = cg.append_prompt(
+                    directory, before, f"请运行 {b} 的测试。", turn_id="t3")
+                self.assertTrue(new_root["id"])
+                self.assertFalse((directory / "prompts/units" /
+                                  f"{new_root['id']}.json").exists())
+                # The state transaction and unit binding were never saved.
+                recovered = cg.load_state(directory, event("t3", ""))
+                self.assertEqual(recovered["integrity"]["status"],
+                                 "recovered_from_prompts")
+                self.assertEqual(recovered["root_controls"], [])
+                self.assertIsNone(cg.current_root_control_projection(recovered, directory))
+                self.assertTrue(any(row["prompt_id"] == new_root["id"]
+                                    for row in recovered["requirements"]))
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_repair_parent_pause_binds_required_edit_and_test_children(self):
+        with physical_tempdir(prefix="stop-v5-parent-control-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(kind, turn, **fields):
+                    return dict(hook_event_name=kind, session_id="parent-control-v5",
+                                cwd=tmp, turn_id=turn, **fields)
+                target = Path(tmp) / "parser.py"
+                target.write_bytes(b"old\n")
+                cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                cg.dispatch(event("UserPromptSubmit", "t1",
+                                  prompt=f"请修复 {target}，并运行 {target} 的测试。"))
+                cg.dispatch(event("UserPromptSubmit", "t2", prompt="暂停这项修复。"))
+                directory = Path(tmp) / "private/sessions/parent-control-v5"
+                state = cg.load_state(directory, event("Stop", "t2"))
+                bindings = [c for c in state["root_controls"] if c.get("kind") == "pause"]
+                self.assertEqual(len(bindings), 1)
+                self.assertEqual(bindings[0]["scope_kind"], "parent_task")
+                self.assertEqual({r["action"] for r in bindings[0]["items"]},
+                                 {"local_edit", "test_verify"})
+                normalized = cg.current_root_control_projection(state, directory)
+                self.assertIsNotNone(normalized)
+                self.assertEqual(set(normalized["root_control_states"]),
+                                 {r["id"] for r in bindings[0]["items"]})
+                self.assertEqual(set(normalized["root_control_states"].values()),
+                                 {"paused"})
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_qualified_persistence_keeps_until_clause_with_repair_children(self):
+        with physical_tempdir(prefix="stop-v5-qualified-control-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(kind, turn, **fields):
+                    return dict(hook_event_name=kind, session_id="qualified-control-v5",
+                                cwd=tmp, turn_id=turn, **fields)
+                cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                cg.dispatch(event("UserPromptSubmit", "t1", prompt=(
+                    "请持续完成本轮 parser 修复和测试，直到当前任务完成。")))
+                directory = Path(tmp) / "private/sessions/qualified-control-v5"
+                state = cg.load_state(directory, event("Stop", "t1"))
+                controls = [c for c in state["root_controls"]
+                            if c.get("kind") == "persistence"]
+                self.assertEqual(len(controls), 1)
+                self.assertEqual(controls[0]["scope_kind"], "parent_task")
+                self.assertEqual({row["action"] for row in controls[0]["items"]},
+                                 {"local_edit", "test_verify"})
+                self.assertEqual(len(controls[0]["items"]), 2)
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_test_class_persistence_binds_existing_test_only(self):
+        with physical_tempdir(prefix="stop-v5-test-role-control-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit",
+                                session_id="test-role-control-v5", cwd=tmp,
+                                turn_id=turn, prompt=prompt)
+                cg.dispatch(event("t0", "context-guard on"))
+                cg.dispatch(event("t1", "请运行当前测试。"))
+                cg.dispatch(event("t2", "持续推进，直到本轮测试完成为止。"))
+                directory = Path(tmp) / "private/sessions/test-role-control-v5"
+                state = cg.load_state(directory, dict(hook_event_name="Stop",
+                                    session_id="test-role-control-v5", cwd=tmp,
+                                    turn_id="t2"))
+                controls = [c for c in state["root_controls"]
+                            if c.get("kind") == "persistence"]
+                self.assertEqual(len(controls), 1)
+                self.assertEqual(controls[0]["scope_kind"], "action_class")
+                self.assertEqual({row["action"] for row in controls[0]["items"]},
+                                 {"test_verify"})
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_root_time_repair_dependency_excludes_independent_target_and_has_many_children(self):
+        with physical_tempdir(prefix="stop-v5-repair-graph-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(session, turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit", session_id=session,
+                                cwd=tmp, turn_id=turn, prompt=prompt)
+                target = Path(tmp) / "parser.py"
+                other = Path(tmp) / "other.py"
+                target.write_bytes(b"old\n")
+                other.write_bytes(b"old\n")
+                cg.dispatch(event("repair-graph-positive", "t0", "context-guard on"))
+                cg.dispatch(event("repair-graph-positive", "t1", (
+                    f"请修复 {target}，运行 {target} 的单元测试，"
+                    f"然后运行 {target} 的回归测试。")))
+                cg.dispatch(event("repair-graph-positive", "t2", "暂停这项修复。"))
+                directory = Path(tmp) / "private/sessions/repair-graph-positive"
+                state = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id="repair-graph-positive", cwd=tmp, turn_id="t2"))
+                children = [r for r in state["requirements"]
+                            if r.get("execution_source_span") is not None]
+                self.assertEqual(len(children), 3)
+                repair = next(r for r in children if r["execution_kind"] == "local_edit")
+                self.assertEqual({r.get("required_for_item_id") for r in children
+                                  if r["execution_kind"] == "test_verify"}, {repair["id"]})
+                control = next(c for c in state["root_controls"]
+                               if c.get("scope_kind") == "parent_task")
+                self.assertEqual({r["id"] for r in control["items"]},
+                                 {r["id"] for r in children})
+                normalized = cg.current_root_control_projection(state, directory)
+                self.assertIsNotNone(normalized)
+                self.assertEqual(normalized["root_control_states"],
+                                 {r["id"]: "paused" for r in children})
+                self.assertFalse(any(a["requirement_id"] in {r["id"] for r in children}
+                                     for a in normalized["current_actions"]))
+
+                cg.dispatch(event("repair-graph-negative", "t0", "context-guard on"))
+                cg.dispatch(event("repair-graph-negative", "t1", (
+                    f"请修复 {target}，并运行 {other} 的测试。")))
+                cg.dispatch(event("repair-graph-negative", "t2", "暂停这项修复。"))
+                other_state = cg.load_state(
+                    Path(tmp) / "private/sessions/repair-graph-negative",
+                    dict(hook_event_name="Stop", session_id="repair-graph-negative",
+                         cwd=tmp, turn_id="t2"))
+                self.assertFalse(any(r.get("required_for_item_id")
+                                     for r in other_state["requirements"]))
+                self.assertFalse(any(c.get("scope_kind") == "parent_task"
+                                     for c in other_state["root_controls"]))
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_historical_control_survives_sourced_supersession_without_transferring(self):
+        with physical_tempdir(prefix="stop-v5-history-control-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                def event(turn, prompt):
+                    return dict(hook_event_name="UserPromptSubmit",
+                                session_id="history-control-v5", cwd=tmp,
+                                turn_id=turn, prompt=prompt)
+                a, b = Path(tmp) / "a.py", Path(tmp) / "b.py"
+                a.write_bytes(b"a\n")
+                b.write_bytes(b"b\n")
+                cg.dispatch(event("t0", "context-guard on"))
+                cg.dispatch(event("t1", f"请修改 {a}。"))
+                cg.dispatch(event("t2", "持续执行直到当前任务完成。"))
+                directory = Path(tmp) / "private/sessions/history-control-v5"
+                earlier = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id="history-control-v5", cwd=tmp, turn_id="t2"))
+                before = cg.current_root_control_projection(earlier, directory)
+                self.assertEqual(before["root_control_states"], {"R001": "persistent"})
+                cg.dispatch(event("t3", f"用修改 {b} 替代 R001。"))
+                later = cg.load_state(directory, dict(hook_event_name="Stop",
+                    session_id="history-control-v5", cwd=tmp, turn_id="t3"))
+                self.assertEqual(later["supersedes"][0]["old_id"], "R001")
+                after = cg.current_root_control_projection(later, directory)
+                self.assertIsNotNone(after)
+                self.assertEqual(after["root_control_states"], {"R001": "persistent"})
+                self.assertNotIn("R001", {a["requirement_id"] for a in after["current_actions"]})
+                self.assertNotIn("R003", after["root_control_states"])
+                self.assertEqual(after["coverage_errors"], [])
+                self.assertEqual(cg.current_root_control_projection(
+                    cg.load_state(directory, dict(hook_event_name="Stop",
+                        session_id="history-control-v5", cwd=tmp, turn_id="t3")),
+                    directory)["root_control_states"], after["root_control_states"])
             finally:
                 if previous is None:
                     os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)

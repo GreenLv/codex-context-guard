@@ -82,11 +82,17 @@ class ContinuityBoundaryTests(P0Harness):
         state = self.state()
         self.assertEqual(self.unit(state, "WU0001")["status"],
                          "historical_unresolved")
-        self.assertEqual(state["work_state"]["active_work_unit_id"], "WU0002")
+        # A canceled root remains sourced to WU0001. The next unit needs a
+        # later real user root; no empty unit may reuse the cancel source.
+        self.assertIsNone(state["work_state"]["active_work_unit_id"])
         for item in state["requirements"]:
             self.assertNotEqual(item["status"], "pass")
         scoped, _ancestors = cg.checkpoint_scope_item_ids(state)
         self.assertNotIn("R001", scoped)
+        self.prompt("请开始另一项独立任务：检查文档索引。")
+        state = self.state()
+        self.assertEqual(state["work_state"]["active_work_unit_id"], "WU0002")
+        self.assertEqual(self.unit(state, "WU0001")["status"], "historical_unresolved")
 
     def test_deferred_unit_stays_deferred_and_new_request_opens_sibling(
         self,

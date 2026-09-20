@@ -16,6 +16,8 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Source candidate: `0.14.0` (unreleased; not installed in the daily host). If a completed repair ends with “its long-term benefit needs observation,” Guard no longer turns that future observation into a task to do now. If the user says “continue and run the tests,” an unfinished test stays visible when the current request and actual tool input identify it; honest reporting that a current measurement remains unrun can end the turn, while a short resume with ready work can receive one bounded correction. A short “continue” is not treated as a demand to keep working indefinitely. Ordinary edits and tests still run through Codex tools; Guard records their results for completion checks. Host Goal-complete interception is unavailable until its Hook path is verified. This source candidate uses Schema 13 and Stop 5.0.0; the shared core v2 contract is maintained here, while downstream mirror and pin identity need separate verification. See the [changelog](CHANGELOG.md) for earlier versions.
 
+In the 0.14.0 source candidate, a direct “keep working until this task is done” request applies to the work in scope when it was said. An intervening question keeps that work visible; a later pause, resume or cancellation changes only the sourced scope. Guard adds no approval or execution gate for ordinary tools.
+
 ## Install
 
 Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. Portable acceptance used Codex CLI `0.153.4` on macOS and `0.149.0` on native Windows; see [compatibility](docs/COMPATIBILITY.md) for the full evidence boundary.

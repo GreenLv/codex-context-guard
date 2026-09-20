@@ -20,6 +20,25 @@ explicit-proof, Goal, or adopted-release contracts. Final exact-input local
 results and exact shared-file SHA-256 identities are recorded in the
 development handoff outside this public source tree.
 
+The later root-control source repair has focused local replays for a persistent
+test request followed by an information interlude, source-bound pause/resume/
+cancel, multiple required tests under one repair, an independent same-root
+test, a trusted replacement, and a rehashed truncated catalog. The truncated
+private state is recovered as untrusted; it cannot certify its smaller action
+subset. Independent-root truncation, missing prompt-unit binding, and an
+unsourced replacement link are separate recovery negatives; an explicitly
+sourced replacement remains a positive control. Cancellation removes only
+the bound ordinary execution obligations and a wholly derived acceptance row;
+independent information, explicit proof, Goal, and adopted-release gates remain
+separate.
+The prompt-write-before-state crash window is checked separately: a new
+immutable root ahead of the saved watermark forces untrusted recovery instead
+of allowing the old catalog to certify completion.
+These are synthetic source checks on changed bytes, not a new installed or
+native Host result. Exact commands, hashes, review outcomes, and final local
+matrix status belong to
+the external development handoff until this candidate is frozen.
+
 The later Host-wire repair has focused synthetic replays of the CLI 0.153.4
 string PostToolUse shape: it correlates an already-visible Host terminal item
 for supported Bash and apply_patch operations and keeps missing status unknown.

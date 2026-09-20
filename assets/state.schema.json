@@ -213,6 +213,10 @@
         "execution_kind": {
           "enum": ["local_edit", "test_verify", "local_commit", "remote_push"]
         },
+        "required_for_item_id": {
+          "type": "string",
+          "description": "Root-time verified required-child edge to the repair item. A later control cannot create this relation."
+        },
         "parent_id": {
           "type": "string"
         },
@@ -905,11 +909,64 @@
     "prompt_journal",
     "integrity",
     "content_hash",
-    "response_delivery"
+    "response_delivery",
+    "root_controls"
   ],
   "properties": {
     "schema_version": {
       "const": 13
+    },
+    "root_controls": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_prompt_id", "source_record_sha256", "source_seq", "work_unit_id", "items"],
+        "properties": {
+          "kind": {"enum": ["persistence", "pause", "resume", "cancel"]},
+          "source_prompt_id": {"type": "string", "pattern": "^P[0-9]{4,}$"},
+          "source_record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "source_seq": {"type": "integer", "minimum": 1},
+          "source_span": {
+            "type": "array", "prefixItems": [
+              {"type": "integer", "minimum": 0},
+              {"type": "integer", "minimum": 1}
+            ], "minItems": 2, "maxItems": 2
+          },
+          "work_unit_id": {"type": "string", "pattern": "^WU[0-9]{4,}$"},
+          "scope_kind": {"enum": ["current_unit", "action_class", "exact", "parent_task"]},
+          "scope_target": {"type": "string", "minLength": 1},
+          "scope_target_span": {
+            "type": "array", "prefixItems": [
+              {"type": "integer", "minimum": 0},
+              {"type": "integer", "minimum": 1}
+            ], "minItems": 2, "maxItems": 2
+          },
+          "catalog_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "items": {
+            "type": "array", "minItems": 1, "maxItems": 64,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["id", "prompt_id", "work_unit_id", "source_sha256", "root_seq"],
+              "properties": {
+                "id": {"type": "string", "pattern": "^R[0-9]{3,}$"},
+                "prompt_id": {"type": "string", "pattern": "^P[0-9]{4,}$"},
+                "work_unit_id": {"type": "string", "pattern": "^WU[0-9]{4,}$"},
+                "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "root_seq": {"type": "integer", "minimum": 1},
+                "action": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        },
+        "if": {"required": ["kind"]},
+        "then": {"required": ["source_span", "scope_kind", "catalog_sha256"]},
+        "else": {"not": {"anyOf": [
+          {"required": ["source_span"]}, {"required": ["scope_kind"]},
+          {"required": ["catalog_sha256"]}
+        ]}}
+      }
     },
     "wait_conditions": {
       "type": "array",
