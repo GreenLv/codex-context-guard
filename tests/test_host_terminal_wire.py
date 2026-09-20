@@ -97,6 +97,23 @@ class HostTerminalWireTests(unittest.TestCase):
     def readback(self, call_id, target, stdout):
         self.command(call_id, self.readback_command(target), stdout=stdout)
 
+    def assert_sourced_readback_was_verified(self, root):
+        evidence = self.state()["evidence"][-1]
+        observed = evidence.get("core_observation")
+        self.assertEqual(evidence["outcome"], "success")
+        self.assertEqual(evidence["outcome_basis"], "host_transcript_exit_code")
+        self.assertIsInstance(observed, dict)
+        self.assertEqual(observed["predicate"], "content_hash")
+        self.assertEqual(observed["outcome"], "success")
+        self.assertEqual(observed["content_sha256"],
+                         hashlib.sha256(Path(observed["target"]).read_bytes()).hexdigest())
+        commands = [(clause, direct) for clause in cg._action_source_clauses(root)
+                    if (direct := cg._direct_shell_command_object(clause)) is not None
+                    and direct[0] == "state_readback"]
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(cg._sourced_readback_host_matches(
+            commands[0][0], commands[0][1], observed))
+
     def patch(self, call_id, target, before, after, *, response="patch applied",
               status="completed"):
         source = (f"*** Begin Patch\n*** Update File: {target.name}\n@@\n"
@@ -582,11 +599,12 @@ class HostTerminalWireTests(unittest.TestCase):
     def test_exact_edit_delivery_does_not_claim_unreported_or_extra_work(self):
         target = self.cwd / "config.txt"
         other = self.cwd / "other.txt"
+        command = self.readback_command(target)
         roots = (
             (f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行；'
-             f"然后运行 `cat '{target}'` 完整回读并报告。", False),
+             f"然后运行 `{command}` 完整回读并报告。", False),
             (f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行；'
-             f"然后运行 `cat '{target}'` 完整回读并报告并修复 {other}。", True),
+             f"然后运行 `{command}` 完整回读并报告并修复 {other}。", True),
         )
         for index, (root, extra_action) in enumerate(roots):
             with self.subTest(index=index):
@@ -598,10 +616,8 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.write_file(other, "untouched\n")
                 self.start(root)
                 self.patch(f"unreported-edit-{index}", target, "old\n", "mode=on\n")
-                self.command(f"unreported-read-{index}", f"cat '{target}'",
-                             stdout="mode=on\n", response="mode=on\n",
-                             parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                          "name": target.name, "path": str(target)}])
+                self.readback(f"unreported-read-{index}", target, "mode=on\n")
+                self.assert_sourced_readback_was_verified(root)
                 reply = ("已回读：mode=on 加一个换行。" if extra_action
                          else "已完成操作。")
                 cg.dispatch(self.event("Stop", last_assistant_message=reply))
@@ -612,13 +628,14 @@ class HostTerminalWireTests(unittest.TestCase):
     def test_quoted_target_bytes_are_not_an_actual_readback_report(self):
         target = self.cwd / "config.txt"
         self.write_file(target, "old\n")
-        self.start(f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
-                   '请把它改为恰好 mode=on 加一个换行；'
-                   f"然后调用 `cat '{target}'` 完整回读并报告内容。")
+        command = self.readback_command(target)
+        root = (f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                '请把它改为恰好 mode=on 加一个换行；'
+                f"然后调用 `{command}` 完整回读并报告内容。")
+        self.start(root)
         self.patch("edit", target, "old\n", "mode=on\n")
-        self.command("read", f"cat '{target}'", stdout="mode=on\n",
-                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                  "name": target.name, "path": str(target)}])
+        self.readback("read", target, "mode=on\n")
+        self.assert_sourced_readback_was_verified(root)
         cg.dispatch(self.event("Stop", last_assistant_message=(
             "说明文字里出现 mode=on 加一个换行；实际文件内容我未核验。")))
         rows = self.state()["decision_log"][-1]["core_projections"]
@@ -627,10 +644,11 @@ class HostTerminalWireTests(unittest.TestCase):
 
     def test_actual_current_file_report_requires_one_attributed_complete_value(self):
         target = self.cwd / "config.txt"
+        command = self.readback_command(target)
         root = (f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
                 '请把它改为恰好 mode=on 加一个换行；'
-                f"然后调用 `cat '{target}'` 完整回读并报告内容。")
-        actual_model_shape = ("已完成修改。独立 Bash `cat` 完整回读结果为：\n\n"
+                f"然后调用 `{command}` 完整回读并报告内容。")
+        actual_model_shape = (f"已完成修改。独立 {'PowerShell ReadAllText' if os.name == 'nt' else 'Bash `cat`'} 完整回读结果为：\n\n"
                               "```text\nmode=on\n```\n\n"
                               "实际文件内容恰好为 `mode=on` 加一个换行。")
         cases = (
@@ -668,6 +686,7 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.start(root)
                 self.patch(f"edit-{index}", target, "mode=off\n", "mode=on\n")
                 self.readback(f"read-{index}", target, "mode=on\n")
+                self.assert_sourced_readback_was_verified(root)
                 cg.dispatch(self.event("Stop", last_assistant_message=final))
                 rows = self.state()["decision_log"][-1]["core_projections"]
                 certified = any(row["predicate"] == "edit_readback_and_report"
@@ -942,13 +961,14 @@ class HostTerminalWireTests(unittest.TestCase):
     def test_context_clause_with_preservation_rule_remains_uninterpreted(self):
         target = self.cwd / "config.txt"
         self.write_file(target, "old\n")
-        self.start(f'已知 "{target}" 且需要保留所有注释。'
-                   '请把它改为恰好 mode=on 加一个换行；'
-                   f"然后运行 `cat '{target}'` 完整回读并报告内容。")
+        command = self.readback_command(target)
+        root = (f'已知 "{target}" 且需要保留所有注释。'
+                '请把它改为恰好 mode=on 加一个换行；'
+                f"然后运行 `{command}` 完整回读并报告内容。")
+        self.start(root)
         self.patch("edit", target, "old\n", "mode=on\n")
-        self.command("read", f"cat '{target}'", stdout="mode=on\n",
-                     parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
-                                  "name": target.name, "path": str(target)}])
+        self.readback("read", target, "mode=on\n")
+        self.assert_sourced_readback_was_verified(root)
         cg.dispatch(self.event("Stop", last_assistant_message="已回读：mode=on 加一个换行。"))
         rows = self.state()["decision_log"][-1]["core_projections"]
         self.assertFalse(any(r["predicate"] == "edit_readback_and_report"
