@@ -280,6 +280,113 @@ class HostTerminalWireTests(unittest.TestCase):
         self.assertFalse(any(row["predicate"] == "readback_complete"
                              and row["certifiable"] for row in rows))
 
+    def test_sourced_readback_method_keeps_content_fact_separate(self):
+        target = r"C:\Work Space\config.txt"
+        source = f"请用宿主 Bash 调用 `cat '{target}'` 完整回读该文件。"
+        command = cg._direct_shell_command_object(source)
+        self.assertIsNotNone(command)
+        argv = ["cat", target]
+        fact = {"kind": "state_readback", "predicate": "content_hash",
+                "target": target,
+                "call_argv_sha256": cg.sha256_text(cg.canonical_json(argv)),
+                "host_shell": "pwsh.exe"}
+        self.assertFalse(cg._sourced_readback_host_matches(source, command, fact))
+        del fact["host_shell"]
+        self.assertFalse(cg._sourced_readback_host_matches(source, command, fact))
+        fact["host_shell"] = "zsh"
+        self.assertTrue(cg._sourced_readback_host_matches(source, command, fact))
+
+        ps = ("[System.Console]::Write([System.IO.File]::ReadAllText("
+              f"'{target}'))")
+        ps_source = f"请用宿主 PowerShell 调用 `{ps}` 完整回读该文件。"
+        ps_command = cg._direct_shell_command_object(ps_source)
+        ps_fact = {"kind": "state_readback", "predicate": "content_hash",
+                   "target": target, "call_sha256": cg.sha256_text(ps),
+                   "host_shell": "pwsh.exe"}
+        self.assertTrue(cg._sourced_readback_host_matches(ps_source, ps_command, ps_fact))
+        ps_fact["host_shell"] = "zsh"
+        self.assertFalse(cg._sourced_readback_host_matches(ps_source, ps_command, ps_fact))
+
+    def test_powershell_literal_command_names_only_its_file_subject(self):
+        for index, target in enumerate((
+            r"C:\Work\config.txt", r"C:\Work Space\config.txt",
+            r"C:\Work\config (copy).txt", r"C:\Work\config[1].txt",
+            r"C:\研究\config.txt",
+        )):
+            with self.subTest(target=target):
+                self.session_id = f"literal-subject-{index}"
+                self.rows = [self.record("session_meta", {
+                    "id": self.session_id, "session_id": self.session_id})]
+                self.write_rows()
+                command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
+                           f"'{target}'))")
+                self.start(f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                           '请把它改为恰好 mode=on 加一个换行；'
+                           f"然后调用 `{command}` 完整回读并报告内容。")
+                contract = self.state()["requirements"][0]["verification_contract"]
+                readbacks = [item for item in contract["obligations"]
+                             if item["kind"] == "subject_readback"]
+                self.assertEqual(len(readbacks), 1)
+                self.assertEqual(readbacks[0]["subject_ids"],
+                                 [f"subject:{cg.sha256_text(target)[:20]}"])
+
+    def test_powershell_literal_does_not_hide_an_independent_file_subject(self):
+        target = r"C:\Work Space\config.txt"
+        other = r"C:\Work\other.txt"
+        command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
+                   f"'{target}'))")
+        self.start(f'请核对 "{other}"，然后调用 `{command}` 完整回读 "{target}"。')
+        contract = self.state()["requirements"][0]["verification_contract"]
+        readbacks = [item for item in contract["obligations"]
+                     if item["kind"] == "subject_readback"]
+        self.assertEqual(len(readbacks), 1)
+        self.assertEqual(set(readbacks[0]["subject_ids"]), {
+            f"subject:{cg.sha256_text(target)[:20]}",
+            f"subject:{cg.sha256_text(other)[:20]}",
+        })
+
+    def test_verified_windows_fact_can_retire_ordinary_completion_after_reload(self):
+        # This checks the producer-to-proof bridge on every platform. Native
+        # Windows tests separately check physical identity and Host records.
+        target = r"C:\Work Space\config (copy).txt"
+        command = ("[System.Console]::Write([System.IO.File]::ReadAllText("
+                   f"'{target}'))")
+        patch = (f"*** Begin Patch\n*** Update File: {target}\n@@\n"
+                 "-mode=off\n+mode=on\n*** End Patch\n")
+        self.start(f'已知 "{target}" 的原内容恰好为 mode=off 加一个换行。'
+                   '请把它改为恰好 mode=on 加一个换行；'
+                   f"然后调用 `{command}` 完整回读并报告内容。")
+
+        def verified_host(_state, payload):
+            if payload["tool_name"] == "apply_patch":
+                return {"type": "file_change", "outcome": "success",
+                        "basis": "host_transcript_file_change", "target": target,
+                        "kind": "Update", "patch": patch,
+                        "post_content_sha256": cg.sha256_text("mode=on\n")}
+            return {"type": "command", "outcome": "success",
+                    "basis": "host_transcript_exit_code", "shell": "pwsh.exe",
+                    "exit_code": 0, "stdout": "mode=on\n"}
+
+        with (mock.patch.object(cg, "host_terminal_result", side_effect=verified_host),
+              mock.patch.object(cg, "_verified_windows_target", return_value=target),
+              mock.patch.object(cg, "_stable_host_file_bytes", return_value=b"mode=on\n")):
+            cg.dispatch(self.event("PostToolUse", tool_name="apply_patch",
+                                   tool_use_id="edit", tool_input={"command": patch},
+                                   tool_response="done"))
+            cg.dispatch(self.event("PostToolUse", tool_name="Bash",
+                                   tool_use_id="read", tool_input={"command": command},
+                                   tool_response="mode=on\n"))
+            final = ("已完成修改。实际文件内容恰好为 `mode=on` 加一个换行。"
+                     "我实际回读当前文件得到 mode=on 加一个换行。")
+            cg.dispatch(self.event("Stop", last_assistant_message=final))
+        state = self.state()
+        self.assertEqual(state["requirements"][0]["status"], "pass")
+        self.assertEqual(len(state["proofs"]), 1)
+        self.assertEqual(state["requirements"][0]["completion_basis"]["host_evidence_ids"],
+                         ["E0001", "E0002"])
+        self.assertEqual(state["open_items"], [])
+        self.assertEqual(self.state()["requirements"], state["requirements"])
+
     def test_tilde_inside_absolute_filename_remains_a_literal_host_target(self):
         directory = self.cwd / "RUNNER~1"
         directory.mkdir()

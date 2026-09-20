@@ -7980,6 +7980,26 @@ def windows_locator_display(locator: str) -> str:
     return re.split(r"[\\/]+", locator.rstrip(")]}>.,:"))[-1] or locator[:60]
 
 
+def typed_path_subject(raw: str) -> dict[str, str]:
+    """Bind one complete parsed file locator without prose regex truncation."""
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw):
+        canonical, unsupported = canonical_windows_locator(raw)
+        if unsupported is not None or canonical != raw:
+            reason = unsupported or "physical_identity"
+            return {"id": unsupported_subject(reason, raw), "kind": "path",
+                    "display": windows_locator_display(raw),
+                    "locator_sha256": unsupported_locator_digest(raw)}
+        display = windows_locator_display(raw)
+    elif raw.startswith("/") and ".." not in Path(raw).parts:
+        display = Path(raw).name
+    else:
+        return {"id": unsupported_subject("physical_identity", raw), "kind": "path",
+                "display": Path(raw).name,
+                "locator_sha256": unsupported_locator_digest(raw)}
+    return {"id": f"subject:{sha256_text(raw)[:20]}", "kind": "path",
+            "display": display, "locator_sha256": sha256_text(raw)}
+
+
 def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, str]]:
     subjects: list[dict[str, str]] = []
     for value in WINDOWS_UNC_PATH_RE.findall(text):
@@ -8296,13 +8316,34 @@ def verification_contract(
         and parsed[0] == "test_verify" for clause in role_clauses)
     # A discarded quoted command cannot lend its subjects to the remaining
     # bare verb (for example, "run" with no selected command object).
-    direct_subjects = prompt_subjects("\n".join(role_clauses)) if role_clauses else []
+    def clause_subjects(clause: str) -> list[dict[str, str]]:
+        # A supported literal command object already has one parsed target.
+        # Re-reading its PowerShell syntax as prose can turn the closing
+        # quote/parentheses into a second, nonexistent file subject.
+        command = _direct_shell_command_object(clause)
+        typed: list[dict[str, str]] = []
+        if command is not None:
+            clause = clause.replace(command[2], " ", 1)
+            typed.append(typed_path_subject(command[1]))
+        # Quoted file literals may contain spaces or Unicode. Mask each full
+        # literal before the whitespace-delimited prose path scanner can
+        # invent a prefix target; retain any other independent object.
+        for match in reversed(list(re.finditer(r"([\"'])([^\"'\r\n]+)\1", clause))):
+            candidate = match.group(2)
+            if WINDOWS_ABSOLUTE_PATH_RE.match(candidate) or candidate.startswith("/"):
+                typed.append(typed_path_subject(candidate))
+                clause = clause[:match.start()] + " " + clause[match.end():]
+        return list({item["id"]: item for item in
+                     [*prompt_subjects(clause), *typed]}.values())
+
+    direct_subjects = list({item["id"]: item for clause in role_clauses
+                            for item in clause_subjects(clause)}.values())
     readback_subjects = direct_subjects
     if test_input_only:
         readback_subjects = []
         for clause in role_clauses:
             if explicit_file_readback(clause):
-                named = prompt_subjects(clause)
+                named = clause_subjects(clause)
                 if (not named and len(subjects) == 1
                         and re.search(r"该文件|这个文件|this file\b", clause, re.I)):
                     # The readback clause refers to the sole earlier file
@@ -8933,6 +8974,32 @@ def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
         return None
     kind = "test_verify" if tokens[0] in {"pytest", "py.test"} else "state_readback"
     return kind, target, match.group(0)
+
+
+def _sourced_readback_host_matches(
+    clause: str, command_object: tuple[str, str, str], observed: dict[str, Any],
+) -> bool:
+    """Keep file bytes distinct from a root's explicit command method."""
+    command = command_object[2][1:-1]
+    if (observed.get("kind") != "state_readback"
+            or observed.get("predicate") != "content_hash"
+            or observed.get("target") != command_object[1]):
+        return False
+    shell = str(observed.get("host_shell") or "")
+    if _POWERSHELL_BYTE_READBACK_RE.fullmatch(command):
+        return (observed.get("call_sha256") == sha256_text(command)
+                and shell in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"})
+    expected_argv = _command_tokens(command, posix=not WINDOWS_ABSOLUTE_PATH_RE.search(command),
+                                    _windows_shell="powershell" if WINDOWS_ABSOLUTE_PATH_RE.search(command) else None)
+    if (len(expected_argv) != 2 or expected_argv[0] != "cat"
+            or observed.get("call_argv_sha256") != sha256_text(canonical_json(expected_argv))):
+        return False
+    prefix = clause.split(command_object[2], 1)[0]
+    if re.search(r"\b(?:bash|zsh|sh)\b", prefix, re.I):
+        return shell in {"bash", "zsh", "sh"}
+    if re.search(r"\b(?:pwsh|powershell)\b", prefix, re.I):
+        return shell in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}
+    return shell in {"bash", "zsh", "sh", "pwsh", "pwsh.exe", "powershell", "powershell.exe"}
 
 
 def _direct_anaphoric_edit(clause: str) -> bool:
@@ -9669,6 +9736,20 @@ def _current_action_basis(
                         and not any(p.search(prefix) for _, p in ACTION_PATTERNS)
                     ),
                 )
+                if category == "state_readback" and direct_command is not None:
+                    matching_ids = {
+                        str(evidence.get("id"))
+                        for evidence in state.get("evidence", [])
+                        if isinstance(evidence, dict)
+                        and isinstance((observed := evidence.get("core_observation")), dict)
+                        and _sourced_readback_host_matches(source, direct_command, observed)
+                    }
+                    snapshot["facts"] = [
+                        fact for fact in snapshot["facts"]
+                        if not (fact.get("requirement_id") == item.get("id")
+                                and str(fact.get("source_id") or "").startswith("result:")
+                                and str(fact["source_id"])[7:] not in matching_ids)
+                    ]
                 from cg_core_v2 import project as project_core
                 projected = project_core(snapshot)
             except (ValueError, KeyError, TypeError):
@@ -10697,7 +10778,7 @@ def delivered_exact_edit_readback_projection(
             if read_clause is not None:
                 return None
             valid_read, embedded_report = _readback_clause_roles(clause, command[2])
-            if valid_read:
+            if valid_read and _sourced_readback_host_matches(clause, command, observed):
                 kind = "interpreted"
                 read_clause = (clause, at, end)
                 if embedded_report:
@@ -16287,6 +16368,10 @@ def core_shell_observation(
         "turn": str(payload.get("turn_id") or ""),
         "call_sha256": sha256_text(command),
     }
+    if kind == "state_readback" and len(parts) == 2 and parts[0] == "cat":
+        observation["call_argv_sha256"] = sha256_text(canonical_json(parts))
+    if isinstance(host_terminal, dict) and host_terminal.get("type") == "command":
+        observation["host_shell"] = str(host_terminal.get("shell") or "")
     if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
         observation["canonical_target"] = physical_target
     if kind == "state_readback":
@@ -17020,6 +17105,20 @@ def handle_post_tool(
                 evidence["core_origin_prompt_id"] = origin_prompt_id
                 core_fact["prompt_id"] = origin_prompt_id
             evidence["core_observation"] = core_fact
+            # PowerShell ReadAllText is a read adapter only after this same
+            # Host result has proved its shell, physical target, and exact
+            # bytes. A command-shaped input or stdout alone grants no proof.
+            command = _shell_command(payload.get("tool_input"))
+            ps_read = (_POWERSHELL_BYTE_READBACK_RE.fullmatch(command)
+                       if isinstance(command, str) else None)
+            if (ps_read is not None and core_fact.get("kind") == "state_readback"
+                    and core_fact.get("predicate") == "content_hash"
+                    and core_fact.get("outcome") == "success"
+                    and core_fact.get("target") == ps_read.group(1)
+                    and core_fact.get("call_sha256") == sha256_text(command)):
+                subjects = [typed_path_subject(ps_read.group(1))["id"]]
+                evidence["readback_subjects"] = list(dict.fromkeys(subjects))
+                evidence["subjectId"] = list(dict.fromkeys(subjects or evidence_subject_ids))
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
         trim_evidence(state)
