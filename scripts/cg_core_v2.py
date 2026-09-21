@@ -105,7 +105,8 @@ def _control_speech(text: str, kind: str, rules: dict[str, str]) -> bool:
         match = re.search(rules["USER_PERSISTENCE_RE"], speech, re.I | re.S)
         return bool(match and match.start() == 0)
     if kind == "resume":
-        return bool(re.match(rules["EXECUTION_RESUME_RE"], speech, re.I))
+        return (_current_unit_scope_speech(speech, kind)
+                or bool(re.match(rules["EXECUTION_RESUME_RE"], speech, re.I)))
     if kind == "pause":
         return bool(re.match(r"^(?:暂停|搁置|pause\b|hold\b)", speech, re.I))
     if kind == "cancel":
@@ -271,8 +272,13 @@ def _current_unit_scope_speech(text: str, kind: str) -> bool:
     # relabeled as current_unit merely because only A is in the snapshot.
     lead = r"\s*(?:(?:请|请先|先)\s*|(?:please|now)\s+)*"
     end = r"\s*[。.!！]?\s*"
-    scoped = (r"(?:当前|本轮|这轮|全部|整个)"
-              r"(?:任务|工作|事项)")
+    # A determiner and a current-unit qualifier are separate grammatical
+    # roles, shared by every control kind. Recognizing this phrase only
+    # proposes a scope; immutable root/catalog checks still bind its members.
+    en_scoped = (r"(?:(?:(?:this|the)\s+)?current|this)"
+                 r"\s+(?:task|work)")
+    scoped = (r"(?:(?:当前|本轮|这轮|全部|整个)(?:任务|工作|事项)|"
+              + en_scoped + r")")
     if kind in {"pause", "resume", "cancel"}:
         verb = {"pause": r"(?:暂停|搁置|pause|hold)",
                 "resume": r"(?:继续|continue)",
@@ -289,12 +295,12 @@ def _current_unit_scope_speech(text: str, kind: str) -> bool:
               r"\s*[,，]?\s*(?:直到|直至)(?:(?:当前|本轮|这轮|全部|整个))?"
               r"(?:任务|工作|事项)(?:完成|结束)" + end)
         terminal = r"(?:is\s+)?(?:done|complete|finished)"
-        en_head = r"\s*(?:please\s+)?(?:keep|continue)\s+(?:going|working)"
-        en = (en_head + r"(?:\s+on\s+(?:this|the\s+current)\s+(?:task|work))?"
-              r"\s+until\s+(?:this|the\s+current|current|whole|entire)\s+"
-              r"(?:task|work)\s+" + terminal + end)
-        en_anaphora = (en_head + r"\s+on\s+(?:this|the\s+current)\s+"
-                       r"(?:task|work)\s+until\s+it\s+" + terminal + end)
+        en_head = lead + r"(?:keep|continue)\s+(?:going|working)"
+        en = (en_head + r"(?:\s+on\s+" + en_scoped + r")?"
+              r"\s+until\s+(?:" + en_scoped
+              + r"|(?:whole|entire)\s+(?:task|work))\s+" + terminal + end)
+        en_anaphora = (en_head + r"\s+on\s+" + en_scoped
+                       + r"\s+until\s+it\s+" + terminal + end)
         return bool(re.fullmatch(zh, text, re.I) or re.fullmatch(en, text, re.I)
                     or re.fullmatch(en_anaphora, text, re.I))
     return False

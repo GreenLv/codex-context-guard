@@ -10088,7 +10088,7 @@ def _root_control_decomposition_valid(
                 or base[0].get("sha256") != record["sha256"]
                 or base[0].get("text") != bounded(record["text"], 900)):
             return False
-        if not any(begin == 0 and end == len(record["text"].rstrip("。.!！").encode("utf-8"))
+        if not any(_root_control_covers_prompt(record["text"], begin, end)
                    for _, begin, end, _ in _root_control_segments(record["text"])):
             expected_acceptance = set(extract_acceptance(record["text"]))
             present_acceptance = {str(row.get("text")) for row in state.get("acceptance_items", [])
@@ -12899,8 +12899,7 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
         None,
     )
     if (current is not None and current.get("status") == "active"
-            and any(kind == "cancel" and begin == 0
-                    and end == len(text.rstrip("。.!！").encode("utf-8"))
+            and any(kind == "cancel" and _root_control_covers_prompt(text, begin, end)
                     for kind, begin, end, _ in _root_control_segments(text))):
         # Cancellation applies to the active unit before any later switch.
         # Opening a sibling first would bind the control to the wrong task.
@@ -13262,6 +13261,23 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _root_control_covers_prompt(text: str, begin: int, end: int) -> bool:
+    """Check complete source coverage without normalizing the bound span.
+
+    Sentence extraction can retain an ASCII terminator inside the source span
+    while leaving a CJK terminator outside it. Only whitespace before and
+    terminal punctuation after a validated control are outside its speech act.
+    """
+    raw = text.encode("utf-8")
+    if not 0 <= begin < end <= len(raw):
+        return False
+    try:
+        prefix, suffix = raw[:begin].decode("utf-8"), raw[end:].decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return not prefix.strip() and re.fullmatch(r"[。.!！\s]*", suffix) is not None
+
+
 def _root_control_segments(text: str) -> list[tuple[str, int, int, str]]:
     """Find complete direct control clauses; the shared parser checks governance."""
     from cg_core_v2 import (
@@ -13314,7 +13330,7 @@ def _root_control_segments(text: str) -> list[tuple[str, int, int, str]]:
 
 def _root_control_item_action(item: dict[str, Any]) -> str | None:
     item_text = str(item.get("text") or "")
-    if any(begin == 0 and end == len(item_text.rstrip("。.!！").encode("utf-8"))
+    if any(_root_control_covers_prompt(item_text, begin, end)
            for _, begin, end, _ in _root_control_segments(item_text)):
         return None  # A control sentence is not a test/edit requirement.
     kind = item.get("execution_kind")
@@ -15812,7 +15828,7 @@ def handle_user_prompt(
         append_information_children(state, prompt, text, requirement_id, work_unit_id)
         append_execution_children(state, prompt, text, requirement_id, work_unit_id)
         control_only = any(
-            begin == 0 and end == len(text.rstrip("。.!！").encode("utf-8"))
+            _root_control_covers_prompt(text, begin, end)
             for _, begin, end, _ in _root_control_segments(text)
         )
         acceptance_count = len(state["acceptance_items"])
@@ -15830,8 +15846,7 @@ def handle_user_prompt(
             capture_persistence_scope(state, prompt, text, work_unit_id)
         from cg_core_v2 import _current_unit_scope_speech
         if control_only and any(
-            kind == "cancel" and begin == 0
-            and end == len(text.rstrip("。.!！").encode("utf-8"))
+            kind == "cancel" and _root_control_covers_prompt(text, begin, end)
             and _current_unit_scope_speech(clause, "cancel")
             for kind, begin, end, clause in _root_control_segments(text)
         ):

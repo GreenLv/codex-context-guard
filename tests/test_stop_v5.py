@@ -28,6 +28,188 @@ def root_locator(path: Path) -> str:
 
 
 class StopV5Tests(unittest.TestCase):
+    def test_english_current_unit_controls_survive_hook_restore_and_keep_stop_watermarks(self):
+        nouns = ("this task", "the current task", "current task", "this current task")
+        for noun in nouns:
+            with self.subTest(noun=noun), physical_tempdir(prefix="stop-v5-en-current-") as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    suite = Path(tmp) / "suite.py"
+                    suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
+                    session = "english-current-unit"
+                    def event(kind, turn, **fields):
+                        return dict(hook_event_name=kind, session_id=session,
+                                    cwd=tmp, turn_id=turn, **fields)
+                    directory = Path(tmp) / "private/sessions" / session
+                    cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                    cg.dispatch(event("UserPromptSubmit", "t1", prompt=(
+                        f"继续执行，运行 {root_locator(suite)} 的测试。")))
+                    cg.dispatch(event("UserPromptSubmit", "t2", prompt=(
+                        f"Keep working on {noun} until it is complete.")))
+                    first = cg.load_state(directory, event("Stop", "t2"))
+                    controls = first["root_controls"]
+                    self.assertEqual([row["kind"] for row in controls], ["persistence"])
+                    self.assertEqual(controls[0]["scope_kind"], "current_unit")
+                    self.assertEqual([row["action"] for row in controls[0]["items"]],
+                                     ["test_verify"])
+                    item_id = controls[0]["items"][0]["id"]
+                    self.assertIn(item_id, {row["id"] for row in first["requirements"]})
+                    self.assertEqual([row["id"] for row in controls[0]["items"]], [item_id])
+                    self.assertEqual(cg.current_root_control_projection(first, directory)[
+                        "root_control_states"], {item_id: "persistent"})
+                    self.assertEqual(cg.current_root_control_projection(first, directory)[
+                        "root_control_errors"], [])
+                    cg.dispatch(event("Stop", "t2", last_assistant_message="测试尚未运行。"))
+                    old_decision = copy.deepcopy(cg.load_state(directory, event("Stop", "t2"))[
+                        "decision_log"][-1])
+
+                    cg.dispatch(event("UserPromptSubmit", "t3", prompt=(
+                        "顺便解释一下这个函数为什么要处理空输入？")))
+                    information = cg.load_state(directory, event("Stop", "t3"))
+                    self.assertEqual(cg.current_root_control_projection(information, directory)[
+                        "root_control_states"], {item_id: "persistent"})
+                    cg.dispatch(event("UserPromptSubmit", "t4", prompt=f"Pause {noun}."))
+                    paused = cg.load_state(directory, event("Stop", "t4"))
+                    self.assertEqual([row["kind"] for row in paused["root_controls"]],
+                                     ["persistence", "pause"])
+                    self.assertEqual(cg.current_root_control_projection(paused, directory)[
+                        "root_control_states"], {item_id: "persistent_paused"})
+                    self.assertEqual(paused["decision_log"][-1], old_decision)
+                    cg.dispatch(event("UserPromptSubmit", "t5", prompt=f"Continue {noun}."))
+                    resumed = cg.load_state(directory, event("Stop", "t5"))
+                    self.assertEqual(cg.current_root_control_projection(resumed, directory)[
+                        "root_control_states"], {item_id: "persistent"})
+                    cg.dispatch(event("UserPromptSubmit", "t6", prompt=f"Cancel {noun}."))
+                    cancelled = cg.load_state(directory, event("Stop", "t6"))
+                    self.assertEqual([row["kind"] for row in cancelled["root_controls"]],
+                                     ["persistence", "pause", "resume", "cancel"])
+                    self.assertEqual([row["id"] for row in cancelled["root_controls"][-1]["items"]],
+                                     [item_id])
+                    self.assertEqual(cancelled["decision_log"][-1], old_decision)
+                    # Cold load reads persisted receipts; it may not derive a new
+                    # control from the latest text or bind it to a later item.
+                    again = cg.load_state(directory, event("Stop", "t6"))
+                    self.assertEqual(again["root_controls"], cancelled["root_controls"])
+                    self.assertEqual(again["work_state"]["active_work_unit_id"], None)
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_english_control_negative_sources_do_not_bind_current_task(self):
+        negative = (
+            'The README says "Pause the current task."',
+            'The user once wrote "Keep working on this current task until it is complete."',
+            'If the test fails later, pause the current task.',
+            'At a future time, cancel this current task.',
+            'Pause the deployment task.',
+            'Do not pause the current task.',
+        )
+        for index, text in enumerate(negative):
+            with self.subTest(text=text), physical_tempdir(prefix="stop-v5-en-negative-") as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    session = f"en-negative-{index}"
+                    def event(kind, turn, **fields):
+                        return dict(hook_event_name=kind, session_id=session,
+                                    cwd=tmp, turn_id=turn, **fields)
+                    cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                    cg.dispatch(event("UserPromptSubmit", "t1", prompt="运行 suite 测试。"))
+                    cg.dispatch(event("UserPromptSubmit", "t2", prompt=text))
+                    directory = Path(tmp) / "private/sessions" / session
+                    state = cg.load_state(directory, event("Stop", "t2"))
+                    self.assertEqual(state["root_controls"], [])
+                    projected = cg.current_root_control_projection(state, directory)
+                    if projected is not None:
+                        self.assertEqual(projected["root_control_states"], {})
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
+    def test_complete_english_cancel_prompt_preserves_span_and_does_not_swallow_business_tail(self):
+        complete = (
+            "Cancel this task.",
+            "Cancel this task",
+            "Cancel this task。",
+            "  Cancel this task.  ",
+        )
+        for index, text in enumerate(complete):
+            with self.subTest(text=text), physical_tempdir(prefix="stop-v5-en-cancel-edge-") as tmp:
+                previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+                try:
+                    session = f"en-cancel-edge-{index}"
+                    def event(kind, turn, **fields):
+                        return dict(hook_event_name=kind, session_id=session,
+                                    cwd=tmp, turn_id=turn, **fields)
+                    cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                    cg.dispatch(event("UserPromptSubmit", "t1", prompt="运行 suite 测试。"))
+                    cg.dispatch(event("UserPromptSubmit", "t2", prompt=text))
+                    directory = Path(tmp) / "private/sessions" / session
+                    state = cg.load_state(directory, event("Stop", "t2"))
+                    self.assertEqual(state["root_controls"][-1]["kind"], "cancel")
+                    self.assertEqual(state["work_state"]["active_work_unit_id"], None)
+                    self.assertEqual(state["work_units"][0]["status"],
+                                     "historical_unresolved")
+                    self.assertFalse(any(item["prompt_id"] == state["prompts"][-1]["id"]
+                                         for item in state["acceptance_items"]))
+                    self.assertEqual(cg.load_state(directory, event("Stop", "t2"))[
+                        "root_controls"], state["root_controls"])
+                finally:
+                    if previous is None:
+                        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                    else:
+                        os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+        mixed = "Cancel this task. Run another test."
+        segments = cg._root_control_segments(mixed)
+        self.assertTrue(segments)
+        self.assertFalse(any(cg._root_control_covers_prompt(mixed, begin, end)
+                             for _, begin, end, _ in segments))
+        self.assertEqual(cg._root_control_segments('The log says "Cancel this task."'), [])
+
+    def test_completed_english_persistence_does_not_create_resume_test_action(self):
+        with physical_tempdir(prefix="stop-v5-en-complete-") as tmp:
+            previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = str(Path(tmp) / "private")
+            try:
+                suite = Path(tmp) / "suite.py"
+                suite.write_text("def test_ok(): assert True\n", encoding="utf-8")
+                session = "en-completed-current-unit"
+                def event(kind, turn, **fields):
+                    return dict(hook_event_name=kind, session_id=session,
+                                cwd=tmp, turn_id=turn, **fields)
+                directory = Path(tmp) / "private/sessions" / session
+                cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
+                cg.dispatch(event("UserPromptSubmit", "t1", prompt=(
+                    f"请运行 {root_locator(suite)} 的测试并持续执行直到任务完成。")))
+                cg.dispatch(event("UserPromptSubmit", "t2", prompt=(
+                    "Keep working on this current task until it is complete.")))
+                for command in (f"test -f {suite}", f"pytest {suite}"):
+                    cg.dispatch(event("PostToolUse", "t2", tool_name="exec_command",
+                                      tool_input={"cmd": command},
+                                      tool_response={"exit_code": 0, "output": "1 passed"}))
+                cg.dispatch(event("Stop", "t2", last_assistant_message="测试通过。"))
+                completed = cg.load_state(directory, event("Stop", "t2"))
+                projection = cg.current_root_control_projection(completed, directory)
+                self.assertIsNotNone(projection)
+                self.assertEqual(projection["current_actions"], [])
+                self.assertFalse(cg.current_persistence_actions(completed, directory)[1])
+                cg.dispatch(event("UserPromptSubmit", "t3", prompt="Continue."))
+                resumed = cg.load_state(directory, event("Stop", "t3"))
+                self.assertEqual(cg.current_persistence_actions(resumed, directory)[1], [])
+                self.assertEqual(cg.current_root_control_projection(resumed, directory)[
+                    "current_actions"], [])
+            finally:
+                if previous is None:
+                    os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+                else:
+                    os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+
     def test_subjectless_compound_control_uses_only_same_root_task(self):
         cases = (
             ("unique", ("运行suite测试。不要停止,一直推进直到完成。",), True),
