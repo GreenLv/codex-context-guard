@@ -14,9 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 > Current release: `0.13.9`. See the [release notes](docs/releases/v0.13.9.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-> Source candidate: `0.14.0` (unreleased; not installed in the daily host). If a completed repair ends with “its long-term benefit needs observation,” Guard no longer turns that future observation into a task to do now. If the user says “continue and run the tests,” an unfinished test stays visible when the current request and actual tool input identify it; honest reporting that a current measurement remains unrun can end the turn, while a short resume with ready work can receive one bounded correction. A short “continue” is not treated as a demand to keep working indefinitely. Ordinary edits and tests still run through Codex tools; Guard records their results for completion checks. Host Goal-complete interception is unavailable until its Hook path is verified. This source candidate uses Schema 13 and Stop 5.0.0; the shared core v2 contract is maintained here, while downstream mirror and pin identity need separate verification. See the [changelog](CHANGELOG.md) for earlier versions.
-
-In the 0.14.0 source candidate, a direct “keep working until this task is done” request applies to the work in scope when it was said. An intervening question keeps that work visible; a later pause, resume or cancellation changes only the sourced scope. Guard adds no approval or execution gate for ordinary tools.
+> Source candidate: `0.14.0` (unreleased; not installed in the daily host). After a repair, “observe its long-term benefit later” remains a future observation; an unfinished test the user requests now remains current. A short “continue” resumes only sourced, ready work, while a later pause or cancellation changes only its own scope. Codex still performs ordinary edits and tests, and Guard checks their persisted results. The shared core v2 contract is maintained here; DSH verifies its mirror and pin separately. See the [changelog](CHANGELOG.md) and [candidate acceptance](docs/LOCAL_ACCEPTANCE.md) for details and platform limits.
 
 ## Install
 
@@ -40,9 +38,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-Upgrade with the managed installer, then start a fresh task to load the new version. Keep old versioned caches for tasks that still use them; installed caches are immutable, and 0.13.3 never refreshes a consumed copy.
-
-Version 0.13.3 narrows release enforcement before private release state is read: damaged release state cannot block an ordinary commit or one branch push, but tags, package uploads, GitHub Releases, mutation runners, and restricted compound calls remain protected. It keeps the schema and protocols from 0.13.2. See [compatibility](docs/COMPATIBILITY.md) before downgrading.
+After a future 0.14.0 release, use the managed installer, review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. Host Goal-completion interception remains unavailable until its synchronous Hook path is verified; Guard's explicit proof and whole-completion checks still apply. See [compatibility](docs/COMPATIBILITY.md) before downgrading or reviewing earlier 0.13.x behavior.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); current behavior and platform limits are in [compatibility](docs/COMPATIBILITY.md). The [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) is historical.
 

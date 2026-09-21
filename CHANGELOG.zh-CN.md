@@ -29,7 +29,7 @@
 
 ### Validation
 
-- 较早源码字节通过当前行为检查和隔离安装生命周期。最终组合动作修复已有定向合成 Hook 覆盖；精确输入的最终检查及其能力边界另见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。日常安装、原生平台、CI、制品、tag 和 Release 均未声称通过。
+- 候选 `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` 通过完整确定性源码矩阵、候选 CI 全部 16 项、HOL 扫描，以及 macOS portable 原生五项门禁和清理。完整原生宿主、Windows、该运行时的固定模型、日常安装、tag 与 Release 仍待验收。后续源码或运行时改变须按精确对象复验；详见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.13.9 - 2026-09-14
 

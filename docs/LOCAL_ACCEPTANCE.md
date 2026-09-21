@@ -2,8 +2,11 @@
 
 ## 0.14.0 local source candidate (Unreleased)
 
-This source candidate has no release, daily-host installation,
-native-platform, CI, HOL, tag, or public-readback evidence. Its source tests
+Committed candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed its complete deterministic source matrix, all 16 jobs in [candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/35523280198), and the [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/35523420917). Its 35-file runtime tree has SHA-256 `b1887c837722c41049d86e194a5859ec667a77ca7726f1d2adb7dc5e08bfd1ea`; the macOS portable native profile passed five gates with cleanup.
+
+The portable result does not establish a six-gate Host run, native Windows acceptance or fixed-model behavior for these runtime bytes. An earlier runtime had actual model observations, which cannot be relabeled as acceptance of this changed runtime. This remains an unreleased candidate without daily-host installation, tag, GitHub Release or public readback. A later source edit requires exact-subject reevaluation; a runtime-byte edit also invalidates installed-runtime evidence.
+
+The current source tests
 exercise the protocol 5 Stop path and the shared core v2 projection with
 synthetic, structured Host Hook inputs. A single-file edit requires an
 attributable one-target effect plus independent post-edit content readback;
@@ -34,10 +37,7 @@ separate.
 The prompt-write-before-state crash window is checked separately: a new
 immutable root ahead of the saved watermark forces untrusted recovery instead
 of allowing the old catalog to certify completion.
-These are synthetic source checks on changed bytes, not a new installed or
-native Host result. Exact commands, hashes, review outcomes, and final local
-matrix status belong to
-the external development handoff until this candidate is frozen.
+These root-control replays are synthetic source checks on changed bytes, separate from the portable macOS result above. Exact commands, hashes, review outcomes, and final local matrix status belong to the external development handoff until this candidate is frozen.
 
 The later Host-wire repair has focused synthetic replays of the CLI 0.153.4
 string PostToolUse shape: it correlates an already-visible Host terminal item
@@ -48,9 +48,7 @@ preserved LF, CRLF, and UTF-8 text without a BOM. UTF-8 BOM bytes were lost, so
 the new bounded readback producer requires exact Host stdout/current-file byte
 equality and leaves that case unavailable. Source tests do not establish the
 new runtime's Windows-native Hook completion path.
-The native transcript that exposed the defect belongs to earlier runtime
-bytes; source tests on this repair do not establish a fresh installed or
-native ordinary-completion pass. The focused source repair records the
+The native transcript that exposed the defect belongs to earlier runtime bytes; source tests on that repair alone did not establish a fresh ordinary-completion pass. The focused source repair records the
 audited Update post-image hash at PostToolUse and compares it with a later
 independent readback. Reprojecting an unchanged session watermark uses only
 the persisted observations, even if disk bytes subsequently change without
@@ -65,7 +63,7 @@ an unrelated file-content proof; an independently requested file readback
 still retains it. Exact edit/readback/report and test/run/report closure
 persist bounded evidence and delivery identities, survive reload, and leave
 unsupported extra clauses open. These checks do not reclassify the earlier
-native model capture or establish native behavior of the new bytes.
+native model capture or establish full native Host behavior of the new bytes.
 The ordinary completion basis must match retained certified core projection
 and verified delivery records. Referenced records survive ordinary bounded
 log rotation; a forged digest or missing record cannot silently certify a

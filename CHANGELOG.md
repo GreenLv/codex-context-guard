@@ -29,7 +29,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- Earlier source bytes passed the current-behavior suite and isolated install lifecycle. The final combined-chain source repair has focused synthetic Hook coverage; exact-input final validation and its capability limits are recorded separately in the [acceptance record](docs/LOCAL_ACCEPTANCE.md). Daily installation, native, CI, package, tag, and release results are not claimed.
+- Candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the complete deterministic source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable native run with cleanup. Full native Host and Windows acceptance, fixed-model evidence for this runtime, daily installation, tag and Release remain pending. Later source or runtime changes require exact-subject revalidation; see the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.9 - 2026-09-14
 

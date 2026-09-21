@@ -3,23 +3,23 @@
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 
-The unreleased 0.14.0 source candidate uses schema 13 and Stop 5.0.0. Local
+The unreleased 0.14.0 source candidate uses schema 13 and Stop 5.0.0. Commit `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable run. That result does not establish the six-gate native Host path, native Windows, fixed-model behavior, daily installation, tag or Release for this runtime. Source and runtime changes require their own exact-subject checks.
+
+Local
 synthetic Hook tests include lexical Windows drive-path binding and unsupported
 UNC/device-path controls; they are not Windows-native Hook acceptance. The
 CLI 0.153.4 Host-wire adapter can read an already-present, same-call terminal
 item from its bounded session transcript when PostToolUse carries only text.
 It recognizes supported single-file FileChange, focused pytest and exact cat
 results; arbitrary command output is not an execution receipt. The repair's
-current source checks do not establish a new installed or native result. The
+current source checks alone do not establish a new installed or native Host result. The
 Windows PowerShell path additionally accepts one exact literal-path
 `[System.Console]::Write([System.IO.File]::ReadAllText(...))` file readback only when the verified
 Host stdout equals the stable current file bytes. PowerShell `cat` output is
 not normalized into success; BOM and physical-path uncertainty remain unknown.
 The Windows shell primitive has an independent byte probe, not a candidate
 native Hook pass. The shared core v2 files are maintained here; each downstream mirror and consumer
-pin needs an independent exact-commit and file-SHA-256 check. No
-daily-host, CI, native-platform, or release status is inferred from these
-source checks. The candidate can reject an
+pin needs an independent exact-commit and file-SHA-256 check. No additional daily-host, full native-platform or release status is inferred from these source checks. The candidate can reject an
 attempt to adopt host Goal-complete interception with `capability_unavailable`:
 its current Hook matcher does not cover a verified synchronous `update_goal`
 route. Guard-owned proof and whole-completion checks remain active; native
