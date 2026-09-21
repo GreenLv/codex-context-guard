@@ -46,6 +46,10 @@ children are related to a repair only by the original root decomposition:
 the same sourced object or an object-free test joined to that repair. A later
 control cannot create this parent relation. Repeated pause remains paused;
 resume lifts a pause prospectively but does not revive a canceled item.
+A short resume can lift a general pause, but does not establish that a
+specified input has arrived or a particular confirmation has been given.
+The original wait condition remains source-bound across recovery; matching
+root input or an explicit change to that condition affects only later state.
 Completion still has separate explicit-proof, Goal, and release checks.
 The private prompt-unit companion fixes a root's work-unit choice at receipt.
 Control projection checks every original root in that unit, including a root

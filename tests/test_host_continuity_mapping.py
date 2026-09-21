@@ -595,8 +595,8 @@ class ContinuityMappingTests(unittest.TestCase):
                 return pre, post
 
             fixture.wait_prompt = (
-                "请使用 $context-guard 保持当前工作单元暂停，直到我明确输入"
-                "“CG_CONTINUITY_RELEASE_47”。本轮不要调用工具；最后一行必须是 "
+                "等我发来标记 CG_CONTINUITY_RELEASE_47 再继续处理当前工作单元。"
+                "本轮不要调用工具；最后一行必须是 "
                 "WAITING_FOR:CG_CONTINUITY_RELEASE_47。"
             )
             wait_registered, _ = event("UserPromptSubmit", prompt=fixture.wait_prompt)
@@ -604,9 +604,13 @@ class ContinuityMappingTests(unittest.TestCase):
                                "WAITING_FOR:CG_CONTINUITY_RELEASE_47")
             event("UserPromptSubmit", prompt="仅执行状态采集；不要输入释放词。")
             wait_pair = run_witness("wait_started")
+            event("UserPromptSubmit", prompt="继续。")
+            parked = json.loads((sessions / fixture.session / "state.json").read_text())
+            self.assertTrue(any(row["status"] == "waiting"
+                                for row in parked["wait_conditions"]))
             release_cmd = command(fixture.root / "wait-released.json", "current")
             fixture.release_prompt = (
-                "继续 CG_CONTINUITY_RELEASE_47。仅执行这一条命令记录释放后的状态："
+                "CG_CONTINUITY_RELEASE_47。仅执行这一条命令记录释放后的状态："
                 + release_cmd
             )
             released, _ = event("UserPromptSubmit", prompt=fixture.release_prompt)

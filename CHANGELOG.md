@@ -14,6 +14,7 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 ### Changes
 
+- A short resume can lift a general pause, but cannot stand in for a requested input or a specific confirmation. Those waits retain their original condition until matching root input arrives or the user explicitly changes that condition; a later release does not revise earlier Stop decisions.
 - Schema 13 and Stop 5.0.0 retain prior journal and delivery history. Old mixed answered rows require review; old reply-derived waits do not become trusted lifecycle facts.
 - The shared core v2 schema and reference projection bind Stop diagnosis to the current root requirement, host-selected target, and observed result. A future time or unmet prerequisite keeps an evaluation deferred even if its input file exists. Downstream mirror and pin validation is a separate identity check.
 - Mixed requests can deliver an information span while the original execution and unknown scope stays pending. Root and host append numbers keep Stop decisions at their own event watermark even when timestamps tie or move backward.

@@ -12718,6 +12718,16 @@ def root_pause_clauses(text: str) -> list[str]:
         if (direct and not TEST_SPEC_FRAME_RE.search(direct_clause)
                 and not DESCRIPTION_FRAME_RE.search(direct_clause)):
             result.append(direct_clause.strip())
+            # A general pause and a named input can share one sentence.
+            # Preserve the later dependency instead of letting the first
+            # comma turn the whole root into a bare-resumable pause.
+            sentence = sentence[len(direct_clause):].lstrip(" ,，")
+            if not sentence:
+                continue
+        if (general_root_pause_clause(sentence)
+                and not TEST_SPEC_FRAME_RE.search(sentence)
+                and not DESCRIPTION_FRAME_RE.search(sentence)):
+            result.append(sentence.strip())
             continue
         if (clause_is_interrogative(sentence) or TEST_SPEC_FRAME_RE.search(sentence)
                 or DESCRIPTION_FRAME_RE.search(sentence)
@@ -12771,6 +12781,56 @@ def wait_subject(text: str) -> str:
         "", text, flags=re.I,
     )
     return re.sub(r"[\s。.!！]+", "", text).casefold()
+
+
+def input_wait_subject(text: str) -> str:
+    """Extract a named user-supplied object without rewriting its bytes.
+
+    Waiting/provision verbs and a following time clause are grammar around
+    the object. They are not a license to fold marker case, separators, or
+    words such as READY and DONE inside the object itself.
+    """
+    text = text.strip()
+    text = re.sub(
+        r"^(?:请\s*)?等(?:待|到)?(?:我|你|您|用户)?"
+        r"(?:(?:随后|稍后|明确|之后)\s*)*"
+        r"(?:发来|发送|提供|上传|给出|补充)\s*",
+        "", text,
+    )
+    text = re.sub(
+        r"^(?:please\s+)?wait(?:ing)?\s+until\s+"
+        r"(?:i|you|the\s+user)\s+(?:send|provide|upload|supply)\s+",
+        "", text, flags=re.I,
+    )
+    text = re.split(
+        rf"{_WAIT_TEMPORAL_QIAN_BOUNDARY}|后再|之后|才|[,，;；]|"
+        r"\s+before\s+(?:continuing|resuming)(?=\s|$)|"
+        r"再(?:分析|处理|检查|核对|评估|继续|执行|运行)",
+        text, maxsplit=1, flags=re.I,
+    )[0].strip()
+    text = re.sub(r"^(?:标记\s*|(?:marker|token)\b\s*)", "", text, flags=re.I)
+    text = re.sub(r"^(?:the\s+)", "", text, flags=re.I)
+    text = re.sub(r"(?:已|已经)?(?:发来|发送|提供|上传|给出|补充)\s*$", "", text)
+    text = re.sub(
+        r"\s+(?:is|are|has\s+been|have\s+been)\s+ready\s*$|"
+        r"\s+(?:sent|provided|uploaded|supplied)\s*$",
+        "", text, flags=re.I,
+    )
+    return text.strip(" \t\r\n。.!！")
+
+
+def general_root_pause_clause(clause: str) -> bool:
+    """A bare task pause has no missing external or named user input."""
+    return bool(re.fullmatch(
+        r"\s*(?:(?:请|现在|先)\s*)*暂停(?:\s*(?:当前|本|这个)\s*"
+        r"(?:任务|工作))?\s*|"
+        r"\s*(?:please\s+)?pause(?:\s+(?:the\s+)?(?:current\s+)?"
+        r"(?:task|work))?\s*|"
+        r"\s*等(?:待)?我确认(?:后再|之后再|才)继续\s*|"
+        r"\s*wait\s+for\s+my\s+(?:explicit\s+)?next\s+message"
+        r"(?:\s+before\s+(?:completing|continuing)\s+(?:the\s+)?task)?\s*",
+        clause, re.I,
+    ))
 
 
 def root_pause_condition_type(clause: str) -> str:
@@ -12832,7 +12892,10 @@ def affirmative_confirmation(text: str) -> bool:
     return any(AFFIRMATIVE_CONFIRMATION_RE.search(clause) for clause in clauses)
 
 
-def release_matches_condition(condition: dict[str, Any], text: str) -> bool:
+def release_matches_condition(
+    condition: dict[str, Any], text: str, *,
+    state: dict[str, Any] | None = None, prompt_id: str | None = None,
+) -> bool:
     if condition.get("condition_type") == "external_dependency":
         return False
     clauses = control_speech_clauses(text)
@@ -12842,6 +12905,27 @@ def release_matches_condition(condition: dict[str, Any], text: str) -> bool:
     if condition.get("condition_type") == "choice":
         return any(CHOICE_ANSWER_RE.search(clause) for clause in clauses)
     subject = condition.get("subject_sha256")
+    if condition.get("condition_type") == "input":
+        if (condition.get("kind") == MIGRATED_WAIT_CONDITION_KIND
+                or condition.get("raised_by_kind") != "root_user"
+                or not condition.get("source_clause_sha256") or not subject):
+            return False
+        attachment_subjects = {
+            sha256_text(input_wait_subject(noun))
+            for noun in ("附件", "图片", "图像", "截图", "attachment", "image", "screenshot")
+        }
+        if subject in attachment_subjects:
+            if not state or not prompt_id or not any(
+                item.get("available") and item.get("source") == "hook_payload"
+                and str(item.get("media_type") or "").startswith("image/")
+                and isinstance(item.get("width"), int) and item["width"] > 0
+                and isinstance(item.get("height"), int) and item["height"] > 0
+                and prompt_id in item.get("prompt_ids", [])
+                for item in state.get("assets", []) if isinstance(item, dict)
+            ):
+                return False
+        return any(sha256_text(input_wait_subject(clause)) == subject
+                   for clause in clauses)
     return bool(subject) and any(
         AFFIRMATIVE_CONFIRMATION_RE.search(clause)
         and sha256_text(wait_subject(clause)) == subject
@@ -12866,7 +12950,11 @@ def has_explicit_switch_intent(text: str) -> bool:
     return False
 
 
-def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -> str:
+def append_work_unit(
+    state: dict[str, Any], prompt: dict[str, Any], text: str, *,
+    session_dir: Path | None = None,
+    source_texts: dict[str, str] | None = None,
+) -> str:
     """Open the prompt's work unit under the schema-11 lifecycle.
 
     The unfinished task is continuous by default (plan sections 3.1/3.2):
@@ -12876,9 +12964,10 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
     unit as historical_unresolved and opens a sibling root; completed units
     never block a new request; parked units stay parked and reopen only
     through their typed wait conditions. A unique user-controlled condition
-    is released by a matching root confirmation (choice answers,
-    affirmative confirmations) or an explicit resume; external dependencies
-    are never released by speech, and progress questions, negated/unmet
+    is released by a matching root input/confirmation (including choice
+    answers); bare resume applies only to a source-verified general pause or
+    next-message request. External dependencies are never released by speech,
+    and progress questions, negated/unmet
     replies, quoted-only material, and multiple ambiguous conditions never
     release anything. Every release records its root-user source.
     """
@@ -12889,6 +12978,28 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
     work_state.setdefault("active_work_unit_id", None)
     work_state.setdefault("unit_activity_seq", 0)
     work_state.pop("resume_selection_required", None)
+
+    def verified_root_wait_clause(condition: dict[str, Any]) -> str | None:
+        if condition.get("raised_by_kind") != "root_user":
+            return None
+        source_id = condition.get("raised_by_source")
+        source_text = (source_texts or {}).get(str(source_id))
+        if source_text is None and session_dir is not None:
+            metadata = next((item for item in state.get("prompts", [])
+                             if item.get("id") == source_id), None)
+            record = read_prompt_record(session_dir, metadata) if metadata else None
+            source_text = record.get("text") if record else None
+        if not isinstance(source_text, str):
+            return None
+        return next((clause for clause in root_pause_clauses(source_text)
+                     if sha256_text(clause) == condition.get("source_clause_sha256")
+                     and condition.get("subject_sha256") in {
+                         None, sha256_text(
+                             input_wait_subject(clause)
+                             if condition.get("condition_type") == "input"
+                             else wait_subject(clause)
+                         )
+                     }), None)
     current_id = work_state.get("active_work_unit_id")
     current = next(
         (
@@ -12935,10 +13046,20 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
         else:
             matched = [
                 item for item in user_conditions
-                if release_matches_condition(item, text)
+                if (item.get("raised_by_kind") != "root_user"
+                    or verified_root_wait_clause(item) is not None)
+                if release_matches_condition(
+                    item, text, state=state, prompt_id=str(prompt["id"])
+                )
             ]
             resume = has_root_resume_intent(text)
-            if resume and len(user_conditions) == 1:
+            if (resume and len(user_conditions) == 1
+                    and user_conditions[0].get("condition_type") == "confirmation"
+                    and user_conditions[0].get("kind") != MIGRATED_WAIT_CONDITION_KIND
+                    and user_conditions[0].get("raised_by_kind") == "root_user"
+                    and general_root_pause_clause(
+                        verified_root_wait_clause(user_conditions[0]) or ""
+                    )):
                 matched = list(user_conditions)
             # Multiple matches are ambiguous; order or recency is not authority.
             if len(matched) != 1:
@@ -12947,6 +13068,17 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
                 release_wait_condition(state, condition, str(prompt["id"]))
             remaining = waiting_conditions_for_unit(state, str(current["id"]))
             if matched and not remaining:
+                work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
+                current["status"] = "active"
+                current["closed_at"] = None
+                current["last_active_seq"] = int(work_state["unit_activity_seq"])
+                return str(current["id"])
+            if (resume and not matched and len(conditions) == 1
+                    and conditions[0].get("kind") == MIGRATED_WAIT_CONDITION_KIND
+                    and conditions[0].get("condition_type") == "input"):
+                # An old parked unit may be selected for continued work, but
+                # its source-less generic wait is not proof that the missing
+                # input arrived. Keep the condition open for completion.
                 work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
                 current["status"] = "active"
                 current["closed_at"] = None
@@ -13727,7 +13859,8 @@ def prompt_records_from_disk(session_dir: Path) -> list[dict[str, Any]]:
 
 
 def replay_prompt_record(
-    state: dict[str, Any], record: dict[str, Any]
+    state: dict[str, Any], record: dict[str, Any],
+    source_texts: dict[str, str] | None = None,
 ) -> None:
     text = record["text"]
     origin = record.get("origin")
@@ -13788,7 +13921,7 @@ def replay_prompt_record(
         )
     if is_control_prompt(text):
         return
-    work_unit_id = append_work_unit(state, metadata, text)
+    work_unit_id = append_work_unit(state, metadata, text, source_texts=source_texts)
     requirement_id = append_requirement(
         state, metadata, text, [], work_unit_id=work_unit_id
     )
@@ -13828,8 +13961,10 @@ def rebuild_state_from_prompts(
         records = prompt_records_from_disk(session_dir)
         if not records:
             raise StateIntegrityError("no immutable prompt records are available")
+        source_texts = {str(record["id"]): str(record["text"])
+                        for record in records}
         for record in records:
-            replay_prompt_record(rebuilt, record)
+            replay_prompt_record(rebuilt, record, source_texts)
         rebuilt["session"]["created_at"] = records[0]["created_at"]
         rebuilt["open_items"] = open_item_ids(rebuilt)
         rebuilt["integrity"] = {
@@ -15801,12 +15936,14 @@ def handle_user_prompt(
         export_requested = False
     if not is_control_prompt(text):
         state["continuation_attempts"] = 0
-        work_unit_id = append_work_unit(state, prompt, text)
+        work_unit_id = append_work_unit(state, prompt, text, session_dir=session_dir)
         if origin == "human":
             append_prompt_unit_binding(session_dir, prompt, work_unit_id)
         for pause_clause in root_pause_clauses(text):
             pause_type = root_pause_condition_type(pause_clause)
-            subject = wait_subject(pause_clause)
+            subject = (None if general_root_pause_clause(pause_clause)
+                       else input_wait_subject(pause_clause) if pause_type == "input"
+                       else wait_subject(pause_clause))
             add_wait_condition(
                 state, work_unit_id, kind="one_shot", condition_type=pause_type,
                 raised_by_kind="root_user", raised_by_source=str(prompt["id"]),
