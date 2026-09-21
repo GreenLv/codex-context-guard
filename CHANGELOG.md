@@ -2,7 +2,35 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.9` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+
+## 0.14.0 — 2026-09-21
+
+### Highlights
+
+- A completed repair can end with “long-term benefit still needs observation” without a false prompt to keep working. An explicitly unfinished current test or evaluation remains a specific open requirement; a short resume, an incorrect whole-completion claim, or deferring current evaluation can trigger one bounded correction when its input is ready.
+- A short “continue” resumes the current task without becoming an unlimited persistence demand. A wait described in the reply does not register an external operation.
+- Mixed requests can deliver the explanation while keeping an unfinished file edit or unknown tail open.
+
+### Changes
+
+- A short resume can lift a general pause, but cannot stand in for a requested input or a specific confirmation. Those waits retain their original condition until matching root input arrives or the user explicitly changes that condition; a later release does not revise earlier Stop decisions.
+- Schema 13 and Stop 5.0.0 retain prior journal and delivery history. Old mixed answered rows require review; old reply-derived waits do not become trusted lifecycle facts.
+- The shared core v2 schema and reference projection bind Stop diagnosis to the current root requirement, host-selected target, and observed result. A future time or unmet prerequisite keeps an evaluation deferred even if its input file exists. Downstream mirror and pin validation is a separate identity check.
+- Mixed requests can deliver an information span while the original execution and unknown scope stays pending. Root and host append numbers keep Stop decisions at their own event watermark even when timestamps tie or move backward.
+- A combined edit and test retain separate required outcomes. A later commit and push can bind the same uniquely sourced repository, with commit lineage and remote-ref readback checked separately. Host Goal-completion interception reports unavailable until a synchronous Hook route is verified.
+- Ordinary business tools remain host-owned; explicit proof and adopted release checks keep their existing gates.
+- When Codex supplies a text-only Bash or apply_patch Hook response, completion evidence requires the matching Host terminal record already present for that call. A failed command cannot prove that a test passed or an edit or readback succeeded; a quoted success message or missing Host status cannot certify those outcomes. Supported single-file patches, focused pytest commands, and exact file reads remain separate checks.
+- On Windows, PowerShell `cat` can rewrite line endings. A single exact `Console.Write(File.ReadAllText(...))` expression may supply file readback only when the Host ran PowerShell and its output matches the current physical file byte for byte; a BOM, alias, extra operation, or changed file remains unverified.
+- A direct edit request can quote its complete file path, including spaces, without turning the request into quoted speech. A quoted command, someone else's report, or a negated edit still creates no positive edit action; an ambiguous unquoted Windows path never grants its valid-looking prefix.
+- Ordinary file paths and URLs do not become visual-inspection requests because their directory names contain image-related words. Actual image references and direct visual questions retain their evidence requirements.
+- An audited one-file Update can satisfy its edit outcome after a separate exact post-edit readback, even without a prior read. Missing or conflicting readback remains insufficient and does not imply that the edit should be repeated. Historical Stop projections use the bytes recorded at their event watermark, not later disk state.
+- A direct backtick `pytest` request retains its command object as a current test; an ordinary shell-quoted `cat` display can corroborate the same single Host command without accepting a shortened compound command. A named test that reaches a trustworthy terminal result and is reported accurately fulfills a run-and-report request even when it fails; an explicit pass target still requires a pass. For a uniquely sourced file, an explicit literal replacement, independent full readback, and matching final report can close the supported root clauses. Ambiguous referents, extra actions, wrong bytes, and unrecognized conditions remain open.
+- A direct request to keep working stays bound to the ordinary tasks present when the user made it, even if an information question intervenes. A sourced pause or cancellation changes only that scope; a later resume lifts a pause without reviving a canceled task or extending persistence to new work. Required tests are related to a repair from the original request, and a later replacement keeps the old control auditable without making the replacement inherit it.
+
+### Validation
+
+- Candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the complete deterministic source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable native run with cleanup. Publication requires native Host, Windows and fixed-model gates for the final exact source. Later source or runtime changes require exact-subject revalidation. Tag and Release publication follow acceptance; public readback and daily installation are separate later steps. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.9 - 2026-09-14
 

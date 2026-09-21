@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import mimetypes
+import ntpath
 import os
 import re
 import secrets
@@ -24,15 +25,16 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.parse import unquote, urlparse
 
-PRODUCT_VERSION = "0.13.9"
-SCHEMA_VERSION = 12
+PRODUCT_VERSION = "0.14.0"
+SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
 # compatibility inputs. Schema 11 keeps every durable record and gains the
 # response-delivery ledger plus the historical marking of pre-0.13
 # authorization records.
-FULL_MIGRATION_SOURCE_SCHEMAS = {9, 10, 11}
+FULL_MIGRATION_SOURCE_SCHEMAS = {9, 10, 11, 12}
 SCHEMA_11_WORK_UNIT_PROTOCOL = "2.0.0"
 LEGACY_EXECUTION_PROTOCOLS = frozenset({"1.0.0", SCHEMA_11_WORK_UNIT_PROTOCOL})
 READ_ONLY_COMPATIBILITY_SCHEMAS = {7, 8}
@@ -43,7 +45,7 @@ WAIT_CONDITION_RAISE_KINDS = ("root_user", "assistant", "external")
 WAIT_CONDITION_STATUSES = ("waiting", "released")
 WAIT_RELEASE_KINDS = ("root_user_confirmation", "external_fact")
 MIGRATED_WAIT_CONDITION_KIND = "migrated_unresolved"
-STOP_PROTOCOL_VERSION = "4.0.0"
+STOP_PROTOCOL_VERSION = "5.0.0"
 CLASSIFIER_VERSION = "3.3.0"
 PROOF_PROTOCOL_VERSION = "1.0.0"
 EXECUTION_PROTOCOL_VERSION = "3.0.0"
@@ -181,10 +183,13 @@ MAX_EXECUTION_DEPTH = 8
 MAX_EXECUTION_STRING = 512
 MAX_EXECUTION_RECORDS = 64
 MAX_EXECUTION_TICKETS = 128
+MAX_PERSISTENCE_SCOPES = 64
+MAX_PERSISTENCE_SCOPE_ITEMS = 64
 PROCESS_SESSION_LOCKS_GUARD = threading.Lock()
 PROCESS_SESSION_LOCKS: dict[str, threading.Lock] = {}
 STATE_REQUIRED_KEYS = {
     "schema_version",
+    "core_event_sequence",
     "session",
     "mode",
     "prompts",
@@ -214,6 +219,7 @@ STATE_REQUIRED_KEYS = {
     "prompt_journal",
     "integrity",
     "content_hash",
+    "root_controls",
 }
 ASSET_ID_RE = re.compile(r"M\d{4,}")
 PROOF_ID_RE = re.compile(r"V\d{4,}")
@@ -306,6 +312,7 @@ FORBIDDEN_EXECUTION_KEYS = {
 ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:/\\])(?:/[\w.@+~\-\u0080-\uffff][^\s,;，；。!?！？'\"<>]*)"
 )
+RELATIVE_FILE_RE = re.compile(r"(?<![\w:/\\])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+")
 URL_RE = re.compile(
     r"(?:https?://[^\s,;，；。!?！？'\"<>]+|codex://threads/[0-9a-f-]{20,})",
     re.IGNORECASE,
@@ -558,7 +565,7 @@ BROAD_EXECUTION_PROMPT_RE = re.compile(
 DEFERRED_ACTION_CLAUSE_RE = re.compile(
     r"\b(?:defer(?:red)?|paused|on\s+hold|out\s+of\s+scope|"
     r"outside\s+.{0,20}\bscope|denied)\b|"
-    r"(?:留待|推迟|延后|暂停|搁置|超出.{0,12}范围|"
+    r"(?:留待|留到|推迟|延后|暂停|搁置|(?:今后|以后|改天)再|超出.{0,12}范围|"
     r"不在.{0,12}范围|被拒绝)",
     re.IGNORECASE | re.DOTALL,
 )
@@ -654,15 +661,20 @@ POLICY_HOLD_RE = re.compile(
 # action, not the surrounding natural-language clause, so decision_log never
 # needs to retain raw prompt or reply text.
 ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("local_review", re.compile(r"\b(?:review|audit|inspect|check)\b|(?:审查|审核|检查|评估)", re.I)),
-    ("local_edit", re.compile(r"\b(?:edit|modify|implement|update\s+(?:the\s+)?(?:code|repository))\b|(?:实现|修改|更新)(?:.{0,10}(?:代码|仓库|项目))?", re.I)),
+    ("local_review", re.compile(r"\b(?:review|audit|inspect|check|evaluate|measure)\b|(?:审查|审核|检查|核对|评估|测量|测出)", re.I)),
+    ("local_edit", re.compile(r"\b(?:edit|modify|implement|fix|correct|repair|update\s+(?:the\s+)?(?:code|repository)|(?:finish|complete)\s+(?:the\s+|this\s+)?(?:patch|repair))\b|(?:实现|修改|更新|修正|修复|修好)(?:.{0,10}(?:代码|仓库|项目))?|完成(?:这次|本轮|当前)?(?:补丁|修复)", re.I)),
     ("local_commit", re.compile(r"\bcommit(?:ted|ting)?\b|(?:本地提交|提交(?:改动|变更|代码))", re.I)),
     ("remote_create", re.compile(r"\bcreat(?:e|ing).{0,18}(?:remote|repo(?:sitory)?)\b|创建.{0,12}(?:远端|仓库)", re.I)),
     ("remote_push", re.compile(r"\bpush(?:ed|ing)?\b|推送", re.I)),
     ("remote_publish", re.compile(r"\b(?:publish|deploy|promot|release|blog|community\s+post)\w*\b|(?:发布|部署|推广|博客|社区发帖|正式版本)", re.I)),
     ("remote_ci", re.compile(r"\b(?:run(?:ning)?\s+)?ci\b|(?:运行|跑).{0,8}CI", re.I)),
     ("review_followup", re.compile(r"\b(?:address|handle|process|check).{0,24}(?:review\s+(?:comment|feedback)|review\s+log)\b|(?:处理|检查).{0,16}(?:审查意见|审核意见|审核日志)", re.I)),
-    ("test_verify", re.compile(r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)", re.I)),
+    ("test_verify", re.compile(
+        r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)|"
+        r"(?:\b(?:run|execute)\b|(?:运行|执行))\s+[^,，;；。.!?？]{0,96}"
+        r"(?:^|[/\\_.-])test[^\s,，;；。!?？]*\.py\b",
+        re.I,
+    )),
     ("artifact_work", re.compile(r"\b(?:import|download|configure|configuration)\w*\b|(?:导入|下载|配置|打开页面|处理PDF|PDF\s*阶段)", re.I)),
 )
 # A trailing test/verify signal certifies a concrete action rather than
@@ -677,12 +689,8 @@ PRIMARY_CLAUSE_ACTIONS = {
     "artifact_work",
 }
 EXECUTION_RESUME_RE = re.compile(
-    r"^(?:请|你|您|帮我|麻烦)?\s*(?:继续(?:执行|推进|工作)|"
-    r"按(?:照)?(?:你(?:的)?|刚刚|现在|上述|之前|这个|该|既定|和|与|\s)*"
-    r"(?:计划|建议)(?:继续)?执行)"
-    r"|^(?:please\s+)?(?:continue\s+(?:working|executing)|"
-    r"continue\s+(?:(?:the|this|whole|entire|release|remaining)\s+)*plan|"
-    r"(?:proceed|execute)\s+(?:with\s+)?(?:the\s+)?(?:plan|recommendations))\b",
+    json.loads((Path(__file__).resolve().parent.parent / "assets/core-intent-v2.json")
+               .read_text(encoding="utf-8"))["patterns"]["EXECUTION_RESUME_RE"],
     re.IGNORECASE,
 )
 REPLY_ACTION_NEGATION_PREFIX_RE = re.compile(
@@ -933,10 +941,19 @@ EXPLICIT_SWITCH_RE = re.compile(
 ROOT_PAUSE_RE = re.compile(
     r"(?:在[^。！？,，\n]{0,24}(?:确认|完成|换好|就绪|批准|恢复)前[^。！？\n]{0,12}"
     r"(?:保持?等待|暂停|先等|等待)"
-    r"|等(?:到|待)?[^。！？\n]{0,24}(?:后再|之后(?:再)?|才)(?:继续|开始|执行|处理)"
+    r"|等(?:到|待)?\s*(?:(?:我|你|您|用户)[^。！？,，\n]{1,44}|"
+    r"(?:构建|部署|审核|审批|流水线|外部|子任务|子代理|CI)[^。！？,，\n]{0,40})"
+    r"(?:后再|之后(?:再)?|才|再)"
+    r"[^。！？,，\n]{1,48}(?:[,，]\s*(?:在)?(?:收到|得到|拿到|获得)?"
+    r"[^。！？,，\n]{0,24}(?:前|之前)\s*(?:保持)?等待)?"
     r"|(?:暂停|等待)[^。！？\n]{0,10}(?:直到|till\b|until\b)"
     r"|wait(?:ing)? (?:for|until) [^.!?;\n]{0,40}"
     r"|hold (?:off|until) [^.!?;\n]{0,40})",
+    re.I,
+)
+ROOT_DIRECT_PAUSE_RE = re.compile(
+    r"^\s*(?:(?:请|先|请先|现在)\s*)*暂停(?=\S|\s|$)|"
+    r"^\s*(?:please\s+)?(?:pause|hold)\s+(?:the\s+|this\s+)?(?:current\s+)?",
     re.I,
 )
 ROOT_PAUSE_EXTERNAL_RE = re.compile(
@@ -3573,7 +3590,7 @@ def _shell_actions(
     ``branch_cwd`` resolves a bare ``git push`` refspec to the current
     branch; purity callers pass None (``unknown``).
     """
-    actions: list[dict[str, str]] = []
+    actions: list[dict[str, Any]] = []
     for executable, args, env in command_invocations_full(command, posix=posix):
         state, action = _invocation_state(
             executable, args, env, branch_cwd=branch_cwd
@@ -6154,7 +6171,7 @@ def validate_wait_conditions(state: dict[str, Any]) -> None:
     """
     version = state.get("schema_version")
     conditions = state.get("wait_conditions")
-    if version not in {SCHEMA_VERSION, 11}:
+    if version not in {SCHEMA_VERSION, 11, 12}:
         if conditions:
             raise StateIntegrityError(
                 "wait conditions require the current private state schema"
@@ -6279,7 +6296,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
         raise StateIntegrityError("private work-unit ledger exceeds its record limit")
     if not isinstance(sequence, int) or sequence < 0:
         raise StateIntegrityError("private work-unit sequence is invalid")
-    if version == SCHEMA_VERSION:
+    if version in {SCHEMA_VERSION, 12}:
         protocol = WORK_UNIT_PROTOCOL_VERSION
         statuses = stop3().WORK_UNIT_STATUSES
         optional_keys: set[str] = {
@@ -6321,7 +6338,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
             raise StateIntegrityError("private work-unit kind is invalid")
         if record.get("status") not in statuses:
             raise StateIntegrityError("private work-unit status is invalid")
-        if version in {SCHEMA_VERSION, 10, 11}:
+        if version in {SCHEMA_VERSION, 10, 11, 12}:
             seq = record.get("last_active_seq")
             if seq is not None and not isinstance(seq, int):
                 raise StateIntegrityError("private work-unit activity sequence is invalid")
@@ -6336,7 +6353,7 @@ def validate_work_units(state: dict[str, Any]) -> None:
                     "only waiting units may carry the resume-pending flag"
                 )
         _execution_time(record.get("created_at"), "work_units.created_at")
-        if version in {SCHEMA_VERSION, 10, 11}:
+        if version in {SCHEMA_VERSION, 10, 11, 12}:
             _validate_unit_authorizations(unit_id, record.get("authorizations"))
             _validate_commit_context(record.get("commit_context"))
         _execution_time(record.get("closed_at"), "work_units.closed_at", nullable=True)
@@ -6351,6 +6368,126 @@ def validate_work_units(state: dict[str, Any]) -> None:
         raise StateIntegrityError("active work-unit id is unknown")
     if sequence < len(ids):
         raise StateIntegrityError("private work-unit sequence trails its records")
+
+
+def _ordinary_completion_basis_valid(
+    state: dict[str, Any], item: dict[str, Any], watermark: int,
+) -> bool:
+    """Check persisted ordinary closure against retained Host and result facts."""
+    basis = item.get("completion_basis")
+    if not isinstance(basis, dict) or set(basis) != {
+        "schema", "predicate", "as_of", "delivery_sha256",
+        "core_sha256", "host_evidence_ids",
+    }:
+        return False
+    ids = basis["host_evidence_ids"]
+    predicate = basis["predicate"]
+    if (basis["schema"] != "ordinary-core-completion/v1"
+            or predicate not in {"edit_readback_and_report", "test_and_report"}
+            or type(basis["as_of"]) is not int
+            or not 0 < basis["as_of"] <= watermark
+            or any(not isinstance(basis[name], str)
+                   or not re.fullmatch(r"[0-9a-f]{64}", basis[name])
+                   for name in ("delivery_sha256", "core_sha256"))
+            or not isinstance(ids, list)
+            or len(ids) != (2 if predicate == "edit_readback_and_report" else 1)
+            or len(set(ids)) != len(ids)
+            or item.get("status") != "pass"
+            or item.get("evidence") != ids
+            or item.get("verification_contract", {}).get("mode") not in {
+                "legacy_fallback", "enforced"}):
+        return False
+    if (item.get("verification_contract", {}).get("mode") == "enforced"
+            and unresolved_proof_obligations(state).get(str(item.get("id")))):
+        return False
+    by_evidence = {str(e.get("id")): e for e in state.get("evidence", [])
+                   if isinstance(e, dict)}
+    observations = []
+    for eid in ids:
+        event = by_evidence.get(eid)
+        if (not isinstance(eid, str) or not EVIDENCE_ID_RE.fullmatch(eid)
+                or not isinstance(event, dict)
+                or event.get("core_result_seq", watermark + 1) > basis["as_of"]
+                or event.get("core_call_seq", 0) >= event.get("core_result_seq", 0)):
+            return False
+        observed = event.get("core_observation")
+        if (not isinstance(observed, dict)
+                or observed.get("unit") != item.get("work_unit_id")
+                or observed.get("prompt_id") != item.get("prompt_id")
+                or observed.get("outcome") != "success"):
+            return False
+        observations.append((event, observed))
+    if predicate == "edit_readback_and_report":
+        edit_event, edit = observations[0]
+        read_event, read = observations[1]
+        if (edit_event.get("outcome") != "success"
+                or read_event.get("outcome") != "success"
+                or edit.get("kind") != "action_event"
+                or edit.get("predicate") != "edit_applied"
+                or read.get("kind") != "state_readback"
+                or read.get("predicate") != "content_hash"
+                or edit.get("target") != read.get("target")
+                or edit.get("post_content_sha256") != read.get("content_sha256")
+                or edit_event["core_result_seq"] >= read_event["core_call_seq"]):
+            return False
+    else:
+        event, observed = observations[0]
+        if (observed.get("kind") != "action_event"
+                or observed.get("predicate") not in {"test_run_completed", "test_passed"}):
+            return False
+        if event.get("outcome") != "success" and not (
+            event.get("outcome") == "failed"
+            and observed.get("predicate") == "test_run_completed"
+            and type(observed.get("terminal_exit_code")) is int
+            and observed["terminal_exit_code"] > 0
+        ):
+            return False
+    ledger = state.get("response_delivery", {})
+    records = [record for record in ledger.get("records", [])
+               if record.get("delivery_sha256") == basis["delivery_sha256"]]
+    if len(records) != 1:
+        return False
+    record = records[0]
+    related = any(
+        candidate.get("id") in record.get("requirement_ids", [])
+        and candidate.get("prompt_id") == item.get("prompt_id")
+        and candidate.get("text") == item.get("text")
+        for candidate in state.get("requirements", [])
+        if isinstance(candidate, dict)
+    )
+    if (record.get("resolution") != "verified"
+            or record.get("delivery") != "delivered"
+            or (item.get("id") not in record.get("requirement_ids", [])
+                and not related)):
+        return False
+    for decision in state.get("decision_log", []):
+        if (not isinstance(decision, dict)
+                or decision.get("reply_sha256") != record.get("reply_sha256")
+                or decision.get("turn_id") != record.get("turn_id")):
+            continue
+        for row in decision.get("core_projections", []):
+            if (not isinstance(row, dict)
+                    or row.get("predicate") != predicate
+                    or row.get("as_of") != basis["as_of"]
+                    or row.get("delivery_sha256") != basis["delivery_sha256"]
+                    or row.get("host_evidence_ids") != ids
+                    or row.get("certifiable") is not True
+                    or row.get("predicate_state") != "satisfied"
+                    or row.get("unknown_coverage_count") != 0
+                    or row.get("coverage_error_count") != 0
+                    or not isinstance(row.get("core_projection"), dict)
+                    or sha256_text(canonical_json(row["core_projection"]))
+                    != basis["core_sha256"]):
+                continue
+            source = next((candidate for candidate in state.get("requirements", [])
+                           if isinstance(candidate, dict)
+                           and candidate.get("id") == row.get("requirement_id")), None)
+            if (isinstance(source, dict)
+                    and source.get("prompt_id") == item.get("prompt_id")
+                    and source.get("text") == item.get("text")
+                    and source.get("work_unit_id") == item.get("work_unit_id")):
+                return True
+    return False
 
 
 def validate_state_integrity(state: dict[str, Any]) -> None:
@@ -6404,6 +6541,8 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
         }
     else:
         required = STATE_REQUIRED_KEYS
+    if version != SCHEMA_VERSION:
+        required = required - {"core_event_sequence", "root_controls"}
     missing = sorted(required - set(state))
     if missing:
         raise StateIntegrityError(
@@ -6477,7 +6616,7 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                     raise StateIntegrityError("private verification contract is invalid")
                 if 'constraint_scope' in item or 'source_span' in item:
                     span = item.get('source_span')
-                    if (version not in {SCHEMA_VERSION, 11} or item.get('constraint_scope') != 'session'
+                    if (version not in {SCHEMA_VERSION, 11, 12} or item.get('constraint_scope') != 'session'
                             or not isinstance(span, list) or len(span) != 2
                             or any(type(v) is not int for v in span) or not 0 <= span[0] < span[1]):
                         raise StateIntegrityError('private persistent constraint source is invalid')
@@ -6498,16 +6637,148 @@ def validate_state_integrity(state: dict[str, Any]) -> None:
                             + obligations_fault
                         )
         if version == SCHEMA_VERSION:
+            watermark = state.get("core_event_sequence")
+            if type(watermark) is not int or watermark < 0:
+                raise StateIntegrityError("private core event watermark is invalid")
+            used_sequence: set[int] = set()
+            for prompt in state.get("prompts", []):
+                seq = prompt.get("core_event_seq") if isinstance(prompt, dict) else None
+                if seq is None:
+                    continue  # Historical source remains unpromoted after migration.
+                if type(seq) is not int or not 0 < seq <= watermark or seq in used_sequence:
+                    raise StateIntegrityError("private prompt event sequence is invalid")
+                used_sequence.add(seq)
+            for event in state.get("evidence", []):
+                if not isinstance(event, dict):
+                    continue
+                call_seq, result_seq = event.get("core_call_seq"), event.get("core_result_seq")
+                if call_seq is None and result_seq is None:
+                    continue
+                if (type(call_seq) is not int or type(result_seq) is not int
+                        or not 0 < call_seq < result_seq <= watermark
+                        or call_seq in used_sequence or result_seq in used_sequence):
+                    raise StateIntegrityError("private host event sequence is invalid")
+                used_sequence.update((call_seq, result_seq))
+            root_controls = state.get("root_controls", [])
+            if (not isinstance(root_controls, list)
+                    or len(root_controls) > MAX_PERSISTENCE_SCOPES):
+                raise StateIntegrityError("private persistence scope ledger is invalid")
+            prompts_by_id = {str(p.get("id")): p for p in state.get("prompts", [])
+                             if isinstance(p, dict)}
+            items_by_id = {str(i.get("id")): i for i in state.get("requirements", [])
+                           if isinstance(i, dict)}
+            seen_persistence_sources: set[tuple[str, int, int]] = set()
+            for binding in root_controls:
+                old_keys = {"source_prompt_id", "source_record_sha256",
+                            "source_seq", "work_unit_id", "items"}
+                new_keys = old_keys | {"kind", "source_span", "scope_kind",
+                                       "catalog_sha256"}
+                targeted_keys = new_keys | {"scope_target", "scope_target_span"}
+                if not isinstance(binding, dict) or set(binding) not in (
+                        old_keys, new_keys, targeted_keys):
+                    raise StateIntegrityError("private persistence scope binding is invalid")
+                modern = set(binding) != old_keys
+                source_id = binding["source_prompt_id"]
+                source = prompts_by_id.get(source_id)
+                source_seq = binding["source_seq"]
+                bound_items = binding["items"]
+                span = binding.get("source_span") if modern else None
+                position = (source_id, span[0], span[1]) if (
+                    isinstance(span, list) and len(span) == 2
+                    and all(type(n) is int for n in span)) else None
+                if (not isinstance(source_id, str) or position in seen_persistence_sources
+                        or source is None or source.get("origin", "human") != "human"
+                        or source.get("record_sha256") != binding["source_record_sha256"]
+                        or type(source_seq) is not int or source_seq != source.get("core_event_seq")
+                        or binding["work_unit_id"] not in work_unit_ids
+                        or not isinstance(bound_items, list)
+                        or not 0 < len(bound_items) <= MAX_PERSISTENCE_SCOPE_ITEMS
+                        or (modern and (position is None or not 0 <= span[0] < span[1]
+                                        or binding["kind"] not in {"persistence", "pause", "resume", "cancel"}
+                                        or binding["scope_kind"] not in {
+                                            "current_unit", "action_class", "exact", "parent_task"}
+                                        or not re.fullmatch(r"[0-9a-f]{64}", str(binding["catalog_sha256"]))))):
+                    raise StateIntegrityError("private persistence scope source is invalid")
+                if modern and set(binding) == targeted_keys:
+                    target_span = binding["scope_target_span"]
+                    if (binding["scope_kind"] == "current_unit"
+                            or not isinstance(binding["scope_target"], str)
+                            or not binding["scope_target"]
+                            or not isinstance(target_span, list)
+                            or len(target_span) != 2
+                            or any(type(n) is not int for n in target_span)
+                            or not span[0] <= target_span[0] < target_span[1] <= span[1]):
+                        raise StateIntegrityError("private control target span is invalid")
+                elif modern and binding["scope_kind"] in {"exact", "parent_task"}:
+                    raise StateIntegrityError("private control target source is missing")
+                if position is not None:
+                    seen_persistence_sources.add(position)
+                if modern:
+                    catalog = _root_control_catalog(state, binding["work_unit_id"], source_seq)
+                    if (catalog is None or sha256_text(canonical_json(catalog))
+                            != binding["catalog_sha256"]):
+                        raise StateIntegrityError("private root control catalog changed")
+                    expected = _root_control_selected_items(
+                        state, catalog, binding["scope_kind"],
+                        binding.get("scope_target", "test_verify"
+                                    if binding["scope_kind"] == "action_class" else None))
+                    if expected != bound_items:
+                        raise StateIntegrityError("private root control scope changed")
+                seen_items: set[str] = set()
+                for bound in bound_items:
+                    fields = {"id", "prompt_id", "work_unit_id", "source_sha256", "root_seq"}
+                    if modern:
+                        fields.add("action")
+                    if not isinstance(bound, dict) or set(bound) != fields:
+                        raise StateIntegrityError("private persistence scope item is invalid")
+                    item_id = bound["id"]
+                    item = items_by_id.get(item_id)
+                    item_prompt = prompts_by_id.get(bound["prompt_id"])
+                    if (not isinstance(item_id, str) or item_id in seen_items
+                            or item is None or item_prompt is None
+                            or item.get("prompt_id") != bound["prompt_id"]
+                            or item.get("work_unit_id") != bound["work_unit_id"]
+                            or item.get("sha256") != bound["source_sha256"]
+                            or bound["work_unit_id"] != binding["work_unit_id"]
+                            or type(bound["root_seq"]) is not int
+                            or bound["root_seq"] != item_prompt.get("core_event_seq")
+                            or bound["root_seq"] > source_seq):
+                        raise StateIntegrityError("private persistence scope identity is invalid")
+                    seen_items.add(item_id)
             if "response_delivery" not in state:
                 raise StateIntegrityError(
                     "private state is missing required field: response_delivery"
                 )
+            pins = _ordinary_completion_pins(state)
+            pinned_digests = {digest for digest, _ in pins}
             try:
-                delivery().validate_ledger(state.get("response_delivery"))
+                delivery().validate_ledger(
+                    state.get("response_delivery"),
+                    retained_completion_digests=pinned_digests)
             except delivery().DeliveryValueError as exc:
                 raise StateIntegrityError(
                     f"private response-delivery ledger is invalid: {exc}"
                 ) from exc
+            unpinned_decisions = 0
+            for entry in state.get("decision_log", []):
+                if not isinstance(entry, dict):
+                    raise StateIntegrityError("private decision record is invalid")
+                retained = any(
+                    isinstance(row, dict)
+                    and isinstance(row.get("core_projection"), dict)
+                    and (row.get("delivery_sha256"), sha256_text(canonical_json(
+                        row["core_projection"]))) in pins
+                    for row in entry.get("core_projections", [])
+                )
+                if not retained:
+                    unpinned_decisions += 1
+            if unpinned_decisions > DECISION_LOG_LIMIT:
+                raise StateIntegrityError("private decision log exceeds its unreferenced limit")
+            for collection in ("requirements", "acceptance_items"):
+                for item in state.get(collection, []):
+                    if (isinstance(item, dict) and "completion_basis" in item
+                            and not _ordinary_completion_basis_valid(state, item, watermark)):
+                        raise StateIntegrityError("private ordinary completion basis is invalid")
             validate_wait_conditions(state)
             for entry in state.get("evidence", []):
                 evidence_fault = stop3().evidence_record_reason(entry)
@@ -6635,6 +6906,8 @@ def new_state(payload: dict[str, Any]) -> dict[str, Any]:
         "supersedes": [],
         "evidence": [],
         "evidence_sequence": 0,
+        "core_event_sequence": 0,
+        "root_controls": [],
         "assets": [],
         "asset_sequence": 0,
         "proofs": [],
@@ -6759,18 +7032,20 @@ DELIVERY_ALLOWED_STOP_REASON_CODES = frozenset(
 # introduce an arbitrary trailing-text wildcard.
 _INFORMATION_ZH_MODIFIER = (
     r"(?:这个|那个|这段|这|那|本|该|它|它们|其|全部|所有|主要|核心|当前|"
-    r"新的|旧的|的|一下|里|中|运行的|实现的|部署的|发布的|修改的|配置的|恢复的|验证的)"
+    r"新的|旧的|未来|到时候|采用的|的|一下|里|中|运行的|实现的|部署的|发布的|修改的|配置的|恢复的|验证的)"
 )
 _INFORMATION_ZH_NOUN = (
     r"(?:仓库|项目|插件|模块|代码|配置文件|文件|版本|应用|程序|脚本|命令|功能|标签|函数|"
-    r"恢复包|部署流程|发布流程|目录结构|结构|核心逻辑|逻辑|原理|主要内容|内容|流程|结果|"
-    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法)"
+    r"恢复包|[\u4e00-\u9fff]{1,12}(?:流程|步骤|方法|机制)|目录结构|结构|核心逻辑|逻辑|原理|主要内容|内容|流程|结果|"
+    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法|宿主|步骤|安装步骤|重启流程|"
+    r"安排|观察|判定方法|观察方法|比较方法|等待状态|观察依据)"
 )
 _INFORMATION_EN_NOUN = (
     r"(?:project|repository|repo|plugin|module|code|files?|version|application|"
     r"program|script|command|feature|config file|configuration file|tag|function|recovery packet|directory structure|"
     r"structure|core logic|logic|principle|content|workflow|results?|tests?|"
-    r"test coverage|vulnerabilities|name|differences?|mechanism|plan|problem|claim)"
+    r"test coverage|vulnerabilities|name|differences?|mechanism|plan|problem|claim|host|steps?|"
+    r"(?:[a-z][a-z-]{1,20}\s+){1,3}(?:steps?|workflow|process)|installation|restart)"
 )
 _INFORMATION_IDENTIFIER = r"(?:[A-Za-z_][A-Za-z0-9_.:/-]*|(?-i:[A-Z][a-z]+(?: [A-Z][a-z]+){1,3}))"
 # Quotation is a topic only when it consumes the entire subject. Delimiters
@@ -6795,9 +7070,9 @@ _INFORMATION_EN_HEAD = (
     r"illustrate|walk\s+me\s+through|tell\s+me\s+about)"
 )
 _INFORMATION_HOW = (
-    rf"(?:(?:如何|怎样|怎么)\s*(?:运行|执行|修改|配置|发布|部署|验证|测试)\s*"
+    rf"(?:(?:如何|怎样|怎么)\s*(?:运行|执行|修改|配置|发布|部署|验证|测试|安装|重启)\s*"
     rf"{_INFORMATION_TOPIC}|how\s+(?:to|do\s+(?:i|we|you))\s+"
-    rf"(?:run|execute|modify|configure|publish|deploy|verify|test)\s+{_INFORMATION_TOPIC})"
+    rf"(?:run|execute|modify|configure|publish|deploy|verify|test|install|restart)\s+{_INFORMATION_TOPIC})"
 )
 _INFORMATION_CLAUSE_RE = re.compile(
     rf"(?:{_INFORMATION_ZH_HEAD}(?:一下)?\s*(?:{_INFORMATION_HOW}|{_INFORMATION_TOPIC})"
@@ -6814,7 +7089,8 @@ _INFORMATION_CLAUSE_RE = re.compile(
     rf"|when\s+(?:does|do)\s+{_INFORMATION_EN_TOPIC}\s+run"
     rf"|which\s+version\s+supports\s+{_INFORMATION_TOPIC}"
     rf"|哪个版本支持\s*{_INFORMATION_TOPIC}|什么时候运行\s*{_INFORMATION_TOPIC}"
-    rf"|(?:{_INFORMATION_ZH_HEAD}(?:一下)?)?有没有漏洞)",
+    rf"|(?:{_INFORMATION_ZH_HEAD}(?:一下)?)?有没有漏洞"
+    rf"|{_INFORMATION_ZH_HEAD}(?:一下)?(?:到时候)?(?:如何|怎样|怎么)(?:比较|观察|判定))",
     re.IGNORECASE,
 )
 _INFORMATION_COORDINATION_RE = re.compile(
@@ -6844,8 +7120,19 @@ def _reply_only_request_shape(text: str) -> bool:
     for index, segment in enumerate(segments):
         body = re.sub(
             r"^(?:(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)\s*|"
-            r"please\s+|(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
+            r"(?:本轮|当前)?(?:只|仅|先)\s*|please\s+|"
+            r"(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
         )
+        # The leading communication verb governs its object. Words such as
+        # configure or deploy inside that object do not request execution.
+        # Independent coordinated clauses are still parsed separately below.
+        explanatory = bool(
+            re.fullmatch(r"(?:先\s*)?(?:解释|说明)\s*(?:怎样|如何|怎么|原因)\S{0,100}", body, re.I)
+            or re.fullmatch(r"describe\s+the\s+[^。！？.!?;；,，]{1,60}\s+procedure\s+for\s+[^。！？.!?;；,，]{1,80}", body, re.I)
+        )
+        subsequent = re.search(r"(?:后|之后|然后|随后|再|\bthen\b).+$", body, re.I)
+        if explanatory and not subsequent:
+            continue
         if _INFORMATION_CLAUSE_RE.fullmatch(body):
             continue
         # Coordinated topic lists inherit only the information operator from
@@ -6884,6 +7171,55 @@ def _information_tutorial_reply(prompt: str, reply: str) -> bool:
     return bool(steps) and len(steps) <= 32 and all(
         _INFORMATION_TUTORIAL_STEP_RE.fullmatch(step) for step in steps
     )
+
+
+def _action_clause_time_state(clause: str, category: str) -> str:
+    """Return the root-time state of one sourced action clause.
+
+    This is shared by persisted metadata, Stop action selection and resume
+    catalogs.  It reads the governing source clause; reply wording and old
+    generic rows cannot move a future/conditional action into the present.
+    """
+    pattern = dict(ACTION_PATTERNS).get(category)
+    if category == "state_readback":
+        command = _direct_shell_command_object(clause)
+        if command is None or command[0] != "state_readback":
+            return "unsupported"
+        action = re.search(re.escape(command[2]), clause)
+        if action is None:
+            return "unsupported"
+    else:
+        matches = list(pattern.finditer(clause)) if pattern is not None else []
+        if matches:
+            action = _root_action_head(clause, pattern)
+        elif ((command := _direct_shell_command_object(clause)) is not None
+              and command[0] == category
+              and (action := re.search(re.escape(command[2]), clause)) is not None):
+            # A literal command object carries the action category even when
+            # its surrounding prose contains no duplicate category noun.
+            pass
+        elif (category == "test_verify"
+              and len(root_absolute_locator_mentions(clause)[0]) == 1
+              and (action := re.search(r"\b(?:run|execute)\b|(?:运行|执行)", clause, re.I))):
+            # A coordinated execution child can inherit the test category
+            # from its sibling/root while its own span says only "run X".
+            # The category is already source-derived; this branch determines
+            # only the child's root time.
+            pass
+        else:
+            return "unsupported"
+    # ``别`` is a negator as a standalone imperative but is lexical material
+    # in ``分别``.  Normalize that coordinator before applying the repository's
+    # established clause-negation grammar.
+    normalized = clause.replace("分别", "")
+    if (CLAUSE_NEGATION_RE.search(normalized)
+            or REPLY_ACTION_NEGATION_PREFIX_RE.search(normalized)):
+        return "denied"
+    if DEFERRED_ACTION_CLAUSE_RE.search(clause):
+        return "future_observation"
+    if _root_action_condition(clause, action) is not None:
+        return "waiting"
+    return "current"
 
 
 def _information_delivery_item(item: dict[str, Any]) -> bool:
@@ -6929,6 +7265,8 @@ def _delivable_question(
     elif not clause_is_interrogative(text):
         return False
     prompt_id = item.get("prompt_id")
+    if item.get("information_source_span") is not None:
+        return True
     for candidate in state.get("acceptance_items", []):
         if (
             isinstance(candidate, dict)
@@ -7129,6 +7467,10 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             "backup_file": None,
         }
     state.setdefault("evidence_sequence", 0)
+    state.setdefault("core_event_sequence", 0)
+    # Old schema-13 candidates did not capture this as-of scope. An empty
+    # ledger preserves history without promoting old root text to a binding.
+    state.setdefault("root_controls", [])
     state.setdefault("assets", [])
     state.setdefault("asset_sequence", 0)
     state.setdefault("proofs", [])
@@ -7282,6 +7624,18 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
                 if isinstance(record, dict):
                     record["participation"] = "historical"
         state["response_delivery"] = _migrate_response_delivery_history(state)
+        state["schema_version"] = 12
+    if version in {9, 10, 11, 12}:
+        # Historical delivery and terminal decisions retain their original
+        # meaning. Old mixed answers cannot be upgraded to verified closure.
+        for item in state.get("requirements", []):
+            if not isinstance(item, dict) or item.get("status") != "answered":
+                continue
+            contract = item.get("verification_contract")
+            if (isinstance(contract, dict) and contract.get("mode") == "enforced") or not _reply_only_request_shape(str(item.get("text") or "")):
+                item["status"] = "legacy_review"
+        # Existing text-derived waits retain their old bytes and are ignored
+        # as current trusted owner facts by the schema-13 Stop adapter.
         state["schema_version"] = SCHEMA_VERSION
     state.setdefault("agents", [])
     state.setdefault("completion_attempt", None)
@@ -7348,6 +7702,8 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 raise StateIntegrityError("private state root must be an object")
             validate_state_integrity(loaded)
             state = migrate_state(loaded, payload)
+            if not _root_control_decomposition_valid(state, session_dir):
+                raise StateIntegrityError("private root control decomposition changed")
             integrity = state.get("integrity")
             if isinstance(integrity, dict) and integrity.get("status") == "failed":
                 state = rebuild_state_from_prompts(
@@ -7377,6 +7733,10 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
             )
     session = state.setdefault("session", {})
     for key in ("cwd", "model", "permission_mode", "transcript_path"):
+        # The first Host session path is the transcript identity.  A later
+        # Hook payload may observe that file, but cannot replace its source.
+        if key == "transcript_path" and session.get(key):
+            continue
         if payload.get(key) is not None:
             session[key] = payload[key]
     state["open_items"] = open_item_ids(state)
@@ -7621,6 +7981,8 @@ def canonical_windows_locator(raw: str) -> tuple[str | None, str | None]:
     if raw_components and raw_components[-1] == "":
         raw_components = raw_components[:-1]
     for component in raw_components:
+        if any(char in '<>"|?*' or ord(char) < 32 for char in component):
+            return None, "invalid_character"
         if component in {".", ".."}:
             continue
         if component != component.rstrip(" "):
@@ -7679,9 +8041,42 @@ def windows_locator_display(locator: str) -> str:
     return re.split(r"[\\/]+", locator.rstrip(")]}>.,:"))[-1] or locator[:60]
 
 
+def typed_path_subject(raw: str) -> dict[str, str]:
+    """Bind one complete parsed file locator without prose regex truncation."""
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw):
+        canonical, unsupported = canonical_windows_locator(raw)
+        if unsupported is not None or canonical != raw:
+            reason = unsupported or "physical_identity"
+            return {"id": unsupported_subject(reason, raw), "kind": "path",
+                    "display": windows_locator_display(raw),
+                    "locator_sha256": unsupported_locator_digest(raw)}
+        display = windows_locator_display(raw)
+    elif raw.startswith("/") and ".." not in Path(raw).parts:
+        display = Path(raw).name
+    else:
+        return {"id": unsupported_subject("physical_identity", raw), "kind": "path",
+                "display": Path(raw).name,
+                "locator_sha256": unsupported_locator_digest(raw)}
+    return {"id": f"subject:{sha256_text(raw)[:20]}", "kind": "path",
+            "display": display, "locator_sha256": sha256_text(raw)}
+
+
 def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, str]]:
     subjects: list[dict[str, str]] = []
-    for value in WINDOWS_UNC_PATH_RE.findall(text):
+    quoted_windows: list[tuple[tuple[int, int], str]] = []
+    quoted_posix: list[tuple[tuple[int, int], str]] = []
+    for match in re.finditer(r"([\"'])(.*?)\1", text):
+        candidate = match.group(2)
+        if WINDOWS_ABSOLUTE_PATH_RE.match(candidate):
+            quoted_windows.append((match.span(), candidate))
+        elif candidate.startswith("/") and ".." not in Path(candidate).parts:
+            quoted_posix.append((match.span(), candidate))
+    windows_values: list[str] = [value for _, value in quoted_windows]
+    quoted_spans = [span for span, _ in quoted_windows + quoted_posix]
+    for match in WINDOWS_UNC_PATH_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in quoted_spans):
+            continue
+        value = match.group(0)
         canonical, unsupported = canonical_windows_locator(value)
         reason = unsupported or "unc"
         subjects.append(
@@ -7692,7 +8087,11 @@ def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, s
                 "locator_sha256": unsupported_locator_digest(value),
             }
         )
-    for value in WINDOWS_DRIVE_PATH_RE.findall(text):
+    windows_values.extend(
+        match.group(0) for match in WINDOWS_DRIVE_PATH_RE.finditer(text)
+        if not any(start <= match.start() < end for start, end in quoted_spans)
+    )
+    for value in windows_values:
         canonical, unsupported = canonical_windows_locator(value)
         if unsupported is not None:
             subjects.append(
@@ -7712,8 +8111,24 @@ def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, s
                 "locator_sha256": sha256_text(canonical),
             }
         )
+    for _, value in quoted_posix:
+        if Path(value).suffix.lower() in IMAGE_SUFFIXES:
+            continue
+        subjects.append(
+            {
+                "id": f"subject:{sha256_text(value)[:20]}",
+                "kind": "path",
+                "display": Path(value).name,
+                "locator_sha256": sha256_text(value),
+            }
+        )
     for kind, pattern in (("path", ABSOLUTE_PATH_RE), ("url", URL_RE)):
-        for value in pattern.findall(text):
+        for match in pattern.finditer(text):
+            if kind == "path" and any(
+                start <= match.start() < end for start, end in quoted_spans
+            ):
+                continue
+            value = match.group(0)
             cleaned = value.rstrip(")]}>.,")
             if kind == "url":
                 normalized_thread = canonical_thread_uri(cleaned)
@@ -7827,6 +8242,43 @@ def visual_mutation_requested(text: str) -> bool:
     return False
 
 
+def visual_reference_source_text(text: str) -> str:
+    """Remove ordinary locator bytes before reading visual source language.
+
+    A pathname or URL component named ``images`` or ``visualizations`` is a
+    typed object, not an instruction to inspect an attached image. Keep actual
+    image-file locators visible, and keep words outside each locator intact.
+    The caller first selects directly governed clauses so reported commands
+    cannot supply visual authority through this lexical step.
+    """
+    hidden = [False] * len(text)
+
+    def ordinary_locator(value: str) -> bool:
+        candidate = value.rstrip(")]}>.,;，；。!?！？")
+        if candidate.lower().startswith(("https://", "http://")):
+            candidate = urlparse(candidate).path
+        return ntpath.splitext(candidate)[1].lower() not in IMAGE_SUFFIXES
+
+    def mask(start: int, end: int) -> None:
+        for index in range(start, end):
+            hidden[index] = True
+
+    # A quoted absolute locator may contain spaces or punctuation. Its whole
+    # value is one object even where a prose path scanner would stop early.
+    for match in re.finditer(r"([\"'])([^\r\n]*?)\1", text):
+        value = match.group(2)
+        if (value.startswith("/") or WINDOWS_ABSOLUTE_PATH_RE.match(value)
+                or value.lower().startswith(("https://", "http://"))):
+            if ordinary_locator(value):
+                mask(*match.span(2))
+    for pattern in (URL_RE, WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+        for match in pattern.finditer(text):
+            if ordinary_locator(match.group(0)):
+                mask(*match.span())
+    return "".join(" " if hidden[index] else char for index, char in enumerate(text))
+
+
 def verification_contract(
     item_id: str,
     text: str,
@@ -7858,7 +8310,28 @@ def verification_contract(
             contract_operation = operation
     assets = [item for item in state.get("assets", []) if item.get("id") in asset_ids]
     subjects = prompt_subjects(positive_text) if positive_text else []
-    if IMAGE_REFERENCE_RE.search(positive_text) and not assets:
+    direct_clauses = [clause for clause in _action_source_clauses(positive_text)
+                      if not _stop_outer_reporting_frame(clause)
+                      and not DESCRIPTION_FRAME_RE.search(clause)
+                      and not clause_is_interrogative(clause)]
+    # Information requests about an image remain asset obligations even when
+    # the ordinary mutation-authority filter excludes their question form.
+    # A reported/quoted question does not become this user's visual request.
+    direct_visual_questions = []
+    for clause in positive_clauses:
+        if not (clause_is_interrogative(clause) and re.match(
+            r"\s*(?:can|could|would|will|what|which|how)\b", clause, re.I
+        )):
+            continue
+        if _stop_outer_reporting_frame(clause) or DESCRIPTION_FRAME_RE.search(clause):
+            continue
+        if _stop_quotation_regions(clause):
+            continue
+        direct_visual_questions.append(clause)
+    visual_source = visual_reference_source_text(
+        "\n".join([*direct_clauses, *direct_visual_questions])
+    )
+    if IMAGE_REFERENCE_RE.search(visual_source) and not assets:
         return {
             "protocol_version": PROOF_PROTOCOL_VERSION,
             "mode": "legacy_fallback",
@@ -7872,12 +8345,72 @@ def verification_contract(
             "reason": "asset_unavailable",
             "obligations": [],
         }
+    def explicit_file_readback(clause: str) -> bool:
+        parsed = _direct_shell_command_object(clause)
+        if parsed is not None and parsed[0] == "state_readback":
+            return True
+        if re.fullmatch(
+            r"\s*(?:(?:and|then)\s*)?(?:(?:please|must)\s+)?read\s+"
+            r"(?:(?:the\s+)?(?:complete|full)\s+(?:file\s+)?"
+            r"(?:contents?|bytes)\s+of\s+.+|.+\s+(?:in\s+full|completely))"
+            r"\s*[.!?]?\s*", clause, re.I,
+        ):
+            return True
+        return bool(re.match(
+            r"\s*(?:(?:并|然后|再)\s*)?(?:请|必须)?\s*"
+            r"(?:完整)?(?:读取|回读|核对)\s*.+?\s*"
+            r"(?:的)?(?:完整)?(?:文件内容|内容|字节)"
+            r"(?=\s*(?:$|[，,；;]|并|然后|再))",
+            clause,
+        ))
+
+    def verification_role_clauses(clause: str) -> list[str]:
+        """Separate coordinated read and test acts without splitting quoted commands."""
+        containers = _stop_quotation_regions(clause)
+        cuts = [match.start() for match in re.finditer(
+            r"(?:并|然后|再|\band\b|\bthen\b)\s*"
+            r"(?=(?:(?:请|必须|please|must)\s*)?(?:完整)?"
+            r"(?:读取|回读|核对|运行|执行|read\b|run\b))",
+            clause, re.I)
+            if not any(start <= match.start() < end
+                       for start, end, _kind in containers)]
+        return [clause[start:end].strip() for start, end in
+                zip([0, *cuts], [*cuts, len(clause)]) if clause[start:end].strip()]
+
+    role_clauses = [part for clause in direct_clauses
+                    for part in verification_role_clauses(clause)]
+
+    # Remove only the quantity attached to a direct file-content read. A
+    # coordinated or trailing all-project/unknown proof clause remains in the
+    # source text even when the read and proof share a sentence.
+    def without_readback_quantity(clause: str) -> str:
+        parsed = _direct_shell_command_object(clause)
+        if parsed is not None and parsed[0] == "state_readback":
+            clause = re.sub(r"完整(?=\s*(?:回读|读取|核对))", "", clause, count=1)
+            clause = re.sub(
+                r"\b(?:complete|full)\s+(?=readback\b|read\s+back\b)",
+                "", clause, count=1, flags=re.I,
+            )
+        if not re.match(
+            r"^\s*(?:(?:并|然后|再|and|then)\s*)?(?:请|必须|please|must)?"
+            r"\s*(?:先)?(?:读取|回读|核对|read\b)", clause, re.I,
+        ):
+            return clause
+        clause = re.sub(r"完整(?=\s*(?:文件)?(?:内容|字节))", "", clause, count=1)
+        clause = re.sub(
+            r"\b(?:complete|full)\s+(?=(?:file\s+)?(?:contents?|bytes)\b)",
+            "", clause, count=1, flags=re.I,
+        )
+        return re.sub(r"\bin\s+full\b(?=\s*(?:$|[.!?。]|\band\b|\bthen\b))",
+                      "", clause, count=1, flags=re.I)
+
+    scope_text = "\n".join(without_readback_quantity(c) for c in role_clauses)
     full_scope_requested = bool(
-        FULL_SCOPE_RE.search(positive_text)
-        and not FULL_SCOPE_NEGATION_RE.search(positive_text)
+        FULL_SCOPE_RE.search(scope_text)
+        and not FULL_SCOPE_NEGATION_RE.search(scope_text)
     )
     scope_spec = (
-        deterministic_scope_spec(positive_text or text, subjects, assets)
+        deterministic_scope_spec(scope_text, subjects, assets)
         if full_scope_requested
         else None
     )
@@ -7908,16 +8441,70 @@ def verification_contract(
 
     for asset in assets:
         add("input_asset_inspection", "visual", [str(asset["id"])])
-    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(positive_text))
-    if visual_signal and visual_mutation_requested(positive_text or text):
+    visual_signal = bool(assets or IMAGE_REFERENCE_RE.search(visual_source))
+    if visual_signal and visual_mutation_requested(visual_source):
         add("result_visual_readback", "ui", [str(item["id"]) for item in assets])
-    if subjects:
+    # A path used as input by a test process is not itself a file-content
+    # readback request. For a test root with a separate readback clause, only
+    # subjects of that independently sourced clause enter this obligation.
+    read_as_primary_action = any(re.match(
+        r"^\s*(?:(?:并|然后|再|and|then)\s*)?(?:请|必须|please|must)?"
+        r"\s*(?:先|完整)?"
+        r"(?:读取|回读|核对|Read\b)", clause, re.I)
+        for clause in role_clauses)
+    direct_test_role = any(re.match(
+        r"^\s*(?:(?:并|然后|再|and|then)\s*)?(?:请|必须|please|must)?\s*"
+        r"(?:运行|执行|run)\s*(?:`?pytest\b|测试|test\b)", clause, re.I)
+        for clause in role_clauses)
+    test_input_only = (
+        contract_operation == "test_verify" and not read_as_primary_action
+    ) or direct_test_role or any(
+        (parsed := _direct_shell_command_object(clause)) is not None
+        and parsed[0] == "test_verify" for clause in role_clauses)
+    # A discarded quoted command cannot lend its subjects to the remaining
+    # bare verb (for example, "run" with no selected command object).
+    def clause_subjects(clause: str) -> list[dict[str, str]]:
+        # A supported literal command object already has one parsed target.
+        # Re-reading its PowerShell syntax as prose can turn the closing
+        # quote/parentheses into a second, nonexistent file subject.
+        command = _direct_shell_command_object(clause)
+        typed: list[dict[str, str]] = []
+        if command is not None:
+            clause = clause.replace(command[2], " ", 1)
+            typed.append(typed_path_subject(command[1]))
+        # Quoted file literals may contain spaces or Unicode. Mask each full
+        # literal before the whitespace-delimited prose path scanner can
+        # invent a prefix target; retain any other independent object.
+        for match in reversed(list(re.finditer(r"([\"'])([^\"'\r\n]+)\1", clause))):
+            candidate = match.group(2)
+            if WINDOWS_ABSOLUTE_PATH_RE.match(candidate) or candidate.startswith("/"):
+                typed.append(typed_path_subject(candidate))
+                clause = clause[:match.start()] + " " + clause[match.end():]
+        return list({item["id"]: item for item in
+                     [*prompt_subjects(clause), *typed]}.values())
+
+    direct_subjects = list({item["id"]: item for clause in role_clauses
+                            for item in clause_subjects(clause)}.values())
+    readback_subjects = direct_subjects
+    if test_input_only:
+        readback_subjects = []
+        for clause in role_clauses:
+            if explicit_file_readback(clause):
+                named = clause_subjects(clause)
+                if (not named and len(subjects) == 1
+                        and re.search(r"该文件|这个文件|this file\b", clause, re.I)):
+                    # The readback clause refers to the sole earlier file
+                    # object in this same root. Multiple objects stay unknown.
+                    named = subjects
+                readback_subjects.extend(named)
+        readback_subjects = list({item["id"]: item for item in readback_subjects}.values())
+    if readback_subjects:
         readback_surface = "ui" if UI_SURFACE_RE.search(positive_text) else "artifact"
         readback = {
             "id": f"O-{item_id}-{len(obligations) + 1:03d}",
             "kind": "subject_readback",
             "surface": readback_surface,
-            "subject_ids": [item["id"] for item in subjects],
+            "subject_ids": [item["id"] for item in readback_subjects],
             "operation": contract_operation,
             "requested_surface": readback_surface,
         }
@@ -8317,7 +8904,7 @@ def _reply_action_match(
         if future_matches:
             prefix = prefix[future_matches[-1].start() :]
         suffix = text[match.end() : match.end() + 32]
-        if REPLY_ACTION_NEGATION_PREFIX_RE.search(prefix):
+        if REPLY_ACTION_NEGATION_PREFIX_RE.search(prefix) and not _incomplete_action_clause(text):
             continue
         if (
             match.group(0).casefold() == "configuration"
@@ -8328,15 +8915,2389 @@ def _reply_action_match(
     return None
 
 
+def _incomplete_action_clause(text: str) -> bool:
+    """A past action explicitly unperformed is an unmet predicate, not a ban."""
+    return bool(re.search(
+        r"(?:尚未|还未|未曾|没有).{0,32}(?:运行|执行|完成|进行|做)|"
+        r"(?:未运行|未执行|未完成|未进行)|"
+        r"\b(?:not\s+yet|have\s+not|has\s+not|was\s+not|were\s+not)\b.{0,40}"
+        r"\b(?:run|performed|executed|completed|done)\b|"
+        r"\b(?:not\s+run|not\s+performed|not\s+executed)\b",
+        text, re.I,
+    ))
+
+
+def _action_ready(action: dict[str, Any]) -> bool:
+    return action.get("actionability") == "current_ready" and isinstance(
+        action.get("basis"), dict
+    )
+
+
+def _basis_actionability(basis: dict[str, Any]) -> str:
+    if basis["readiness"] == "root_condition_pending":
+        return "deferred"
+    if basis["readiness"] == "evidence_insufficient":
+        return "insufficient"
+    return "current_ready"
+
+
+def _action_deferred(action: dict[str, Any]) -> bool:
+    return action.get("actionability") in {"denied", "out_of_scope", "deferred"} or (
+        "actionability" not in action
+        and action.get("authorization") in {"denied", "out_of_scope"}
+    )
+
+
 def _action_authorization(category: str, scope: dict[str, Any]) -> str:
     if category in scope["denied"]:
         return "denied"
     if category in scope["authorized"] or scope["broad"]:
-        return "authorized"
+        return "unknown"
     if scope["bounded"]:
         return "out_of_scope"
-    # Ambiguous task scopes fail toward continuation, not silent completion.
-    return "authorized"
+    # Text-only scope describes a request; it cannot supply a current
+    # predicate, Host readiness, or an as-of action basis. A standalone
+    # classifier therefore never grants execution authority.
+    return "unknown"
+
+
+def _root_action_condition(
+    source: str, action_match: re.Match[str]
+) -> tuple[str, str] | None:
+    """A source-bound unmet antecedent before an action, not a reply wait.
+
+    A host file preflight cannot release a root schedule or external approval.
+    Without a trusted clock/approval fact at this Stop watermark it stays
+    pending. These forms describe clause structure, not named incident words.
+    """
+    prefix = source[:action_match.start()].strip()
+    # The category token can be a trailing object noun (for example the word
+    # ``test`` in a named test object).  Recover a leading antecedent from the
+    # whole sourced clause rather than assuming the token immediately follows
+    # it.  Pure temporal adverbs such as ``今后`` are deferrals, not receipt
+    # predicates, and are classified by DEFERRED_ACTION_CLAUSE_RE.
+    leading_zh = re.match(
+        r"\s*((?:(?:收到|获得|拿到|等到|等待)[^。！？,，;；]{1,80}|"
+        r"在[^。！？,，;；]{1,80}(?:确认|完成|就绪|恢复))(?:之后|后))"
+        r"(?=再|便|就|才|运行|执行|测试|验证|评估|检查|核对|使用|调用|读取|回读|\s)",
+        source,
+    )
+    if leading_zh and not re.fullmatch(
+        r"(?:今后|以后|往后|日后|然后|随后|之后)", leading_zh.group(1).strip()
+    ):
+        prefix = leading_zh.group(1).strip()
+    else:
+        leading_en = re.match(r"\s*((?:after|once|when|until)\b[^,;，；]{1,96})[,;，；\s]+", source, re.I)
+        if leading_en:
+            prefix = leading_en.group(1).strip()
+    if not prefix:
+        return None
+    if re.search(r"(?:后|之后|以后)\s*$|\b(?:after|once|when|until)\b", prefix, re.I):
+        kind = "external_dependency" if re.search(
+            r"外部|第三方|平台|审批|审核|批准|\b(?:external|third[- ]party|platform|approval|review)\b",
+            prefix, re.I,
+        ) else "predicate"
+        return prefix, kind
+    if re.search(
+        r"(?:上|下|本|明|后|第\d+|\d{4}年)?\d*(?:周|星期|月|年|季度|天|日)\s*$"
+        r"|\b(?:next|following)\s+(?:week|month|year|quarter|day)\b"
+        r"|\b\d{4}-\d{2}-\d{2}\b",
+        prefix, re.I,
+    ):
+        return prefix, "predicate"
+    return None
+
+
+def _root_action_head(source: str, pattern: re.Pattern[str]) -> re.Match[str]:
+    """Choose the effect after an antecedent, not an action word within it."""
+    matches = list(pattern.finditer(source))
+    for match in reversed(matches):
+        if _root_action_condition(source, match):
+            return match
+    return matches[0]
+
+
+def root_absolute_locator_mentions(text: str) -> tuple[set[str], bool]:
+    """Read complete root locators; a quoted path never grants its prefix."""
+    targets: set[str] = set()
+    ambiguous = bool(WINDOWS_UNC_PATH_RE.search(text))
+    quoted: list[tuple[int, int]] = []
+    for match in re.finditer(r"([\"'])(.*?)\1", text):
+        quoted.append(match.span())
+        candidate = match.group(2)
+        tail = text[match.end():]
+        delimited = (not tail or tail[0].isspace() or tail[0] in "。；，"
+                     or (tail[0] in ".,;!?！？):]}"
+                         and (len(tail) == 1 or tail[1].isspace()
+                              or tail[1] in "。；，")))
+        if not delimited:
+            ambiguous |= bool(WINDOWS_ABSOLUTE_PATH_RE.match(candidate) or candidate.startswith("/"))
+            continue
+        if WINDOWS_ABSOLUTE_PATH_RE.match(candidate):
+            if canonical_windows_locator(candidate) == (candidate, None):
+                targets.add(candidate)
+            else:
+                ambiguous = True
+        elif candidate.startswith("/") and ".." not in Path(candidate).parts:
+            targets.add(candidate)
+        elif candidate.startswith("/"):
+            ambiguous = True
+    for match in WINDOWS_DRIVE_PATH_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in quoted):
+            continue
+        # The regex locates a drive path but may stop before a forbidden
+        # character. Consume the whole nonspace lexeme before validation.
+        end = match.start()
+        while (end < len(text) and not text[end].isspace()
+               and text[end] not in "。；，！？"):
+            end += 1
+        token = text[match.start():end]
+        if token.endswith(("?", ".", ",")) and (end == len(text) or text[end].isspace()):
+            token = token[:-1]
+        # An unquoted space can separate a path component or prose. It does
+        # not establish an exact repository identity.
+        if end < len(text) and text[end].isspace() and text[end:].strip():
+            ambiguous = True
+            continue
+        if canonical_windows_locator(token) == (token, None):
+            targets.add(token)
+        else:
+            ambiguous = True
+    for match in ABSOLUTE_PATH_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in quoted):
+            continue
+        candidate = match.group(0).rstrip(".")
+        if ".." in Path(candidate).parts:
+            ambiguous = True
+        else:
+            targets.add(candidate)
+    return targets, ambiguous
+
+
+_DIRECT_COMMAND_GOVERNOR_RE = re.compile(
+    r"(?:运行|调用|执行|run|execute|invoke)\s*$", re.I,
+)
+_POWERSHELL_BYTE_READBACK_RE = re.compile(
+    r"\[System\.Console\]::Write\(\[System\.IO\.File\]::ReadAllText\('([^'\r\n]+)'\)\)"
+)
+
+
+def _direct_shell_command_object(clause: str) -> tuple[str, str, str] | None:
+    """A literal command *object* governed by this root's direct speech act.
+
+    This identifies a bounded requested operation; it does not attest that a
+    Host command ran or that its result satisfies the request.
+    """
+    matches = list(re.finditer(r"`([^`\n]+)`", clause))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    prefix = clause[:match.start()].strip()
+    suffix = clause[match.end():].strip()
+    if (_stop_outer_reporting_frame(prefix) or any(
+        kind == "quote" and start < match.start() and match.end() < end
+        for start, end, kind in _stop_quotation_regions(clause)
+    )):
+        return None
+    governed_read = bool(re.search(
+        r"(?:通过|使用)(?:独立的|单独的)?\s*$|\b(?:with|using)\s+(?:a\s+)?(?:separate|independent)\s*$",
+        prefix, re.I,
+    ) and re.search(r"^(?:读取|回读|核对|调用|call\b|to\s+read\b)", suffix, re.I))
+    if (not (_DIRECT_COMMAND_GOVERNOR_RE.search(prefix) or governed_read)
+            or CLAUSE_NEGATION_RE.search(prefix) or NEGATED_CLAUSE_RE.search(prefix)
+            or DESCRIPTION_FRAME_RE.search(prefix) or clause_is_interrogative(clause)):
+        return None
+    command = match.group(1)
+    byte_readback = _POWERSHELL_BYTE_READBACK_RE.fullmatch(command)
+    if byte_readback is not None:
+        # This is a literal one-operation source object. The later Host fact
+        # must independently prove PowerShell, physical target, and bytes.
+        # An explicit different shell cannot authorize this expression.
+        if re.search(r"\b(?:bash|zsh|sh|cmd(?:\.exe)?)\b", prefix, re.I):
+            return None
+        target = byte_readback.group(1)
+        if canonical_windows_locator(target) != (target, None):
+            return None
+        return "state_readback", target, match.group(0)
+    if (shell_control_operator_present(command)
+            or any(mark in command for mark in "<>$*?")):
+        return None
+    # A root does not name a shell. Select the one lexical grammar warranted
+    # by its absolute target spelling; Host execution later proves the actual
+    # shell and the exact command independently.
+    windows = bool(WINDOWS_DRIVE_PATH_RE.search(command))
+    tokens = _command_tokens(command, posix=not windows,
+                             _windows_shell="powershell" if windows else None)
+    if len(tokens) != 2 or tokens[0] not in {"cat", "pytest", "py.test"}:
+        return None
+    target = tokens[1]
+    if windows and tokens[0] == "cat" and re.search(r"\b(?:pwsh|powershell|cmd)\b", prefix, re.I):
+        return None
+    if windows:
+        if canonical_windows_locator(target) != (target, None):
+            return None
+    elif not target.startswith("/") or ".." in Path(target).parts:
+        return None
+    kind = "test_verify" if tokens[0] in {"pytest", "py.test"} else "state_readback"
+    return kind, target, match.group(0)
+
+
+def _sourced_readback_host_matches(
+    clause: str, command_object: tuple[str, str, str], observed: dict[str, Any],
+) -> bool:
+    """Keep file bytes distinct from a root's explicit command method."""
+    command = command_object[2][1:-1]
+    if (observed.get("kind") != "state_readback"
+            or observed.get("predicate") != "content_hash"
+            or observed.get("target") != command_object[1]):
+        return False
+    shell = str(observed.get("host_shell") or "")
+    if _POWERSHELL_BYTE_READBACK_RE.fullmatch(command):
+        return (observed.get("call_sha256") == sha256_text(command)
+                and shell in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"})
+    expected_argv = _command_tokens(command, posix=not WINDOWS_ABSOLUTE_PATH_RE.search(command),
+                                    _windows_shell="powershell" if WINDOWS_ABSOLUTE_PATH_RE.search(command) else None)
+    if (len(expected_argv) != 2 or expected_argv[0] != "cat"
+            or observed.get("call_argv_sha256") != sha256_text(canonical_json(expected_argv))):
+        return False
+    prefix = clause.split(command_object[2], 1)[0]
+    if re.search(r"\b(?:bash|zsh|sh)\b", prefix, re.I):
+        return shell in {"bash", "zsh", "sh"}
+    if re.search(r"\b(?:pwsh|powershell)\b", prefix, re.I):
+        return shell in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}
+    return shell in {"bash", "zsh", "sh", "pwsh", "pwsh.exe", "powershell", "powershell.exe"}
+
+
+def _direct_anaphoric_edit(clause: str) -> bool:
+    """A present edit imperative with an object pronoun, not an object choice."""
+    if (CLAUSE_NEGATION_RE.search(clause) or NEGATED_CLAUSE_RE.search(clause)
+            or DESCRIPTION_FRAME_RE.search(clause) or clause_is_interrogative(clause)):
+        return False
+    if not re.match(r"\s*(?:现在)?\s*(?:请|随后|然后|再|把|将|please\b|then\b|change\b)", clause, re.I):
+        return False
+    return bool(re.search(
+        r"(?:把|将)\s*(?:它|该文件(?:内容)?|这个文件|此文件|其内容)\s*"
+        r"(?:改为|修改为|替换为|更新为|写成)|"
+        r"(?:请|随后|然后|再)\s*修成|"
+        r"\b(?:change|replace|edit|update)\s+(?:it|that\s+file)\s+(?:to|with)\b",
+        clause, re.I,
+    ))
+
+
+def _same_root_anaphoric_target(root_text: str, source: str) -> str | None:
+    """Resolve only a unique preceding filesystem object in this one root."""
+    if not _direct_anaphoric_edit(source):
+        return None
+    source_at = root_text.find(source)
+    if source_at < 0 or root_text.find(source, source_at + len(source)) >= 0:
+        return None
+    preceding = root_text[:source_at]
+    if re.search(r"(?:如果|假如|若|仅当|今后|未来|以后|下周|\bif\b|\bwhen\b|\bonce\b)",
+                 preceding, re.I):
+        return None
+    targets, ambiguous = root_absolute_locator_mentions(preceding)
+    if ambiguous or len(targets) != 1:
+        return None
+    return next(iter(targets))
+
+
+def _explicit_file_postimage(source: str) -> str | None:
+    """Hash a bounded literal replacement, including its stated line ending.
+
+    This is a narrow, source-derived postcondition. Other replacements remain
+    unverified; a successful edit or a readback alone cannot invent the bytes
+    requested by the user.
+    """
+    match = re.search(
+        r"(?:改为|改成|替换为|更新为|修成|写成|\bto\b|\bwith\b)\s*"
+        r"(?:恰好|正好|exactly\s+)?\s*"
+        r"(?P<literal>[\w=:+-]{1,256})\s*"
+        r"(?:加一个换行|加换行|后跟换行|plus\s+(?:a\s+)?newline|followed\s+by\s+a\s+newline)\s*$",
+        source, re.I,
+    )
+    if match is None:
+        return None
+    return hashlib.sha256((match.group("literal") + "\n").encode("utf-8")).hexdigest()
+
+
+def _test_completion_predicate(source: str) -> str:
+    """A request to run and report differs from a requirement to pass.
+
+    The explicit success target is sourced from the governing test clause.
+    A later honest failure report neither creates repair work nor satisfies
+    a user requirement to make tests pass.
+    """
+    if re.search(
+        r"(?:确保|保证|必须|直到|修到|修至).{0,32}(?:测试|用例).{0,12}(?:通过|全绿)|"
+        r"(?:使|让)(?:测试|用例).{0,12}(?:通过|全绿)|"
+        r"\b(?:make|ensure|must|get)\b.{0,32}\btests?\b.{0,16}\bpass\b|"
+        r"\bfix\b.{0,32}\b(?:failing\s+tests?|tests?\s+to\s+pass)\b",
+        source, re.I,
+    ):
+        return "test_passed"
+    return "test_run_completed"
+
+
+def _reported_file_postimage(reply: str, target: str) -> str | None:
+    """Bind a direct current-file report to its complete reported bytes.
+
+    The Host readback is checked separately. A literal requested value, a
+    quoted example, or an assertion about a different object is not a report
+    of that readback. Fenced output is a value, and every reported value must
+    agree; selecting one convenient sentence from conflicting prose is unsafe.
+    """
+    if re.search(
+        r"(?:未|没有|尚未|无法|不能).{0,24}(?:回读|读取|读到|查看|核验|确认|报告)|"
+        r"(?:文件|内容|回读|结果).{0,16}(?:未|没有|尚未)(?:回读|读取|查看|核验|确认)|"
+        r"\b(?:not|never|cannot|couldn't|didn't)\b.{0,32}\b(?:read|check|verify|report)\b",
+        reply, re.I,
+    ):
+        return None
+    fences = list(re.finditer(r"(?m)^```(?:text)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*$", reply))
+    if "```" in reply and len(fences) * 2 != reply.count("```"):
+        return None
+    prose = reply
+    for match in reversed(fences):
+        prose = prose[:match.start()] + "\n" + prose[match.end():]
+    basename = re.escape(Path(target).name)
+    # The subject grammar is deliberately bounded. In particular, a bare
+    # read verb followed by an unbound object ("another file", a document,
+    # test output) cannot use this root's unique target as its subject.
+    headers = (
+        rf"(?:我|我们)?\s*核对了本次\s+{basename}\s+的(?:完整)?回读",
+        rf"(?:我|我们)?\s*实际回读\s*(?:{basename}|当前文件|该文件|这个文件)",
+        r"独立\s+Bash\s+`cat`\s+完整回读结果为",
+        r"(?:已|已经)?\s*(?:独立)?回读\s*(?:当前文件|该文件|这个文件|本次文件)?\s*(?=[:：，,]|读到|得到|结果|内容|$)",
+        r"已修改并回读\s*(?=[:：，,]|当前文件|该文件|这个文件|读到|$)",
+        r"实际文件内容\s*(?:恰好|确实)?\s*(?:是|为|等于)",
+        r"(?:I|we)\s+(?:have\s+)?(?:read|checked|verified)\s+(?:the\s+)?(?:current|same)\s+file",
+    )
+    def direct_clause(clause: str) -> re.Match[str] | None:
+        clause = clause.strip()
+        if not clause or clause.startswith((">", "'", '"', "“", "‘")):
+            return None
+        if clause_is_interrogative(clause) or _stop_outer_reporting_frame(clause):
+            return None
+        return next((match for pattern in headers
+                     if (match := re.match(r"^\s*" + pattern, clause, re.I))), None)
+
+    # A claim belongs to the clause that asserts it. A preceding, detached
+    # "I read the file" sentence cannot lend its subject to a later example.
+    value_re = re.compile(
+        r"`?(?P<literal>[\w=:+-]{1,256})`?\s*(?:加一个换行|加换行|后跟换行|"
+        r"[,，]\s*末尾有一个换行|plus\s+(?:a\s+)?newline|"
+        r"followed\s+by\s+a\s+newline)", re.I)
+    claims: list[str] = []
+    for clause in re.split(r"[。；;!！\n]+", prose):
+        clause = clause.strip()
+        values = list(value_re.finditer(clause))
+        if values:
+            subject = direct_clause(clause)
+            if subject is None:
+                # A separate claim about another object supplies no bytes
+                # for this file. An unowned "actual content" assertion after
+                # a current-file report is ambiguous and cannot be ignored.
+                possessor = re.match(r"^(.{1,80}?)的(?:实际)?(?:内容|示例)", clause)
+                if (possessor is not None
+                        and not re.search(r"当前|该文件|这个文件|本次|" + basename,
+                                          possessor.group(1), re.I)):
+                    continue
+                return None
+            if any(not re.fullmatch(
+                r"[\s:：,，]*(?:(?:文件)?内容\s*(?:是|为|等于)|"
+                r"读到|得到|结果\s*(?:是|为))?[\s:：,，]*",
+                clause[subject.end():value.start()], re.I)
+                for value in values):
+                return None
+            claims.extend(hashlib.sha256((value.group("literal") + "\n").encode("utf-8")).hexdigest()
+                          for value in values)
+    for fence in fences:
+        # The immediately governing clause must itself assert that the fence
+        # is this file's actual readback. Whitespace may separate Markdown
+        # blocks; another sentence, report object, or example may not.
+        prefix = reply[:fence.start()].rstrip()
+        governing = re.split(r"[。；;!！]", prefix)[-1].strip()
+        subject = direct_clause(governing)
+        if subject is None:
+            continue
+        if not re.fullmatch(r"[\s:：]*", governing[subject.end():]):
+            return None
+        claims.append(hashlib.sha256(fence.group(1).encode("utf-8")).hexdigest())
+    if not claims or len(set(claims)) != 1:
+        return None
+    if re.search(r"(?:没有|无|不含|缺少)\s*(?:末尾)?换行|\b(?:no|without|missing)\s+(?:final\s+)?newline\b",
+                 prose, re.I):
+        return None
+    return claims[0]
+
+
+def _reported_current_test_result(reply: str, target: str, observed: dict[str, Any]) -> bool:
+    """Check a present-tense report against one already verified Host test.
+
+    This only validates delivery. The current test effect, exit status, suite
+    identity, and event watermark must have been proved independently.
+    """
+    exit_code = observed.get("terminal_exit_code")
+    passed_count = observed.get("passed_count")
+    failed_count = observed.get("failed_count")
+    if type(exit_code) is not int or exit_code < 0:
+        return False
+    # Interpret only the assistant's direct result statement and its adjacent
+    # metric lines. A blockquote, example, or later future observation cannot
+    # provide a missing exit/count, nor poison an already complete report.
+    excluded = [(begin, end) for begin, end, kind in _stop_quotation_regions(reply)
+                if kind in {"quote", "blockquote"}]
+    statement = re.compile(r"^(?:测试(?:成功|通过|失败|未通过)|"
+                           r"(?:\d+\s+)?tests?\s+(?:passed|failed)|"
+                           r"\d+\s+(?:passed|failed))", re.I)
+    metric = re.compile(r"^(?:退出码|退出状态|exit\s*(?:code|status)|"
+                        r"收集(?:测试)?|collected|通过|失败|passed|failed)", re.I)
+    selected: list[str] = []
+    active = False
+    offset = 0
+    for line in reply.splitlines(keepends=True):
+        line_end = offset + len(line)
+        if any(begin < line_end and offset < end for begin, end in excluded):
+            active = False
+            offset = line_end
+            continue
+        for clause in re.split(r"[。；;!！]|(?<!\d)\.(?!\d)", line):
+            clause = re.sub(r"^\s*[-*+]\s*", "", clause.strip()).strip()
+            if not clause:
+                continue
+            if _stop_outer_reporting_frame(clause):
+                active = False
+            elif statement.match(clause):
+                selected.append(clause)
+                active = True
+            elif active and metric.match(clause):
+                selected.append(clause)
+            else:
+                active = False
+        offset = line_end
+    if not selected:
+        return False
+    reply = "\n".join(selected)
+    # Inline Markdown renders a numeric result without changing its value.
+    # It does not supply any Host fact or turn identity.
+    reply = re.sub(r"`(\d+)`", r"\1", reply)
+    if re.search(r"(?:以后|稍后|将来|计划|建议)\s*(?:运行|测试|报告)|"
+                 r"\b(?:later|future|plan|would|will)\b.{0,32}\b(?:test|report|run)\b",
+                 reply, re.I):
+        return False
+    if re.search(r"(?:另一个|其他|别的)(?:测试|套件|文件)|\b(?:other|another)\s+(?:test|suite|file)\b",
+                 reply, re.I):
+        return False
+    mentioned, ambiguous = root_absolute_locator_mentions(reply)
+    if ambiguous or mentioned - {target}:
+        return False
+    # A quoted example or third-party report is not this assistant's result.
+    if _stop_outer_reporting_frame(reply):
+        return False
+    codes = [int(value) for value in re.findall(
+        r"(?:退出码|退出状态|exit\s*(?:code|status))\s*[:：=]?\s*(\d+)", reply, re.I)]
+    if any(code != exit_code for code in codes):
+        return False
+    counts = [int(value) for match in re.findall(
+        r"(?:通过|passed?)\s*[:：]?\s*(\d+)|\b(\d+)\s+passed\b", reply, re.I)
+        for value in match if value]
+    collected = [int(value) for value in re.findall(
+        r"(?:收集(?:测试)?|collected)\s*[:：]?\s*(\d+)", reply, re.I)]
+    if exit_code == 0:
+        if (type(passed_count) is not int or passed_count < 1
+                or any(count != passed_count for count in counts + collected)
+                or re.search(r"测试失败|未通过|运行失败|\b(?:failed|failure|not passed)\b",
+                             reply, re.I)):
+            return False
+        return bool(re.search(r"测试(?:成功|通过)|\b\d+\s+passed\b", reply, re.I)) \
+            and bool(codes or counts)
+    if (type(failed_count) is not int or failed_count < 1
+            or re.search(r"测试(?:成功|通过)|\b\d+\s+passed\b", reply, re.I)
+            or any(count != failed_count for count in collected)):
+        return False
+    reported_failed = [int(value) for match in re.findall(
+        r"(?:失败|failed?)\s*[:：]?\s*(\d+)|\b(\d+)\s+failed\b", reply, re.I)
+        for value in match if value]
+    return bool(codes and (reported_failed or re.search(r"测试(?:失败|未通过)|\bfailed\b", reply, re.I))) \
+        and all(count == failed_count for count in reported_failed)
+
+
+def _append_current_result_delivery(
+    snapshot: dict[str, Any], source_req: dict[str, Any],
+    report_span: dict[str, Any], report_text: str,
+    delivery_record: dict[str, Any], event_seq: int,
+) -> str:
+    """Add the same source-bound delivery relation for edit and test reports."""
+    import copy
+
+    report_id = "report:" + source_req["id"]
+    report_req = copy.deepcopy(source_req)
+    report_req.update(id=report_id, source=report_span, kind="information",
+                      action="deliver_information", target=report_text,
+                      predicate="answer_delivered", evidence_kind="delivery",
+                      target_origin=dict(root_constraint=report_text, subject_kind="opaque",
+                                         implementation_choice=report_text,
+                                         host_selection=report_text, resolved=report_text,
+                                         observed=report_text, root_constraint_source=report_span,
+                                         constraint_kind="exact", selection_source_id=None))
+    snapshot["requirements"].append(report_req)
+    delivery_id = "final_delivery:" + delivery_record["delivery_sha256"]
+    snapshot["sources"].append(dict(
+        id=delivery_id, seq=event_seq, kind="final_delivery",
+        unit=source_req["unit"], revision=source_req["revision"],
+        sha256=delivery_record["reply_sha256"], byte_length=0,
+        text=None, call_id=None, turn=snapshot["turn"],
+    ))
+    snapshot["facts"].append(dict(
+        id="delivery_fact:" + report_id, seq=event_seq,
+        unit=source_req["unit"], revision=source_req["revision"],
+        source_id=delivery_id, call_source_id=None, kind="delivery",
+        target=report_text, predicate="answer_delivered", outcome="success",
+        operation_id=None, requirement_id=report_id, condition_id=None,
+        invalidates=[],
+    ))
+    snapshot["as_of"] = event_seq
+    return report_id
+
+
+def _action_source_clauses(text: str) -> list[str]:
+    """Keep a quoted filesystem *object* inside its governing instruction.
+
+    The ordinary authority filter must still discard a quoted command or a
+    report of somebody else's command. Only a complete quoted locator is
+    shielded while that filter splits the root into speech clauses.
+    """
+    marker_open, marker_close = "\ue000", "\ue001"
+    if marker_open in text or marker_close in text:
+        return control_speech_clauses(text)
+    replacements: list[str] = []
+
+    def shield(match: re.Match[str]) -> str:
+        candidate = match.group(2)
+        if match.group(1) == "`":
+            sentence_start = max(text.rfind(mark, 0, match.start()) for mark in
+                                 "\n。！？!?；;，,") + 1
+            governed = _direct_shell_command_object(text[sentence_start:])
+            valid = governed is not None or (
+                (WINDOWS_ABSOLUTE_PATH_RE.match(candidate) is not None
+                 and canonical_windows_locator(candidate) == (candidate, None)) or
+                (candidate.startswith("/") and ".." not in Path(candidate).parts)
+            )
+        else:
+            found, ambiguous = root_absolute_locator_mentions(match.group(0))
+            valid = not ambiguous and found == {candidate}
+        if not valid:
+            return match.group(0)
+        index = len(replacements)
+        replacements.append(match.group(0))
+        return f"{marker_open}{index}{marker_close}"
+
+    shielded = re.sub(r"([\"'`])([^\n]*?)\1", shield, text)
+    # Preserve dots in unquoted locators as well. A quoted locator is already
+    # one opaque token, including any spaces or punctuation in its filename.
+    for pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+        shielded = pattern.sub(lambda match: match.group(0).replace(".", "\u241f"), shielded)
+    clauses = control_speech_clauses(shielded)
+    restored = []
+    for clause in clauses:
+        clause = clause.replace("\u241f", ".")
+        for index, original in enumerate(replacements):
+            clause = clause.replace(f"{marker_open}{index}{marker_close}", original)
+        restored.append(clause)
+    return restored
+
+
+def _result_report_clause(clause: str) -> bool:
+    """A report of the result is delivery, not another requested action."""
+    return bool(re.fullmatch(
+        r"\s*(?:(?:并|然后|再)\s*)?(?:根据|按照)\s*[^,，;；。.!?？]{0,48}"
+        r"(?:结果|退出|输出)\s*(?:报告|说明)(?:本次)?(?:测试|结果|状态)?\s*|"
+        r"\s*(?:(?:and|then)\s+)?report\s+(?:the\s+)?(?:result|output|exit\s+status)\s*",
+        clause, re.I,
+    ))
+
+
+def _readback_clause_roles(clause: str, command_span: str) -> tuple[bool, bool]:
+    """Validate the whole readback tail; an adjacent action stays unknown."""
+    suffix = clause.split(command_span, 1)[1].strip().rstrip("。.!！").strip()
+    zh = re.fullmatch(
+        r"(?:(?:完整)?(?:回读|读取|核对)(?:该文件|文件|它|内容)?|调用)?"
+        r"(?:并(?:说明|报告|告知)(?:读到的|实际)?(?:内容|结果))?",
+        suffix,
+    )
+    en = re.fullmatch(
+        r"(?:call|separately|to\s+read\s+it)?"
+        r"(?:\s+and\s+report\s+(?:what\s+it\s+returned|the\s+actual\s+bytes|the\s+result))?",
+        suffix, re.I,
+    )
+    valid = bool(zh or en)
+    report = bool(re.search(r"(?:说明|报告|告知|\breport\b)", suffix, re.I))
+    return valid, report
+
+
+def _pure_readback_report_clause(clause: str) -> bool:
+    return bool(re.fullmatch(
+        r"\s*(?:(?:并|然后|再)\s*)?(?:根据|按照)(?:本次)?(?:真实)?(?:回读|读取|结果|退出|输出)"
+        r"(?:的)?(?:结果)?(?:报告|说明)(?:本次)?(?:实际)?(?:内容|结果|状态)?\s*|"
+        r"\s*(?:(?:并|然后|再)\s*)?据实(?:报告|告知|说明)(?:实际)?(?:内容|结果)?\s*|"
+        r"\s*(?:(?:and|then)\s+)?report\s+(?:the\s+)?(?:actual\s+bytes|result|output|content)\s*",
+        clause, re.I,
+    ))
+
+
+def _literal_old_file_context(clause: str, target: str) -> bool:
+    """A stated old literal is context, with no bundled preservation rule."""
+    locators, ambiguous = root_absolute_locator_mentions(clause)
+    if ambiguous or locators != {target} or clause.count(target) != 1:
+        return False
+    contextual = clause.replace(target, "对象", 1)
+    return bool(re.fullmatch(
+        r"\s*已知\s*[\"“]?对象[\"”]?\s*(?:的原内容恰好为|当前是)\s*"
+        r"[\w=:+-]{1,256}\s*(?:加一个换行|加换行|后跟换行)\s*|"
+        r"\s*这个文件\s*[\"“]?对象[\"”]?\s*原为\s*"
+        r"[\w=:+-]{1,256}\s*(?:加一个换行|加换行|后跟换行)\s*|"
+        r"\s*The\s+file\s*[\"“]?对象[\"”]?\s+currently\s+says\s*"
+        r"[\w=:+-]{1,256}\s+followed\s+by\s+a\s+newline\s*",
+        contextual, re.I,
+    ))
+
+
+def _current_action_basis(
+    state: dict[str, Any] | None, category: str, reply_clause: str,
+    session_dir: Path | None = None, *, include_satisfied: bool = False,
+    allowed_item_ids: set[str] | None = None,
+    include_unready: bool = False, include_controlled: bool = False,
+) -> dict[str, Any] | None:
+    """Bind a candidate action to an unmet, current root requirement.
+
+    This is Stop diagnosis, never permission to run a tool. Historical and
+    terminal rows cannot become current work through reply wording.
+    """
+    if state is None or session_dir is None or category == "generic_work":
+        return None
+    current_ids = current_scope_projection(state)["scoped_item_ids"]
+    if include_controlled:
+        current_ids |= {
+            str(ref["id"])
+            for control in state.get("root_controls", [])
+            if isinstance(control, dict) and "kind" in control
+            for ref in control.get("items", []) if isinstance(ref, dict)
+        }
+    active_id = state.get("work_state", {}).get("active_work_unit_id")
+    units = {str(u.get("id")): u for u in state.get("work_units", []) if isinstance(u, dict)}
+    reply_subjects = {str(s["id"]) for s in prompt_subjects(reply_clause)}
+    pattern = dict(ACTION_PATTERNS).get(category)
+    if pattern is None:
+        if category != "state_readback":
+            return None
+        pattern = re.compile(r"(?!)")  # The audited command object supplies this action.
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            if not isinstance(item, dict) or item.get("id") not in current_ids:
+                continue
+            if allowed_item_ids is not None and item.get("id") not in allowed_item_ids:
+                continue
+            if ((item.get("status") in TERMINAL_ITEM_STATUSES and
+                 not (include_controlled and item.get("status") in {
+                     "pass", "answered", "superseded"}))
+                    or item.get("status") == "legacy_review"):
+                continue
+            unit = units.get(str(item.get("work_unit_id")))
+            if not unit or unit.get("status") in {"completed", "historical_unresolved"}:
+                continue
+            prompt = next((p for p in state.get("prompts", []) if p.get("id") == item.get("prompt_id")
+                           and p.get("origin", "human") == "human"), None)
+            if prompt is None:
+                continue
+            roots = {
+                str(p["id"]): record
+                for p in state.get("prompts", [])
+                if isinstance(p, dict) and p.get("origin", "human") == "human"
+                and (record := read_prompt_record(session_dir, p)) is not None
+            }
+            root_record = roots.get(str(item.get("prompt_id")))
+            if root_record is None:
+                continue
+            root_text = root_record["text"]
+            if item.get("execution_source_span") is None and any(
+                child.get("parent_id") == item.get("id")
+                and child.get("execution_source_span") is not None
+                for child in state.get("requirements", []) if isinstance(child, dict)
+            ):
+                continue
+            clauses = _action_source_clauses(root_text)
+            if item.get("execution_source_span") is not None:
+                span = item["execution_source_span"]
+                if (not isinstance(span, list) or len(span) != 2
+                        or any(type(value) is not int for value in span)):
+                    continue
+                try:
+                    child_scope = root_text.encode("utf-8")[span[0]:span[1]].decode("utf-8")
+                except (UnicodeDecodeError, IndexError):
+                    continue
+                if (sha256_text(child_scope) != item.get("execution_source_sha256")
+                        or item.get("execution_kind") != category):
+                    continue
+                clauses = [child_scope]
+            sources = [c for c in clauses
+                       if (item.get("execution_kind") == category
+                           or pattern.search(c)
+                           or category == "local_edit" and _direct_anaphoric_edit(c)
+                           or (command_object := _direct_shell_command_object(c)) is not None
+                           and command_object[0] == category)
+                       and ((category == "local_edit" and _direct_anaphoric_edit(c))
+                            or _action_clause_time_state(c, category)
+                            in {"current", "waiting"})
+                       and not _result_report_clause(c)
+                       and not CLAUSE_NEGATION_RE.search(c.replace("分别", ""))
+                       and not DESCRIPTION_FRAME_RE.search(c)]
+            if len(sources) != 1:
+                continue
+            source = sources[0]
+            direct_command = _direct_shell_command_object(source)
+            source_at = root_text.find(source)
+            dependent_readback = False
+            if category == "local_edit" and source_at >= 0:
+                following = root_text[source_at + len(source):]
+                if re.fullmatch(
+                    r"\s*[,，;；]?\s*(?:并|然后|and)?\s*"
+                    r"(?:检查|核对)(?:改动后(?:的)?文件|文件内容)\s*[。.!！]?\s*"
+                    r"|\s*[,，;；]?\s*(?:and\s+)?verify\s+(?:the\s+)?changed\s+file\s*[.!]?\s*",
+                    following, re.I,
+                ):
+                    source = root_text[source_at:].strip()
+                    dependent_readback = True
+            if category == "local_review" and source_at >= 0 and re.search(
+                r"\bmeasure\b|测量|测出", source, re.I
+            ):
+                following = root_text[source_at + len(source):]
+                if re.fullmatch(r"\s*[,，;；]\s*(?:并|然后)?\s*报告(?:数值|结果)\s*[。.!！]?\s*"
+                                r"|\s*[,，;；]\s*(?:and\s+)?report\s+(?:the\s+)?(?:value|result)\s*[.!]?\s*",
+                                following, re.I):
+                    source = root_text[source_at:].strip()
+            if source_at >= 0:
+                sentence_start = max(root_text.rfind(mark, 0, source_at)
+                                     for mark in "\n。！？!?；;") + 1
+                candidate = root_text[sentence_start:source_at + len(source)].strip()
+                candidate_action = _root_action_head(candidate, pattern) if pattern.search(candidate) else None
+                if (candidate_action is not None
+                        and candidate.count(",") + candidate.count("，") > 0
+                        and _root_action_condition(candidate, candidate_action)):
+                    source = candidate
+            condition_action = (_root_action_head(source, pattern)
+                                if pattern.search(source) else None)
+            if condition_action is None and direct_command is not None:
+                condition_action = re.search(re.escape(direct_command[2]), source)
+            condition_scope = (_root_action_condition(source, condition_action)
+                               if condition_action is not None else None)
+            requested_postimage = (_explicit_file_postimage(source)
+                                   if category == "local_edit" else None)
+            # A changed byte digest proves only an unconstrained edit. A
+            # requested replacement, preservation condition, or other
+            # postcondition needs its own sourced predicate and readback.
+            if category == "local_edit":
+                governed_repair_child = bool(
+                    item.get("execution_source_span") is not None
+                    and any(
+                        c.get("kind") == "persistence"
+                        and c.get("scope_kind") == "parent_task"
+                        and c.get("source_prompt_id") == item.get("prompt_id")
+                        and any(r.get("id") == item.get("id")
+                                for r in c.get("items", []))
+                        for c in state.get("root_controls", []) if isinstance(c, dict)
+                    )
+                )
+                governed_successor = bool(
+                    include_controlled
+                    and any(link.get("new_id") == item.get("id")
+                            and link.get("old_id") in current_ids
+                            for link in state.get("supersedes", [])
+                            if isinstance(link, dict))
+                )
+                generic_edit = source
+                if dependent_readback:
+                    generic_edit = re.sub(
+                        r"\s*[,，;；]\s*(?:并|然后)?\s*(?:检查|核对)(?:改动后(?:的)?文件|文件内容)\s*[。.!！]?\s*$",
+                        "", generic_edit,
+                    )
+                full_locators, _ = root_absolute_locator_mentions(source)
+                for locator in (*full_locators,
+                                *ABSOLUTE_PATH_RE.findall(source),
+                                *WINDOWS_DRIVE_PATH_RE.findall(source),
+                                *RELATIVE_FILE_RE.findall(source)):
+                    generic_edit = generic_edit.replace(locator, "", 1)
+                simple_edit = bool(re.fullmatch(
+                    r"\s*(?:(?:请|帮我|先|再|完成|只)\s*)*(?:修改|编辑|更新|修复|修正|修好|实现)"
+                    r"\s*[^,，;；。.!?？]{0,55}?(?:\s*(?:并|然后)\s*核对(?:文件)?内容)?\s*"
+                    r"|\s*(?:本轮)?完成(?:补丁|修复)\s*"
+                    r"|\s*请在\s*[^,，;；。.!?？]{1,70}\s*范围内\s*(?:修好|修复|修正|修改)[^,，;；。.!?？]{0,55}\s*"
+                    r"|\s*(?:please\s+)?(?:edit|modify|update|fix|correct|repair)"
+                    r"\s*[^,，;；。!?？]{0,70}?(?:\s+and\s+verify\s+the\s+changed\s+file)?\s*",
+                    generic_edit, re.I,
+                )) or (_direct_anaphoric_edit(source) and requested_postimage is not None)
+                constrained_edit = bool(re.search(
+                    r"改为|替换为|写入|不得覆盖|no[- ]overwrite|replace\s+with",
+                    source, re.I,
+                ))
+                if (not (governed_repair_child or governed_successor)
+                        and (not simple_edit or constrained_edit and requested_postimage is None)):
+                    continue
+            # A single sentence can carry independent effects. One host test
+            # result cannot interpret and close an adjacent edit/review verb.
+            semantic_source = re.sub(r"`[^`\n]+`", "对象", source)
+            for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+                semantic_source = locator_pattern.sub("对象", semantic_source)
+            if any(other != category and not (
+                category == "local_edit" and other in {"local_review", "test_verify"}
+                and (dependent_readback or re.search(r"(?:并|然后)\s*核对(?:文件)?内容|\band\s+verify\s+the\s+changed\s+file\b", source, re.I))
+            ) and any(
+                not semantic_source[match.end():].startswith("的")
+                for match in other_pattern.finditer(semantic_source)
+            ) for other, other_pattern in ACTION_PATTERNS):
+                continue
+            if WINDOWS_UNC_PATH_RE.search(source):
+                continue  # An explicit unsupported locator cannot become a work-unit choice.
+            source_without_command = (source.replace(direct_command[2], "对象", 1)
+                                      if direct_command is not None else source)
+            source_targets, ambiguous_source_target = root_absolute_locator_mentions(
+                source_without_command)
+            if ambiguous_source_target:
+                continue
+            if direct_command is not None:
+                source_targets.add(direct_command[1])
+            anaphoric_target = (_same_root_anaphoric_target(root_text, source)
+                                if category == "local_edit" and _direct_anaphoric_edit(source)
+                                else None)
+            if category == "local_edit" and _direct_anaphoric_edit(source):
+                if anaphoric_target is None:
+                    continue
+                source_targets.add(anaphoric_target)
+            targets = sorted(source_targets)
+            relative_targets = [match.group(0) for match in RELATIVE_FILE_RE.finditer(source)
+                                if ".." not in Path(match.group(0)).parts]
+            eligible_targets = targets
+            resolved_constraint = None
+            if eligible_targets:
+                if len(set(eligible_targets)) != 1:
+                    continue
+                root_constraint = eligible_targets[0]
+                if WINDOWS_ABSOLUTE_PATH_RE.match(root_constraint):
+                    target, unsupported = canonical_windows_locator(root_constraint)
+                    if unsupported is not None or target is None or target != root_constraint:
+                        continue
+                else:
+                    target = root_constraint
+                constraint_kind = "exact"
+            else:
+                # The root names the current work but delegates an object
+                # choice. Accept only a unique, observed host readiness
+                # selection from this exact work unit/revision.
+                root_relative_target = None
+                relative_kind = None
+                if relative_targets:
+                    if len(set(relative_targets)) != 1:
+                        continue
+                    cwd = root_record.get("locator_base")
+                    literal = relative_targets[0]
+                    if (not isinstance(cwd, str) or not Path(cwd).is_absolute()
+                            or any(part in {"", ".", ".."} for part in literal.split("/"))
+                            or literal.startswith(("~", "$", "%"))):
+                        continue
+                    root_relative_target = str(Path(cwd) / literal)
+                    relative_kind = "directory" if re.search(
+                        rf"{re.escape(literal)}\s*(?:范围内|目录内|之下)|\bunder\s+{re.escape(literal)}\b",
+                        source, re.I,
+                    ) else "exact"
+                allowed_predicates = ({"edit_applied", "content_hash"} if category == "local_edit"
+                                      else {"content_hash"} if category == "state_readback"
+                                      else {"file_exists", "test_passed", "test_run_completed"} if category in {"test_verify", "local_review"}
+                                      else {"repo_identity", "commit_identity", "branch_identity", "remote_ref"})
+                selections = {
+                    (obs.get("canonical_target") if root_relative_target is not None else obs["target"])
+                    for evidence in state.get("evidence", [])
+                    if isinstance(evidence, dict)
+                    and isinstance((obs := evidence.get("core_observation")), dict)
+                    and obs.get("kind") in {"readiness", "state_readback", "action_event", "git_readback"}
+                    and obs.get("outcome") == "success"
+                    and obs.get("unit") == item.get("work_unit_id")
+                    and obs.get("prompt_id") in roots
+                    and type(evidence.get("core_call_seq")) is int
+                    and type(root_record.get("core_event_seq")) is int
+                    and evidence["core_call_seq"] > root_record["core_event_seq"]
+                    and obs.get("predicate") in allowed_predicates
+                    and isinstance(obs.get("target"), str)
+                    and (root_relative_target is None or isinstance(obs.get("canonical_target"), str))
+                    and (root_relative_target is None
+                         or (obs["canonical_target"].startswith(root_relative_target + "/")
+                             if relative_kind == "directory"
+                             else obs["canonical_target"] == root_relative_target))
+                }
+                if len(selections) != 1:
+                    if not (include_satisfied and relative_kind == "exact"
+                            and not selections and root_relative_target is not None):
+                        continue
+                    target = root_relative_target
+                else:
+                    target = next(iter(selections))
+                if root_relative_target is not None:
+                    # Lexical containment is necessary but insufficient when
+                    # a symlink can redirect the actual Host target elsewhere.
+                    if selections:
+                        try:
+                            if str(Path(target).resolve(strict=True)) != target:
+                                continue
+                        except (OSError, RuntimeError):
+                            continue
+                    root_constraint = relative_targets[0]
+                    constraint_kind = relative_kind
+                    resolved_constraint = root_relative_target
+                else:
+                    root_constraint = None
+                    constraint_kind = "work_unit"
+                    resolved_constraint = None
+                if category in {"local_commit", "remote_push"}:
+                    prior_targets: set[str] = set()
+                    ambiguous_prior = False
+                    for prior_item in state.get("requirements", []):
+                        if not isinstance(prior_item, dict):
+                            continue
+                        prior_root = roots.get(str(prior_item.get("prompt_id")))
+                        if (prior_item.get("work_unit_id") != item.get("work_unit_id")
+                                or prior_root is None
+                                or type(prior_root.get("core_event_seq")) is not int
+                                or prior_root["core_event_seq"] >= root_record["core_event_seq"]):
+                            continue
+                        found, unknown = root_absolute_locator_mentions(prior_root["text"])
+                        prior_targets.update(found)
+                        ambiguous_prior |= unknown
+                    if ambiguous_prior or prior_targets != {target}:
+                        continue
+            target_ids = {str(s["id"]) for s in prompt_subjects(target)}
+            if reply_subjects and target_ids and not target_ids.issubset(reply_subjects):
+                continue
+            # A current root review/evaluation is due at this work unit's
+            # watermark. Its object is selected by host provenance; topic
+            # nouns and time adverbs in the reply are never authority.
+            action_name = (
+                "measure_current_effect" if category == "local_review"
+                and re.search(r"\bmeasure\b|测量|测出", source, re.I)
+                else "evaluate_current_effect" if category == "local_review" else category
+            )
+            predicate_name = ("measurement_and_report" if action_name == "measure_current_effect"
+                              else "readback_complete" if action_name == "state_readback"
+                              else _test_completion_predicate(source)
+                              if category == "test_verify" else None)
+            from cg_codex_core_adapter import project_current_action
+            try:
+                snapshot = project_current_action(
+                    state, roots, item=item, action=action_name, target=target,
+                    turn=str((state.get("completion_attempt") or {}).get("turn_id") or "stop"),
+                    constraint_kind=constraint_kind,
+                    root_constraint=root_constraint,
+                    resolved_constraint=resolved_constraint,
+                    root_scope=source,
+                    condition_scope=condition_scope,
+                    predicate_name=predicate_name,
+                    requested_postimage_sha256=requested_postimage,
+                    return_snapshot=True,
+                    resume_prefix=bool(
+                        (prefix := root_text.split(source, 1)[0].strip(" \t\r\n,，。.!?？；;：:"))
+                        and (resume_match := EXECUTION_RESUME_RE.search(prefix)) is not None
+                        and resume_match.end() == len(prefix)
+                        and len(control_speech_clauses(prefix)) == 1
+                        and not any(p.search(prefix) for _, p in ACTION_PATTERNS)
+                    ),
+                )
+                if category == "state_readback" and direct_command is not None:
+                    matching_ids = {
+                        str(evidence.get("id"))
+                        for evidence in state.get("evidence", [])
+                        if isinstance(evidence, dict)
+                        and isinstance((observed := evidence.get("core_observation")), dict)
+                        and _sourced_readback_host_matches(source, direct_command, observed)
+                    }
+                    snapshot["facts"] = [
+                        fact for fact in snapshot["facts"]
+                        if not (fact.get("requirement_id") == item.get("id")
+                                and fact.get("kind") != "readiness"
+                                and str(fact.get("source_id") or "").startswith("result:")
+                                and str(fact["source_id"])[7:] not in matching_ids)
+                    ]
+                from cg_core_v2 import project as project_core
+                projected = project_core(snapshot)
+            except (ValueError, KeyError, TypeError):
+                continue
+            actionable = any(a["requirement_id"] == item["id"] for a in projected["current_actions"])
+            satisfied = projected["predicates"].get(item["id"]) == "satisfied"
+            edit_effects = sorted(
+                (fact for fact in snapshot["facts"]
+                 if fact["requirement_id"] == item["id"]
+                 and fact["kind"] == "action_event"
+                 and fact["predicate"] == "edit_applied"),
+                key=lambda fact: fact["seq"],
+            ) if category == "local_edit" else []
+            effect_needs_verification = bool(
+                edit_effects and edit_effects[-1]["outcome"] == "success" and not satisfied
+            )
+            if (not actionable and not condition_scope and not include_unready
+                    and not (include_satisfied and satisfied)
+                    and not (include_satisfied and constraint_kind == "exact"
+                             and resolved_constraint is not None)):
+                continue
+            return {
+                "schema": "current-action-basis/v1", "requirement_id": str(item["id"]),
+                "unit": str(item.get("work_unit_id") or active_id),
+                "revision": str(unit.get("scope_sha256") or ""),
+                "source_prompt_id": str(prompt["id"]), "source_sha256": str(prompt.get("sha256") or ""),
+                "action": action_name, "target": target,
+                "predicate": predicate_name or {"test_verify": "test_passed", "local_commit": "commit_verified",
+                              "remote_push": "push_verified"}.get(category, "state_matches"),
+                "owner": "assistant", "readiness": (
+                    "root_condition_pending" if condition_scope else
+                    "evidence_insufficient" if effect_needs_verification else
+                    "trusted_host_observation"
+                ),
+                "as_of": projected["as_of"],
+                "predicate_state": projected["predicates"].get(item["id"], "insufficient"),
+                "current_due": category == "local_review" and not condition_scope,
+                "root_condition": (
+                    {"kind": condition_scope[1],
+                     "source_sha256": sha256_text(condition_scope[0])}
+                    if condition_scope else None
+                ),
+                "core_projection": projected,
+                "core_snapshot": snapshot,
+            }
+    return None
+
+
+def _live_current_action_bases(
+    state: dict[str, Any], session_dir: Path,
+) -> list[dict[str, Any]]:
+    """Resolve current executable steps, preferring a ready substep.
+
+    A single root item can have an observed edit effect whose remaining
+    explicit step is an independent readback.  The ready readback is the
+    current action; an evidence-insufficient edit basis must not turn that
+    state into a request to repeat the edit.
+    """
+    selected: dict[str, dict[str, Any]] = {}
+    item_ids = sorted(current_scope_projection(state)["scoped_item_ids"])
+    categories = [*(name for name, _ in ACTION_PATTERNS), "state_readback"]
+    for item_id in item_ids:
+        for category in categories:
+            basis = _current_action_basis(
+                state, category, "", session_dir, allowed_item_ids={item_id}
+            )
+            if basis is None:
+                continue
+            prior = selected.get(item_id)
+            if prior is None or (
+                _basis_actionability(prior) != "current_ready"
+                and _basis_actionability(basis) == "current_ready"
+            ):
+                selected[item_id] = basis
+    return _dedupe_action_bases(list(selected.values()))
+
+
+def _dedupe_action_bases(bases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse duplicate requirement/acceptance projections, not real steps."""
+    selected: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for basis in bases:
+        key = (
+            str(basis.get("source_prompt_id") or ""),
+            str(basis.get("action") or ""),
+            str(basis.get("target") or ""),
+            str(basis.get("predicate") or ""),
+        )
+        prior = selected.get(key)
+        if prior is None or (
+            str(prior.get("requirement_id") or "").startswith("A")
+            and str(basis.get("requirement_id") or "").startswith("R")
+        ):
+            selected[key] = basis
+    return list(selected.values())
+
+
+def _root_control_decomposition_valid(
+    state: dict[str, Any], session_dir: Path,
+    additional_prompt_ids: set[str] | None = None,
+) -> bool:
+    """Compare controlled execution children with immutable root bytes."""
+    controls = [c for c in state.get("root_controls", [])
+                if isinstance(c, dict) and "kind" in c]
+    if not controls:
+        return True
+    # Every new human business root carries its own immutable root→unit
+    # companion, including roots whose requirement and acceptance rows have
+    # since been deleted. A survivor-only catalog cannot prove completeness.
+    try:
+        records = prompt_records_from_disk(session_dir)
+    except (OSError, StateIntegrityError, TypeError, ValueError):
+        return False
+    metadata = {str(p.get("id")): p for p in state.get("prompts", [])
+                if isinstance(p, dict)}
+    max_control_seq = max(int(c["source_seq"]) for c in controls)
+    latest_seq = int(state.get("core_event_sequence") or max_control_seq)
+    # The immutable prompt is written before the mutable state transaction.
+    # A crash after that write leaves a real newer root on disk. Do not treat
+    # the older state watermark as an exhaustive view of the user's work.
+    if any(type(record.get("core_event_seq")) is int
+           and record["core_event_seq"] > latest_seq for record in records):
+        return False
+    unit_bindings: dict[str, tuple[str, int]] = {}
+    known_units = {str(u.get("id")) for u in state.get("work_units", [])
+                   if isinstance(u, dict)}
+    for record in records:
+        if record.get("origin", "human") != "human":
+            continue
+        seq = record.get("core_event_seq")
+        if type(seq) is not int or seq > latest_seq:
+            continue
+        item = metadata.get(str(record["id"]))
+        if item is None or item.get("record_sha256") != record.get("record_sha256"):
+            return False
+        if not record.get("unit_binding_required"):
+            # Old roots without a source-bound unit cannot be promoted into
+            # a later whole-unit catalog. Control commands are not business.
+            if not is_control_prompt(record["text"]):
+                return False
+            continue
+        path = session_dir / "prompts" / "units" / f"{record['id']}.json"
+        binding = read_json(path)
+        keys = {"schema", "prompt_id", "prompt_record_sha256",
+                "core_event_seq", "work_unit_id", "record_sha256"}
+        if (not isinstance(binding, dict) or set(binding) != keys
+                or binding["schema"] != "prompt-unit/v1"
+                or binding["prompt_id"] != record["id"]
+                or binding["prompt_record_sha256"] != record["record_sha256"]
+                or binding["core_event_seq"] != seq
+                or binding["work_unit_id"] not in known_units
+                or binding["record_sha256"] != sha256_text(canonical_json(
+                    {key: binding[key] for key in keys - {"record_sha256"}}))):
+            return False
+        unit_bindings[record["id"]] = (binding["work_unit_id"], seq)
+        base = [row for row in state.get("requirements", [])
+                if isinstance(row, dict) and row.get("prompt_id") == record["id"]
+                and row.get("execution_source_span") is None
+                and row.get("information_source_span") is None
+                and row.get("constraint_scope") != "session"]
+        if (len(base) != 1 or base[0].get("work_unit_id") != binding["work_unit_id"]
+                or base[0].get("sha256") != record["sha256"]
+                or base[0].get("text") != bounded(record["text"], 900)):
+            return False
+        if not any(_root_control_covers_prompt(record["text"], begin, end)
+                   for _, begin, end, _ in _root_control_segments(record["text"])):
+            expected_acceptance = set(extract_acceptance(record["text"]))
+            present_acceptance = {str(row.get("text")) for row in state.get("acceptance_items", [])
+                                  if isinstance(row, dict)
+                                  and row.get("prompt_id") == record["id"]
+                                  and row.get("work_unit_id") == binding["work_unit_id"]}
+            if not expected_acceptance.issubset(present_acceptance):
+                return False
+    for control in controls:
+        if unit_bindings.get(control["source_prompt_id"]) != (
+            control["work_unit_id"], control["source_seq"]
+        ):
+            return False
+        for ref in control["items"]:
+            source = unit_bindings.get(ref["prompt_id"])
+            if source != (control["work_unit_id"], ref["root_seq"]):
+                return False
+    # A later root's arrival proves ordering, not replacement intent. Replay
+    # each link against that root's immutable words and the unit inventory at
+    # that watermark; a rehashed state link cannot revoke an earlier duty.
+    rows_by_id = {str(row.get("id")): row for row in state.get("requirements", [])
+                  if isinstance(row, dict)}
+    if len(rows_by_id) != len(state.get("requirements", [])):
+        return False
+    links_at_root: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for link in state.get("supersedes", []):
+        if not isinstance(link, dict):
+            return False
+        old = rows_by_id.get(str(link.get("old_id")))
+        new = rows_by_id.get(str(link.get("new_id")))
+        if old is None or new is None:
+            return False
+        old_source = unit_bindings.get(str(old.get("prompt_id")))
+        new_source = unit_bindings.get(str(new.get("prompt_id")))
+        if (old_source is None or new_source is None
+                or old_source[0] != new_source[0]
+                or not old_source[1] < new_source[1] <= latest_seq
+                or new.get("execution_source_span") is not None
+                or new.get("information_source_span") is not None):
+            return False
+        links_at_root.append((new_source[1], link, old, new))
+    replaced: set[str] = set()
+    for seq, link, old, new in sorted(links_at_root, key=lambda row: row[0]):
+        if old["id"] in replaced:
+            return False
+        source = next((record for record in records
+                       if record["id"] == new["prompt_id"]), None)
+        if source is None:
+            return False
+        unit = old["work_unit_id"]
+        current = {
+            row_id: row for row_id, row in rows_by_id.items()
+            if row.get("work_unit_id") == unit
+            and (root := unit_bindings.get(str(row.get("prompt_id")))) is not None
+            and root[1] <= seq and row_id not in replaced
+            and row.get("execution_source_span") is None
+            and row.get("information_source_span") is None
+        }
+        if (old["id"] not in current or new["id"] not in current
+                or supersession_target(
+                    source["text"], set(current), new["id"],
+                    {row_id: str(row.get("text") or "") for row_id, row in current.items()}
+                ) != old["id"]):
+            return False
+        replaced.add(old["id"])
+    prompt_rows = {str(p.get("id")): p for p in state.get("prompts", [])
+                   if isinstance(p, dict) and p.get("origin", "human") == "human"}
+    from cg_core_v2 import _action_class_scope_speech, _current_unit_scope_speech
+    for control in controls:
+        prompt = prompt_rows.get(str(control["source_prompt_id"]))
+        record = read_prompt_record(session_dir, prompt) if prompt else None
+        if record is None:
+            return False
+        matches = [clause for kind, begin, end, clause in
+                   _root_control_segments(record["text"])
+                   if (kind == control["kind"]
+                       and [begin, end] == control["source_span"])]
+        if len(matches) != 1:
+            return False
+        clause = matches[0]
+        if (control["scope_kind"] == "current_unit"
+                and not _current_unit_scope_speech(clause, control["kind"])):
+            return False
+        if control["scope_kind"] == "action_class":
+            parsed = _action_class_scope_speech(clause, control["kind"])
+            if (parsed is None or control.get("scope_target") != "test_verify"
+                    or control.get("scope_target_span") != [
+                        control["source_span"][0] + len(clause[:parsed[1]].encode("utf-8")),
+                        control["source_span"][0] + len(clause[:parsed[2]].encode("utf-8"))]):
+                return False
+        if control["scope_kind"] == "exact":
+            bounds = control.get("scope_target_span")
+            if (not isinstance(bounds, list) or len(bounds) != 2
+                    or record["text"].encode("utf-8")[bounds[0]:bounds[1]].decode("utf-8")
+                    != control.get("scope_target")):
+                return False
+    candidate_prompts = (set(unit_bindings)
+                         | {str(c["source_prompt_id"]) for c in controls}
+                         | {str(row["prompt_id"]) for c in controls for row in c["items"]}
+                         | (additional_prompt_ids or set()))
+    for prompt_id in candidate_prompts:
+        prompt = prompt_rows.get(prompt_id)
+        record = read_prompt_record(session_dir, prompt) if prompt else None
+        if record is None:
+            return False
+        expected, related = _execution_child_specs(record["text"])
+        actual = sorted((item for item in state.get("requirements", [])
+                         if isinstance(item, dict) and item.get("prompt_id") == prompt_id
+                         and item.get("execution_source_span") is not None),
+                        key=lambda item: item["execution_source_span"][0])
+        if len(actual) != len(expected):
+            return False
+        repair_id = actual[0]["id"] if related and actual else None
+        for index, (item, (begin, end, fragment, category)) in enumerate(zip(actual, expected)):
+            span = [len(record["text"][:begin].encode("utf-8")),
+                    len(record["text"][:end].encode("utf-8"))]
+            required_for = repair_id if related and index else None
+            if (item.get("execution_source_span") != span
+                    or item.get("execution_source_sha256") != sha256_text(fragment)
+                    or item.get("execution_kind") != category
+                    or item.get("required_for_item_id") != required_for):
+                return False
+    return True
+
+
+def current_root_control_projection(
+    state: dict[str, Any], session_dir: Path,
+) -> dict[str, Any] | None:
+    """Project the full ledger-bound control catalog through the shared core.
+
+    A partial or unselected catalog is unavailable, never a smaller scope.
+    The returned normalized projection is ephemeral; persisted Stop rows use
+    only a bounded hash-free summary of it.
+    """
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    controls = [c for c in state.get("root_controls", [])
+                if isinstance(c, dict) and c.get("work_unit_id") == active
+                and "kind" in c]
+    if not controls or not isinstance(active, str):
+        return None
+    current_catalog = _root_control_catalog(
+        state, active, int(state.get("core_event_sequence") or 0))
+    if current_catalog is None:
+        return None
+    # A candidate cannot silently shrink its inventory and recompute its own
+    # catalog hash: the original user root determines every recognized child.
+    if not _root_control_decomposition_valid(
+        state, session_dir, {str(row["prompt_id"]) for row in current_catalog}
+    ):
+        return None
+    for binding in controls:
+        at_receipt = _root_control_catalog(state, active, binding["source_seq"])
+        if (at_receipt is None or binding["catalog_sha256"] !=
+                sha256_text(canonical_json(at_receipt))):
+            return None
+        selected = _root_control_selected_items(
+            state, at_receipt, binding["scope_kind"],
+            binding.get("scope_target", "test_verify"
+                        if binding["scope_kind"] == "action_class" else None))
+        if binding["items"] != selected:
+            return None
+    all_items = {str(i.get("id")): i for i in state.get("requirements", [])
+                 if isinstance(i, dict) and i.get("work_unit_id") == active}
+    bound_ids = ({str(ref.get("id")) for c in controls for ref in c["items"]}
+                 | {str(row["id"]) for row in current_catalog})
+    snapshots: list[tuple[str, dict[str, Any]]] = []
+    for item_id in sorted(bound_ids):
+        item = all_items.get(item_id)
+        if item is None or (category := _root_control_item_action(item)) is None:
+            return None
+        basis = _current_action_basis(
+            state, category, "", session_dir, include_satisfied=True,
+            allowed_item_ids={item_id}, include_unready=True,
+            include_controlled=True,
+        )
+        if basis is None or basis["requirement_id"] != item_id:
+            return None
+        snapshots.append((item_id, copy.deepcopy(basis["core_snapshot"])))
+    if not snapshots:
+        return None
+    combined = copy.deepcopy(snapshots[0][1])
+    root_sources = {s["id"]: s for s in combined["sources"] if s["kind"] == "root"}
+    root_ids = set(root_sources)
+    combined["requirements"] = []
+    combined["facts"] = []
+    combined["actions"] = []
+    combined["conditions"] = []
+    combined["sources"] = list(root_sources.values())
+    interpreted: dict[str, list[tuple[int, int]]] = {key: [] for key in root_ids}
+    for item_id, part in snapshots:
+        if {s["id"]: s for s in part["sources"] if s["kind"] == "root"} != root_sources:
+            return None
+        prefix = item_id + ":"
+        rename = {s["id"]: prefix + s["id"] for s in part["sources"]
+                  if s["kind"] != "root"}
+        condition_ids = {c["id"]: prefix + c["id"] for c in part["conditions"]}
+        for source in part["sources"]:
+            if source["kind"] == "root":
+                continue
+            row = copy.deepcopy(source)
+            row["id"] = rename[source["id"]]
+            combined["sources"].append(row)
+        for req in part["requirements"]:
+            row = copy.deepcopy(req)
+            selection = row["target_origin"].get("selection_source_id")
+            if selection is not None:
+                row["target_origin"]["selection_source_id"] = rename[selection]
+            row["condition_ids"] = [condition_ids[c] for c in row["condition_ids"]]
+            combined["requirements"].append(row)
+        for fact in part["facts"]:
+            row = copy.deepcopy(fact)
+            row["id"] = prefix + fact["id"]
+            row["source_id"] = rename.get(fact["source_id"], fact["source_id"])
+            if row["call_source_id"] is not None:
+                row["call_source_id"] = rename[row["call_source_id"]]
+            row["invalidates"] = [prefix + fid for fid in row["invalidates"]]
+            if row["condition_id"] is not None:
+                row["condition_id"] = condition_ids[row["condition_id"]]
+            combined["facts"].append(row)
+        for action in part["actions"]:
+            row = copy.deepcopy(action)
+            row["readiness_fact_ids"] = [prefix + fid for fid in row["readiness_fact_ids"]]
+            combined["actions"].append(row)
+        for condition in part["conditions"]:
+            row = copy.deepcopy(condition)
+            row["id"] = condition_ids[condition["id"]]
+            row["fact_ids"] = [prefix + fid for fid in row["fact_ids"]]
+            combined["conditions"].append(row)
+        for coverage in part["coverage"]:
+            span = coverage["source"]
+            if coverage["kind"] == "interpreted" and span["source_id"] in interpreted:
+                interpreted[span["source_id"]].append((span["start"], span["end"]))
+    requirement_by_id = {r["id"]: r for r in combined["requirements"]}
+    if len(requirement_by_id) != len(combined["requirements"]):
+        return None
+    # Preserve historical requirement versions. A later trusted replacement
+    # closes the old interval; it does not erase the old control or make the
+    # replacement inherit it. The source is the actual successor root event.
+    for link in state.get("supersedes", []):
+        old_id, new_id = link.get("old_id"), link.get("new_id")
+        if old_id not in requirement_by_id:
+            continue
+        successor = all_items.get(str(new_id))
+        if successor is None or new_id not in requirement_by_id:
+            return None
+        source = root_sources.get("root:" + str(successor.get("prompt_id")))
+        old = requirement_by_id[old_id]
+        new = requirement_by_id[new_id]
+        if (source is None or source["seq"] <= old["seq"]
+                or source["unit"] != old["unit"] or new["unit"] != old["unit"]
+                or new["revision"] == old["revision"]):
+            return None
+        old.update(status="superseded", superseded_at_seq=source["seq"],
+                   supersession_source_id=source["id"],
+                   superseded_by_requirement_id=new_id)
+    # Only root-time, hash-bound decomposition can establish required-child
+    # edges. A control's selected list cannot manufacture a dependency.
+    for item_id, item in all_items.items():
+        required_for = item.get("required_for_item_id")
+        if required_for is None or item_id not in requirement_by_id:
+            continue
+        if required_for not in requirement_by_id:
+            return None
+        requirement_by_id[item_id]["parent_id"] = required_for
+    canonical_controls = []
+    for binding in controls:
+        root = root_sources.get("root:" + binding["source_prompt_id"])
+        if (root is None or root["seq"] != binding["source_seq"]
+                or binding["scope_kind"] not in {
+                    "current_unit", "action_class", "exact", "parent_task"}):
+            return None
+        begin, end = binding["source_span"]
+        if not 0 <= begin < end <= root["byte_length"]:
+            return None
+        span = dict(source_id=root["id"], start=begin, end=end,
+                    sha256=root["sha256"])
+        interpreted[root["id"]].append((begin, end))
+        basis = dict(kind=binding["scope_kind"], target=None, target_source=None)
+        if binding["scope_kind"] != "current_unit":
+            target_bounds = binding.get("scope_target_span")
+            if (not isinstance(target_bounds, list) or len(target_bounds) != 2
+                    or not begin <= target_bounds[0] < target_bounds[1] <= end):
+                return None
+            basis.update(target=binding["scope_target"], target_source=dict(
+                source_id=root["id"], start=target_bounds[0],
+                end=target_bounds[1],
+                sha256=root["sha256"],
+            ))
+        refs = []
+        for bound in binding["items"]:
+            req = requirement_by_id.get(bound["id"])
+            if req is None:
+                return None  # Never certify a truncated receipt catalog.
+            selected = any(f["requirement_id"] == req["id"]
+                           and f["kind"] == "readiness" and f["outcome"] == "success"
+                           and f["seq"] <= binding["source_seq"]
+                           for f in combined["facts"])
+            ref_target = (None if req["target_origin"]["constraint_kind"] == "work_unit"
+                          and not selected else req["target"])
+            refs.append(dict(requirement_id=req["id"], unit=req["unit"],
+                             revision=req["revision"],
+                             source_id=req["source"]["source_id"], seq=req["seq"],
+                             target=ref_target, scope_sha256=req["scope_sha256"]))
+        canonical_controls.append(dict(
+            id="control:" + binding["source_prompt_id"] + ":" + str(begin),
+            kind=binding["kind"], source=span, seq=binding["source_seq"],
+            scope_basis=basis, controlled_requirements=refs,
+        ))
+    combined["root_controls"] = canonical_controls
+    combined["revision"] = max(s["revision"] for s in root_sources.values()
+                               if s["unit"] == active)
+    combined["as_of"] = state["core_event_sequence"]
+    combined["turn"] = str((state.get("completion_attempt") or {}).get("turn_id") or "stop")
+    combined["intent"] = {"source": None, "kind": "none"}
+    combined["coverage"] = []
+    for root in root_sources.values():
+        if root["unit"] != active:
+            continue
+        intervals = interpreted[root["id"]]
+        boundaries = {0, root["byte_length"]}
+        boundaries.update(n for pair in intervals for n in pair)
+        for start, end in zip(sorted(boundaries), sorted(boundaries)[1:]):
+            if start == end:
+                continue
+            kind = ("interpreted" if any(a <= start and end <= b for a, b in intervals)
+                    else "unknown")
+            combined["coverage"].append(dict(
+                source=dict(source_id=root["id"], start=start, end=end,
+                            sha256=root["sha256"]), kind=kind,
+            ))
+    try:
+        return project_core(combined)
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def current_persistence_actions(
+    state: dict[str, Any], session_dir: Path,
+) -> tuple[bool, list[dict[str, Any]], dict[str, str]]:
+    """Consume shared normalized control states, never a second private fold."""
+    normalized = current_root_control_projection(state, session_dir)
+    if normalized is None or normalized["root_control_errors"]:
+        return False, [], {} if normalized is None else normalized["root_control_states"]
+    requirements = {str(i.get("id")): i for i in state.get("requirements", [])
+                    if isinstance(i, dict)}
+    actions: list[dict[str, Any]] = []
+    for action in normalized["current_actions"]:
+        item_id = action["requirement_id"]
+        if normalized["root_control_states"].get(item_id) != "persistent":
+            continue
+        item = requirements.get(item_id)
+        category = _root_control_item_action(item) if item is not None else None
+        if category is None:
+            continue
+        basis = _current_action_basis(
+            state, category, "", session_dir, allowed_item_ids={item_id},
+        )
+        if (basis is not None and basis["requirement_id"] == item_id
+                and basis["readiness"] == "trusted_host_observation"
+                and basis["predicate_state"] != "satisfied"):
+            actions.append(basis)
+    return (bool(normalized["explicit_user_persistence"]), actions,
+            normalized["root_control_states"])
+
+
+def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[dict[str, Any]]:
+    """Read-only current Stop status from genuine root and host observations."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    bases: list[dict[str, Any]] = []
+    for category, _ in (*ACTION_PATTERNS, ("state_readback", re.compile(r"(?!)"))):
+        basis = _current_action_basis(state, category, "", session_dir,
+                                      include_satisfied=True)
+        if basis is None or basis["requirement_id"] in seen:
+            continue
+        seen.add(basis["requirement_id"])
+        bases.append(basis)
+        projected = basis["core_projection"]
+        rows.append({
+            "requirement_id": basis["requirement_id"],
+            "unit": basis["unit"], "as_of": basis["as_of"],
+            "source_sha256": basis["source_sha256"],
+            "target_sha256": sha256_text(basis["target"]),
+            "predicate": basis["predicate"],
+            "predicate_state": basis["predicate_state"],
+            "conditions": projected["conditions"],
+            "root_condition": basis["root_condition"],
+            "certifiable": bool(projected["certifiable"]),
+            "unknown_coverage_count": len(projected["unknown_coverage"]),
+            "coverage_error_count": len(projected["coverage_errors"]),
+        })
+        if len(rows) >= 16:
+            break
+    execution_items = {item["id"]: item for item in state.get("requirements", [])
+                       if isinstance(item, dict) and item.get("execution_source_span") is not None}
+    paired = [basis for basis in bases if basis["requirement_id"] in execution_items]
+    pair_kind = {basis["action"] for basis in paired}
+    if len(paired) == 2 and pair_kind in (
+        {"local_edit", "test_verify"}, {"local_commit", "remote_push"}
+    ):
+        parents = {execution_items[basis["requirement_id"]].get("parent_id") for basis in paired}
+        if len(parents) == 1 and None not in parents:
+            import copy
+
+            from cg_core_v2 import project as project_core
+            combined = copy.deepcopy(paired[0]["core_snapshot"])
+            other = paired[1]["core_snapshot"]
+            suffix = paired[1]["requirement_id"] + ":"
+            combined["requirements"].extend(copy.deepcopy(other["requirements"]))
+            for fact in other["facts"]:
+                copied = copy.deepcopy(fact)
+                copied["id"] = suffix + copied["id"]
+                copied["invalidates"] = [suffix + fid for fid in copied["invalidates"]]
+                combined["facts"].append(copied)
+            for action in other["actions"]:
+                copied = copy.deepcopy(action)
+                copied["readiness_fact_ids"] = [suffix + fid for fid in copied["readiness_fact_ids"]]
+                combined["actions"].append(copied)
+            if not combined["conditions"] and not other["conditions"]:
+                source_id = combined["requirements"][0]["source"]["source_id"]
+                root = next((source for source in combined["sources"] if source["id"] == source_id), None)
+                if root is not None:
+                    parent_id = next(iter(parents))
+                    container = copy.deepcopy(combined["requirements"][0])
+                    container.update({
+                        "id": parent_id, "kind": "constraint", "required": False,
+                        "source": {"source_id": source_id, "start": 0,
+                                   "end": root["byte_length"], "sha256": root["sha256"]},
+                        "parent_id": None, "condition_ids": [],
+                    })
+                    combined["requirements"].append(container)
+                    for child in combined["requirements"]:
+                        if child["id"] != parent_id:
+                            child["parent_id"] = parent_id
+                    combined["coverage"] = [coverage for coverage in combined["coverage"]
+                                            if coverage["source"]["source_id"] != source_id]
+                    combined["coverage"].append({
+                        "source": {"source_id": source_id, "start": 0,
+                                   "end": root["byte_length"], "sha256": root["sha256"]},
+                        "kind": "interpreted",
+                    })
+                    try:
+                        aggregate = project_core(combined)
+                    except (ValueError, KeyError, TypeError):
+                        aggregate = None
+                    if aggregate is not None:
+                        rows.append({
+                            "requirement_id": next(iter(parents)),
+                            "unit": paired[0]["unit"], "as_of": aggregate["as_of"],
+                            "predicate": ("edit_and_test" if pair_kind == {"local_edit", "test_verify"}
+                                          else "commit_and_push"),
+                            "predicate_state": "satisfied" if all(
+                                aggregate["predicates"].get(basis["requirement_id"]) == "satisfied"
+                                for basis in paired) else "insufficient",
+                            "certifiable": bool(aggregate["certifiable"]),
+                            "unknown_coverage_count": len(aggregate["unknown_coverage"]),
+                            "coverage_error_count": len(aggregate["coverage_errors"]),
+                        })
+    # A root may contain an exact positive edit followed by a reported
+    # different object and an explicit prohibition on that object. Keep the
+    # prohibition active without treating its mention as another edit or as
+    # unparsed completion debt. This is sourced clause-role interpretation;
+    # the Host effect still has to match the exact positive target.
+    for basis in bases:
+        if basis["action"] != "local_edit":
+            continue
+        snapshot = basis["core_snapshot"]
+        req = snapshot["requirements"][0]
+        if req["target_origin"]["constraint_kind"] != "exact":
+            continue
+        root = next((s for s in snapshot["sources"]
+                     if s["id"] == req["source"]["source_id"]), None)
+        if root is None or root["text"] is None or req["source"]["end"] >= root["byte_length"]:
+            continue
+        raw = root["text"].encode("utf-8")
+        try:
+            remainder = raw[req["source"]["end"]:].decode("utf-8").strip(" \t\r\n。.!?？；;：:")
+        except UnicodeDecodeError:
+            continue
+        metadata = clause_metadata(root["text"])
+        clauses = [str(c.get("clause") or "") for c in metadata.get("clauses", [])]
+        action_text = raw[:req["source"]["end"]].decode("utf-8")
+        trailing = [c for c in clauses if c and c not in action_text]
+        if (len(trailing) != 2 or CLAUSE_NEGATION_RE.search(trailing[0])
+                or not CLAUSE_NEGATION_RE.search(trailing[1])
+                or any(c.get("operation") != "unspecified" for c in metadata.get("clauses", [])
+                       if c.get("clause") in trailing)
+                or any(pattern.search(c) for c in trailing
+                       if not CLAUSE_NEGATION_RE.search(c)
+                       for _, pattern in ACTION_PATTERNS)):
+            continue
+        mentioned = {m.group(0) for m in RELATIVE_FILE_RE.finditer(remainder)}
+        mentioned.update(m.group(0) for m in WINDOWS_DRIVE_PATH_RE.finditer(remainder))
+        if len(mentioned) != 1 or next(iter(mentioned)) == req["target_origin"]["root_constraint"]:
+            continue
+        forbidden_literal = next(iter(mentioned))
+        if WINDOWS_ABSOLUTE_PATH_RE.match(forbidden_literal):
+            forbidden_target, unsupported = canonical_windows_locator(forbidden_literal)
+            if unsupported is not None or forbidden_target != forbidden_literal:
+                continue
+        else:
+            base = root.get("locator_base")
+            if not isinstance(base, str) or not Path(base).is_absolute():
+                continue
+            forbidden_target = str(Path(base) / forbidden_literal)
+            if ".." in Path(forbidden_literal).parts:
+                continue
+        forbidden_at = root["text"].find(forbidden_literal, len(action_text))
+        prohibition_at = root["text"].find(trailing[1], len(action_text))
+        if forbidden_at < 0 or prohibition_at < 0:
+            continue
+        forbidden_span = dict(source_id=root["id"],
+                              start=len(root["text"][:forbidden_at].encode("utf-8")),
+                              end=len(root["text"][:forbidden_at + len(forbidden_literal)].encode("utf-8")),
+                              sha256=root["sha256"])
+        prohibition_span = dict(source_id=root["id"],
+                                start=len(root["text"][:prohibition_at].encode("utf-8")),
+                                end=len(root["text"][:prohibition_at + len(trailing[1])].encode("utf-8")),
+                                sha256=root["sha256"])
+        root_seq = root["seq"]
+        source_by_id = {source["id"]: source for source in snapshot["sources"]}
+        def origin_seq(evidence: dict[str, Any]) -> int | None:
+            pid = evidence.get("core_origin_prompt_id")
+            row = source_by_id.get("root:" + str(pid)) if pid else None
+            return row["seq"] if row is not None else None
+        foreign_effects = [evidence for evidence in state.get("evidence", []) if (
+            isinstance(evidence, dict)
+            and isinstance((obs := evidence.get("core_observation")), dict)
+            and obs.get("unit") == basis["unit"]
+            and obs.get("kind") == "action_event"
+            and obs.get("predicate") in {"edit_applied", "mutation_applied"}
+            and obs.get("outcome") == "success"
+            and type(evidence.get("core_call_seq")) is int
+            and root_seq < evidence["core_call_seq"] <= basis["as_of"]
+            and (origin_seq(evidence) is not None
+                 and origin_seq(evidence) >= root_seq)
+            and req["target"] not in {obs.get("target"), obs.get("canonical_target")}
+        )]
+        violating_events = [evidence for evidence in foreign_effects
+                            if forbidden_target in {
+                                evidence["core_observation"].get("target"),
+                                evidence["core_observation"].get("canonical_target")}
+                            and (call := source_by_id.get("call:" + str(evidence["id"]))) is not None
+                            and (result := source_by_id.get("result:" + str(evidence["id"]))) is not None
+                            and call.get("target") == forbidden_target
+                            and call.get("target_kind") == "filesystem"
+                            and result.get("call_id") == call.get("call_id")]
+        crossing_candidates = [evidence for evidence in state.get("evidence", []) if (
+            isinstance(evidence, dict)
+            and isinstance((obs := evidence.get("core_observation")), dict)
+            and obs.get("unit") == basis["unit"]
+            and obs.get("kind") == "action_event"
+            and obs.get("predicate") in {"edit_applied", "mutation_applied"}
+            and obs.get("outcome") == "success"
+            and type(evidence.get("core_call_seq")) is int
+            and type(evidence.get("core_result_seq")) is int
+            and (evidence["core_call_seq"] <= root_seq
+                 or (origin_seq(evidence) is not None and origin_seq(evidence) < root_seq))
+            and root_seq <= evidence["core_result_seq"] <= basis["as_of"]
+            and forbidden_target in {obs.get("target"), obs.get("canonical_target")}
+        )]
+        crossing_events = [evidence for evidence in crossing_candidates
+                           if (call := source_by_id.get("call:" + str(evidence["id"]))) is not None
+                           and (result := source_by_id.get("result:" + str(evidence["id"]))) is not None
+                           and call.get("target") == forbidden_target
+                           and call.get("target_kind") == "filesystem"
+                           and result.get("call_id") == call.get("call_id")]
+        unattributed_mutations = [evidence for evidence in state.get("evidence", [])
+                                  if isinstance(evidence, dict)
+                                  and evidence.get("outcome") == "success"
+                                  and type(evidence.get("core_call_seq")) is int
+                                  and root_seq < evidence["core_call_seq"] <= basis["as_of"]
+                                  and not isinstance(evidence.get("core_observation"), dict)
+                                  and ("apply_patch" in str(evidence.get("tool") or "")
+                                       or tool_is_shell_execution(str(evidence.get("tool") or "")))]
+        uncertain_origin_events = [evidence for evidence in state.get("evidence", [])
+                                   if isinstance(evidence, dict)
+                                   and isinstance((obs := evidence.get("core_observation")), dict)
+                                   and obs.get("unit") == basis["unit"]
+                                   and obs.get("kind") == "action_event"
+                                   and obs.get("predicate") in {"edit_applied", "mutation_applied"}
+                                   and obs.get("outcome") == "success"
+                                   and origin_seq(evidence) is None
+                                   and type(evidence.get("core_call_seq")) is int
+                                   and root_seq < evidence["core_call_seq"] <= basis["as_of"]
+                                   and forbidden_target in {obs.get("target"), obs.get("canonical_target")}]
+        import copy
+
+        from cg_core_v2 import project as project_core
+        combined = copy.deepcopy(snapshot)
+        container = copy.deepcopy(req)
+        container.update(id="scope:" + req["id"], kind="constraint",
+                         required=bool(len(foreign_effects) > len(violating_events)
+                                       or len(crossing_candidates) > len(crossing_events)
+                                       or unattributed_mutations or uncertain_origin_events),
+                         parent_id=None, condition_ids=[],
+                         status="legacy_review" if len(foreign_effects) > len(violating_events)
+                         or len(crossing_candidates) > len(crossing_events)
+                         or unattributed_mutations or uncertain_origin_events else "pending",
+                         source=dict(source_id=root["id"], start=0,
+                                     end=root["byte_length"], sha256=root["sha256"]))
+        container["target_origin"].update(
+            implementation_choice=None, host_selection=None, observed=None)
+        combined["requirements"].append(container)
+        forbidden_req = copy.deepcopy(req)
+        forbidden_req.update(id="prohibition:" + req["id"], kind="constraint",
+                             action="forbidden_mutation", target=forbidden_target,
+                             predicate="no_mutation", evidence_kind="action_event",
+                             required=True, status="pending", parent_id=None,
+                             condition_ids=[], source=prohibition_span,
+                             target_origin=dict(
+                                 root_constraint=forbidden_literal,
+                                 subject_kind="filesystem",
+                                 implementation_choice=None,
+                                 host_selection=None,
+                                 resolved=forbidden_target,
+                                 observed=None,
+                                 root_constraint_source=forbidden_span,
+                                 constraint_kind="exact",
+                                 selection_source_id=None))
+        if not WINDOWS_ABSOLUTE_PATH_RE.match(forbidden_literal) and not forbidden_literal.startswith("/"):
+            forbidden_req["target_origin"]["resolved_constraint"] = forbidden_target
+        combined["requirements"].append(forbidden_req)
+        source_by_id = {source["id"]: source for source in combined["sources"]}
+        for evidence in violating_events + crossing_events:
+            eid = str(evidence["id"])
+            call, result = source_by_id.get("call:" + eid), source_by_id.get("result:" + eid)
+            if call is None or result is None:
+                continue
+            combined["facts"].append(dict(
+                id="forbidden_mutation:" + eid, seq=result["seq"],
+                unit=forbidden_req["unit"], revision=forbidden_req["revision"],
+                source_id=result["id"], call_source_id=call["id"],
+                kind="action_event", target=forbidden_target,
+                predicate="mutation_applied", outcome="success",
+                operation_id=None, requirement_id=forbidden_req["id"],
+                condition_id=None, invalidates=[]))
+        combined["coverage"] = [c for c in combined["coverage"]
+                                if c["source"]["source_id"] != root["id"]]
+        combined["coverage"].append(dict(
+            source=dict(source_id=root["id"], start=0,
+                        end=root["byte_length"], sha256=root["sha256"]),
+            kind="interpreted"))
+        try:
+            aggregate = project_core(combined)
+        except (ValueError, KeyError, TypeError):
+            continue
+        rows.append(dict(requirement_id=req["id"], unit=basis["unit"],
+                         as_of=aggregate["as_of"], predicate="edit_with_prohibition",
+                         predicate_state=aggregate["predicates"].get(req["id"]),
+                         constraint_state=aggregate["predicates"].get(forbidden_req["id"]),
+                         certifiable=bool(aggregate["certifiable"]),
+                         violating_host_event_ids=[str(e["id"]) for e in violating_events],
+                         crossing_host_event_ids=[str(e["id"]) for e in crossing_events],
+                         unattributed_host_event_ids=[str(e["id"]) for e in unattributed_mutations + uncertain_origin_events],
+                         unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                         coverage_error_count=len(aggregate["coverage_errors"])))
+    return rows
+
+
+def delivered_mixed_core_projection(
+    state: dict[str, Any], session_dir: Path, delivery_record: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Join one actual final delivery with its independent current edit effect.
+
+    The reply ledger supplies delivery identity; the existing Host adapter
+    supplies the edit/readback facts. Root byte coverage is complete only when
+    the two sourced clauses plus their separators exhaust the immutable root.
+    """
+    if (delivery_record.get("delivery") != "delivered"
+            or not delivery_record.get("reply_sha256")
+            or delivery_record.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id")):
+        return None
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    basis = _current_action_basis(state, "local_edit", "", session_dir,
+                                  include_satisfied=True)
+    if basis is None or basis["predicate_state"] != "satisfied":
+        return None
+    item = next((r for r in state.get("requirements", [])
+                 if isinstance(r, dict) and r.get("id") == basis["requirement_id"]), None)
+    if item is None:
+        return None
+    children = [r for r in state.get("requirements", [])
+                if isinstance(r, dict) and r.get("parent_id") == item.get("parent_id", item.get("id"))
+                and r.get("information_source_span") is not None
+                and r.get("prompt_id") == item.get("prompt_id")]
+    # An unsplit execution parent may itself be the edit item. Its information
+    # child is attached to that parent; a split edit child shares the parent.
+    if not children:
+        children = [r for r in state.get("requirements", [])
+                    if isinstance(r, dict) and r.get("parent_id") == item.get("id")
+                    and r.get("information_source_span") is not None
+                    and r.get("prompt_id") == item.get("prompt_id")]
+    if not children:
+        return None
+    snapshot = copy.deepcopy(basis["core_snapshot"])
+    action_req = snapshot["requirements"][0]
+    root_id = action_req["source"]["source_id"]
+    root = next((s for s in snapshot["sources"] if s["id"] == root_id), None)
+    if root is None or root["text"] is None:
+        return None
+    event_seq = state.get("core_event_sequence")
+    if type(event_seq) is not int or event_seq < snapshot["as_of"]:
+        return None
+    delivery_id = "final_delivery:" + delivery_record["delivery_sha256"]
+    snapshot["sources"].append(dict(
+        id=delivery_id, seq=event_seq, kind="final_delivery",
+        unit=action_req["unit"], revision=action_req["revision"],
+        sha256=delivery_record["reply_sha256"], byte_length=0,
+        text=None, call_id=None, turn=snapshot["turn"],
+    ))
+    spans = [(action_req["source"]["start"], action_req["source"]["end"])]
+    for child in children:
+        bounds = child["information_source_span"]
+        if (not isinstance(bounds, list) or len(bounds) != 2
+                or not all(type(n) is int for n in bounds)
+                or not 0 <= bounds[0] < bounds[1] <= root["byte_length"]):
+            return None
+        raw = root["text"].encode("utf-8")
+        try:
+            subject = raw[bounds[0]:bounds[1]].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if (subject != child.get("text")
+                or hashlib.sha256(subject.encode("utf-8")).hexdigest()
+                != child.get("information_source_sha256")):
+            return None
+        span = dict(source_id=root_id, start=bounds[0], end=bounds[1],
+                    sha256=root["sha256"])
+        info_req = copy.deepcopy(action_req)
+        info_req.update(id=child["id"], source=span, kind="information",
+                        action="deliver_information", target=subject,
+                        predicate="answer_delivered", evidence_kind="delivery",
+                        parent_id=None, status="pending", condition_ids=[],
+                        target_origin=dict(
+                            root_constraint=subject, subject_kind="opaque",
+                            implementation_choice=subject, host_selection=subject,
+                            resolved=subject, observed=subject,
+                            root_constraint_source=span, constraint_kind="exact",
+                            selection_source_id=None))
+        snapshot["requirements"].append(info_req)
+        if (child.get("status") == "answered"
+                and child["id"] in delivery_record.get("requirement_ids", [])):
+            snapshot["facts"].append(dict(
+                id="delivery_fact:" + child["id"], seq=event_seq,
+                unit=action_req["unit"], revision=action_req["revision"],
+                source_id=delivery_id, call_source_id=None, kind="delivery",
+                target=subject, predicate="answer_delivered", outcome="success",
+                operation_id=None, requirement_id=child["id"],
+                condition_id=None, invalidates=[],
+            ))
+        spans.append((bounds[0], bounds[1]))
+    spans.sort()
+    if spans[0][0] < 0 or spans[-1][1] > root["byte_length"]:
+        return None
+    segments = []
+    cursor = 0
+    raw = root["text"].encode("utf-8")
+    for begin, end in spans:
+        if begin < cursor:
+            return None
+        if begin > cursor:
+            try:
+                gap = raw[cursor:begin].decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            # Only separators between independently sourced clauses are
+            # interpreted. Other text remains unknown and blocks a certificate.
+            segments.append((cursor, begin, "interpreted" if not gap.strip(
+                " \t\r\n,，。.!?？；;：:、") else "unknown"))
+        segments.append((begin, end, "interpreted"))
+        cursor = end
+    if cursor < len(raw):
+        gap = raw[cursor:].decode("utf-8")
+        segments.append((cursor, len(raw), "interpreted" if not gap.strip(
+            " \t\r\n,，。.!?？；;：:、") else "unknown"))
+    snapshot["coverage"] = [c for c in snapshot["coverage"]
+                            if c["source"]["source_id"] != root_id] + [dict(source=dict(source_id=root_id, start=a,
+                                              end=b, sha256=root["sha256"]), kind=k)
+                            for a, b, k in segments]
+    container = copy.deepcopy(action_req)
+    container.update(id="scope:" + action_req["id"], kind="constraint",
+                     required=False, parent_id=None, condition_ids=[],
+                     source=dict(source_id=root_id, start=0,
+                                 end=root["byte_length"], sha256=root["sha256"]))
+    snapshot["requirements"].append(container)
+    snapshot["as_of"] = event_seq
+    try:
+        aggregate = project_core(snapshot)
+    except (ValueError, KeyError, TypeError):
+        return None
+    return dict(requirement_id=item.get("parent_id") or item["id"],
+                unit=basis["unit"], as_of=aggregate["as_of"],
+                predicate="information_and_edit",
+                predicate_state="satisfied" if all(
+                    aggregate["predicates"].get(r["id"]) == "satisfied"
+                    for r in snapshot["requirements"] if r["required"]) else "insufficient",
+                certifiable=bool(aggregate["certifiable"]),
+                unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                coverage_error_count=len(aggregate["coverage_errors"]))
+
+
+def delivered_exact_edit_readback_projection(
+    state: dict[str, Any], session_dir: Path, delivery_record: dict[str, Any], reply_text: str,
+) -> dict[str, Any] | None:
+    """Close a bounded edit, independent full readback, and actual report.
+
+    Each clause retains its own root span. The user-supplied old value is
+    context, never a fabricated before-file observation. Unrecognized clauses
+    or another open obligation keep whole certification unavailable.
+    """
+    if (delivery_record.get("delivery") != "delivered"
+            or delivery_record.get("reply_sha256") != sha256_text(reply_text)
+            or delivery_record.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id")):
+        return None
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    basis = _current_action_basis(state, "local_edit", "", session_dir,
+                                  include_satisfied=True)
+    if basis is None or basis["predicate_state"] != "satisfied":
+        return None
+    item_id = basis["requirement_id"]
+    if item_id not in delivery_record.get("requirement_ids", []):
+        return None
+    scoped = current_scope_projection(state)["scoped_item_ids"]
+    if scoped - {item_id}:
+        return None
+    snapshot = copy.deepcopy(basis["core_snapshot"])
+    edit_req = snapshot["requirements"][0]
+    root_id = edit_req["source"]["source_id"]
+    root = next((s for s in snapshot["sources"] if s["id"] == root_id), None)
+    if root is None or not isinstance(root.get("text"), str):
+        return None
+    root_text = root["text"]
+    edit_bytes = root_text.encode("utf-8")[edit_req["source"]["start"]:edit_req["source"]["end"]]
+    try:
+        edit_clause = edit_bytes.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    target = basis["target"]
+    requested = _explicit_file_postimage(edit_clause)
+    if requested is None or _reported_file_postimage(reply_text, target) != requested:
+        return None
+    # The existing state_matches fact already requires an audited FileChange
+    # postimage followed by the separate matching readback. Link its exact
+    # readback Host result to this root's requested cat operation.
+    successful_state = [f for f in snapshot["facts"]
+                        if f["requirement_id"] == item_id
+                        and f["kind"] == "state_outcome"
+                        and f["predicate"] == "state_matches"
+                        and f["outcome"] == "success"]
+    if not successful_state:
+        return None
+    latest_state = max(successful_state, key=lambda f: f["seq"])
+    read_fact = next((f for f in snapshot["facts"]
+                      if f["kind"] == "readiness" and f["seq"] == latest_state["seq"]
+                      and f["source_id"] == latest_state["source_id"]
+                      and f["target"] == target and f["outcome"] == "success"), None)
+    if read_fact is None:
+        return None
+    read_eid = read_fact["source_id"].removeprefix("result:")
+    edit_ids = [fact["source_id"].removeprefix("result:")
+                for fact in snapshot["facts"]
+                if fact["requirement_id"] == item_id
+                and fact["kind"] == "action_event"
+                and fact["predicate"] == "edit_applied"
+                and fact["outcome"] == "success"
+                and fact["seq"] < read_fact["seq"]]
+    if not edit_ids:
+        return None
+    observed = next((e.get("core_observation") for e in state.get("evidence", [])
+                     if isinstance(e, dict) and str(e.get("id")) == read_eid), None)
+    if (not isinstance(observed, dict)
+            or observed.get("kind") != "state_readback"
+            or observed.get("predicate") != "content_hash"
+            or observed.get("content_sha256") != requested
+            or observed.get("target") != target):
+        return None
+    clauses = _action_source_clauses(root_text)
+    pieces: list[tuple[int, int, str]] = []
+    cursor = 0
+    read_clause: tuple[str, int, int] | None = None
+    report_clause: tuple[str, int, int] | None = None
+    seen_edit = False
+    for clause in clauses:
+        at = root_text.find(clause, cursor)
+        if at < cursor:
+            return None
+        end = at + len(clause)
+        if at > cursor:
+            gap = root_text[cursor:at]
+            if gap.strip(" \t\r\n,，。.!?？；;：:、"):
+                return None
+            pieces.append((cursor, at, "interpreted"))
+        kind = "unknown"
+        command = _direct_shell_command_object(clause)
+        if clause == edit_clause and not seen_edit:
+            kind = "interpreted"
+            seen_edit = True
+        elif command is not None and command[:2] == ("state_readback", target):
+            if read_clause is not None:
+                return None
+            valid_read, embedded_report = _readback_clause_roles(clause, command[2])
+            if valid_read and _sourced_readback_host_matches(clause, command, observed):
+                kind = "interpreted"
+                read_clause = (clause, at, end)
+                if embedded_report:
+                    report_clause = (clause, at, end)
+        elif _literal_old_file_context(clause, target):
+            kind = "interpreted"
+        elif re.fullmatch(r"\s*无需(?:编辑前)?读取\s*", clause):
+            kind = "interpreted"
+        elif _pure_readback_report_clause(clause):
+            kind = "interpreted"
+            report_clause = (clause, at, end)
+        pieces.append((at, end, kind))
+        cursor = end
+    if cursor < len(root_text):
+        gap = root_text[cursor:]
+        pieces.append((cursor, len(root_text), "interpreted" if not gap.strip(
+            " \t\r\n,，。.!?？；;：:、") else "unknown"))
+    if not seen_edit or read_clause is None or report_clause is None:
+        return None
+    def span_for(at: int, end: int) -> dict[str, Any]:
+        return dict(source_id=root_id, start=len(root_text[:at].encode("utf-8")),
+                    end=len(root_text[:end].encode("utf-8")), sha256=root["sha256"])
+    read_text, read_at, read_end = read_clause
+    report_text, report_at, report_end = report_clause
+    read_span = span_for(read_at, read_end)
+    report_span = span_for(report_at, report_end)
+    target_at = root_text.find(target, read_at, read_end)
+    if target_at < read_at:
+        return None
+    read_origin = copy.deepcopy(edit_req["target_origin"])
+    read_origin["root_constraint_source"] = span_for(target_at, target_at + len(target))
+    read_id, report_id = f"readback:{item_id}", f"report:{item_id}"
+    read_req = copy.deepcopy(edit_req)
+    read_req.update(id=read_id, source=read_span, action="state_readback",
+                    predicate="readback_complete", evidence_kind="action_event",
+                    target_origin=read_origin)
+    snapshot["requirements"].append(read_req)
+    readback_fact = copy.deepcopy(read_fact)
+    readback_fact.update(id=f"complete:{read_eid}", requirement_id=read_id,
+                         kind="action_event", predicate="readback_complete")
+    snapshot["facts"].append(readback_fact)
+    container = copy.deepcopy(edit_req)
+    container.update(id="scope:" + item_id, kind="constraint", required=False,
+                     parent_id=None, condition_ids=[],
+                     source=dict(source_id=root_id, start=0,
+                                 end=root["byte_length"], sha256=root["sha256"]))
+    snapshot["requirements"].append(container)
+    event_seq = state.get("core_event_sequence")
+    if type(event_seq) is not int or event_seq < snapshot["as_of"]:
+        return None
+    _append_current_result_delivery(
+        snapshot, edit_req, report_span, report_text, delivery_record, event_seq)
+    coverage = []
+    for at, end, kind in pieces:
+        if at < end:
+            coverage.append(dict(source=span_for(at, end), kind=kind))
+    snapshot["coverage"] = [c for c in snapshot["coverage"]
+                            if c["source"]["source_id"] != root_id] + coverage
+    try:
+        aggregate = project_core(snapshot)
+    except (ValueError, KeyError, TypeError):
+        return None
+    return dict(requirement_id=item_id, unit=basis["unit"], as_of=aggregate["as_of"],
+                predicate="edit_readback_and_report",
+                predicate_state="satisfied" if all(
+                    aggregate["predicates"].get(rid) == "satisfied"
+                    for rid in (item_id, read_id, report_id)) else "insufficient",
+                certifiable=bool(aggregate["certifiable"]),
+                host_evidence_ids=[edit_ids[-1], read_eid],
+                delivery_sha256=delivery_record["delivery_sha256"],
+                unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                coverage_error_count=len(aggregate["coverage_errors"]),
+                core_projection=aggregate)
+
+
+def delivered_current_test_projection(
+    state: dict[str, Any], session_dir: Path,
+    delivery_record: dict[str, Any], reply_text: str,
+) -> dict[str, Any] | None:
+    """Join a current, attributable pytest result with its actual final report.
+
+    The report has its own root span and delivery fact. A test exit alone
+    cannot interpret a separately requested report, and a success sentence
+    cannot substitute for the Host test result.
+    """
+    if (delivery_record.get("delivery") != "delivered"
+            or delivery_record.get("reply_sha256") != sha256_text(reply_text)
+            or delivery_record.get("work_unit_id") != state.get("work_state", {}).get("active_work_unit_id")):
+        return None
+    import copy
+
+    from cg_core_v2 import project as project_core
+
+    basis = _current_action_basis(state, "test_verify", "", session_dir,
+                                  include_satisfied=True)
+    if basis is None or basis["predicate_state"] != "satisfied":
+        return None
+    item_id = basis["requirement_id"]
+    corresponding_acceptance = {
+        str(item["id"]) for item in state.get("acceptance_items", [])
+        if isinstance(item, dict)
+        and item.get("prompt_id") == basis["source_prompt_id"]
+        and item.get("text") == next((s.get("text") for s in basis["core_snapshot"]["sources"]
+                                      if s.get("id") == basis["core_snapshot"]["requirements"][0]["source"]["source_id"]), None)
+        and isinstance(item.get("verification_contract"), dict)
+        and (item["verification_contract"].get("mode") == "legacy_fallback"
+             or item["verification_contract"].get("clause_operation") == "test_verify")
+    }
+    if (item_id not in delivery_record.get("requirement_ids", [])
+            or current_scope_projection(state)["scoped_item_ids"]
+            - {item_id} - corresponding_acceptance):
+        return None
+    snapshot = copy.deepcopy(basis["core_snapshot"])
+    req = snapshot["requirements"][0]
+    root_id = req["source"]["source_id"]
+    root = next((s for s in snapshot["sources"] if s["id"] == root_id), None)
+    if root is None or not isinstance(root.get("text"), str):
+        return None
+    root_text = root["text"]
+    test_facts = [fact for fact in snapshot["facts"]
+                  if fact["requirement_id"] == item_id
+                  and fact["predicate"] == basis["predicate"]
+                  and fact["kind"] == "action_event"
+                  and fact["outcome"] == "success"]
+    if not test_facts:
+        return None
+    latest = max(test_facts, key=lambda fact: fact["seq"])
+    eid = latest["source_id"].removeprefix("result:")
+    observed = next((e.get("core_observation") for e in state.get("evidence", [])
+                     if isinstance(e, dict) and str(e.get("id")) == eid), None)
+    if (not isinstance(observed, dict)
+            or observed.get("target") != basis["target"]
+            or not _reported_current_test_result(
+                reply_text, basis["target"], observed)):
+        return None
+    pieces: list[tuple[int, int, str]] = []
+    cursor = 0
+    test_seen = False
+    report_clause: tuple[str, int, int] | None = None
+    for clause in _action_source_clauses(root_text):
+        at = root_text.find(clause, cursor)
+        if at < cursor:
+            return None
+        end = at + len(clause)
+        if at > cursor:
+            gap = root_text[cursor:at]
+            pieces.append((cursor, at, "interpreted" if not gap.strip(
+                " \t\r\n,，。.!?？；;：:、") else "unknown"))
+        kind = "unknown"
+        direct = _direct_shell_command_object(clause)
+        if (not test_seen and direct is not None
+                and direct[:2] == ("test_verify", basis["target"])
+                and re.search(r"(?:运行|执行|run|execute)", clause, re.I)):
+            kind = "interpreted"
+            test_seen = True
+        elif _result_report_clause(clause) and report_clause is None:
+            kind = "interpreted"
+            report_clause = (clause, at, end)
+        pieces.append((at, end, kind))
+        cursor = end
+    if cursor < len(root_text):
+        tail = root_text[cursor:]
+        pieces.append((cursor, len(root_text), "interpreted" if not tail.strip(
+            " \t\r\n,，。.!?？；;：:、") else "unknown"))
+    if not test_seen or report_clause is None:
+        return None
+    def span_for(at: int, end: int) -> dict[str, Any]:
+        return dict(source_id=root_id, start=len(root_text[:at].encode("utf-8")),
+                    end=len(root_text[:end].encode("utf-8")), sha256=root["sha256"])
+    report_text, report_at, report_end = report_clause
+    container = copy.deepcopy(req)
+    container.update(id="scope:" + item_id, kind="constraint", required=False,
+                     parent_id=None, condition_ids=[],
+                     source=dict(source_id=root_id, start=0,
+                                 end=root["byte_length"], sha256=root["sha256"]))
+    snapshot["requirements"].append(container)
+    event_seq = state.get("core_event_sequence")
+    if type(event_seq) is not int or event_seq < snapshot["as_of"]:
+        return None
+    report_id = _append_current_result_delivery(
+        snapshot, req, span_for(report_at, report_end), report_text,
+        delivery_record, event_seq)
+    snapshot["coverage"] = [c for c in snapshot["coverage"]
+                            if c["source"]["source_id"] != root_id]
+    snapshot["coverage"].extend(dict(source=span_for(at, end), kind=kind)
+                                for at, end, kind in pieces if at < end)
+    try:
+        aggregate = project_core(snapshot)
+    except (ValueError, KeyError, TypeError):
+        return None
+    return dict(requirement_id=item_id, unit=basis["unit"], as_of=aggregate["as_of"],
+                predicate="test_and_report",
+                predicate_state="satisfied" if all(
+                    aggregate["predicates"].get(rid) == "satisfied"
+                    for rid in (item_id, report_id)) else "insufficient",
+                certifiable=bool(aggregate["certifiable"]),
+                host_evidence_ids=[eid],
+                delivery_sha256=delivery_record["delivery_sha256"],
+                unknown_coverage_count=len(aggregate["unknown_coverage"]),
+                coverage_error_count=len(aggregate["coverage_errors"]),
+                core_projection=aggregate)
+
+
+def retire_verified_ordinary_core_result(
+    state: dict[str, Any], row: dict[str, Any], delivered_record: dict[str, Any],
+) -> bool:
+    """Persist one fully sourced ordinary result without touching adopted gates.
+
+    A test process that terminates unsuccessfully can fulfill a *run and
+    report* requirement, but its failed Host evidence cannot fulfill a
+    separate pass target. The typed core fact and exact report establish that
+    distinction before this function is called.
+    """
+    if (not row.get("certifiable") or row.get("predicate_state") != "satisfied"
+            or row.get("unknown_coverage_count") != 0
+            or row.get("coverage_error_count") != 0
+            or row.get("delivery_sha256") != delivered_record.get("delivery_sha256")
+            or row.get("predicate") not in {"edit_readback_and_report", "test_and_report"}):
+        return False
+    item_id = row.get("requirement_id")
+    requirement = next((item for item in state.get("requirements", [])
+                        if isinstance(item, dict) and item.get("id") == item_id), None)
+    if not isinstance(requirement, dict) or requirement.get("status") != "pending":
+        return False
+    scoped = current_scope_projection(state)
+    associated = []
+    if row["predicate"] == "test_and_report":
+        associated = [item for item in state.get("acceptance_items", [])
+                      if isinstance(item, dict)
+                      and item.get("prompt_id") == requirement.get("prompt_id")
+                      and item.get("text") == requirement.get("text")]
+    items = [requirement, *associated]
+    if (scoped["scoped_item_ids"] != {str(item.get("id")) for item in items}
+            or scoped["waiting_conditions"]
+            or any(item.get("status") != "pending"
+                   or item.get("work_unit_id") != row.get("unit")
+                   or not isinstance(item.get("verification_contract"), dict)
+                   or item["verification_contract"].get("mode") not in {
+                       "legacy_fallback", "enforced"}
+                   for item in items)):
+        return False
+    evidence_ids = row.get("host_evidence_ids")
+    expected_count = 2 if row["predicate"] == "edit_readback_and_report" else 1
+    by_evidence = {str(e.get("id")): e for e in state.get("evidence", [])
+                   if isinstance(e, dict)}
+    if (not isinstance(evidence_ids, list) or len(evidence_ids) != expected_count
+            or len(set(evidence_ids)) != expected_count):
+        return False
+    for evidence_id in evidence_ids:
+        evidence = by_evidence.get(evidence_id)
+        if not isinstance(evidence, dict):
+            return False
+        if evidence.get("outcome") != "success":
+            observation = evidence.get("core_observation")
+            if not (row["predicate"] == "test_and_report"
+                    and evidence.get("outcome") == "failed"
+                    and isinstance(observation, dict)
+                    and observation.get("kind") == "action_event"
+                    and observation.get("predicate") == "test_run_completed"
+                    and observation.get("outcome") == "success"
+                    and type(observation.get("terminal_exit_code")) is int
+                    and observation["terminal_exit_code"] > 0):
+                return False
+    # An adopted/enforced proof remains a separate gate. Ordinary readback
+    # proof may be deterministically derived from its own registered Host
+    # input, but an unmatched visual, scope, or explicit proof cannot be
+    # replaced by the aggregate's certifiable bit.
+    proof_mark = len(state.get("proofs", []))
+    sequence_mark = int(state.get("proof_sequence") or 0)
+    try:
+        for manifest in derive_ordinary_proofs(state):
+            if manifest.get("item_id") in {item["id"] for item in items}:
+                append_normalized_proof(state, manifest)
+    except (ValueError, TypeError, KeyError):
+        del state["proofs"][proof_mark:]
+        state["proof_sequence"] = sequence_mark
+        return False
+    if any(unresolved_proof_obligations(state).get(item["id"])
+           for item in items):
+        del state["proofs"][proof_mark:]
+        state["proof_sequence"] = sequence_mark
+        return False
+    basis = {
+        "schema": "ordinary-core-completion/v1",
+        "predicate": row["predicate"],
+        "as_of": row["as_of"],
+        "delivery_sha256": delivered_record["delivery_sha256"],
+        "core_sha256": sha256_text(canonical_json(row["core_projection"])),
+        "host_evidence_ids": list(evidence_ids),
+    }
+    for item in items:
+        item["status"] = "pass"
+        item["evidence"] = list(evidence_ids)
+        item["completion_basis"] = {**basis, "host_evidence_ids": list(evidence_ids)}
+    delivered_record["resolution"] = "verified"
+    return True
 
 
 def deferred_action_bindings(
@@ -8375,7 +11336,10 @@ def deferred_action_bindings(
     return list(dict.fromkeys(bound))
 
 
-def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
+def remaining_action_facts(
+    text: str, prompt_text: str, *, state: dict[str, Any] | None = None,
+    session_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     scope = prompt_action_scope(prompt_text)
     resume_requested = explicit_execution_resume(prompt_text)
     actions: list[dict[str, str]] = []
@@ -8386,16 +11350,16 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
         if user_handoff:
             fact = ("user_action", "user", "user_only")
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "user_input_needed"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
         if EXTERNAL_WAIT_RE.search(clause):
             fact = ("external_wait", "external", "external_dependency")
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "unregistered_wait"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
             # A single clause can still contain an explicit assistant future
             # after an external status, so do not return early here.
@@ -8412,9 +11376,9 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
         if user_dependent_future and not user_handoff:
             fact = ("user_action", "user", "user_only")
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "user_input_needed"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
             user_handoff = True
         # A pure user handoff owns every action in the clause. An explicit
@@ -8435,9 +11399,16 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             REMAINING_WORK_RE.search(clause) or re.search(r"仍有|尚有", clause, re.I)
             or resumed_next_action
         )
+        incomplete_operation = bool(
+            re.search(r"(?:尚未|还未|未)\s*[^，。;；]{0,20}", clause)
+            and (any(pattern.search(clause) for _, pattern in ACTION_PATTERNS)
+                 or re.search(r"(?:回读|读取)|\bread\s*back\b", clause, re.I))
+        )
         remaining = bool(
             remaining_marker
+            or incomplete_operation
             or NON_COMPLETION_RE.search(clause)
+            or _incomplete_action_clause(clause)
             or re.search(r"\b(?:next|then)\s+i\s+(?:will|need\s+to)\b", clause, re.I)
             or assistant_future
         )
@@ -8455,26 +11426,94 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             ):
                 continue
             authorization = _action_authorization(category, scope)
+            bases: list[dict[str, Any]] = []
+            if state is not None and session_dir is not None:
+                for item_id in sorted(current_scope_projection(state)["scoped_item_ids"]):
+                    candidate = _current_action_basis(
+                        state, category, assistant_clause, session_dir,
+                        allowed_item_ids={item_id},
+                    )
+                    if candidate is not None:
+                        bases.append(candidate)
+            bases = _dedupe_action_bases(bases)
+            basis = bases[0] if bases else None
+            if state is not None and basis is None:
+                completed_basis = _current_action_basis(
+                    state, category, assistant_clause, session_dir, include_satisfied=True
+                )
+                if completed_basis is not None and completed_basis["predicate_state"] == "satisfied":
+                    continue
+            if state is not None:
+                authorization = (
+                    "authorized" if basis is not None
+                    else authorization if authorization in {"denied", "out_of_scope"}
+                    else "unknown"
+                )
+            if bases:
+                existing_basis_ids = {
+                    item.get("basis", {}).get("requirement_id") for item in actions
+                }
+                for candidate in bases:
+                    if candidate["requirement_id"] in existing_basis_ids:
+                        continue
+                    actions.append({"category": candidate["action"], "owner": "assistant",
+                                    "actionability": _basis_actionability(candidate),
+                                    "basis": candidate})
+                    existing_basis_ids.add(candidate["requirement_id"])
+                matched = True
+                if assistant_future:
+                    explicit_assistant_facts.add((category, "assistant", "authorized"))
+                continue
             fact = (category, "assistant", authorization)
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                action: dict[str, Any] = {"category": fact[0], "owner": fact[1]}
+                if state is None:
+                    action["authorization"] = fact[2]
+                else:
+                    action["actionability"] = (
+                        _basis_actionability(basis) if basis is not None else fact[2]
+                    )
+                if basis is not None:
+                    action["basis"] = basis
+                actions.append(action)
                 seen.add(fact)
             if assistant_future:
                 explicit_assistant_facts.add(fact)
             matched = True
         generic_future = assistant_future and bool(re.search(r"继续|\bcontinue\b", assistant_clause, re.I))
-        if not matched and (remaining_marker or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
-            authorization = _action_authorization("generic_work", scope)
+        if not matched and (remaining_marker or incomplete_operation or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
+            # A reply may name an unfinished predicate without repeating the
+            # root's verb. Resolve it only when exactly one live, sourced,
+            # ready root action exists; never upgrade a stored generic row.
+            live_bases = (_live_current_action_bases(state, session_dir)
+                          if state is not None and session_dir is not None else [])
+            unique_bases = {basis["requirement_id"]: basis for basis in live_bases}
+            if len(unique_bases) == 1:
+                basis = next(iter(unique_bases.values()))
+                actions.append({"category": basis["action"], "owner": "assistant",
+                                "actionability": _basis_actionability(basis), "basis": basis})
+                matched = True
+        if not matched and (remaining_marker or incomplete_operation or generic_future) and not EXTERNAL_WAIT_RE.search(clause):
+            authorization = "unknown"
             fact = ("generic_work", "assistant", authorization)
             if fact not in seen:
-                actions.append(
-                    {"category": fact[0], "owner": fact[1], "authorization": fact[2]}
-                )
+                actions.append({"category": fact[0], "owner": fact[1],
+                                **({"actionability": "insufficient"} if state is not None
+                                   else {"authorization": fact[2]})})
                 seen.add(fact)
             if assistant_future:
                 explicit_assistant_facts.add(fact)
+    if state is not None and resume_requested:
+        # A short resume inherits only still-actionable requirements in the
+        # same live unit. The resume text itself supplies no new target or
+        # predicate, and completed/future rows cannot become work.
+        existing_ids = {a.get("basis", {}).get("requirement_id") for a in actions}
+        for basis in _live_current_action_bases(state, session_dir):
+            if basis["requirement_id"] in existing_ids:
+                continue
+            actions.append({"category": basis["action"], "owner": "assistant",
+                            "actionability": _basis_actionability(basis), "basis": basis})
+            existing_ids.add(basis["requirement_id"])
     if any(item["owner"] == "user" for item in actions):
         actions = [
             item
@@ -8483,18 +11522,30 @@ def remaining_action_facts(text: str, prompt_text: str) -> list[dict[str, str]]:
             or (
                 item["category"],
                 item["owner"],
-                item["authorization"],
+                item.get("authorization", item.get("actionability", "unknown")),
             )
             in explicit_assistant_facts
         ]
+    if state is not None and session_dir is not None and re.search(
+        r"(?:以后|后续|未来|将来|尚待|有待|\b(?:later|future|eventually|remains? to be)\b)",
+        text, re.I,
+    ):
+        basis = _current_action_basis(state, "local_review", text, session_dir)
+        if basis is not None and basis["action"] == "evaluate_current_effect":
+            if not any(a.get("basis", {}).get("requirement_id") == basis["requirement_id"]
+                       for a in actions):
+                actions.append({"category": "evaluate_current_effect",
+                                "owner": "assistant", "actionability": "current_ready",
+                                "basis": basis})
     return actions
 
 
 def classify_stop_decision(
     text: str, prompt_text: str = "", *, prompt_integrity: bool = True,
-    state: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None, session_dir: Path | None = None,
 ) -> dict[str, Any]:
-    interpretation = interpret_stop_reply(text, prompt_text, state=state)
+    interpretation = interpret_stop_reply(text, prompt_text, state=state,
+                                          session_dir=session_dir)
     if not prompt_integrity:
         outcome = "fail_closed_integrity"
         reasons = ["prompt_integrity_unavailable"]
@@ -8507,17 +11558,18 @@ def classify_stop_decision(
         authorized = [
             item
             for item in assistant_actions
-            if item["authorization"] == "authorized"
+            if _action_ready(item)
         ]
         if interpretation["whole_completion_claim"]:
             outcome = "gate_completion_claim"
             reasons = ["current_unit_whole_completion"]
         elif authorized:
-            outcome = "gate_authorized_remaining_work"
+            outcome = ("gate_current_actionable_work" if state is not None
+                       else "gate_authorized_remaining_work")
             reasons = ["assistant_actionable_work_remains"]
             if any(item["owner"] == "external" for item in actions):
                 reasons.append("mixed_external_and_assistant_work")
-        elif assistant_actions:
+        elif any(_action_deferred(item) for item in assistant_actions):
             outcome = "allow_out_of_scope_deferred"
             reasons = ["remaining_work_denied_or_out_of_scope"]
         elif any(item["owner"] == "user" for item in actions):
@@ -8592,7 +11644,7 @@ def _stop_outer_reporting_frame(prefix: str) -> bool:
     return bool(
         re.search(r"\b(?:example|sample|illustration)\s*[:：]|\b(?:for example|as an example)\b|(?:示例|举例)\s*[:：]|(?:^|[,，:：])\s*例如", outer, re.I)
         or re.search(r"\b(?:said|says|wrote|writes|reported|states|claimed)\b|\baccording\s+to\b|据.{0,24}(?:说|称|报道)", outer, re.I)
-        or re.search(r"(?:报告|文档|他|她|它|有人).{0,24}(?:写道|写着|说|称|表示)|"
+        or re.search(r"(?:报告|文档|日志|他|她|它|有人).{0,24}(?:写道|写着|说|称|表示)|"
                      r"\b(?:report|reviewer|team|docs?|they)\b.{0,48}\b(?:says?|said|states?|reported|wrote)\b", outer, re.I)
     )
 
@@ -8701,7 +11753,8 @@ def _stop_claim_subject(
     return "current_work_unit", "reply_subject"
 
 
-def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, Any] | None = None) -> dict[str, Any]:
+def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, Any] | None = None,
+                         session_dir: Path | None = None) -> dict[str, Any]:
     """One bounded semantic projection; unknown subjects never auto-complete.
 
     This is deterministic clause/subject interpretation, not semantic proof.
@@ -8735,27 +11788,37 @@ def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, A
                            "speech_act": _stop_claim_speech_act(text, match, regions),
                            "source": source, "clause_sha256": sha256_text(match.group(0))})
     action_text = authoritative_supersession_text(text)
-    actions = remaining_action_facts(action_text, prompt_text)
+    actions = remaining_action_facts(action_text, prompt_text, state=state,
+                                     session_dir=session_dir)
     owner_source = "reply_action"
-    if not actions and (POLICY_HOLD_RE.search(action_text) or EXPLICIT_HOLD_RE.search(action_text)):
+    # The standalone compatibility classifier reports wording. A production
+    # Stop never treats that report as a registered lifecycle operation.
+    if state is None and not actions and (POLICY_HOLD_RE.search(action_text) or EXPLICIT_HOLD_RE.search(action_text)):
         actions = [{"category": "external_wait", "owner": "external", "authorization": "external_dependency"}]
         owner_source = "reply_hold"
     if state is not None and not actions:
         waits = current_scope_projection(state)["waiting_conditions"]
         for wait in waits:
+            if wait.get("raised_by_kind") not in {"root_user", "external"}:
+                continue
+            if wait.get("kind") == MIGRATED_WAIT_CONDITION_KIND:
+                continue
             external = wait.get("condition_type") == "external_dependency"
             action = {"category": "external_wait" if external else "user_action",
                       "owner": "external" if external else "user",
-                      "authorization": "external_dependency" if external else "user_only"}
+                      "actionability": "registered_wait" if external else "user_input_needed"}
             if action not in actions:
                 actions.append(action)
         if actions:
             owner_source = "current_wait"
+    trusted_waits = current_scope_projection(state)["waiting_conditions"] if state is not None else []
     owner = stop3().resolve_waiting_owner({
-        "authorized_assistant_actions_available": any(a["owner"] == "assistant" and a["authorization"] == "authorized" for a in actions),
-        "missing_user_only_input_or_approval": any(a["owner"] == "user" for a in actions),
-        "registered_external_operation": any(a["owner"] == "external" for a in actions),
-        "deferred_by_scope_or_authority": any(a["owner"] == "assistant" and a["authorization"] != "authorized" for a in actions),
+        "authorized_assistant_actions_available": any(a["owner"] == "assistant" and _action_ready(a) for a in actions),
+        "missing_user_only_input_or_approval": any(w.get("raised_by_kind") == "root_user"
+            and w.get("condition_type") != "external_dependency" for w in trusted_waits),
+        "registered_external_operation": any(w.get("raised_by_kind") == "external"
+            and w.get("external_source_sha256") for w in trusted_waits),
+        "deferred_by_scope_or_authority": any(a["owner"] == "assistant" and _action_deferred(a) for a in actions),
     })
     return {"whole_completion_claim": whole, "claims": claims, "remaining_action_owner": owner,
             "omitted_claim_count": max(0, count - len(claims)), "actions": actions,
@@ -8888,7 +11951,7 @@ def is_control_prompt(text: str) -> bool:
         stripped.startswith(INTERNAL_CONTINUATION_PREFIX)
         or re.fullmatch(
             r"\$?context-guard(?:\s+(?:on|off|status|diagnose|export|rollover|adopt"
-            r"|standard|strict|release|observe)(?:\s+.+)?)?",
+            r"|standard|strict|release|observe|goal-adopt)(?:\s+.+)?)?",
             stripped,
             re.I,
         )
@@ -8899,7 +11962,7 @@ def control_action(text: str) -> tuple[str | None, str | None]:
     stripped = text.strip()
     match = re.fullmatch(
         r"\$?context-guard(?:\s+(on|off|status|diagnose|export|rollover|adopt"
-        r"|standard|strict|release|observe)(?:\s+(.+))?)?",
+        r"|standard|strict|release|observe|goal-adopt)(?:\s+(.+))?)?",
         stripped,
         re.I,
     )
@@ -8949,6 +12012,8 @@ def append_prompt(
     origin: str = "human",
     authority: str = "user",
     actor_id: str | None = None,
+    locator_base: str | None = None,
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     sequences = [
         int(match.group(1))
@@ -8972,6 +12037,18 @@ def append_prompt(
         "authority": authority,
         "actor_id": actor_id,
     }
+    if turn_id:
+        record["turn_id"] = turn_id
+    if locator_base is not None:
+        record["locator_base"] = locator_base
+        record["locator_flavor"] = "windows" if WINDOWS_ABSOLUTE_PATH_RE.match(locator_base) else "posix"
+    if origin == "human" and not is_control_prompt(text):
+        # The work-unit choice is made just after this immutable root arrives.
+        # Its required companion is written once then; absent/old companions
+        # cannot later be inferred from surviving requirement rows.
+        record["unit_binding_required"] = True
+    state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
+    record["core_event_seq"] = state["core_event_sequence"]
     record["record_sha256"] = prompt_record_hash(record)
     if path.exists():
         raise RuntimeError(f"immutable prompt already exists: {path}")
@@ -8987,7 +12064,10 @@ def append_prompt(
         "authority": authority,
         "actor_id": actor_id,
         "record_sha256": record["record_sha256"],
+        "core_event_seq": record["core_event_seq"],
     }
+    if turn_id:
+        metadata["turn_id"] = turn_id
     state["prompts"].append(metadata)
     journal = state.setdefault("prompt_journal", {"version": 1, "entries": []})
     entries = journal.setdefault("entries", []) if isinstance(journal, dict) else []
@@ -9013,6 +12093,20 @@ def append_prompt(
     return metadata
 
 
+def append_prompt_unit_binding(
+    session_dir: Path, prompt: dict[str, Any], work_unit_id: str,
+) -> None:
+    path = session_dir / "prompts" / "units" / f"{prompt['id']}.json"
+    if path.exists():
+        raise StateIntegrityError("immutable prompt-unit binding already exists")
+    record = {"schema": "prompt-unit/v1", "prompt_id": prompt["id"],
+              "prompt_record_sha256": prompt["record_sha256"],
+              "core_event_seq": prompt["core_event_seq"],
+              "work_unit_id": work_unit_id}
+    record["record_sha256"] = sha256_text(canonical_json(record))
+    atomic_write_json(path, record)
+
+
 def clause_metadata(text: str) -> dict[str, Any]:
     """Derive bounded, diagnostic bindings from each protected prompt clause."""
     clauses: list[dict[str, Any]] = []
@@ -9032,7 +12126,7 @@ def clause_metadata(text: str) -> dict[str, Any]:
                 else ("ambiguous" if operations else "unspecified")
             )
         subjects = [item["id"] for item in prompt_subjects(clause, include_threads=True)]
-        lowered = clause.casefold()
+        lowered = visual_reference_source_text(clause).casefold()
         if re.search(r"视觉|图片|图像|image|visual|截图|ui|界面|页面", lowered):
             surface = "visual" if re.search(r"视觉|图片|图像|image|visual|截图", lowered) else "ui"
         elif re.search(r"全部|所有|范围|scope|each|every", lowered):
@@ -9135,14 +12229,197 @@ def append_requirement(
         }
     )
     primary = _primary_positive_clause(metadata)
-    if primary is not None:
-        pending_operation(
-            state,
-            str(primary.get("operation") or "unspecified"),
-            subject_id=(primary.get("subjectId") or [None])[0],
-            requested_surface=primary.get("requestedSurface"),
+    primary_state = (
+        _action_clause_time_state(
+            str(primary.get("clause") or ""), str(primary.get("operation") or "")
         )
+        if primary is not None else "unsupported"
+    )
+    if primary is not None and not _information_delivery_item(state["requirements"][-1]):
+        operation = str(primary.get("operation") or "unspecified")
+        # Preserve a genuinely ambiguous current derivation as a diagnostic,
+        # clearable pending row. It is not a trusted action basis: execution
+        # still requires a concrete category, sourced predicate and Host fact.
+        if primary_state == "current" or operation == "ambiguous":
+            pending_operation(
+                state,
+                operation,
+                subject_id=(primary.get("subjectId") or [None])[0],
+                requested_surface=primary.get("requestedSurface"),
+            )
     return requirement_id
+
+
+def append_information_children(
+    state: dict[str, Any], prompt: dict[str, Any], text: str,
+    parent_id: str, work_unit_id: str,
+) -> None:
+    """Keep independently deliverable root spans visible in mixed requests.
+
+    The original root requirement remains pending; a recognized information
+    span can be answered without granting closure to execution or unknown
+    neighboring bytes. The span is measured over the immutable UTF-8 root.
+    """
+    if _reply_only_request_shape(text):
+        return
+    start = 0
+    candidates: list[tuple[int, int, str]] = []
+    for separator in re.finditer(
+        r"(?<=[.!?])\s+|" + _INFORMATION_COORDINATION_RE.pattern, text, re.I
+    ):
+        fragment = text[start:separator.start()]
+        trimmed = fragment.strip().rstrip(".!?。！？")
+        if trimmed:
+            offset = len(fragment) - len(fragment.lstrip())
+            begin = start + offset
+            candidates.append((begin, begin + len(trimmed), trimmed))
+        start = separator.end()
+    fragment = text[start:]
+    trimmed = fragment.strip().rstrip(".!?。！？")
+    if trimmed:
+        begin = start + len(fragment) - len(fragment.lstrip())
+        candidates.append((begin, begin + len(trimmed), trimmed))
+    if len(candidates) < 2 or len(candidates) > 32:
+        return
+    for begin, end, fragment in candidates:
+        if not _information_delivery_item({"text": fragment}):
+            continue
+        append_requirement(state, prompt, fragment, work_unit_id=work_unit_id)
+        child = state["requirements"][-1]
+        child["parent_id"] = parent_id
+        child["information_source_span"] = [
+            len(text[:begin].encode("utf-8")), len(text[:end].encode("utf-8"))
+        ]
+        child["information_source_sha256"] = hashlib.sha256(
+            text[begin:end].encode("utf-8")
+        ).hexdigest()
+
+
+def _execution_child_specs(
+    text: str,
+) -> tuple[list[tuple[int, int, str, str]], bool]:
+    """Derive bounded execution spans and dependency shape from root bytes.
+
+    A shared root is not itself a dependency. A test is a required descendant
+    only when its own clause names the same sole object as the repair, or is
+    an object-free test joined to that repair. Controls never create this edge.
+    """
+    from cg_core_v2 import _subjectless_compound_persistence
+
+    source = text
+    controls = [(begin, end) for kind, begin, end, clause in
+                _root_control_segments(text)
+                if kind == "persistence" and _subjectless_compound_persistence(clause)]
+    if len(controls) == 1 and controls[0][0] > 0:
+        # A complete following control clause is not a third edit/test
+        # action. Its source span remains separate from the root-time work.
+        source = text.encode("utf-8")[:controls[0][0]].decode("utf-8")
+    separators = [match for match in re.finditer(
+        r"[,，;；]\s*(?:(?:并且|然后|随后|并|和|and|then)\s*)?"
+        r"|\b(?:and|then)\b|并且|并|然后|随后|和",
+        source, re.I,
+    ) if not (match.group().lstrip().startswith((",", "，"))
+              and re.match(r"\s*(?:直到|直至|until\b)", source[match.end():], re.I))]
+    if not 1 <= len(separators) <= 16:
+        return [], False
+    raw_parts = []
+    start = 0
+    for cut in separators:
+        raw_parts.append((start, cut.start()))
+        start = cut.end()
+    raw_parts.append((start, len(source)))
+    # A changed-file readback is one edit predicate, not a regression suite.
+    if len(raw_parts) == 2 and re.fullmatch(
+        r"\s*verify\s+(?:the\s+)?changed\s+file[.。!！]?\s*",
+        source[raw_parts[1][0]:], re.I,
+    ):
+        return [], False
+    whole_speech = source
+    for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                            ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+        whole_speech = locator_pattern.sub("对象", whole_speech)
+    whole_classes = [category for category, pattern in ACTION_PATTERNS
+                     if pattern.search(whole_speech)]
+    parts: list[tuple[int, int, str, str]] = []
+    for begin, end in raw_parts:
+        fragment = source[begin:end]
+        offset = len(fragment) - len(fragment.lstrip())
+        begin += offset
+        value = fragment.strip(" \t\r\n。.!?？")
+        if (not value or CLAUSE_NEGATION_RE.search(value.replace("分别", ""))
+                or DESCRIPTION_FRAME_RE.search(value)):
+            return [], False
+        if DEFERRED_ACTION_CLAUSE_RE.search(value):
+            continue
+        speech = value
+        for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                                ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+            speech = locator_pattern.sub("对象", speech)
+        direct_command = _direct_shell_command_object(value)
+        classes = ([direct_command[0]] if direct_command is not None
+                   else [category for category, pattern in ACTION_PATTERNS
+                         if pattern.search(speech)])
+        if (not classes and whole_classes == ["test_verify"]
+                and re.search(r"\b(?:run|execute)\b|(?:运行|执行)", speech, re.I)
+                and len(root_absolute_locator_mentions(value)[0]) == 1):
+            classes = ["test_verify"]
+        if len(classes) != 1 or classes[0] not in {
+            "local_edit", "test_verify", "local_commit", "remote_push", "state_readback"
+        }:
+            return [], False
+        parts.append((begin, begin + len(value), value, classes[0]))
+    if len(parts) < 2:
+        return [], False
+    pair = {part[3] for part in parts}
+    repair_tests = (parts[0][3] == "local_edit"
+                    and all(part[3] == "test_verify" for part in parts[1:]))
+    commit_push = (len(parts) == 2 and pair == {"local_commit", "remote_push"})
+    edit_readback = (len(parts) == 2 and pair == {"local_edit", "state_readback"})
+    independent_tests = all(part[3] == "test_verify" for part in parts)
+    if not repair_tests and not commit_push and not edit_readback and not independent_tests:
+        return [], False
+    clause_targets = []
+    for _, _, fragment, _ in parts:
+        found, ambiguous = root_absolute_locator_mentions(fragment)
+        if ambiguous or len(found) > 1:
+            return [], False
+        clause_targets.append(found)
+    targets = set().union(*clause_targets)
+    if len(targets) > 1 and not independent_tests:
+        return [], False
+    related_tests = False
+    if repair_tests:
+        if targets:
+            related_tests = all(found == targets for found in clause_targets)
+        else:
+            related_tests = all(re.fullmatch(
+                r"\s*(?:(?:请|再|并|先)\s*)?(?:运行|执行)?\s*(?:回归|单元|集成)?\s*"
+                r"(?:测试|验证)\s*(?:[,，]\s*(?:直到|直至)\s*当前任务完成)?\s*",
+                fragment, re.I,
+            ) for _, _, fragment, _ in parts[1:])
+    return parts, related_tests
+
+
+def append_execution_children(
+    state: dict[str, Any], prompt: dict[str, Any], text: str,
+    parent_id: str, work_unit_id: str,
+) -> None:
+    """Persist individually sourced child effects and root-time relations."""
+    parts, related_tests = _execution_child_specs(text)
+    created: list[dict[str, Any]] = []
+    for begin, end, fragment, category in parts:
+        append_requirement(state, prompt, fragment, work_unit_id=work_unit_id)
+        child = state["requirements"][-1]
+        child["parent_id"] = parent_id
+        child["execution_kind"] = category
+        child["execution_source_span"] = [
+            len(text[:begin].encode("utf-8")), len(text[:end].encode("utf-8"))
+        ]
+        child["execution_source_sha256"] = sha256_text(fragment)
+        created.append(child)
+    if related_tests:
+        for child in created[1:]:
+            child["required_for_item_id"] = created[0]["id"]
 
 
 def append_session_constraints(state: dict[str, Any], prompt: dict[str, Any], text: str, unit_id: str) -> None:
@@ -9434,6 +12711,24 @@ def root_pause_clauses(text: str) -> list[str]:
     authoritative = authoritative_supersession_text(text)
     result = []
     for sentence in re.findall(r"[^\n.!?。！？;；]+[?？]?", authoritative):
+        # A direct pause at the sentence head remains an instruction when a
+        # later comma introduces a separate question in the same sentence.
+        direct_clause = re.split(r"[,，]", sentence, maxsplit=1)[0]
+        direct = ROOT_DIRECT_PAUSE_RE.search(direct_clause)
+        if (direct and not TEST_SPEC_FRAME_RE.search(direct_clause)
+                and not DESCRIPTION_FRAME_RE.search(direct_clause)):
+            result.append(direct_clause.strip())
+            # A general pause and a named input can share one sentence.
+            # Preserve the later dependency instead of letting the first
+            # comma turn the whole root into a bare-resumable pause.
+            sentence = sentence[len(direct_clause):].lstrip(" ,，")
+            if not sentence:
+                continue
+        if (general_root_pause_clause(sentence)
+                and not TEST_SPEC_FRAME_RE.search(sentence)
+                and not DESCRIPTION_FRAME_RE.search(sentence)):
+            result.append(sentence.strip())
+            continue
         if (clause_is_interrogative(sentence) or TEST_SPEC_FRAME_RE.search(sentence)
                 or DESCRIPTION_FRAME_RE.search(sentence)
                 or re.search(r"^\s*(?:如果|假如|if\b|suppose\b)", sentence, re.I)):
@@ -9444,30 +12739,139 @@ def root_pause_clauses(text: str) -> list[str]:
     return result
 
 
+_WAIT_TEMPORAL_QIAN_BOUNDARY = (
+    r"前(?=\s*(?:$|[,，;；]|(?:本任务|任务)?(?:保持)?(?:暂停|停止|等待)|"
+    r"(?:先|暂时)?(?:不要|别|不)(?:继续|分析|处理|检查|核对|评估|执行|运行)))"
+)
+_WAIT_SUBJECT_SPLIT_RE = re.compile(
+    rf"(?:{_WAIT_TEMPORAL_QIAN_BOUNDARY}|后再|之后|才|[,，;；])|"
+    r"(?:\s+then\s+)|再(?:分析|处理|检查|核对|评估|继续|执行|运行)",
+    re.I,
+)
+_WAIT_RELEASE_DEFERRED_RE = re.compile(
+    rf"(?:{_WAIT_TEMPORAL_QIAN_BOUNDARY}|后再|之后|直到|\buntil\b|\bbefore\b)",
+    re.I,
+)
+
+
 def wait_subject(text: str) -> str:
     """Conservative subject normalization; an unknown paraphrase stays waiting.
 
     Only one-shot timing/confirmation words are removed. The remaining object
     must match exactly; no shared keyword or generic affirmative can release it.
     """
-    text = re.split(r"前|后再|之后|才|[,，;；]", text, maxsplit=1)[0]
+    text = re.sub(
+        r"^\s*等(?:待|到)?(?:我|你|您|用户)?(?:发来|发送|提供|上传|给出|补充)\s*",
+        "", text,
+    )
+    text = re.sub(
+        r"^\s*(?:please\s+)?(?:wait(?:ing)?\s+)?until\s+"
+        r"(?:i|you|the\s+user)\s+(?:send|provide|upload|supply)\s+",
+        "", text, flags=re.I,
+    )
+    # ``前`` is also a lexical prefix in subjects such as 前台日志 and
+    # 前序输出. The shared boundary recognizes it only when the following
+    # syntax closes the dependency and introduces the parked action.
+    text = _WAIT_SUBJECT_SPLIT_RE.split(text, maxsplit=1)[0]
     text = re.sub(r"^(?:补充[:：]\s*)?(?:在|等待|等到|等)?(?:我|你|您)?(?:确认)?", "", text.strip())
-    text = re.sub(r"\b(?:please|wait|waiting|hold|until|for|my|your|the|is|has|been|already|confirmation|confirmed|ready|done|finished|completed|complete|changed|change)\b", " ", text, flags=re.I)
-    text = re.sub(r"确认|已经|已|更换|换好|完成|就绪|准备好|通过|好了|结束", "", text)
+    text = re.sub(r"\b(?:please|wait|waiting|hold|until|for|my|your|the|is|are|has|been|already|confirmation|confirmed|ready|done|finished|completed|complete|changed|change)\b", " ", text, flags=re.I)
+    text = re.sub(
+        r"确认|已经|已|更换|换好|完成|就绪|准备好|通过|好了|结束|"
+        r"发来|发送|提供|上传|给出|补充|\b(?:sent|provided|uploaded|supplied)\b",
+        "", text, flags=re.I,
+    )
     return re.sub(r"[\s。.!！]+", "", text).casefold()
+
+
+def input_wait_subject(text: str) -> str:
+    """Extract a named user-supplied object without rewriting its bytes.
+
+    Waiting/provision verbs and a following time clause are grammar around
+    the object. They are not a license to fold marker case, separators, or
+    words such as READY and DONE inside the object itself.
+    """
+    text = text.strip()
+    text = re.sub(
+        r"^(?:请\s*)?等(?:待|到)?(?:我|你|您|用户)?"
+        r"(?:(?:随后|稍后|明确|之后)\s*)*"
+        r"(?:发来|发送|提供|上传|给出|补充)\s*",
+        "", text,
+    )
+    text = re.sub(
+        r"^(?:please\s+)?wait(?:ing)?\s+until\s+"
+        r"(?:i|you|the\s+user)\s+(?:send|provide|upload|supply)\s+",
+        "", text, flags=re.I,
+    )
+    text = re.split(
+        rf"{_WAIT_TEMPORAL_QIAN_BOUNDARY}|后再|之后|才|[,，;；]|"
+        r"\s+before\s+(?:continuing|resuming)(?=\s|$)|"
+        r"再(?:分析|处理|检查|核对|评估|继续|执行|运行)",
+        text, maxsplit=1, flags=re.I,
+    )[0].strip()
+    text = re.sub(r"^(?:标记\s*|(?:marker|token)\b\s*)", "", text, flags=re.I)
+    text = re.sub(r"^(?:the\s+)", "", text, flags=re.I)
+    text = re.sub(r"(?:已|已经)?(?:发来|发送|提供|上传|给出|补充)\s*$", "", text)
+    text = re.sub(
+        r"\s+(?:is|are|has\s+been|have\s+been)\s+ready\s*$|"
+        r"\s+(?:sent|provided|uploaded|supplied)\s*$",
+        "", text, flags=re.I,
+    )
+    return text.strip(" \t\r\n。.!！")
+
+
+def general_root_pause_clause(clause: str) -> bool:
+    """A bare task pause has no missing external or named user input."""
+    return bool(re.fullmatch(
+        r"\s*(?:(?:请|现在|先)\s*)*暂停(?:\s*(?:当前|本|这个)\s*"
+        r"(?:任务|工作))?\s*|"
+        r"\s*(?:please\s+)?pause(?:\s+(?:the\s+)?(?:current\s+)?"
+        r"(?:task|work))?\s*|"
+        r"\s*等(?:待)?我确认(?:后再|之后再|才)继续\s*|"
+        r"\s*wait\s+for\s+my\s+(?:explicit\s+)?next\s+message"
+        r"(?:\s+before\s+(?:completing|continuing)\s+(?:the\s+)?task)?\s*",
+        clause, re.I,
+    ))
+
+
+def root_pause_condition_type(clause: str) -> str:
+    """Classify the sourced dependency owner without using reply wording."""
+    if ROOT_PAUSE_EXTERNAL_RE.search(clause):
+        return "external_dependency"
+    if re.search(
+        r"(?:我|你|您|用户)?(?:发来|发送|提供|上传|给出|补充)|"
+        r"\b(?:i|you|the\s+user)\s+(?:send|provide|upload|supply)\b",
+        clause, re.I,
+    ):
+        return "input"
+    return "confirmation"
 
 
 def detect_root_pause(text: str) -> str | None:
     clauses = root_pause_clauses(text)
     if not clauses:
         return None
-    return "external_dependency" if ROOT_PAUSE_EXTERNAL_RE.search(clauses[0]) else "confirmation"
+    return root_pause_condition_type(clauses[0])
 
 
 def clause_is_interrogative(clause: str) -> bool:
-    return bool(INTERROGATIVE_RE.search(clause.strip()) or re.search(
-        r"是否|能否|可否|^\s*(?:is|are|has|have|did|can|could|should|would)\b", clause, re.I
-    ))
+    explicit_question = re.search(
+        r"[?？]\s*$|吗\b|么呢|呢\b|如何|怎么样|是否|能否|可否|"
+        r"^\s*(?:is|are|has|have|did|can|could|should|would)\b",
+        clause, re.I,
+    )
+    if explicit_question:
+        return True
+    # ``status``/``状态`` can be the object of a direct requested operation
+    # (run the test and report its exit status).  That speech act is not a
+    # question merely because the result field is named. Explicit question
+    # morphology still wins.
+    if re.search(
+                r"(?:报告|说明|检查|核对|读取|回读|显示|运行|执行).{0,120}(?:状态|进度)|"
+                r"\b(?:report|show|check|read|run|execute)\b.{0,120}\b(?:status|progress)\b",
+                clause, re.I,
+            ):
+        return False
+    return bool(INTERROGATIVE_RE.search(clause.strip()))
 
 
 def clause_is_negated_unmet(clause: str) -> bool:
@@ -9488,16 +12892,40 @@ def affirmative_confirmation(text: str) -> bool:
     return any(AFFIRMATIVE_CONFIRMATION_RE.search(clause) for clause in clauses)
 
 
-def release_matches_condition(condition: dict[str, Any], text: str) -> bool:
+def release_matches_condition(
+    condition: dict[str, Any], text: str, *,
+    state: dict[str, Any] | None = None, prompt_id: str | None = None,
+) -> bool:
     if condition.get("condition_type") == "external_dependency":
         return False
     clauses = control_speech_clauses(text)
-    clauses = [c for c in clauses if not re.search(r"前|后再|之后|直到|\buntil\b|\bbefore\b", c, re.I)]
+    clauses = [c for c in clauses if not _WAIT_RELEASE_DEFERRED_RE.search(c)]
     if not clauses or any(clause_is_negated_unmet(c) for c in clauses):
         return False
     if condition.get("condition_type") == "choice":
         return any(CHOICE_ANSWER_RE.search(clause) for clause in clauses)
     subject = condition.get("subject_sha256")
+    if condition.get("condition_type") == "input":
+        if (condition.get("kind") == MIGRATED_WAIT_CONDITION_KIND
+                or condition.get("raised_by_kind") != "root_user"
+                or not condition.get("source_clause_sha256") or not subject):
+            return False
+        attachment_subjects = {
+            sha256_text(input_wait_subject(noun))
+            for noun in ("附件", "图片", "图像", "截图", "attachment", "image", "screenshot")
+        }
+        if subject in attachment_subjects:
+            if not state or not prompt_id or not any(
+                item.get("available") and item.get("source") == "hook_payload"
+                and str(item.get("media_type") or "").startswith("image/")
+                and isinstance(item.get("width"), int) and item["width"] > 0
+                and isinstance(item.get("height"), int) and item["height"] > 0
+                and prompt_id in item.get("prompt_ids", [])
+                for item in state.get("assets", []) if isinstance(item, dict)
+            ):
+                return False
+        return any(sha256_text(input_wait_subject(clause)) == subject
+                   for clause in clauses)
     return bool(subject) and any(
         AFFIRMATIVE_CONFIRMATION_RE.search(clause)
         and sha256_text(wait_subject(clause)) == subject
@@ -9522,7 +12950,11 @@ def has_explicit_switch_intent(text: str) -> bool:
     return False
 
 
-def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -> str:
+def append_work_unit(
+    state: dict[str, Any], prompt: dict[str, Any], text: str, *,
+    session_dir: Path | None = None,
+    source_texts: dict[str, str] | None = None,
+) -> str:
     """Open the prompt's work unit under the schema-11 lifecycle.
 
     The unfinished task is continuous by default (plan sections 3.1/3.2):
@@ -9532,9 +12964,10 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
     unit as historical_unresolved and opens a sibling root; completed units
     never block a new request; parked units stay parked and reopen only
     through their typed wait conditions. A unique user-controlled condition
-    is released by a matching root confirmation (choice answers,
-    affirmative confirmations) or an explicit resume; external dependencies
-    are never released by speech, and progress questions, negated/unmet
+    is released by a matching root input/confirmation (including choice
+    answers); bare resume applies only to a source-verified general pause or
+    next-message request. External dependencies are never released by speech,
+    and progress questions, negated/unmet
     replies, quoted-only material, and multiple ambiguous conditions never
     release anything. Every release records its root-user source.
     """
@@ -9545,6 +12978,28 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
     work_state.setdefault("active_work_unit_id", None)
     work_state.setdefault("unit_activity_seq", 0)
     work_state.pop("resume_selection_required", None)
+
+    def verified_root_wait_clause(condition: dict[str, Any]) -> str | None:
+        if condition.get("raised_by_kind") != "root_user":
+            return None
+        source_id = condition.get("raised_by_source")
+        source_text = (source_texts or {}).get(str(source_id))
+        if source_text is None and session_dir is not None:
+            metadata = next((item for item in state.get("prompts", [])
+                             if item.get("id") == source_id), None)
+            record = read_prompt_record(session_dir, metadata) if metadata else None
+            source_text = record.get("text") if record else None
+        if not isinstance(source_text, str):
+            return None
+        return next((clause for clause in root_pause_clauses(source_text)
+                     if sha256_text(clause) == condition.get("source_clause_sha256")
+                     and condition.get("subject_sha256") in {
+                         None, sha256_text(
+                             input_wait_subject(clause)
+                             if condition.get("condition_type") == "input"
+                             else wait_subject(clause)
+                         )
+                     }), None)
     current_id = work_state.get("active_work_unit_id")
     current = next(
         (
@@ -9554,6 +13009,12 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
         ),
         None,
     )
+    if (current is not None and current.get("status") == "active"
+            and any(kind == "cancel" and _root_control_covers_prompt(text, begin, end)
+                    for kind, begin, end, _ in _root_control_segments(text))):
+        # Cancellation applies to the active unit before any later switch.
+        # Opening a sibling first would bind the control to the wrong task.
+        return str(current["id"])
     if (
         current is not None
         and (
@@ -9585,10 +13046,20 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
         else:
             matched = [
                 item for item in user_conditions
-                if release_matches_condition(item, text)
+                if (item.get("raised_by_kind") != "root_user"
+                    or verified_root_wait_clause(item) is not None)
+                if release_matches_condition(
+                    item, text, state=state, prompt_id=str(prompt["id"])
+                )
             ]
             resume = has_root_resume_intent(text)
-            if resume and len(user_conditions) == 1:
+            if (resume and len(user_conditions) == 1
+                    and user_conditions[0].get("condition_type") == "confirmation"
+                    and user_conditions[0].get("kind") != MIGRATED_WAIT_CONDITION_KIND
+                    and user_conditions[0].get("raised_by_kind") == "root_user"
+                    and general_root_pause_clause(
+                        verified_root_wait_clause(user_conditions[0]) or ""
+                    )):
                 matched = list(user_conditions)
             # Multiple matches are ambiguous; order or recency is not authority.
             if len(matched) != 1:
@@ -9597,6 +13068,17 @@ def append_work_unit(state: dict[str, Any], prompt: dict[str, Any], text: str) -
                 release_wait_condition(state, condition, str(prompt["id"]))
             remaining = waiting_conditions_for_unit(state, str(current["id"]))
             if matched and not remaining:
+                work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
+                current["status"] = "active"
+                current["closed_at"] = None
+                current["last_active_seq"] = int(work_state["unit_activity_seq"])
+                return str(current["id"])
+            if (resume and not matched and len(conditions) == 1
+                    and conditions[0].get("kind") == MIGRATED_WAIT_CONDITION_KIND
+                    and conditions[0].get("condition_type") == "input"):
+                # An old parked unit may be selected for continued work, but
+                # its source-less generic wait is not proof that the missing
+                # input arrived. Keep the condition open for completion.
                 work_state["unit_activity_seq"] = int(work_state["unit_activity_seq"]) + 1
                 current["status"] = "active"
                 current["closed_at"] = None
@@ -9723,10 +13205,74 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
     and never pass.
     """
     _current, descendants, ancestors = work_unit_relations(state)
+    # Only the exact, receipt-time ordinary execution refs are canceled.
+    # Replaying an entire unit here would wrongly remove information, proof,
+    # Goal, release, and independently sourced acceptance obligations.
+    cancelled: set[str] = set()
+    requirements_by_id = {str(i.get("id")): i for i in state.get("requirements", [])
+                          if isinstance(i, dict)}
+    for control in state.get("root_controls", []):
+        if (not isinstance(control, dict) or control.get("kind") != "cancel"
+                or type(control.get("source_seq")) is not int
+                or control["source_seq"] > int(state.get("core_event_sequence") or 0)):
+            continue
+        catalog = _root_control_catalog(state, control["work_unit_id"], control["source_seq"])
+        selected = (_root_control_selected_items(
+            state, catalog, control["scope_kind"],
+            control.get("scope_target", "test_verify"
+                        if control["scope_kind"] == "action_class" else None))
+                    if catalog is not None else None)
+        if (catalog is None or selected != control.get("items")
+                or sha256_text(canonical_json(catalog)) != control.get("catalog_sha256")):
+            continue
+        for ref in selected:
+            item = requirements_by_id.get(ref["id"])
+            if (item is not None and item.get("constraint_scope") != "session"
+                    and _root_control_item_action(item) == ref["action"]):
+                cancelled.add(ref["id"])
+    # A mixed-root container has no independent effect once every sourced
+    # execution child is canceled. Any information child or other obligation
+    # keeps the original root in the completion scope.
+    for item in state.get("requirements", []):
+        if not isinstance(item, dict) or item.get("id") in cancelled:
+            continue
+        children = [child for child in state.get("requirements", [])
+                    if isinstance(child, dict) and child.get("parent_id") == item.get("id")]
+        if (children and all(child.get("execution_source_span") is not None
+                             and child.get("id") in cancelled for child in children)
+                and item.get("constraint_scope") != "session"):
+            cancelled.add(str(item["id"]))
+            for acceptance in state.get("acceptance_items", []):
+                if (not isinstance(acceptance, dict)
+                        or acceptance.get("prompt_id") != item.get("prompt_id")
+                        or acceptance.get("text") != item.get("text")):
+                    continue
+                obligations = acceptance.get("verification_contract", {}).get("obligations")
+                if (isinstance(obligations, list) and obligations
+                        and all(isinstance(o, dict) and o.get("kind") == "subject_readback"
+                                for o in obligations)):
+                    cancelled.add(str(acceptance["id"]))
     unit_status = {
         str(item.get("id")): str(item.get("status"))
         for item in state.get("work_units", [])
         if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    # Explicit proof and session constraints remain independent of ordinary
+    # work-unit cancellation. Goal and adopted-release contracts have their
+    # separate gates; neither is inferred from this completion scope.
+    protected_ids = {
+        str(item["id"])
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict) and item.get("status") != "superseded"
+        and str(item.get("id")) not in cancelled
+        and (item.get("constraint_scope") == "session" or (
+            isinstance(contract := item.get("verification_contract"), dict)
+            and contract.get("mode") == "enforced"
+            and any(isinstance(obligation, dict)
+                    and obligation.get("kind") != "subject_readback"
+                    for obligation in contract.get("obligations", []))
+        ))
     }
     if not descendants:
         live_ids = {
@@ -9734,16 +13280,16 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
             for collection in ("requirements", "acceptance_items")
             for item in state.get(collection, [])
             if isinstance(item, dict)
-            and item.get("status") != "superseded"
+            and item.get("status") != "superseded" and str(item.get("id")) not in cancelled
             and unit_status.get(str(item.get("work_unit_id"))) == "active"
         }
-        return live_ids, set()
+        return live_ids, protected_ids - live_ids
     scoped = {
         str(item["id"])
         for collection in ("requirements", "acceptance_items")
         for item in state.get(collection, [])
         if isinstance(item, dict)
-        and item.get("status") != "superseded"
+        and item.get("status") != "superseded" and str(item.get("id")) not in cancelled
         and item.get("work_unit_id") in descendants
         and unit_status.get(str(item.get("work_unit_id"))) not in {"historical_unresolved", "completed"}
     }
@@ -9752,7 +13298,7 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
         for collection in ("requirements", "acceptance_items")
         for item in state.get(collection, [])
         if isinstance(item, dict)
-        and item.get("status") != "superseded"
+        and item.get("status") != "superseded" and str(item.get("id")) not in cancelled
         and item.get("work_unit_id") in ancestors
         and unit_status.get(str(item.get("work_unit_id"))) not in {"historical_unresolved", "completed"}
     }
@@ -9761,6 +13307,7 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
         if i.get('constraint_scope') == 'session' and i.get('status') != 'superseded'
         and i.get('id') not in scoped
     )
+    ancestor_constraints.update(protected_ids - scoped)
     return scoped, ancestor_constraints
 
 
@@ -9844,6 +13391,299 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
         "historical_counts": counts,
         "revision": revision,
     }
+
+
+def _root_control_covers_prompt(text: str, begin: int, end: int) -> bool:
+    """Check complete source coverage without normalizing the bound span.
+
+    Sentence extraction can retain an ASCII terminator inside the source span
+    while leaving a CJK terminator outside it. Only whitespace before and
+    terminal punctuation after a validated control are outside its speech act.
+    """
+    raw = text.encode("utf-8")
+    if not 0 <= begin < end <= len(raw):
+        return False
+    try:
+        prefix, suffix = raw[:begin].decode("utf-8"), raw[end:].decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return not prefix.strip() and re.fullmatch(r"[。.!！\s]*", suffix) is not None
+
+
+def _root_control_segments(text: str) -> list[tuple[str, int, int, str]]:
+    """Find complete direct control clauses; the shared parser checks governance."""
+    from cg_core_v2 import (
+        _control_speech,
+        _root_sentence_bounds,
+        _subjectless_compound_persistence,
+    )
+
+    rules = json.loads((Path(__file__).resolve().parent.parent /
+                        "assets/core-intent-v2.json").read_text(encoding="utf-8"))["patterns"]
+    starts = {0}
+    for match in re.finditer(r"[。！？;；\n,，]|并", text):
+        starts.add(match.end())
+    result: list[tuple[str, int, int, str]] = []
+    raw = text.encode("utf-8")
+    for start in sorted(starts):
+        tail = text[start:]
+        leading = len(tail) - len(tail.lstrip())
+        start += leading
+        if start >= len(text):
+            continue
+        end = len(text)
+        for mark in re.finditer(r"[。！？;；\n,，]|(?<=[.!?])\s", text[start:]):
+            at = start + mark.start()
+            if text[at] in ",，" and _subjectless_compound_persistence(
+                re.split(r"[。！？;；\n]", text[start:], maxsplit=1)[0]
+            ):
+                continue
+            if text[at] in ",，" and re.match(
+                r"\s*(?:直到|直至|until\b)", text[at + 1:], re.I
+            ):
+                continue
+            end = at
+            break
+        clause = text[start:end].strip()
+        if not clause:
+            continue
+        byte_start = len(text[:start].encode("utf-8"))
+        byte_end = byte_start + len(clause.encode("utf-8"))
+        span = {"source_id": "root", "start": byte_start, "end": byte_end,
+                "sha256": sha256_text(text)}
+        if _root_sentence_bounds(raw, span, rules) is None:
+            continue
+        for kind in ("persistence", "pause", "resume", "cancel"):
+            if _control_speech(clause, kind, rules):
+                result.append((kind, byte_start, byte_end, clause))
+                break
+    return result
+
+
+def _root_control_item_action(item: dict[str, Any]) -> str | None:
+    item_text = str(item.get("text") or "")
+    if any(_root_control_covers_prompt(item_text, begin, end)
+           for _, begin, end, _ in _root_control_segments(item_text)):
+        return None  # A control sentence is not a test/edit requirement.
+    kind = item.get("execution_kind")
+    if kind in {category for category, _ in ACTION_PATTERNS}:
+        # Persisted execution children are a source projection, not a bypass
+        # around root time.  Re-evaluate their own immutable child bytes so a
+        # legacy/future child cannot enter a later resume catalog merely
+        # because it carries an execution_kind field.  A genuine unmet
+        # antecedent remains catalogued as waiting; current-action projection
+        # keeps it deferred until the predicate is released.
+        if _action_clause_time_state(item_text, str(kind)) in {"current", "waiting"}:
+            return str(kind)
+        return None
+    if kind == "state_readback":
+        if _action_clause_time_state(item_text, "state_readback") in {"current", "waiting"}:
+            return "state_readback"
+        return None
+    if item.get("information_source_span") is not None or _information_delivery_item(item):
+        return None
+    classes = [category for category, pattern in ACTION_PATTERNS
+               if pattern.search(item_text)
+               and any(_action_clause_time_state(clause, category) == "current"
+                       for clause in _action_source_clauses(item_text)
+                       if pattern.search(clause))]
+    return classes[0] if len(classes) == 1 else None
+
+
+def _root_control_catalog(
+    state: dict[str, Any], work_unit_id: str, source_seq: int,
+) -> list[dict[str, Any]] | None:
+    """Replay the whole unit inventory at one root watermark, not one item."""
+    prompts = {str(p.get("id")): p for p in state.get("prompts", [])
+               if isinstance(p, dict)}
+    superseded_at: dict[str, int] = {}
+    cancelled_at: dict[str, int] = {}
+    for control in state.get("root_controls", []):
+        if (isinstance(control, dict) and control.get("kind") == "cancel"
+                and type(control.get("source_seq")) is int):
+            for ref in control.get("items", []):
+                if isinstance(ref, dict) and isinstance(ref.get("id"), str):
+                    cancelled_at[ref["id"]] = min(
+                        cancelled_at.get(ref["id"], control["source_seq"]),
+                        control["source_seq"],
+                    )
+    for link in state.get("supersedes", []):
+        if not isinstance(link, dict):
+            return None
+        new_item = next((i for i in state.get("requirements", [])
+                         if isinstance(i, dict) and i.get("id") == link.get("new_id")), None)
+        new_prompt = prompts.get(str(new_item.get("prompt_id"))) if new_item else None
+        seq = new_prompt.get("core_event_seq") if new_prompt else None
+        if type(seq) is not int:
+            return None  # Old unsequenced supersession never becomes authority.
+        superseded_at[str(link.get("old_id"))] = seq
+    catalog = []
+    for item in state.get("requirements", []):
+        if not isinstance(item, dict) or item.get("work_unit_id") != work_unit_id:
+            continue
+        item_prompt = prompts.get(str(item.get("prompt_id")))
+        seq = item_prompt.get("core_event_seq") if item_prompt else None
+        if type(seq) is not int or seq > source_seq or seq < 1:
+            continue
+        end = superseded_at.get(str(item.get("id")))
+        if end is not None and end <= source_seq:
+            continue
+        cancelled = cancelled_at.get(str(item.get("id")))
+        if cancelled is not None and cancelled < source_seq:
+            continue
+        if item.get("status") == "superseded" and end is None:
+            return None
+        if (isinstance(item.get("completion_basis"), dict)
+                and _ordinary_completion_basis_valid(state, item, source_seq)):
+            continue
+        action = _root_control_item_action(item)
+        if action is None:
+            continue
+        catalog.append({"id": item["id"], "prompt_id": item["prompt_id"],
+                        "work_unit_id": work_unit_id,
+                        "source_sha256": item["sha256"], "root_seq": seq,
+                        "action": action})
+    return catalog
+
+
+def _root_control_selected_items(
+    state: dict[str, Any], catalog: list[dict[str, Any]],
+    scope_kind: str, scope_target: str | None,
+) -> list[dict[str, Any]] | None:
+    """Select a sourced subset from the complete at-receipt catalog."""
+    if scope_kind == "current_unit" and scope_target is None:
+        return catalog
+    if scope_kind == "action_class" and scope_target == "test_verify":
+        return [row for row in catalog if row["action"] == "test_verify"]
+    if scope_kind == "exact" and isinstance(scope_target, str):
+        selected = []
+        for row in catalog:
+            item = next((i for i in state.get("requirements", [])
+                         if isinstance(i, dict) and i.get("id") == row["id"]), None)
+            if item is None:
+                return None
+            targets, ambiguous = root_absolute_locator_mentions(str(item.get("text") or ""))
+            if ambiguous:
+                return None
+            if targets == {scope_target}:
+                selected.append(row)
+        return selected
+    if scope_kind == "parent_task" and isinstance(scope_target, str):
+        items = {str(i.get("id")): i for i in state.get("requirements", [])
+                 if isinstance(i, dict)}
+        parent = items.get(scope_target)
+        if parent is None or _root_control_item_action(parent) != "local_edit":
+            return None
+        child_ids = {row["id"] for row in catalog
+                     if items[row["id"]].get("required_for_item_id") == scope_target
+                     and row["action"] == "test_verify"}
+        selected = [row for row in catalog
+                    if row["id"] == scope_target or row["id"] in child_ids]
+        if len(selected) < 2 or not child_ids:
+            return None
+        return selected
+    return None
+
+
+def capture_persistence_scope(
+    state: dict[str, Any], prompt: dict[str, Any], text: str, work_unit_id: str,
+) -> None:
+    """Bind direct root controls to the full current execution catalog.
+
+    This is Stop continuation diagnosis, not permission for ordinary tools.
+    An older candidate without this entry cannot infer it later from prose.
+    """
+    source_seq = prompt.get("core_event_seq")
+    if type(source_seq) is not int or source_seq < 1:
+        return
+    clauses = _root_control_segments(text)
+    if not clauses:
+        return
+    catalog = _root_control_catalog(state, work_unit_id, source_seq)
+    scopes = state.setdefault("root_controls", [])
+    if (catalog is None or not catalog or len(catalog) > MAX_PERSISTENCE_SCOPE_ITEMS
+            or len(scopes) >= MAX_PERSISTENCE_SCOPES):
+        return
+    for kind, begin, end, clause in clauses:
+        from cg_core_v2 import (
+            _action_class_scope_speech,
+            _current_unit_scope_speech,
+            _single_root_task_scope,
+            _subjectless_compound_persistence,
+        )
+        scope_target: str | None = None
+        target_span: list[int] | None = None
+        if _current_unit_scope_speech(clause, kind):
+            scope_kind, selected = "current_unit", catalog
+            if _subjectless_compound_persistence(clause):
+                by_id = {str(row.get("id")): row for row in state["requirements"]
+                         if isinstance(row, dict)}
+                if any(row["prompt_id"] != prompt["id"] for row in catalog):
+                    continue
+                tasks = []
+                for row in catalog:
+                    item = by_id.get(row["id"])
+                    if item is None:
+                        tasks = []
+                        break
+                    targets, ambiguous = root_absolute_locator_mentions(
+                        str(item.get("text") or ""))
+                    if ambiguous or len(targets) > 1:
+                        tasks = []
+                        break
+                    tasks.append({"id": row["id"], "action": row["action"],
+                                  "parent_id": item.get("required_for_item_id"),
+                                  "target": next(iter(targets)) if targets else None})
+                prior = text.encode("utf-8")[:begin].decode("utf-8")
+                if not _single_root_task_scope(prior, tasks):
+                    continue
+        else:
+            typed = _action_class_scope_speech(clause, kind)
+            if typed is not None:
+                scope_kind, scope_target = "action_class", "test_verify"
+                selected = _root_control_selected_items(
+                    state, catalog, scope_kind, scope_target)
+                if typed[0].startswith(("这项", "该项")) and len(selected or []) != 1:
+                    continue
+                target_span = [begin + len(clause[:typed[1]].encode("utf-8")),
+                               begin + len(clause[:typed[2]].encode("utf-8"))]
+            else:
+                mentioned, ambiguous = root_absolute_locator_mentions(clause)
+                if not ambiguous and len(mentioned) == 1:
+                    scope_kind, scope_target = "exact", next(iter(mentioned))
+                    selected = _root_control_selected_items(
+                        state, catalog, scope_kind, scope_target)
+                    at = clause.find(scope_target)
+                    if at < 0:
+                        continue
+                    target_span = [begin + len(clause[:at].encode("utf-8")),
+                                   begin + len(clause[:at + len(scope_target)].encode("utf-8"))]
+                else:
+                    qualified = re.search(
+                        r"(?:本轮|这轮|当前).+?(?:测试|验证)(?=\s*[,，]?\s*(?:直到|直至))"
+                        r"|(?:这项|该项)修复", clause,
+                    )
+                    parents = [row for row in catalog if row["action"] == "local_edit"
+                               and _root_control_selected_items(
+                                   state, catalog, "parent_task", row["id"]) is not None]
+                    if qualified is None or len(parents) != 1:
+                        continue
+                    scope_kind, scope_target = "parent_task", parents[0]["id"]
+                    selected = _root_control_selected_items(
+                        state, catalog, scope_kind, scope_target)
+                    target_span = [begin + len(clause[:qualified.start()].encode("utf-8")),
+                                   begin + len(clause[:qualified.end()].encode("utf-8"))]
+        if not selected or len(scopes) >= MAX_PERSISTENCE_SCOPES:
+            continue
+        binding = {"kind": kind, "source_prompt_id": prompt["id"],
+                   "source_record_sha256": prompt["record_sha256"],
+                   "source_seq": source_seq, "source_span": [begin, end],
+                   "work_unit_id": work_unit_id, "scope_kind": scope_kind,
+                   "catalog_sha256": sha256_text(canonical_json(catalog)),
+                   "items": selected}
+        if target_span is not None:
+            binding.update(scope_target=scope_target, scope_target_span=target_span)
+        scopes.append(binding)
 
 
 def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]]:
@@ -10019,7 +13859,8 @@ def prompt_records_from_disk(session_dir: Path) -> list[dict[str, Any]]:
 
 
 def replay_prompt_record(
-    state: dict[str, Any], record: dict[str, Any]
+    state: dict[str, Any], record: dict[str, Any],
+    source_texts: dict[str, str] | None = None,
 ) -> None:
     text = record["text"]
     origin = record.get("origin")
@@ -10046,8 +13887,15 @@ def replay_prompt_record(
         "authority": authority,
         "actor_id": record.get("actor_id"),
         "record_sha256": record.get("record_sha256"),
+        "core_event_seq": record.get("core_event_seq"),
     }
+    if isinstance(record.get("turn_id"), str) and record["turn_id"]:
+        metadata["turn_id"] = record["turn_id"]
     state["prompts"].append(metadata)
+    if isinstance(record.get("core_event_seq"), int):
+        state["core_event_sequence"] = max(
+            int(state.get("core_event_sequence") or 0), record["core_event_seq"]
+        )
     if origin != "human":
         return
     action, _ = control_action(text)
@@ -10073,7 +13921,7 @@ def replay_prompt_record(
         )
     if is_control_prompt(text):
         return
-    work_unit_id = append_work_unit(state, metadata, text)
+    work_unit_id = append_work_unit(state, metadata, text, source_texts=source_texts)
     requirement_id = append_requirement(
         state, metadata, text, [], work_unit_id=work_unit_id
     )
@@ -10113,8 +13961,10 @@ def rebuild_state_from_prompts(
         records = prompt_records_from_disk(session_dir)
         if not records:
             raise StateIntegrityError("no immutable prompt records are available")
+        source_texts = {str(record["id"]): str(record["text"])
+                        for record in records}
         for record in records:
-            replay_prompt_record(rebuilt, record)
+            replay_prompt_record(rebuilt, record, source_texts)
         rebuilt["session"]["created_at"] = records[0]["created_at"]
         rebuilt["open_items"] = open_item_ids(rebuilt)
         rebuilt["integrity"] = {
@@ -10204,16 +14054,71 @@ def append_decision_log(
             {
                 "category": bounded(item.get("category", "unknown"), 80),
                 "owner": bounded(item.get("owner", "unknown"), 40),
-                "authorization": bounded(
-                    item.get("authorization", "unknown"), 40
+                **(
+                    {"actionability": bounded(item.get("actionability", "insufficient"), 40),
+                     "basis_requirement_id": item.get("basis", {}).get("requirement_id"),
+                     "basis_as_of": item.get("basis", {}).get("as_of")}
+                    if decision.get("protocol_version") == STOP_PROTOCOL_VERSION
+                    else {"authorization": bounded(item.get("authorization", "unknown"), 40)}
                 ),
             }
             for item in decision.get("actions", [])[:16]
             if isinstance(item, dict)
         ],
+        **({"core_projections": decision.get("core_projections", [])[:16]}
+           if decision.get("protocol_version") == STOP_PROTOCOL_VERSION else {}),
     }
     state.setdefault("decision_log", []).append(record)
-    state["decision_log"] = state["decision_log"][-DECISION_LOG_LIMIT:]
+    pinned = _ordinary_completion_pins(state)
+    keep: set[int] = set()
+    for index, entry in enumerate(state["decision_log"]):
+        if any(isinstance(row, dict)
+               and (row.get("delivery_sha256"), sha256_text(canonical_json(
+                   row["core_projection"]))) in pinned
+               for row in entry.get("core_projections", [])
+               if isinstance(row.get("core_projection"), dict)):
+            keep.add(index)
+    recent = 0
+    for index in range(len(state["decision_log"]) - 1, -1, -1):
+        if index in keep:
+            continue
+        if recent >= DECISION_LOG_LIMIT:
+            break
+        keep.add(index)
+        recent += 1
+    state["decision_log"] = [entry for index, entry in enumerate(state["decision_log"])
+                             if index in keep]
+
+
+def _ordinary_completion_pins(state: dict[str, Any]) -> set[tuple[str, str]]:
+    """Bounded references to result/delivery records still closing an item."""
+    return {
+        (basis["delivery_sha256"], basis["core_sha256"])
+        for collection in ("requirements", "acceptance_items")
+        for item in state.get(collection, [])
+        if isinstance(item, dict) and item.get("status") == "pass"
+        for basis in [item.get("completion_basis")]
+        if isinstance(basis, dict)
+        and isinstance(basis.get("delivery_sha256"), str)
+        and isinstance(basis.get("core_sha256"), str)
+    }
+
+
+def _trim_response_delivery(state: dict[str, Any]) -> None:
+    records = state["response_delivery"]["records"]
+    pinned_digests = {digest for digest, _ in _ordinary_completion_pins(state)}
+    keep = {index for index, record in enumerate(records)
+            if record.get("delivery_sha256") in pinned_digests}
+    recent = 0
+    for index in range(len(records) - 1, -1, -1):
+        if index in keep:
+            continue
+        if recent >= delivery().MAX_DELIVERY_RECORDS:
+            break
+        keep.add(index)
+        recent += 1
+    state["response_delivery"]["records"] = [record for index, record in enumerate(records)
+                                              if index in keep]
 
 
 def status_context(state: dict[str, Any]) -> str:
@@ -10248,6 +14153,7 @@ def status_context(state: dict[str, Any]) -> str:
         f"execution_contract={execution_state}, "
         f"execution_mode={execution_mode}, "
         f"execution_drift={drift_count}, "
+        "goal_host_completion=capability_unavailable, "
         f"last_decision={last_decision}, "
         f"requirements={len(state['requirements'])}, "
         f"acceptance={len(state['acceptance_items'])}, "
@@ -10602,6 +14508,8 @@ def read_prompt_record(session_dir: Path, metadata: dict[str, Any]) -> dict[str,
         or not isinstance(text, str)
         or digest != sha256_text(text)
         or digest != metadata.get("sha256")
+        or value.get("core_event_seq") != metadata.get("core_event_seq")
+        or value.get("turn_id") != metadata.get("turn_id")
         or (
             value.get("record_sha256") is not None
             and value.get("record_sha256") != prompt_record_hash(value)
@@ -11955,6 +15863,13 @@ def handle_user_prompt(
 ) -> dict[str, Any]:
     text = prompt_text(payload)
     origin, authority, actor_id = classify_prompt_origin(state, payload, text)
+    supplied_cwd = payload.get("cwd")
+    locator_base = None
+    if isinstance(supplied_cwd, str) and Path(supplied_cwd).is_absolute():
+        try:
+            locator_base = str(Path(supplied_cwd).resolve(strict=True))
+        except (OSError, RuntimeError):
+            pass
     prompt = append_prompt(
         session_dir,
         state,
@@ -11963,6 +15878,9 @@ def handle_user_prompt(
         origin=origin,
         authority=authority,
         actor_id=actor_id,
+        locator_base=locator_base,
+        turn_id=(str(payload["turn_id"]) if isinstance(payload.get("turn_id"), str)
+                 and payload["turn_id"] else None),
     )
     asset_ids = discover_assets(
         state, payload, prompt_id=prompt["id"], source="hook_payload"
@@ -12006,19 +15924,26 @@ def handle_user_prompt(
             context = adopt_execution_contract(state, prompt, argument)
         except (OSError, StateIntegrityError, ValueError) as exc:
             context = "Execution contract adoption rejected: " + bounded(str(exc), 400)
+    elif action == "goal-adopt":
+        context = (
+            "Goal host-completion adoption rejected: capability_unavailable. "
+            "No verified synchronous PreToolUse route exists for host "
+            "update_goal completion; Guard proof and whole-completion checks remain separate."
+        )
     elif action == "export":
         export_requested = True
     elif action == "rollover":
         export_requested = False
     if not is_control_prompt(text):
         state["continuation_attempts"] = 0
-        work_unit_id = append_work_unit(state, prompt, text)
+        work_unit_id = append_work_unit(state, prompt, text, session_dir=session_dir)
+        if origin == "human":
+            append_prompt_unit_binding(session_dir, prompt, work_unit_id)
         for pause_clause in root_pause_clauses(text):
-            pause_type = (
-                "external_dependency" if ROOT_PAUSE_EXTERNAL_RE.search(pause_clause)
-                else "confirmation"
-            )
-            subject = wait_subject(pause_clause)
+            pause_type = root_pause_condition_type(pause_clause)
+            subject = (None if general_root_pause_clause(pause_clause)
+                       else input_wait_subject(pause_clause) if pause_type == "input"
+                       else wait_subject(pause_clause))
             add_wait_condition(
                 state, work_unit_id, kind="one_shot", condition_type=pause_type,
                 raised_by_kind="root_user", raised_by_source=str(prompt["id"]),
@@ -12037,15 +15962,46 @@ def handle_user_prompt(
         requirement_id = append_requirement(
             state, prompt, text, asset_ids, work_unit_id=work_unit_id
         )
-        acceptance_count = len(state["acceptance_items"])
-        append_acceptance(
-            state, prompt["id"], text, asset_ids, work_unit_id=work_unit_id
+        append_information_children(state, prompt, text, requirement_id, work_unit_id)
+        append_execution_children(state, prompt, text, requirement_id, work_unit_id)
+        control_only = any(
+            _root_control_covers_prompt(text, begin, end)
+            for _, begin, end, _ in _root_control_segments(text)
         )
+        acceptance_count = len(state["acceptance_items"])
+        if not control_only:
+            append_acceptance(
+                state, prompt["id"], text, asset_ids, work_unit_id=work_unit_id
+            )
         new_acceptance_ids = [
             item["id"] for item in state["acceptance_items"][acceptance_count:]
         ]
-        supersession_result = record_supersession(state, text, requirement_id)
+        supersession_result = (None if control_only else
+                               record_supersession(state, text, requirement_id))
         append_session_constraints(state, prompt, text, work_unit_id)
+        if origin == "human":
+            capture_persistence_scope(state, prompt, text, work_unit_id)
+        from cg_core_v2 import _current_unit_scope_speech
+        if control_only and any(
+            kind == "cancel" and _root_control_covers_prompt(text, begin, end)
+            and _current_unit_scope_speech(clause, "cancel")
+            for kind, begin, end, clause in _root_control_segments(text)
+        ):
+            # The cancel root belongs to the old selected unit. Closing that
+            # unit after the attempted scope binding avoids canceling a
+            # fabricated successor. A missing precise execution catalog does
+            # not turn historical unresolved work into a pass. No rootless
+            # active unit is created: the next real root supplies its identity.
+            old_unit = next(u for u in state["work_units"] if u["id"] == work_unit_id)
+            old_unit["status"] = "historical_unresolved"
+            old_unit["closed_at"] = utc_now()
+            state["work_state"]["active_work_unit_id"] = None
+        if control_only and any(
+            binding.get("source_prompt_id") == prompt["id"]
+            for binding in state.get("root_controls", [])
+        ):
+            next(item for item in state["requirements"]
+                 if item["id"] == requirement_id)["status"] = "answered"
         score, reasons = score_complexity(text)
         goal_requested = bool(
             re.search(r"^\s*/goal\b", text, re.I | re.MULTILINE)
@@ -12266,6 +16222,325 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
     return "unknown", "unstructured_text"
 
 
+HOST_TRANSCRIPT_LIMIT = 32 * 1024 * 1024
+HOST_TRANSCRIPT_LINE_LIMIT = 1024 * 1024
+
+
+def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read only the current Host session transcript snapshot, never tool prose.
+
+    A missing or oversized Host record is an unavailable observation.  The
+    whole bounded snapshot is inspected so an earlier conflicting terminal
+    record cannot be hidden by a more convenient tail entry.
+    """
+    session = state.get("session")
+    if not isinstance(session, dict):
+        return []
+    session_id = session.get("id")
+    raw_path = payload.get("transcript_path")
+    if (not isinstance(session_id, str) or not session_id
+            or payload.get("session_id") != session_id
+            or not isinstance(raw_path, str)
+            or raw_path != session.get("transcript_path")):
+        return []
+    root = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().absolute() / "sessions"
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        return []
+    try:
+        relative = path.relative_to(root)
+        if not relative.parts or relative.suffix != ".jsonl":
+            return []
+        if root.is_symlink() or root.parent.is_symlink():
+            return []
+        current = root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return []
+        path_before = path.lstat()
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_size > HOST_TRANSCRIPT_LIMIT):
+                return []
+            raw = handle.read(HOST_TRANSCRIPT_LIMIT + 1)
+            after = os.fstat(handle.fileno())
+        path_after = path.lstat()
+        if (len(raw) != before.st_size or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or (path_before.st_dev, path_before.st_ino) != (before.st_dev, before.st_ino)
+                or (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino)
+                or len(raw) > HOST_TRANSCRIPT_LIMIT or not raw.endswith(b"\n")):
+            return []
+        lines = raw.splitlines(keepends=True)
+        if not lines or any(len(line) > HOST_TRANSCRIPT_LINE_LIMIT for line in lines):
+            return []
+        records = [json.loads(line.decode("utf-8")) for line in lines]
+    except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+        return []
+    first = records[0]
+    if (not isinstance(first, dict) or first.get("type") != "session_meta"
+            or not isinstance(first.get("payload"), dict)
+            or first["payload"].get("id") != session_id
+            or first["payload"].get("session_id") != session_id):
+        return []
+    call_id = payload.get("tool_use_id")
+    turn_id = payload.get("turn_id")
+    if not isinstance(call_id, str) or not call_id or not isinstance(turn_id, str) or not turn_id:
+        return []
+    matches = []
+    for record in records[1:]:
+        if not isinstance(record, dict) or record.get("type") != "event_msg":
+            continue
+        event = record.get("payload")
+        if not isinstance(event, dict) or event.get("type") != "item_completed":
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("id") == call_id:
+            matches.append({"event": event, "item": item})
+    if len(matches) != 1:
+        return []
+    event = matches[0]["event"]
+    if event.get("thread_id") != session_id or event.get("turn_id") != turn_id:
+        return []
+    return matches
+
+
+def _host_item_cwd(item: dict[str, Any]) -> Path | None:
+    raw = item.get("cwd")
+    if not isinstance(raw, str):
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+        return None
+    value = unquote(parsed.path)
+    if os.name == "nt" and re.match(r"^/[A-Za-z]:/", value):
+        value = value[1:]
+    try:
+        return Path(value).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+
+def _stable_host_file_bytes(path: Path) -> bytes | None:
+    """Bounded present-time file readback; no symlink/hardlink alias claim."""
+    try:
+        if path.is_symlink() or path.resolve(strict=True) != path:
+            return None
+        path_before = path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_size > HOST_TRANSCRIPT_LINE_LIMIT):
+                return None
+            content = handle.read(HOST_TRANSCRIPT_LINE_LIMIT + 1)
+            after = os.fstat(handle.fileno())
+        path_after = path.lstat()
+        if (len(content) != before.st_size or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or after.st_ino != before.st_ino or after.st_dev != before.st_dev):
+            return None
+        if ((path_before.st_dev, path_before.st_ino) != (before.st_dev, before.st_ino)
+                or (path_after.st_dev, path_after.st_ino) != (before.st_dev, before.st_ino)):
+            return None
+        return content
+    except (OSError, RuntimeError):
+        return None
+
+
+def _single_host_patch(patch: str) -> tuple[str, str] | None:
+    """Accept one bounded operation, not an embedded second patch command."""
+    if len(patch.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT:
+        return None
+    lines = patch.splitlines()
+    if len(lines) < 3 or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        return None
+    match = re.fullmatch(r"\*\*\* (Update|Add|Delete) File: (.+)", lines[1])
+    if match is None:
+        return None
+    kind, raw_target = match.groups()
+    body = lines[2:-1]
+    if (not raw_target.strip() or raw_target != raw_target.strip()
+            or any(line.startswith("***") for line in body)):
+        return None
+    if kind == "Update":
+        if (not any(line.startswith("@@") for line in body)
+                or not any(line.startswith("+") for line in body)
+                or not any(line.startswith("-") for line in body)
+                or not all(line.startswith(("@@", " ", "+", "-", "\\")) for line in body)):
+            return None
+    elif kind == "Add":
+        if not body or not all(line.startswith("+") for line in body):
+            return None
+    elif body:
+        return None
+    return kind, raw_target
+
+
+def _patch_change_lines(text: str) -> list[str] | None:
+    """Compare changed lines, not a human-readable success statement."""
+    result = []
+    for line in text.splitlines():
+        if line.startswith(("@@", "--- ", "+++ ", " ", "\\")):
+            continue
+        if line.startswith(("+", "-")) and not line.startswith(("+++", "---")):
+            result.append(line)
+        else:
+            return None
+    return result
+
+
+def _host_parsed_display_matches(command: str, display: Any, shell: str) -> bool:
+    """Accept only a POSIX single-operation display with ordinary quotes elided.
+
+    The Host's invoked script still has to match the Hook input byte for byte.
+    Its parsed display is a second corroboration, not a replacement command.
+    """
+    if display == command:
+        return True
+    if shell not in {"sh", "bash", "zsh"} or not isinstance(display, str):
+        return False
+    if (shell_control_operator_present(command) or shell_control_operator_present(display)
+            or any(mark in command + display for mark in "<>$*?")):
+        return False
+    tokens = _command_tokens(command, posix=True)
+    # A tilde inside a complete absolute filename is literal. A leading
+    # tilde still denotes shell home expansion and cannot be bound to the
+    # lexical target captured by the Hook.
+    if len(tokens) >= 2 and tokens[-1].startswith("~"):
+        return False
+    if not (
+        len(tokens) == 2 and tokens[0] in {"cat", "pytest", "py.test"}
+        or len(tokens) == 3 and tokens[:2] == ["test", "-f"]
+        or len(tokens) == 4 and tokens[:3] in (["python", "-m", "pytest"],
+                                                ["python3", "-m", "pytest"])
+    ):
+        return False
+    # The Host display may elide ordinary quotes even around a literal
+    # tilde within an absolute filename. Compare the entire bounded argv,
+    # not a canonical rendering: a shortened command, wrong target, or
+    # whitespace-ambiguous path still differs.
+    return _command_tokens(display, posix=True) == tokens
+
+
+def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+    """A structured terminal result corroborated by the current Hook call."""
+    matches = _host_transcript_items(state, payload)
+    if not matches:
+        return None
+    item = matches[0]["item"]
+    tool_name = str(payload.get("tool_name") or "")
+    tool_input = payload.get("tool_input")
+    if item.get("type") == "CommandExecution" and tool_is_shell_execution(tool_name):
+        command = _shell_command(tool_input)
+        invoked = item.get("command")
+        parsed = item.get("parsed_cmd")
+        cwd = payload.get("cwd")
+        shell = (ntpath.basename(invoked[0]).lower()
+                 if isinstance(invoked, list) and len(invoked) == 3
+                 and isinstance(invoked[0], str) else "")
+        shell_flag = invoked[1] if isinstance(invoked, list) and len(invoked) == 3 else None
+        supported_invocation = (
+            (shell in {"sh", "bash", "zsh"} and shell_flag in {"-c", "-lc", "-ic"})
+            or (shell in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}
+                and isinstance(shell_flag, str) and shell_flag.lower() == "-command")
+        )
+        if (not command or not isinstance(invoked, list) or len(invoked) != 3
+                or not supported_invocation or invoked[-1] != command
+                or not isinstance(parsed, list) or len(parsed) != 1
+                or not isinstance(parsed[0], dict)
+                or not _host_parsed_display_matches(command, parsed[0].get("cmd"), shell)
+                or not isinstance(cwd, str)):
+            return None
+        try:
+            expected_cwd = Path(cwd).resolve(strict=True)
+            requested_workdir = tool_input.get("workdir") if isinstance(tool_input, dict) else None
+            if isinstance(requested_workdir, str):
+                expected_cwd = Path(requested_workdir).resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        if _host_item_cwd(item) != expected_cwd:
+            return None
+        raw_code = item.get("exit_code")
+        code = raw_code if type(raw_code) is int else None
+        status = item.get("status")
+        if code is None or (code == 0 and status != "completed") or (code != 0 and status != "failed"):
+            return None
+        stdout = item.get("stdout")
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT:
+            return None
+        return {"type": "command", "outcome": "success" if code == 0 else "failed",
+                "basis": "host_transcript_exit_code", "exit_code": code,
+                "stdout": stdout, "shell": shell}
+    if item.get("type") == "FileChange" and re.sub(r"[^a-z0-9]+", "_", tool_name.lower()).strip("_") in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}:
+        patch = (tool_input.get("command", tool_input.get("patch"))
+                 if isinstance(tool_input, dict) else tool_input)
+        if not isinstance(patch, str):
+            return None
+        mutation = _single_host_patch(patch)
+        changes = item.get("changes")
+        if mutation is None or not isinstance(changes, dict) or len(changes) != 1:
+            return None
+        kind, raw_target = mutation
+        post_content_sha256 = None
+        if kind == "Delete":
+            # A native Delete FileChange shape and pre-object identity have
+            # not been observed.  The structured legacy producer is separate.
+            return None
+        if ".." in Path(raw_target).parts:
+            return None
+        cwd = payload.get("cwd")
+        if not isinstance(cwd, str):
+            return None
+        try:
+            target = Path(raw_target) if Path(raw_target).is_absolute() else Path(cwd) / raw_target
+            changed_path, change = next(iter(changes.items()))
+            if (not isinstance(change, dict) or str(target) != changed_path
+                    or change.get("type") != kind.lower()
+                    or change.get("move_path") not in (None, "")):
+                return None
+            physical = (target.parent.resolve(strict=True) / target.name
+                        if kind == "Delete" else target.resolve(strict=True))
+            if physical != target:
+                return None
+            if kind == "Add":
+                claimed_content = change.get("content")
+                if (not isinstance(claimed_content, str)
+                        or _stable_host_file_bytes(target) != claimed_content.encode("utf-8")):
+                    return None
+            elif kind == "Update":
+                host_diff = change.get("unified_diff")
+                post_bytes = _stable_host_file_bytes(target)
+                if (not isinstance(host_diff, str)
+                        or len(host_diff.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT
+                        or _patch_change_lines(host_diff) != _patch_change_lines(
+                            "\n".join(patch.splitlines()[2:-1]))
+                        or post_bytes is None):
+                    return None
+                changed_lines = _patch_change_lines(host_diff)
+                if (changed_lines is None or
+                    [line[1:] for line in changed_lines if line.startswith("-")]
+                        == [line[1:] for line in changed_lines if line.startswith("+")]):
+                    return None
+                post_content_sha256 = hashlib.sha256(post_bytes).hexdigest()
+            elif target.exists():
+                return None
+        except (OSError, RuntimeError):
+            return None
+        status = item.get("status")
+        if status not in ("completed", "failed"):
+            return None
+        return {"type": "file_change", "outcome": "success" if status == "completed" else "failed",
+                "basis": "host_transcript_file_change", "target": str(target),
+                "kind": kind, "patch": patch,
+                "post_content_sha256": post_content_sha256 if status == "completed" else None}
+    return None
+
+
 def tool_outcome(payload: dict[str, Any]) -> str:
     return tool_outcome_details(payload)[0]
 
@@ -12454,6 +16729,370 @@ def tool_is_shell_execution(tool_name: str) -> bool:
         normalized in {"bash", "shell", "exec_command"}
         or normalized.endswith("_exec_command")
     )
+
+
+def _core_observation_tokens(command: str, tool_input: Any) -> list[str]:
+    """Tokenize one observed command without erasing Windows drive separators."""
+    shell = tool_input.get("shell") if isinstance(tool_input, dict) else None
+    if shell is not None:
+        if not isinstance(shell, str) or not shell.strip():
+            return []
+        name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+        if name in {"bash", "zsh", "sh"}:
+            # A drive spelling in a POSIX shell is not a Windows file identity.
+            if WINDOWS_DRIVE_PATH_RE.search(command):
+                return []
+            return _command_tokens(command, posix=True)
+        if name in {"powershell", "pwsh"}:
+            return _command_tokens(command, posix=False, _windows_shell="powershell")
+        if name == "cmd":
+            return _command_tokens(command, posix=False, _windows_shell="cmd")
+        return []
+    if os.name == "nt" or WINDOWS_DRIVE_PATH_RE.search(command):
+        return _command_tokens(command, posix=False, _windows_shell="powershell")
+    return _command_tokens(command, posix=True)
+
+
+def _verified_windows_target(raw_target: str, *, deleted: bool = False) -> str | None:
+    """Require an exact local drive spelling and physical path identity."""
+    target, unsupported = canonical_windows_locator(raw_target)
+    if unsupported is not None or target != raw_target or os.name != "nt":
+        return None
+    path = Path(raw_target)
+    try:
+        physical = (path.parent.resolve(strict=True) / path.name
+                    if deleted else path.resolve(strict=True))
+        if not deleted and path.is_file() and path.stat().st_nlink != 1:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    resolved, unsupported = canonical_windows_locator(str(physical))
+    return target if unsupported is None and resolved == target else None
+
+
+def core_shell_observation(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str,
+    outcome_basis: str, host_terminal: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """Extract only one attributable shell operation from a host result.
+
+    A compound command, raw prose, or an unstructured success never becomes
+    a readiness or effect fact. The full command stays in the host payload;
+    the durable record stores only a digest and exact target.
+    """
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return None
+    if outcome_basis not in {"structured_exit_code", "host_transcript_exit_code"}:
+        return None
+    command = _shell_command(payload.get("tool_input"))
+    if not command or shell_control_operator_present(command):
+        return None
+    byte_readback = _POWERSHELL_BYTE_READBACK_RE.fullmatch(command)
+    parts = _core_observation_tokens(command, payload.get("tool_input"))
+    if byte_readback is not None:
+        # This is one measured PowerShell expression, never a general parser.
+        # The Host transcript, not tool_input.shell or reply text, identifies
+        # the process that interpreted it.  Exact stdout/file bytes are
+        # checked below; ReadAllText's BOM removal cannot certify that file.
+        if (outcome_basis != "host_transcript_exit_code" or outcome != "success"
+                or not isinstance(host_terminal, dict)
+                or host_terminal.get("type") != "command"
+                or host_terminal.get("shell") not in {
+                    "pwsh", "pwsh.exe", "powershell", "powershell.exe"
+                } or not WINDOWS_ABSOLUTE_PATH_RE.match(byte_readback.group(1))):
+            return None
+        kind, predicate, raw_target = (
+            "state_readback", "content_hash", byte_readback.group(1)
+        )
+    elif (
+        len(parts) == 5
+        and parts[0].casefold() == "test-path"
+        and parts[1].casefold() == "-literalpath"
+        and parts[3].casefold() == "-pathtype"
+        and parts[4].casefold() == "leaf"
+    ):
+        tool_input = payload.get("tool_input")
+        declared_shell = (tool_input.get("shell")
+                          if isinstance(tool_input, dict) else None)
+        powershell_names = {"pwsh", "powershell"}
+        if declared_shell is not None and (
+            not isinstance(declared_shell, str)
+            or _command_basename(declared_shell) not in powershell_names
+        ):
+            return None
+        if host_terminal is not None:
+            if (host_terminal.get("type") != "command"
+                    or _command_basename(str(host_terminal.get("shell") or ""))
+                    not in powershell_names):
+                return None
+        elif outcome_basis != "structured_exit_code" or declared_shell is None:
+            # An inferred Windows tokenizer dialect is not evidence that
+            # PowerShell interpreted the command. An exact Host terminal can
+            # supply that fact when the Hook input did not declare a shell.
+            return None
+        response = payload.get("tool_response")
+        if (
+            outcome != "success"
+            or not isinstance(response, dict)
+            or not isinstance(response.get("output"), str)
+            or response["output"].strip().casefold() != "true"
+        ):
+            return None
+        kind, predicate, raw_target = "readiness", "file_exists", parts[2]
+    elif len(parts) == 3 and parts[:2] == ["test", "-f"]:
+        kind, predicate, raw_target = "readiness", "file_exists", parts[2]
+    elif len(parts) == 2 and parts[0] == "cat":
+        response = payload.get("tool_response")
+        if not isinstance(response, dict) or not isinstance(response.get("output"), str):
+            return None
+        kind, predicate, raw_target = "state_readback", "content_hash", parts[1]
+    elif len(parts) == 2 and parts[0] in {"pytest", "py.test"}:
+        kind, predicate, raw_target = "action_event", "test_passed", parts[1]
+    elif len(parts) == 4 and parts[0] in {"python", "python3"} and parts[1:3] == ["-m", "pytest"]:
+        kind, predicate, raw_target = "action_event", "test_passed", parts[3]
+    else:
+        return None
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        target = _verified_windows_target(raw_target)
+        if target is None:
+            return None
+    elif raw_target.startswith(("\\\\", "//")):
+        return None  # UNC/device paths have no supported lexical identity.
+    else:
+        cwd = str(state.get("session", {}).get("cwd") or "")
+        tool_input = payload.get("tool_input")
+        if isinstance(tool_input, dict) and isinstance(tool_input.get("workdir"), str):
+            cwd = tool_input["workdir"]
+        if not cwd or not Path(cwd).is_absolute():
+            return None
+        candidate = Path(raw_target)
+        if raw_target.startswith("~") or ".." in candidate.parts:
+            return None
+        candidate = candidate if candidate.is_absolute() else Path(cwd) / candidate
+        try:
+            physical_target = str(candidate.resolve(strict=True))
+        except (OSError, RuntimeError):
+            return None
+        target = str(candidate)
+    active_unit = state.get("work_state", {}).get("active_work_unit_id")
+    if not active_unit:
+        return None
+    unit = next((u for u in state.get("work_units", []) if u.get("id") == active_unit), None)
+    if not isinstance(unit, dict) or not unit.get("prompt_id"):
+        return None
+    current_prompt_id = next((str(item["prompt_id"]) for item in
+                              reversed(state.get("requirements", []))
+                              if item.get("work_unit_id") == active_unit
+                              and item.get("prompt_id")), str(unit["prompt_id"]))
+    pytest_terminal = None
+    if predicate == "test_passed" and isinstance(host_terminal, dict):
+        output = host_terminal.get("stdout")
+        code = host_terminal.get("exit_code")
+        if host_terminal.get("type") == "command" and type(code) is int and isinstance(output, str):
+            summaries = re.findall(
+                r"(?m)^\s*(\d+)\s+(passed|failed|error|errors)"
+                r"(?:\s+in\s+[\d.]+s)?\s*$", output)
+            if len(summaries) == 1:
+                pytest_terminal = (code, int(summaries[0][0]), summaries[0][1])
+        if outcome != "success" and (pytest_terminal is None or pytest_terminal[2] == "passed"):
+            return None  # A shell or approval failure did not prove pytest ran.
+    if predicate == "test_passed" and outcome != "success":
+        predicate = "test_run_completed"
+    observation = {
+        "kind": kind, "predicate": predicate, "target": target,
+        "outcome": "success" if outcome == "success" or (
+            predicate == "test_run_completed" and pytest_terminal is not None) else "failure",
+        "unit": str(active_unit),
+        "prompt_id": current_prompt_id,
+        "turn": str(payload.get("turn_id") or ""),
+        "call_sha256": sha256_text(command),
+    }
+    if kind == "state_readback" and len(parts) == 2 and parts[0] == "cat":
+        observation["call_argv_sha256"] = sha256_text(canonical_json(parts))
+    if isinstance(host_terminal, dict) and host_terminal.get("type") == "command":
+        observation["host_shell"] = str(host_terminal.get("shell") or "")
+    if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        observation["canonical_target"] = physical_target
+    if kind == "state_readback":
+        if outcome_basis == "host_transcript_exit_code":
+            # Transcript stdout is a historical Host result.  It is usable as
+            # current readback only while the exact physical file still has
+            # those bytes; a later change must not borrow the old output.
+            try:
+                file_path = Path(target)
+                actual = _stable_host_file_bytes(file_path)
+                if actual != payload["tool_response"]["output"].encode("utf-8"):
+                    return None
+            except UnicodeError:
+                return None
+        observation["content_sha256"] = sha256_text(payload["tool_response"]["output"])
+    elif predicate in {"test_passed", "test_run_completed"} and pytest_terminal is not None:
+        # The exit status is the success authority. A bounded, unambiguous
+        # pytest summary supplies only the count needed to check a later
+        # user-facing report; arbitrary stdout never supplies test success.
+        observation["terminal_exit_code"] = pytest_terminal[0]
+        observation["passed_count" if pytest_terminal[2] == "passed" else "failed_count"] = pytest_terminal[1]
+    return observation
+
+
+def core_host_origin_prompt(state: dict[str, Any], payload: dict[str, Any]) -> str | None:
+    """Bind a result to the one immutable root of its Host turn, if known.
+
+    A PostToolUse append position is only a result-arrival watermark. It does
+    not establish when an earlier turn's call began. Legacy prompts without
+    a captured turn, or competing roots for that turn, remain unattributed.
+    """
+    turn = payload.get("turn_id")
+    if not isinstance(turn, str) or not turn:
+        return None
+    active = state.get("work_state", {}).get("active_work_unit_id")
+    root_ids = {str(row.get("prompt_id")) for row in state.get("requirements", [])
+                if isinstance(row, dict) and row.get("work_unit_id") == active}
+    matching = [row for row in state.get("prompts", [])
+                if isinstance(row, dict) and row.get("id") in root_ids
+                and row.get("turn_id") == turn
+                and type(row.get("core_event_seq")) is int]
+    return str(matching[0]["id"]) if len(matching) == 1 else None
+
+
+def core_patch_observation(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str,
+    outcome_basis: str, host_terminal: dict[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """One structured successful/failed host patch, never patch prose."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower()).strip("_")
+    if normalized not in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}:
+        return None
+    if outcome_basis not in {"structured_status", "structured_exit_code", "host_transcript_file_change"}:
+        return None
+    tool_input = payload.get("tool_input")
+    patch = (tool_input.get("patch", tool_input.get("command"))
+             if isinstance(tool_input, dict) else tool_input)
+    if not isinstance(patch, str) or not patch.startswith("*** Begin Patch\n") or not patch.rstrip().endswith("*** End Patch"):
+        return None
+    mutations = re.findall(r"^\*\*\* (Update|Add|Delete) File: (.+)$", patch, re.M)
+    if (len(mutations) != 1 or re.search(r"^\*\*\* Move to:", patch, re.M)):
+        return None
+    mutation_kind, raw_target = mutations[0]
+    raw_target = raw_target.strip()
+    if outcome_basis == "host_transcript_file_change":
+        if (not isinstance(host_terminal, dict) or host_terminal.get("type") != "file_change"
+                or host_terminal.get("patch") != patch
+                or host_terminal.get("kind") != mutation_kind):
+            return None
+        raw_target = str(host_terminal["target"])
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        target = _verified_windows_target(raw_target, deleted=mutation_kind == "Delete")
+        if target is None:
+            return None
+    elif raw_target.startswith("/") and ".." not in Path(raw_target).parts:
+        try:
+            physical_target = (str(Path(raw_target).parent.resolve(strict=True) / Path(raw_target).name)
+                               if mutation_kind == "Delete" else str(Path(raw_target).resolve(strict=True)))
+        except (OSError, RuntimeError):
+            return None
+        target = raw_target
+    else:
+        return None
+    active_unit = state.get("work_state", {}).get("active_work_unit_id")
+    unit = next((u for u in state.get("work_units", []) if u.get("id") == active_unit), None)
+    if not isinstance(unit, dict) or not unit.get("prompt_id"):
+        return None
+    current_prompt_id = next((str(item["prompt_id"]) for item in
+                              reversed(state.get("requirements", []))
+                              if item.get("work_unit_id") == active_unit
+                              and item.get("prompt_id")), str(unit["prompt_id"]))
+    observation = {
+        "kind": "action_event",
+        "predicate": "edit_applied" if mutation_kind == "Update" else "mutation_applied",
+        "target": target,
+        "outcome": "success" if outcome == "success" else "failure",
+        "unit": str(active_unit), "prompt_id": current_prompt_id,
+        "turn": str(payload.get("turn_id") or ""),
+        "call_sha256": sha256_text(patch),
+    }
+    if (mutation_kind == "Update" and outcome == "success"
+            and outcome_basis == "host_transcript_file_change"
+            and isinstance(host_terminal.get("post_content_sha256"), str)):
+        observation["post_content_sha256"] = host_terminal["post_content_sha256"]
+    if not WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        observation["canonical_target"] = physical_target
+    return observation
+
+
+def core_git_observation(
+    state: dict[str, Any], payload: dict[str, Any], outcome: str,
+    outcome_basis: str,
+) -> dict[str, Any] | None:
+    """Record exact local Git call/result identity without executing Git."""
+    if not tool_is_shell_execution(str(payload.get("tool_name") or "")):
+        return None
+    if outcome_basis not in {"structured_exit_code", "host_transcript_exit_code"}:
+        return None
+    command = _shell_command(payload.get("tool_input"))
+    if not command or shell_control_operator_present(command):
+        return None
+    parts = _core_observation_tokens(command, payload.get("tool_input"))
+    if len(parts) < 5 or parts[:2] != ["git", "-C"]:
+        return None
+    raw_target = parts[2]
+    if WINDOWS_ABSOLUTE_PATH_RE.match(raw_target):
+        target = _verified_windows_target(raw_target)
+        if target is None:
+            return None
+    elif raw_target.startswith("/") and ".." not in Path(raw_target).parts:
+        target = str(Path(raw_target))
+    else:
+        return None
+    tail = parts[3:]
+    response = payload.get("tool_response")
+    output = response.get("output") if isinstance(response, dict) else None
+    if not isinstance(output, str):
+        return None
+    kind, predicate, git_data = None, None, {}
+    oid = r"[0-9a-f]{40}"
+    if tail == ["rev-parse", "--show-toplevel"]:
+        if output.strip() != target:
+            return None
+        kind, predicate = "readiness", "repo_selected"
+    elif tail == ["show", "-s", "--format=%H%n%P%n%T", "HEAD"]:
+        lines = output.strip().splitlines()
+        if len(lines) != 3 or not re.fullmatch(oid, lines[0]) or not re.fullmatch(oid, lines[2]):
+            return None
+        if lines[1] and not re.fullmatch(oid, lines[1]):
+            return None
+        kind, predicate = "git_readback", "commit_identity"
+        git_data = {"oid": lines[0], "parent": lines[1], "tree": lines[2]}
+    elif tail == ["symbolic-ref", "--short", "HEAD"]:
+        branch = output.strip()
+        if not branch or not _is_valid_git_branch_name(branch):
+            return None
+        kind, predicate, git_data = "git_readback", "branch_identity", {"branch": branch}
+    elif tail[:1] == ["commit"] and "--dry-run" not in tail:
+        kind, predicate = "action_event", "commit_attempt"
+    elif tail == ["push", "origin", "main"]:
+        kind, predicate, git_data = "action_event", "push_attempt", {"remote": "origin", "refspec": "main"}
+    elif tail == ["ls-remote", "origin", "refs/heads/main"]:
+        match = re.fullmatch(rf"({oid})\s+refs/heads/main\s*", output)
+        if match is None:
+            return None
+        kind, predicate, git_data = "git_readback", "remote_ref", {
+            "oid": match.group(1), "remote": "origin", "refspec": "main",
+        }
+    else:
+        return None
+    active_unit = state.get("work_state", {}).get("active_work_unit_id")
+    current_prompt_id = next((str(item["prompt_id"]) for item in
+                              reversed(state.get("requirements", []))
+                              if item.get("work_unit_id") == active_unit
+                              and item.get("prompt_id")), None)
+    if not active_unit or not current_prompt_id:
+        return None
+    return {"kind": kind, "predicate": predicate, "target": target,
+            "outcome": "success" if outcome == "success" else "failure",
+            "unit": str(active_unit), "prompt_id": current_prompt_id,
+            "turn": str(payload.get("turn_id") or ""),
+            "call_sha256": sha256_text(command), "git": git_data}
 
 
 def private_control_command_intent(payload: dict[str, Any]) -> bool:
@@ -12817,6 +17456,26 @@ def handle_post_tool(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
     outcome, outcome_basis = tool_outcome_details(payload)
+    host_terminal = None
+    execution = state.get("execution")
+    in_flight = (
+        any(isinstance(ticket, dict) and ticket.get("state") == "in_flight"
+            and ticket.get("tool_use_id") == payload.get("tool_use_id")
+            for ticket in execution.get("action_tickets", []))
+        if isinstance(execution, dict) else False
+    )
+    if (isinstance(payload.get("tool_response"), str)
+            and (state.get("mode", {}).get("active") or in_flight)
+            and not private_control_command_intent(payload)):
+        host_terminal = host_terminal_result(state, payload)
+        if host_terminal is not None:
+            outcome, outcome_basis = host_terminal["outcome"], host_terminal["basis"]
+        elif (tool_is_shell_execution(str(payload.get("tool_name") or ""))
+              or re.sub(r"[^a-z0-9]+", "_", str(payload.get("tool_name") or "").lower()).strip("_")
+              in {"apply_patch", "functions_apply_patch", "tools_apply_patch"}):
+            # A textual marker, even on PostToolUse, is not a process exit or
+            # FileChange receipt.  Preserve the result as unstructured.
+            outcome, outcome_basis = "unknown", "host_terminal_unavailable"
     settle_pre_tool_ticket(state, payload, outcome)
     if state["mode"]["active"]:
         require_usable_state(state)
@@ -12966,6 +17625,39 @@ def handle_post_tool(
             "adapter_identity": str(tool_identity.get("identity")),
             "capabilities": sorted(capabilities),
         }
+        state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 2
+        evidence["core_call_seq"] = state["core_event_sequence"] - 1
+        evidence["core_result_seq"] = state["core_event_sequence"]
+        core_payload = payload
+        if host_terminal is not None and host_terminal["type"] == "command":
+            core_payload = dict(payload)
+            core_payload["tool_response"] = {
+                "exit_code": host_terminal["exit_code"],
+                "output": host_terminal["stdout"],
+            }
+        core_fact = (core_shell_observation(state, core_payload, outcome, outcome_basis, host_terminal)
+                     or core_patch_observation(state, payload, outcome, outcome_basis, host_terminal)
+                     or core_git_observation(state, core_payload, outcome, outcome_basis))
+        if core_fact is not None:
+            origin_prompt_id = core_host_origin_prompt(state, payload)
+            if origin_prompt_id is not None:
+                evidence["core_origin_prompt_id"] = origin_prompt_id
+                core_fact["prompt_id"] = origin_prompt_id
+            evidence["core_observation"] = core_fact
+            # PowerShell ReadAllText is a read adapter only after this same
+            # Host result has proved its shell, physical target, and exact
+            # bytes. A command-shaped input or stdout alone grants no proof.
+            command = _shell_command(payload.get("tool_input"))
+            ps_read = (_POWERSHELL_BYTE_READBACK_RE.fullmatch(command)
+                       if isinstance(command, str) else None)
+            if (ps_read is not None and core_fact.get("kind") == "state_readback"
+                    and core_fact.get("predicate") == "content_hash"
+                    and core_fact.get("outcome") == "success"
+                    and core_fact.get("target") == ps_read.group(1)
+                    and core_fact.get("call_sha256") == sha256_text(command)):
+                subjects = [typed_path_subject(ps_read.group(1))["id"]]
+                evidence["readback_subjects"] = list(dict.fromkeys(subjects))
+                evidence["subjectId"] = list(dict.fromkeys(subjects or evidence_subject_ids))
         state["evidence"].append(evidence)
         capture_plan_snapshot(state, payload, outcome)
         trim_evidence(state)
@@ -13263,7 +17955,12 @@ def checkpoint_issues(
                     issues.append(
                         f"{item_id} references unknown evidence {evidence_id}"
                     )
-                elif evidence.get("outcome") != "success":
+                elif evidence.get("outcome") != "success" and not (
+                    item.get("completion_basis", {}).get("predicate") == "test_and_report"
+                    and evidence_id in item["completion_basis"].get("host_evidence_ids", [])
+                    and _ordinary_completion_basis_valid(
+                        state, item, int(state.get("core_event_sequence") or 0))
+                ):
                     issues.append(
                         f"{item_id} references non-success evidence {evidence_id} "
                         f"(outcome={evidence.get('outcome') or 'unknown'})"
@@ -13524,9 +18221,30 @@ def handle_stop(
     )
     prompt_integrity = bool(authoritative_prompt) or not state.get("requirements")
     observed = classify_stop_decision(
-        text, authoritative_prompt, prompt_integrity=prompt_integrity, state=state
+        text, authoritative_prompt, prompt_integrity=prompt_integrity, state=state,
+        session_dir=session_dir,
     )
     decision: dict[str, Any] = dict(observed)
+    decision["core_projections"] = current_core_projections(state, session_dir)
+    normalized_control = current_root_control_projection(state, session_dir)
+    if normalized_control is not None:
+        # The complete projection is available to local conformance replay;
+        # only bounded state names and IDs enter the private decision ledger.
+        decision["core_control_projection"] = {
+            "schema": normalized_control["schema"],
+            "unit": normalized_control["unit"],
+            "revision": normalized_control["revision"],
+            "as_of": normalized_control["as_of"],
+            "predicates": normalized_control["predicates"],
+            "current_action_ids": [row["requirement_id"]
+                                   for row in normalized_control["current_actions"]],
+            "root_control_states": normalized_control["root_control_states"],
+            "root_control_errors": normalized_control["root_control_errors"],
+            "unknown_coverage_count": len(normalized_control["unknown_coverage"]),
+            "coverage_error_count": len(normalized_control["coverage_errors"]),
+            "certifiable": normalized_control["certifiable"],
+            "reason_codes": normalized_control["reason_codes"],
+        }
     decision.update(
         {
             "protocol_version": STOP_PROTOCOL_VERSION,
@@ -13580,7 +18298,7 @@ def handle_stop(
             return "delivery_unknown", None
         return "delivered", sha256_text(text_value)
 
-    def record_delivery() -> None:
+    def record_delivery() -> dict[str, Any] | None:
         status, reply_digest = _final_reply_fact()
         projection = delivery_mod.canonical_projection(
             session_id=str(state.get("session", {}).get("id") or "unknown-session"),
@@ -13604,7 +18322,7 @@ def handle_stop(
                 continue
             if delivery_mod.idempotency_key(prior) == key:
                 # Same-event replay: no state growth, no closure rerun.
-                return
+                return existing
         # Existing work-unit waits still govern overall completion, but are
         # not claims that this turn's answer remains unfinished. Inspect the
         # reply itself so inherited waits neither veto an answer nor mask an
@@ -13612,22 +18330,22 @@ def handle_stop(
         reply_observation = classify_stop_decision(
             text, authoritative_prompt, prompt_integrity=prompt_integrity
         )
-        answer_can_close = (
-            status == "delivered"
-            and (not reply_observation.get("actions")
-                 or _information_tutorial_reply(authoritative_prompt, text))
-            and "explicit_non_completion_without_actionable_detail"
-            not in reply_observation.get("reason_codes", [])
-        )
-        if answer_can_close:
-            for item in state.get("requirements", []):
-                if (
-                    isinstance(item, dict)
-                    and item.get("id") in turn_requirement_ids
-                    and _delivable_question(item, state)
-                ):
-                    item["status"] = "answered"
-                    item["answer_state"] = "answered"
+        for item in state.get("requirements", []):
+            if not (isinstance(item, dict) and item.get("id") in turn_requirement_ids
+                    and _delivable_question(item, state)):
+                continue
+            answer_can_close = (
+                status == "delivered"
+                and (item.get("information_source_span") is not None
+                     or not reply_observation.get("actions")
+                     or _information_tutorial_reply(authoritative_prompt, text))
+                and (item.get("information_source_span") is not None
+                     or "explicit_non_completion_without_actionable_detail"
+                     not in reply_observation.get("reason_codes", []))
+            )
+            if answer_can_close:
+                item["status"] = "answered"
+                item["answer_state"] = "answered"
         outcome = str(decision.get("outcome") or "")
         if outcome in {"consume_checkpoint", "auto_complete_verified"}:
             resolution = "verified"
@@ -13649,10 +18367,12 @@ def handle_stop(
                 recorded_at=utc_now(),
             )
         except delivery_mod.DeliveryValueError:
-            return
+            return None
         records.append(record)
-        del records[:-delivery_mod.MAX_DELIVERY_RECORDS]
+        _trim_response_delivery(state)
         ledger["sequence"] = sequence
+        state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
+        return record
 
     def finish(result: dict[str, Any], *reason_codes: str) -> dict[str, Any]:
         codes = list(decision.get("reason_codes", []))
@@ -13665,7 +18385,28 @@ def handle_stop(
         # reply un-delivered (plan section 4.5).
         if result == {} and decision.get("decision_source") != "integrity":
             try:
-                record_delivery()
+                delivered_record = record_delivery()
+                if delivered_record is not None:
+                    mixed = delivered_mixed_core_projection(
+                        state, session_dir, delivered_record)
+                    if mixed is not None:
+                        decision.setdefault("core_projections", []).append(mixed)
+                    exact_edit = delivered_exact_edit_readback_projection(
+                        state, session_dir, delivered_record, text)
+                    if exact_edit is not None:
+                        decision.setdefault("core_projections", []).append(exact_edit)
+                        if len(decision["core_projections"]) <= 16 and retire_verified_ordinary_core_result(
+                                state, exact_edit, delivered_record):
+                            decision.setdefault("reason_codes", []).append(
+                                "ordinary_core_result_verified")
+                    current_test = delivered_current_test_projection(
+                        state, session_dir, delivered_record, text)
+                    if current_test is not None:
+                        decision.setdefault("core_projections", []).append(current_test)
+                        if len(decision["core_projections"]) <= 16 and retire_verified_ordinary_core_result(
+                                state, current_test, delivered_record):
+                            decision.setdefault("reason_codes", []).append(
+                                "ordinary_core_result_verified")
             except delivery_mod.DeliveryValueError:
                 pass
         # Protocol envelope consumption: the heavy path routes its terminal
@@ -13834,7 +18575,11 @@ def handle_stop(
 
     interpretation = observed["interpretation"]
     completion_claim = bool(interpretation["whole_completion_claim"])
-    current_waits = current_scope_projection(state)["waiting_conditions"]
+    current_waits = [
+        wait for wait in current_scope_projection(state)["waiting_conditions"]
+        if wait.get("raised_by_kind") == "root_user"
+        or (wait.get("raised_by_kind") == "external" and wait.get("external_source_sha256"))
+    ]
     if current_waits and completion_claim:
         return visible_correction(
             "a current waiting condition has not been released",
@@ -13848,31 +18593,71 @@ def handle_stop(
         for item_id, obligations in unresolved_all.items()
         if item_id in scoped_ids
     }
-    explicit_persistence = bool(
-        authoritative_prompt
-        and USER_PERSISTENCE_RE.search(authoritative_prompt)
+    explicit_persistence, persistence_actions, root_control_states = current_persistence_actions(
+        state, session_dir
     )
+    # A later root-user pause is a current control fact for this unit. Keep
+    # the earlier persistence source in history, but do not present its work
+    # as ready until the pause is released by a later sourced event.
+    if current_waits:
+        persistence_actions = []
+    decision["persistence_scope"] = {
+        "in_force": explicit_persistence,
+        "ready_requirement_ids": [b["requirement_id"] for b in persistence_actions],
+        "as_of": state.get("core_event_sequence"),
+    }
+    decision["root_control_states"] = dict(sorted(root_control_states.items()))
+    controlled_out = {key for key, value in root_control_states.items()
+                      if value in {"paused", "persistent_paused", "cancelled"}}
     # A brief resume is not an unlimited persistence mandate. Correct it only
     # when the reply itself identifies authorized assistant work still to do.
     resumed_actionable_work = bool(
         explicit_execution_resume(authoritative_prompt)
-        and any(a["owner"] == "assistant" and a["authorization"] == "authorized"
+        and not current_waits
+        and any(a["owner"] == "assistant" and _action_ready(a)
+                and a.get("basis", {}).get("requirement_id") not in controlled_out
                 for a in interpretation["actions"])
+    )
+    current_due_action_omitted = bool(
+        re.search(r"(?:以后|后续|未来|将来|\b(?:later|future|eventually)\b)", text, re.I)
+        and
+        any(a.get("basis", {}).get("current_due")
+            and a.get("basis", {}).get("predicate_state") != "satisfied"
+            for a in interpretation["actions"] if a.get("owner") == "assistant")
     )
     facts = {
         "whole_completion_claim": completion_claim,
-        "explicit_persistence": explicit_persistence or resumed_actionable_work,
-        "authorized_assistant_actions_available": (
-            any(a["owner"] == "assistant" and a["authorization"] == "authorized" for a in interpretation["actions"])
+        "explicit_persistence": explicit_persistence,
+        "resume_with_actionable_work": resumed_actionable_work,
+        "current_due_action_omitted": current_due_action_omitted,
+        "authorized_assistant_actions_available": not current_waits and (
+            bool(persistence_actions)
+            or any(a["owner"] == "assistant" and _action_ready(a)
+                   and a.get("basis", {}).get("requirement_id") not in controlled_out
+                   for a in interpretation["actions"])
         ),
-        "missing_user_only_input_or_approval": (
-            any(a["owner"] == "user" for a in interpretation["actions"])
+        "missing_user_only_input_or_approval": any(
+            w.get("raised_by_kind") == "root_user"
+            and w.get("condition_type") != "external_dependency"
+            and w.get("kind") != MIGRATED_WAIT_CONDITION_KIND
+            for w in current_waits
         ),
-        "registered_external_operation": (
-            any(a["owner"] == "external" for a in interpretation["actions"])
+        "registered_external_operation": any(
+            w.get("raised_by_kind") == "external"
+            and w.get("condition_type") == "external_dependency"
+            and w.get("external_source_sha256")
+            and w.get("kind") != MIGRATED_WAIT_CONDITION_KIND
+            for w in current_waits
         ),
-        "deferred_by_scope_or_authority": (
-            observed["outcome"] == "allow_out_of_scope_deferred"
+        "root_external_dependency": any(
+            w.get("raised_by_kind") == "root_user"
+            and w.get("condition_type") == "external_dependency"
+            and w.get("kind") != MIGRATED_WAIT_CONDITION_KIND
+            for w in current_waits
+        ),
+        "deferred_by_scope_or_authority": any(
+            a["owner"] == "assistant" and _action_deferred(a)
+            for a in interpretation["actions"]
         ),
     }
     decision["waiting_owner"] = stop3_mod.resolve_waiting_owner(facts)
@@ -13894,9 +18679,11 @@ def handle_stop(
 
     def persistence_gate_blocks() -> bool:
         return bool(
-            explicit_persistence
+            facts["authorized_assistant_actions_available"]
+            and (explicit_persistence or resumed_actionable_work or current_due_action_omitted)
             and not persistence_allows_deferred
             and declared_disposition not in {"user_wait", "external_wait"}
+            and not current_waits
         )
 
     if completion_claim:
@@ -13946,9 +18733,10 @@ def handle_stop(
             )
         if persistence_gate_blocks():
             return visible_correction(
-                "authorized work remains and the user required persistence",
+                "a current sourced action remains",
                 "Continue the authorized work",
-                "explicit_user_persistence",
+                "explicit_user_persistence" if explicit_persistence else (
+                    "resume_with_actionable_work" if resumed_actionable_work else "current_due_action_omitted"),
             )
         # A claim that no deterministic obligation gated and that no unique
         # evidence could support ends silently by design, but the reason stays
@@ -13967,10 +18755,13 @@ def handle_stop(
         )
         decision["outcome"] = outcome
         if outcome == stop3_mod.OUTCOME_SINGLE_BOUNDED_CORRECTION:
+            correction_code = ("explicit_user_persistence" if explicit_persistence
+                               else "resume_with_actionable_work" if resumed_actionable_work
+                               else "current_due_action_omitted")
             return visible_correction(
-                "authorized work remains and the user required persistence",
+                "a current sourced action remains",
                 "Continue the authorized work",
-                "explicit_user_persistence",
+                correction_code,
             )
         if outcome == stop3_mod.OUTCOME_SILENT_YIELD_PRESERVE_PENDING:
             status_map = {
@@ -13986,19 +18777,23 @@ def handle_stop(
 
     if persistence_gate_blocks():
         return visible_correction(
-            "authorized work remains and the user required persistence",
+            "a current sourced action remains",
             "Continue the authorized work",
-            "explicit_user_persistence",
+            "explicit_user_persistence" if explicit_persistence else (
+                "resume_with_actionable_work" if resumed_actionable_work else "current_due_action_omitted"),
         )
     outcome = stop3_mod.plan_waiting_outcome(
         facts, declared_disposition, interruption_index=interruption_index
     )
     decision["outcome"] = outcome
     if outcome == stop3_mod.OUTCOME_SINGLE_BOUNDED_CORRECTION:
+        correction_code = ("explicit_user_persistence" if explicit_persistence
+                           else "resume_with_actionable_work" if resumed_actionable_work
+                           else "current_due_action_omitted")
         return visible_correction(
-            "authorized work remains and the user required persistence",
+            "a current sourced action remains",
             "Continue the authorized work",
-            "explicit_user_persistence",
+            correction_code,
         )
     if outcome == stop3_mod.OUTCOME_SILENT_YIELD_PRESERVE_PENDING:
         status_map = {

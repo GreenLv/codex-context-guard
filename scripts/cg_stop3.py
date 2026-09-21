@@ -373,9 +373,12 @@ OUTCOME_SILENT_OWNER_AMBIGUOUS = "silent_end_owner_ambiguous"
 OWNER_FACT_KEYS = (
     "whole_completion_claim",
     "explicit_persistence",
+    "resume_with_actionable_work",
+    "current_due_action_omitted",
     "authorized_assistant_actions_available",
     "missing_user_only_input_or_approval",
     "registered_external_operation",
+    "root_external_dependency",
     "deferred_by_scope_or_authority",
 )
 
@@ -394,7 +397,7 @@ def resolve_waiting_owner(facts: dict) -> str:
         return OWNER_ASSISTANT
     if facts.get("missing_user_only_input_or_approval"):
         return OWNER_USER
-    if facts.get("registered_external_operation"):
+    if facts.get("registered_external_operation") or facts.get("root_external_dependency"):
         return OWNER_EXTERNAL
     if facts.get("deferred_by_scope_or_authority"):
         return OWNER_DEFERRED
@@ -417,7 +420,8 @@ def plan_waiting_outcome(
     del declared  # advisory only; structured facts are authoritative
     owner = resolve_waiting_owner(facts)
     if owner == OWNER_ASSISTANT:
-        if facts.get("explicit_persistence") and _budget_allows(interruption_index):
+        if (facts.get("explicit_persistence") or facts.get("resume_with_actionable_work")
+                or facts.get("current_due_action_omitted")) and _budget_allows(interruption_index):
             return OUTCOME_SINGLE_BOUNDED_CORRECTION
         return OUTCOME_SILENT_ASSISTANT_PENDING
     if owner in {OWNER_USER, OWNER_EXTERNAL, OWNER_DEFERRED}:

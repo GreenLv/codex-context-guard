@@ -376,7 +376,7 @@ class DeliveredIsNotVerifiedTests(DeliveryLifecycleHarness):
             for item in state[collection]:
                 self.assertNotEqual(item["status"], "pass")
 
-    def test_blocked_candidate_is_not_delivered_corrected_reply_is(self) -> None:
+    def test_persistence_without_sourced_ready_action_has_honest_delivery(self) -> None:
         self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
         self.cg.dispatch(
             self.payload(
@@ -395,16 +395,15 @@ class DeliveredIsNotVerifiedTests(DeliveryLifecycleHarness):
                 last_assistant_message="我会继续修复模块和文档,并运行测试。",
             )
         )
-        # Persistence + remaining authorized assistant work draws the
-        # single visible correction: the candidate reply is NOT delivered.
-        self.assertEqual(blocked.get("decision"), "block")
+        # A text-only generic future cannot qualify a current host action.
+        self.assertEqual(blocked, {})
         deliveries = [
             record
             for record in self.ledger()["records"]
             if record["delivery"] == "delivered"
         ]
-        self.assertEqual(deliveries, [])
-        # The corrected same-turn reply IS delivered (event order kept).
+        self.assertEqual(len(deliveries), 1)
+        # A second delivered same-turn reply retains event order.
         self.cg.dispatch(
             self.payload(
                 "Stop",
@@ -413,7 +412,7 @@ class DeliveredIsNotVerifiedTests(DeliveryLifecycleHarness):
             )
         )
         records = self.ledger()["records"]
-        self.assertEqual(len(records), 1)
+        self.assertEqual(len(records), 2)
         self.assertEqual(records[-1]["delivery"], "delivered")
         self.assertEqual(records[-1]["resolution"], "open")
 

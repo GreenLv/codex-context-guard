@@ -20,6 +20,63 @@ control Codex-native orchestration.
 
 ## Responsibility boundary
 
+The unreleased 0.14.0 source candidate records schema-13 append sequence
+numbers for root prompts and observed host calls/results. Stop 5.0.0 projects
+only current, source-bound work through the shared core v2 reference; wall
+clock timestamps and reply wording cannot backfill an earlier Stop. A mixed
+root retains its whole requirement while independently deliverable information
+spans carry UTF-8 source offsets and can close on a trusted final reply.
+Unknown and execution spans remain pending. A combined edit and test has
+separate required children: a structured patch with changed file readback
+supports the edit, while an attributable test result supports the test.
+For a uniquely sourced repository, a later commit and push use the same
+current work unit and require commit parent/tree/branch and remote-ref
+readbacks. One shell exit cannot substitute for these separate effects,
+an explicit proof contract, or a host Goal completion. The
+ordinary business tool remains under Codex host control. Root-imposed external
+dependencies and registered external operations have distinct provenance;
+assistant reply text alone creates neither.
+
+Direct user persistence, pause, resume, and cancellation are bound at their
+root event to the then-current ordinary execution catalog. An information
+question does not replace that scope, and later requirements do not inherit
+an earlier persistence demand. A trusted replacement closes the old item's
+effective interval without erasing its historical control. Required test
+children are related to a repair only by the original root decomposition:
+the same sourced object or an object-free test joined to that repair. A later
+control cannot create this parent relation. Repeated pause remains paused;
+resume lifts a pause prospectively but does not revive a canceled item.
+A short resume can lift a general pause, but does not establish that a
+specified input has arrived or a particular confirmation has been given.
+The original wait condition remains source-bound across recovery; matching
+root input or an explicit change to that condition affects only later state.
+Completion still has separate explicit-proof, Goal, and release checks.
+The private prompt-unit companion fixes a root's work-unit choice at receipt.
+Control projection checks every original root in that unit, including a root
+whose requirement row was later removed from mutable state. A replacement
+link is replayed against its successor root's original words and the prior
+unit inventory; arrival order alone never supplies replacement intent. If
+these source records are missing, recovery preserves the original prompt as
+untrusted work rather than certifying a smaller catalog.
+
+Codex CLI may report an ordinary Bash or apply_patch result to PostToolUse as
+unstructured text. The 0.14.0 adapter uses a bounded, session-bound Host
+transcript terminal item only when it is already present during that Post
+observation and matches the call, turn, command or single changed target, and
+cwd. A failed Bash command also uses PostToolUse, so the event name or output
+text cannot prove success. The adapter keeps missing or conflicting Host
+status unknown; a later transcript append does not revise an earlier Stop.
+Supported single-suite pytest, one-file patch and exact cat readback remain
+separate facts, and current file bytes must corroborate a cat result. Arbitrary
+npm or Python command output does not become a test or readback fact.
+An ordinary test input path alone does not derive an artifact-content proof;
+an independent request to read that file still does. The shared projection
+distinguishes a trustworthy terminal test run from a passing test. A current
+final report must match that same Host result. A fully sourced ordinary
+edit/readback/report or run/report closure persists its bounded Host and
+delivery references so resume does not restore a completed business item.
+Enforced proof, Goal, and adopted release contracts retain their own gates.
+
 The 0.13.8 source candidate retains the 0.13.6 reply delivery behavior.
 For SessionEnd, whose Codex CLI host deadline is at most three seconds, both
 launchers invoke the stateful core directly instead of starting the router
@@ -326,6 +383,11 @@ metadata.
 
 The completion gate is bound to the current turn. Only successful evidence
 already captured by the Hook may satisfy a requirement or acceptance item.
+In schema 13, an available UserPromptSubmit turn ID is captured in the
+hash-bound immutable prompt record. A late PostToolUse result may bind to
+that original turn's unique root; its arrival sequence does not prove that
+the call began after a later root. Missing or conflicting turn identity
+remains unknown, and the default PreToolUse path keeps zero state I/O.
 Private staging remains in plugin data and is never appended to the visible
 assistant response.
 
@@ -543,9 +605,11 @@ The retained schema-6 task ledger contains:
 - one turn-bound completion attempt with protocol version, token hash, staging
   timestamp, and a single checkpoint-or-disposition `staged_control`;
 - a checkpoint-derived completion record;
-- at most 32 hash-only Stop decision records with protocol/classifier versions,
-  decision source, disposition and outcome enums, bounded reason/action enums,
-  prompt/reply SHA-256, and no raw reply text;
+- 32 recent unreferenced hash-only Stop decisions, plus source-bound result
+  rows still needed to validate passed ordinary completion items. Each keeps
+  protocol/classifier versions, decision source, disposition and outcome
+  enums, bounded reason/action enums, prompt/reply SHA-256, and no raw reply
+  text;
 - integrity status and a canonical content hash.
 
 Default checkpoint status is scoped to the current work unit and its

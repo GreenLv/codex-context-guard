@@ -272,9 +272,10 @@ def main() -> int:
                 "turn-root",
                 tool_name="Bash",
                 tool_input={"command": "synthetic warning verification"},
-                tool_response=(
-                    "Script completed\nOutput:\nWarning: Operation not permitted"
-                ),
+                tool_response={
+                    "exit_code": 0,
+                    "output": "Warning: Operation not permitted",
+                },
             ),
         )
         hook(

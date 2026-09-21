@@ -39,8 +39,16 @@
       "peer_gates": {"dsh_context_guard": ["contract_tests"]}
     },
     {
+      "id": "shared_core_v2_assets",
+      "paths": ["assets/core-intent-v2.json", "assets/core-observation-v2.schema.json"],
+      "gates": ["contract_tests"],
+      "invalidates": ["cross_repository_contract"],
+      "contracts": ["context_guard_core_v2"],
+      "peer_gates": {"dsh_context_guard": ["contract_tests"]}
+    },
+    {
       "id": "runtime",
-      "paths": ["assets/state.schema.json", "hooks/**", "scripts/cg_*.py", "scripts/context_guard.py", "skills/context-guard/**"],
+      "paths": ["assets/core-intent-v2.json", "assets/core-observation-v2.schema.json", "assets/state.schema.json", "hooks/**", "scripts/cg_*.py", "scripts/context_guard.py", "skills/context-guard/**"],
       "gates": ["lint_compile", "repo_contract", "runtime_tests", "self_test"],
       "invalidates": ["artifact", "candidate_matrix", "native_artifact", "native_runtime", "publication_identity"],
       "contracts": [],

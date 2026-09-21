@@ -62,12 +62,25 @@ THREAD_IDS = [f"bb11{index}-c0de-4d5e-8f90-{index:012d}" for index in range(3)]
 THREAD_URIS = [f"codex://threads/{value}" for value in THREAD_IDS]
 
 
+def append_distinct_host_evidence(state: dict) -> None:
+    """A second genuine append-order host event, not a copied event ID."""
+    second = dict(state["evidence"][-1])
+    second["id"] = "E9999"
+    state["core_event_sequence"] += 2
+    second["core_call_seq"] = state["core_event_sequence"] - 1
+    second["core_result_seq"] = state["core_event_sequence"]
+    state["evidence"].append(second)
+    state["evidence_sequence"] = 9999
+
+
 class Phase3TestCase(unittest.TestCase):
     """Temp-state harness; dispatches hooks exactly like the host."""
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        # The Windows temp API can return an 8.3 alias. Host fixtures use a
+        # physical root-time spelling so the file evidence has one identity.
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.project = self.root / "project"
         self.project.mkdir()
         environment = mock.patch.dict(
@@ -200,7 +213,7 @@ class LifecycleConformanceTests(Phase3TestCase):
         self.assertIn("R003", scoped)
 
     def test_awaiting_user_is_reopened_by_the_user_reply(self) -> None:
-        self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
+        self.prompt("等我确认方案 B 后再继续。请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
         self.dispatch(
             "Stop",
             turn="t1",
@@ -210,7 +223,7 @@ class LifecycleConformanceTests(Phase3TestCase):
         self.assertEqual(state["work_units"][0]["status"], "awaiting_user")
         # The user answers the parked question: same unit, no new root.
         self.prompt(
-            "选择方案 B;补充一条:必须同时更新文档。必须运行测试验证。", turn="t2"
+            "方案 B 已确认;补充一条:必须同时更新文档。必须运行测试验证。", turn="t2"
         )
         state = self.state()
         self.assertEqual(len(state["work_units"]), 1)
@@ -219,7 +232,7 @@ class LifecycleConformanceTests(Phase3TestCase):
         self.assertEqual(len(state["requirements"]), 2)
 
     def test_awaiting_external_stays_parked_without_explicit_resume(self) -> None:
-        self.prompt("请发布目录并等待外部审核。必须逐项落实。必须运行测试验证。", turn="t1")
+        self.prompt("等外部审核完成后再继续。请发布目录。必须逐项落实。必须运行测试验证。", turn="t1")
         self.dispatch(
             "Stop",
             turn="t1",
@@ -233,7 +246,7 @@ class LifecycleConformanceTests(Phase3TestCase):
         self.assertEqual(state["work_units"][1]["status"], "active")
 
     def test_explicit_resume_reopens_the_unique_parked_unit(self) -> None:
-        self.prompt("请发布目录并等待外部审核。必须逐项落实。必须运行测试验证。", turn="t1")
+        self.prompt("等外部审核完成后再继续。请发布目录。必须逐项落实。必须运行测试验证。", turn="t1")
         self.dispatch(
             "Stop",
             turn="t1",
@@ -348,11 +361,7 @@ class OrdinaryTerminalCompletionTests(Phase3TestCase):
         self.build_single_read_task()
         # Duplicate the unique read: candidates are no longer unique.
         state = self.state()
-        evidence = list(state["evidence"])
-        second = dict(evidence[-1])
-        second["id"] = "E9999"
-        state["evidence"].append(second)
-        state["evidence_sequence"] = 9999
+        append_distinct_host_evidence(state)
         cg.save_state(self.root / "private" / "sessions" / "p3", state)
         result = self.dispatch(
             "Stop", turn="t1", last_assistant_message="任务已经全部完成。"
@@ -370,10 +379,7 @@ class OrdinaryTerminalCompletionTests(Phase3TestCase):
     def test_second_correction_is_silent_and_pending_is_preserved(self) -> None:
         self.build_single_read_task()
         state = self.state()
-        second = dict(state["evidence"][-1])
-        second["id"] = "E9999"
-        state["evidence"].append(second)
-        state["evidence_sequence"] = 9999
+        append_distinct_host_evidence(state)
         cg.save_state(self.root / "private" / "sessions" / "p3", state)
         first = self.dispatch(
             "Stop", turn="t1", last_assistant_message="任务已经全部完成。"
@@ -1143,20 +1149,19 @@ class VerificationContractIntegrityTests(Phase3TestCase):
 class Stop3BudgetAndFeedbackTests(Phase3TestCase):
     """Budget=1 per turn, bounded feedback, PreToolUse exemption."""
 
-    PERSISTENCE_PROMPT = (
-        "请修复模块、修复文档、修复测试三件事。必须逐项落实。必须运行测试验证。"
-        "不要停止,一直推进直到完成。"
-    )
-    ASSISTANT_REPLY = "我会继续修复模块和文档,并运行测试。"
+    ASSISTANT_REPLY = "测试尚未运行，我会继续运行测试。"
+
+    def prepare_ready_persistence(self, *, turn: str) -> None:
+        target = self.project / "suite.py"
+        target.write_text("def test_ok(): assert True\n", encoding="utf-8")
+        locator = f'"{target}"' if os.name == "nt" else str(target)
+        self.prompt(f"运行 {locator} 的测试。不要停止,一直推进直到完成。", turn=turn)
+        self.dispatch("PostToolUse", turn=turn, tool_name="exec_command",
+                      tool_input={"cmd": f"test -f {target}"},
+                      tool_response={"exit_code": 0, "output": ""})
 
     def test_budget_is_one_and_pretool_deny_is_exempt(self) -> None:
-        self.prompt(self.PERSISTENCE_PROMPT)
-        self.dispatch(
-            "PostToolUse",
-            tool_name="shell",
-            tool_input={"command": "python3 -m unittest"},
-            tool_response={"exit_code": 0, "output": "OK"},
-        )
+        self.prepare_ready_persistence(turn="turn-1")
         blocks = 0
         for _ in range(4):
             result = self.dispatch(
@@ -1212,7 +1217,7 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
             outcomes.append("block" if result.get("decision") == "block" else "silent")
         # UX-02/UX-03 target: the sub-class chain never cascades.
         self.assertEqual(outcomes, ["silent", "silent", "silent"])
-        self.assertEqual(self.state()["work_units"][0]["status"], "awaiting_external")
+        self.assertEqual(self.state()["work_units"][0]["status"], "active")
 
     def test_t1_lane_target_bounded_units_and_feedback(self) -> None:
         with mock.patch.object(cg.secrets, "token_urlsafe", return_value="token"):
@@ -1221,7 +1226,7 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
                     "UserPromptSubmit",
                     turn=f"turn-{index}",
                     prompt=(
-                        f"独立请求 {index}:请修复对应条目。必须逐项落实。必须运行测试验证。"
+                        f"独立请求 {index}:等外部审核完成后再继续。请修复对应条目。必须逐项落实。必须运行测试验证。"
                     ),
                 )
         self.dispatch(
@@ -1289,13 +1294,7 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
         self.assertLess(len(status.encode("utf-8")), 4096)
 
     def test_default_feedback_is_anonymous_and_audit_keeps_ids(self) -> None:
-        self.prompt(self.PERSISTENCE_PROMPT, turn="t1")
-        self.dispatch(
-            "PostToolUse",
-            tool_name="shell",
-            tool_input={"command": "python3 -m unittest"},
-            tool_response={"exit_code": 0, "output": "OK"},
-        )
+        self.prepare_ready_persistence(turn="t1")
         blocked = self.dispatch(
             "Stop", turn="t1", last_assistant_message=self.ASSISTANT_REPLY
         )
@@ -1328,8 +1327,8 @@ class Stop3BudgetAndFeedbackTests(Phase3TestCase):
             last_assistant_message="我会继续修复模块和文档,并运行测试。",
         )
         latest = self.state()["decision_log"][-1]
-        self.assertEqual(latest["outcome"], "silent_end_assistant_pending_actions")
-        self.assertIn("assistant_pending_actions", latest["reason_codes"])
+        self.assertEqual(latest["outcome"], "silent_end_owner_ambiguous")
+        self.assertFalse(any(a.get("actionability") == "current_ready" for a in latest["actions"]))
         self.assertEqual(self.state()["continuation_attempts"], 0)
 
 
@@ -1629,6 +1628,19 @@ class RunnerDiscoveryEvidenceTests(Phase3TestCase):
         self.assertEqual(modules, sorted(modules))
         self.assertEqual(len(modules), len(set(modules)))
 
+    def test_failure_summary_survives_legacy_windows_console(self) -> None:
+        import io
+
+        from run_current_behavior_suite import console_failure_summary
+
+        self.assertEqual(console_failure_summary("test_a: FAIL"), "test_a: FAIL")
+        failure = "test_stop_v5: FAIL root='现在评估这次修改的效果。'"
+        stream = io.BytesIO()
+        console = io.TextIOWrapper(stream, encoding="cp1252", write_through=True)
+        console.write("! " + console_failure_summary(failure) + "\n")
+        self.assertIn(b"\\u73b0", stream.getvalue())
+        self.assertIn(b"test_stop_v5: FAIL", stream.getvalue())
+
     def test_new_failing_module_is_discovered_and_propagates(self) -> None:
         from run_current_behavior_suite import discover_current_modules
 
@@ -1765,7 +1777,7 @@ class SchemaUpgradePromptIntegrationTests(Phase3TestCase):
         # historical; the only parked unit is then the post-upgrade root
         # with a persisted activity sequence. The explicit resume reopens
         # exactly that unique waiting candidate (plan 4.2).
-        self.prompt("切换到新任务：检查别的问题。必须运行测试验证。", turn="t3")
+        self.prompt("切换到新任务：等我确认后再继续。检查别的问题。必须运行测试验证。", turn="t3")
         state = self.state()
         self.assertEqual(state["work_units"][1]["status"], "historical_unresolved")
         self.assertEqual(state["work_units"][2]["status"], "active")

@@ -1,7 +1,78 @@
 # Local Release Acceptance
 
+## 0.14.0 release-line source (2026-09-21; public identity pending)
+
+Committed candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed its complete deterministic source matrix, all 16 jobs in [candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/35523280198), and the [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/35523420917). Its 35-file runtime tree has SHA-256 `b1887c837722c41049d86e194a5859ec667a77ca7726f1d2adb7dc5e08bfd1ea`; the macOS portable native profile passed five gates with cleanup.
+
+The portable result does not establish a six-gate Host run, native Windows acceptance or fixed-model behavior for these runtime bytes. An earlier runtime had actual model observations, which cannot be relabeled as acceptance of this changed runtime. These recorded 1217029 bytes have no daily-host installation, tag, GitHub Release or public readback; final release identity needs a separate exact-subject annex. A later source edit requires exact-subject reevaluation; a runtime-byte edit also invalidates installed-runtime evidence.
+
+The current source tests
+exercise the protocol 5 Stop path and the shared core v2 projection with
+synthetic, structured Host Hook inputs. A single-file edit requires an
+attributable one-target effect plus independent post-edit content readback;
+a prior read is optional. A test requires its own
+attributable result. Future observations and short resume wording cannot
+create current work or registered external operations. An omitted current
+test or evaluation remains visible when its input is host-selected and ready.
+The combined edit/test and unique-repository commit/push chains are exercised
+through synthetic structured Hook replays; the latter does not execute Git.
+An attempted host Goal-completion adoption reports `capability_unavailable`
+until a synchronous host tool route and deny/readback are verified.
+The projection does not itself discharge the independent whole-completion,
+explicit-proof, Goal, or adopted-release contracts. Final exact-input local
+results and exact shared-file SHA-256 identities are recorded in the
+development handoff outside this public source tree.
+
+The later root-control source repair has focused local replays for a persistent
+test request followed by an information interlude, source-bound pause/resume/
+cancel, multiple required tests under one repair, an independent same-root
+test, a trusted replacement, and a rehashed truncated catalog. The truncated
+private state is recovered as untrusted; it cannot certify its smaller action
+subset. Independent-root truncation, missing prompt-unit binding, and an
+unsourced replacement link are separate recovery negatives; an explicitly
+sourced replacement remains a positive control. Cancellation removes only
+the bound ordinary execution obligations and a wholly derived acceptance row;
+independent information, explicit proof, Goal, and adopted-release gates remain
+separate.
+The prompt-write-before-state crash window is checked separately: a new
+immutable root ahead of the saved watermark forces untrusted recovery instead
+of allowing the old catalog to certify completion.
+These root-control replays are synthetic source checks on changed bytes, separate from the portable macOS result above. Exact commands, hashes, review outcomes, and final local matrix status belong to the external development handoff until this candidate is frozen.
+
+The later Host-wire repair has focused synthetic replays of the CLI 0.153.4
+string PostToolUse shape: it correlates an already-visible Host terminal item
+for supported Bash and apply_patch operations and keeps missing status unknown.
+An independent Windows PowerShell shell primitive probe found that `cat`
+changed LF bytes to CRLF, while a full-form literal `[System.Console]::Write([System.IO.File]::ReadAllText(...))`
+preserved LF, CRLF, and UTF-8 text without a BOM. UTF-8 BOM bytes were lost, so
+the new bounded readback producer requires exact Host stdout/current-file byte
+equality and leaves that case unavailable. Source tests do not establish the
+new runtime's Windows-native Hook completion path.
+The native transcript that exposed the defect belongs to earlier runtime bytes; source tests on that repair alone did not establish a fresh ordinary-completion pass. The focused source repair records the
+audited Update post-image hash at PostToolUse and compares it with a later
+independent readback. Reprojecting an unchanged session watermark uses only
+the persisted observations, even if disk bytes subsequently change without
+a new Host event. Unknown root scope and absent or conflicting readback remain
+uncertified.
+
+The newer source-only ordinary-result slice distinguishes a named pytest
+process reaching a trusted terminal result from a passing test. Synthetic
+Host replays exercise both an honest nonzero run-and-report closure and an
+explicit pass target that stays open. A pure test input path does not create
+an unrelated file-content proof; an independently requested file readback
+still retains it. Exact edit/readback/report and test/run/report closure
+persist bounded evidence and delivery identities, survive reload, and leave
+unsupported extra clauses open. These checks do not reclassify the earlier
+native model capture or establish full native Host behavior of the new bytes.
+The ordinary completion basis must match retained certified core projection
+and verified delivery records. Referenced records survive ordinary bounded
+log rotation; a forged digest or missing record cannot silently certify a
+completed item. The source regression rotates more than the delivery ledger's
+normal recent-record limit without reopening the completed
+requirement.
+
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current release is `0.13.9`. Release history includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. Public availability is determined by the verified GitHub Releases listing. Historical release evidence includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
 ## 0.13.9 native acceptance closeout (2026-09-14)

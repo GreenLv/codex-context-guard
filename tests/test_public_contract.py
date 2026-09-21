@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,9 +36,51 @@ workflow = load(
 identity = load(
     "audit_commit_identity", ROOT / "scripts" / "audit_commit_identity.py"
 )
+plugin_manager = load("manage_plugin", ROOT / "scripts" / "manage_plugin.py")
 
 
 class PublicContractTests(unittest.TestCase):
+    def test_runtime_bytes_survive_autocrlf_checkout(self) -> None:
+        """All packaged runtime suffixes retain one digest on Windows checkout."""
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "source"
+            fixture.mkdir()
+            source = plugin_manager.tree_manifest(ROOT)
+            paths = [".gitattributes", *source]
+            for name in paths:
+                destination = fixture / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / name, destination)
+            subprocess.run(
+                ["git", "init", "--quiet", str(fixture)],
+                text=True, capture_output=True, check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(fixture), "-c", "core.autocrlf=false",
+                 "add", "--", *paths],
+                text=True, capture_output=True, check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(fixture),
+                 "-c", "user.name=Fixture",
+                 "-c", "user.email=fixture@users.noreply.github.com",
+                 "commit", "--quiet", "-m", "fixture: runtime bytes"],
+                text=True, capture_output=True, check=True,
+            )
+            checkout = Path(temporary) / "autocrlf-checkout"
+            subprocess.run(
+                [
+                    "git", "-c", "core.autocrlf=true", "clone", "--quiet",
+                    "--no-hardlinks", "--local", str(fixture), str(checkout),
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            converted = plugin_manager.tree_manifest(checkout)
+            self.assertEqual(converted, source)
+            self.assertGreaterEqual(len(source), 30)
+
     def test_repository_contract(self) -> None:
         self.assertEqual(contract.validate(ROOT), [])
 
@@ -124,6 +167,27 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("Windows portable installed-runtime acceptance", candidate)
         self.assertIn("contains(needs.classify.outputs.invalidates, 'native_runtime')", candidate)
         self.assertIn("tools/validation/native_acceptance.py", candidate)
+
+    def test_ci_lane_propagates_current_suite_failure_before_phase3(self) -> None:
+        lane = (ROOT / ".github" / "workflows" / "ci-lane.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(workflow.validate_lane_failure_propagation(lane), [])
+        merged = lane.replace(
+            "        run: python scripts/run_current_behavior_suite.py\n"
+            "      - name: Audit historical phase 3 transition\n"
+            "        run: python scripts/check_phase3_transition.py",
+            "        run: |\n"
+            "          python scripts/run_current_behavior_suite.py\n"
+            "          python scripts/check_phase3_transition.py",
+        )
+        self.assertIn("distinct CI steps", workflow.validate_lane_failure_propagation(merged)[0])
+        ignored = lane.replace(
+            "        run: python scripts/run_current_behavior_suite.py",
+            "        run: python scripts/run_current_behavior_suite.py\n"
+            "        continue-on-error: true",
+        )
+        self.assertIn("propagate failures", workflow.validate_lane_failure_propagation(ignored)[0])
 
     def test_public_tree_has_no_private_material(self) -> None:
         self.assertEqual(audit.findings(ROOT), [])
@@ -242,11 +306,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.13.9`.",
+            "`0.14.0` release line",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.13.9`。",
+            "`0.14.0` 发布线",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -345,10 +409,18 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current release: `0.13.9` (2026-09-14)",
+            "### 0.14.0 release-line source (public identity separate)",
             compatibility,
         )
-        self.assertIn("Published release baseline: `0.13.9`", compatibility)
+        current, historical = compatibility.split(
+            "### Historical published 0.13.9 baseline", 1
+        )
+        self.assertIn("Private state schema: `13`", current)
+        self.assertIn("Stop protocol: `5.0.0`", current)
+        self.assertNotIn("Private state schema: `12`", current)
+        self.assertNotIn("Stop protocol: `4.0.0`", current)
+        self.assertIn("Private state schema: `12`", historical)
+        self.assertIn("Stop protocol: `4.0.0`", historical)
         self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
         self.assertNotIn(
             "Current published Context Guard release: `0.11.0`", compatibility

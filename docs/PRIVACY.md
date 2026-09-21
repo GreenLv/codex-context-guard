@@ -17,6 +17,20 @@ execution should use the Codex-provided data directory.
 
 No plugin runtime state belongs in this Git repository.
 
+The unreleased schema-13 candidate adds a private monotonic event watermark,
+per-prompt and per-host-call/result append numbers, UTF-8 byte offsets for
+information and bounded execution children, and the root event's canonical
+locator base/flavor in its immutable, hashed private prompt record (used only
+for relative target identity).
+Structured Git readback observations may retain commit, parent and tree OIDs,
+branch and remote/refspec in private evidence; no Git command is executed by
+the Guard. Stop diagnostics retain
+bounded core predicate/coverage states and target digests, not a second raw
+prompt copy. These fields stay in the existing private session directory and
+follow its retention and redaction rules. Legacy events without append numbers
+remain historical; migration does not infer a trustworthy sequence from
+timestamps or assistant prose.
+
 For opt-in Windows native acceptance only, `CONTEXT_GUARD_HOOK_TRACE_DIR`
 may point to an already-created private directory outside the repository.
 The PowerShell Hook entry writes one file per invocation containing a start
@@ -40,6 +54,22 @@ reviewed public fixtures and never reads a maintainer's private corpus.
 Context Guard saves the user's prompt text in immutable per-prompt files so that requirements can be recovered after compaction or resume. It also saves the requirements and acceptance items derived from those prompts, together with their revisions and the session or turn identifiers needed to keep records in the right task.
 
 Tool activity is stored as a bounded, redacted summary and outcome, not as complete stdout or file contents. Proofs keep the operation, object, result type, normalized counts, and hashes needed to check that evidence belongs to the user's actual requirement.
+For an attributable Host FileChange Update, schema-13 evidence may also retain
+the SHA-256 of the stable post-image observed at PostToolUse. The later
+independent readback stores its own hash and event sequence; neither record
+copies the file bytes into the session state.
+When a supported ordinary edit/readback/report or test/run/report root closes,
+the item stores a bounded completion basis: the named predicate, event
+watermark, Host evidence IDs, delivery digest, and shared-core projection
+digest. The result text and file contents are not copied into that basis.
+Recovery validates its Host and delivery references; missing historical
+lineage cannot be inferred from a later reply or file state.
+The ordinary completion store retains one source-bound result/delivery pair
+for each distinct completed ordinary result while its item remains closed.
+Thirty-two unreferenced diagnostic decisions and 512 unreferenced delivery
+records may rotate; referenced pairs remain available for reload validation.
+Their count is constrained by the completed items already in the session,
+not an additional completion quota. No reply text or file contents are pinned.
 
 For images and other binary inputs, the store keeps a redacted basename or type, media facts such as byte count and dimensions, and hashes of the locator and content. It does not keep the image bytes or data-URL body.
 
@@ -50,6 +80,29 @@ Recovery and diagnosis keep compact checkpoints, delegated-result summaries, pro
 Context Guard does not copy complete root or delegated-agent transcripts, chain-of-thought, full tool output, file contents, image bytes, credentials, authorization headers, plaintext private tokens, or URL query values into its ledger. Diagnostic Stop records keep hashes and bounded enums rather than raw assistant replies.
 
 This distinction is important: user prompt bodies are saved privately for recovery, but the surrounding transcript and the model's hidden reasoning are not duplicated into plugin state.
+For schema 13 provenance, the immutable prompt record also retains the Host
+turn identifier when provided, covered by its record hash. This bounded
+identity lets a late tool result be associated with its originating root;
+legacy prompts without it remain unknown. No PreToolUse transcript or tool
+content is added for this association.
+Schema 13 also retains bounded root-control records for direct persistence,
+pause, resume and cancellation. Each stores the original prompt record hash,
+UTF-8 control and object spans, event sequence, work-unit id, scoped ordinary
+requirement ids, action kinds and a catalog digest. A required test child's
+parent repair id and its own source span/hash are stored with the requirement.
+The original prompt body remains only in its existing private immutable
+record; Stop decisions store a bounded normalized control summary, not another
+copy of the request or Host output. Old states without these source fields do
+not acquire them from later text or migration.
+For a newly recorded human business root, a separate private `prompts/units`
+companion binds the original prompt-record hash and event sequence to its
+work unit. It contains identifiers and hashes, not another prompt body. A
+missing companion, a shortened requirement inventory, or an unsupported
+replacement link cannot be reconstructed from a final status label or a
+rehash of the mutable state; recovery leaves controls untrusted.
+If a crash leaves an immutable prompt record ahead of the last saved state
+watermark, the older catalog is likewise not certified. Recovery replays the
+prompt as an unverified obligation; it does not infer a missing unit binding.
 
 ## Minimization
 

@@ -1,0 +1,84 @@
+# Core v2 host capability inventory (source candidate)
+
+These are source-inspected capabilities, not native acceptance. The fixed
+shared contract uses existing host events; it requires no invented Hook.
+
+| Predicate/input | Codex adapter | DSH adapter | Trust and limit |
+| --- | --- | --- | --- |
+| Root input | UserPromptSubmit, immutable prompt ledger | persisted user/message with root origin | tool/model/delegated text cannot create root input |
+| Tool call/result | PostToolUse tool_name/tool_input/tool_response; a string response needs a matching Host session-transcript terminal item observed during that Hook | Session tool/call with callId/name/raw arguments, tool/result message.source.callId/error/meta | exact session/turn/call/input/cwd correlation; model receipts and quoted output never enter trusted store |
+| Persistence | locked atomic state and journal sequence | snapshotEvents plus sessions.flush(session) successful boolean | flush failure is unavailable, never empty success |
+| Root controls | immutable prompt span/sequence plus at-receipt scoped requirement refs | persisted user/message span/sequence plus current scoped requirement refs | explicit persistence/pause/resume/cancel affect only bounded Stop diagnosis; old text and a later new task cannot inherit an unbound control |
+| File effect/readback | one-target Host FileChange plus separate bounded current file readback; exact file subjects | write/edit plus independent file SHA readback | a patch receipt alone cannot prove required content or historical prestate |
+| Test process | matching Host CommandExecution integer exit and identifiable pytest terminal result for a supported single-suite process | pinned bash/pwsh foreground result; nonzero terminal status currently unavailable | `test_run_completed` requires an attributable terminal run, including an independently proved nonzero result; `test_passed` requires actual success, and an accurate report remains separate. Missing executable, approval denial, arbitrary npm/Python commands and compound inner commands do not become completed tests. |
+| Git commit/push | existing Git identity/readback adapter | existing readback producers; ordinary-host lineage adapter required | exact repo/tree/parent/OID/ref; shell prose does not establish identity |
+| Final delivery | Stop final assistant reply and turn binding | current assistant final message/session turn | interrupted, intermediate, delegated and late replies do not close current information |
+| External lifecycle | existing registered child/operation evidence | jobs/delegation snapshots with correlated operation ID | reply text cannot register a wait |
+| Goal complete | existing guarded completion path | tool precommit callback for update_goal complete | only adopted completion contract; no scheduling/pause/restart |
+| Release | adopted release adapter and actual intercepted surfaces | controlled registry publish reservation/settlement | ordinary opaque DSH shell is not an enforced channel |
+
+Pinned DSH API inspected: Session 0.1.5-rc.1 `tool/call` fields
+`turn,step,callId,name,arguments`; result fields `turn,step,message,error?,meta?`;
+`message.source={kind:tool,callId}` and ToolResultBlock/isError. PTC dispatch
+start/result requires matching correlation and the same durable replay checks.
+The inspected rc.2 foreground bash/pwsh result currently persists one matched
+nested text block and `isError`, without a separately authenticated process
+start, termination, exit code, or stdout/stderr split. An absent renderer exit
+marker can support only the bounded zero-exit path; a nonzero marker and an npm
+script heading can be printed by stdout before the test process terminates.
+Consequently the DSH adapter cannot issue `test_run_completed` for a nonzero
+run or certify its exact failure report from those bytes. It retains an
+unknown attempt rather than calling the test unrun or authorizing a retry.
+Nonzero completion needs a same-call host record of start, terminal status and
+exit code, with stdout/stderr separated and the named test script's outcome
+attributed to that call. This is a capability limit, not a core predicate or
+ordinary-tool permission change.
+
+No real-model task, host restart, platform-native run, installed cache, package,
+network push or release is established here. macOS/Windows source branches are
+portable candidates until each platform's authorized native acceptance. Missing
+adapters report capability_unavailable, not missing permission.
+
+Codex's normal PostToolUse carries the call input and a response in one Hook
+event. CLI 0.153.4 can give Bash and apply_patch a bare string response,
+including for a failed Bash command. For that wire, the Codex adapter accepts
+only a bounded Host session-transcript `item_completed` already present when
+PostToolUse runs, with matching session, turn and call ID, plus exact command/cwd
+for CommandExecution or a single matching change target/type for FileChange.
+The Host terminal status and exit remain separate from output text. A missing,
+late, ambiguous or oversized record is unavailable at that observation
+watermark; later facts cannot change an earlier Stop. Internal call/result
+pairing remains a logical observation, not a persisted independent PreToolUse
+call. The standard/strict PreToolUse fast path remains stateless and silent.
+The observed Add FileChange carries post-image content; the observed Update
+carries a unified diff instead. The adapter validates each against the one
+Hook patch operation. For an Update, it records the stable post-image hash at
+that PostToolUse watermark, then requires a separate later readback of the
+same exact bytes for completion. A prior read is useful but not mandatory.
+Projection of a persisted watermark uses only those recorded facts; reading
+the file again later cannot rewrite the earlier result. A new Host readback
+gets a new event watermark. Native Delete FileChange shape is not established
+by these inputs.
+
+For an absolute Windows drive file, PowerShell `cat` is not assumed to preserve
+bytes. A single full-form `[System.Console]::Write([System.IO.File]::ReadAllText(...))`
+expression with one literal path may produce the existing file-readback fact
+only when the same-call Host terminal confirms PowerShell, zero exit, and
+stdout identical to stable current physical file bytes. The expression is a
+bounded producer, not a general PowerShell parser. UTF-8 BOM removal, newline
+conversion, path aliases, extra operations, or missing Host records leave the
+readback unavailable. A separate Windows shell primitive probe established
+LF, CRLF and BOM behavior; it is not new-runtime native Hook acceptance.
+
+For current Windows file readiness, one exact PowerShell
+`Test-Path -LiteralPath '<absolute-drive-path>' -PathType Leaf` command may
+produce `file_exists` only when a structured Hook result or matched Host
+terminal reports a zero-exit success,
+stdout is exactly the Boolean `True` after surrounding whitespace is removed,
+the input explicitly names PowerShell or a same-call Host terminal confirms
+PowerShell, and the same absolute path resolves to the supported physical file
+identity. Contradictory shell declarations and terminal records are rejected.
+`False`, an unsupported shell, a non-literal path, a compound command, or a
+non-leaf query produces no readiness fact. This bounded producer neither reads
+file content nor proves that a requested test ran, and it is not a general
+PowerShell parser.
