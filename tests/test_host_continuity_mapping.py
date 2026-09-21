@@ -117,7 +117,7 @@ class Fixture:
                                    expected_event=event, capture_dir=self.capture,
                                    runtime_root=ROOT)
             meta = self.capture / f"capture-{index:06d}.meta.json"
-            item = json.loads(meta.read_text())
+            item = json.loads(meta.read_text(encoding="utf-8"))
             item["captured_at"] = f"2026-09-09T00:00:{index:02d}+00:00"
             meta.write_text(json.dumps(item, sort_keys=True))
             meta.chmod(0o600)
@@ -265,13 +265,13 @@ class Fixture:
         return MAPPING.adapt(self.manifest, ROOT, sha(self.manifest))
 
     def mutate_manifest(self, fn) -> None:
-        value = json.loads(self.manifest.read_text())
+        value = json.loads(self.manifest.read_text(encoding="utf-8"))
         fn(value)
         self.manifest.write_text(json.dumps(value, sort_keys=True))
 
     def mutate_snapshot(self, name: str, fn) -> None:
         path = self.paths[name]
-        value = json.loads(path.read_text())
+        value = json.loads(path.read_text(encoding="utf-8"))
         fn(value)
         path.write_text(json.dumps(value, sort_keys=True) + "\n")
         self.mutate_manifest(lambda m: m["snapshots"][name].update({"sha256": sha(path)}))
@@ -280,7 +280,7 @@ class Fixture:
         if name in post_sequences:
             sequence = post_sequences[name]
             raw_path = self.capture / f"capture-{sequence:06d}.raw"
-            payload = json.loads(raw_path.read_text())
+            payload = json.loads(raw_path.read_text(encoding="utf-8"))
             payload["tool_response"] = json.dumps({
                 "status": "captured", "output": str(path), "sha256": sha(path)
             }, sort_keys=True)
@@ -288,7 +288,7 @@ class Fixture:
             raw_path.write_bytes(raw)
             raw_path.chmod(0o600)
             meta_path = self.capture / f"capture-{sequence:06d}.meta.json"
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             meta["raw_sha256"] = hashlib.sha256(raw).hexdigest()
             meta["raw_bytes"] = len(raw)
             meta_path.write_text(json.dumps(meta, sort_keys=True))
@@ -380,7 +380,7 @@ class ContinuityMappingTests(unittest.TestCase):
     def test_untrusted_lifecycle_capture_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             fixture = self.fixture(temp)
-            trust = json.loads(fixture.trust.read_text())
+            trust = json.loads(fixture.trust.read_text(encoding="utf-8"))
             trust["records"][0]["trustStatus"] = "untrusted"
             fixture.trust.write_text(json.dumps(trust, sort_keys=True))
             fixture.mutate_manifest(lambda m: m["capture"].update(
@@ -496,7 +496,7 @@ class ContinuityMappingTests(unittest.TestCase):
             setup = CAPTURE.prepare_hooks(output, python=Path(os.sys.executable),
                                           capture_dir=root / "capture",
                                           runtime_root=ROOT, events=events)
-            hooks = json.loads(output.read_text())["hooks"]
+            hooks = json.loads(output.read_text(encoding="utf-8"))["hooks"]
             self.assertEqual(list(hooks), list(events))
             self.assertEqual(setup["events"], list(events))
             self.assertTrue(setup["requires_normal_hook_review_and_trust"])
@@ -605,7 +605,7 @@ class ContinuityMappingTests(unittest.TestCase):
             event("UserPromptSubmit", prompt="仅执行状态采集；不要输入释放词。")
             wait_pair = run_witness("wait_started")
             event("UserPromptSubmit", prompt="继续。")
-            parked = json.loads((sessions / fixture.session / "state.json").read_text())
+            parked = json.loads((sessions / fixture.session / "state.json").read_text(encoding="utf-8"))
             self.assertTrue(any(row["status"] == "waiting"
                                 for row in parked["wait_conditions"]))
             release_cmd = command(fixture.root / "wait-released.json", "current")
@@ -627,7 +627,7 @@ class ContinuityMappingTests(unittest.TestCase):
             fixture.paths["cleanup_after"] = cleanup_after
             report = CAPTURE.inspect_directory(fixture.capture, ROOT)
             fixture.report.write_text(json.dumps(report, sort_keys=True))
-            manifest = json.loads(fixture.manifest.read_text())
+            manifest = json.loads(fixture.manifest.read_text(encoding="utf-8"))
             manifest["capture"]["report_sha256"] = sha(fixture.report)
             manifest["snapshots"] = {name: {"path": str(path), "sha256": sha(path)}
                                      for name, path in fixture.paths.items()}
