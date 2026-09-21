@@ -8063,7 +8063,20 @@ def typed_path_subject(raw: str) -> dict[str, str]:
 
 def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, str]]:
     subjects: list[dict[str, str]] = []
-    for value in WINDOWS_UNC_PATH_RE.findall(text):
+    quoted_windows: list[tuple[tuple[int, int], str]] = []
+    quoted_posix: list[tuple[tuple[int, int], str]] = []
+    for match in re.finditer(r"([\"'])(.*?)\1", text):
+        candidate = match.group(2)
+        if WINDOWS_ABSOLUTE_PATH_RE.match(candidate):
+            quoted_windows.append((match.span(), candidate))
+        elif candidate.startswith("/") and ".." not in Path(candidate).parts:
+            quoted_posix.append((match.span(), candidate))
+    windows_values: list[str] = [value for _, value in quoted_windows]
+    quoted_spans = [span for span, _ in quoted_windows + quoted_posix]
+    for match in WINDOWS_UNC_PATH_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in quoted_spans):
+            continue
+        value = match.group(0)
         canonical, unsupported = canonical_windows_locator(value)
         reason = unsupported or "unc"
         subjects.append(
@@ -8074,7 +8087,11 @@ def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, s
                 "locator_sha256": unsupported_locator_digest(value),
             }
         )
-    for value in WINDOWS_DRIVE_PATH_RE.findall(text):
+    windows_values.extend(
+        match.group(0) for match in WINDOWS_DRIVE_PATH_RE.finditer(text)
+        if not any(start <= match.start() < end for start, end in quoted_spans)
+    )
+    for value in windows_values:
         canonical, unsupported = canonical_windows_locator(value)
         if unsupported is not None:
             subjects.append(
@@ -8094,8 +8111,24 @@ def prompt_subjects(text: str, include_threads: bool = True) -> list[dict[str, s
                 "locator_sha256": sha256_text(canonical),
             }
         )
+    for _, value in quoted_posix:
+        if Path(value).suffix.lower() in IMAGE_SUFFIXES:
+            continue
+        subjects.append(
+            {
+                "id": f"subject:{sha256_text(value)[:20]}",
+                "kind": "path",
+                "display": Path(value).name,
+                "locator_sha256": sha256_text(value),
+            }
+        )
     for kind, pattern in (("path", ABSOLUTE_PATH_RE), ("url", URL_RE)):
-        for value in pattern.findall(text):
+        for match in pattern.finditer(text):
+            if kind == "path" and any(
+                start <= match.start() < end for start, end in quoted_spans
+            ):
+                continue
+            value = match.group(0)
             cleaned = value.rstrip(")]}>.,")
             if kind == "url":
                 normalized_thread = canonical_thread_uri(cleaned)
@@ -16619,6 +16652,41 @@ def core_shell_observation(
         kind, predicate, raw_target = (
             "state_readback", "content_hash", byte_readback.group(1)
         )
+    elif (
+        len(parts) == 5
+        and parts[0].casefold() == "test-path"
+        and parts[1].casefold() == "-literalpath"
+        and parts[3].casefold() == "-pathtype"
+        and parts[4].casefold() == "leaf"
+    ):
+        tool_input = payload.get("tool_input")
+        declared_shell = (tool_input.get("shell")
+                          if isinstance(tool_input, dict) else None)
+        powershell_names = {"pwsh", "powershell"}
+        if declared_shell is not None and (
+            not isinstance(declared_shell, str)
+            or _command_basename(declared_shell) not in powershell_names
+        ):
+            return None
+        if host_terminal is not None:
+            if (host_terminal.get("type") != "command"
+                    or _command_basename(str(host_terminal.get("shell") or ""))
+                    not in powershell_names):
+                return None
+        elif outcome_basis != "structured_exit_code" or declared_shell is None:
+            # An inferred Windows tokenizer dialect is not evidence that
+            # PowerShell interpreted the command. An exact Host terminal can
+            # supply that fact when the Hook input did not declare a shell.
+            return None
+        response = payload.get("tool_response")
+        if (
+            outcome != "success"
+            or not isinstance(response, dict)
+            or not isinstance(response.get("output"), str)
+            or response["output"].strip().casefold() != "true"
+        ):
+            return None
+        kind, predicate, raw_target = "readiness", "file_exists", parts[2]
     elif len(parts) == 3 and parts[:2] == ["test", "-f"]:
         kind, predicate, raw_target = "readiness", "file_exists", parts[2]
     elif len(parts) == 2 and parts[0] == "cat":

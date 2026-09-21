@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import context_guard as cg
@@ -50,12 +51,153 @@ class CurrentActionGroundingTests(unittest.TestCase):
     def state(self):
         return cg.load_state(self.data / "sessions" / self.session, self.event("Stop"))
 
-    def host(self, command: str, output: str = "", code: int = 0) -> None:
+    def host(
+        self, command: str, output: str = "", code: int = 0,
+        *, shell: str | None = None,
+    ) -> None:
+        tool_input = {"command": command}
+        if shell is not None:
+            tool_input["shell"] = shell
         cg.dispatch(self.event(
             "PostToolUse", tool_name="Bash", tool_use_id=f"tool-{self.turn}",
-            tool_input={"command": command},
+            tool_input=tool_input,
             tool_response={"exit_code": code, "output": output},
         ))
+
+    def ready_file(self, target: Path) -> None:
+        if os.name == "nt":
+            escaped = str(target).replace("'", "''")
+            self.host(
+                f"Test-Path -LiteralPath '{escaped}' -PathType Leaf",
+                "True\r\n", shell="powershell",
+            )
+        else:
+            self.host(f"test -f '{target}'")
+
+    def test_quoted_path_with_spaces_keeps_exact_source_and_current_action(self):
+        suite = self.root / "suite space" / "test now.py"
+        suite.parent.mkdir()
+        suite.write_text("def test_current(): assert True\n", encoding="utf-8")
+        prompt = f'现在运行 "{suite}" 并报告退出状态。'
+        self.submit(prompt)
+        self.ready_file(suite)
+        self.stop("当前测试尚未运行。")
+
+        decision = self.state()["decision_log"][-1]
+        projection = next(row for row in decision["core_projections"]
+                          if row["predicate"] == "test_run_completed")
+        self.assertEqual(
+            projection["source_sha256"],
+            cg.sha256_text(prompt),
+        )
+        self.assertTrue(any(
+            row.get("category") == "test_verify"
+            and row.get("actionability") == "current_ready"
+            for row in decision["actions"]
+        ))
+
+    def test_windows_quoted_drive_paths_bind_whole_subject_not_prefix(self):
+        for quote, target in (
+            ('"', r"D:\work\tests\test_now.py"),
+            ("'", r"C:\work dir\tests\test now.py"),
+        ):
+            with self.subTest(quote=quote, target=target):
+                prompt = f"Run {quote}{target}{quote} and report its status."
+                locators, ambiguous = cg.root_absolute_locator_mentions(prompt)
+                self.assertFalse(ambiguous)
+                self.assertEqual(locators, {target})
+                subjects = cg.prompt_subjects(prompt)
+                self.assertEqual(
+                    [row["locator_sha256"] for row in subjects],
+                    [cg.sha256_text(target)],
+                )
+                self.assertEqual(subjects[0]["display"], target.rsplit("\\", 1)[-1])
+
+        unquoted = r"Run C:\work dir\tests\test now.py and report its status."
+        self.assertEqual(cg.root_absolute_locator_mentions(unquoted), (set(), True))
+
+    def test_windows_native_test_path_requires_true_exact_leaf_result(self):
+        target = r"D:\work dir\tests\test now.py"
+        state = {
+            "session": {"cwd": r"D:\work dir"},
+            "work_state": {"active_work_unit_id": "w"},
+            "work_units": [{"id": "w", "prompt_id": "P0001"}],
+            "requirements": [{"work_unit_id": "w", "prompt_id": "P0001"}],
+        }
+        command = f"Test-Path -LiteralPath '{target}' -PathType Leaf"
+
+        def payload(
+            output: str, *, shell: str | None = "powershell",
+            command_text: str = command,
+        ) -> dict:
+            tool_input = {"command": command_text}
+            if shell is not None:
+                tool_input["shell"] = shell
+            return {
+                "tool_name": "exec_command",
+                "tool_input": tool_input,
+                "tool_response": {"exit_code": 0, "output": output},
+                "turn_id": "turn",
+            }
+
+        with mock.patch.object(cg, "_verified_windows_target", return_value=target):
+            for quoted in (f"'{target}'", f'"{target}"'):
+                with self.subTest(quoted=quoted):
+                    observed = cg.core_shell_observation(
+                        state, payload(
+                            "True\r\n", shell="pwsh.exe",
+                            command_text=f"Test-Path -LiteralPath {quoted} -PathType Leaf",
+                        ), "success", "structured_exit_code",
+                    )
+                    self.assertIsNotNone(observed)
+                    self.assertEqual(observed["predicate"], "file_exists")
+                    self.assertEqual(observed["target"], target)
+            for candidate in (
+                payload("False\r\n"),
+                payload("True\r\n", shell="bash"),
+                payload("True\r\n", shell="cmd"),
+                payload("True\r\n", shell="fish"),
+                payload("True\r\n", shell=None),
+                payload("True\r\n", command_text=command.replace("-LiteralPath", "-Path")),
+            ):
+                with self.subTest(candidate=candidate):
+                    self.assertIsNone(cg.core_shell_observation(
+                        state, candidate, "success", "structured_exit_code",
+                    ))
+            host_ps = {"type": "command", "shell": "pwsh.exe"}
+            observed = cg.core_shell_observation(
+                state, payload("True\r\n", shell=None), "success",
+                "host_transcript_exit_code", host_ps,
+            )
+            self.assertIsNotNone(observed)
+            self.assertEqual(observed["host_shell"], "pwsh.exe")
+            for declared, terminal in (
+                ("cmd", host_ps),
+                ("bash", host_ps),
+                ("powershell", {"type": "command", "shell": "cmd.exe"}),
+                (None, {"type": "command", "shell": "zsh"}),
+            ):
+                with self.subTest(declared=declared, terminal=terminal):
+                    self.assertIsNone(cg.core_shell_observation(
+                        state, payload("True\r\n", shell=declared), "success",
+                        "host_transcript_exit_code", terminal,
+                    ))
+
+    def test_posix_future_path_does_not_borrow_current_readiness(self):
+        current = self.root / "current suite.py"
+        future = self.root / "future suite.py"
+        current.write_text("def test_current(): assert True\n", encoding="utf-8")
+        future.write_text("def test_future(): assert True\n", encoding="utf-8")
+        self.submit(
+            f'现在运行 "{current}" 的测试；'
+            f'以后再观察 "{future}" 的测试长期耗时。'
+        )
+        self.ready_file(current)
+        self.stop("当前测试尚未运行；长期耗时留待以后观察。")
+        actions = [row for row in self.state()["decision_log"][-1]["actions"]
+                   if row.get("basis_requirement_id")]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["category"], "test_verify")
 
     def test_future_observation_closes_information_without_execution_catalog(self):
         suite = self.root / "future_suite.py"
@@ -80,8 +222,8 @@ class CurrentActionGroundingTests(unittest.TestCase):
     def test_current_unrun_test_remains_sourced_ready_and_resume_selectable(self):
         suite = self.root / "current_suite.py"
         suite.write_text("def test_current(): assert True\n", encoding="utf-8")
-        self.submit(f"继续执行，运行 {suite} 的测试。")
-        self.host(f"test -f '{suite}'")
+        self.submit(f'继续执行，运行 "{suite}" 的测试。')
+        self.ready_file(suite)
         self.stop("测试尚未运行。")
         decision = self.state()["decision_log"][-1]
         action = next(row for row in decision["actions"]
@@ -95,8 +237,8 @@ class CurrentActionGroundingTests(unittest.TestCase):
 
     def test_direct_test_object_needs_no_repeated_test_noun(self):
         cases = (
-            ("现在运行 {target} 并报告退出状态。", "还有测试没有运行。"),
-            ("Run {target} and report the exit status.", "The test has not yet run."),
+            ('现在运行 "{target}" 并报告退出状态。', "还有测试没有运行。"),
+            ('Run "{target}" and report the exit status.', "The test has not yet run."),
         )
         for index, (root, reply) in enumerate(cases):
             with self.subTest(index=index):
@@ -106,7 +248,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
                 suite = self.root / f"test_direct_{index}.py"
                 suite.write_text("def test_case(): assert True\n", encoding="utf-8")
                 self.submit(root.format(target=suite))
-                self.host(f"test -f '{suite}'")
+                self.ready_file(suite)
                 self.stop(reply)
                 actions = [row for row in self.state()["decision_log"][-1]["actions"]
                            if row.get("basis_requirement_id")]
@@ -116,8 +258,8 @@ class CurrentActionGroundingTests(unittest.TestCase):
 
     def test_explicit_deliberative_question_never_uses_status_object_exception(self):
         questions = (
-            "Should we run {target} and report its status",
-            "Is it necessary to run {target} and report status",
+            'Should we run "{target}" and report its status',
+            'Is it necessary to run "{target}" and report status',
         )
         for index, question in enumerate(questions):
             with self.subTest(index=index):
@@ -127,7 +269,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
                 suite = self.root / f"test_question_{index}.py"
                 suite.write_text("def test_case(): assert True\n", encoding="utf-8")
                 self.submit(question.format(target=suite))
-                self.host(f"test -f '{suite}'")
+                self.ready_file(suite)
                 self.stop("This asks whether the test should be run; it does not direct a run.")
                 state = self.state()
                 self.assertEqual(cg._action_source_clauses(question.format(target=suite)), [])
@@ -158,10 +300,10 @@ class CurrentActionGroundingTests(unittest.TestCase):
         current.write_text("def test_current(): assert True\n", encoding="utf-8")
         future.write_text("def test_future(): assert True\n", encoding="utf-8")
         self.submit(
-            f"先运行 {current} 的测试并回读结果。"
+            f'先运行 "{current}" 的测试并回读结果。'
             f"长期速度优化以后再观察 '{future}'，这一轮只说明观察方法。"
         )
-        self.host(f"test -f '{current}'")
+        self.ready_file(current)
         self.stop("当前测试还未运行；长期速度只在以后观察。")
         actions = [row for row in self.state()["decision_log"][-1]["actions"]
                    if row.get("basis_requirement_id")]
@@ -172,11 +314,11 @@ class CurrentActionGroundingTests(unittest.TestCase):
         for name in ("alpha.py", "beta.py", "gamma.py"):
             (self.root / name).write_text("def test_case(): assert True\n", encoding="utf-8")
         self.submit(
-            f"现在分别运行 {self.root / 'alpha.py'} 和 {self.root / 'beta.py'} 的测试；"
-            f"{self.root / 'gamma.py'} 的长期收益留到下季度观察。"
+            f'现在分别运行 "{self.root / "alpha.py"}" 和 "{self.root / "beta.py"}" 的测试；'
+            f'"{self.root / "gamma.py"}" 的长期收益留到下季度观察。'
         )
-        self.host(f"test -f '{self.root / 'alpha.py'}'")
-        self.host(f"test -f '{self.root / 'beta.py'}'")
+        self.ready_file(self.root / "alpha.py")
+        self.ready_file(self.root / "beta.py")
         self.stop("alpha.py 和 beta.py 的测试均尚未运行；gamma.py 留待季度观察。")
         actions = [row for row in self.state()["decision_log"][-1]["actions"]
                    if row.get("basis_requirement_id")]
@@ -187,7 +329,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
     def test_conditioned_test_waits_while_information_closes_then_new_root_runs(self):
         suite = self.root / "sample_test.py"
         suite.write_text("def test_sample(): assert True\n", encoding="utf-8")
-        self.submit(f"收到样本后运行 {suite}；先解释采用的判定方法。")
+        self.submit(f'收到样本后运行 "{suite}"；先解释采用的判定方法。')
         self.stop("判定时比较同一输入的实际退出状态；样本尚未收到。")
         before = self.state()["decision_log"][-1].copy()
         self.assertFalse(any(row.get("actionability") == "current_ready"
@@ -213,8 +355,8 @@ class CurrentActionGroundingTests(unittest.TestCase):
         self.assertEqual(cg._action_clause_time_state(
             waiting_readback["text"], "state_readback"), "waiting")
         self.assertEqual(cg._root_control_item_action(waiting_readback), "state_readback")
-        self.submit(f"样本已发来；现在运行 {suite}。")
-        self.host(f"test -f '{suite}'")
+        self.submit(f'样本已发来；现在运行 "{suite}"。')
+        self.ready_file(suite)
         self.stop("当前样本测试尚未运行。")
         state = self.state()
         self.assertEqual(state["decision_log"][-2], before)
@@ -379,8 +521,8 @@ class CurrentActionGroundingTests(unittest.TestCase):
         self.submit(f"改天再运行 {suite} 的测试；今天只解释安排，不运行测试。")
         self.stop("今天不运行；以后在相同输入下比较结果。")
         before = self.state()["decision_log"][-1].copy()
-        self.submit(f"现在授权运行 {suite} 的测试。")
-        self.host(f"test -f {suite}")
+        self.submit(f'现在授权运行 "{suite}" 的测试。')
+        self.ready_file(suite)
         self.stop("测试尚未运行。")
         state = self.state()
         self.assertEqual(state["decision_log"][-2], before)
@@ -394,7 +536,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
         sample = self.root / "sample.json"
         sample.write_text("{}\n", encoding="utf-8")
         self.submit("不要只谈将来收益；现在测量当前样本并报告实际数值。")
-        self.host(f"test -f {sample}")
+        self.ready_file(sample)
         self.stop("当前测量尚未进行，不能报告数值。")
         state = self.state()
         action = next(row for row in state["decision_log"][-1]["actions"]
@@ -418,7 +560,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
             tool_input={"command": patch},
             tool_response="Success. Updated the following files:\nM config.txt\n",
         ))
-        self.host(f"test -f '{target}'")
+        self.ready_file(target)
         self.stop("编辑效果已观察，但独立回读尚未执行，证据不足以认证完成。")
         actions = self.state()["decision_log"][-1]["actions"]
         self.assertTrue(any(row.get("category") == "state_readback"

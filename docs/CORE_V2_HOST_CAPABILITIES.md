@@ -69,3 +69,16 @@ bounded producer, not a general PowerShell parser. UTF-8 BOM removal, newline
 conversion, path aliases, extra operations, or missing Host records leave the
 readback unavailable. A separate Windows shell primitive probe established
 LF, CRLF and BOM behavior; it is not new-runtime native Hook acceptance.
+
+For current Windows file readiness, one exact PowerShell
+`Test-Path -LiteralPath '<absolute-drive-path>' -PathType Leaf` command may
+produce `file_exists` only when a structured Hook result or matched Host
+terminal reports a zero-exit success,
+stdout is exactly the Boolean `True` after surrounding whitespace is removed,
+the input explicitly names PowerShell or a same-call Host terminal confirms
+PowerShell, and the same absolute path resolves to the supported physical file
+identity. Contradictory shell declarations and terminal records are rejected.
+`False`, an unsupported shell, a non-literal path, a compound command, or a
+non-leaf query produces no readiness fact. This bounded producer neither reads
+file content nor proves that a requested test ran, and it is not a general
+PowerShell parser.
