@@ -306,11 +306,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "> Current release: `0.13.9`.",
+            "`0.14.0` release line",
             english,
         )
         self.assertIn(
-            "> 当前正式版本：`0.13.9`。",
+            "`0.14.0` 发布线",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)
@@ -409,10 +409,18 @@ class PublicContractTests(unittest.TestCase):
         self.assertIn("## 0.6.1 - 2026-08-11", changelog)
         self.assertIn("`0.6.0` introduced this line but was never released", changelog)
         self.assertIn(
-            "Current release: `0.13.9` (2026-09-14)",
+            "### 0.14.0 release-line source (public identity separate)",
             compatibility,
         )
-        self.assertIn("Published release baseline: `0.13.9`", compatibility)
+        current, historical = compatibility.split(
+            "### Historical published 0.13.9 baseline", 1
+        )
+        self.assertIn("Private state schema: `13`", current)
+        self.assertIn("Stop protocol: `5.0.0`", current)
+        self.assertNotIn("Private state schema: `12`", current)
+        self.assertNotIn("Stop protocol: `4.0.0`", current)
+        self.assertIn("Private state schema: `12`", historical)
+        self.assertIn("Stop protocol: `4.0.0`", historical)
         self.assertNotIn("Current source candidate: `0.12.0`", compatibility)
         self.assertNotIn(
             "Current published Context Guard release: `0.11.0`", compatibility

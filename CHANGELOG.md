@@ -2,9 +2,9 @@
 
 [简体中文](CHANGELOG.zh-CN.md)
 
-Versions are listed from newest to oldest; unreleased candidates are labeled explicitly. `0.13.9` is the latest release. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
+Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.14.0 — Unreleased source candidate
+## 0.14.0 — 2026-09-21
 
 ### Highlights
 
@@ -29,7 +29,7 @@ Versions are listed from newest to oldest; unreleased candidates are labeled exp
 
 ### Validation
 
-- Candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the complete deterministic source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable native run with cleanup. Full native Host and Windows acceptance, fixed-model evidence for this runtime, daily installation, tag and Release remain pending. Later source or runtime changes require exact-subject revalidation; see the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- Candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the complete deterministic source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable native run with cleanup. Publication requires native Host, Windows and fixed-model gates for the final exact source. Later source or runtime changes require exact-subject revalidation. Tag and Release publication follow acceptance; public readback and daily installation are separate later steps. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.13.9 - 2026-09-14
 

@@ -3,7 +3,7 @@
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 
-The unreleased 0.14.0 source candidate uses schema 13 and Stop 5.0.0. Commit `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable run. That result does not establish the six-gate native Host path, native Windows, fixed-model behavior, daily installation, tag or Release for this runtime. Source and runtime changes require their own exact-subject checks.
+The 0.14.0 release-line source uses schema 13 and Stop 5.0.0. Its public availability remains subject to tag and Release readback. Commit `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed the source matrix, all 16 candidate CI jobs, HOL scanning and a five-gate macOS portable run. That result does not establish the six-gate native Host path, native Windows, fixed-model behavior, daily installation, tag or Release for this runtime. Source and runtime changes require their own exact-subject checks.
 
 Local
 synthetic Hook tests include lexical Windows drive-path binding and unsupported
@@ -32,18 +32,24 @@ review and P4 candidate gates must include this behavior.
 
 ## Baselines
 
-- Current release: `0.13.9` (2026-09-14)
-- Published release baseline: `0.13.9`
-- Current release scope: `0.13.9` (answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance)
-- Private state schema: `12`; schemas 11, 10 and 9 migrate, while schemas 7 and 8 remain read-only
+### 0.14.0 release-line source (public identity separate)
+
+- Private state schema: `13`; schema migration details are in [versioning](VERSIONING.md).
+- Stop protocol: `5.0.0`
 - Proof protocol: `1.0.0`
-- Stop protocol: `4.0.0`
 - Work-unit protocol: `3.0.0` (stored records remain `work-unit/v1`)
 - Execution protocol: `3.0.0`
 - Diagnostic classifier: `3.3.0` (position-aware PreToolUse)
-- Python: `3.10+`
-- Codex CLI tested for 0.13.3 portable acceptance: `0.153.4` on macOS, `0.149.0` on native Windows, and `0.150.1` in Windows CI
-- Runtime dependencies: Python standard library only
+- Python: `3.10+`; Hook runtime dependencies: Python standard library only
+
+### Historical published 0.13.9 baseline
+
+- Release date: 2026-09-14; scope: answer delivery, bounded continuation feedback, Windows SessionEnd entry and HOL maintenance.
+- Private state schema: `12`; schemas 11, 10 and 9 migrated, while schemas 7 and 8 remained read-only.
+- Stop protocol: `4.0.0`; proof `1.0.0`, work-unit and execution `3.0.0`, classifier `3.3.0`.
+- The recorded 0.13.3 portable run used Codex CLI `0.153.4` on macOS and `0.149.0` on native Windows; Windows CI used `0.150.1`. Those are historical test subjects, not automatic 0.14.0 compatibility claims.
+
+The currently published version is determined by the verified [GitHub Releases listing](https://github.com/GreenLv/codex-context-guard/releases).
 
 Earlier releases retain their own tested Codex versions. Hook schemas and plugin installation
 behavior may change in future Codex releases and must be revalidated.

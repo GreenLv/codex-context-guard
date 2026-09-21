@@ -2,9 +2,9 @@
 
 [English](CHANGELOG.md)
 
-以下版本从新到旧排列，未发布候选会明确标注。`0.13.9` 是当前最新发布版本。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.14.0 — 未发布源码候选
+## 0.14.0 — 2026-09-21
 
 ### Highlights
 
@@ -29,7 +29,7 @@
 
 ### Validation
 
-- 候选 `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` 通过完整确定性源码矩阵、候选 CI 全部 16 项、HOL 扫描，以及 macOS portable 原生五项门禁和清理。完整原生宿主、Windows、该运行时的固定模型、日常安装、tag 与 Release 仍待验收。后续源码或运行时改变须按精确对象复验；详见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- 候选 `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` 通过完整确定性源码矩阵、候选 CI 全部 16 项、HOL 扫描，以及 macOS portable 原生五项门禁和清理。正式发布以最终精确源码通过规定的原生宿主、Windows 与固定模型门禁为前提；后续源码或运行时改变须按精确对象复验。tag 与 Release 在验收后发布，公开读回及日常安装属于随后分别核验的步骤；详见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.13.9 - 2026-09-14
 

@@ -1,10 +1,10 @@
 # Local Release Acceptance
 
-## 0.14.0 local source candidate (Unreleased)
+## 0.14.0 release-line source (2026-09-21; public identity pending)
 
 Committed candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed its complete deterministic source matrix, all 16 jobs in [candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/35523280198), and the [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/35523420917). Its 35-file runtime tree has SHA-256 `b1887c837722c41049d86e194a5859ec667a77ca7726f1d2adb7dc5e08bfd1ea`; the macOS portable native profile passed five gates with cleanup.
 
-The portable result does not establish a six-gate Host run, native Windows acceptance or fixed-model behavior for these runtime bytes. An earlier runtime had actual model observations, which cannot be relabeled as acceptance of this changed runtime. This remains an unreleased candidate without daily-host installation, tag, GitHub Release or public readback. A later source edit requires exact-subject reevaluation; a runtime-byte edit also invalidates installed-runtime evidence.
+The portable result does not establish a six-gate Host run, native Windows acceptance or fixed-model behavior for these runtime bytes. An earlier runtime had actual model observations, which cannot be relabeled as acceptance of this changed runtime. These recorded 1217029 bytes have no daily-host installation, tag, GitHub Release or public readback; final release identity needs a separate exact-subject annex. A later source edit requires exact-subject reevaluation; a runtime-byte edit also invalidates installed-runtime evidence.
 
 The current source tests
 exercise the protocol 5 Stop path and the shared core v2 projection with
@@ -72,7 +72,7 @@ normal recent-record limit without reopening the completed
 requirement.
 
 This document records local and remote acceptance evidence for standalone
-Context Guard. The current release is `0.13.9`. Release history includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
+Context Guard. Public availability is determined by the verified GitHub Releases listing. Historical release evidence includes `0.13.9`, `0.13.3`, `0.13.2`, `0.12.4`, `0.12.1`, `0.12.0`, `0.11.0`, `0.10.0`, `0.9.5`, `0.9.4`, `0.8.12`, `0.8.8`, `0.8.7`, `0.8.6`, `0.8.5`, `0.8.4`, `0.8.3`, `0.7.7`, `0.7.6`, `0.7.3`,
 `0.5.1`, and historical `0.5.0`/`0.4.9` evidence remains below.
 
 ## 0.13.9 native acceptance closeout (2026-09-14)

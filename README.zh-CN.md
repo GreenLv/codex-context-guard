@@ -12,9 +12,9 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> 当前正式版本：`0.13.9`。详见[发布说明](docs/releases/v0.13.9.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> `0.14.0` 发布线（2026-09-21）。当前公开版本请以[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)的读回为准；本发布线的范围见[发布线说明](docs/releases/v0.14.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-> 源码候选：`0.14.0`（未发布，未安装到日常宿主）。修复后的“长期收益以后再观察”仍属未来观察；用户现在要求但尚未运行的测试仍是当前工作。简短“继续”只恢复有来源且已就绪的工作，后来的暂停或取消只改变各自的范围。普通编辑与测试仍由 Codex 执行，Guard 核验已持久化的结果。共享核心 v2 契约由本仓维护，DSH 的镜像与 pin 身份须独立核验。详情及平台边界见[更新日志](CHANGELOG.zh-CN.md)和[候选验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> `0.14.0` 发布线源码（公开 tag 与安装状态须单独读回）：修复后的“长期收益以后再观察”仍属未来观察；用户现在要求但尚未运行的测试仍是当前工作。简短“继续”只恢复有来源且已就绪的工作，后来的暂停或取消只改变各自的范围。普通编辑与测试仍由 Codex 执行，Guard 核验已持久化的结果。共享核心 v2 契约由本仓维护，DSH 的镜像与 pin 身份须独立核验。详情及平台边界见[更新日志](CHANGELOG.zh-CN.md)和[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -38,7 +38,7 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 升级说明
 
-未来 0.14.0 发布后，请使用受管安装器升级，在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。宿主 Goal 完成拦截仍须先验证同步 Hook 路径，当前不可采用；Guard 的显式 proof 与整体完成检查仍有效。降级或查看 0.13.x 历史行为前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
+确认 0.14.0 Release 已发布后，请使用受管安装器升级并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。宿主 Goal 完成拦截仍须先验证同步 Hook 路径，当前不可采用；Guard 的显式 proof 与整体完成检查仍有效。降级或查看 0.13.x 历史行为前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
 
 若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，当前行为与平台边界见[兼容性说明](docs/COMPATIBILITY.md)；[0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)保留为历史记录。
 
