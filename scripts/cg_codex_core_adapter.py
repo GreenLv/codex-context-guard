@@ -82,7 +82,26 @@ def project_current_action(
             raise ValueError("work_unit_scope_not_independent")
         constraint = root_scope
     raw = text.encode("utf-8")
-    target_at = text.find(constraint)
+    scope_at = text.find(root_scope)
+    constraint_at = root_scope.find(constraint)
+    if scope_at < 0:
+        raise ValueError("target_not_in_action_scope")
+    if constraint_at >= 0:
+        # A repeated target belongs to this exact action span, rather than the
+        # first identical bytes elsewhere in the root.
+        target_at = scope_at + constraint_at
+    else:
+        # Bounded anaphora may name one unique object immediately from earlier
+        # root context ("the file ... change it").  It is not legitimate when
+        # multiple prior literals compete or when the only literal follows
+        # the action span.
+        positions = [
+            match.start() for match in re.finditer(re.escape(constraint), text)
+            if match.end() <= scope_at
+        ]
+        if len(positions) != 1:
+            raise ValueError("target_not_in_action_scope")
+        target_at = positions[0]
     target_start = len(text[:target_at].encode("utf-8"))
     target_end = target_start + len(constraint.encode("utf-8"))
     root_ids = {pid: f"root:{pid}" for pid in roots}
@@ -318,7 +337,6 @@ def project_current_action(
                       parent_id=u.get("parent_id") if u.get("parent_id") in unit_by_id else None,
                       required=True, source_id=root_ids[str(u["prompt_id"])])
                  for u in units]
-    scope_at = text.find(root_scope)
     scope_start = len(text[:scope_at].encode("utf-8"))
     scope_end = scope_start + len(root_scope.encode("utf-8"))
     # Only adjacent punctuation and whitespace can be absorbed into the

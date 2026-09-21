@@ -565,7 +565,7 @@ BROAD_EXECUTION_PROMPT_RE = re.compile(
 DEFERRED_ACTION_CLAUSE_RE = re.compile(
     r"\b(?:defer(?:red)?|paused|on\s+hold|out\s+of\s+scope|"
     r"outside\s+.{0,20}\bscope|denied)\b|"
-    r"(?:留待|推迟|延后|暂停|搁置|超出.{0,12}范围|"
+    r"(?:留待|留到|推迟|延后|暂停|搁置|(?:今后|以后|改天)再|超出.{0,12}范围|"
     r"不在.{0,12}范围|被拒绝)",
     re.IGNORECASE | re.DOTALL,
 )
@@ -669,7 +669,12 @@ ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("remote_publish", re.compile(r"\b(?:publish|deploy|promot|release|blog|community\s+post)\w*\b|(?:发布|部署|推广|博客|社区发帖|正式版本)", re.I)),
     ("remote_ci", re.compile(r"\b(?:run(?:ning)?\s+)?ci\b|(?:运行|跑).{0,8}CI", re.I)),
     ("review_followup", re.compile(r"\b(?:address|handle|process|check).{0,24}(?:review\s+(?:comment|feedback)|review\s+log)\b|(?:处理|检查).{0,16}(?:审查意见|审核意见|审核日志)", re.I)),
-    ("test_verify", re.compile(r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)", re.I)),
+    ("test_verify", re.compile(
+        r"\b(?:test|verify|validate|validation)\w*\b|(?:测试|验证|校验)|"
+        r"(?:\b(?:run|execute)\b|(?:运行|执行))\s+[^,，;；。.!?？]{0,96}"
+        r"(?:^|[/\\_.-])test[^\s,，;；。!?？]*\.py\b",
+        re.I,
+    )),
     ("artifact_work", re.compile(r"\b(?:import|download|configure|configuration)\w*\b|(?:导入|下载|配置|打开页面|处理PDF|PDF\s*阶段)", re.I)),
 )
 # A trailing test/verify signal certifies a concrete action rather than
@@ -936,7 +941,11 @@ EXPLICIT_SWITCH_RE = re.compile(
 ROOT_PAUSE_RE = re.compile(
     r"(?:在[^。！？,，\n]{0,24}(?:确认|完成|换好|就绪|批准|恢复)前[^。！？\n]{0,12}"
     r"(?:保持?等待|暂停|先等|等待)"
-    r"|等(?:到|待)?[^。！？\n]{0,24}(?:后再|之后(?:再)?|才)(?:继续|开始|执行|处理)"
+    r"|等(?:到|待)?\s*(?:(?:我|你|您|用户)[^。！？,，\n]{1,44}|"
+    r"(?:构建|部署|审核|审批|流水线|外部|子任务|子代理|CI)[^。！？,，\n]{0,40})"
+    r"(?:后再|之后(?:再)?|才|再)"
+    r"[^。！？,，\n]{1,48}(?:[,，]\s*(?:在)?(?:收到|得到|拿到|获得)?"
+    r"[^。！？,，\n]{0,24}(?:前|之前)\s*(?:保持)?等待)?"
     r"|(?:暂停|等待)[^。！？\n]{0,10}(?:直到|till\b|until\b)"
     r"|wait(?:ing)? (?:for|until) [^.!?;\n]{0,40}"
     r"|hold (?:off|until) [^.!?;\n]{0,40})",
@@ -7023,12 +7032,13 @@ DELIVERY_ALLOWED_STOP_REASON_CODES = frozenset(
 # introduce an arbitrary trailing-text wildcard.
 _INFORMATION_ZH_MODIFIER = (
     r"(?:这个|那个|这段|这|那|本|该|它|它们|其|全部|所有|主要|核心|当前|"
-    r"新的|旧的|的|一下|里|中|运行的|实现的|部署的|发布的|修改的|配置的|恢复的|验证的)"
+    r"新的|旧的|未来|到时候|采用的|的|一下|里|中|运行的|实现的|部署的|发布的|修改的|配置的|恢复的|验证的)"
 )
 _INFORMATION_ZH_NOUN = (
     r"(?:仓库|项目|插件|模块|代码|配置文件|文件|版本|应用|程序|脚本|命令|功能|标签|函数|"
     r"恢复包|[\u4e00-\u9fff]{1,12}(?:流程|步骤|方法|机制)|目录结构|结构|核心逻辑|逻辑|原理|主要内容|内容|流程|结果|"
-    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法|宿主|步骤|安装步骤|重启流程)"
+    r"测试|测试覆盖|覆盖率|漏洞|名称|区别|机制|方案|问题|说法|宿主|步骤|安装步骤|重启流程|"
+    r"安排|观察|判定方法|观察方法|比较方法|等待状态|观察依据)"
 )
 _INFORMATION_EN_NOUN = (
     r"(?:project|repository|repo|plugin|module|code|files?|version|application|"
@@ -7079,7 +7089,8 @@ _INFORMATION_CLAUSE_RE = re.compile(
     rf"|when\s+(?:does|do)\s+{_INFORMATION_EN_TOPIC}\s+run"
     rf"|which\s+version\s+supports\s+{_INFORMATION_TOPIC}"
     rf"|哪个版本支持\s*{_INFORMATION_TOPIC}|什么时候运行\s*{_INFORMATION_TOPIC}"
-    rf"|(?:{_INFORMATION_ZH_HEAD}(?:一下)?)?有没有漏洞)",
+    rf"|(?:{_INFORMATION_ZH_HEAD}(?:一下)?)?有没有漏洞"
+    rf"|{_INFORMATION_ZH_HEAD}(?:一下)?(?:到时候)?(?:如何|怎样|怎么)(?:比较|观察|判定))",
     re.IGNORECASE,
 )
 _INFORMATION_COORDINATION_RE = re.compile(
@@ -7109,7 +7120,8 @@ def _reply_only_request_shape(text: str) -> bool:
     for index, segment in enumerate(segments):
         body = re.sub(
             r"^(?:(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)\s*|"
-            r"please\s+|(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
+            r"(?:本轮|当前)?(?:只|仅|先)\s*|please\s+|"
+            r"(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
         )
         # The leading communication verb governs its object. Words such as
         # configure or deploy inside that object do not request execution.
@@ -7159,6 +7171,55 @@ def _information_tutorial_reply(prompt: str, reply: str) -> bool:
     return bool(steps) and len(steps) <= 32 and all(
         _INFORMATION_TUTORIAL_STEP_RE.fullmatch(step) for step in steps
     )
+
+
+def _action_clause_time_state(clause: str, category: str) -> str:
+    """Return the root-time state of one sourced action clause.
+
+    This is shared by persisted metadata, Stop action selection and resume
+    catalogs.  It reads the governing source clause; reply wording and old
+    generic rows cannot move a future/conditional action into the present.
+    """
+    pattern = dict(ACTION_PATTERNS).get(category)
+    if category == "state_readback":
+        command = _direct_shell_command_object(clause)
+        if command is None or command[0] != "state_readback":
+            return "unsupported"
+        action = re.search(re.escape(command[2]), clause)
+        if action is None:
+            return "unsupported"
+    else:
+        matches = list(pattern.finditer(clause)) if pattern is not None else []
+        if matches:
+            action = _root_action_head(clause, pattern)
+        elif ((command := _direct_shell_command_object(clause)) is not None
+              and command[0] == category
+              and (action := re.search(re.escape(command[2]), clause)) is not None):
+            # A literal command object carries the action category even when
+            # its surrounding prose contains no duplicate category noun.
+            pass
+        elif (category == "test_verify"
+              and len(root_absolute_locator_mentions(clause)[0]) == 1
+              and (action := re.search(r"\b(?:run|execute)\b|(?:运行|执行)", clause, re.I))):
+            # A coordinated execution child can inherit the test category
+            # from its sibling/root while its own span says only "run X".
+            # The category is already source-derived; this branch determines
+            # only the child's root time.
+            pass
+        else:
+            return "unsupported"
+    # ``别`` is a negator as a standalone imperative but is lexical material
+    # in ``分别``.  Normalize that coordinator before applying the repository's
+    # established clause-negation grammar.
+    normalized = clause.replace("分别", "")
+    if (CLAUSE_NEGATION_RE.search(normalized)
+            or REPLY_ACTION_NEGATION_PREFIX_RE.search(normalized)):
+        return "denied"
+    if DEFERRED_ACTION_CLAUSE_RE.search(clause):
+        return "future_observation"
+    if _root_action_condition(clause, action) is not None:
+        return "waiting"
+    return "current"
 
 
 def _information_delivery_item(item: dict[str, Any]) -> bool:
@@ -8877,6 +8938,25 @@ def _root_action_condition(
     pending. These forms describe clause structure, not named incident words.
     """
     prefix = source[:action_match.start()].strip()
+    # The category token can be a trailing object noun (for example the word
+    # ``test`` in a named test object).  Recover a leading antecedent from the
+    # whole sourced clause rather than assuming the token immediately follows
+    # it.  Pure temporal adverbs such as ``今后`` are deferrals, not receipt
+    # predicates, and are classified by DEFERRED_ACTION_CLAUSE_RE.
+    leading_zh = re.match(
+        r"\s*((?:(?:收到|获得|拿到|等到|等待)[^。！？,，;；]{1,80}|"
+        r"在[^。！？,，;；]{1,80}(?:确认|完成|就绪|恢复))(?:之后|后))"
+        r"(?=再|便|就|才|运行|执行|测试|验证|评估|检查|核对|使用|调用|读取|回读|\s)",
+        source,
+    )
+    if leading_zh and not re.fullmatch(
+        r"(?:今后|以后|往后|日后|然后|随后|之后)", leading_zh.group(1).strip()
+    ):
+        prefix = leading_zh.group(1).strip()
+    else:
+        leading_en = re.match(r"\s*((?:after|once|when|until)\b[^,;，；]{1,96})[,;，；\s]+", source, re.I)
+        if leading_en:
+            prefix = leading_en.group(1).strip()
     if not prefix:
         return None
     if re.search(r"(?:后|之后|以后)\s*$|\b(?:after|once|when|until)\b", prefix, re.I):
@@ -9528,12 +9608,16 @@ def _current_action_basis(
                     continue
                 clauses = [child_scope]
             sources = [c for c in clauses
-                       if (pattern.search(c)
+                       if (item.get("execution_kind") == category
+                           or pattern.search(c)
                            or category == "local_edit" and _direct_anaphoric_edit(c)
                            or (command_object := _direct_shell_command_object(c)) is not None
                            and command_object[0] == category)
+                       and ((category == "local_edit" and _direct_anaphoric_edit(c))
+                            or _action_clause_time_state(c, category)
+                            in {"current", "waiting"})
                        and not _result_report_clause(c)
-                       and not CLAUSE_NEGATION_RE.search(c)
+                       and not CLAUSE_NEGATION_RE.search(c.replace("分别", ""))
                        and not DESCRIPTION_FRAME_RE.search(c)]
             if len(sources) != 1:
                 continue
@@ -9568,8 +9652,12 @@ def _current_action_basis(
                         and candidate.count(",") + candidate.count("，") > 0
                         and _root_action_condition(candidate, candidate_action)):
                     source = candidate
-            condition_scope = (_root_action_condition(source, _root_action_head(source, pattern))
-                               if pattern.search(source) else None)
+            condition_action = (_root_action_head(source, pattern)
+                                if pattern.search(source) else None)
+            if condition_action is None and direct_command is not None:
+                condition_action = re.search(re.escape(direct_command[2]), source)
+            condition_scope = (_root_action_condition(source, condition_action)
+                               if condition_action is not None else None)
             requested_postimage = (_explicit_file_postimage(source)
                                    if category == "local_edit" else None)
             # A changed byte digest proves only an unconstrained edit. A
@@ -9754,7 +9842,7 @@ def _current_action_basis(
                     if ambiguous_prior or prior_targets != {target}:
                         continue
             target_ids = {str(s["id"]) for s in prompt_subjects(target)}
-            if reply_subjects and not reply_subjects.issubset(target_ids):
+            if reply_subjects and target_ids and not target_ids.issubset(reply_subjects):
                 continue
             # A current root review/evaluation is due at this work unit's
             # watermark. Its object is selected by host provenance; topic
@@ -9800,6 +9888,7 @@ def _current_action_basis(
                     snapshot["facts"] = [
                         fact for fact in snapshot["facts"]
                         if not (fact.get("requirement_id") == item.get("id")
+                                and fact.get("kind") != "readiness"
                                 and str(fact.get("source_id") or "").startswith("result:")
                                 and str(fact["source_id"])[7:] not in matching_ids)
                     ]
@@ -9849,6 +9938,54 @@ def _current_action_basis(
                 "core_snapshot": snapshot,
             }
     return None
+
+
+def _live_current_action_bases(
+    state: dict[str, Any], session_dir: Path,
+) -> list[dict[str, Any]]:
+    """Resolve current executable steps, preferring a ready substep.
+
+    A single root item can have an observed edit effect whose remaining
+    explicit step is an independent readback.  The ready readback is the
+    current action; an evidence-insufficient edit basis must not turn that
+    state into a request to repeat the edit.
+    """
+    selected: dict[str, dict[str, Any]] = {}
+    item_ids = sorted(current_scope_projection(state)["scoped_item_ids"])
+    categories = [*(name for name, _ in ACTION_PATTERNS), "state_readback"]
+    for item_id in item_ids:
+        for category in categories:
+            basis = _current_action_basis(
+                state, category, "", session_dir, allowed_item_ids={item_id}
+            )
+            if basis is None:
+                continue
+            prior = selected.get(item_id)
+            if prior is None or (
+                _basis_actionability(prior) != "current_ready"
+                and _basis_actionability(basis) == "current_ready"
+            ):
+                selected[item_id] = basis
+    return _dedupe_action_bases(list(selected.values()))
+
+
+def _dedupe_action_bases(bases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse duplicate requirement/acceptance projections, not real steps."""
+    selected: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for basis in bases:
+        key = (
+            str(basis.get("source_prompt_id") or ""),
+            str(basis.get("action") or ""),
+            str(basis.get("target") or ""),
+            str(basis.get("predicate") or ""),
+        )
+        prior = selected.get(key)
+        if prior is None or (
+            str(prior.get("requirement_id") or "").startswith("A")
+            and str(basis.get("requirement_id") or "").startswith("R")
+        ):
+            selected[key] = basis
+    return list(selected.values())
 
 
 def _root_control_decomposition_valid(
@@ -11231,7 +11368,8 @@ def remaining_action_facts(
         )
         incomplete_operation = bool(
             re.search(r"(?:尚未|还未|未)\s*[^，。;；]{0,20}", clause)
-            and any(pattern.search(clause) for _, pattern in ACTION_PATTERNS)
+            and (any(pattern.search(clause) for _, pattern in ACTION_PATTERNS)
+                 or re.search(r"(?:回读|读取)|\bread\s*back\b", clause, re.I))
         )
         remaining = bool(
             remaining_marker
@@ -11255,7 +11393,17 @@ def remaining_action_facts(
             ):
                 continue
             authorization = _action_authorization(category, scope)
-            basis = _current_action_basis(state, category, assistant_clause, session_dir)
+            bases: list[dict[str, Any]] = []
+            if state is not None and session_dir is not None:
+                for item_id in sorted(current_scope_projection(state)["scoped_item_ids"]):
+                    candidate = _current_action_basis(
+                        state, category, assistant_clause, session_dir,
+                        allowed_item_ids={item_id},
+                    )
+                    if candidate is not None:
+                        bases.append(candidate)
+            bases = _dedupe_action_bases(bases)
+            basis = bases[0] if bases else None
             if state is not None and basis is None:
                 completed_basis = _current_action_basis(
                     state, category, assistant_clause, session_dir, include_satisfied=True
@@ -11268,6 +11416,21 @@ def remaining_action_facts(
                     else authorization if authorization in {"denied", "out_of_scope"}
                     else "unknown"
                 )
+            if bases:
+                existing_basis_ids = {
+                    item.get("basis", {}).get("requirement_id") for item in actions
+                }
+                for candidate in bases:
+                    if candidate["requirement_id"] in existing_basis_ids:
+                        continue
+                    actions.append({"category": candidate["action"], "owner": "assistant",
+                                    "actionability": _basis_actionability(candidate),
+                                    "basis": candidate})
+                    existing_basis_ids.add(candidate["requirement_id"])
+                matched = True
+                if assistant_future:
+                    explicit_assistant_facts.add((category, "assistant", "authorized"))
+                continue
             fact = (category, "assistant", authorization)
             if fact not in seen:
                 action: dict[str, Any] = {"category": fact[0], "owner": fact[1]}
@@ -11289,9 +11452,8 @@ def remaining_action_facts(
             # A reply may name an unfinished predicate without repeating the
             # root's verb. Resolve it only when exactly one live, sourced,
             # ready root action exists; never upgrade a stored generic row.
-            live_bases = [basis for category, _ in ACTION_PATTERNS
-                          if (basis := _current_action_basis(state, category, "", session_dir))
-                          is not None] if state is not None else []
+            live_bases = (_live_current_action_bases(state, session_dir)
+                          if state is not None and session_dir is not None else [])
             unique_bases = {basis["requirement_id"]: basis for basis in live_bases}
             if len(unique_bases) == 1:
                 basis = next(iter(unique_bases.values()))
@@ -11313,9 +11475,8 @@ def remaining_action_facts(
         # same live unit. The resume text itself supplies no new target or
         # predicate, and completed/future rows cannot become work.
         existing_ids = {a.get("basis", {}).get("requirement_id") for a in actions}
-        for category, _ in ACTION_PATTERNS:
-            basis = _current_action_basis(state, category, "", session_dir)
-            if basis is None or basis["requirement_id"] in existing_ids:
+        for basis in _live_current_action_bases(state, session_dir):
+            if basis["requirement_id"] in existing_ids:
                 continue
             actions.append({"category": basis["action"], "owner": "assistant",
                             "actionability": _basis_actionability(basis), "basis": basis})
@@ -11932,7 +12093,7 @@ def clause_metadata(text: str) -> dict[str, Any]:
                 else ("ambiguous" if operations else "unspecified")
             )
         subjects = [item["id"] for item in prompt_subjects(clause, include_threads=True)]
-        lowered = clause.casefold()
+        lowered = visual_reference_source_text(clause).casefold()
         if re.search(r"视觉|图片|图像|image|visual|截图|ui|界面|页面", lowered):
             surface = "visual" if re.search(r"视觉|图片|图像|image|visual|截图", lowered) else "ui"
         elif re.search(r"全部|所有|范围|scope|each|every", lowered):
@@ -12035,13 +12196,24 @@ def append_requirement(
         }
     )
     primary = _primary_positive_clause(metadata)
-    if primary is not None:
-        pending_operation(
-            state,
-            str(primary.get("operation") or "unspecified"),
-            subject_id=(primary.get("subjectId") or [None])[0],
-            requested_surface=primary.get("requestedSurface"),
+    primary_state = (
+        _action_clause_time_state(
+            str(primary.get("clause") or ""), str(primary.get("operation") or "")
         )
+        if primary is not None else "unsupported"
+    )
+    if primary is not None and not _information_delivery_item(state["requirements"][-1]):
+        operation = str(primary.get("operation") or "unspecified")
+        # Preserve a genuinely ambiguous current derivation as a diagnostic,
+        # clearable pending row. It is not a trusted action basis: execution
+        # still requires a concrete category, sourced predicate and Host fact.
+        if primary_state == "current" or operation == "ambiguous":
+            pending_operation(
+                state,
+                operation,
+                subject_id=(primary.get("subjectId") or [None])[0],
+                requested_surface=primary.get("requestedSurface"),
+            )
     return requirement_id
 
 
@@ -12129,29 +12301,49 @@ def _execution_child_specs(
         source[raw_parts[1][0]:], re.I,
     ):
         return [], False
+    whole_speech = source
+    for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
+                            ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
+        whole_speech = locator_pattern.sub("对象", whole_speech)
+    whole_classes = [category for category, pattern in ACTION_PATTERNS
+                     if pattern.search(whole_speech)]
     parts: list[tuple[int, int, str, str]] = []
     for begin, end in raw_parts:
         fragment = source[begin:end]
         offset = len(fragment) - len(fragment.lstrip())
         begin += offset
         value = fragment.strip(" \t\r\n。.!?？")
-        if not value or CLAUSE_NEGATION_RE.search(value) or DESCRIPTION_FRAME_RE.search(value):
+        if (not value or CLAUSE_NEGATION_RE.search(value.replace("分别", ""))
+                or DESCRIPTION_FRAME_RE.search(value)):
             return [], False
+        if DEFERRED_ACTION_CLAUSE_RE.search(value):
+            continue
         speech = value
         for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
                                 ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
             speech = locator_pattern.sub("对象", speech)
-        classes = [category for category, pattern in ACTION_PATTERNS if pattern.search(speech)]
+        direct_command = _direct_shell_command_object(value)
+        classes = ([direct_command[0]] if direct_command is not None
+                   else [category for category, pattern in ACTION_PATTERNS
+                         if pattern.search(speech)])
+        if (not classes and whole_classes == ["test_verify"]
+                and re.search(r"\b(?:run|execute)\b|(?:运行|执行)", speech, re.I)
+                and len(root_absolute_locator_mentions(value)[0]) == 1):
+            classes = ["test_verify"]
         if len(classes) != 1 or classes[0] not in {
-            "local_edit", "test_verify", "local_commit", "remote_push"
+            "local_edit", "test_verify", "local_commit", "remote_push", "state_readback"
         }:
             return [], False
         parts.append((begin, begin + len(value), value, classes[0]))
+    if len(parts) < 2:
+        return [], False
     pair = {part[3] for part in parts}
     repair_tests = (parts[0][3] == "local_edit"
                     and all(part[3] == "test_verify" for part in parts[1:]))
     commit_push = (len(parts) == 2 and pair == {"local_commit", "remote_push"})
-    if not repair_tests and not commit_push:
+    edit_readback = (len(parts) == 2 and pair == {"local_edit", "state_readback"})
+    independent_tests = all(part[3] == "test_verify" for part in parts)
+    if not repair_tests and not commit_push and not edit_readback and not independent_tests:
         return [], False
     clause_targets = []
     for _, _, fragment, _ in parts:
@@ -12160,7 +12352,7 @@ def _execution_child_specs(
             return [], False
         clause_targets.append(found)
     targets = set().union(*clause_targets)
-    if len(targets) > 1:
+    if len(targets) > 1 and not independent_tests:
         return [], False
     related_tests = False
     if repair_tests:
@@ -12504,30 +12696,89 @@ def root_pause_clauses(text: str) -> list[str]:
     return result
 
 
+_WAIT_TEMPORAL_QIAN_BOUNDARY = (
+    r"前(?=\s*(?:$|[,，;；]|(?:本任务|任务)?(?:保持)?(?:暂停|停止|等待)|"
+    r"(?:先|暂时)?(?:不要|别|不)(?:继续|分析|处理|检查|核对|评估|执行|运行)))"
+)
+_WAIT_SUBJECT_SPLIT_RE = re.compile(
+    rf"(?:{_WAIT_TEMPORAL_QIAN_BOUNDARY}|后再|之后|才|[,，;；])|"
+    r"(?:\s+then\s+)|再(?:分析|处理|检查|核对|评估|继续|执行|运行)",
+    re.I,
+)
+_WAIT_RELEASE_DEFERRED_RE = re.compile(
+    rf"(?:{_WAIT_TEMPORAL_QIAN_BOUNDARY}|后再|之后|直到|\buntil\b|\bbefore\b)",
+    re.I,
+)
+
+
 def wait_subject(text: str) -> str:
     """Conservative subject normalization; an unknown paraphrase stays waiting.
 
     Only one-shot timing/confirmation words are removed. The remaining object
     must match exactly; no shared keyword or generic affirmative can release it.
     """
-    text = re.split(r"前|后再|之后|才|[,，;；]", text, maxsplit=1)[0]
+    text = re.sub(
+        r"^\s*等(?:待|到)?(?:我|你|您|用户)?(?:发来|发送|提供|上传|给出|补充)\s*",
+        "", text,
+    )
+    text = re.sub(
+        r"^\s*(?:please\s+)?(?:wait(?:ing)?\s+)?until\s+"
+        r"(?:i|you|the\s+user)\s+(?:send|provide|upload|supply)\s+",
+        "", text, flags=re.I,
+    )
+    # ``前`` is also a lexical prefix in subjects such as 前台日志 and
+    # 前序输出. The shared boundary recognizes it only when the following
+    # syntax closes the dependency and introduces the parked action.
+    text = _WAIT_SUBJECT_SPLIT_RE.split(text, maxsplit=1)[0]
     text = re.sub(r"^(?:补充[:：]\s*)?(?:在|等待|等到|等)?(?:我|你|您)?(?:确认)?", "", text.strip())
-    text = re.sub(r"\b(?:please|wait|waiting|hold|until|for|my|your|the|is|has|been|already|confirmation|confirmed|ready|done|finished|completed|complete|changed|change)\b", " ", text, flags=re.I)
-    text = re.sub(r"确认|已经|已|更换|换好|完成|就绪|准备好|通过|好了|结束", "", text)
+    text = re.sub(r"\b(?:please|wait|waiting|hold|until|for|my|your|the|is|are|has|been|already|confirmation|confirmed|ready|done|finished|completed|complete|changed|change)\b", " ", text, flags=re.I)
+    text = re.sub(
+        r"确认|已经|已|更换|换好|完成|就绪|准备好|通过|好了|结束|"
+        r"发来|发送|提供|上传|给出|补充|\b(?:sent|provided|uploaded|supplied)\b",
+        "", text, flags=re.I,
+    )
     return re.sub(r"[\s。.!！]+", "", text).casefold()
+
+
+def root_pause_condition_type(clause: str) -> str:
+    """Classify the sourced dependency owner without using reply wording."""
+    if ROOT_PAUSE_EXTERNAL_RE.search(clause):
+        return "external_dependency"
+    if re.search(
+        r"(?:我|你|您|用户)?(?:发来|发送|提供|上传|给出|补充)|"
+        r"\b(?:i|you|the\s+user)\s+(?:send|provide|upload|supply)\b",
+        clause, re.I,
+    ):
+        return "input"
+    return "confirmation"
 
 
 def detect_root_pause(text: str) -> str | None:
     clauses = root_pause_clauses(text)
     if not clauses:
         return None
-    return "external_dependency" if ROOT_PAUSE_EXTERNAL_RE.search(clauses[0]) else "confirmation"
+    return root_pause_condition_type(clauses[0])
 
 
 def clause_is_interrogative(clause: str) -> bool:
-    return bool(INTERROGATIVE_RE.search(clause.strip()) or re.search(
-        r"是否|能否|可否|^\s*(?:is|are|has|have|did|can|could|should|would)\b", clause, re.I
-    ))
+    explicit_question = re.search(
+        r"[?？]\s*$|吗\b|么呢|呢\b|如何|怎么样|是否|能否|可否|"
+        r"^\s*(?:is|are|has|have|did|can|could|should|would)\b",
+        clause, re.I,
+    )
+    if explicit_question:
+        return True
+    # ``status``/``状态`` can be the object of a direct requested operation
+    # (run the test and report its exit status).  That speech act is not a
+    # question merely because the result field is named. Explicit question
+    # morphology still wins.
+    if re.search(
+                r"(?:报告|说明|检查|核对|读取|回读|显示|运行|执行).{0,120}(?:状态|进度)|"
+                r"\b(?:report|show|check|read|run|execute)\b.{0,120}\b(?:status|progress)\b",
+                clause, re.I,
+            ):
+        return False
+    return bool(INTERROGATIVE_RE.search(clause.strip()))
 
 
 def clause_is_negated_unmet(clause: str) -> bool:
@@ -12552,7 +12803,7 @@ def release_matches_condition(condition: dict[str, Any], text: str) -> bool:
     if condition.get("condition_type") == "external_dependency":
         return False
     clauses = control_speech_clauses(text)
-    clauses = [c for c in clauses if not re.search(r"前|后再|之后|直到|\buntil\b|\bbefore\b", c, re.I)]
+    clauses = [c for c in clauses if not _WAIT_RELEASE_DEFERRED_RE.search(c)]
     if not clauses or any(clause_is_negated_unmet(c) for c in clauses):
         return False
     if condition.get("condition_type") == "choice":
@@ -13035,11 +13286,26 @@ def _root_control_item_action(item: dict[str, Any]) -> str | None:
         return None  # A control sentence is not a test/edit requirement.
     kind = item.get("execution_kind")
     if kind in {category for category, _ in ACTION_PATTERNS}:
-        return str(kind)
+        # Persisted execution children are a source projection, not a bypass
+        # around root time.  Re-evaluate their own immutable child bytes so a
+        # legacy/future child cannot enter a later resume catalog merely
+        # because it carries an execution_kind field.  A genuine unmet
+        # antecedent remains catalogued as waiting; current-action projection
+        # keeps it deferred until the predicate is released.
+        if _action_clause_time_state(item_text, str(kind)) in {"current", "waiting"}:
+            return str(kind)
+        return None
+    if kind == "state_readback":
+        if _action_clause_time_state(item_text, "state_readback") in {"current", "waiting"}:
+            return "state_readback"
+        return None
     if item.get("information_source_span") is not None or _information_delivery_item(item):
         return None
     classes = [category for category, pattern in ACTION_PATTERNS
-               if pattern.search(str(item.get("text") or ""))]
+               if pattern.search(item_text)
+               and any(_action_clause_time_state(clause, category) == "current"
+                       for clause in _action_source_clauses(item_text)
+                       if pattern.search(clause))]
     return classes[0] if len(classes) == 1 else None
 
 
@@ -13086,6 +13352,9 @@ def _root_control_catalog(
             continue
         if item.get("status") == "superseded" and end is None:
             return None
+        if (isinstance(item.get("completion_basis"), dict)
+                and _ordinary_completion_basis_valid(state, item, source_seq)):
+            continue
         action = _root_control_item_action(item)
         if action is None:
             continue
@@ -15487,10 +15756,7 @@ def handle_user_prompt(
         if origin == "human":
             append_prompt_unit_binding(session_dir, prompt, work_unit_id)
         for pause_clause in root_pause_clauses(text):
-            pause_type = (
-                "external_dependency" if ROOT_PAUSE_EXTERNAL_RE.search(pause_clause)
-                else "confirmation"
-            )
+            pause_type = root_pause_condition_type(pause_clause)
             subject = wait_subject(pause_clause)
             add_wait_condition(
                 state, work_unit_id, kind="one_shot", condition_type=pause_type,
