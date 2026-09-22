@@ -12,6 +12,8 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
+> Source candidate: **0.14.1 (Unreleased)** adds a marketplace link to the existing Apache-2.0 license. Latest published release: **0.14.0**.
+
 > Version `0.14.0` release line (2026-09-21). Check the [published releases](https://github.com/GreenLv/codex-context-guard/releases) for the current public version; see the [release-line notes](docs/releases/v0.14.0.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md) for this line’s scope.
 
 > In the `0.14.0` release-line source (public tag and installation require separate readback), a completed repair can leave “observe its long-term benefit later” as a future observation. An unfinished test the user requests now remains current. A short “continue” resumes only sourced, ready work, while a later pause or cancellation changes only its own scope. Codex still performs ordinary edits and tests, and Guard checks their persisted results. The shared core v2 contract is maintained here; DSH verifies its mirror and pin separately. See the [changelog](CHANGELOG.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for details and platform limits.

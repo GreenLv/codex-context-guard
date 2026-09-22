@@ -257,6 +257,16 @@ class PublicContractTests(unittest.TestCase):
             (root / "note.md").write_text("token abc123x\n", encoding="utf-8")
             self.assertEqual(audit.findings(root, ["abc123"]), ["note.md: forbidden private literal"])
 
+    def test_marketplace_terms_link_existing_license(self) -> None:
+        manifest = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+        self.assertEqual(
+            manifest["interface"]["termsOfServiceURL"],
+            "https://github.com/GreenLv/codex-context-guard/blob/main/LICENSE",
+        )
+        self.assertEqual(manifest["license"], "Apache-2.0")
+        self.assertIn("Apache License", (ROOT / "LICENSE").read_text())
+        self.assertTrue((ROOT / manifest["interface"]["composerIcon"]).is_file())
+
     def test_readmes_keep_hol_badge_links_to_canonical_listing(self) -> None:
         english = (ROOT / "README.md").read_text(encoding="utf-8")
         chinese = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")

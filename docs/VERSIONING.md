@@ -9,7 +9,13 @@ not as a measure of code volume.
 
 ## Candidate revisions
 
-The unreleased 0.14.0 candidate advances private state to schema 13 and
+0.14.1 is an unreleased marketplace-metadata candidate based on published
+0.14.0. It adds a link to the existing Apache-2.0 license and changes the
+product version; state and Hook protocols are unchanged. Its manifest bytes
+require a new runtime-tree identity and separate installation evidence.
+
+
+The 0.14.0 release advances private state to schema 13 and
 Stop diagnostics to protocol 5.0.0. It retains schema-12 history without
 promoting old generic actions, reply-derived waits, or prematurely closed
 mixed requirements. New root/host events use a persisted append watermark;

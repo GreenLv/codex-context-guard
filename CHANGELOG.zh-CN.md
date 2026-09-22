@@ -4,6 +4,21 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 0.14.1 — Unreleased
+
+### Highlights
+
+- 市场元数据通过链接指向现有 Apache-2.0 许可证，明确软件使用条款。
+
+### Changes
+
+- 补充 `interface.termsOfServiceURL`，不新增服务协议，也不改变许可证。
+- Manifest 属于不可变安装运行时目录，因此使用新的候选版本；Hook 行为和状态协议不变。
+
+### Validation
+
+- 源码验证与 HOL 收录、评分分别记录。本候选不宣称新的目录分数、原生安装或正式发布。
+
 ## 0.14.0 — 2026-09-21
 
 ### Highlights

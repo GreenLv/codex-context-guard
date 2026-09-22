@@ -12,6 +12,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
+> 源码候选：**0.14.1（未发布）**，为市场元数据补充现有 Apache-2.0 许可证链接。最新已发布版本：**0.14.0**。
+
 > `0.14.0` 发布线（2026-09-21）。当前公开版本请以[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)的读回为准；本发布线的范围见[发布线说明](docs/releases/v0.14.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 > `0.14.0` 发布线源码（公开 tag 与安装状态须单独读回）：修复后的“长期收益以后再观察”仍属未来观察；用户现在要求但尚未运行的测试仍是当前工作。简短“继续”只恢复有来源且已就绪的工作，后来的暂停或取消只改变各自的范围。普通编辑与测试仍由 Codex 执行，Guard 核验已持久化的结果。共享核心 v2 契约由本仓维护，DSH 的镜像与 pin 身份须独立核验。详情及平台边界见[更新日志](CHANGELOG.zh-CN.md)和[验收记录](docs/LOCAL_ACCEPTANCE.md)。

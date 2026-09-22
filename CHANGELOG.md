@@ -4,6 +4,21 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.14.1 — Unreleased
+
+### Highlights
+
+- Marketplace metadata links to the existing Apache-2.0 license as the software usage terms.
+
+### Changes
+
+- Adds `interface.termsOfServiceURL`; no additional service agreement or change to the license is introduced.
+- Uses a new candidate version because the manifest is part of the immutable installed runtime tree. Hook behavior and state protocols are unchanged.
+
+### Validation
+
+- Source validation is recorded separately from HOL ingestion and scoring. No new registry score, native installation, or release is claimed for this candidate.
+
 ## 0.14.0 — 2026-09-21
 
 ### Highlights
