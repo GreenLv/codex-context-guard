@@ -1,12 +1,12 @@
 # Compatibility and Verification Status
 
-## 0.14.1 source candidate (Unreleased)
+## 0.14.1 metadata patch
 
 This patch adds a marketplace link to the existing license and updates product
 version identifiers. Hook behavior, Python support, schema 13 and Stop 5.0.0
 are unchanged. Existing 0.14.0 users do not need this metadata update for
 runtime correctness. The new manifest still creates a distinct immutable
-cache; never overwrite 0.14.0 caches. See the [candidate acceptance](LOCAL_ACCEPTANCE.md)
+cache; never overwrite 0.14.0 caches. See the [acceptance record](LOCAL_ACCEPTANCE.md)
 for exact evidence; HOL scores and publication remain separate.
 
 
@@ -298,7 +298,7 @@ gates for the 0.9.5 product bytes. Documentation-only release commit
 `e0aed2d7bdbd88643ae2559dc8cd655aa369e049` passes the 12-job main and tag CI
 matrices; the same commit passes the main-branch HOL scan. Annotated tag
 `v0.9.5` resolves to that commit, and its bilingual, non-prerelease GitHub
-Release is the latest published release. Downstream consumer updates remain a
+Release was the published baseline for that acceptance. Downstream consumer updates remain a
 separate adoption surface.
 
 ## 0.9.4 release status

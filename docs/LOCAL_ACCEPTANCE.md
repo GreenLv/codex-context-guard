@@ -1,6 +1,6 @@
 # Local Release Acceptance
 
-## 0.14.1 source candidate (Unreleased)
+## 0.14.1 metadata patch (2026-09-22)
 
 Implementation commit `1cba5fc2c2488cef58af4006b000a6a262299a87` passed all 16
 [candidate CI jobs](https://github.com/GreenLv/codex-context-guard/actions/runs/35697425812)
@@ -14,8 +14,8 @@ installed lifecycle smoke passed. CI includes Windows portable installed-runtime
 acceptance; it does not establish a new Windows daily-host or fixed-model run.
 There are no Hook semantic changes. Later documentation-only edits do not
 change this runtime inventory; the final release commit still needs its own
-required main CI, tag and Release readback. No 0.14.1 public release or daily
-installation is claimed here.
+required main CI, tag and Release readback. Publication is established by tag and Release readback; no daily
+installation is claimed by these checks.
 
 
 ## 0.14.0 release-line source (2026-09-21; public identity pending)

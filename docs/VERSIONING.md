@@ -9,7 +9,7 @@ not as a measure of code volume.
 
 ## Candidate revisions
 
-0.14.1 is an unreleased marketplace-metadata candidate based on published
+0.14.1 is a marketplace-metadata patch based on published
 0.14.0. It adds a link to the existing Apache-2.0 license and changes the
 product version; state and Hook protocols are unchanged. Its manifest bytes
 require a new runtime-tree identity and separate installation evidence.
