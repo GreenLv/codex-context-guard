@@ -2,7 +2,9 @@
 
 For current behavior, start with [compatibility](COMPATIBILITY.md), [architecture](ARCHITECTURE.md), [privacy](PRIVACY.md), and [versioning](VERSIONING.md). [Local acceptance](LOCAL_ACCEPTANCE.md) owns exact platform and release evidence.
 
-For the next repair iteration, use [semantic follow-up](NEXT_VERSION_SEMANTIC_FOLLOWUP.md): complex answer delivery, conditional future actions, and Stop feedback. It distinguishes confirmed synthetic defects from real incidents that still lack diagnostic evidence.
+For the current shared contract, use [core alignment](CORE_ALIGNMENT_CONTRACT_V2.md), [wire semantics](CORE_V2_WIRE.md), and [host capabilities](CORE_V2_HOST_CAPABILITIES.md). The [0.14.0 release notes](releases/v0.14.0.md) describe the delivered changes and their limits.
+
+The pre-0.14 [semantic follow-up](https://github.com/GreenLv/codex-context-guard/blob/5621e75804bdfece04b0f17137b47618e7fe8ffe/docs/NEXT_VERSION_SEMANTIC_FOLLOWUP.md) is retained in Git history. Its “next version” and “pending implementation” wording describes its original baseline, not the current work queue.
 
 [Information-delivery investigation](INVESTIGATION_INFORMATION_DELIVERY_CLOSURE.md) explains the released 0.13.6–0.13.9 work and its limits. [Semantic compatibility](SEMANTIC_COMPATIBILITY.md) owns cross-harness claims.
 

@@ -1,6 +1,6 @@
 # 0.12.4 behavior baseline
 
-> Historical 0.12.4 baseline, retained for release provenance and existing links. It is not the current default behavior. Use [current compatibility](COMPATIBILITY.md); next-version issues are tracked in [the follow-up](NEXT_VERSION_SEMANTIC_FOLLOWUP.md).
+> Historical 0.12.4 baseline, retained for release provenance and existing links. It is not the current default behavior. Use [current compatibility](COMPATIBILITY.md); the pre-0.14 issue analysis is preserved in [the historical follow-up](https://github.com/GreenLv/codex-context-guard/blob/5621e75804bdfece04b0f17137b47618e7fe8ffe/docs/NEXT_VERSION_SEMANTIC_FOLLOWUP.md).
 
 
 Status: **0.12.4 release baseline — 2026-09-09** (private state schema 11,

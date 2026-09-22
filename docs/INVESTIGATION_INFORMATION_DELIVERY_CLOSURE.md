@@ -1,6 +1,6 @@
 # Information delivery and execution continuity
 
-Status: historical investigation of the 0.13.6–0.13.9 information-delivery changes. Those versions are released; exact acceptance belongs to LOCAL_ACCEPTANCE.md. Remaining complex-request and conditional Stop-feedback defects are tracked in [the next-version follow-up](NEXT_VERSION_SEMANTIC_FOLLOWUP.md). This page is rationale and regression history, not a new candidate or native-host receipt.
+Status: historical investigation of the 0.13.6–0.13.9 information-delivery changes. Those versions are released; exact acceptance belongs to LOCAL_ACCEPTANCE.md. The later pre-0.14 complex-request and Stop-feedback analysis is preserved in [the historical follow-up](https://github.com/GreenLv/codex-context-guard/blob/5621e75804bdfece04b0f17137b47618e7fe8ffe/docs/NEXT_VERSION_SEMANTIC_FOLLOWUP.md). Current behavior belongs to [the core contract](CORE_ALIGNMENT_CONTRACT_V2.md) and [compatibility](COMPATIBILITY.md). This page is rationale and regression history, not a new candidate or native-host receipt.
 
 ## Defect and scope
 
