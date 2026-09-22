@@ -1,5 +1,15 @@
 # Compatibility and Verification Status
 
+## 0.14.1 source candidate (Unreleased)
+
+This patch adds a marketplace link to the existing license and updates product
+version identifiers. Hook behavior, Python support, schema 13 and Stop 5.0.0
+are unchanged. Existing 0.14.0 users do not need this metadata update for
+runtime correctness. The new manifest still creates a distinct immutable
+cache; never overwrite 0.14.0 caches. See the [candidate acceptance](LOCAL_ACCEPTANCE.md)
+for exact evidence; HOL scores and publication remain separate.
+
+
 Compatibility statements are evidence-bounded. Passing unit tests on one
 platform does not prove a fresh installed runtime on another platform.
 

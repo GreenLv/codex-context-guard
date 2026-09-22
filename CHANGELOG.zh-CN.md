@@ -9,6 +9,8 @@
 ### Highlights
 
 - 市场元数据通过链接指向现有 Apache-2.0 许可证，明确软件使用条款。
+- Hook 行为、状态协议和完成判断策略保持不变。
+- 使用新的补丁版本，保持已有 0.14.0 安装内容不可变。
 
 ### Changes
 
@@ -17,7 +19,8 @@
 
 ### Validation
 
-- 源码验证与 HOL 收录、评分分别记录。本候选不宣称新的目录分数、原生安装或正式发布。
+- 实现候选 `1cba5fc2c2488cef58af4006b000a6a262299a87` 的全部 16 个 [CI 作业](https://github.com/GreenLv/codex-context-guard/actions/runs/35697425812)及 [HOL 扫描](https://github.com/GreenLv/codex-context-guard/actions/runs/35697432313)通过，新 SARIF 已无 termsOfServiceURL 告警。
+- macOS 隔离安装、第二次安装 no-op、源码/缓存一致性和安装后生命周期 smoke 通过。CI 与 Windows portable 安装不代表新的日常宿主或模型验收。HOL 目录收录与评分仍待上游处理。
 
 ## 0.14.0 — 2026-09-21
 

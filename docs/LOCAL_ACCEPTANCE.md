@@ -1,5 +1,23 @@
 # Local Release Acceptance
 
+## 0.14.1 source candidate (Unreleased)
+
+Implementation commit `1cba5fc2c2488cef58af4006b000a6a262299a87` passed all 16
+[candidate CI jobs](https://github.com/GreenLv/codex-context-guard/actions/runs/35697425812)
+and [HOL scanning](https://github.com/GreenLv/codex-context-guard/actions/runs/35697432313).
+The SARIF no longer reports termsOfServiceURL; remaining logo/screenshots
+findings are note-level. These source checks do not establish registry ingestion.
+
+On macOS, a fresh isolated Codex HOME installed the 0.14.1 candidate; a second
+apply skipped cache refresh. All 35 runtime files matched source, and the
+installed lifecycle smoke passed. CI includes Windows portable installed-runtime
+acceptance; it does not establish a new Windows daily-host or fixed-model run.
+There are no Hook semantic changes. Later documentation-only edits do not
+change this runtime inventory; the final release commit still needs its own
+required main CI, tag and Release readback. No 0.14.1 public release or daily
+installation is claimed here.
+
+
 ## 0.14.0 release-line source (2026-09-21; public identity pending)
 
 Committed candidate `1217029d1d6f3a640e11cdbab7a39b6f1a028a9d` passed its complete deterministic source matrix, all 16 jobs in [candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/35523280198), and the [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/35523420917). Its 35-file runtime tree has SHA-256 `b1887c837722c41049d86e194a5859ec667a77ca7726f1d2adb7dc5e08bfd1ea`; the macOS portable native profile passed five gates with cleanup.

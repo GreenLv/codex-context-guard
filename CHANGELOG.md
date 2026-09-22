@@ -9,6 +9,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 ### Highlights
 
 - Marketplace metadata links to the existing Apache-2.0 license as the software usage terms.
+- Hook behavior, state protocols, and completion policy remain unchanged.
+- A new patch version preserves the immutability of existing 0.14.0 installations.
 
 ### Changes
 
@@ -17,7 +19,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 ### Validation
 
-- Source validation is recorded separately from HOL ingestion and scoring. No new registry score, native installation, or release is claimed for this candidate.
+- Implementation candidate `1cba5fc2c2488cef58af4006b000a6a262299a87` passed all 16 [CI jobs](https://github.com/GreenLv/codex-context-guard/actions/runs/35697425812) and [HOL scanning](https://github.com/GreenLv/codex-context-guard/actions/runs/35697432313). The termsOfServiceURL finding is absent from the new SARIF.
+- macOS isolated installation, a second no-op, source/cache parity and installed lifecycle smoke passed. CI and Windows portable installation do not establish a new daily-host or model result. HOL registry ingestion and scores remain pending upstream.
 
 ## 0.14.0 — 2026-09-21
 
