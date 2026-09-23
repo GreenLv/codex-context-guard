@@ -326,7 +326,7 @@ class ConsumerTests(unittest.TestCase):
             self.collect()
 
     def test_process_transport_capability_boundary(self):
-        if review.os.name != "posix":
+        if review.os.name not in {"posix", "nt"}:
             with self.assertRaises(ValueError):
                 review.invoke([sys.executable, "-c", "pass"], "")
             return

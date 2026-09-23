@@ -330,7 +330,7 @@ def collect(plan, *, execute=False):
             if transport is not None:
                 result["cleanup"] = transport.close(budget.cleanup)
                 if (not result["cleanup"]["owned_process_exited"]
-                        or not result["cleanup"]["owned_tree_empty"]
+                        or not result["cleanup"]["owned_tree_no_running_members"]
                         or result["cleanup"]["process_group_cleanup_error"] is not None):
                     result = {**result, "status": "failed",
                               "reason": "owned_process_tree_cleanup_unverified",

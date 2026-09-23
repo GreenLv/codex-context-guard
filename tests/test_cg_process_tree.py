@@ -1,6 +1,8 @@
 """Bounded child-tree ownership without model or network calls."""
 import ctypes
+import errno
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -103,6 +105,8 @@ class ProcessTreeTest(unittest.TestCase):
         result = owned.close(1)
         self.assertTrue(result["owned_tree_empty"])
         self.assertTrue(result["owned_process_exited"])
+        self.assertTrue(result["owned_tree_no_running_members"])
+        self.assertIsNone(result["process_group_absent"])
         self.assertEqual(owned.close(1), result)
         self.assertEqual(api.terminated, 1)
         self.assertEqual(api.closed.count(111), 1)
@@ -136,6 +140,131 @@ class ProcessTreeTest(unittest.TestCase):
         with mock.patch.object(tree.os, "killpg", side_effect=[None, None, ProcessLookupError]):
             result = tree.OwnedProcess(process).close(1)
         self.assertTrue(result["owned_tree_empty"])
+        self.assertTrue(result["owned_tree_no_running_members"])
+        self.assertTrue(result["process_group_absent"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin group state reader")
+    def test_darwin_group_reader_distinguishes_zombie_from_live(self):
+        class Function:
+            def __init__(self, body):
+                self.body = body
+
+            def __call__(self, *args):
+                return self.body(*args)
+
+        class API:
+            status = 5
+            length = 64
+            reported_pid = 4321
+            reported_pgid = 1234
+            capacity = 1
+            query_errno = 0
+
+            def __init__(self):
+                self.proc_listpgrppids = Function(self.list_group)
+                self.proc_pidinfo = Function(self.info)
+
+            def list_group(self, pgid, buffer, size):
+                if buffer is None:
+                    ctypes.set_errno(self.query_errno)
+                    return self.capacity
+                buffer[0] = 4321
+                return 1
+
+            def info(self, pid, _flavor, _arg, buffer, size):
+                if self.status in {"exited", "denied"}:
+                    ctypes.set_errno(errno.ESRCH if self.status == "exited" else errno.EPERM)
+                    return 0
+                ctypes.memmove(buffer, struct.pack("=IIII", self.reported_pid, 1,
+                                                   self.reported_pgid, self.status), 16)
+                return self.length
+
+        api = API()
+        with mock.patch.object(tree.ctypes, "CDLL", return_value=api):
+            self.assertTrue(tree._darwin_group_no_running_members(1234))
+            api.status = 2
+            self.assertFalse(tree._darwin_group_no_running_members(1234))
+            api.status = "exited"
+            self.assertTrue(tree._darwin_group_no_running_members(1234))
+            api.status = "denied"
+            with self.assertRaisesRegex(tree.ProcessTreeError, "state_unavailable"):
+                tree._darwin_group_no_running_members(1234)
+            api.status = 5
+            api.length = 63
+            with self.assertRaisesRegex(tree.ProcessTreeError, "state_unavailable"):
+                tree._darwin_group_no_running_members(1234)
+            api.length = 64
+            for field in ("reported_pid", "reported_pgid", "status"):
+                with self.subTest(field=field):
+                    original = getattr(api, field)
+                    setattr(api, field, 0)
+                    with self.assertRaisesRegex(tree.ProcessTreeError, "state_invalid"):
+                        tree._darwin_group_no_running_members(1234)
+                    setattr(api, field, original)
+            api.capacity = 0
+            api.query_errno = errno.ESRCH
+            self.assertFalse(tree._darwin_group_no_running_members(1234))
+            api.query_errno = errno.EPERM
+            with self.assertRaisesRegex(tree.ProcessTreeError, "members_unavailable"):
+                tree._darwin_group_no_running_members(1234)
+        self.assertFalse(tree._darwin_group_no_running_members(os.getpgrp()))
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin cleanup classification")
+    def test_darwin_zombie_readback_is_distinct_from_group_disappearance(self):
+        process = _Process()
+        process.wait(1)
+        with (mock.patch.object(tree.os, "killpg", return_value=None),
+              mock.patch.object(tree, "_darwin_group_no_running_members", return_value=True)):
+            result = tree.OwnedProcess(process).close(1)
+        self.assertFalse(result["owned_tree_empty"])
+        self.assertFalse(result["process_group_absent"])
+        self.assertTrue(result["owned_tree_no_running_members"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin cleanup classification")
+    def test_darwin_readback_after_late_signal_and_query_denial(self):
+        process = _Process()
+        process.wait(1)
+        def signal_group(_pgid, signal):
+            if signal != tree.signal.SIGTERM:
+                raise PermissionError
+        with (mock.patch.object(tree.os, "killpg", side_effect=signal_group),
+              mock.patch.object(tree, "_darwin_group_no_running_members", return_value=True)):
+            result = tree.OwnedProcess(process).close(1)
+        self.assertIsNone(result["process_group_cleanup_error"])
+        self.assertTrue(result["owned_tree_no_running_members"])
+        self.assertFalse(result["process_group_absent"])
+        self.assertTrue(result["process_group_signal_denied"])
+        self.assertTrue(result["process_group_query_denied"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin disappearing group")
+    def test_darwin_empty_first_snapshot_requires_group_recheck(self):
+        process = _Process()
+        process.wait(1)
+        with (mock.patch.object(tree.os, "killpg",
+                                side_effect=[None, None, None, ProcessLookupError]),
+              mock.patch.object(tree, "_darwin_group_no_running_members",
+                                return_value=False) as reader):
+            result = tree.OwnedProcess(process).close(1)
+        reader.assert_called_once()
+        self.assertTrue(result["process_group_absent"])
+        self.assertTrue(result["owned_tree_no_running_members"])
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin cleanup classification")
+    def test_darwin_live_or_unreadable_group_fails_closed(self):
+        for observation, expected_error in ((False, None),
+                                            (tree.ProcessTreeError("state_unavailable"),
+                                             "state_unavailable")):
+            with self.subTest(observation=observation):
+                process = _Process()
+                process.wait(1)
+                reader = (mock.Mock(side_effect=observation)
+                          if isinstance(observation, Exception)
+                          else mock.Mock(return_value=observation))
+                with (mock.patch.object(tree.os, "killpg", return_value=None),
+                      mock.patch.object(tree, "_darwin_group_no_running_members", reader)):
+                    result = tree.OwnedProcess(process).close(0.05)
+                self.assertFalse(result["owned_tree_no_running_members"])
+                self.assertEqual(result["process_group_cleanup_error"], expected_error)
 
     @unittest.skipUnless(os.name in {"posix", "nt"}, "owned process-tree probe")
     def test_short_lived_leader_keeps_child_owned(self):
@@ -150,7 +279,13 @@ class ProcessTreeTest(unittest.TestCase):
                                              stderr=subprocess.DEVNULL)
             owned.process.wait(timeout=5)
             self.assertTrue(marker.exists())
-            self.assertTrue(owned.close(3)["owned_tree_empty"])
+            cleanup = owned.close(3)
+            self.assertTrue(cleanup["owned_tree_no_running_members"])
+            if os.name == "nt":
+                self.assertIsNone(cleanup["process_group_absent"])
+            else:
+                self.assertEqual(cleanup["process_group_absent"],
+                                 cleanup["owned_tree_empty"])
 
     def test_review_child_receives_only_explicit_home(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -182,6 +317,7 @@ class ProcessTreeTest(unittest.TestCase):
 
             def close(self, _timeout):
                 return {"owned_process_exited": False, "owned_tree_empty": False,
+                        "owned_tree_no_running_members": False,
                         "process_group_cleanup_error": "denied"}
 
         for pending, expected in ((True, "review_timeout"), (False, "review_cleanup_timeout")):

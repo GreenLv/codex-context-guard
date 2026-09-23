@@ -208,7 +208,9 @@ still does not prove that `replace_compacted_history` completed. The producer
 and independent reviewer now share an owned process-tree route. POSIX uses a
 new process group; Windows starts the process suspended, assigns it to a
 kill-on-close Job Object, then resumes it. Assignment, resume and cleanup
-failures leave native acceptance unavailable. POSIX has offline process-group
+failures leave native acceptance unavailable. POSIX records group disappearance
+separately from macOS-only verification of no running members in a remaining
+group; denied or unknown state does not pass. POSIX has offline process-group
 tests. The Windows zero-model probe confirmed Job assignment and observed an
 owned child alive after leader exit and exited after cleanup, with a separate
 child process handle. This establishes the local cleanup route only; the

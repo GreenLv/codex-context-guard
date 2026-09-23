@@ -21,8 +21,10 @@ model configuration and authentication. It does not resume the answer producer,
 install anything, bypass trust, retry or loop. Input and captured output are
 limited to 2 MiB and the process has a 60-second deadline. Observed tool use
 invalidates the judgment; read-only execution is not a universal guarantee of
-no external effects. POSIX uses a new process group and verifies its disappearance
-after bounded cleanup. Windows starts the process suspended, assigns it to a
+no external effects. POSIX uses a new process group and checks its disappearance;
+on macOS, a group that remains must have no running members by a complete
+system readback. Group absence and no-running membership are distinct results;
+denied or unknown readback fails closed. Windows starts the process suspended, assigns it to a
 kill-on-close Job Object, then resumes it; a zero-model native probe observed
 an owned child exit after the leader had already exited. Escaped descendants
 remain outside the verified route. Independent review on the repaired installed

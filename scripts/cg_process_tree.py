@@ -8,14 +8,65 @@ termination fallback.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 import signal
+import struct
 import subprocess
+import sys
 import time
 
 
 class ProcessTreeError(ValueError):
     pass
+
+
+def _darwin_group_no_running_members(pgid):
+    """Check a signalled group with libproc; zombies are not running children.
+
+    Apple proc_info.h defines PROC_PIDT_SHORTBSDINFO=13 and SZOMB=5. An
+    unavailable or incomplete read never certifies cleanup.
+    """
+    try:
+        api = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        list_group = api.proc_listpgrppids
+        list_group.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        list_group.restype = ctypes.c_int
+        info = api.proc_pidinfo
+        info.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                         ctypes.c_void_p, ctypes.c_int]
+        info.restype = ctypes.c_int
+        ctypes.set_errno(0)
+        capacity = list_group(pgid, None, 0)
+        if capacity == 0 and ctypes.get_errno() in (0, errno.ESRCH):
+            return False  # Recheck killpg; a vanished group is not a read error.
+        if capacity <= 0 or capacity > 65536:
+            raise ProcessTreeError("process_group_members_unavailable")
+        capacity = max(128, capacity + 64)
+        members = (ctypes.c_int * capacity)()
+        count = list_group(pgid, members, ctypes.sizeof(members))
+        if count < 0 or count >= capacity:
+            raise ProcessTreeError("process_group_members_unavailable")
+        if count == 0:
+            return False  # Recheck killpg; an empty snapshot is not group absence.
+        for pid in set(members[:count]):
+            if pid <= 0:
+                raise ProcessTreeError("process_group_members_invalid")
+            row = ctypes.create_string_buffer(64)  # sizeof(proc_bsdshortinfo)
+            ctypes.set_errno(0)
+            length = info(pid, 13, 0, row, ctypes.sizeof(row))
+            if length == 0 and ctypes.get_errno() == errno.ESRCH:
+                continue  # Already exited; libproc no longer exposes its state.
+            if length != ctypes.sizeof(row):
+                raise ProcessTreeError("process_group_state_unavailable")
+            actual_pid, _ppid, actual_pgid, status = struct.unpack_from("=IIII", row)
+            if actual_pid != pid or actual_pgid != pgid or status not in range(1, 6):
+                raise ProcessTreeError("process_group_state_invalid")
+            if status != 5:
+                return False
+        return True
+    except (AttributeError, OSError) as exc:
+        raise ProcessTreeError("process_group_state_unavailable") from exc
 
 
 def _windows_api():
@@ -155,7 +206,11 @@ class OwnedProcess:
         deadline = time.monotonic() + timeout
         error = None
         tree_empty = False
-        if self.job is not None:
+        no_running_members = False
+        signal_denied = False
+        query_denied = False
+        posix_group = self.job is None
+        if not posix_group:
             try:
                 if not self.api.TerminateJobObject(self.job, 1):
                     _win_error("job_termination_denied")
@@ -166,6 +221,7 @@ class OwnedProcess:
                         _win_error("job_query_denied")
                     if accounting.ActiveProcesses == 0:
                         tree_empty = True
+                        no_running_members = True
                         break
                     time.sleep(0.02)
             except ProcessTreeError as exc:
@@ -175,11 +231,14 @@ class OwnedProcess:
                     error = error or "job_close_denied"
                 self.job = None
         else:
+            signal_delivered = False
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
+                signal_delivered = True
             except ProcessLookupError:
                 pass
             except PermissionError:
+                signal_denied = True
                 error = "process_group_signal_denied"
             try:
                 self.process.wait(timeout=min(1, max(0.001, deadline - time.monotonic())))
@@ -187,19 +246,38 @@ class OwnedProcess:
                 pass
             try:
                 os.killpg(self.process.pid, signal.SIGKILL)
+                signal_delivered = True
             except ProcessLookupError:
                 tree_empty = True
+                no_running_members = True
             except PermissionError:
-                error = "process_group_signal_denied"
+                signal_denied = True
+                if not signal_delivered:
+                    error = "process_group_signal_denied"
             while not tree_empty and error is None and time.monotonic() < deadline:
                 try:
                     os.killpg(self.process.pid, 0)
                 except ProcessLookupError:
                     tree_empty = True
+                    no_running_members = True
                 except PermissionError:
+                    query_denied = True
+                    if sys.platform != "darwin" or not signal_delivered:
+                        error = "process_group_query_denied"
+                if sys.platform == "darwin" and not tree_empty and error is None:
+                    try:
+                        no_running_members = _darwin_group_no_running_members(
+                            self.process.pid)
+                    except ProcessTreeError as exc:
+                        error = str(exc)
+                    if no_running_members:
+                        break
+                time.sleep(0.02)
+            if not tree_empty and not no_running_members and error is None:
+                if signal_denied:
+                    error = "process_group_signal_denied"
+                elif query_denied:
                     error = "process_group_query_denied"
-                else:
-                    time.sleep(0.02)
         try:
             self.process.wait(timeout=max(0.001, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
@@ -209,6 +287,10 @@ class OwnedProcess:
             "process_group_kill_attempted": True,
             "process_group_cleanup_error": error,
             "owned_tree_empty": tree_empty and error is None,
+            "owned_tree_no_running_members": no_running_members and error is None,
+            "process_group_absent": tree_empty if posix_group else None,
+            "process_group_signal_denied": signal_denied,
+            "process_group_query_denied": query_denied,
             "escaped_descendants": "not_established",
         }
         return dict(self._closed)

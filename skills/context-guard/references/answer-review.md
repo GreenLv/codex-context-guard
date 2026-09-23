@@ -19,7 +19,9 @@ automatically retried after failure or partial coverage. New messages may be
 reviewed once more, replacing only a validated unique same-question predecessor.
 Do not loop until complete. Requests and model output remain in private local
 captures; never publish them. The process has bounded input/output and a deadline.
-The POSIX group route verifies disappearance after cleanup. The Windows route
+The POSIX group route checks disappearance after cleanup; on macOS, a
+remaining group must have no running members by complete system readback.
+These are separate observations, and denied or unknown readback fails closed. The Windows route
 starts suspended, assigns the process to a kill-on-close Job Object, then
 resumes it; a zero-model native probe observed owned child exit after the
 leader exited. Escaped descendants remain outside the verified route. Native
