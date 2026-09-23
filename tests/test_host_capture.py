@@ -330,3 +330,54 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DigestEchoTests(unittest.TestCase):
+    def test_opt_in_echo_identity_and_same_raw_distinct_invocations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp) / 'capture'
+            raw = payload('SessionStart', source='compact')
+            metas = []
+            for _ in range(2):
+                path = HC.record_payload(raw, total_bytes=len(raw), truncated=False,
+                    expected_event='SessionStart', capture_dir=directory,
+                    runtime_root=ROOT, echo=True)
+                metas.append(json.loads(path.read_text()))
+            self.assertNotEqual(metas[0]['capture_id'], metas[1]['capture_id'])
+            self.assertNotEqual(HC.digest_echo(raw, metas[0]['capture_id']),
+                                HC.digest_echo(raw, metas[1]['capture_id']))
+            self.assertEqual(HC.inspect_directory(directory, ROOT)['capture_count'], 2)
+            metas[1]['capture_id'] = metas[0]['capture_id']
+            path.write_text(json.dumps(metas[1]))
+            with self.assertRaises(HC.CaptureError):
+                HC.inspect_directory(directory, ROOT)
+
+    def test_echo_rejects_other_events(self):
+        with tempfile.TemporaryDirectory() as temp:
+            raw = payload()
+            with self.assertRaises(HC.CaptureError):
+                HC.record_payload(raw, total_bytes=len(raw), truncated=False,
+                    expected_event='PreToolUse', capture_dir=Path(temp),
+                    runtime_root=ROOT, echo=True)
+
+    def test_cli_emits_only_warning_digest_and_both_commands_opt_in(self):
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            capture = directory / 'capture'
+            setup = directory / 'hooks.json'
+            HC.prepare_hooks(setup, python=Path(sys.executable), capture_dir=capture,
+                             runtime_root=ROOT, events=['PreCompact', 'SessionStart'], echo=True)
+            config = json.loads(setup.read_text())
+            for entry in config['hooks'].values():
+                hook = entry[0]['hooks'][0]
+                self.assertIn('--digest-echo', hook['command'])
+                self.assertIn('--digest-echo', hook['commandWindows'])
+            raw = payload('PreCompact', trigger='auto')
+            result = subprocess.run([sys.executable, str(MODULE_PATH), 'record',
+                '--expected-event', 'PreCompact', '--capture-dir', str(capture),
+                '--runtime-root', str(ROOT), '--digest-echo'], input=raw,
+                capture_output=True, check=True)
+            output = json.loads(result.stdout)
+            self.assertEqual(set(output), {'systemMessage'})
+            meta = json.loads(next(capture.glob('*.meta.json')).read_text())
+            self.assertEqual(output['systemMessage'], HC.digest_echo(raw, meta['capture_id']))
+            self.assertNotIn('thr-live-shape-1', result.stdout.decode())

@@ -49,6 +49,27 @@ visual, result-readback, UI, or exact-scope proof. It contains the optional
 `stage-disposition` paths. Do not invoke them merely because this Skill loaded.
 A visual tool's successful return alone proves no visual fact.
 
+## Independently review delivered side answers when adopted
+
+Only when the user has adopted independent answer review and the operator has
+configured the session's reviewer policy, the executing task agent owns this
+step: after delivering a commentary answer to a side question, invoke
+`review-pending` once with the existing session/turn private-control arguments
+and `--execute`, then continue authorized business work. Do not ask the user to
+confirm each answer. This is a separate reviewer call, not the producer judging
+its own answer. Do not manufacture a policy, token, verdict or Host association.
+Hooks do not call models or block ordinary tools on this queue.
+
+The command processes at most one new input, and a claimed failed/partial input
+is not automatically retried. A new answer or correction creates a new input;
+unknown coverage remains pending. Do not loop until a model says complete.
+If the policy, token, source or supported bounded process route is unavailable,
+keep coverage unknown and proceed with authorized business work; expose the
+concrete gap when reporting acceptance. No missing review grants permission to
+close the main task. Read [the reviewer contract](references/answer-review.md)
+for source, correction, retention and platform boundaries. This candidate's
+agent-triggered integration still needs native acceptance.
+
 ## Respect responsibility boundaries
 
 0.13 splits responsibilities explicitly. The executing agent owns whether an

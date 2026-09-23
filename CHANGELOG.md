@@ -4,6 +4,37 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.14.2 — Unreleased
+
+### Highlights
+
+- Instruction classification separates file and quoted data from action words, so renaming a test directory to `audit` or `commit` does not remove an existing continuation requirement.
+- Recovery distinguishes observed business results, remaining predicates and unknown evidence from whole-task completion; a matched edit/readback is not a request to repeat the edit.
+- Offline batch preflight rejects missing initial commits, reused composite sessions, mismatched input digests and inconsistent timeout budgets before model execution.
+
+### Changes
+
+- Validation CI consumes the checked dependency lock; HOL scanning explicitly enables Cisco skill analysis without lowering existing score or severity gates. Local scans do not refresh the public registry.
+- A restricted acceptance tool installs frozen candidates into fresh namespaces, preserves consumed caches, and leaves unrecognized configuration changes untouched. Existing authenticated private test homes require separately authorized, exact-target scope records; installation does not establish native acceptance.
+- An optional host trace source can bind a side-question answer while the main task shares its turn. Exact input and response identity are checked before independent review; repeated identical inputs and missing sources remain unknown. An incomplete inference remains pending within the probe's bounded turn deadline; it never certifies an answer by arrival order alone.
+- A bounded native commentary probe connects official dynamic-tool calls, exact Hook trust readback, independent review and cold recovery to the source checks. Four retained macOS attempts exposed a late answer trace, an `exec`-wrapped business child, an observer lookup in the process-default HOME, and a second default-HOME lookup in the review barrier. The fourth run produced one successful independent reviewer receipt, but failed before releasing the business result. Offline repairs now bind nested identities, carry the isolated session directory and Host HOME through review and cold replay, and prove prior progress across unique `previous_response_id` links. Automatic compaction and cold recovery still need native evidence for the repaired source.
+- The producer and independent reviewer share bounded process-tree ownership. Windows starts each process suspended and joins a kill-on-close Job before execution; POSIX checks group disappearance after cleanup. Denied or unverified cleanup cannot yield native acceptance, and the reviewer uses the selected isolated Host HOME. A Windows zero-model probe confirmed owned child exit after leader exit, but the installed model chain remains open.
+- Stable commentary snapshots compare each file-stat API against itself, avoiding false unknown results when Windows path and handle creation/change-time fields differ. Replacement, concurrent modification and content-prefix checks remain enforced.
+
+- Review input selection is independent of the last-512-message display window, while full-stream conflict checks remain active. Legal finite numeric transcript metadata no longer reopens an answered question; per-root overflow remains unknown.
+- Independent review now records explicit per-question message associations. One projection shares its source parse; malformed unrelated records cannot interrupt recovery. The task-agent queue claims each new input once; Windows has a bounded process route with zero-model proof, while its complete native reviewer chain remains unverified.
+- Adds an explicit, one-shot independent answer reviewer and revocable information-scope projection. Judgments remain distinct from Host facts; missing provenance or uncertain coverage stays open. One native reviewer receipt was retained, but complete native acceptance remains pending.
+- Adds a streaming Host commentary observation reader at compaction/resume. Recovery and diagnostics show recorded-message counts and snapshot freshness; truncation, replacement and changed prefixes stay unknown. Message observations do not close questions or execution work.
+
+- Lossless lexical fragments retain original character and UTF-8 byte positions. Source hashes and locator verification continue to use the original text. Real compound requests, negative instructions and explicit release/proof contracts remain distinct.
+- Recovery budgets whole rows, prioritizes restrictions, waits and proofs, and reports omitted current entries with a session-bound detail command.
+- Private schema 13, Stop 5.0.0 and all nine Hooks remain unchanged. New runtime bytes require an isolated candidate home; consumed 0.14.1 caches remain immutable.
+
+### Validation
+
+- Source candidate under development. Focused synthetic Hook and event-order regressions are separate from the four retained failed native attempts, historical incident replay and complete real-model acceptance of repaired bytes.
+- Trusted commentary answer association/completeness and both native platform chains remain unresolved. This candidate does not claim complete side-question coverage and is not ready for release; see [development status](docs/DEVELOPMENT_0.14.2.md).
+
 ## 0.14.1 — 2026-09-22
 
 ### Highlights

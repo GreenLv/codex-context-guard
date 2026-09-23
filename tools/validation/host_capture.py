@@ -26,6 +26,7 @@ import json
 import os
 import platform
 import re
+import secrets
 import shlex
 import stat
 import sys
@@ -34,6 +35,8 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 CAPTURE_SCHEMA = "codex-hook-private-capture/v1"
+ECHO_SCHEMA = "codex-hook-private-capture/v2"
+ECHO_EVENTS = frozenset({"PreCompact", "SessionStart"})
 REPORT_SCHEMA = "codex-hook-private-capture-report/v1"
 MAX_CAPTURE_BYTES = 1024 * 1024
 MAX_METADATA_BYTES = 128 * 1024
@@ -55,6 +58,14 @@ COMMON_FIELDS = frozenset({
 
 class CaptureError(ValueError):
     """Raised when input cannot be retained as a genuine-shape capture."""
+
+
+def digest_echo(raw: bytes, capture_id: str) -> str:
+    """Correlation only; never a trust, delivery or persistence certificate."""
+    if not isinstance(capture_id, str) or not re.fullmatch(r"[0-9a-f]{32}", capture_id):
+        raise CaptureError("invalid capture identity")
+    digest = _sha256(b"cg-hook-input-pair/v1\0" + raw)
+    return f"cg-hook-input-pair/v1:{capture_id}:{digest}"
 
 
 def _utc_now() -> str:
@@ -208,9 +219,12 @@ def record_payload(
     expected_event: str,
     capture_dir: Path,
     runtime_root: Path,
+    echo: bool = False,
 ) -> Path:
     if truncated or total_bytes != len(raw):
         raise CaptureError("oversized hook stdin is rejected; no partial evidence")
+    if echo and expected_event not in ECHO_EVENTS:
+        raise CaptureError("digest echo supports only compaction hooks")
     wire = validate_wire(raw, expected_event)
     runtime_digest, plugin_version, runtime_files = measure_runtime(runtime_root)
     directory = _private_directory(capture_dir)
@@ -241,6 +255,8 @@ def record_payload(
         },
         "wire": wire,
     }
+    if echo:
+        meta.update(schema=ECHO_SCHEMA, capture_id=secrets.token_hex(16))
     meta_path = raw_path.with_suffix(".meta.json")
     temp_path = directory / f".{meta_path.name}.{os.getpid()}.tmp"
     fd = os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -268,6 +284,7 @@ def inspect_directory(capture_dir: Path, runtime_root: Path) -> dict[str, Any]:
     declared_raw: set[str] = set()
     seen_sequences: set[int] = set()
     seen_raw: set[str] = set()
+    seen_capture_ids: set[str] = set()
     for meta_path in sorted(directory.glob("capture-*.meta.json")):
         if meta_path.is_symlink() or not meta_path.is_file():
             raise CaptureError("capture metadata is missing or not regular")
@@ -278,14 +295,22 @@ def inspect_directory(capture_dir: Path, runtime_root: Path) -> dict[str, Any]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise CaptureError(f"capture metadata is unreadable: {exc}") from exc
-        if not isinstance(meta, dict) or meta.get("schema") != CAPTURE_SCHEMA:
+        if not isinstance(meta, dict) or meta.get("schema") not in (CAPTURE_SCHEMA, ECHO_SCHEMA):
             raise CaptureError("capture metadata schema mismatch")
-        if set(meta) != {
+        expected_fields = {
             "schema", "sequence", "captured_at", "capture_kind",
             "expected_event", "raw_file", "raw_bytes", "raw_sha256",
             "capture_tool_sha256", "runtime_tree_sha256", "runtime_file_count",
             "plugin_version", "host", "wire",
-        }:
+        }
+        if meta["schema"] == ECHO_SCHEMA:
+            expected_fields.add("capture_id")
+            capture_id = meta.get("capture_id")
+            digest_echo(b"", capture_id)
+            if capture_id in seen_capture_ids or meta.get("expected_event") not in ECHO_EVENTS:
+                raise CaptureError("capture identity repeated or unsupported echo event")
+            seen_capture_ids.add(capture_id)
+        if set(meta) != expected_fields:
             raise CaptureError("capture metadata has missing or unknown fields")
         sequence = meta.get("sequence")
         if not isinstance(sequence, int) or sequence < 1 or sequence in seen_sequences:
@@ -309,7 +334,7 @@ def inspect_directory(capture_dir: Path, runtime_root: Path) -> dict[str, Any]:
         raw_sha = _sha256(raw)
         if len(raw) != meta.get("raw_bytes") or raw_sha != meta.get("raw_sha256"):
             raise CaptureError("capture raw payload hash or length mismatch")
-        if raw_sha in seen_raw:
+        if raw_sha in seen_raw and meta["schema"] == CAPTURE_SCHEMA:
             raise CaptureError("capture replays an earlier raw payload")
         seen_raw.add(raw_sha)
         wire = validate_wire(raw, str(meta.get("expected_event") or ""))
@@ -408,6 +433,7 @@ def prepare_hooks(
     capture_dir: Path,
     runtime_root: Path,
     events: Sequence[str] = ("PreToolUse", "PostToolUse"),
+    echo: bool = False,
 ) -> dict[str, Any]:
     python_path = python.resolve(strict=True)
     if not python_path.is_file():
@@ -423,6 +449,8 @@ def prepare_hooks(
             "--capture-dir", str(capture_dir.resolve()),
             "--runtime-root", str(runtime_path),
         ]
+        if echo:
+            args.append("--digest-echo")
         return " ".join(shlex.quote(part) for part in args)
 
     def command_windows(event: str) -> str:
@@ -431,6 +459,8 @@ def prepare_hooks(
             "--capture-dir", str(capture_dir.resolve()),
             "--runtime-root", str(runtime_path),
         ]
+        if echo:
+            args.append("--digest-echo")
         return "& " + " ".join(_powershell_quote(part) for part in args)
 
     selected_events = list(events)
@@ -438,6 +468,7 @@ def prepare_hooks(
         not selected_events
         or len(selected_events) != len(set(selected_events))
         or any(event not in SUPPORTED_EVENTS for event in selected_events)
+        or (echo and any(event not in ECHO_EVENTS for event in selected_events))
     ):
         raise CaptureError("capture Hook event selection is invalid")
     config = {
@@ -488,12 +519,14 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--expected-event", choices=sorted(SUPPORTED_EVENTS), required=True)
     record.add_argument("--capture-dir", type=Path, required=True)
     record.add_argument("--runtime-root", type=Path, required=True)
+    record.add_argument("--digest-echo", action="store_true")
     record.add_argument("--max-bytes", type=_positive_limit, default=MAX_CAPTURE_BYTES)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--capture-dir", type=Path, required=True)
     inspect.add_argument("--runtime-root", type=Path, required=True)
     inspect.add_argument("--output", type=Path, required=True)
     prepare = commands.add_parser("prepare")
+    prepare.add_argument("--digest-echo", action="store_true")
     prepare.add_argument("--output", type=Path, required=True)
     prepare.add_argument("--python", type=Path, required=True)
     prepare.add_argument("--capture-dir", type=Path, required=True)
@@ -510,20 +543,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "record":
             raw, total, truncated = _read_bounded(sys.stdin.buffer, args.max_bytes)
-            record_payload(
+            meta_path = record_payload(
                 raw, total_bytes=total, truncated=truncated,
                 expected_event=args.expected_event,
                 capture_dir=args.capture_dir, runtime_root=args.runtime_root,
+                echo=args.digest_echo,
             )
             # Tool hooks ignore plain stdout, but an empty JSON object is valid
             # and keeps the recorder inert across current Hook surfaces.
-            print("{}")
+            if args.digest_echo:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                print(json.dumps({"systemMessage": digest_echo(raw, meta["capture_id"])}))
+            else:
+                print("{}")
             return 0
         if args.command == "prepare":
             setup = prepare_hooks(
                 args.output, python=args.python, capture_dir=args.capture_dir,
                 runtime_root=args.runtime_root,
                 events=args.events or ("PreToolUse", "PostToolUse"),
+                echo=args.digest_echo,
             )
             print(json.dumps(setup, sort_keys=True))
             return 0

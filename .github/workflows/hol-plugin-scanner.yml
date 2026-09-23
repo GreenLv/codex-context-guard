@@ -27,6 +27,8 @@ jobs:
         with:
           plugin_dir: "."
           mode: scan
+          install_cisco: true
+          cisco_skill_scan: "on"
           min_score: 80
           fail_on_severity: high
           format: sarif

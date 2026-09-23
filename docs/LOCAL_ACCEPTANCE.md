@@ -1,5 +1,101 @@
 # Local Release Acceptance
 
+## 0.14.2 source candidate — Unreleased
+
+Development starts from published 0.14.1. The R33 source candidate passed
+1595 local tests with no failures or errors and 16 skips. Its 41-file plugin
+runtime tree was installed in an isolated private acceptance HOME; official
+Hook review then trusted exactly nine product Hooks and two private capture
+Hooks. Seven older user-config Hooks remained untrusted and unchanged. The
+installed 191-file product manifest retained source hash parity. Hook review
+also wrote trust state into private configuration, generated four Python cache
+files, and updated seven remote-plugin metadata files; whole-HOME byte parity
+from the earlier install cannot be reused.
+
+R35 adds a repository-only native commentary runner and source tests while
+retaining the R33 runtime digest. Its local preflight checks source, binary,
+runtime and proposed configuration inputs with zero model calls. One bounded
+macOS attempt started one producer turn, delivered the side question and
+completed commentary, then failed before releasing the challenge: the
+corresponding inference-completed trace had not yet appeared. No business,
+independent review, automatic compaction, or cold recovery ran. The attempt
+is retained as a failed timing-boundary observation, not native acceptance.
+After an offline timing repair, a second single-run macOS attempt bound the
+answer and reached the business dynamic-tool call. It failed before releasing
+that call because the validator expected a direct model `function_call`, while
+the official trace carried a model-visible `exec` call with the business tool
+as its code-cell child. The second attempt also remains failed; no independent
+review, automatic compaction, or cold recovery ran. Its owned process exited,
+the prior capture files remained byte-identical, two new capture files were
+kept, and the private HOME configuration was byte-identical to its complete
+pre-run snapshot. Offline replay and regressions now bind the nested IDs and
+fresh challenge source, but do not upgrade either native result.
+An independently reviewed third macOS attempt passed exact Hook readback,
+bound the answer and nested business result, and reached review. It failed
+there because the acceptance observer looked for product state under the
+process-default HOME, while the trusted product Hook wrote it under the
+isolated candidate plugin data directory. A zero-model readback found one
+matching question and one distinct main requirement in that private state.
+The observer's unintended policy file under the default HOME was removed
+after exact-path and hash checks. The third attempt's owned process exited,
+four prior captures remained byte-identical, two new captures were retained,
+and the private HOME configuration matched its complete pre-run snapshot.
+The observer now binds policy, state and cold readback to the isolated plugin
+data directory, with path and symlink regressions. This is an offline repair;
+the third native attempt remains failed.
+Further zero-model replay of the retained third-run state found that the
+product reviewer could not build a source-bound request: the answer's official
+inference used `previous_response_id`, while the prior-progress exclusion only
+handled complete expanded input. The candidate now follows unique completed
+response IDs to prove that initial progress was consumed before the side
+question; missing or ambiguous chains remain unknown. A source-only replay can
+build the review request, but no independent reviewer model was started and the
+third native result remains failed. This product runtime change requires a new
+digest, isolated installation and fresh native evidence before acceptance.
+A fourth independently approved macOS attempt used the new isolated candidate
+namespace after an exact 11-Hook trust readback. The producer completed three
+model inferences and reached the business tool request. An independent reviewer
+completed one inference and left a sealed `answer-review/v2` capture with a
+complete judgment for the selected question. The review barrier then failed
+with `missing_question_source` before releasing the business result: unlike
+the observer, it looked up the product session through the harness process's
+default HOME. The run retained its failed result, reviewer capture, trace and
+two new Hook captures; its owned process exited, and the private HOME
+configuration remained byte-identical. No automatic compaction or cold
+recovery was observed. A zero-model replay of the retained state and official
+trace can build one source-bound review request when given the isolated plugin
+session directory and Host HOME explicitly. Without the trace it remains
+source-unknown, and the retained reviewer receipt does not turn the failed
+native run into accepted evidence. The offline repair now passes both roots
+through the reviewer request, barrier projection and cold subprocess; a fresh
+exact-runtime run is still required for complete native acceptance.
+Windows independently verified the public rev14 delta, its two-language
+changelog and the rev15 test-only symlink capability repair. The affected
+four-module zero-model run passed 58 tests with one explicit WinError 1314
+symlink skip; ordinary state and traversal assertions ran. This is source
+validation, not Windows native installation or model acceptance.
+The later process-lifecycle source candidate uses a shared owned-tree route
+for the producer app-server and independent reviewer. On Windows it starts
+the leader suspended, assigns it to a kill-on-close Job Object, and only then
+resumes it; the reviewer receives the explicit isolated Host HOME. On POSIX,
+cleanup verifies process-group disappearance after signalling. A signal sent,
+leader exit, or denied cleanup cannot certify an empty tree. This source
+change has focused macOS tests. Windows independently validated a seven-file
+public delta and ran 32 zero-model tests with six POSIX-only skips. A separate
+native probe held an OS handle to an owned child: the leader had exited, the
+child was still live before cleanup and had exited after Job cleanup. That
+establishes the local process-tree route, not Windows installation, Hook trust,
+model behavior or the complete commentary chain. Both platforms still need
+exact new-runtime acceptance. Prior reviewer receipts do not validate the
+changed adapter bytes.
+The 4096-token
+`body_after_prefix` setting is not calibrated against an actual model prefix.
+Native macOS and Windows commentary chains, CI, public HOL refresh, tag and
+Release remain open. Synthetic source regressions and the earlier Windows
+partial result do not establish those gates. The original failed baseline is
+retained outside the source checkout. See the
+[development status](DEVELOPMENT_0.14.2.md) for the open evidence boundaries.
+
 ## 0.14.1 metadata patch (2026-09-22)
 
 Implementation commit `1cba5fc2c2488cef58af4006b000a6a262299a87` passed all 16

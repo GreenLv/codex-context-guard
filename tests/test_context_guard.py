@@ -4914,14 +4914,19 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(checkpoint_lines[-1], "Script completed")
         self.assertEqual(checkpoint.stderr, "")
         before_checkpoint = self.state()
-        checkpoint_result = cg.dispatch(
-            self.payload(
-                "PostToolUse",
-                tool_name="Bash",
-                tool_input={"command": cg.shell_join(checkpoint_arguments)},
-                tool_response=checkpoint.stdout,
+        windows_command = (f"& '{sys.executable}' '{MODULE_PATH}' stage-checkpoint "
+                           + cg.shell_join(checkpoint_arguments[3:]))
+        original_tokens = cg.private_control_command_tokens
+        with mock.patch.object(cg, "private_control_command_tokens",
+                               side_effect=lambda value, windows: original_tokens(value, windows=True)):
+            checkpoint_result = cg.dispatch(
+                self.payload(
+                    "PostToolUse",
+                    tool_name="Bash",
+                    tool_input={"command": windows_command},
+                    tool_response=checkpoint.stdout,
+                )
             )
-        )
         self.assertEqual(
             checkpoint_result,
             {},
@@ -4970,14 +4975,18 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(disposition_lines[-1], "Script completed")
         self.assertEqual(disposition.stderr, "")
         before_disposition = self.state()
-        disposition_result = cg.dispatch(
-            self.payload(
-                "PostToolUse",
-                tool_name="Bash",
-                tool_input={"command": cg.shell_join(disposition_arguments)},
-                tool_response=disposition.stdout,
+        windows_disposition = (f"& '{sys.executable}' '{MODULE_PATH}' stage-disposition "
+                               + cg.shell_join(disposition_arguments[3:]))
+        with mock.patch.object(cg, "private_control_command_tokens",
+                               side_effect=lambda value, windows: original_tokens(value, windows=True)):
+            disposition_result = cg.dispatch(
+                self.payload(
+                    "PostToolUse",
+                    tool_name="Bash",
+                    tool_input={"command": windows_disposition},
+                    tool_response=disposition.stdout,
+                )
             )
-        )
         self.assertEqual(
             disposition_result,
             {},
@@ -5408,6 +5417,34 @@ class ContextGuardTests(unittest.TestCase):
                 current = self.state()
                 self.assertEqual(len(current["evidence"]), evidence_count)
                 self.assertEqual(current["evidence_sequence"], evidence_sequence)
+
+    def test_windows_single_call_operator_keeps_exact_private_status(self) -> None:
+        """PowerShell's leading & is an invocation, not a compound tail."""
+        self.prompt("实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。")
+        arguments = [sys.executable, str(MODULE_PATH), "checkpoint-status",
+                     *self.private_command_common()]
+        status = subprocess.run(arguments, text=True, capture_output=True, check=False)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        command = (f"& '{sys.executable}' '{MODULE_PATH}' checkpoint-status "
+                   + cg.shell_join(arguments[3:]))
+        self.assertEqual(cg.private_control_command_tokens(command, windows=True),
+                         arguments)
+        self.assertIsNone(cg.private_control_command_tokens(command, windows=False))
+        original = cg.private_control_command_tokens
+        with mock.patch.object(cg, "private_control_command_tokens",
+                               side_effect=lambda value, windows: original(value, windows=True)):
+            for candidate, allowed in ((command, True),
+                                       (command + "; echo injected", False),
+                                       (command + " | echo injected", False),
+                                       (command + " & echo injected", False),
+                                       ("& " + command, False)):
+                with self.subTest(command=candidate):
+                    result = cg.dispatch(self.payload(
+                        "PostToolUse", tool_name="Bash",
+                        tool_input={"command": candidate},
+                        tool_response={"exit_code": 0, "output": status.stdout},
+                    ))
+                    self.assertEqual(result.get("decision") == "block", not allowed)
 
     def test_quoted_control_search_patterns_are_not_command_intent(self) -> None:
         searches = (
@@ -7476,14 +7513,19 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Script completed", result.stdout)
         self.assertEqual(self.state()["proofs"], [])
-        hook_result = cg.dispatch(
-            self.payload(
-                "PostToolUse",
-                tool_name="Bash",
-                tool_input={"command": cg.shell_join(arguments)},
-                tool_response={"exit_code": 0, "output": result.stdout},
+        windows_command = (f"& '{sys.executable}' '{MODULE_PATH}' register-proof "
+                           + cg.shell_join(arguments[3:]))
+        original_tokens = cg.private_control_command_tokens
+        with mock.patch.object(cg, "private_control_command_tokens",
+                               side_effect=lambda value, windows: original_tokens(value, windows=True)):
+            hook_result = cg.dispatch(
+                self.payload(
+                    "PostToolUse",
+                    tool_name="Bash",
+                    tool_input={"command": windows_command},
+                    tool_response={"exit_code": 0, "output": result.stdout},
+                )
             )
-        )
         self.assertNotEqual(hook_result.get("decision"), "block")
         proof = self.state()["proofs"][0]
         self.assertEqual(proof["expected_scope_count"], 2)
@@ -7549,6 +7591,16 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(failed.get("decision"), "block")
         self.assertEqual(self.state()["proofs"], [])
+        canonical = cg.dispatch(
+            self.payload(
+                "PostToolUse",
+                tool_name="Bash",
+                tool_input={"command": cg.shell_join(arguments)},
+                tool_response={"exit_code": 0, "output": preflight.stdout},
+            )
+        )
+        self.assertEqual(canonical, {})
+        self.assertEqual(len(self.state()["proofs"]), 1)
 
 
 if __name__ == "__main__":

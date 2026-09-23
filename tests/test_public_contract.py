@@ -143,6 +143,12 @@ class PublicContractTests(unittest.TestCase):
                 findings,
             )
 
+    def test_validation_tools_reject_stale_lock_or_unlocked_resolution(self) -> None:
+        self.assertEqual(workflow.validate_locked_tools('uv sync --locked --only-group validation'), [])
+        for command in ('uv sync --frozen --only-group validation',
+                        'uv sync --only-group validation', 'pip install ruff'):
+            self.assertTrue(workflow.validate_locked_tools(command))
+
     def test_workflow_contract_rejects_floating_external_action(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workflows = Path(temporary)

@@ -324,8 +324,12 @@ class P0Harness(unittest.TestCase):
         if str(pre_output.get("permissionDecision")) == "deny":
             return pre, None, None
         completed = subprocess.run(
-            command, shell=True, cwd=str(self.project), capture_output=True, text=True
+            command, shell=True, cwd=str(self.project), capture_output=True
         )
+        # Only the exit status is part of this Hook fixture's response. Retain
+        # raw diagnostic pipes: the exact shell command can invoke PS5.1 or Git
+        # and has no universal text encoding. Never decode in reader threads.
+        self.last_command_capture = completed
         post = self.dispatch(
             "PostToolUse", session=session, turn_id=turn_id, tool_use_id=tool_use_id,
             tool_name="shell", tool_input={"command": command},
@@ -372,10 +376,14 @@ class P0Harness(unittest.TestCase):
         )
 
     def git_out(self, *args: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(self.project), *args], check=True,
-            capture_output=True, text=True,
-        ).stdout.strip()
+        # This helper reads Git object IDs and log subjects. Pin Git's log
+        # encoder, collect bytes, then strictly decode on the calling thread.
+        # Shell/PowerShell output does not share this Git-specific contract.
+        completed = subprocess.run(
+            ["git", "-c", "i18n.logOutputEncoding=UTF-8", "-C", str(self.project), *args],
+            check=True, capture_output=True,
+        )
+        return completed.stdout.decode("utf-8", errors="strict").strip()
 
     def write(self, name: str, content: str) -> None:
         """Unattributed worktree change OUTSIDE any hook event."""
@@ -1710,3 +1718,28 @@ class CompletionGateGuardTests(P0Harness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SubprocessEncodingTests(P0Harness):
+    def test_causal_pipes_remain_bytes_and_nonzero_is_preserved(self):
+        for code in (0, 3):
+            command = self.shell_join([sys.executable, "-c",
+                "import os; os.write(1,bytes([172])); os.write(2,bytes([255])); "
+                f"raise SystemExit({code})"])
+            _pre, actual, _post = self.causal_command(command)
+            self.assertEqual(actual, code)
+            self.assertEqual(self.last_command_capture.stdout, b"\xac")
+            self.assertEqual(self.last_command_capture.stderr, b"\xff")
+
+    def test_git_log_has_explicit_utf8_contract(self):
+        subject = "说明-説明-café"
+        self.git("-c", "i18n.commitEncoding=UTF-8", "commit", "-q", "--allow-empty", "-m", subject)
+        self.assertEqual(self.git_out("log", "--format=%s", "-1"), subject)
+
+    def test_invalid_git_text_fails_on_caller_thread(self):
+        completed = subprocess.CompletedProcess([], 0, b"\xff", b"")
+        with mock.patch.object(subprocess, "run", return_value=completed) as run:
+            with self.assertRaises(UnicodeDecodeError):
+                self.git_out("log", "--format=%s", "-1")
+        self.assertIn("i18n.logOutputEncoding=UTF-8", run.call_args.args[0])
+        self.assertNotIn("text", run.call_args.kwargs)

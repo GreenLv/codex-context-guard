@@ -202,6 +202,33 @@ class HooksConfigVisibilityTests(unittest.TestCase):
         # evidence; only PreToolUse is shrunk (4.4).
         self.assertEqual(hooks["PostToolUse"][0].get("matcher"), "*")
 
+    def test_nine_ordinary_success_outputs_are_silent_except_lifecycle_allow(self) -> None:
+        """Archive-025 source contract: read actual dispatch, not only config."""
+        expected = {event: {} for event in (
+            "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart",
+            "SubagentStart", "SubagentStop", "Stop", "SessionEnd",
+        )}
+        expected["PreCompact"] = {"continue": True}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cwd = root / "work"
+            cwd.mkdir()
+            with mock.patch.dict(os.environ, {"CONTEXT_GUARD_DATA_DIR": str(root / "data")}):
+                for event, wire in expected.items():
+                    with self.subTest(event=event):
+                        payload = {"hook_event_name": event,
+                                   "session_id": "archive-025-" + event,
+                                   "cwd": str(cwd), "turn_id": "t1"}
+                        if event == "UserPromptSubmit":
+                            payload["prompt"] = "test"
+                        if event in {"PreToolUse", "PostToolUse"}:
+                            payload.update(tool_name="Bash", tool_input={"command": "echo t"})
+                        if event == "PostToolUse":
+                            payload["tool_response"] = {"exit_code": 0, "output": "t"}
+                        if event == "Stop":
+                            payload["last_assistant_message"] = "done"
+                        self.assertEqual(cg.dispatch(payload), wire)
+
     def test_pre_tool_matcher_is_derived_from_the_classifier_domain(self) -> None:
         """Plan 4.4 with the official matcher contract: the PreToolUse
         matcher must cover EXACTLY the classifier's candidate domain plus

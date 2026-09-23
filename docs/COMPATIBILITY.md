@@ -1,5 +1,31 @@
 # Compatibility and Verification Status
 
+## 0.14.2 source candidate — Unreleased
+
+The candidate separates action speech from object data and distinguishes
+observed predicates from whole closure in feedback. Standard/strict still
+introduce no ordinary-tool execution approvals. The historical 0.14.1 native
+results do not validate these changed bytes. A source-bound independent answer
+reviewer now provides a candidate association and completeness route; the
+fourth macOS attempt recorded one reviewer judgment but failed before business
+result release. The repaired runtime and macOS/Windows real delivery,
+compaction and cold-recovery chains remain unverified. The Windows process-tree
+route passed a separate zero-model Job and child-exit probe, which does not
+establish Hook trust, installed behavior or the model chain. See
+[development status](DEVELOPMENT_0.14.2.md).
+
+The candidate's commentary and derived-sidecar readers compare `lstat` before/after
+and `fstat` before/after separately, retaining `ctime_ns` in each stability check.
+Cross-API binding compares device, inode, size, modification time, mode and link
+count. CPython 3.12.10 Windows [path stat](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L2139)
+copies birth time into ctime, whereas its [handle stat](https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c#L1233)
+uses the attribute conversion's change-time field. Those ctime values are not a
+cross-API equality contract. Persisted identities continue to use handle fields;
+freshness uses the same provider. Full content and prior-prefix digests remain
+required. Synthetic provider-mismatch regressions do not establish native Windows
+acceptance for the repaired candidate; new runtime bytes invalidate old installed
+and native artifact evidence.
+
 ## 0.14.1 metadata patch
 
 This patch adds a marketplace link to the existing license and updates product

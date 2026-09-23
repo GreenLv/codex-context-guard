@@ -1,0 +1,140 @@
+"""Native runner preflight and cleanup boundaries without model execution."""
+
+import hashlib
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from scripts.cg_process_tree import OwnedProcess
+from tools.validation import commentary_live_runner as runner
+
+
+class NativeRunnerBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.binary = self.root / "codex"
+        self.binary.write_bytes(b"not an executable")
+        for name in ("home", "cwd", "runtime", "trace", "captures"):
+            (self.root / name).mkdir()
+        self.hooks = self.root / "runtime/hooks.json"
+        self.hooks.write_bytes(b"{}")
+        self.manifest = self.root / "manifest.json"
+        self.manifest.write_bytes(b"{}")
+        self.plan = {
+            "schema": runner.SCHEMA,
+            "codex": str(self.binary),
+            "binary_sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest(),
+            "codex_home": str(self.root / "home"),
+            "cwd": str(self.root / "cwd"),
+            "runtime_root": str(self.root / "runtime"),
+            "namespace": "cg-candidate-test",
+            "hook_source": str(self.hooks),
+            "trace_root": str(self.root / "trace"),
+            "capture_dir": str(self.root / "captures"),
+            "run_dir": str(self.root / "new-run"),
+            "source_manifest_path": str(self.manifest),
+            "harness_root": str(Path(runner.__file__).resolve().parents[2]),
+            "cold_helper_sha256": "d" * 64,
+            "source_tree_sha256": "a" * 64,
+            "runtime_tree_sha256": "b" * 64,
+            "root_prompt": "main", "question": "question",
+            "root_client_id": "root-id", "question_client_id": "question-id",
+            "main_requirement_text": "main",
+            "developer_instructions": "Use the bounded tools.",
+            "values": [2, 3],
+            "overrides": {"model_auto_compact_token_limit": 4096,
+                          "model_auto_compact_token_limit_scope": "body_after_prefix"},
+            "effective_config": {"model_auto_compact_token_limit": 4096,
+                                 "model_auto_compact_token_limit_scope": "body_after_prefix"},
+            "threshold_proposal": {"limit": 4096, "scope": "body_after_prefix",
+                                   "status": "bounded_proposal_not_token_calibrated"},
+            "history_mode": "paginated",
+            "budget": {"startup": 60, "turn": 240, "compact": 120, "cleanup": 15},
+            "review_policy": {"version": "review-1", "active": True,
+                              "binary": str(self.binary),
+                              "binary_sha256": hashlib.sha256(self.binary.read_bytes()).hexdigest()},
+            "selected_hook_hashes": {str(i): "sha256:" + "c" * 64 for i in range(11)},
+            "execute_producer": False, "execute_review": False,
+        }
+
+    def test_plan_is_checked_before_any_execution(self):
+        path = self.root / "plan.json"
+        path.write_text(json.dumps(self.plan))
+        self.assertEqual(runner.load_plan(path), self.plan)
+        with mock.patch.object(runner, "preflight", return_value={"status": "inputs_checked_only"}):
+            with self.assertRaisesRegex(ValueError, "explicit_producer_and_reviewer_gate_required"):
+                runner.collect(self.plan, execute=True)
+        self.assertFalse((self.root / "new-run").exists())
+        self.plan["question_client_id"] = "root-id"
+        path.write_text(json.dumps(self.plan))
+        with self.assertRaisesRegex(ValueError, "reused_client_id"):
+            runner.load_plan(path)
+
+    def test_plan_rejects_synthetic_threshold_or_expanded_budget(self):
+        path = self.root / "plan.json"
+        for change, reason in [
+            ({"threshold_proposal": {"limit": 4096, "fallback_buffer": 0,
+                                      "before_business": 1024, "after_business": 5000}},
+             "unmeasured_threshold_must_remain_proposal"),
+            ({"budget": {"startup": 180, "turn": 240,
+                         "compact": 120, "cleanup": 15}},
+             "native_budget_exceeds_frozen_ceiling"),
+        ]:
+            path.write_text(json.dumps({**self.plan, **change}))
+            with self.assertRaisesRegex(ValueError, reason):
+                runner.load_plan(path)
+
+    def test_blocking_calls_need_stage_reserve(self):
+        with mock.patch.object(runner.time, "monotonic", return_value=100):
+            with self.assertRaisesRegex(TimeoutError, "review_deadline_reserve"):
+                runner.require_remaining(164, 65, "review")
+            with self.assertRaisesRegex(TimeoutError, "cold_recovery_deadline_reserve"):
+                runner.require_remaining(115, 16, "cold_recovery")
+            runner.require_remaining(165, 65, "review")
+
+    def test_pending_source_never_releases_after_stage_deadline(self):
+        with mock.patch.object(runner.time, "monotonic", return_value=100):
+            for phase, reason in [
+                ("awaiting_answer_evidence", "answer_inference_completion_missing"),
+                ("awaiting_business_evidence", "business_inference_completion_missing"),
+            ]:
+                with self.assertRaisesRegex(TimeoutError, reason):
+                    runner.check_stage_deadline(100, "turn", phase)
+            runner.check_stage_deadline(101, "turn", "awaiting_answer_evidence")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups required")
+    def test_owned_process_group_cleanup(self):
+        process = subprocess.Popen(["/bin/sleep", "30"], start_new_session=True,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        adapter = runner.AppServer.__new__(runner.AppServer)
+        adapter.proc = process
+        adapter.owned = OwnedProcess(process)
+        adapter.errors = (self.root / "stderr.log").open("xb")
+        result = adapter.close(5)
+        self.assertTrue(result["owned_process_exited"])
+        self.assertTrue(result["process_group_kill_attempted"])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups required")
+    def test_cleanup_reports_signal_denial_without_masking_host_exit(self):
+        process = subprocess.Popen(["/usr/bin/true"], start_new_session=True,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        process.wait(timeout=5)
+        adapter = runner.AppServer.__new__(runner.AppServer)
+        adapter.proc = process
+        adapter.owned = OwnedProcess(process)
+        adapter.errors = (self.root / "denied-stderr.log").open("xb")
+        with mock.patch.object(runner.os, "killpg", side_effect=PermissionError):
+            result = adapter.close(1)
+        self.assertTrue(result["owned_process_exited"])
+        self.assertEqual(result["process_group_cleanup_error"],
+                         "process_group_signal_denied")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -27,7 +27,28 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
 
-PRODUCT_VERSION = "0.14.1"
+try:
+    from cg_instruction import action_matches as lexical_action_matches
+    from cg_instruction import fragments, governed_test_action, instruction_text
+except ModuleNotFoundError as exc:
+    if exc.name != "cg_instruction":
+        raise
+    # File-spec embedders need the same sibling module as the installed CLI.
+    import importlib.util
+
+    _instruction_spec = importlib.util.spec_from_file_location(
+        "cg_instruction", Path(__file__).resolve().with_name("cg_instruction.py"))
+    if _instruction_spec is None or _instruction_spec.loader is None:
+        raise
+    _instruction_module = importlib.util.module_from_spec(_instruction_spec)
+    sys.modules["cg_instruction"] = _instruction_module
+    _instruction_spec.loader.exec_module(_instruction_module)
+    lexical_action_matches = _instruction_module.action_matches
+    fragments = _instruction_module.fragments
+    governed_test_action = _instruction_module.governed_test_action
+    instruction_text = _instruction_module.instruction_text
+
+PRODUCT_VERSION = "0.14.2"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -140,6 +161,474 @@ def delivery() -> Any:
         _DELIVERY_MODULE = module
     return _DELIVERY_MODULE
 
+
+
+def commentary_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "cg_commentary", Path(__file__).resolve().with_name("cg_commentary.py"))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("commentary module unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def commentary_observation(
+    session_dir: Path, state: dict[str, Any], payload: dict[str, Any],
+    *, prior: dict[str, Any] | None = None, review_roots=None,
+    codex_home: Path | None = None,
+) -> dict[str, Any]:
+    """Read Host messages separately from final delivery and task closure."""
+    module = commentary_module()
+    session = state.get("session", {})
+    path = payload.get("transcript_path")
+    if (state.get("integrity", {}).get("status") != "ok"
+            or payload.get("session_id") != session.get("id")
+            or not isinstance(path, str) or path != session.get("transcript_path")):
+        return module.unknown("host_route_unavailable")
+    roots = []
+    source_bound = bool(os.environ.get("CODEX_ROLLOUT_TRACE_ROOT"))
+    def complete_prompt_catalog():
+        names = set()
+        try:
+            for candidate in (session_dir / "prompts").glob("P*.json"):
+                names.add(candidate.name)
+                if len(names) > 512:
+                    return False
+        except OSError:
+            return False
+        return names == {str(p.get("id")) + ".json" for p in state.get("prompts", [])}
+    if source_bound and not complete_prompt_catalog():
+        return module.unknown("incomplete_root_catalog")
+    root_records = []
+    for prompt in state.get("prompts", []):
+        if prompt.get("origin", "human") != "human":
+            continue
+        record = read_prompt_record(session_dir, prompt)
+        if record is None:
+            return module.unknown("root_integrity_unavailable")
+        root_records.append((prompt, record))
+        roots.append({"id": record["id"], "origin": "human",
+                      "text": record["text"],
+                      "record_sha256": record.get("record_sha256"),
+                      "turn_id": record.get("turn_id"), "sha256": record["sha256"],
+                      "question_ids": [i["id"] for i in state.get("requirements", [])
+                                       if i.get("prompt_id") == record["id"]
+                                       and _delivable_question(i, state)]})
+    home = Path(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().absolute()
+    result = module.observe(Path(path), home / "sessions", str(session["id"]), roots, prior=prior, review_roots=review_roots)
+    if source_bound and (not complete_prompt_catalog() or any(
+            read_prompt_record(session_dir, prompt) != record for prompt, record in root_records)):
+        return module.unknown("root_catalog_changed")
+    result["state_hash"] = state_content_hash(state)
+    return result
+
+
+
+def read_commentary_projection(path: Path, session_id: str) -> tuple[str, dict[str, Any] | None]:
+    """Bounded derived-data decoder shared by writers and all display paths.
+
+    This boundary catches only observation file/codec failures. State loading,
+    require_usable_state and core integrity enforcement remain outside it.
+    """
+    try:
+        try:
+            before_path = path.lstat()
+        except FileNotFoundError:
+            return "absent", None
+        if (not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1
+                or before_path.st_size > 2 * 1024 * 1024):
+            return "unknown", None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                return "unknown", None
+            raw = handle.read(2 * 1024 * 1024 + 1)
+            after = os.fstat(handle.fileno())
+        after_path = path.lstat()
+        if (not commentary_module().stable_snapshot(before_path, before, after, after_path)
+                or len(raw) != before.st_size or len(raw) > 2 * 1024 * 1024):
+            return "unknown", None
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate_observation_key")
+                result[key] = value
+            return result
+        def invalid_constant(value):
+            raise ValueError("nonfinite_observation_value")
+        report = json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+                            parse_constant=invalid_constant)
+        if not isinstance(report, dict):
+            return "unknown", None
+        stack = [(report, 0)]
+        while stack:
+            value, depth = stack.pop()
+            if depth > 32:
+                return "unknown", None
+            if isinstance(value, dict):
+                stack.extend((v, depth + 1) for v in value.values())
+            elif isinstance(value, list):
+                stack.extend((v, depth + 1) for v in value)
+            elif not (value is None or isinstance(value, (str, int, bool))):
+                return "unknown", None
+        digest = report.pop("projection_sha256", None)
+        if not isinstance(digest, str) or digest != sha256_text(canonical_json(report)):
+            return "unknown", None
+        if not valid_commentary_projection(report, session_id):
+            return "unknown", None
+        return "valid", report
+    except (OSError, UnicodeError, ValueError, TypeError, RecursionError):
+        return "unknown", None
+
+
+def valid_commentary_projection(report: dict[str, Any], session_id: str) -> bool:
+    """Validate only the independent observation schema, never core state."""
+    fields = {"schema", "source", "status", "reason", "snapshot_sha256", "watermark",
+              "messages", "answer_coverage", "execution_closure", "scanned_bytes",
+              "prefix_sha256", "message_count", "messages_omitted", "root_candidate_count",
+              "file_identity", "state_hash", "integrity_anchor", "session_id"}
+    if (set(report) - fields or report.get("schema") != "commentary-observation/v1"
+            or report.get("source") != "codex-transcript-item-completed/v1"
+            or report.get("session_id") != session_id
+            or not isinstance(report.get("status"), str)
+            or report["status"] not in {"observed", "unknown"}
+            or report.get("answer_coverage") != "unknown"
+            or report.get("execution_closure") != "unchanged"):
+        return False
+    def integer(value):
+        return type(value) is int and value >= 0
+    def digest(value):
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    def identifier(value):
+        return isinstance(value, str) and 0 < len(value) <= 200
+    def file_id(value):
+        return (isinstance(value, dict) and set(value) ==
+                {"device", "inode", "bytes", "mtime_ns", "ctime_ns"}
+                and all(integer(v) for v in value.values()) and value["bytes"] <= 512 * 1024 * 1024)
+    if report.get("reason") is not None and not isinstance(report["reason"], str):
+        return False
+    for name in ("snapshot_sha256", "prefix_sha256", "state_hash"):
+        if report.get(name) is not None and not digest(report[name]):
+            return False
+    for name in ("watermark", "scanned_bytes"):
+        if report.get(name) is not None and not integer(report[name]):
+            return False
+    if "file_identity" in report and not file_id(report["file_identity"]):
+        return False
+    anchor = report.get("integrity_anchor")
+    if anchor is not None and (not isinstance(anchor, dict)
+            or set(anchor) != {"file_identity", "snapshot_sha256", "scanned_bytes"}
+            or not file_id(anchor["file_identity"]) or not digest(anchor["snapshot_sha256"])
+            or not integer(anchor["scanned_bytes"])
+            or anchor["scanned_bytes"] != anchor["file_identity"]["bytes"]):
+        return False
+    messages = report.get("messages")
+    if not isinstance(messages, list) or len(messages) > 512:
+        return False
+    seen = set()
+    for message in messages:
+        if (not isinstance(message, dict) or set(message) != {
+                "message_id", "turn_id", "phase", "started_at_ms", "completed_at_ms",
+                "reply_sha256", "observation", "association", "root_id", "root_sha256",
+                "question_candidates", "answer_coverage", "execution_closure"}):
+            return False
+        mid = message.get("message_id")
+        if (not identifier(mid) or mid in seen or not identifier(message.get("turn_id"))
+                or not digest(message.get("reply_sha256"))
+                or not integer(message.get("started_at_ms"))
+                or not integer(message.get("completed_at_ms"))
+                or message["completed_at_ms"] < message["started_at_ms"]
+                or message.get("observation") != "message_completed"
+                or message.get("answer_coverage") != "unknown"
+                or message.get("execution_closure") != "unchanged"):
+            return False
+        seen.add(mid)
+        phase = message.get("phase")
+        if phase is not None and (not isinstance(phase, str) or phase not in {"commentary", "final_answer"}):
+            return False
+        association = message.get("association")
+        if not isinstance(association, str) or association not in {"unique_root_candidate", "unknown"}:
+            return False
+        questions = message.get("question_candidates")
+        if not isinstance(questions, list) or not all(identifier(q) for q in questions):
+            return False
+        if association == "unique_root_candidate":
+            if (phase != "commentary" or not identifier(message.get("root_id"))
+                    or not digest(message.get("root_sha256"))):
+                return False
+        elif message.get("root_id") is not None or message.get("root_sha256") is not None or questions:
+            return False
+    total = report.get("message_count", len(messages))
+    omitted = report.get("messages_omitted", 0)
+    candidates = report.get("root_candidate_count", sum(m["association"] == "unique_root_candidate" for m in messages))
+    if (not integer(total) or not len(messages) <= total <= 8192
+            or not integer(omitted) or omitted != total - len(messages)
+            or not integer(candidates) or not 0 <= candidates <= total):
+        return False
+    if report["status"] == "unknown" and (messages or total or omitted or candidates):
+        return False
+    if report["status"] == "observed" and (
+            not messages or not digest(report.get("snapshot_sha256"))
+            or not file_id(report.get("file_identity"))
+            or not integer(report.get("scanned_bytes"))
+            or report["scanned_bytes"] != report["file_identity"]["bytes"]
+            or not integer(report.get("watermark")) or report["watermark"] == 0
+            or report.get("reason") is not None):
+        return False
+    return True
+
+def record_commentary_observation(
+    session_dir: Path, state: dict[str, Any], payload: dict[str, Any],
+) -> None:
+    # Replace only this derived snapshot, never prompts, delivery or old state.
+    # Missing/invalid current input produces unknown rather than retaining a
+    # convenient prior snapshot as current evidence.
+    path = session_dir / "commentary-observation.json"
+    prior = None
+    status, old = read_commentary_projection(path, str(state["session"]["id"]))
+    if status == "unknown":
+        return  # Preserve corrupt/unreadable derived bytes; never adopt an anchor.
+    if old is not None:
+        prior = old.get("integrity_anchor")
+    result = commentary_observation(session_dir, state, payload, prior=prior)
+    if result.get("file_identity") and result.get("snapshot_sha256"):
+        prior = {key: result[key] for key in ("file_identity", "snapshot_sha256", "scanned_bytes")}
+    result["integrity_anchor"] = prior  # Never reused as message/answer evidence.
+    result["session_id"] = state["session"]["id"]
+    result["projection_sha256"] = sha256_text(canonical_json(result))
+    atomic_write_json(path, result)
+
+
+def answer_review_module():
+    # Sibling import also supports isolated file-spec embedders.
+    import importlib.util
+    name = "cg_answer_review"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(name + ".py"))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def answer_review_subject(session_dir, state, item):
+    """Check only source-bound question eligibility, without scanning messages."""
+    if (state.get("integrity", {}).get("status") != "ok"
+            or item.get("status") != "pending" or item.get("constraint_scope") == "session"
+            or item.get("execution_kind") or item.get("verification_contract", {}).get("mode") == "enforced"
+            or _root_control_item_action(item) is not None
+            or not (item.get("information_source_span") is not None
+                    or clause_is_interrogative(str(item.get("text") or "")))):
+        raise ValueError("not_independent_information")
+    metadata = next((p for p in state["prompts"] if p["id"] == item.get("prompt_id")), None)
+    root = read_prompt_record(session_dir, metadata) if metadata else None
+    if not root or root.get("origin", "human") != "human" or not root.get("turn_id"):
+        raise ValueError("missing_question_source")
+    raw = root["text"].encode("utf-8")
+    span = item.get("information_source_span", [0, len(raw)])
+    if (not isinstance(span, list) or len(span) != 2 or any(type(v) is not int for v in span)
+            or not 0 <= span[0] < span[1] <= len(raw)):
+        raise ValueError("invalid_question_span")
+    question = raw[span[0]:span[1]].decode("utf-8")
+    if bounded(question, 900) != item["text"]:
+        raise ValueError("question_source_mismatch")
+    return {"subject": {"session_id": state["session"]["id"], "root_id": root["id"],
+                        "root_sha256": root["sha256"], "question_id": item["id"],
+                        "span_utf8": span, "question_sha256": sha256_text(question), "turn_id": root["turn_id"]},
+            "root_text": root["text"], "question_text": question}
+
+
+def answer_review_catalog(session_dir, state):
+    catalog = []
+    for item in state.get("requirements", []):
+        try:
+            catalog.append(answer_review_subject(session_dir, state, item))
+        except (OSError, ValueError, TypeError, KeyError, RecursionError):
+            continue
+    return catalog
+
+
+def answer_review_source(session_dir, state, *, catalog=None, codex_home=None):
+    """One ephemeral, verified parse shared only within the current projection."""
+    payload = {"session_id": state["session"]["id"],
+               "transcript_path": state["session"].get("transcript_path")}
+    catalog = answer_review_catalog(session_dir, state) if catalog is None else catalog
+    review_roots = {q["subject"]["root_id"] for q in catalog}
+    observation = commentary_observation(
+        session_dir, state, payload, review_roots=review_roots,
+        codex_home=codex_home,
+    )
+    if observation.get("status") != "observed":
+        raise ValueError("message_source_unknown")
+    texts, records, positions = {}, {}, {}
+    overflow = set(observation.get("review_overflow_roots", []))
+    by_mid = {m["message_id"]: m for m in observation["messages"]}
+    text_bytes = {}
+    mids = set(by_mid)
+    snapshot = hashlib.sha256()
+    source_module = commentary_module()
+    with Path(payload["transcript_path"]).open("rb") as stream:
+        ordinal, scanned = 0, 0
+        while line := stream.readline(2 * 1024 * 1024 + 1):
+            ordinal += 1
+            scanned += len(line)
+            if scanned > observation["scanned_bytes"]:
+                raise ValueError("snapshot_grew_during_review")
+            if len(line) > 2 * 1024 * 1024:
+                raise ValueError("oversize_record")
+            snapshot.update(line)
+            selected = source_module.message_event(source_module.decode_record(line))
+            if selected is None:
+                continue
+            event, message = selected
+            mid = message["id"]
+            if mid in mids:
+                root_id = by_mid[mid]["root_id"]
+                if root_id in overflow:
+                    continue
+                text = "".join(part["text"] for part in message["content"])
+                if mid not in records:
+                    text_bytes[root_id] = text_bytes.get(root_id, 0) + len(text.encode("utf-8"))
+                if text_bytes[root_id] > answer_review_module().LIMIT:
+                    overflow.add(root_id)
+                    for retained in list(texts):
+                        if by_mid[retained]["root_id"] == root_id:
+                            del texts[retained]
+                    continue
+                identity = hashlib.sha256(line).hexdigest()
+                if mid in records and records[mid] != identity:
+                    raise ValueError("conflicting_raw_message")
+                records[mid], texts[mid] = identity, text
+                positions.setdefault(mid, ordinal)
+    if snapshot.hexdigest() != observation["snapshot_sha256"] or ordinal != observation["watermark"]:
+        raise ValueError("snapshot_changed_during_review")
+    messages = []
+    for message in observation["messages"]:
+        if message["root_id"] in overflow:
+            continue
+        mid = message["message_id"]
+        if sha256_text(texts.get(mid, "")) != message["reply_sha256"]:
+            raise ValueError("message_changed")
+        messages.append({**message, "record_sha256": records[mid], "source_ordinal": positions[mid]})
+    return {"messages": messages, "answer_texts": texts, "overflow_roots": sorted(overflow),
+            "as_of": {"source": "codex-transcript-item-completed/v1",
+                      "snapshot_sha256": observation["snapshot_sha256"], "watermark": ordinal}}
+
+
+def answer_review_request(session_dir, state, item, *, source=None, catalog=None,
+                          codex_home=None):
+    target = answer_review_subject(session_dir, state, item)
+    subject = target["subject"]
+    catalog = answer_review_catalog(session_dir, state) if catalog is None else catalog
+    source = (answer_review_source(session_dir, state, catalog=catalog,
+                                   codex_home=codex_home)
+              if source is None else source)
+    if subject["root_id"] in source["overflow_roots"]:
+        raise ValueError("relevant_message_budget_exceeded")
+    questions = [q["subject"] for q in catalog if q["subject"]["root_id"] == subject["root_id"]]
+    questions.sort(key=lambda q: (q["span_utf8"], q["question_id"]))
+    messages = [m for m in source["messages"] if m["root_id"] == subject["root_id"]
+                and m["root_sha256"] == subject["root_sha256"] and m["turn_id"] == subject["turn_id"]
+                and m["phase"] == "commentary"]
+    if not messages:
+        raise ValueError("no_source_bound_commentary")
+    if any(a["completed_at_ms"] >= b["started_at_ms"]
+           for a, b in zip(messages, messages[1:])):
+        raise ValueError("ambiguous_message_order")
+    return {**target, "question_catalog": questions, "messages": messages,
+            "answer_texts": {m["message_id"]: source["answer_texts"][m["message_id"]] for m in messages},
+            "as_of": source["as_of"]}
+
+
+def reviewed_information(state, session_dir=None, *, codex_home=None):
+    """Read-only information projection; no core status, wait or proof writes."""
+    directory = session_dir or session_dir_for({"session_id": state.get("session", {}).get("id")})
+    reviews = directory / "answer-reviews"
+    if not reviews.is_dir():
+        return {}
+    catalog = answer_review_catalog(directory, state)
+    if not catalog:
+        return {}
+    result = {q["subject"]["question_id"]: {
+        "coverage": "unknown", "basis": "independent_review", "judgment": None} for q in catalog}
+    try:
+        source = answer_review_source(directory, state, catalog=catalog,
+                                      codex_home=codex_home)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        return result
+    module = answer_review_module()
+    for item in state.get("requirements", []):
+        if item["id"] not in result:
+            continue
+        try:
+            request = answer_review_request(directory, state, item, source=source,
+                                            catalog=catalog, codex_home=codex_home)
+            result[item["id"]] = module.replay(reviews, request["subject"], request["messages"],
+                                              request["question_catalog"], request["as_of"])
+        except (OSError, ValueError, TypeError, KeyError, RecursionError):
+            pass
+    return result
+
+
+def commentary_summary(session_dir: Path | None, state: dict[str, Any]) -> dict[str, Any]:
+    """Display a verified derived snapshot, never re-certify it as current."""
+    empty = {"status": "absent", "recorded_messages": 0, "root_candidates": 0,
+             "answer_coverage": "unknown", "execution_closure": "unchanged",
+             "freshness": "unavailable", "watermark": None}
+    if session_dir is None:
+        return empty
+    invalid = {**empty, "status": "unknown"}
+    if state.get("integrity", {}).get("status") != "ok":
+        return invalid
+    status, report = read_commentary_projection(
+        session_dir / "commentary-observation.json", str(state.get("session", {}).get("id")))
+    if status == "absent":
+        return empty
+    if status != "valid" or report is None:
+        return invalid
+    messages = report["messages"]
+    try:
+        freshness = "unavailable"
+        source_path = state.get("session", {}).get("transcript_path")
+        if isinstance(source_path, str) and not Path(source_path).is_symlink():
+            source = Path(source_path)
+            before_path = source.lstat()
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            with os.fdopen(os.open(source, flags), "rb") as handle:
+                current = os.fstat(handle.fileno())
+                after = os.fstat(handle.fileno())
+            module = commentary_module()
+            if (stat.S_ISREG(current.st_mode) and current.st_nlink == 1
+                    and module.stable_snapshot(before_path, current, after, source.lstat())):
+                freshness = ("unchanged_snapshot" if module.file_identity(current)
+                             == report.get("file_identity") else "source_changed")
+        watermark = report.get("watermark")
+        total = report.get("message_count", len(messages))
+        candidates = report.get("root_candidate_count", sum(m.get("association") == "unique_root_candidate" for m in messages))
+        if (type(total) is not int or not len(messages) <= total <= 8192
+                or type(candidates) is not int or not 0 <= candidates <= total
+                or report.get("messages_omitted", 0) != total - len(messages)):
+            return invalid
+        return {**empty, "status": report["status"], "freshness": freshness,
+                "recorded_messages": total, "messages_omitted": total - len(messages),
+                "root_candidates": candidates,
+                "watermark": watermark if type(watermark) is int and watermark >= 0 else None}
+    except (OSError, ValueError, TypeError, KeyError):
+        return invalid
+
+
+def commentary_summary_text(summary: dict[str, Any]) -> str:
+    if summary["status"] == "absent":
+        return ""
+    return (f" Recorded message snapshot: {summary['recorded_messages']} messages, "
+            f"{summary['root_candidates']} root candidates; {summary['freshness']}; "
+            "answer coverage unknown, no closure.")
 
 def response_delivery_ledger() -> dict[str, Any]:
     return {
@@ -677,6 +1166,19 @@ ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     )),
     ("artifact_work", re.compile(r"\b(?:import|download|configure|configuration)\w*\b|(?:导入|下载|配置|打开页面|处理PDF|PDF\s*阶段)", re.I)),
 )
+def action_matches(pattern: re.Pattern[str], text: str) -> list[re.Match[str]]:
+    matches = lexical_action_matches(pattern, text)
+    if not matches and pattern is dict(ACTION_PATTERNS)["test_verify"]:
+        governor = governed_test_action(text)
+        if governor is not None:
+            matches = [governor]
+    return matches
+
+
+def action_search(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+    return next(iter(action_matches(pattern, text)), None)
+
+
 # A trailing test/verify signal certifies a concrete action rather than
 # replacing it. Review/CI signals remain verification operations themselves,
 # so combinations such as "check and verify" stay deliberately ambiguous.
@@ -7189,7 +7691,7 @@ def _action_clause_time_state(clause: str, category: str) -> str:
         if action is None:
             return "unsupported"
     else:
-        matches = list(pattern.finditer(clause)) if pattern is not None else []
+        matches = list(action_matches(pattern, clause)) if pattern is not None else []
         if matches:
             action = _root_action_head(clause, pattern)
         elif ((command := _direct_shell_command_object(clause)) is not None
@@ -7211,11 +7713,11 @@ def _action_clause_time_state(clause: str, category: str) -> str:
     # ``别`` is a negator as a standalone imperative but is lexical material
     # in ``分别``.  Normalize that coordinator before applying the repository's
     # established clause-negation grammar.
-    normalized = clause.replace("分别", "")
+    normalized = instruction_text(clause).replace("分别", "")
     if (CLAUSE_NEGATION_RE.search(normalized)
             or REPLY_ACTION_NEGATION_PREFIX_RE.search(normalized)):
         return "denied"
-    if DEFERRED_ACTION_CLAUSE_RE.search(clause):
+    if DEFERRED_ACTION_CLAUSE_RE.search(instruction_text(clause)):
         return "future_observation"
     if _root_action_condition(clause, action) is not None:
         return "waiting"
@@ -7982,7 +8484,9 @@ def canonical_windows_locator(raw: str) -> tuple[str | None, str | None]:
         raw_components = raw_components[:-1]
     for component in raw_components:
         if any(char in '<>"|?*' or ord(char) < 32 for char in component):
-            return None, "invalid_character"
+            # Use the existing opaque-unverifiable identity contract. An
+            # undeclared reason token would raise while parsing the root.
+            return None, "physical_identity"
         if component in {".", ".."}:
             continue
         if component != component.rstrip(" "):
@@ -8262,6 +8766,13 @@ def visual_reference_source_text(text: str) -> str:
     def mask(start: int, end: int) -> None:
         for index in range(start, end):
             hidden[index] = True
+
+    for match in _QUOTED_SPAN_RE.finditer(text):
+        candidate = match.group(0)[1:-1]
+        is_locator = (candidate.startswith(("/", "./", "../", "https://", "http://"))
+                      or WINDOWS_ABSOLUTE_PATH_RE.match(candidate))
+        if not is_locator:
+            mask(*match.span())
 
     # A quoted absolute locator may contain spaces or punctuation. Its whole
     # value is one object even where a prose path scanner would stop early.
@@ -8750,25 +9261,32 @@ def reconcile_transcript_assets(
 
 
 def _protected_prompt_clauses(text: str) -> list[str]:
-    protected = re.sub(
-        r"\b(?:do\s+not|don't|must\s+not|should\s+not)\s+skip\s+",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    )
-    protected = re.sub(r"(?:不要|不得|不能)\s*(?:跳过|遗漏)", "", protected)
-    protected = re.sub(r"(?:不能|不可)\s*不\s*", "", protected)
-    protected = re.sub(
-        r"\b(?:do\s+not|don't|never)\s+(?:stop|pause|yield|end)\b",
-        "",
-        protected,
-        flags=re.IGNORECASE,
-    )
-    return [
-        clause.strip()
-        for clause in re.split(r"[\n。！？!?；;，,]+", protected)
-        if clause.strip()
-    ]
+    protected_parts = []
+    for part in fragments(text):
+        if part.kind != "instruction":
+            protected_parts.append(part.text)
+            continue
+        protected = re.sub(
+            r"\b(?:do\s+not|don't|must\s+not|should\s+not)\s+skip\s+",
+            "", part.text, flags=re.IGNORECASE,
+        )
+        protected = re.sub(r"(?:不要|不得|不能)\s*(?:跳过|遗漏)", "", protected)
+        protected = re.sub(r"(?:不能|不可)\s*不\s*", "", protected)
+        protected = re.sub(
+            r"\b(?:do\s+not|don't|never)\s+(?:stop|pause|yield|end)\b",
+            "", protected, flags=re.IGNORECASE,
+        )
+        protected_parts.append(protected)
+    protected = "".join(protected_parts)
+    result = []
+    start = 0
+    for cut in re.finditer(r"[\n。！？!?；;，,]+", instruction_text(protected, preserve_newlines=False)):
+        if protected[start:cut.start()].strip():
+            result.append(protected[start:cut.start()].strip())
+        start = cut.end()
+    if protected[start:].strip():
+        result.append(protected[start:].strip())
+    return result
 
 
 def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
@@ -8781,11 +9299,11 @@ def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
         re.IGNORECASE,
     )
     for clause in _protected_prompt_clauses(prompt_text):
-        negative = bool(negation.search(clause))
+        negative = bool(negation.search(instruction_text(clause)))
         if not negative:
             positive_clauses.append(clause)
         for category, pattern in ACTION_PATTERNS:
-            if pattern.search(clause):
+            if action_search(pattern, clause):
                 (denied if negative else authorized).add(category)
     positive_text = "\n".join(positive_clauses)
     broad = bool(
@@ -8898,8 +9416,8 @@ def _completion_match_is_nonassertive(
 def _reply_action_match(
     pattern: re.Pattern[str], text: str
 ) -> re.Match[str] | None:
-    for match in pattern.finditer(text):
-        prefix = text[max(0, match.start() - 64) : match.start()]
+    for match in action_matches(pattern, text):
+        prefix = instruction_text(text[max(0, match.start() - 64) : match.start()])
         future_matches = list(EXPLICIT_ASSISTANT_FUTURE_RE.finditer(prefix))
         if future_matches:
             prefix = prefix[future_matches[-1].start() :]
@@ -8971,6 +9489,7 @@ def _root_action_condition(
     pending. These forms describe clause structure, not named incident words.
     """
     prefix = source[:action_match.start()].strip()
+    semantic_source = instruction_text(source)
     # The category token can be a trailing object noun (for example the word
     # ``test`` in a named test object).  Recover a leading antecedent from the
     # whole sourced clause rather than assuming the token immediately follows
@@ -8980,29 +9499,30 @@ def _root_action_condition(
         r"\s*((?:(?:收到|获得|拿到|等到|等待)[^。！？,，;；]{1,80}|"
         r"在[^。！？,，;；]{1,80}(?:确认|完成|就绪|恢复))(?:之后|后))"
         r"(?=再|便|就|才|运行|执行|测试|验证|评估|检查|核对|使用|调用|读取|回读|\s)",
-        source,
+        semantic_source,
     )
     if leading_zh and not re.fullmatch(
         r"(?:今后|以后|往后|日后|然后|随后|之后)", leading_zh.group(1).strip()
     ):
-        prefix = leading_zh.group(1).strip()
+        prefix = source[leading_zh.start(1):leading_zh.end(1)].strip()
     else:
-        leading_en = re.match(r"\s*((?:after|once|when|until)\b[^,;，；]{1,96})[,;，；\s]+", source, re.I)
+        leading_en = re.match(r"\s*((?:after|once|when|until)\b[^,;，；]{1,96})[,;，；\s]+", semantic_source, re.I)
         if leading_en:
-            prefix = leading_en.group(1).strip()
+            prefix = source[leading_en.start(1):leading_en.end(1)].strip()
     if not prefix:
         return None
-    if re.search(r"(?:后|之后|以后)\s*$|\b(?:after|once|when|until)\b", prefix, re.I):
+    semantic_prefix = instruction_text(prefix)
+    if re.search(r"(?:后|之后|以后)\s*$|\b(?:after|once|when|until)\b", semantic_prefix, re.I):
         kind = "external_dependency" if re.search(
             r"外部|第三方|平台|审批|审核|批准|\b(?:external|third[- ]party|platform|approval|review)\b",
-            prefix, re.I,
+            semantic_prefix, re.I,
         ) else "predicate"
         return prefix, kind
     if re.search(
         r"(?:上|下|本|明|后|第\d+|\d{4}年)?\d*(?:周|星期|月|年|季度|天|日)\s*$"
         r"|\b(?:next|following)\s+(?:week|month|year|quarter|day)\b"
         r"|\b\d{4}-\d{2}-\d{2}\b",
-        prefix, re.I,
+        semantic_prefix, re.I,
     ):
         return prefix, "predicate"
     return None
@@ -9010,7 +9530,7 @@ def _root_action_condition(
 
 def _root_action_head(source: str, pattern: re.Pattern[str]) -> re.Match[str]:
     """Choose the effect after an antecedent, not an action word within it."""
-    matches = list(pattern.finditer(source))
+    matches = action_matches(pattern, source)
     for match in reversed(matches):
         if _root_action_condition(source, match):
             return match
@@ -9170,8 +9690,9 @@ def _sourced_readback_host_matches(
 
 def _direct_anaphoric_edit(clause: str) -> bool:
     """A present edit imperative with an object pronoun, not an object choice."""
-    if (CLAUSE_NEGATION_RE.search(clause) or NEGATED_CLAUSE_RE.search(clause)
-            or DESCRIPTION_FRAME_RE.search(clause) or clause_is_interrogative(clause)):
+    speech = instruction_text(clause)
+    if (CLAUSE_NEGATION_RE.search(speech) or NEGATED_CLAUSE_RE.search(speech)
+            or DESCRIPTION_FRAME_RE.search(speech) or clause_is_interrogative(speech)):
         return False
     if not re.match(r"\s*(?:现在)?\s*(?:请|随后|然后|再|把|将|please\b|then\b|change\b)", clause, re.I):
         return False
@@ -9467,43 +9988,25 @@ def _action_source_clauses(text: str) -> list[str]:
     report of somebody else's command. Only a complete quoted locator is
     shielded while that filter splits the root into speech clauses.
     """
-    marker_open, marker_close = "\ue000", "\ue001"
-    if marker_open in text or marker_close in text:
-        return control_speech_clauses(text)
-    replacements: list[str] = []
-
-    def shield(match: re.Match[str]) -> str:
-        candidate = match.group(2)
-        if match.group(1) == "`":
-            sentence_start = max(text.rfind(mark, 0, match.start()) for mark in
-                                 "\n。！？!?；;，,") + 1
-            governed = _direct_shell_command_object(text[sentence_start:])
-            valid = governed is not None or (
-                (WINDOWS_ABSOLUTE_PATH_RE.match(candidate) is not None
-                 and canonical_windows_locator(candidate) == (candidate, None)) or
-                (candidate.startswith("/") and ".." not in Path(candidate).parts)
-            )
+    # Shield complete objects before speech/clause splitting, then restore the
+    # exact original slices. Action consumers separately use instruction_text;
+    # object identity and all source hashes continue to use original bytes.
+    marker = "\ue000"
+    while marker in text:
+        marker += "\ue000"
+    replacements = []
+    shielded = []
+    for part in fragments(text):
+        if part.kind == "instruction":
+            shielded.append(part.text)
         else:
-            found, ambiguous = root_absolute_locator_mentions(match.group(0))
-            valid = not ambiguous and found == {candidate}
-        if not valid:
-            return match.group(0)
-        index = len(replacements)
-        replacements.append(match.group(0))
-        return f"{marker_open}{index}{marker_close}"
-
-    shielded = re.sub(r"([\"'`])([^\n]*?)\1", shield, text)
-    # Preserve dots in unquoted locators as well. A quoted locator is already
-    # one opaque token, including any spaces or punctuation in its filename.
-    for pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
-                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
-        shielded = pattern.sub(lambda match: match.group(0).replace(".", "\u241f"), shielded)
-    clauses = control_speech_clauses(shielded)
+            token = f"{marker}{len(replacements)}\ue001"
+            replacements.append((token, part.text))
+            shielded.append(token)
     restored = []
-    for clause in clauses:
-        clause = clause.replace("\u241f", ".")
-        for index, original in enumerate(replacements):
-            clause = clause.replace(f"{marker_open}{index}{marker_close}", original)
+    for clause in control_speech_clauses("".join(shielded)):
+        for token, original in replacements:
+            clause = clause.replace(token, original)
         restored.append(clause)
     return restored
 
@@ -9568,6 +10071,7 @@ def _current_action_basis(
     session_dir: Path | None = None, *, include_satisfied: bool = False,
     allowed_item_ids: set[str] | None = None,
     include_unready: bool = False, include_controlled: bool = False,
+    _root_records: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """Bind a candidate action to an unmet, current root requirement.
 
@@ -9610,7 +10114,7 @@ def _current_action_basis(
                            and p.get("origin", "human") == "human"), None)
             if prompt is None:
                 continue
-            roots = {
+            roots = _root_records if _root_records is not None else {
                 str(p["id"]): record
                 for p in state.get("prompts", [])
                 if isinstance(p, dict) and p.get("origin", "human") == "human"
@@ -9620,6 +10124,8 @@ def _current_action_basis(
             if root_record is None:
                 continue
             root_text = root_record["text"]
+            if any(part.kind == "ambiguous_object" for part in fragments(root_text)):
+                continue
             if item.get("execution_source_span") is None and any(
                 child.get("parent_id") == item.get("id")
                 and child.get("execution_source_span") is not None
@@ -9642,7 +10148,7 @@ def _current_action_basis(
                 clauses = [child_scope]
             sources = [c for c in clauses
                        if (item.get("execution_kind") == category
-                           or pattern.search(c)
+                           or action_search(pattern, c)
                            or category == "local_edit" and _direct_anaphoric_edit(c)
                            or (command_object := _direct_shell_command_object(c)) is not None
                            and command_object[0] == category)
@@ -9650,8 +10156,8 @@ def _current_action_basis(
                             or _action_clause_time_state(c, category)
                             in {"current", "waiting"})
                        and not _result_report_clause(c)
-                       and not CLAUSE_NEGATION_RE.search(c.replace("分别", ""))
-                       and not DESCRIPTION_FRAME_RE.search(c)]
+                       and not CLAUSE_NEGATION_RE.search(instruction_text(c).replace("分别", ""))
+                       and not DESCRIPTION_FRAME_RE.search(instruction_text(c))]
             if len(sources) != 1:
                 continue
             source = sources[0]
@@ -9680,13 +10186,13 @@ def _current_action_basis(
                 sentence_start = max(root_text.rfind(mark, 0, source_at)
                                      for mark in "\n。！？!?；;") + 1
                 candidate = root_text[sentence_start:source_at + len(source)].strip()
-                candidate_action = _root_action_head(candidate, pattern) if pattern.search(candidate) else None
+                candidate_action = _root_action_head(candidate, pattern) if action_search(pattern, candidate) else None
                 if (candidate_action is not None
                         and candidate.count(",") + candidate.count("，") > 0
                         and _root_action_condition(candidate, candidate_action)):
                     source = candidate
             condition_action = (_root_action_head(source, pattern)
-                                if pattern.search(source) else None)
+                                if action_search(pattern, source) else None)
             if condition_action is None and direct_command is not None:
                 condition_action = re.search(re.escape(direct_command[2]), source)
             condition_scope = (_root_action_condition(source, condition_action)
@@ -9745,16 +10251,13 @@ def _current_action_basis(
                     continue
             # A single sentence can carry independent effects. One host test
             # result cannot interpret and close an adjacent edit/review verb.
-            semantic_source = re.sub(r"`[^`\n]+`", "对象", source)
-            for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
-                                    ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
-                semantic_source = locator_pattern.sub("对象", semantic_source)
+            semantic_source = instruction_text(source)
             if any(other != category and not (
                 category == "local_edit" and other in {"local_review", "test_verify"}
                 and (dependent_readback or re.search(r"(?:并|然后)\s*核对(?:文件)?内容|\band\s+verify\s+the\s+changed\s+file\b", source, re.I))
             ) and any(
                 not semantic_source[match.end():].startswith("的")
-                for match in other_pattern.finditer(semantic_source)
+                for match in action_matches(other_pattern, source)
             ) for other, other_pattern in ACTION_PATTERNS):
                 continue
             if WINDOWS_UNC_PATH_RE.search(source):
@@ -9907,7 +10410,7 @@ def _current_action_basis(
                         and (resume_match := EXECUTION_RESUME_RE.search(prefix)) is not None
                         and resume_match.end() == len(prefix)
                         and len(control_speech_clauses(prefix)) == 1
-                        and not any(p.search(prefix) for _, p in ACTION_PATTERNS)
+                        and not any(action_search(p, prefix) for _, p in ACTION_PATTERNS)
                     ),
                 )
                 if category == "state_readback" and direct_command is not None:
@@ -10458,15 +10961,28 @@ def current_persistence_actions(
             normalized["root_control_states"])
 
 
-def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[dict[str, Any]]:
+def current_core_projections(
+    state: dict[str, Any], session_dir: Path, *, limit: int | None = 16,
+) -> list[dict[str, Any]]:
     """Read-only current Stop status from genuine root and host observations."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     bases: list[dict[str, Any]] = []
-    for category, _ in (*ACTION_PATTERNS, ("state_readback", re.compile(r"(?!)"))):
+    roots = {str(prompt["id"]): record for prompt in state.get("prompts", [])
+             if prompt.get("origin", "human") == "human"
+             and (record := read_prompt_record(session_dir, prompt)) is not None}
+    candidates = ((item_id, category)
+                  for item_id in sorted(current_scope_projection(state)["scoped_item_ids"],
+                                        key=lambda item_id: (not item_id.startswith("R"), item_id))
+                  for category, _ in (*ACTION_PATTERNS, ("state_readback", None)))
+    for item_id, category in candidates:
         basis = _current_action_basis(state, category, "", session_dir,
-                                      include_satisfied=True)
+                                      include_satisfied=True, allowed_item_ids={item_id},
+                                      _root_records=roots)
         if basis is None or basis["requirement_id"] in seen:
+            continue
+        if any(all(previous.get(key) == basis.get(key) for key in
+                   ("source_prompt_id", "action", "target", "predicate")) for previous in bases):
             continue
         seen.add(basis["requirement_id"])
         bases.append(basis)
@@ -10484,7 +11000,7 @@ def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[d
             "unknown_coverage_count": len(projected["unknown_coverage"]),
             "coverage_error_count": len(projected["coverage_errors"]),
         })
-        if len(rows) >= 16:
+        if limit is not None and len(rows) >= limit:
             break
     execution_items = {item["id"]: item for item in state.get("requirements", [])
                        if isinstance(item, dict) and item.get("execution_source_span") is not None}
@@ -10580,7 +11096,7 @@ def current_core_projections(state: dict[str, Any], session_dir: Path) -> list[d
                 or not CLAUSE_NEGATION_RE.search(trailing[1])
                 or any(c.get("operation") != "unspecified" for c in metadata.get("clauses", [])
                        if c.get("clause") in trailing)
-                or any(pattern.search(c) for c in trailing
+                or any(action_search(pattern, c) for c in trailing
                        if not CLAUSE_NEGATION_RE.search(c)
                        for _, pattern in ACTION_PATTERNS)):
             continue
@@ -11326,7 +11842,7 @@ def deferred_action_bindings(
             ):
                 continue
             for category, pattern in ACTION_PATTERNS:
-                if not pattern.search(candidate):
+                if not action_search(pattern, candidate):
                     continue
                 if _action_authorization(category, scope) in {
                     "denied",
@@ -11401,7 +11917,7 @@ def remaining_action_facts(
         )
         incomplete_operation = bool(
             re.search(r"(?:尚未|还未|未)\s*[^，。;；]{0,20}", clause)
-            and (any(pattern.search(clause) for _, pattern in ACTION_PATTERNS)
+            and (any(action_search(pattern, clause) for _, pattern in ACTION_PATTERNS)
                  or re.search(r"(?:回读|读取)|\bread\s*back\b", clause, re.I))
         )
         remaining = bool(
@@ -12111,7 +12627,7 @@ def clause_metadata(text: str) -> dict[str, Any]:
     """Derive bounded, diagnostic bindings from each protected prompt clause."""
     clauses: list[dict[str, Any]] = []
     for clause in _protected_prompt_clauses(text):
-        operations = [category for category, pattern in ACTION_PATTERNS if pattern.search(clause)]
+        operations = [category for category, pattern in ACTION_PATTERNS if action_search(pattern, clause)]
         primary_actions = [
             operation for operation in operations if operation in PRIMARY_CLAUSE_ACTIONS
         ]
@@ -12169,7 +12685,7 @@ def _positive_clause_records(metadata: dict[str, Any]) -> list[dict[str, Any]]:
         clause
         for clause in metadata.get("clauses") or []
         if isinstance(clause, dict)
-        and not CLAUSE_NEGATION_RE.search(str(clause.get("clause") or ""))
+        and not CLAUSE_NEGATION_RE.search(instruction_text(str(clause.get("clause") or "")))
     ]
 
 
@@ -12306,6 +12822,8 @@ def _execution_child_specs(
     """
     from cg_core_v2 import _subjectless_compound_persistence
 
+    if any(part.kind == "ambiguous_object" for part in fragments(text)):
+        return [], False
     source = text
     controls = [(begin, end) for kind, begin, end, clause in
                 _root_control_segments(text)
@@ -12317,7 +12835,7 @@ def _execution_child_specs(
     separators = [match for match in re.finditer(
         r"[,，;；]\s*(?:(?:并且|然后|随后|并|和|and|then)\s*)?"
         r"|\b(?:and|then)\b|并且|并|然后|随后|和",
-        source, re.I,
+        instruction_text(source), re.I,
     ) if not (match.group().lstrip().startswith((",", "，"))
               and re.match(r"\s*(?:直到|直至|until\b)", source[match.end():], re.I))]
     if not 1 <= len(separators) <= 16:
@@ -12334,31 +12852,24 @@ def _execution_child_specs(
         source[raw_parts[1][0]:], re.I,
     ):
         return [], False
-    whole_speech = source
-    for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
-                            ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
-        whole_speech = locator_pattern.sub("对象", whole_speech)
     whole_classes = [category for category, pattern in ACTION_PATTERNS
-                     if pattern.search(whole_speech)]
+                     if action_search(pattern, source)]
     parts: list[tuple[int, int, str, str]] = []
     for begin, end in raw_parts:
         fragment = source[begin:end]
         offset = len(fragment) - len(fragment.lstrip())
         begin += offset
         value = fragment.strip(" \t\r\n。.!?？")
-        if (not value or CLAUSE_NEGATION_RE.search(value.replace("分别", ""))
-                or DESCRIPTION_FRAME_RE.search(value)):
+        speech = instruction_text(value)
+        if (not value or CLAUSE_NEGATION_RE.search(speech.replace("分别", ""))
+                or DESCRIPTION_FRAME_RE.search(speech)):
             return [], False
-        if DEFERRED_ACTION_CLAUSE_RE.search(value):
+        if DEFERRED_ACTION_CLAUSE_RE.search(speech):
             continue
-        speech = value
-        for locator_pattern in (WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE,
-                                ABSOLUTE_PATH_RE, RELATIVE_FILE_RE):
-            speech = locator_pattern.sub("对象", speech)
         direct_command = _direct_shell_command_object(value)
         classes = ([direct_command[0]] if direct_command is not None
                    else [category for category, pattern in ACTION_PATTERNS
-                         if pattern.search(speech)])
+                         if action_search(pattern, value)])
         if (not classes and whole_classes == ["test_verify"]
                 and re.search(r"\b(?:run|execute)\b|(?:运行|执行)", speech, re.I)
                 and len(root_absolute_locator_mentions(value)[0]) == 1):
@@ -13311,7 +13822,8 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
     return scoped, ancestor_constraints
 
 
-def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
+def current_scope_projection(state: dict[str, Any], *, session_dir: Path | None = None,
+                             codex_home: Path | None = None) -> dict[str, Any]:
     """Shared current-scope projection (frozen plan section 3.3).
 
     One deterministic view of what is CURRENT: the active unit and its
@@ -13364,7 +13876,13 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
                 counts["answered"] += 1
             elif str(item.get("id")) not in in_scope:
                 counts["historical"] += 1
+    answer_reviews = reviewed_information(state, session_dir=session_dir,
+                                           codex_home=codex_home)
+    reviewed_ids = {key for key, value in answer_reviews.items() if value["coverage"] == "complete"}
+    in_scope -= reviewed_ids
+    counts["answered"] += len(reviewed_ids)
     revision = sha256_text(canonical_json({
+        "answer_reviews": answer_reviews,
         "scoped": sorted(str(item) for item in scoped),
         "ancestors": sorted(str(item) for item in ancestor_constraints),
         "waiting": [str(item.get("condition_id")) for item in waiting],
@@ -13389,6 +13907,7 @@ def current_scope_projection(state: dict[str, Any]) -> dict[str, Any]:
         "waiting_conditions": waiting,
         "released_by_prompt": released_by_prompt,
         "historical_counts": counts,
+        "answer_reviews": answer_reviews,
         "revision": revision,
     }
 
@@ -13421,7 +13940,7 @@ def _root_control_segments(text: str) -> list[tuple[str, int, int, str]]:
     rules = json.loads((Path(__file__).resolve().parent.parent /
                         "assets/core-intent-v2.json").read_text(encoding="utf-8"))["patterns"]
     starts = {0}
-    for match in re.finditer(r"[。！？;；\n,，]|并", text):
+    for match in re.finditer(r"[。！？;；\n,，]|并", instruction_text(text)):
         starts.add(match.end())
     result: list[tuple[str, int, int, str]] = []
     raw = text.encode("utf-8")
@@ -13462,6 +13981,8 @@ def _root_control_segments(text: str) -> list[tuple[str, int, int, str]]:
 
 def _root_control_item_action(item: dict[str, Any]) -> str | None:
     item_text = str(item.get("text") or "")
+    if any(part.kind == "ambiguous_object" for part in fragments(item_text)):
+        return None
     if any(_root_control_covers_prompt(item_text, begin, end)
            for _, begin, end, _ in _root_control_segments(item_text)):
         return None  # A control sentence is not a test/edit requirement.
@@ -13483,10 +14004,10 @@ def _root_control_item_action(item: dict[str, Any]) -> str | None:
     if item.get("information_source_span") is not None or _information_delivery_item(item):
         return None
     classes = [category for category, pattern in ACTION_PATTERNS
-               if pattern.search(item_text)
+               if action_search(pattern, item_text)
                and any(_action_clause_time_state(clause, category) == "current"
                        for clause in _action_source_clauses(item_text)
-                       if pattern.search(clause))]
+                       if action_search(pattern, clause))]
     return classes[0] if len(classes) == 1 else None
 
 
@@ -14121,7 +14642,7 @@ def _trim_response_delivery(state: dict[str, Any]) -> None:
                                               if index in keep]
 
 
-def status_context(state: dict[str, Any]) -> str:
+def status_context(state: dict[str, Any], *, session_dir: Path | None = None) -> str:
     projection = current_scope_projection(state)
     integrity = state.get("integrity", {})
     decisions = state.get("decision_log", [])
@@ -14138,7 +14659,7 @@ def status_context(state: dict[str, Any]) -> str:
         for item in execution.get("drift", [])
         if isinstance(item, dict)
     )
-    return (
+    return (commentary_summary_text(commentary_summary(session_dir, state)) +
         "Context Guard status: "
         f"product={PRODUCT_VERSION}, "
         f"active={state['mode']['active']}, "
@@ -14164,9 +14685,9 @@ def status_context(state: dict[str, Any]) -> str:
     )
 
 
-def diagnose_context(state: dict[str, Any], limit: int = 5) -> str:
+def diagnose_context(state: dict[str, Any], limit: int = 5, *, session_dir: Path | None = None) -> str:
     projection = current_scope_projection(state)
-    scope_summary = f"current_open={len(projection['current_item_ids'])}, current_waits={len(projection['waiting_conditions'])}, "
+    scope_summary = feedback_summary(current_feedback_view(state, session_dir)) + f" current_open={len(projection['current_item_ids'])}, current_waits={len(projection['waiting_conditions'])}, "
     decisions = [
         item
         for item in state.get("decision_log", [])[-max(1, min(limit, 10)) :]
@@ -14519,12 +15040,16 @@ def read_prompt_record(session_dir: Path, metadata: dict[str, Any]) -> dict[str,
     return value
 
 
-def format_items(title: str, items: list[dict[str, Any]], include_evidence: bool = False) -> str:
+def format_items(
+    title: str, items: list[dict[str, Any]], include_evidence: bool = False, *,
+    text_limit: int | None = 600,
+) -> str:
     lines = [f"## {title}"]
     if not items:
         lines.append("- None")
     for item in items:
-        line = f"- {item['id']} [{item.get('status', 'pending')}]: {bounded(item.get('text', ''), 600)}"
+        text = str(item.get('text', ''))
+        line = f"- {item['id']} [{item.get('status', 'pending')}]: {bounded(text, text_limit) if text_limit is not None else text}"
         if include_evidence and item.get("evidence"):
             line += f" | evidence: {bounded(item['evidence'], 500)}"
         contract = item.get("verification_contract")
@@ -14560,8 +15085,142 @@ def clip_preserving_suffix(
     return prefix[:budget].rstrip() + "\n\n" + marker + "\n\n" + suffix
 
 
+def current_feedback_view(
+    state: dict[str, Any], session_dir: Path | None,
+) -> dict[str, Any]:
+    """Read-only facts at the current watermark, never a completion transition.
+
+    No cached Stop result supplies current truth. Missing source/capability
+    remains unknown; a supported observed predicate does not discharge proofs,
+    required descendants, delivery, or the whole work-unit closure.
+    """
+    scope = current_scope_projection(state)
+    healthy = state.get("integrity", {}).get("status") == "ok"
+    core = (current_core_projections(state, session_dir, limit=None)
+            if session_dir is not None and healthy else [])
+    by_id = {row["requirement_id"]: row for row in core}
+    prompts = {p["id"]: p for p in state.get("prompts", [])}
+    proofs = unresolved_proof_obligations(state)
+    units = {u["id"]: u for u in state.get("work_units", [])}
+    def applicable_waits(item: dict[str, Any]) -> list[str]:
+        chain: set[str] = set()
+        unit_id = item.get("work_unit_id")
+        while unit_id in units and unit_id not in chain:
+            chain.add(unit_id)
+            unit_id = units[unit_id].get("parent_id")
+        return [w["condition_id"] for w in scope["waiting_conditions"]
+                if w.get("owner_work_unit_id") in chain]
+    rows = []
+    counts = dict(observed=0, remaining=0, waiting=0, unknown=0, historical=0)
+    current = scope["current_item_ids"] | scope["persistent_constraint_ids"]
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            item_id = item["id"]
+            record = (read_prompt_record(session_dir, prompts[item["prompt_id"]])
+                      if session_dir is not None and item.get("prompt_id") in prompts else None)
+            source_known = healthy and record is not None
+            predicate = by_id.get(item_id) if source_known else None
+            waits = applicable_waits(item) if item_id in current else []
+            if item_id not in current:
+                business = "historical"
+            elif predicate and predicate["predicate_state"] == "satisfied":
+                business = "observed"
+            elif source_known and (waits or predicate and (predicate.get("root_condition") or
+                                "pending" in predicate.get("conditions", {}).values())):
+                business = "waiting"
+            elif predicate and not predicate["coverage_error_count"]:
+                business = "remaining"
+            else:
+                business = "unknown"
+            counts[business] += 1
+            rows.append({
+                "id": item_id, "business_state": business,
+                "answer_review": scope.get("answer_reviews", {}).get(item_id),
+                "waiting_condition_ids": waits,
+                "closure": "closed" if item.get("status") in TERMINAL_ITEM_STATUSES else "open",
+                "source_state": "verified" if source_known else "unknown",
+                "predicate": predicate["predicate"] if predicate else None,
+                "predicate_state": predicate["predicate_state"] if predicate else "unknown",
+                "proofs_remaining": proofs.get(item_id, []),
+            })
+    return {"as_of": state.get("core_event_sequence"), "revision": scope["revision"],
+            "items": rows, "counts": counts, "core_projections": core,
+            "commentary_observation": commentary_summary(session_dir, state)}
+
+
+def feedback_summary(view: dict[str, Any]) -> str:
+    counts = view["counts"]
+    return ("Business facts: " + ", ".join(f"{key}={value}" for key, value in counts.items())
+            + ". Observed facts are not a request to repeat work; remaining means a matching "
+            "predicate is still unmet. Unknown is not proof that work was never done. "
+            "Whole closure, delivery, waits and explicit proofs remain separate."
+            + commentary_summary_text(view["commentary_observation"]))
+
+
+def _pack_recovery_sections(sections: list[str], limit: int, current: set[str]) -> str:
+    """Budget whole rows; never sever a prohibition, locator or release token."""
+    scope = next(section for section in sections if section.startswith("## Current work scope"))
+    facts = next(section for section in sections if section.startswith("Business facts:"))
+    notice = ("Recovery details may be omitted below. Read the complete-text paging entry "
+              "before acting on omitted requirements, restrictions, waits or proofs; "
+              "omission never releases them.")
+    integrity = next((section for section in sections if section.startswith("Integrity status:")), "")
+    mandatory = [sections[0], scope, facts, notice, integrity]
+    suffix = RECOVERY_COMPLETION_RULE
+    reserve = len("\n\n".join([*mandatory, suffix]))
+    if reserve > limit:
+        # No partially printed command or condition. Very small caller budgets
+        # are incapable of conveying a safe recovery packet.
+        message = "Recovery unavailable at this budget. Read recovery-page before acting or claiming completion."
+        return message if len(message) <= limit else ""
+    details = [section for section in sections
+               if section not in mandatory and section != suffix
+               and not section.startswith("## Current-set overflow")]
+    def priority(section: str) -> int:
+        if section.startswith(("## Session constraints", "## Ancestor constraints",
+                               "## Unreleased wait", "## Unresolved verification")):
+            return 0
+        if section.startswith(("## Current requirements", "## Current acceptance")):
+            return 1
+        return 2
+    kept = []
+    budget = max(0, limit - reserve - 32)  # count digit growth after row selection
+    omitted = False
+    wait_listed = 0
+    for section in sorted(details, key=priority):
+        lines = section.splitlines()
+        selected = []
+        for line in lines[1:]:
+            cost = len(line) + 1 + (len(lines[0]) + 2 if not selected else 0)
+            if cost > budget:
+                omitted = True
+                continue
+            selected.append(line)
+            budget -= cost
+        if selected:
+            kept.append("\n".join([lines[0], *selected]))
+            if section.startswith("## Unreleased wait conditions"):
+                wait_listed += len(selected)
+    rendered = "\n\n".join(kept)
+    listed = sum(bool(re.search(r"(?m)^- " + re.escape(item_id) + r" \[", rendered))
+                 for item_id in current)
+    mandatory[1] = re.sub(
+        r"listed in this packet: \d+; unlisted: \d+",
+        f"listed in this packet: {listed}; unlisted: {len(current) - listed}", mandatory[1],
+    )
+    wait_count = int(re.search(r"- waits: (\d+)", scope).group(1))
+    mandatory[1] = re.sub(r"(- waits: \d+); listed: \d+; omitted: \d+",
+                          rf"\1; listed: {wait_listed}; omitted: {wait_count - wait_listed}", mandatory[1])
+    if omitted or listed < len(current):
+        mandatory[3] = notice.replace("Recovery details may be omitted below.",
+                                      "## Current-set overflow\n…[recovery packet clipped]")
+    return "\n\n".join([*mandatory, *kept, suffix])
+
+
 def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int = RECOVERY_CHAR_LIMIT) -> str:
     projection = current_scope_projection(state)
+    feedback = current_feedback_view(state, session_dir)
+    feedback_items = {row["id"]: row for row in feedback["items"]}
     current = projection["current_item_ids"]
     groups = (
         ("Session constraints still in force", [i for i in state['requirements'] if i['id'] in projection['persistent_constraint_ids'] and i['id'] not in current]),
@@ -14573,13 +15232,33 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
     # and the completion rule. Never split a row and count it as fully listed.
     item_sections = []
     listed = 0
-    used = 0
     for title, items in groups:
         lines = ["## " + title]
         if not items:
             lines.append("- None")
         for item in items:
-            line = format_items(title, [item], True).split("\n", 1)[1]
+            display_item = dict(item)
+            display_text = str(item.get("text", ""))
+            metadata = next((p for p in state.get("prompts", []) if p["id"] == item.get("prompt_id")), None)
+            record = read_prompt_record(session_dir, metadata) if metadata else None
+            if record is not None and item in state["requirements"]:
+                full_text = record["text"]
+                span = item.get("execution_source_span") or item.get("information_source_span")
+                if span:
+                    full_text = full_text.encode("utf-8")[span[0]:span[1]].decode("utf-8")
+                elif item.get("constraint_scope") == "session" and item.get("source_span"):
+                    begin, end = item["source_span"]
+                    full_text = full_text[begin:end]
+                # A complete row stays atomic during budgeting, including
+                # multiline source; JSON escaping preserves every character.
+                if bounded(full_text, 900) == item.get("text"):
+                    display_text = full_text
+            display_item["text"] = json.dumps(display_text, ensure_ascii=False)
+            line = format_items(title, [display_item], True, text_limit=None).split("\n", 1)[1]
+            fact = feedback_items[item['id']]
+            line += f" | business={fact['business_state']}; closure={fact['closure']}"
+            if fact['predicate']:
+                line += f"; {fact['predicate']}={fact['predicate_state']}"
             released = projection["released_by_prompt"].get(str(item.get("prompt_id")))
             if released:
                 line = line.replace(": ", ": [等待条件已解除/released: " + ",".join(sorted(set(released))) + "; only business duties and persistent restrictions remain] ", 1)
@@ -14590,10 +15269,7 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
                     "keep the open obligations, do not mechanically re-answer] ",
                     1,
                 )
-            if used + len(line) > min(9000, max(0, char_limit - 3500)):
-                continue
             lines.append(line)
-            used += len(line) + 1
             listed += int(item['id'] in current)
         item_sections.append("\n".join(lines))
     counts = projection["historical_counts"]
@@ -14607,6 +15283,7 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
         "# CONTEXT-GUARD RECOVERY PACKET",
         "The private raw prompt ledger remains the fact source. Summaries below are bounded; use the session-bound page command for complete text and verification contracts.",
         "Integrity status: " + str(state.get("integrity", {}).get("status", "unknown")) + ". Reconstructed items require fresh evidence.",
+        feedback_summary(feedback),
         "## Current work scope\n"
         + f"- active unit: {projection['active_work_unit_id'] or 'none'}; current items: {len(current)}\n"
         + f"- current-set total: {len(current)} items; listed in this packet: {listed}; unlisted: {len(current) - listed}\n"
@@ -14623,11 +15300,11 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
         ))
         sections.append("## Current reason and next step\n- Waiting conditions remain unmet. Obtain the matching root confirmation or bound external fact; do not infer completion from other evidence.")
     elif current:
-        sections.append("## Current reason and next step\n- Current obligations remain open. Read any omitted text, then gather matching successful evidence before claiming whole completion.")
+        sections.append("## Current reason and next step\n- Resolve the remaining predicates and unknown sources; retain observed results. Read omitted conditions and check delivery, descendants and required proofs before whole completion.")
     unresolved = unresolved_proof_obligations(state)
     obligations = [f"{key}: {','.join(value)}" for key, value in unresolved.items() if key in current]
     if obligations:
-        sections.append("## Unresolved verification obligations\n- " + bounded("\n- ".join(obligations), 900))
+        sections.append("## Unresolved verification obligations\n- " + "\n- ".join(obligations))
     decisions = state.get("decision_log", [])
     if decisions and decisions[-1].get("outcome") == "fail_closed_integrity":
         sections.append("## Latest fail-closed decision\n- " + bounded(", ".join(decisions[-1].get("reason_codes", [])), 320))
@@ -14663,8 +15340,7 @@ def recovery_packet(session_dir: Path, state: dict[str, Any], *, char_limit: int
         ))
     sections.append("## Out-of-scope history (bounded note)\n" + f"- {counts['historical']} isolated-historical, {counts['superseded']} superseded, {counts['completed']} completed, {counts['answered']} answer-delivered items are not current obligations. Explicit checkpoint-status --full retains the audit view.")
     sections.append(RECOVERY_COMPLETION_RULE)
-    return clip_preserving_suffix(redact_text("\n\n".join(sections)), char_limit,
-                                  RECOVERY_COMPLETION_RULE, "…[lower-priority recovery detail clipped]")
+    return _pack_recovery_sections([redact_text(section) for section in sections], char_limit, current)
 
 
 def write_recovery(session_dir: Path, state: dict[str, Any], trigger: str, *, char_limit: int = RECOVERY_CHAR_LIMIT) -> str:
@@ -15457,9 +16133,13 @@ def checkpoint_status_snapshot_full(state: dict[str, Any], turn_id: str) -> dict
 def checkpoint_status_snapshot(
     state: dict[str, Any], turn_id: str, *, full: bool = False,
     item_id: str | None = None, after_revision: str | None = None,
+    session_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Return a bounded work-unit view; full/item modes are explicit audits."""
     revision = str(state.get("content_hash") or state_content_hash(state))
+    observation = commentary_summary(session_dir, state)
+    if observation["status"] != "absent":
+        revision = sha256_text(canonical_json({"state": revision, "observation": observation}))
     active = state.get("work_state", {}).get("active_work_unit_id")
     if after_revision is not None and hmac.compare_digest(after_revision, revision):
         return {
@@ -15468,6 +16148,13 @@ def checkpoint_status_snapshot(
             "active_work_unit_id": active,
         }
     detailed = checkpoint_status_snapshot_full(state, turn_id)
+    feedback = current_feedback_view(state, session_dir)
+    feedback_items = {row["id"]: row for row in feedback["items"]}
+    for key in ("requirements", "acceptance"):
+        for item in detailed[key]:
+            item["business_facts"] = feedback_items.get(item["id"])
+    detailed["business_fact_counts"] = feedback["counts"]
+    detailed["commentary_observation"] = feedback["commentary_observation"]
     detailed.update(
         {
             "revision": revision,
@@ -15490,6 +16177,7 @@ def checkpoint_status_snapshot(
             "revision": revision,
             "active_work_unit_id": active,
             "item": matches[0],
+            "commentary_observation": feedback["commentary_observation"],
         }
     if full:
         detailed["mode"] = "full"
@@ -15537,10 +16225,13 @@ def checkpoint_status_snapshot(
                 "id": item["id"],
                 "status": item.get("status", "pending"),
                 "summary": bounded(item.get("text", ""), 180),
+                "business_facts": feedback_items.get(item["id"]),
             }
             for item in items[:12]
         ],
         "items_truncated": len(items) > 12,
+        "business_fact_counts": feedback["counts"],
+        "commentary_observation": feedback["commentary_observation"],
         "ancestor_constraint_ids": sorted(ancestor_ids),
         "successful_evidence_count": sum(
             item.get("outcome") == "success"
@@ -15628,7 +16319,7 @@ def checkpoint_status(
     completion_attempt_for(state, turn_id, token)
     return checkpoint_status_snapshot(
         state, turn_id, full=full, item_id=item_id,
-        after_revision=after_revision,
+        after_revision=after_revision, session_dir=session_dir,
     )
 
 
@@ -15897,7 +16588,7 @@ def handle_user_prompt(
         state["mode"]["activation_reasons"] = list(
             dict.fromkeys(state["mode"]["activation_reasons"] + ["explicit"])
         )
-        context = status_context(state)
+        context = status_context(state, session_dir=session_dir)
     elif action == "off":
         state["mode"]["active"] = False
         state["mode"]["manual_off"] = True
@@ -15916,9 +16607,9 @@ def handle_user_prompt(
         )
         context = f"Context Guard profile set to {action}."
     elif action == "status":
-        context = status_context(state)
+        context = status_context(state, session_dir=session_dir)
     elif action == "diagnose":
-        context = diagnose_context(state)
+        context = diagnose_context(state, session_dir=session_dir)
     elif action == "adopt":
         try:
             context = adopt_execution_contract(state, prompt, argument)
@@ -17148,6 +17839,28 @@ def private_control_command_intent(payload: dict[str, Any]) -> bool:
     return False
 
 
+def private_control_command_tokens(command: str, *, windows: bool) -> list[str] | None:
+    """Parse one control invocation, allowing one leading PowerShell call operator."""
+    body = command
+    if windows:
+        call = re.match(r"\s*&(?=\s)", body)
+        if call is not None:
+            body = body[call.end():]
+    if shell_control_operator_present(body):
+        return None
+    try:
+        tokens = shlex.split(body, posix=not windows)
+    except ValueError:
+        return None
+    tokens = [
+        token[1:-1]
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
+        else token
+        for token in tokens
+    ]
+    return tokens
+
+
 def is_exact_checkpoint_status_command(
     state: dict[str, Any], payload: dict[str, Any]
 ) -> bool:
@@ -17157,17 +17870,8 @@ def is_exact_checkpoint_status_command(
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or "checkpoint-status" not in command:
         return False
-    try:
-        tokens = shlex.split(command, posix=os.name != "nt")
-    except ValueError:
-        return False
-    tokens = [
-        token[1:-1]
-        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
-        else token
-        for token in tokens
-    ]
-    if len(tokens) < 3 or tokens[2] != "checkpoint-status":
+    tokens = private_control_command_tokens(command, windows=os.name == "nt")
+    if tokens is None or len(tokens) < 3 or tokens[2] != "checkpoint-status":
         return False
     executable = Path(tokens[0]).expanduser()
     script = Path(tokens[1]).expanduser()
@@ -17218,18 +17922,9 @@ def parse_proof_request_from_tool(
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str) or "register-proof" not in command:
         return None
-    if shell_control_operator_present(command):
+    tokens = private_control_command_tokens(command, windows=os.name == "nt")
+    if tokens is None:
         raise ValueError("private proof request must be one exact command")
-    try:
-        tokens = shlex.split(command, posix=os.name != "nt")
-    except ValueError as exc:
-        raise ValueError(f"invalid private proof command: {exc}") from exc
-    tokens = [
-        token[1:-1]
-        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
-        else token
-        for token in tokens
-    ]
     if len(tokens) < 3 or tokens[2] != "register-proof":
         raise ValueError("private proof request must be one exact command")
     try:
@@ -17297,18 +17992,11 @@ def parse_stage_request_from_tool(
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
     if not isinstance(command, str):
         return None
-    try:
-        tokens = shlex.split(command, posix=os.name != "nt")
-    except ValueError as exc:
+    tokens = private_control_command_tokens(command, windows=os.name == "nt")
+    if tokens is None:
         if "stage-checkpoint" not in command and "stage-disposition" not in command:
             return None
-        raise ValueError(f"invalid private stage command: {exc}") from exc
-    tokens = [
-        token[1:-1]
-        if len(token) >= 2 and token[0] == token[-1] and token[0] in {"'", '"'}
-        else token
-        for token in tokens
-    ]
+        raise ValueError("private stage request must be one exact command")
     private_commands = {"stage-checkpoint", "stage-disposition"}
     present_commands = [token for token in tokens if token in private_commands]
     if not present_commands:
@@ -17674,6 +18362,7 @@ def handle_pre_compact(
         return {"continue": True}
     require_usable_state(state)
     reconcile_transcript_assets(state, payload, trigger="pre_compact")
+    record_commentary_observation(session_dir, state, payload)
     state["mode"]["active"] = True
     state["mode"]["activation_reasons"] = list(
         dict.fromkeys(state["mode"]["activation_reasons"] + ["first_compaction"])
@@ -17701,6 +18390,7 @@ def handle_session_start(
         return {}
     require_usable_state(state)
     reconcile_transcript_assets(state, payload, trigger="session_start")
+    record_commentary_observation(session_dir, state, payload)
     existing_attempt = state.get("completion_attempt")
     transcript_turn_id = latest_transcript_turn_id(state, payload)
     fallback_turn_id = transcript_turn_id
@@ -18225,7 +18915,7 @@ def handle_stop(
         session_dir=session_dir,
     )
     decision: dict[str, Any] = dict(observed)
-    decision["core_projections"] = current_core_projections(state, session_dir)
+    decision["core_projections"] = current_feedback_view(state, session_dir)["core_projections"][:16]
     normalized_control = current_root_control_projection(state, session_dir)
     if normalized_control is not None:
         # The complete projection is available to local conformance replay;
@@ -19700,8 +20390,8 @@ def command_status() -> int:
     if latest is None:
         print("Context Guard has no local session state.")
         return 0
-    _, state = latest
-    print(status_context(state))
+    session_dir, state = latest
+    print(status_context(state, session_dir=session_dir))
     return 0
 
 
@@ -19726,6 +20416,8 @@ def command_recovery_page(args: argparse.Namespace) -> int:
         if state["session"]["id"] != session_id:
             return error("session_identity_mismatch")
         projection = current_scope_projection(state)
+        feedback = current_feedback_view(state, session_dir)
+        feedback_items = {row["id"]: row for row in feedback["items"]}
         items = []
         for collection in ("requirements", "acceptance_items"):
             for item in state[collection]:
@@ -19750,7 +20442,8 @@ def command_recovery_page(args: argparse.Namespace) -> int:
                         return error("prompt_integrity_failure")
                 items.append({"id": item['id'], "collection": collection,
                               "status": item['status'], "work_unit_id": item.get('work_unit_id'),
-                              "text": text, "verification_contract": item.get('verification_contract'),
+                              "text": text, "business_facts": feedback_items.get(item["id"]),
+                              "verification_contract": item.get('verification_contract'),
                               "released_waits": [c['condition_id'] for c in state.get('wait_conditions', []) if c.get('raised_by_source') == item.get('prompt_id') and c.get('status') == 'released']})
         items.extend({"id": c['condition_id'], "collection": "wait_conditions", "status": "waiting", "text": "", "condition": c} for c in projection['waiting_conditions'])
         items.sort(key=lambda item: (item['collection'], item['id']))
@@ -19816,7 +20509,7 @@ def command_diagnose(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    _, state = latest
+    session_dir, state = latest
     limit = max(1, min(int(args.limit), 20))
     projection = current_scope_projection(state)
     result = {
@@ -19825,6 +20518,8 @@ def command_diagnose(args: argparse.Namespace) -> int:
         "current_open": len(projection['current_item_ids']),
         "current_waits": len(projection['waiting_conditions']),
         "historical_counts": projection['historical_counts'],
+        "business_fact_counts": current_feedback_view(state, session_dir)["counts"],
+        "commentary_observation": commentary_summary(session_dir, state),
         "decisions": [item for item in state.get('decision_log', [])[-limit:] if isinstance(item, dict)],
         "decisions_omitted": max(0, len(state.get('decision_log', [])) - limit),
     }
@@ -19922,6 +20617,63 @@ def command_register_proof(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_review_answer(args):
+    """Explicit single-run entrypoint; Hooks never request semantic review."""
+    directory = args.data_dir.expanduser().resolve() / "sessions" / safe_session_id(args.session_id)
+    try:
+        with session_lock(directory):
+            state = load_state(directory, {"session_id": args.session_id})
+            require_usable_state(state)
+            completion_attempt_for(state, args.turn_id, args.token)
+            if args.revoke:
+                answer_review_module().revoke(directory / "answer-reviews")
+                print(json.dumps({"status": "review_authority_revoked"}))
+                return 0
+            if not all((args.question, args.binary, args.binary_sha256, args.authority_version)):
+                raise ValueError("missing_review_arguments")
+            item = next(i for i in state["requirements"] if i["id"] == args.question)
+            request = answer_review_request(directory, state, item)
+            identity = answer_review_module().collect(
+                directory / "answer-reviews", request, args.binary, args.binary_sha256,
+                args.authority_version, execute=args.execute, supersedes=args.supersedes)
+            print(json.dumps({"status": "review_recorded", "judgment": identity,
+                              "basis": "independent_review", "native_acceptance": "not_established"}))
+        return 0
+    except (OSError, ValueError, RuntimeError, TypeError, KeyError, StopIteration):
+        console_write("[FAIL] answer review unavailable; no information closure", stream=sys.stderr)
+        return 1
+
+
+def command_review_pending(args):
+    """Agent invokes after commentary delivery; never invoked inside a Hook."""
+    directory = args.data_dir.expanduser().resolve() / "sessions" / safe_session_id(args.session_id)
+    try:
+        with session_lock(directory):
+            state = load_state(directory, {"session_id": args.session_id})
+            require_usable_state(state)
+            completion_attempt_for(state, args.turn_id, args.token)
+            catalog = answer_review_catalog(directory, state)
+            scoped, ancestors = _applicable_scope_item_ids(state)
+            eligible = {q["subject"]["question_id"] for q in catalog} & (scoped | ancestors)
+            requests = []
+            if eligible:
+                source = answer_review_source(directory, state, catalog=catalog)
+                for item in state["requirements"]:
+                    if item["id"] not in eligible:
+                        continue
+                    try:
+                        requests.append(answer_review_request(directory, state, item, source=source, catalog=catalog))
+                    except (ValueError, KeyError, TypeError):
+                        continue
+            result = answer_review_module().pending_review(directory / "answer-reviews", requests,
+                                                           execute=args.execute)
+            print(json.dumps(result))
+        return 0
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError, RecursionError):
+        console_write("[FAIL] review queue unavailable; no information closure", stream=sys.stderr)
+        return 1
+
+
 def command_self_test() -> int:
     hooks = Path(__file__).resolve().parent.parent / "hooks" / "hooks.json"
     config = read_json(hooks)
@@ -19974,6 +20726,24 @@ def main() -> int:
     recovery_page.add_argument("--session-id", required=True)
     subparsers.add_parser("cleanup", help="Delete ended sessions older than 30 days")
     subparsers.add_parser("self-test", help="Validate the runtime and hook bundle")
+    pending_review = subparsers.add_parser("review-pending", help="One review at the task-agent commentary delivery boundary")
+    pending_review.add_argument("--data-dir", type=Path, required=True)
+    pending_review.add_argument("--session-id", required=True)
+    pending_review.add_argument("--turn-id", required=True)
+    pending_review.add_argument("--token", required=True)
+    pending_review.add_argument("--execute", action="store_true")
+    reviewer = subparsers.add_parser("review-answer", help="Explicit one-shot independent answer review")
+    reviewer.add_argument("--data-dir", type=Path, required=True)
+    reviewer.add_argument("--session-id", required=True)
+    reviewer.add_argument("--turn-id", required=True)
+    reviewer.add_argument("--token", required=True)
+    reviewer.add_argument("--question")
+    reviewer.add_argument("--binary", type=Path)
+    reviewer.add_argument("--binary-sha256")
+    reviewer.add_argument("--authority-version")
+    reviewer.add_argument("--supersedes", action="append", default=[])
+    reviewer.add_argument("--execute", action="store_true")
+    reviewer.add_argument("--revoke", action="store_true")
     proof = subparsers.add_parser(
         "register-proof", help="Register an immutable Proof protocol manifest"
     )
@@ -20033,6 +20803,10 @@ def main() -> int:
     if args.command == "cleanup":
         print(f"Removed {cleanup_old_sessions(data_root())} expired session(s).")
         return 0
+    if args.command == "review-pending":
+        return command_review_pending(args)
+    if args.command == "review-answer":
+        return command_review_answer(args)
     if args.command == "register-proof":
         return command_register_proof(args)
     if args.command == "checkpoint-status":

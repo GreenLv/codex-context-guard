@@ -20,6 +20,8 @@ RUNTIME = ROOT / "scripts" / "context_guard.py"
 # (cg_delivery.py) and the plainly imported authority/release layers
 # (cg_authority.py, cg_release_adapter.py) behind the release-profile gate.
 REQUIRED_MODULES = [
+    ROOT / "scripts" / "cg_commentary.py",
+    ROOT / "scripts" / "cg_instruction.py",
     ROOT / "scripts" / "cg_commit.py",
     ROOT / "scripts" / "cg_actions.py",
     ROOT / "scripts" / "cg_authority.py",

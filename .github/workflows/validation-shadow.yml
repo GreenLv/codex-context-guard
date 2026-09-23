@@ -54,7 +54,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
-      - run: python -m pip install --disable-pip-version-check "ruff==0.16.1"
+      - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
+      - name: Install locked validation tools
+        run: |
+          set -euo pipefail
+          uv sync --locked --only-group validation
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Run repository-owned selected gates
         env:
           VALIDATION_PLAN: ${{ needs.classify.outputs.plan }}

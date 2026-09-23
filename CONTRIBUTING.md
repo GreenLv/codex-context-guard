@@ -43,6 +43,26 @@ because a transfer failed.
 
 Run the complete checks from the repository root when required:
 
+Install validation tools with `uv==0.12.18` and
+`uv sync --locked --only-group validation`. Activate the resulting virtual
+environment before running checks. `uv.lock` records the resolved dependencies;
+`requirements-lock.txt` is only the direct-tool index. A version change must
+also refresh the project entry in `uv.lock`. CI uses `--locked` so stale locks
+fail instead of being silently accepted. The Hook runtime needs no dependency
+installation.
+
+`tools/validation/candidate_namespace.py --help` describes the restricted,
+zero-model candidate installer (Python 3.11+). It defaults to an existing
+unauthenticated isolated HOME, a fresh namespace, and pinned source and CLI
+identities. An existing authenticated private acceptance HOME additionally
+requires an explicitly authorized, expiring operator scope record and its
+digest, bound to that exact HOME, namespace, source, runtime, CLI and installer.
+The record is an input constraint, not a grant of permission. The macOS route
+rejects observed active HOME users; other platforms remain unsupported for
+this authenticated route. It restores only attributable configuration changes;
+unknown edits leave an incomplete transaction for inspection. It does not
+establish Hook trust or native acceptance, and never removes consumed caches.
+
 ```shell
 python scripts/validate_public_repo.py .
 python scripts/audit_public_tree.py .

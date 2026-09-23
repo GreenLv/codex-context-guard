@@ -1,5 +1,92 @@
 # Architecture
 
+## Optional commentary source binding (0.14.2 candidate)
+
+The host-selected transcript remains the completed-message source. With the
+host's `CODEX_ROLLOUT_TRACE_ROOT` set, the read-only collector discovers exactly
+one official trace bundle for that session and validates its manifest, complete
+event sequence, request/response payloads and stable file identities. It accepts
+no caller-provided root ID, edge list or success flag. Independent review runs
+after source binding and judges completeness only; it cannot repair a missing edge.
+
+The supported domain is deliberately narrow: exactly one immutable human root
+and completed native user input have the same full text, the latter has a client
+ID, and a concrete inference request includes that exact user input with a
+completed response containing the same commentary ID and bytes. Distinct main
+and question roots can therefore share a turn. Repeated identical user text,
+multiple possible questions for an answer, missing client IDs, incremental
+ancestor-only input or multiple resumed trace bundles stay unknown. The host
+does not carry client ID into inference input; full candidate uniqueness is a
+limited exact-content join, not a general identity edge or a nearest-root rule.
+Unbound commentary keeps its questions unknown unless an explicit input lineage
+excludes it. A full-history request must contain the exact earlier response
+before the new question and preserve the earlier request as an exact prefix.
+For incremental history, each `previous_response_id` must resolve to one
+completed response in the same session and turn, with a single causal child;
+the exact earlier message must occur once on that chain before the question.
+Branches, duplicate or missing responses, failed attempts and a question already
+present in an ancestor request cannot exclude a possible correction. This
+supports ordinary main-task progress before a side question without using
+notification order or clocks. Root catalogs are checked against all immutable
+prompt files before and after observation; truncation cannot manufacture uniqueness.
+
+The collector rereads both sources and their hashes. It bounds roots and
+messages at 64 each, transcript answer text at 2 MiB, trace snapshots at 64 MiB,
+and aggregate matching work at 128 MiB of candidate payload bytes. Overflow
+stays unknown. No model is called and no core completion or authorization is
+written. Synthetic same-turn replay does not establish native host acceptance.
+
+## Independent answer review (0.14.2 candidate)
+
+The explicit `review-answer` command reconstructs a question's exact UTF-8
+span and authenticated root/message sources, then starts one fresh independent
+Codex exec process. Hooks never call a model. A pinned executable, separate
+reviewer thread, successful structured output and a collector-owned local MAC
+bind each private capture. User/model supplied hashes or `trusted: true` are
+not accepted receipts. The MAC protects local capture integrity; it is not a
+security boundary against the same OS account. Semantic conclusions remain
+fallible reviewer judgments, never Host facts.
+
+`answer-review/v2` is an independent private ledger, not a core-state migration.
+Current scope replays it against current source on every read. Only a complete,
+information-only judgment removes the matching pending information item from
+the current answer projection. It does not mutate the requirement, work unit,
+proof, prohibition, execution state or wait. Partial/promise/unknown remain
+open. Exact supersession graphs retain history; conflicting leaves, missing
+parents, revoked/changed authority, changed source and corrupt captures cannot
+supply complete. New questions have distinct identities. Message occurrence
+order is retained, not normalized by ID. Old states without this ledger stay
+unchanged. A fresh isolated HOME is required for any installation of these new
+candidate bytes.
+
+An isolated native reviewer passes the validated plugin session directory and
+Host HOME explicitly through source selection, current-scope projection,
+barrier release and cold replay. The selected session ID must match the
+directory leaf; a wrong directory or Host transcript root stays unknown rather
+than falling back to the harness process's HOME.
+
+The executable adapter has only synthetic protocol validation so far; actual
+model and native platform acceptance remain pending. Unsupported question
+boundaries or ambiguous root/turn association remain unknown. No claim of
+complete natural-language coverage follows from this interface.
+
+
+## 0.14.2 source candidate — instruction and feedback views
+
+The lexical instruction view partitions unchanged source into instruction and
+opaque object fragments. Every fragment has character and UTF-8 byte offsets;
+only action classification consumes the masked view. Source hashes, governed
+command checks and locator verification continue to consume original text.
+The bounded `run test_*.py` shorthand requires an actual run instruction; a
+path keyword alone is not an action. Unsupported locators remain unsupported
+by evidence verification even when their action-like names are correctly data.
+
+Recovery, status details and Stop consume current source/Host predicate
+projections. Observed results do not mutate completion, proof, wait, child or
+delivery state. Unknown source/capability cannot establish either successful
+work or unperformed work. Recovery selects whole rows under its budget and
+retains a session-bound paging command for omitted conditions.
+
 The authoritative continuation plan for the 0.9 protocol transition is
 [Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md); its protocol
 rationale is [Protocol-authoritative completion](PROTOCOL_AUTHORITATIVE_COMPLETION.md).
@@ -752,3 +839,22 @@ Delivery association requires an explicit current root turn. Delayed or
 unbound Stop replies, child replies and malformed/conflicting reply sources
 remain unknown. A delivered promise or reply with explicit remaining work
 retains pending questions; delivery alone never supplies execution evidence.
+
+### Commentary observation candidate
+
+`cg_commentary.py` reads the Host-selected, session-bound native transcript as
+a stable snapshot by streaming at PreCompact and compact/resume SessionStart.
+Memory is bounded by one line and a capped identity catalog; the prior prefix
+is rehashed rather than trusted from an execution-authorizing checkpoint. The
+new independent observation schema separates message completion, unique root
+candidate, answer coverage and execution closure. Only the first two may become
+known; coverage stays unknown and execution closure stays unchanged. Missing
+phase/turn, old roots, conflicts, truncated or oversized snapshots are not
+promoted. This sidecar is derived evidence, never execution authority or an
+input to existing final-answer closure. See the development status for limits.
+
+The commentary source decoder handles bounded general JSON, including finite
+floating-point metadata, separately from the stricter answer-review receipt
+protocol. Review selection occurs after full-stream identity checks. An internal
+root selection view bypasses the 512-row display window, with independent
+per-root message/text budgets and no persisted display-schema change.

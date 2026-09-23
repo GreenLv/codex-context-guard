@@ -1,5 +1,41 @@
 # Versioning policy
 
+## Independent review ledger candidate
+
+`answer-review/v2` adds explicit independent-review capture and a read-only
+information-scope consumer. It leaves core schema 13 and Stop 5.0.0 unchanged:
+no durable core completion field is added or migrated. Old state with no review
+ledger follows existing behavior. Every read revalidates source and current
+authority; unsupported or damaged records remain unknown. Collector code bytes
+are pinned inside captures, so changed adapter bytes invalidate old review
+receipts. Candidate repairs remain 0.14.2 Unreleased and require new isolated
+installation evidence. No existing cache or historical receipt is overwritten.
+
+
+## 0.14.2 source candidate (Unreleased)
+
+The optional `commentary-source-binding/v1` proof extends derived commentary
+rows and independently sealed review requests; core schema 13 and Stop 5.0.0
+do not change. Every projection recomputes source bindings. Removing the trace
+route, changing source identities, or losing an unambiguous input makes an old
+binding unusable; no historical source is reconstructed. Changed runtime bytes
+require a new runtime digest and fresh isolated installation evidence.
+The same `commentary-source-binding/v1` proof can now carry bounded causal-hop
+count and chain SHA-256 when official `previous_response_id` edges prove that a
+prior progress message was consumed before a new question. The proof remains
+derived and fail-closed; this unpublished 0.14.2 repair changes runtime bytes,
+not the core state schema or Hook event set.
+
+This compatible candidate changes instruction classification and feedback.
+Its lossless lexical fragments are ephemeral derived views, not persisted
+protocol fields: original prompt bytes, SHA-256 domains and UTF-8 source spans
+remain authoritative. Schema 13 and existing Hook/Stop/delivery protocols are
+unchanged. The independent derived `commentary-observation/v1` snapshot uses
+`codex-transcript-item-completed/v1`; it is not a response-delivery record and
+has no state migration or completion authority. Existing unknown delivery
+stays unknown. New candidate
+bytes require a fresh isolated HOME and do not replace consumed caches.
+
 The completed 0.9 release work is recorded in the authoritative
 [Context Guard 0.9 development plan](DEVELOPMENT_PLAN_0.9.md), linked to the
 [protocol-authoritative completion design](PROTOCOL_AUTHORITATIVE_COMPLETION.md).

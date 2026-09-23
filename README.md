@@ -12,6 +12,8 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
+> **0.14.2 source candidate — Unreleased.** Path/action separation and current-fact recovery are under development. Trusted commentary delivery and native acceptance remain unresolved; [development status](docs/DEVELOPMENT_0.14.2.md). Latest published version remains 0.14.1. The candidate includes an explicit independent-review interface; its model judgments and native execution have not yet been accepted.
+
 > **0.14.1 (2026-09-22)** adds a marketplace link to the existing Apache-2.0 license. Hook behavior is unchanged. See the [release notes](docs/releases/v0.14.1.md) and [published releases](https://github.com/GreenLv/codex-context-guard/releases).
 
 > Behavior baseline: Version `0.14.0` release line (2026-09-21). Check the [published releases](https://github.com/GreenLv/codex-context-guard/releases) for the current public version; see the [release-line notes](docs/releases/v0.14.0.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md) for this line’s scope.

@@ -202,6 +202,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_argument_parser()
+    parser.add_argument("--batch-manifest", type=Path,
+                        help="Optional zero-model input manifest checked before acceptance execution")
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
@@ -210,6 +212,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         behavior.check_output_path(args.output, args.repo_root)
     except (OSError, behavior.HostBehaviorError) as exc:
         parser.error(str(exc))
+    if args.batch_manifest is not None:
+        try:
+            path = Path(__file__).with_name("batch_preflight.py")
+            spec = importlib.util.spec_from_file_location("batch_preflight", path)
+            if spec is None or spec.loader is None:
+                raise NativeRunError("batch preflight unavailable")
+            batch = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(batch)
+            manifest = batch.read_json(args.batch_manifest)
+            check = batch.validate_batch(manifest)
+            if check["status"] != "inputs_ready":
+                raise NativeRunError("batch inputs failed: " + ",".join(check["errors"]))
+            if manifest["source_commit"] != args.source_commit:
+                raise NativeRunError("batch source identity mismatch")
+            actual = runtime_digest(load_manager(args.repo_root.resolve()), args.repo_root.resolve())
+            if manifest["runtime_tree_sha256"] != actual:
+                raise NativeRunError("batch runtime identity mismatch")
+        except (OSError, ValueError, NativeRunError, RuntimeError) as exc:
+            parser.error(str(exc))
     if args.profile == "host_behavior":
         try:
             result = behavior.run_host_behavior(args)

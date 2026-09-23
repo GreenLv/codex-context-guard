@@ -1,5 +1,59 @@
 # Privacy and Data Handling
 
+## Independent reviewer candidate records
+
+An explicitly invoked review sends the exact root, selected question span and
+actual commentary text to the configured Codex model in a separate process.
+The private `answer-reviews` directory retains the request, structured model
+output and source digests to permit cold replay; this is an additional private
+copy of that content. It follows session retention and must not be exported
+with public diagnostics. No credentials are read, copied or stored by the
+collector. The collector uses the existing authentication environment without
+login or trust bypass. A local random MAC key seals captures; it is never
+printed. Policy version/revocation is checked afresh. Hooks do not send content
+to a model. A missing key or capture is unknown, never reconstructed from an
+assistant claim. A successful run is review evidence, not native acceptance.
+
+
+## 0.14.2 source candidate
+
+When the host sets `CODEX_ROLLOUT_TRACE_ROOT`, the optional source-binding
+reader discovers the official session bundle and reads complete bounded trace
+and transcript snapshots. It reads raw model input/output in memory only;
+it does not copy trace payloads into plugin state or contact a model. Derived
+message observations and sealed review requests may additionally retain
+`commentary-source-binding/v1` metadata: client, inference, response and message
+identities, collector/root-record/manifest/event/payload hashes and source file device/inode pairs.
+An excluded prior-progress proof may add a bounded causal-hop count and SHA-256
+of the verified response chain; the chain's raw prompts and responses remain
+ephemeral in memory.
+`trace_as_of` contains the complete snapshot's relative filenames and hashes.
+These private fields follow session retention and are excluded from public
+diagnostics. Full prompt text used for matching remains ephemeral. The source
+directory is supplied by the host environment, not a caller-selected receipt.
+Local files remain inside the existing transcript trust boundary; this reader
+does not authenticate a hostile process running as the same operating-system user.
+
+Instruction/object fragments are ephemeral views of already retained root
+text; they create no new persisted raw-text copy or hash domain. Current-fact
+feedback is derived on read, not a new completion or delivery record. Default
+diagnostics expose bounded state counts; complete source remains restricted
+to the existing session-bound recovery/detail surfaces. Zero-model preflight
+manifests and host schemas stay outside the public source tree; redacted
+preflight results contain digests and reason codes, not credential contents.
+The derived `commentary-observation.json` in the private session directory
+retains bounded message/turn/root identities, Host completion time, source and
+reply hashes, snapshot watermark, root question candidates and unknown coverage.
+It stores no answer prose, credentials or additional raw transcript. It follows
+the session's existing retention and private-file handling. Each read replaces only this derived observation snapshot. A hash/inode/byte
+integrity anchor is retained to detect truncation, replacement and prefix edits;
+it is never reused as message, answer or completion evidence. File identities
+retain the existing five handle-stat fields; path/handle comparability checks
+add no persisted fields. Each API retains its own before/after ctime check. Damaged/unavailable
+current input does not reuse older observations as current truth. Recovery and
+diagnostics show bounded counts/freshness only, and reject corrupted snapshots. No existing state or final-answer
+ledger is migrated or promoted.
+
 Context Guard deliberately separates public plugin code from private runtime
 state.
 
@@ -223,3 +277,8 @@ share the session retention and deletion policy and are not exported. This is
 fault recovery for managed state, not protection against arbitrary filesystem
 deletion. PreToolUse reads posture without writing, locking or recovering state
 on the standard and strict paths.
+
+The answer-review/v2 candidate adds the exact question catalog, explicit semantic
+message associations, source row ordinals and bounded per-input attempt markers
+to private review data. Associations remain model judgments; they are not new
+Host fields. No legacy v1 receipt is silently promoted.

@@ -58,6 +58,13 @@ def validate_lane_failure_propagation(lane: str) -> list[str]:
     return []
 
 
+def validate_locked_tools(workflow: str) -> list[str]:
+    """CI must check lock freshness and consume its resolved tool closure."""
+    if 'uv sync --locked --only-group validation' not in workflow:
+        return ['validation tools must consume the checked lockfile']
+    return []
+
+
 def validate(root: Path) -> list[str]:
     errors: list[str] = []
     workflows = root / ".github" / "workflows"
@@ -70,6 +77,8 @@ def validate(root: Path) -> list[str]:
 
     errors.extend(validate_action_pins(workflows))
     errors.extend(validate_lane_failure_propagation(lane))
+    errors.extend(validate_locked_tools(candidate))
+    errors.extend(validate_locked_tools(pull_request))
     if "strategy:" in candidate or "matrix:" in candidate:
         errors.append("candidate lanes must remain independent jobs")
     reusable_call = "uses: ./.github/workflows/ci-lane.yml"
