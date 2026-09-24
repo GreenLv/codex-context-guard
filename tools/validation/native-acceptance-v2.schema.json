@@ -20,7 +20,7 @@
     "schema": {"const": "native-acceptance/v2"},
     "status": {"enum": ["passed", "failed", "pending"]},
     "product": {"const": "codex_context_guard"},
-    "gate_profile": {"enum": ["portable_runtime", "host_behavior"]},
+    "gate_profile": {"enum": ["portable_runtime", "host_behavior", "commentary_chain/v1"]},
     "subject": {
       "type": "object",
       "required": ["kind", "source_commit", "prepared_source_sha256", "runtime_tree_sha256"],

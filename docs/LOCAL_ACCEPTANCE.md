@@ -2,6 +2,22 @@
 
 ## 0.14.2 source candidate — Unreleased
 
+The P7 macOS run on source commit `0bcb53328bbe70b6fae539d6bed2768f6a1e2cb5`
+observed one source-bound side-question answer, a challenge-bound business
+action, independent review consumption, real automatic PreCompact and compact
+SessionStart, and an unchanged cold product projection. A later fresh-process
+read with the same official trace root reproduced that projection; an earlier
+diagnostic read without the trace-root environment stayed unknown by design.
+P7's runner reported `source_chain_observed`, not native acceptance. A later
+zero-model `commentary_chain/v1` profile independently replays the frozen
+source, official RPC, trace, Hook captures, answer review and installed state.
+It passes its seven scoped gates, including owned-process cleanup on the
+original supervised runner's exact `OwnedProcess.close` observation. Escaped
+descendants remain unestablished. This mapping did not start another model or
+rewrite the original runner result. The new profile's pass covers this one
+macOS commentary chain; Windows commentary-chain acceptance and the separate
+control scenarios remain outstanding. 0.14.2 is not release-ready.
+
 Development starts from published 0.14.1. The R33 source candidate passed
 1595 local tests with no failures or errors and 16 skips. Its 41-file plugin
 runtime tree was installed in an isolated private acceptance HOME; official

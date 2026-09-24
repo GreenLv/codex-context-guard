@@ -1,5 +1,11 @@
 # Compatibility and Verification Status
 
+The `commentary_chain/v1` native-acceptance profile is separate from portable
+runtime checks and the existing six-gate `host_behavior` profile. A macOS P7
+commentary-chain profile pass is not Windows acceptance,
+nor a complete 0.14.2 release gate. The profile reuses installed 0.14.2
+runtime bytes and makes no new Hook or state-schema compatibility claim.
+
 ## 0.14.2 source candidate — Unreleased
 
 The candidate separates action speech from object data and distinguishes

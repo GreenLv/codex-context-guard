@@ -204,6 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_argument_parser()
     parser.add_argument("--batch-manifest", type=Path,
                         help="Optional zero-model input manifest checked before acceptance execution")
+    parser.add_argument("--commentary-replay-manifest", type=Path,
+                        help="Immutable completed commentary run for zero-model replay")
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
@@ -231,6 +233,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise NativeRunError("batch runtime identity mismatch")
         except (OSError, ValueError, NativeRunError, RuntimeError) as exc:
             parser.error(str(exc))
+    if args.profile == "commentary_chain/v1":
+        if args.commentary_replay_manifest is None:
+            parser.error("commentary_chain/v1 requires --commentary-replay-manifest")
+        try:
+            root_path = str(Path(__file__).resolve().parents[2])
+            if root_path not in sys.path:
+                sys.path.insert(0, root_path)
+            from tools.validation import commentary_native_profile
+            if args.preflight:
+                commentary_native_profile.preflight(args.commentary_replay_manifest,
+                                                     args.source_commit)
+                print("native_preflight=passed; input_checks_only; acceptance_not_written")
+                return 0
+            result = commentary_native_profile.replay(args.commentary_replay_manifest)
+            if result["original_source_commit"] != args.source_commit:
+                raise NativeRunError("commentary original source commit differs")
+            behavior.write_result(args.output, result)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            parser.error(str(exc))
+        print(f"native_acceptance={result['status']}")
+        return {"passed": 0, "failed": 1, "pending": 3}[result["status"]]
     if args.profile == "host_behavior":
         try:
             result = behavior.run_host_behavior(args)

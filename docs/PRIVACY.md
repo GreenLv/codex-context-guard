@@ -1,5 +1,15 @@
 # Privacy and Data Handling
 
+## Commentary native replay candidate
+
+The optional zero-model `commentary_chain/v1` replay keeps its input manifest,
+raw RPC journal, official trace, Hook captures, private product state, and
+review records outside the public repository. It validates bounded file-tree
+hashes and writes a result with digests, gate status and reason labels, not raw
+prompts or answer text. Its full local result can include private session and
+evidence locators; do not publish it as a public annex. The mapping does not
+start a model or copy credentials.
+
 ## Independent reviewer candidate records
 
 An explicitly invoked review sends the exact root, selected question span and

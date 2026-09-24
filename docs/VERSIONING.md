@@ -1,5 +1,18 @@
 # Versioning policy
 
+## Commentary native replay profile candidate
+
+The repository-owned `native-acceptance/v2` result schema now permits the
+separate `commentary_chain/v1` profile. It does not change the six existing
+`host_behavior` gates or the installed plugin runtime. The profile consumes a
+frozen completed native run with raw RPC, trace, Hook, product and review
+evidence. Its original execution commit/runtime digest and later mapping-tool
+closure digest are distinct identities. A fresh zero-model replay may observe
+durable recovery at its own time; it does not rewrite the original run.
+Missing or contradicted evidence remains pending or failed. Source-only tool
+changes do not retroactively establish native acceptance or require refreshing
+an immutable installed cache.
+
 ## Independent review ledger candidate
 
 `answer-review/v2` adds explicit independent-review capture and a read-only
