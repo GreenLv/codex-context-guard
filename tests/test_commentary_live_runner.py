@@ -36,7 +36,8 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
             "runtime_root": str(self.root / "runtime"),
             "namespace": "cg-candidate-test",
             "hook_source": str(self.hooks),
-            "capture_hook_source": "/<session-flags>/config.toml",
+            "capture_hook_source": runner.fixture.expected_capture_hook_source(
+                str(self.root / "home")),
             "trace_root": str(self.root / "trace"),
             "capture_dir": str(self.root / "captures"),
             "run_dir": str(self.root / "new-run"),
@@ -77,6 +78,19 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
         path.write_text(json.dumps(self.plan))
         with self.assertRaisesRegex(ValueError, "reused_client_id"):
             runner.load_plan(path)
+
+    def test_capture_source_is_exact_for_host_drive(self):
+        expected = runner.fixture.expected_capture_hook_source
+        self.assertEqual(expected("/private/test-home", host_os="posix"),
+                         "/<session-flags>/config.toml")
+        self.assertEqual(expected(r"C:\fixture\codex-home", host_os="nt"),
+                         r"C:\<session-flags>\config.toml")
+        self.assertEqual(expected(r"d:\test-home", host_os="nt"),
+                         r"D:\<session-flags>\config.toml")
+        with self.assertRaisesRegex(ValueError, "windows_capture_drive_unavailable"):
+            expected(r"\\server\share\home", host_os="nt")
+        with self.assertRaisesRegex(ValueError, "unsupported_capture_host"):
+            expected("/home", host_os="unknown")
 
     def test_partial_review_mode_is_explicitly_bounded(self):
         path = self.root / "plan.json"
@@ -276,6 +290,7 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
                       mock.patch.object(runner, 'NativeObserver'),
                       mock.patch.object(runner, 'Controller', FakeController),
                       mock.patch.object(runner, 'AppServer', FakeTransport),
+                      mock.patch.object(runner.time, 'monotonic_ns', return_value=100),
                       mock.patch.object(runner.commentary_timepoint, 'capture',
                                         side_effect=capture),
                       mock.patch.object(runner.suite_oracle, 'verify_suite',
@@ -284,6 +299,9 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
                 self.assertEqual(result['status'], 'source_chain_observed')
                 journal = (Path(plan['run_dir']) / 'rpc.jsonl').read_bytes()
                 rows = profile._rpc(journal)
+                self.assertEqual([row['record_index'] for row in rows],
+                                 list(range(1, len(rows) + 1)))
+                self.assertEqual({row['monotonic_ns'] for row in rows}, {100})
                 send_index = next(i for i, row in enumerate(rows)
                                   if row['direction'] == 'send' and row['raw'].get('id') == 91)
                 compact_index = next(i for i, row in enumerate(rows)

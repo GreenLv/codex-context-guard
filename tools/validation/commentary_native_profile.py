@@ -149,13 +149,26 @@ def _one(rows: list[Any], reason: str) -> Any:
 def _rpc(journal: bytes) -> list[dict[str, Any]]:
     rows = []
     prior = -1
+    mode = None
     for line in journal.splitlines():
         row = _object(line)
-        if (set(row) != {"direction", "raw", "monotonic_ns"}
+        fields = set(row)
+        current_mode = (
+            "ordered" if fields == {"direction", "raw", "monotonic_ns", "record_index"}
+            else "legacy" if fields == {"direction", "raw", "monotonic_ns"}
+            else None)
+        if (current_mode is None or (mode is not None and current_mode != mode)
                 or row["direction"] not in {"send", "send_complete", "receive"}
                 or type(row["monotonic_ns"]) is not int
-                or row["monotonic_ns"] <= prior or not isinstance(row["raw"], dict)):
+                or row["monotonic_ns"] < 0
+                or (row["monotonic_ns"] < prior if current_mode == "ordered"
+                    else row["monotonic_ns"] <= prior)
+                or not isinstance(row["raw"], dict)
+                or (current_mode == "ordered"
+                    and (type(row["record_index"]) is not int
+                         or row["record_index"] != len(rows) + 1))):
             raise ReplayError("invalid_rpc_journal_order_or_shape")
+        mode = current_mode
         prior = row["monotonic_ns"]
         rows.append(row)
     if not rows or len(rows) > 2000:

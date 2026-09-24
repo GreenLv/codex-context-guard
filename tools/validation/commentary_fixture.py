@@ -1,6 +1,8 @@
 """Offline compaction fixture primitives. No model or host execution."""
 
 import hashlib
+import ntpath
+import os
 import re
 from pathlib import Path
 
@@ -13,6 +15,19 @@ class Unknown(ValueError):
 
 
 CAPTURE_HOOK_SOURCE = "/<session-flags>/config.toml"
+
+
+def expected_capture_hook_source(codex_home, *, host_os=None):
+    """Freeze the official host-specific session-flags source path exactly."""
+    host_os = os.name if host_os is None else host_os
+    if host_os == "posix":
+        return CAPTURE_HOOK_SOURCE
+    if host_os == "nt":
+        drive = ntpath.splitdrive(str(codex_home))[0]
+        if not re.fullmatch(r"[A-Za-z]:", drive):
+            raise ValueError("windows_capture_drive_unavailable")
+        return drive.upper() + r"\<session-flags>\config.toml"
+    raise ValueError("unsupported_capture_host")
 
 
 def pair(raw, capture_id, notification, *, thread, turn, source_path, event):

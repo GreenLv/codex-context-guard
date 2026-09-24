@@ -100,7 +100,8 @@ def load_plan(path):
     if any(type(plan.get(k)) is not str or not Path(plan[k]).is_absolute()
            for k in required_paths):
         raise ValueError("absolute_paths_required")
-    if plan.get("capture_hook_source") != fixture.CAPTURE_HOOK_SOURCE:
+    if (plan.get("capture_hook_source") != fixture.expected_capture_hook_source(
+            plan.get("codex_home"))):
         raise ValueError("unfrozen_capture_hook_source")
     for k in ("binary_sha256", "runtime_tree_sha256", "source_tree_sha256",
               "cold_helper_sha256"):
@@ -278,6 +279,7 @@ def collect(plan, *, execute=False):
     transport = None
     controller = None
     journal_size = 0
+    journal_index = 0
     result = {"status": "failed", "reason": "unstarted",
               "native_acceptance": "not_established", "model_calls": "unknown"}
     cold_result = None
@@ -288,9 +290,11 @@ def collect(plan, *, execute=False):
         transport = AppServer(plan, directory / "stderr.log")
         with (directory / "rpc.jsonl").open("xb") as journal:
             def record(direction, raw):
-                nonlocal journal_size
+                nonlocal journal_size, journal_index
+                journal_index += 1
                 line = json.dumps({"direction": direction, "raw": raw,
-                                   "monotonic_ns": time.monotonic_ns()},
+                                   "monotonic_ns": time.monotonic_ns(),
+                                   "record_index": journal_index},
                                   ensure_ascii=True).encode() + b"\n"
                 journal_size += len(line)
                 if len(line) > MAX_RPC_LINE or journal_size > MAX_JOURNAL:
