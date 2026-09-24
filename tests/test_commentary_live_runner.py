@@ -136,6 +136,7 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
             def __init__(self, _plan, _observer):
                 self.phase = "waiting_ready"
                 self.thread, self.turn, self.business_call_id = "thread", "turn", "business"
+                self.compaction_item = {"params": {"item": {"id": "compact"}}}
                 self.seen = 0
                 self.instances.append(self)
 
@@ -149,7 +150,8 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
 
             def cold_recovery(self):
                 self.phase = "awaiting_suite"
-                return {"native_acceptance": "not_established", "evidence": {"cold": True}}
+                return {"native_acceptance": "not_established",
+                        "evidence": {"cold_product": {"cold": True}}}
 
         class FakeTransport:
             def __init__(self, _plan, _log):
@@ -169,11 +171,14 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
               mock.patch.object(runner, "NativeObserver"),
               mock.patch.object(runner, "Controller", FakeController),
               mock.patch.object(runner, "AppServer", FakeTransport),
+              mock.patch.object(runner.commentary_timepoint, "capture",
+                                return_value={"path": "synthetic", "sha256": "f" * 64}),
               mock.patch.object(runner.suite_oracle, "verify_suite",
                                 return_value={"item_id": "suite-call"}) as check):
             result = runner.collect(plan, execute=True)
         self.assertEqual(result["status"], "source_chain_observed")
         self.assertEqual(result["suite_execution"], {"item_id": "suite-call"})
+        self.assertEqual(set(result["timepoint_snapshots"]), {"cold"})
         self.assertEqual(FakeController.instances[-1].seen, 2)
         self.assertEqual(check.call_count, 1)
 
@@ -189,11 +194,109 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
         with (mock.patch.object(runner, "preflight"),
               mock.patch.object(runner, "NativeObserver"),
               mock.patch.object(runner, "Controller", FakeController),
+              mock.patch.object(runner.commentary_timepoint, "capture",
+                                return_value={"path": "synthetic", "sha256": "f" * 64}),
               mock.patch.object(runner, "AppServer", PollingTransport),
               mock.patch.object(runner.time, "monotonic", side_effect=lambda: next(ticks))):
             timed = runner.collect(plan, execute=True)
         self.assertEqual(timed["status"], "failed")
         self.assertIn("suite_execution_or_turn_completion_missing", timed["reason"])
+
+    def test_real_runner_journal_boundaries_allow_suite_on_either_side_of_compaction(self):
+        from types import SimpleNamespace
+
+        from tools.validation import commentary_native_profile as profile
+
+        for suite_before in (True, False):
+            with self.subTest(suite_before=suite_before):
+                class FakeController:
+                    def __init__(self, _plan, _observer):
+                        self.phase = 'waiting_ready'
+                        self.thread, self.turn, self.business_call_id = 'thread', 'turn', 'business'
+                        self.compaction_item = {'params': {'item': {'id': 'compact'}}}
+                        self.barrier = SimpleNamespace(chain=SimpleNamespace(
+                            evidence={'precompact_product': {'review': True}}))
+
+                    def start(self):
+                        return []
+
+                    def sent(self, _row):
+                        pass
+
+                    def reviewed(self):
+                        self.phase = 'awaiting_auto_compaction'
+                        return [{'id': 91, 'result': {'ok': True}}]
+
+                    def cold_recovery(self):
+                        self.phase = 'awaiting_suite'
+                        return {'native_acceptance': 'not_established',
+                                'evidence': {'cold_product': {'cold': True}}}
+
+                    def ingest(self, raw):
+                        if raw['method'] == 'ready':
+                            self.phase = 'awaiting_review'
+                        elif raw['method'] == 'postcompact':
+                            self.phase = 'awaiting_cold_recovery'
+                        elif raw['method'] == 'turn/completed':
+                            self.phase = 'turn_completed'
+                        return []
+
+                events = ([{'method': 'ready'}, {'method': 'suite-start'},
+                           {'method': 'suite-complete'}, {'method': 'postcompact'},
+                           {'method': 'turn/completed'}] if suite_before else
+                          [{'method': 'ready'}, {'method': 'postcompact'},
+                           {'method': 'suite-start'}, {'method': 'suite-complete'},
+                           {'method': 'turn/completed'}])
+
+                class FakeTransport:
+                    def __init__(self, _plan, _log):
+                        self.events = iter(events)
+
+                    def send(self, _row, timeout):
+                        pass
+
+                    def receive(self, _timeout):
+                        return next(self.events)
+
+                    def close(self, _budget):
+                        return {'owned_process_exited': True,
+                                'owned_tree_no_running_members': True,
+                                'process_group_cleanup_error': None}
+
+                captured = {}
+
+                def capture(_observer, _directory, stage, _projection, journal, _anchor):
+                    captured[stage] = journal.stat().st_size
+                    return {'path': stage, 'sha256': 'f' * 64}
+
+                plan = {**self.plan, 'run_dir': str(self.root / f'order-{suite_before}'),
+                        'execute_producer': True, 'execute_review': True,
+                        'suite_oracle': {'frozen': True}}
+                with (mock.patch.object(runner, 'preflight'),
+                      mock.patch.object(runner, 'NativeObserver'),
+                      mock.patch.object(runner, 'Controller', FakeController),
+                      mock.patch.object(runner, 'AppServer', FakeTransport),
+                      mock.patch.object(runner.commentary_timepoint, 'capture',
+                                        side_effect=capture),
+                      mock.patch.object(runner.suite_oracle, 'verify_suite',
+                                        return_value={'item_id': 'suite'})):
+                    result = runner.collect(plan, execute=True)
+                self.assertEqual(result['status'], 'source_chain_observed')
+                journal = (Path(plan['run_dir']) / 'rpc.jsonl').read_bytes()
+                rows = profile._rpc(journal)
+                send_index = next(i for i, row in enumerate(rows)
+                                  if row['direction'] == 'send' and row['raw'].get('id') == 91)
+                compact_index = next(i for i, row in enumerate(rows)
+                                     if row['raw'].get('method') == 'postcompact')
+                terminal_index = next(i for i, row in enumerate(rows)
+                                      if row['raw'].get('method') == 'turn/completed')
+                suite_index = next(i for i, row in enumerate(rows)
+                                   if row['raw'].get('method') == 'suite-start')
+                self.assertEqual(captured['review'], profile._rpc_offset(journal, send_index))
+                self.assertTrue(profile._rpc_offset(journal, compact_index + 1)
+                                <= captured['cold']
+                                <= profile._rpc_offset(journal, terminal_index))
+                self.assertEqual(suite_index < compact_index, suite_before)
 
     @unittest.skipUnless(os.name == "posix", "POSIX process groups required")
     def test_owned_process_group_cleanup(self):

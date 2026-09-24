@@ -23,6 +23,7 @@ from scripts.cg_process_tree import OwnedProcess
 from tools.validation import commentary_fixture as fixture
 from tools.validation import commentary_runner as legacy
 from tools.validation import commentary_suite_oracle as suite_oracle
+from tools.validation import commentary_timepoint
 from tools.validation.commentary_live_controller import Controller
 from tools.validation.commentary_live_observer import NativeObserver
 
@@ -121,6 +122,8 @@ def load_plan(path):
                                           "compact": 120, "cleanup": 15}):
             raise ValueError("unfrozen_partial_control_inputs")
     if "suite_oracle" in plan:
+        if plan.get("review_coverage", "complete") != "complete":
+            raise ValueError("suite_oracle_requires_complete_review")
         suite_oracle.validate_suite_plan(plan)
     if (type(plan.get("values")) is not list or not 1 <= len(plan["values"]) <= 256
             or any(type(x) is not int or not -64 <= x <= 63 for x in plan["values"])
@@ -278,6 +281,7 @@ def collect(plan, *, execute=False):
     result = {"status": "failed", "reason": "unstarted",
               "native_acceptance": "not_established", "model_calls": "unknown"}
     cold_result = None
+    timepoints = {}
     try:
         observer = NativeObserver(plan)
         controller = Controller(plan, observer)
@@ -320,12 +324,23 @@ def collect(plan, *, execute=False):
                 if controller.phase == "awaiting_review":
                     require_remaining(min(deadline, stage_deadline), 65, "review")
                     reviewed = controller.reviewed()
+                    if plan.get("suite_oracle"):
+                        timepoints["review"] = commentary_timepoint.capture(
+                            observer, directory, "review",
+                            controller.barrier.chain.evidence["precompact_product"],
+                            directory / "rpc.jsonl", controller.business_call_id)
                     if time.monotonic() >= min(deadline, stage_deadline):
                         raise TimeoutError("review_deadline")
                     send_all(reviewed)
                 if controller.phase == "awaiting_cold_recovery":
                     require_remaining(min(deadline, stage_deadline), 16, "cold_recovery")
                     cold_result = controller.cold_recovery()
+                    if plan.get("suite_oracle"):
+                        timepoints["cold"] = commentary_timepoint.capture(
+                            observer, directory, "cold",
+                            cold_result["evidence"]["cold_product"],
+                            directory / "rpc.jsonl",
+                            controller.compaction_item["params"]["item"]["id"])
                     if time.monotonic() >= min(deadline, stage_deadline):
                         raise TimeoutError("cold_recovery_deadline")
                     if controller.phase == "complete":
@@ -348,7 +363,8 @@ def collect(plan, *, execute=False):
                         rows, plan, controller.thread, controller.turn,
                         controller.business_call_id)
                     result = {"status": "source_chain_observed", **cold_result,
-                              "suite_execution": suite}
+                              "suite_execution": suite,
+                              "timepoint_snapshots": timepoints}
                     break
             else:
                 raise TimeoutError(deadline_reason("native_chain", controller.phase))

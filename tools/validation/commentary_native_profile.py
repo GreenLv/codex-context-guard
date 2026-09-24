@@ -18,7 +18,7 @@ from typing import Any
 
 from tools.validation import commentary_fixture as fixture
 from tools.validation import commentary_live_runner as runner
-from tools.validation import commentary_suite_oracle
+from tools.validation import commentary_suite_oracle, commentary_timepoint
 from tools.validation.commentary_live_observer import NativeObserver
 from tools.validation.host_capture import measure_runtime
 
@@ -161,6 +161,13 @@ def _rpc(journal: bytes) -> list[dict[str, Any]]:
     if not rows or len(rows) > 2000:
         raise ReplayError("invalid_rpc_journal_length")
     return rows
+
+
+def _rpc_offset(journal: bytes, index: int) -> int:
+    lines = journal.splitlines(keepends=True)
+    if not 0 <= index <= len(lines):
+        raise ReplayError('invalid_rpc_offset')
+    return sum(map(len, lines[:index]))
 
 
 def _response(rows, method):
@@ -374,7 +381,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
         "tools/validation/commentary_trace.py",
         "tools/validation/host_capture.py",
         "scripts/cg_process_tree.py",
-    ) + (("tools/validation/commentary_suite_oracle.py",)
+    ) + (("tools/validation/commentary_suite_oracle.py",
+          "tools/validation/commentary_timepoint.py")
          if plan.get("suite_oracle") else ())
     mapper_root = Path(__file__).resolve().parents[2]
     if any(_digest(_read_unpinned(mapper_root / name, 2 * 1024 * 1024))
@@ -423,6 +431,7 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     gates.append(_gate("official_hook_trust", "passed"))
     previous_home = os.environ.get("CODEX_HOME")
     previous_trace = os.environ.get("CODEX_ROLLOUT_TRACE_ROOT")
+    final_product = None
     os.environ["CODEX_HOME"] = plan["codex_home"]
     os.environ["CODEX_ROLLOUT_TRACE_ROOT"] = plan["trace_root"]
     try:
@@ -497,10 +506,14 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             rows, "receive", lambda raw: raw.get("method") == "item/tool/call"
             and raw.get("params", {}).get("callId") == business_call,
             "business_event_missing")
+        business_rpc_id = _one([n for n in calls if n["params"].get("tool") == "business"],
+                               "business_call_missing_or_repeated").get("id")
+        business_send = _position(
+            rows, "send", lambda raw: raw.get("id") == business_rpc_id
+            and "result" in raw, "business_send_missing")
         business_reply = _position(
             rows, "send_complete", lambda raw: raw.get("id") ==
-            _one([n for n in calls if n["params"].get("tool") == "business"],
-                 "business_call_missing_or_repeated").get("id")
+            business_rpc_id
             and "method" not in raw, "business_reply_missing")
         if not answer_event < challenge_event < business_event < business_reply:
             raise ReplayError("business_not_after_answer_and_challenge")
@@ -512,31 +525,55 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                 or chain.evidence["business_inference"] != result["evidence"].get("business_inference")):
             raise ReplayError("business_result_disagrees_with_raw_source")
         gates.append(_gate("post_answer_business", "passed"))
-        directory, state = observer._state(thread)
         question_id = result["evidence"]["precompact_product"]["question_id"]
+        if plan.get("suite_oracle"):
+            snapshots = result.get("timepoint_snapshots")
+            if not isinstance(snapshots, dict) or set(snapshots) != {"review", "cold"}:
+                raise ReplayError("timepoint_snapshots_missing")
+            try:
+                before, state, review_binding = commentary_timepoint.verify(
+                    observer, run_dir, "review", snapshots["review"],
+                    result["evidence"]["precompact_product"], run_dir / "rpc.jsonl",
+                    business_call,
+                    after_boundary=_rpc_offset(inputs["journal"], business_event + 1),
+                    before_boundary=_rpc_offset(inputs["journal"], business_send))
+            except commentary_timepoint.TimepointError as exc:
+                raise ReplayError("review_timepoint_unverified:" + str(exc)) from exc
+        else:
+            directory, state = observer._state(thread)
+            before = fixture.product_review_checkpoint(
+                observer.runtime, state, session_dir=directory,
+                codex_home=plan["codex_home"],
+                question_id=question_id,
+                main_ids=result["evidence"]["precompact_product"]["main_ids"],
+                expected_coverage=plan.get("review_coverage", "complete"),
+                expected_main_current=(True if plan.get("review_coverage", "complete")
+                                       == "complete" else None))
+        directory = observer._product_directory(thread)
         question_rows = [item for item in state.get("requirements", [])
                          if item.get("id") == question_id]
         question_row = _one(question_rows, "review_question_missing_or_repeated")
-        review_request = observer.runtime.answer_review_request(
-            directory, state, question_row, codex_home=Path(plan["codex_home"]))
         message_id = actual_answer["pair"]["commentary_id"]
-        if (review_request.get("subject", {}).get("session_id") != thread
-                or review_request.get("subject", {}).get("turn_id") != turn
-                or [item.get("message_id") for item in review_request.get("messages", [])]
-                != [message_id]
-                or review_request.get("answer_texts", {}).get(message_id)
-                != chain.commentary_text):
-            raise ReplayError("sealed_review_not_bound_to_answer")
+        if plan.get("suite_oracle"):
+            if (review_binding.get("subject", {}).get("session_id") != thread
+                    or review_binding.get("subject", {}).get("turn_id") != turn
+                    or review_binding.get("message_ids") != [message_id]
+                    or review_binding.get("answer_sha256", {}).get(message_id)
+                    != _digest(chain.commentary_text.encode())):
+                raise ReplayError("sealed_review_not_bound_to_answer")
+        else:
+            review_request = observer.runtime.answer_review_request(
+                directory, state, question_row, codex_home=Path(plan["codex_home"]))
+            if (review_request.get("subject", {}).get("session_id") != thread
+                    or review_request.get("subject", {}).get("turn_id") != turn
+                    or [item.get("message_id") for item in review_request.get("messages", [])]
+                    != [message_id]
+                    or review_request.get("answer_texts", {}).get(message_id)
+                    != chain.commentary_text):
+                raise ReplayError("sealed_review_not_bound_to_answer")
         coverage = plan.get("review_coverage", "complete")
         if coverage not in {"complete", "partial"}:
             raise ReplayError("unsupported_review_coverage")
-        before = fixture.product_review_checkpoint(
-            observer.runtime, state, session_dir=directory,
-            codex_home=plan["codex_home"],
-            question_id=question_id,
-            main_ids=result["evidence"]["precompact_product"]["main_ids"],
-            expected_coverage=coverage,
-            expected_main_current=True if coverage == "complete" else None)
         if before != result["evidence"]["precompact_product"]:
             raise ReplayError("review_projection_changed")
         barrier = _object(_read_unpinned(run_dir / "review-barrier.json", 65536))
@@ -544,6 +581,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                 or barrier.get("challenge_nonce") != challenge.get("nonce")
                 or barrier.get("projection") != before):
             raise ReplayError("review_barrier_not_bound_to_projection")
+        if plan.get("suite_oracle"):
+            gates.append(_gate("review_product_timepoint", "passed"))
         chain.question_id = before["question_id"]
         chain.main_ids = before["main_ids"]
         observer.question_id = before["question_id"]
@@ -591,10 +630,27 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             raise ReplayError("compaction_result_disagrees_with_raw_source")
         gates.append(_gate("auto_compaction", "passed"))
         if (later.get("original_result_sha256") != manifest["result"]["sha256"]
-                or later.get("projection_equal_to_original_precompact") is not True
-                or later.get("runtime_tree_sha256") != plan["runtime_tree_sha256"]):
+                or later.get("runtime_tree_sha256") != plan["runtime_tree_sha256"]
+                or (not plan.get("suite_oracle") and
+                    later.get("projection_equal_to_original_precompact") is not True)):
             raise ReplayError("later_cold_receipt_subject_mismatch")
-        cold = chain.cold_recovery(observer.cold_reader)
+        if plan.get("suite_oracle"):
+            turn_complete = _position(
+                rows, "receive", lambda raw: raw.get("method") == "turn/completed"
+                and raw.get("params", {}).get("turn", {}).get("id") == turn,
+                "turn_completion_missing_or_repeated")
+            try:
+                cold_projection, _cold_state, _cold_binding = commentary_timepoint.verify(
+                    observer, run_dir, "cold", snapshots["cold"],
+                    result["evidence"]["cold_product"], run_dir / "rpc.jsonl",
+                    completed["params"]["item"]["id"],
+                    after_boundary=_rpc_offset(inputs["journal"], compact_start_events[1] + 1),
+                    before_boundary=_rpc_offset(inputs["journal"], turn_complete))
+            except commentary_timepoint.TimepointError as exc:
+                raise ReplayError("cold_timepoint_unverified:" + str(exc)) from exc
+            cold = chain.cold_recovery(lambda _question, _mains: cold_projection)
+        else:
+            cold = chain.cold_recovery(observer.cold_reader)
         if cold["evidence"]["cold_product"] != result["evidence"].get("cold_product"):
             raise ReplayError("cold_projection_disagrees_with_original")
         gates.append(_gate("cold_recovery", "passed"))
@@ -607,6 +663,13 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             if suite_evidence != result.get("suite_execution"):
                 raise ReplayError("suite_result_disagrees_with_raw_source")
             gates.append(_gate("suite_execution", "passed"))
+            try:
+                final_product = commentary_timepoint.final_cold_readback(
+                    observer, before["question_id"], before["main_ids"],
+                    _cold_state)
+            except commentary_timepoint.TimepointError as exc:
+                raise ReplayError("final_product_readback_unverified:" + str(exc)) from exc
+            gates.append(_gate("final_product_readback", "passed"))
     finally:
         for key, previous in (("CODEX_HOME", previous_home),
                               ("CODEX_ROLLOUT_TRACE_ROOT", previous_trace)):
@@ -628,7 +691,13 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     for gate in gates:
         gate["subject"] = {"kind": "runtime_tree", "id": plan["runtime_tree_sha256"]}
         gate["exit_code"] = {"passed": 0, "failed": 1, "pending": 3}[gate["status"]]
-        gate["evidence"] = {"mode": "reviewed_raw_replay",
+        mode = ("captured_product_timepoint"
+                if plan.get("suite_oracle") and gate["id"] in {
+                    "review_product_timepoint", "cold_recovery"}
+                else "fresh_process_readback"
+                if gate["id"] == "final_product_readback"
+                else "reviewed_raw_replay")
+        gate["evidence"] = {"mode": mode,
                             "source_result_sha256": manifest["result"]["sha256"],
                             "source_gate_id": None,
                             "invalidation_reason": "input_or_mapper_changed"}
@@ -647,6 +716,9 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             "mapper_sha256": _digest(Path(__file__).read_bytes()),
             "mapper_closure_sha256": mapper_closure_sha256,
             "mapper_file_count": mapper_file_count,
+            "final_product_readback": final_product,
+            "synthetic_main_task_product_closure": (
+                final_product["main_closure"] if final_product else "not_established"),
             "host_identity_basis": [
                 "original_runner_source_manifest", "runner_written_plan",
                 "pinned_binary_bytes", "ordered_official_rpc",
