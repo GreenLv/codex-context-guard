@@ -61,7 +61,7 @@ LEGACY_EXECUTION_PROTOCOLS = frozenset({"1.0.0", SCHEMA_11_WORK_UNIT_PROTOCOL})
 READ_ONLY_COMPATIBILITY_SCHEMAS = {7, 8}
 # Schema-11 bounded wait-condition vocabulary (frozen plan sections 3.2/4.3).
 WAIT_CONDITION_KINDS = ("one_shot", "migrated_unresolved")
-WAIT_CONDITION_TYPES = ("choice", "input", "confirmation", "external_dependency")
+WAIT_CONDITION_TYPES = ("choice", "input", "exact_input", "confirmation", "external_dependency")
 WAIT_CONDITION_RAISE_KINDS = ("root_user", "assistant", "external")
 WAIT_CONDITION_STATUSES = ("waiting", "released")
 WAIT_RELEASE_KINDS = ("root_user_confirmation", "external_fact")
@@ -1458,6 +1458,25 @@ ROOT_DIRECT_PAUSE_RE = re.compile(
     r"^\s*(?:please\s+)?(?:pause|hold)\s+(?:the\s+|this\s+)?(?:current\s+)?",
     re.I,
 )
+ROOT_EXACT_MARKER_WAIT_RE = re.compile(
+    r"^\s*(?:只有|仅当)\s*(?:我|用户)\s*(?:在后续消息中|在下一条消息中)?\s*"
+    r"(?:原样|精确地?)\s*(?:发送|发来|提供)\s+"
+    r"(?P<marker>[A-Za-z0-9][A-Za-z0-9_-]{1,63})\s*"
+    r"(?:后|时)?\s*(?:才可|才|方可)\s*(?:继续|调用|运行|执行|处理|分析)",
+    re.I,
+)
+ROOT_EXACT_MARKER_WAIT_EN_RE = re.compile(
+    r"^\s*only\s+(?:after|when)\s+(?:i|the user)\s+"
+    r"(?:send|provide)\s+exactly\s+"
+    r"(?P<marker>[A-Za-z0-9][A-Za-z0-9_-]{1,63})\s+"
+    r"(?:may|can)\s+you\s+(?:continue|call|run|execute|process|analyze)\b",
+    re.I,
+)
+
+
+def exact_marker_wait_match(text: str) -> re.Match[str] | None:
+    return (ROOT_EXACT_MARKER_WAIT_RE.match(text)
+            or ROOT_EXACT_MARKER_WAIT_EN_RE.match(text))
 ROOT_PAUSE_EXTERNAL_RE = re.compile(
     # English dependency words must be complete ASCII tokens, including a
     # bounded set of ordinary inflections. Chinese text can adjoin CI without
@@ -6737,6 +6756,11 @@ def validate_wait_conditions(state: dict[str, Any]) -> None:
                     or record.get("condition_type") not in {"input", "external_dependency"}):
                 raise StateIntegrityError("invalid migrated wait condition shape")
         else:
+            if (record.get("condition_type") == "exact_input"
+                    and (record.get("raised_by_kind") != "root_user"
+                         or record.get("subject_sha256") is None
+                         or record.get("source_clause_sha256") is None)):
+                raise StateIntegrityError("exact input wait lacks root source or marker")
             source = next((p for p in state.get("prompts", []) if p.get("id") == raised_source), None)
             owned_prompts = {
                 i.get("prompt_id") for i in state.get("requirements", [])
@@ -13219,34 +13243,64 @@ def control_speech_clauses(text: str) -> list[str]:
 def root_pause_clauses(text: str) -> list[str]:
     # A Chinese pause may span a comma (condition, then wait). Keep sentence
     # framing until after extraction, so a test description cannot shed its frame.
-    authoritative = authoritative_supersession_text(text)
+    # Mask authority on the complete input first. Filtering each sentence
+    # separately would forget a multiline code fence or attributed block.
+    def blank(match: re.Match[str]) -> str:
+        return "".join("\n" if char == "\n" else " " for char in match.group(0))
+
+    masked = re.sub(r"(?m)^\s*(?:>|\|).*$", blank, text)
+    masked = re.sub(r"```.*?```", blank, masked, flags=re.S)
+    masked = re.sub(r"`[^`\n]*`", blank, masked)
+    masked = ATTRIBUTED_SUPERSESSION_BLOCK_RE.sub(blank, masked)
+    masked = ATTRIBUTED_SUPERSESSION_LINE_RE.sub(blank, masked)
+    masked = _QUOTED_SPAN_RE.sub(blank, masked)
+    assert len(masked) == len(text)
     result = []
-    for sentence in re.findall(r"[^\n.!?。！？;；]+[?？]?", authoritative):
-        # A direct pause at the sentence head remains an instruction when a
-        # later comma introduces a separate question in the same sentence.
-        direct_clause = re.split(r"[,，]", sentence, maxsplit=1)[0]
-        direct = ROOT_DIRECT_PAUSE_RE.search(direct_clause)
-        if (direct and not TEST_SPEC_FRAME_RE.search(direct_clause)
-                and not DESCRIPTION_FRAME_RE.search(direct_clause)):
-            result.append(direct_clause.strip())
-            # A general pause and a named input can share one sentence.
-            # Preserve the later dependency instead of letting the first
-            # comma turn the whole root into a bare-resumable pause.
-            sentence = sentence[len(direct_clause):].lstrip(" ,，")
-            if not sentence:
+    for outer in re.finditer(r"[^\n。！？;；]+", text):
+        original = outer.group(0)
+        boundaries = list(re.finditer(
+            r"(?<=\.)\s+(?=Only\s+(?:after|when)\b)", original, flags=re.I
+        ))
+        spans = []
+        start = 0
+        for boundary in boundaries:
+            spans.append((start, boundary.start()))
+            start = boundary.end()
+        spans.append((start, len(original)))
+        for begin, end in spans:
+            source = original[begin:end]
+            authoritative = masked[outer.start() + begin:outer.start() + end]
+            exact = exact_marker_wait_match(authoritative)
+            if (exact and not TEST_SPEC_FRAME_RE.search(authoritative)
+                    and not DESCRIPTION_FRAME_RE.search(authoritative)
+                    and not PASSIVE_EVENT_FRAME_RE.search(authoritative)
+                    and not SUPERSESSION_NEGATION_PREFIX_RE.search(
+                        authoritative[:exact.start()][-80:])):
+                # Classification and source bytes share one original span.
+                result.append(source.strip().rstrip("."))
                 continue
-        if (general_root_pause_clause(sentence)
-                and not TEST_SPEC_FRAME_RE.search(sentence)
-                and not DESCRIPTION_FRAME_RE.search(sentence)):
-            result.append(sentence.strip())
-            continue
-        if (clause_is_interrogative(sentence) or TEST_SPEC_FRAME_RE.search(sentence)
-                or DESCRIPTION_FRAME_RE.search(sentence)
-                or re.search(r"^\s*(?:如果|假如|if\b|suppose\b)", sentence, re.I)):
-            continue
-        for match in ROOT_PAUSE_RE.finditer(sentence):
-            if not SUPERSESSION_NEGATION_PREFIX_RE.search(sentence[:match.start()][-80:]):
-                result.append(match.group(0).strip())
+            # Retain the historical generic-pause segmentation.
+            for sentence in re.findall(r"[^\n.!?。！？;；]+[?？]?", authoritative):
+                direct_clause = re.split(r"[,，]", sentence, maxsplit=1)[0]
+                direct = ROOT_DIRECT_PAUSE_RE.search(direct_clause)
+                if (direct and not TEST_SPEC_FRAME_RE.search(direct_clause)
+                        and not DESCRIPTION_FRAME_RE.search(direct_clause)):
+                    result.append(direct_clause.strip())
+                    sentence = sentence[len(direct_clause):].lstrip(" ,，")
+                    if not sentence:
+                        continue
+                if (general_root_pause_clause(sentence)
+                        and not TEST_SPEC_FRAME_RE.search(sentence)
+                        and not DESCRIPTION_FRAME_RE.search(sentence)):
+                    result.append(sentence.strip())
+                    continue
+                if (clause_is_interrogative(sentence) or TEST_SPEC_FRAME_RE.search(sentence)
+                        or DESCRIPTION_FRAME_RE.search(sentence)
+                        or re.search(r"^\s*(?:如果|假如|if\b|suppose\b)", sentence, re.I)):
+                    continue
+                for match in ROOT_PAUSE_RE.finditer(sentence):
+                    if not SUPERSESSION_NEGATION_PREFIX_RE.search(sentence[:match.start()][-80:]):
+                        result.append(match.group(0).strip())
     return result
 
 
@@ -13301,6 +13355,9 @@ def input_wait_subject(text: str) -> str:
     the object. They are not a license to fold marker case, separators, or
     words such as READY and DONE inside the object itself.
     """
+    exact = exact_marker_wait_match(text)
+    if exact:
+        return exact.group("marker")
     text = text.strip()
     text = re.sub(
         r"^(?:请\s*)?等(?:待|到)?(?:我|你|您|用户)?"
@@ -13346,6 +13403,8 @@ def general_root_pause_clause(clause: str) -> bool:
 
 def root_pause_condition_type(clause: str) -> str:
     """Classify the sourced dependency owner without using reply wording."""
+    if exact_marker_wait_match(clause):
+        return "exact_input"
     if ROOT_PAUSE_EXTERNAL_RE.search(clause):
         return "external_dependency"
     if re.search(
@@ -13409,6 +13468,9 @@ def release_matches_condition(
 ) -> bool:
     if condition.get("condition_type") == "external_dependency":
         return False
+    if condition.get("condition_type") == "exact_input":
+        return (type(text) is str and condition.get("subject_sha256")
+                == sha256_text(text))
     clauses = control_speech_clauses(text)
     clauses = [c for c in clauses if not _WAIT_RELEASE_DEFERRED_RE.search(c)]
     if not clauses or any(clause_is_negated_unmet(c) for c in clauses):
@@ -13507,7 +13569,7 @@ def append_work_unit(
                      and condition.get("subject_sha256") in {
                          None, sha256_text(
                              input_wait_subject(clause)
-                             if condition.get("condition_type") == "input"
+                             if condition.get("condition_type") in {"input", "exact_input"}
                              else wait_subject(clause)
                          )
                      }), None)
@@ -16633,7 +16695,7 @@ def handle_user_prompt(
         for pause_clause in root_pause_clauses(text):
             pause_type = root_pause_condition_type(pause_clause)
             subject = (None if general_root_pause_clause(pause_clause)
-                       else input_wait_subject(pause_clause) if pause_type == "input"
+                       else input_wait_subject(pause_clause) if pause_type in {"input", "exact_input"}
                        else wait_subject(pause_clause))
             add_wait_condition(
                 state, work_unit_id, kind="one_shot", condition_type=pause_type,

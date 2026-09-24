@@ -11,7 +11,7 @@ authority; this public status intentionally omits private evidence locations.
 | --- | --- | --- |
 | CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch | Independent holdouts and final exact candidate checks; unsupported locators still cannot certify a target |
 | CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and an explicit independent answer-review consumer keep information coverage separate from execution closure | Complete repaired macOS and Windows delivery, review, compaction and cold-recovery chains on their exact installed runtimes |
-| CG142-03 | Existing source-bound persistence, wait, pause and cancellation projection retained; path classification repair feeds that projection | Full mapped control matrix and corresponding native/model evidence |
+| CG142-03 | Source-bound persistence, pause and cancellation remain; an explicitly named exact marker has its own byte-exact wait, and offline C1/C2 controls separate partial answers from future observations | Fresh installed-runtime C1/C2 native control results and the full mapped control matrix |
 | CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting | Independent low-budget, damaged-source, wrong-target and multi-object review; model rerun behavior remains unmeasured |
 
 Renaming a suite directory from `neutral` to `audit` must not remove an
@@ -93,12 +93,12 @@ No answer-coverage oracle is adopted by this feature.
 CG142-02 has a source-bound independent reviewer contract, with unknown or
 partial judgments leaving the question open. The observation reader alone
 does not upgrade old unknown records or close information requirements. Four
-bounded macOS attempts remain failed. The fourth recorded a successful
-independent reviewer judgment but failed at a second product-session lookup
-before the business result was released. The offline candidate now passes the
-isolated session directory and Host HOME through review and cold readback;
-complete native macOS and Windows chains on these changed runtime bytes remain
-unverified. The original plan's full-coverage and publication gates remain
+earlier bounded macOS attempts remain failed. A later P7 run observed one
+full-answer, business, real automatic compaction and cold-recovery chain; its
+separate zero-model profile passed seven scoped gates for that installed
+runtime. The new exact-marker repair changes runtime bytes, so P7 does not
+establish acceptance of those bytes or either C1/C2 control. Windows native
+chains and the original plan's full-coverage and publication gates remain
 unmet.
 
 ## Follow-up tools and ownership

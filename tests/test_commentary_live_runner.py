@@ -77,6 +77,20 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reused_client_id"):
             runner.load_plan(path)
 
+    def test_partial_review_mode_is_explicitly_bounded(self):
+        path = self.root / "plan.json"
+        partial = {**self.plan, "review_coverage": "partial",
+                   "question": "请分别告诉我：(1) 7 的平方是多少？(2) 11 的平方是多少？",
+                   "values": list(range(-64, 64))}
+        path.write_text(json.dumps(partial))
+        self.assertEqual(runner.load_plan(path)["review_coverage"], "partial")
+        path.write_text(json.dumps({**partial, "values": [2, 3]}))
+        with self.assertRaisesRegex(ValueError, "unfrozen_partial_control_inputs"):
+            runner.load_plan(path)
+        path.write_text(json.dumps({**self.plan, "review_coverage": "unknown"}))
+        with self.assertRaisesRegex(ValueError, "unsupported_review_coverage"):
+            runner.load_plan(path)
+
     def test_plan_rejects_synthetic_threshold_or_expanded_budget(self):
         path = self.root / "plan.json"
         for change, reason in [

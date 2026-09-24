@@ -53,7 +53,8 @@ class ObserverSourceTest(unittest.TestCase):
             )
             helper = harness / "tools/validation/commentary_fixture.py"
             helper.write_text(
-                "def product_review_checkpoint(_module, state, **_): return state\n"
+                "def product_review_checkpoint(_module, state, **kw): "
+                "return {'state': state, 'coverage': kw['expected_coverage']}\n"
             )
             self.observer.runtime_root = installed
             self.observer.product_data_root = root / "home/plugins/data/context-guard-candidate"
@@ -67,7 +68,10 @@ class ObserverSourceTest(unittest.TestCase):
             self.observer.question_id = "q"
             self.observer.main_ids = ["main"]
             self.assertEqual(self.observer.cold_reader("q", ["main"]),
-                             {"product": "installed"})
+                             {"state": {"product": "installed"}, "coverage": "complete"})
+            self.observer.plan["review_coverage"] = "partial"
+            self.assertEqual(self.observer.cold_reader("q", ["main"]),
+                             {"state": {"product": "installed"}, "coverage": "partial"})
             helper.write_text("def product_review_checkpoint(*_, **__): return {}\n")
             with self.assertRaisesRegex(ValueError, "cold_product_read_failed"):
                 self.observer.cold_reader("q", ["main"])

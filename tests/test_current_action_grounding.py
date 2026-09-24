@@ -74,6 +74,159 @@ class CurrentActionGroundingTests(unittest.TestCase):
         else:
             self.host(f"test -f '{target}'")
 
+    def test_exact_marker_wait_releases_only_on_named_user_input(self):
+        suite = self.root / "suite.py"
+        suite.write_text("def test_case(): assert True\n", encoding="utf-8")
+        self.submit(
+            f'只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{suite}" 的测试。'
+        )
+        waiting = self.state()["wait_conditions"]
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["condition_type"], "exact_input")
+        self.assertEqual(waiting[0]["subject_sha256"],
+                         cg.sha256_text("CG142-CONFIRM-17"))
+        self.submit("继续。")
+        self.assertEqual(self.state()["wait_conditions"][0]["status"], "waiting")
+        for wrong in (
+            "CG142-CONFIRM-18", "cg142-CONFIRM-17", "CG142-CONFIRM-17 ",
+            "CG142-CONFIRM-170", '"CG142-CONFIRM-17"',
+            "`CG142-CONFIRM-17`",
+        ):
+            self.submit(wrong)
+            self.assertEqual(self.state()["wait_conditions"][0]["status"],
+                             "waiting", wrong)
+        self.submit("CG142-CONFIRM-17")
+        self.assertEqual(self.state()["wait_conditions"][0]["status"], "released")
+
+    def test_exact_marker_english_equivalent_and_false_source_frames(self):
+        suite = self.root / "suite.py"
+        suite.write_text("def test_case(): assert True\n", encoding="utf-8")
+        for index, prompt in enumerate((
+            f'Only after I send exactly CG142-CONFIRM-17 may you run "{suite}".',
+            f'只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{suite}" 的测试。',
+        )):
+            self.session = f"exact-marker-{index}"
+            self.turn = 0
+            self.submit("context-guard on")
+            self.submit(prompt)
+            waiting = self.state()["wait_conditions"]
+            self.assertEqual(len(waiting), 1)
+            self.assertEqual(waiting[0]["condition_type"], "exact_input")
+            self.submit("CG142-CONFIRM-17")
+            self.assertEqual(self.state()["wait_conditions"][0]["status"], "released")
+        for index, frame in enumerate((
+            f'测试规格：只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{suite}"。',
+            f'例如只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{suite}"。',
+            f'不要把只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{suite}" 当成授权。',
+            f'"只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 {suite}"',
+        )):
+            self.session = f"exact-marker-negative-{index}"
+            self.turn = 0
+            self.submit("context-guard on")
+            self.submit(frame)
+            self.assertFalse(self.state()["wait_conditions"], frame)
+
+    def test_same_exact_marker_for_two_targets_is_ambiguous(self):
+        first = self.root / "first.py"
+        second = self.root / "second.py"
+        for path in (first, second):
+            path.write_text("def test_case(): assert True\n", encoding="utf-8")
+        self.submit(
+            f'只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{first}" 的测试。'
+            f'只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{second}" 的测试。'
+        )
+        waiting = self.state()["wait_conditions"]
+        self.assertEqual(len(waiting), 2)
+        self.assertNotEqual(waiting[0]["source_clause_sha256"],
+                            waiting[1]["source_clause_sha256"])
+        self.submit("CG142-CONFIRM-17")
+        self.assertEqual([row["status"] for row in self.state()["wait_conditions"]],
+                         ["waiting", "waiting"])
+
+    def test_exact_marker_release_does_not_satisfy_future_observation(self):
+        suite = self.root / "suite.py"
+        suite.write_text("def test_case(): assert True\n", encoding="utf-8")
+        future = self.root / "future-observation.json"
+        self.submit(
+            f'只有我在后续消息中原样发送 CG142-CONFIRM-17 才可运行 "{suite}" 的测试。'
+            f'今后再观察 "{future}" 的性能变化；当前文件不存在。'
+        )
+        original = self.state()["requirements"][-1]
+        clauses = original["clause_metadata"]["clauses"]
+        main = next(row for row in clauses if row["operation"] == "test_verify")
+        later = next(row for row in clauses if future.name in row["clause"])
+        self.assertNotEqual(main["subjectId"], later["subjectId"])
+        self.assertFalse(future.exists())
+        self.submit("CG142-CONFIRM-17")
+        state = self.state()
+        self.assertEqual(state["wait_conditions"][0]["status"], "released")
+        self.assertFalse(future.exists())
+        self.assertEqual(state["requirements"][1]["status"], "pending")
+
+    def test_generic_pause_and_exact_marker_remain_separate_without_target_proof(self):
+        suite = self.root / "suite.py"
+        suite.write_text("def test_case(): assert True\n", encoding="utf-8")
+        self.submit(
+            f'请先暂停运行 "{suite}" 的测试；'
+            '只有我在后续消息中原样发送 CG142-CONFIRM-17 才可继续运行该测试。'
+        )
+        waiting = self.state()["wait_conditions"]
+        self.assertEqual(len(waiting), 2)
+        self.assertEqual([row["condition_type"] for row in waiting],
+                         ["confirmation", "exact_input"])
+        self.submit("CG142-CONFIRM-17")
+        self.assertEqual([row["status"] for row in self.state()["wait_conditions"]],
+                         ["waiting", "released"])
+
+    def test_exact_marker_keeps_second_source_after_rejected_first(self):
+        first = "只有我原样发送 BAD 才可运行测试，测试必须包含负例。"
+        second = "只有我原样发送 GOOD 才可运行 suite.py。"
+        self.assertEqual(cg.root_pause_clauses(first + second),
+                         [second.rstrip("。")])
+        self.submit(first + second)
+        waits = self.state()["wait_conditions"]
+        self.assertEqual(len(waits), 1)
+        self.assertEqual(waits[0]["condition_type"], "exact_input")
+        self.assertEqual(waits[0]["source_clause_sha256"],
+                         cg.sha256_text(second.rstrip("。")))
+        self.assertEqual(waits[0]["subject_sha256"], cg.sha256_text("GOOD"))
+
+    def test_two_english_exact_markers_keep_distinct_sentence_sources(self):
+        first = "Only after I send exactly BAD may you run suite.py."
+        second = "Only after I send exactly GOOD may you run other.py."
+        self.assertEqual(cg.root_pause_clauses(first + " " + second),
+                         [first.rstrip("."), second.rstrip(".")])
+        self.submit(first + " " + second)
+        waits = self.state()["wait_conditions"]
+        self.assertEqual(len(waits), 2)
+        self.assertEqual([w["source_clause_sha256"] for w in waits],
+                         [cg.sha256_text(first.rstrip(".")),
+                          cg.sha256_text(second.rstrip("."))])
+        self.assertEqual([w["subject_sha256"] for w in waits],
+                         [cg.sha256_text("BAD"), cg.sha256_text("GOOD")])
+
+    def test_exact_marker_state_requires_root_source_and_subject(self):
+        self.submit("只有我原样发送 READY 才可运行测试。")
+        for field in ("subject_sha256", "source_clause_sha256"):
+            damaged = self.state()
+            damaged["wait_conditions"][0][field] = None
+            with self.assertRaises(cg.StateIntegrityError):
+                cg.validate_state_integrity(damaged)
+
+    def test_multiline_source_frames_do_not_create_waits(self):
+        fenced = "```text\n只有我原样发送 BAD 才可运行 suite.py。\n请先暂停当前任务。\n```"
+        self.assertEqual(cg.root_pause_clauses(fenced), [])
+        self.assertEqual(cg.root_pause_clauses(
+            fenced + "\n只有我原样发送 GOOD 才可运行 other.py。"
+        ), ["只有我原样发送 GOOD 才可运行 other.py"])
+        self.assertEqual(cg.root_pause_clauses(
+            "> 只有我原样发送 BAD 才可运行 suite.py。\n"
+            "只有我原样发送 GOOD 才可运行 other.py。"
+        ), ["只有我原样发送 GOOD 才可运行 other.py"])
+        self.assertEqual(cg.root_pause_clauses(
+            "```text\n请先暂停当前任务。\n```\n请先暂停当前任务。"
+        ), ["请先暂停当前任务"])
+
     def test_quoted_path_with_spaces_keeps_exact_source_and_current_action(self):
         suite = self.root / "suite space" / "test now.py"
         suite.parent.mkdir()

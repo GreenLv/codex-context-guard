@@ -19,6 +19,29 @@ from tools.validation.commentary_live_observer import NativeObserver
 
 
 class ChainTests(unittest.TestCase):
+    def test_partial_cold_uses_postbusiness_baseline_not_review_checkpoint(self):
+        chain = Chain(thread="thread", turn="turn", cwd="/fixture",
+                      hook_source="/product/hooks.json",
+                      capture_hook_source="/capture/hooks.json",
+                      frozen_config={}, threshold={}, expected_coverage="partial")
+        chain.phase = "review_consumed"
+        chain.question_id = "question"
+        chain.main_ids = ["main"]
+        before = {"question_id": "question", "main_ids": ["main"],
+                  "requirements_sha256": "a" * 64,
+                  "product_projection_sha256": "b" * 64}
+        after = {**before, "requirements_sha256": "c" * 64,
+                 "product_projection_sha256": "d" * 64}
+        chain.evidence["precompact_product"] = before
+        chain.phase = "recovery_observed"
+        with self.assertRaisesRegex(fixture.Unknown, "postbusiness_baseline_missing"):
+            chain.cold_recovery(lambda *_args: after)
+        chain.phase = "review_consumed"
+        chain.postbusiness(after, item_id="business-call", hook_id="post-hook")
+        chain.phase = "recovery_observed"
+        self.assertEqual(chain.cold_recovery(lambda *_args: after)["phase"],
+                         "offline_chain_checked")
+
     def setUp(self):
         product_type = type('BoundConsumer', (review_tests.ConsumerTests,), {
             'prepare_commentary_source': commentary_binding_fixture.prepare_with_progress})

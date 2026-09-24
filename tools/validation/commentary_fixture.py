@@ -382,7 +382,8 @@ def verify_business(values, challenge, actual):
 
 
 def product_review_checkpoint(runtime, state, *, session_dir, codex_home,
-                              question_id, main_ids):
+                              question_id, main_ids, expected_coverage="complete",
+                              expected_main_current=True):
     """Read the product's sealed-review consumer; never mutate obligations.
 
     `runtime` is the independently loaded installed/source product module, not
@@ -393,6 +394,10 @@ def product_review_checkpoint(runtime, state, *, session_dir, codex_home,
 
     if not main_ids or question_id in main_ids:
         raise Unknown("missing_distinct_main_obligation")
+    if expected_coverage not in {"complete", "partial"}:
+        raise Unknown("unsupported_review_coverage")
+    if type(expected_main_current) not in (bool, type(None)):
+        raise Unknown("invalid_main_current_expectation")
     directory = Path(session_dir)
     if directory.name != state.get("session", {}).get("id"):
         raise Unknown("review_session_directory_mismatch")
@@ -403,10 +408,17 @@ def product_review_checkpoint(runtime, state, *, session_dir, codex_home,
     if state != before:
         raise Unknown("projection_mutated_obligations")
     reviews = scope.get("answer_reviews", {})
+    current = scope.get("current_item_ids", [])
+    if (not isinstance(current, (list, set, tuple))
+            or any(item not in {row.get("id") for row in state["requirements"]}
+                   for item in main_ids)):
+        raise Unknown("main_identity_lost")
     if (
-        reviews.get(question_id, {}).get("coverage") != "complete"
-        or question_id in scope.get("current_item_ids", [])
-        or any(item not in scope.get("current_item_ids", []) for item in main_ids)
+        reviews.get(question_id, {}).get("coverage") != expected_coverage
+        or (question_id in current) ==
+        (expected_coverage == "complete")
+        or (expected_main_current is not None
+            and any((item in current) != expected_main_current for item in main_ids))
     ):
         raise Unknown("review_not_consumed_or_main_lost")
     return {

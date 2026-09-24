@@ -27,6 +27,16 @@ installation evidence. No existing cache or historical receipt is overwritten.
 
 ## 0.14.2 source candidate (Unreleased)
 
+The unpublished candidate extends schema-13 one-shot wait classification with
+`exact_input` for a source-bound, explicitly named root-user marker. Its
+release predicate compares the complete later root message with the marker's
+original bytes; ordinary continuation, a quoted marker, changed case or
+surrounding whitespace do not release it. A separate generic pause is not
+silently removed. This is an observable runtime repair within the unreleased
+0.14.2 candidate, not a state-schema, Stop-protocol or Hook-event revision.
+Changed runtime bytes require a fresh isolated installation and affected
+native acceptance; earlier 0.14.2 runs retain their own digest.
+
 The optional `commentary-source-binding/v1` proof extends derived commentary
 rows and independently sealed review requests; core schema 13 and Stop 5.0.0
 do not change. Every projection recomputes source bindings. Removing the trace

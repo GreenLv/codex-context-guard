@@ -65,6 +65,7 @@ class NativeObserver:
             capture_hook_source=self.plan["capture_hook_source"],
             frozen_config=self.plan["effective_config"],
             threshold=self.plan["threshold_proposal"],
+            expected_coverage=self.plan.get("review_coverage", "complete"),
         )
 
     def configure_review_policy(self, thread):
@@ -337,6 +338,19 @@ class NativeObserver:
             raise ValueError("product_state_unavailable")
         return directory, self.runtime.load_state(directory, {"session_id": thread})
 
+    def postbusiness_projection(self, thread, question_id, main_ids):
+        from tools.validation.commentary_fixture import product_review_checkpoint
+
+        if self.plan.get("review_coverage") != "partial":
+            raise ValueError("postbusiness_projection_wrong_profile")
+        directory, state = self._state(thread)
+        return product_review_checkpoint(
+            self.runtime, state, session_dir=directory,
+            codex_home=self.plan["codex_home"], question_id=question_id,
+            main_ids=main_ids, expected_coverage="partial",
+            expected_main_current=None,
+        )
+
     def review_projection(self, thread, turn):
         directory, state = self._state(thread)
         catalog = self.runtime.answer_review_catalog(directory, state)
@@ -484,7 +498,7 @@ class NativeObserver:
         program = """
 import importlib.util, hashlib, json, sys
 from pathlib import Path
-root, harness, helper_digest, directory, home, thread, question, mains = json.load(sys.stdin)
+root, harness, helper_digest, directory, home, thread, question, mains, coverage = json.load(sys.stdin)
 helper = Path(harness) / 'tools/validation/commentary_fixture.py'
 if hashlib.sha256(helper.read_bytes()).hexdigest() != helper_digest:
     raise ValueError('external_cold_helper_changed')
@@ -500,14 +514,17 @@ if Path(fixture.__file__).resolve() != helper.resolve():
 state = module.load_state(Path(directory), {'session_id': thread})
 print(json.dumps(product_review_checkpoint(module, state, session_dir=Path(directory),
                                            codex_home=Path(home),
-                                           question_id=question, main_ids=mains)))
+                                           question_id=question, main_ids=mains,
+                                           expected_coverage=coverage,
+                                           expected_main_current=(None if coverage == 'partial' else True))))
 """
         run = subprocess.run(
             [sys.executable, "-c", program],
             input=json.dumps([str(self.runtime_root), self.plan["harness_root"],
                               self.plan["cold_helper_sha256"], str(directory),
                               self.plan["codex_home"], self.thread,
-                              question_id, main_ids]),
+                              question_id, main_ids,
+                              self.plan.get("review_coverage", "complete")]),
             text=True, capture_output=True, timeout=15, check=False,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         )

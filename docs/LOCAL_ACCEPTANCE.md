@@ -2,6 +2,20 @@
 
 ## 0.14.2 source candidate — Unreleased
 
+The C1 partial-answer gate and C2 exact-marker/future-observation gate now
+have zero-model source oracles and focused regressions. The C1 native path
+checks the fixed first-answer content and independent partial review before
+business release, then binds the successful dynamic-tool terminal item and
+its exact product PostToolUse run before automatic compaction. Cold recovery
+compares with this business-after projection, allowing the main item to leave
+current while the partial question stays current. A three-turn C2 app-server
+collector checks source-bound wait identity, official turn success, one
+nonce-bound business result, fixed deadlines and owned-process cleanup.
+These paths have not produced a C1 or C2 native model result. The new
+`exact_input` runtime bytes require a fresh isolated installation and Hook
+trust readback before affected native work; P7 remains evidence for its
+earlier runtime digest only.
+
 The P7 macOS run on source commit `0bcb53328bbe70b6fae539d6bed2768f6a1e2cb5`
 observed one source-bound side-question answer, a challenge-bound business
 action, independent review consumption, real automatic PreCompact and compact

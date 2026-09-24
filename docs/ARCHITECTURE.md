@@ -135,6 +135,11 @@ control cannot create this parent relation. Repeated pause remains paused;
 resume lifts a pause prospectively but does not revive a canceled item.
 A short resume can lift a general pause, but does not establish that a
 specified input has arrived or a particular confirmation has been given.
+An explicit exact-marker condition keeps the marker's original bytes and
+releases only when a later root message equals that marker byte for byte.
+An adjacent general pause remains a separate wait unless its target is
+independently tied to the exact condition. A future observation clause stays
+open until its own evidence arrives.
 The original wait condition remains source-bound across recovery; matching
 root input or an explicit change to that condition affects only later state.
 Completion still has separate explicit-proof, Goal, and release checks.

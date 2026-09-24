@@ -109,6 +109,15 @@ def load_plan(path):
             raise ValueError("missing_scenario_field")
     if plan["root_client_id"] == plan["question_client_id"]:
         raise ValueError("reused_client_id")
+    if plan.get("review_coverage", "complete") not in {"complete", "partial"}:
+        raise ValueError("unsupported_review_coverage")
+    if plan.get("review_coverage") == "partial":
+        if (plan.get("question") !=
+                "请分别告诉我：(1) 7 的平方是多少？(2) 11 的平方是多少？"
+                or plan.get("values") != list(range(-64, 64))
+                or plan.get("budget") != {"startup": 60, "turn": 240,
+                                          "compact": 120, "cleanup": 15}):
+            raise ValueError("unfrozen_partial_control_inputs")
     if (type(plan.get("values")) is not list or not 1 <= len(plan["values"]) <= 256
             or any(type(x) is not int or not -64 <= x <= 63 for x in plan["values"])
             or type(plan.get("overrides")) is not dict
@@ -283,6 +292,7 @@ def collect(plan, *, execute=False):
                     record("send", request)
                     transport.send(request, timeout=10)
                     record("send_complete", request)
+                    controller.sent(request)
 
             send_all(controller.start())
             while time.monotonic() < deadline:

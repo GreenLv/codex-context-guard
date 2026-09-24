@@ -307,6 +307,67 @@ class FixtureBoundaries(unittest.TestCase):
 
 
 class ProductReviewProjectionTests(unittest.TestCase):
+    def test_partial_postbusiness_allows_main_to_leave_current_but_cold_hashes_bind(self):
+        import tempfile
+        from pathlib import Path
+
+        from tools.validation import commentary_fixture as f
+
+        class Runtime:
+            @staticmethod
+            def current_scope_projection(_state, **_kwargs):
+                return {"answer_reviews": {"q": {"coverage": "partial"}},
+                        "current_item_ids": {"q"}}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "session"
+            directory.mkdir()
+            state = {"session": {"id": "session"},
+                     "requirements": [{"id": "q"}, {"id": "main"}]}
+            with self.assertRaisesRegex(f.Unknown, "review_not_consumed_or_main_lost"):
+                f.product_review_checkpoint(
+                    Runtime, state, session_dir=directory, codex_home=temporary,
+                    question_id="q", main_ids=["main"],
+                    expected_coverage="partial",
+                )
+            after = f.product_review_checkpoint(
+                Runtime, state, session_dir=directory, codex_home=temporary,
+                question_id="q", main_ids=["main"], expected_coverage="partial",
+                expected_main_current=None,
+            )
+            self.assertEqual(after["question_id"], "q")
+
+    def test_partial_review_stays_current_through_compact_and_cold_load(self):
+        from tests import test_answer_review as base
+        from tools.validation import commentary_fixture as f
+
+        fixture = base.ConsumerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        host = fixture.host
+        host.turn_id = "business-turn"
+        base.cg.dispatch(host.event(
+            "UserPromptSubmit", prompt="请运行 /work/suite.py 的测试并持续执行直到完成。",
+        ))
+        main = host.state()["requirements"][-1]["id"]
+        question = fixture.item["id"]
+        fixture.collect("partial")
+        def check():
+            return f.product_review_checkpoint(
+                base.cg, host.state(), session_dir=fixture.directory,
+                codex_home=host.home, question_id=question, main_ids=[main],
+                expected_coverage="partial",
+            )
+        first = check()
+        with self.assertRaises(f.Unknown):
+            f.product_review_checkpoint(
+                base.cg, host.state(), session_dir=fixture.directory,
+                codex_home=host.home, question_id=question, main_ids=[main],
+            )
+        for event, extra in (("PreCompact", {}), ("SessionStart", {"source": "compact"})):
+            base.cg.dispatch(host.event(event, **extra))
+            self.assertEqual(check(), first)
+
     def test_real_receipt_consumer_preserves_main_through_hooks(self):
         from tests import test_answer_review as base
         from tools.validation import commentary_fixture as f

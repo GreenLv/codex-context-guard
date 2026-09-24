@@ -174,7 +174,7 @@ def nested_business_proof(events, payloads, *, thread, turn,
 
 class Chain:
     def __init__(self, *, thread, turn, cwd, hook_source, capture_hook_source,
-                 frozen_config, threshold):
+                 frozen_config, threshold, expected_coverage="complete"):
         if not isinstance(capture_hook_source, str) or not capture_hook_source or capture_hook_source == hook_source:
             raise ValueError("distinct_capture_hook_source_required")
         self.scope = dict(thread=thread, turn=turn, source_path=hook_source)
@@ -182,6 +182,9 @@ class Chain:
         self.cwd = cwd
         self.frozen_config = frozen_config
         self.threshold = threshold
+        if expected_coverage not in {"complete", "partial"}:
+            raise ValueError("unsupported_review_coverage")
+        self.expected_coverage = expected_coverage
         self.phase = "new"
         self.evidence = {}
 
@@ -350,7 +353,8 @@ class Chain:
             raise fixture.Unknown("review_not_bound_to_observed_answer")
         checkpoint = fixture.product_review_checkpoint(
             runtime, state, session_dir=directory, codex_home=codex_home,
-            question_id=question_id, main_ids=main_ids
+            question_id=question_id, main_ids=main_ids,
+            expected_coverage=self.expected_coverage,
         )
         # This exclusive file is a real dependency consumed by a bounded tool;
         # a caller-supplied review score cannot release it.
@@ -366,8 +370,25 @@ class Chain:
         self.evidence["precompact_product"] = checkpoint
         self.phase = "review_consumed"
 
+    def postbusiness(self, checkpoint, *, item_id, hook_id):
+        """Freeze the partial control after the business terminal and Hook."""
+        self.require("review_consumed")
+        if self.expected_coverage != "partial" or "postbusiness_product" in self.evidence:
+            raise fixture.Unknown("unexpected_postbusiness_baseline")
+        if (checkpoint.get("question_id") != self.question_id
+                or checkpoint.get("main_ids") != self.main_ids
+                or not isinstance(item_id, str) or not item_id
+                or not isinstance(hook_id, str) or not hook_id):
+            raise fixture.Unknown("postbusiness_baseline_unbound")
+        self.evidence["postbusiness_product"] = checkpoint
+        self.evidence["business_terminal_item_id"] = item_id
+        self.evidence["business_post_hook_id"] = hook_id
+
     def compaction(self, captures, *, events, payloads, request_id, completed_item):
         self.require("review_consumed")
+        if (self.expected_coverage == "partial"
+                and "postbusiness_product" not in self.evidence):
+            raise fixture.Unknown("postbusiness_baseline_missing_before_compact")
         request, _response, source = trace.attempt_pair(
             events,
             payloads,
@@ -410,7 +431,11 @@ class Chain:
         # The integration owner supplies a fresh-process product read, not an
         # assistant assertion. Test callbacks are explicitly synthetic.
         projection = read_projection(self.question_id, self.main_ids)
-        before = self.evidence["precompact_product"]
+        before = (self.evidence.get("postbusiness_product")
+                  if self.expected_coverage == "partial"
+                  else self.evidence["precompact_product"])
+        if not isinstance(before, dict):
+            raise fixture.Unknown("postbusiness_baseline_missing_before_cold")
         if (
             projection.get("question_id") != self.question_id
             or projection.get("main_ids") != self.main_ids

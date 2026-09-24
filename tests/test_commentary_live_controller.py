@@ -1,10 +1,12 @@
 """Official app-server RPC-shaped controller tests; no host/model execution."""
 
+import copy
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from tools.validation import commentary_trace
 from tools.validation.commentary_live_adapter import (
@@ -62,6 +64,9 @@ class StubChain:
         assert reader("q", ["main"]) == {"cold": True}
         return {"native_acceptance": "not_established", "phase": "offline_chain_checked"}
 
+    def postbusiness(self, checkpoint, *, item_id, hook_id):
+        self.postbusiness_observation = (checkpoint, item_id, hook_id)
+
 
 class StubObserver:
     def configure_review_policy(self, thread):
@@ -86,6 +91,12 @@ class StubObserver:
     def cold_reader(self, question, main):
         return {"cold": True}
 
+    def postbusiness_projection(self, thread, question, main):
+        assert (thread, question, main) == ("thread", "q", ["main"])
+        return {"question_id": "q", "main_ids": ["main"],
+                "requirements_sha256": "c" * 64,
+                "product_projection_sha256": "d" * 64}
+
 
 class ControllerTest(unittest.TestCase):
     def setUp(self):
@@ -101,6 +112,80 @@ class ControllerTest(unittest.TestCase):
             "question": "side question", "values": [2, 3],
             "developer_instructions": "Use the three bounded tools in order.",
         }, StubObserver())
+
+    def test_partial_postbusiness_requires_sent_terminal_item_then_product_hook(self):
+        controller = self.controller
+        controller.plan["review_coverage"] = "partial"
+        controller.thread = "thread"
+        controller.turn = "turn"
+        controller.phase = "awaiting_auto_compaction"
+        controller.business_request_id = 7
+        controller.business_call_id = "business-call"
+        chain = StubChain("thread", "turn")
+        chain.question_id, chain.main_ids = "q", ["main"]
+        controller.barrier = SimpleNamespace(chain=chain)
+        item = {"type": "dynamicToolCall", "id": "business-call",
+                "namespace": "cg_commentary_acceptance", "tool": "business",
+                "status": "completed", "success": True}
+        item_event = {"method": "item/completed", "params": {
+            "threadId": "thread", "turnId": "turn", "item": item}}
+        hook = {"method": "hook/completed", "params": {
+            "threadId": "thread", "turnId": "turn",
+            "run": {"id": "post-tool-use:10:/hooks.json:business-call",
+                    "sourcePath": "/hooks.json", "source": "plugin",
+                    "handlerType": "command", "executionMode": "sync",
+                    "scope": "turn", "statusMessage": None,
+                    "eventName": "postToolUse", "status": "completed"}}}
+        with self.assertRaisesRegex(ValueError, "precompact_before_postbusiness"):
+            controller._notification({"method": "hook/completed", "params": {
+                "threadId": "thread", "turnId": "turn",
+                "run": {"id": "pre", "sourcePath": "/hooks.json",
+                        "eventName": "preCompact", "status": "completed"}}})
+        controller.sent({"id": 7, "result": {}})
+        with self.assertRaisesRegex(ValueError, "intervening_tool_before_postbusiness"):
+            controller._notification({"method": "item/completed", "params": {
+                "threadId": "thread", "turnId": "turn",
+                "item": {"type": "commandExecution", "id": "other"}}})
+        with self.assertRaisesRegex(ValueError, "unbound_postbusiness_hook"):
+            controller._notification(hook)
+        controller._notification(item_event)
+        delayed = copy.deepcopy(hook)
+        delayed["params"]["run"]["id"] = "post-tool-use:9:/hooks.json:other-call"
+        with self.assertRaisesRegex(ValueError, "unbound_postbusiness_hook"):
+            controller._notification(delayed)
+        failed = copy.deepcopy(hook)
+        failed["params"]["run"]["status"] = "failed"
+        with self.assertRaisesRegex(ValueError, "unbound_postbusiness_hook"):
+            controller._notification(failed)
+        controller._notification(hook)
+        self.assertEqual(chain.postbusiness_observation[1:],
+                         ("business-call", "post-tool-use:10:/hooks.json:business-call"))
+        with self.assertRaisesRegex(ValueError, "unbound_postbusiness_hook"):
+            controller._notification(hook)
+
+    def test_partial_answer_content_is_bound_before_challenge_release(self):
+        controller = self.controller
+        controller.plan["review_coverage"] = "partial"
+        controller.thread = "thread"
+        controller.turn = "turn"
+        controller.phase = "awaiting_answer_evidence"
+        controller.barrier = SimpleNamespace(
+            release_challenge=lambda **_source: {"id": 3, "result": {}})
+
+        def source(text):
+            return {"events": [], "payloads": {}, "client_id": "question-id",
+                    "question": "side question", "notification": {"params": {
+                        "item": {"text": text}}}}
+
+        with mock.patch.object(controller.observer, "answer_source",
+                               return_value=source("第一问是 49。第二问是 121。")):
+            with self.assertRaisesRegex(ValueError, "partial_answer_content_unfit"):
+                controller.try_answer()
+        self.assertEqual(controller.phase, "awaiting_answer_evidence")
+        with mock.patch.object(controller.observer, "answer_source",
+                               return_value=source("第一问是 49。")):
+            self.assertTrue(controller.try_answer())
+        self.assertEqual(controller.phase, "waiting_business")
 
     def reply(self, request, result):
         return self.controller.ingest({"id": request["id"], "result": result})

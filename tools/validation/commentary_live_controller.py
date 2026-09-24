@@ -7,9 +7,11 @@ controller refuses to replace any of those sources with notification order.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from tools.validation import commentary_live_adapter as wire
+from tools.validation.commentary_controls import valid_c1_partial_answer
 from tools.validation.commentary_live_observer import PendingEvidence
 
 PRODUCT_EVENTS = {
@@ -40,6 +42,11 @@ class Controller:
         self.compaction_item = None
         self.deferred = []
         self.question_client_id = plan["question_client_id"]
+        self.business_request_id = None
+        self.business_call_id = None
+        self.business_reply_sent = False
+        self.business_terminal_item = None
+        self.business_post_hook = None
 
     def request(self, method, params):
         self.serial += 1
@@ -196,6 +203,10 @@ class Controller:
             )
         except PendingEvidence:
             return False
+        if (self.plan.get("review_coverage") == "partial"
+                and not valid_c1_partial_answer(
+                    source["notification"]["params"]["item"].get("text"))):
+            raise ValueError("partial_answer_content_unfit")
         self.outbox.append(self.barrier.release_challenge(**source))
         self.phase = "waiting_business"
         return True
@@ -220,6 +231,11 @@ class Controller:
         runtime, state, session_dir, question_id, main_ids = self.observer.review_projection(
             self.thread, self.turn,
         )
+        pending = self.barrier.pending
+        if pending is None:
+            raise ValueError("review_business_call_missing")
+        self.business_request_id = pending.request_id
+        self.business_call_id = pending.call_id
         self.outbox.append(self.barrier.release_after_review(
             runtime, state, session_dir=session_dir,
             codex_home=self.plan["codex_home"],
@@ -227,6 +243,15 @@ class Controller:
         ))
         self.phase = "awaiting_auto_compaction"
         return self.drain()
+
+    def sent(self, row):
+        """Bind the business response to a completed transport write."""
+        if self.business_request_id is None or row.get("id") != self.business_request_id:
+            return
+        if (self.phase != "awaiting_auto_compaction"
+                or self.business_reply_sent or "result" not in row):
+            raise ValueError("business_reply_send_out_of_order")
+        self.business_reply_sent = True
 
     def _notification(self, raw):
         method, params = raw.get("method"), raw.get("params", {})
@@ -245,11 +270,65 @@ class Controller:
         if method == "turn/completed":
             raise ValueError("turn_ended_before_auto_compaction")
         if method == "hook/completed":
+            if self.plan.get("review_coverage") == "partial":
+                run = params.get("run", {})
+                if (isinstance(run, dict) and run.get("eventName") == "preCompact"
+                        and run.get("sourcePath") in {
+                            self.plan["hook_source"], self.plan["capture_hook_source"]
+                        } and self.business_post_hook is None):
+                    raise ValueError("precompact_before_postbusiness_baseline")
+                if isinstance(run, dict) and run.get("sourcePath") == self.plan["hook_source"]:
+                    if run.get("eventName") == "postToolUse" and self.business_reply_sent:
+                        identity = run.get("id")
+                        exact_id = (
+                            isinstance(identity, str)
+                            and re.fullmatch(
+                                r"post-tool-use:\d+:"
+                                + re.escape(self.plan["hook_source"])
+                                + ":" + re.escape(self.business_call_id or ""),
+                                identity,
+                            ) is not None
+                        )
+                        if (self.business_terminal_item is None
+                                or self.business_post_hook is not None
+                                or not exact_id
+                                or run.get("status") != "completed"
+                                or run.get("statusMessage") is not None
+                                or run.get("source") != "plugin"
+                                or run.get("handlerType") != "command"
+                                or run.get("executionMode") != "sync"
+                                or run.get("scope") != "turn"):
+                            raise ValueError("unbound_postbusiness_hook")
+                        checkpoint = self.observer.postbusiness_projection(
+                            self.thread, self.barrier.chain.question_id,
+                            self.barrier.chain.main_ids,
+                        )
+                        self.barrier.chain.postbusiness(
+                            checkpoint, item_id=self.business_terminal_item,
+                            hook_id=run["id"],
+                        )
+                        self.business_post_hook = run["id"]
             self.hook_runs.append(raw)
             if self.phase == "awaiting_compaction_evidence":
                 self.try_compaction()
             return
         item = params.get("item", {})
+        if (self.plan.get("review_coverage") == "partial"
+                and self.business_reply_sent and self.business_post_hook is None
+                and item.get("type") in {"commandExecution", "fileChange",
+                                         "mcpToolCall", "webSearch"}):
+            raise ValueError("intervening_tool_before_postbusiness_baseline")
+        if (self.plan.get("review_coverage") == "partial"
+                and item.get("type") == "dynamicToolCall"
+                and self.business_reply_sent):
+            if (self.business_terminal_item is not None
+                    or item.get("id") != self.business_call_id
+                    or item.get("namespace") != wire.TOOL_NAMESPACE
+                    or item.get("tool") != wire.BUSINESS
+                    or item.get("status") != "completed"
+                    or item.get("success") is not True):
+                raise ValueError("unbound_business_terminal_item")
+            self.business_terminal_item = item["id"]
         if item.get("type") == "userMessage":
             self.user_items.append(raw)
         elif item.get("type") == "agentMessage" and item.get("phase") == "commentary":

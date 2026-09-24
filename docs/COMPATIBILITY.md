@@ -14,8 +14,10 @@ introduce no ordinary-tool execution approvals. The historical 0.14.1 native
 results do not validate these changed bytes. A source-bound independent answer
 reviewer now provides a candidate association and completeness route; the
 fourth macOS attempt recorded one reviewer judgment but failed before business
-result release. The repaired runtime and macOS/Windows real delivery,
-compaction and cold-recovery chains remain unverified. The Windows process-tree
+result release. One later macOS P7 chain passed its scoped replay profile on
+the earlier 0.14.2 runtime. The new exact-marker wait changes runtime bytes;
+neither P7 nor source tests establish C1/C2 native control acceptance. Windows
+real delivery, compaction and cold-recovery chains remain unverified. The Windows process-tree
 route passed a separate zero-model Job and child-exit probe, which does not
 establish Hook trust, installed behavior or the model chain. See
 [development status](DEVELOPMENT_0.14.2.md).

@@ -27,6 +27,12 @@ assistant claim. A successful run is review evidence, not native acceptance.
 
 ## 0.14.2 source candidate
 
+An explicit exact-marker wait uses the existing private prompt source and
+wait-condition record. Its condition stores a source-clause SHA-256 and marker
+SHA-256, without adding a second raw marker or prompt copy. Only later
+root-user message bytes are compared for release; the public diagnostic
+surface does not expose those bytes.
+
 When the host sets `CODEX_ROLLOUT_TRACE_ROOT`, the optional source-binding
 reader discovers the official session bundle and reads complete bounded trace
 and transcript snapshots. It reads raw model input/output in memory only;
