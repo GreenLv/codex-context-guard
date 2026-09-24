@@ -110,6 +110,26 @@ def _tree_digest(root: Path, *, max_files: int = 512,
     return _digest(fixture.canonical(hashes))
 
 
+def _capture_snapshot(manifest: dict[str, Any], plan: dict[str, Any],
+                      thread: str | None = None) -> dict[str, Any] | None:
+    if "capture_snapshot" not in manifest:
+        return None
+    item = manifest["capture_snapshot"]
+    if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
+        raise ReplayError("invalid_capture_snapshot_descriptor")
+    raw = _read(Path(item["path"]), item["sha256"], 65536)
+    from tools.validation import commentary_control_native_profile as control_profile
+
+    try:
+        snapshot = control_profile._snapshot(raw, plan, thread)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ReplayError("capture_snapshot_invalid") from exc
+    if (snapshot["capture_tree_sha256"]
+            != manifest["closures"]["capture"]["sha256"]):
+        raise ReplayError("capture_snapshot_closure_mismatch")
+    return snapshot
+
+
 def _closures(manifest: dict[str, Any], plan: dict[str, Any]) -> None:
     expected = {
         "run": Path(plan["run_dir"]),
@@ -119,11 +139,13 @@ def _closures(manifest: dict[str, Any], plan: dict[str, Any]) -> None:
     closure = manifest.get("closures")
     if not isinstance(closure, dict) or set(closure) != set(expected) | {"session"}:
         raise ReplayError("evidence_closure_missing")
+    snapshot = _capture_snapshot(manifest, plan)
     for name, root in expected.items():
         item = closure[name]
         if (not isinstance(item, dict) or set(item) != {"root", "sha256"}
                 or item["root"] != str(root)
-                or _tree_digest(root) != item["sha256"]):
+                or ((name != "capture" or snapshot is None)
+                    and _tree_digest(root) != item["sha256"])):
             raise ReplayError("evidence_closure_changed:" + name)
     session_root = Path(closure["session"].get("root", ""))
     product_sessions = (Path(plan["codex_home"]) / "plugins/data"
@@ -158,8 +180,10 @@ def _object(raw: bytes) -> dict[str, Any]:
 
 def _projection_descriptor(manifest: dict[str, Any]) -> dict[str, Any] | None:
     fields = set(manifest)
-    if fields not in (REPLAY_FIELDS, REPLAY_FIELDS | {"checkout_projection"},
-                      REPLAY_FIELDS | {"source_delta"}):
+    extras = fields - REPLAY_FIELDS
+    if (not REPLAY_FIELDS <= fields
+            or not extras <= {"checkout_projection", "source_delta", "capture_snapshot"}
+            or {"checkout_projection", "source_delta"} <= extras):
         raise ReplayError("invalid_replay_manifest")
     descriptor = manifest.get("checkout_projection")
     if descriptor is not None and (not isinstance(descriptor, dict)
@@ -585,6 +609,8 @@ def preflight(manifest_path: Path, source_commit: str) -> None:
         descriptors.append(("checkout_projection", 65536))
     if "source_delta" in manifest:
         descriptors.append(("source_delta", 65536))
+    if "capture_snapshot" in manifest:
+        descriptors.append(("capture_snapshot", 65536))
     for name, limit in descriptors:
         item = manifest[name]
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
@@ -615,6 +641,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
         descriptors.append(("checkout_projection", 65536))
     if "source_delta" in manifest:
         descriptors.append(("source_delta", 65536))
+    if "capture_snapshot" in manifest:
+        descriptors.append(("capture_snapshot", 65536))
     for name, limit in descriptors:
         item = manifest[name]
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
@@ -693,6 +721,7 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     turn = turn_response["result"]["turn"]["id"]
     if Path(manifest["closures"]["session"]["root"]).name != thread:
         raise ReplayError("session_closure_subject_mismatch")
+    snapshot = _capture_snapshot(manifest, plan, thread)
     handshake = [(method, request, response) for method, request, response in (
         ("initialize", initialize_request, initialize_response),
         ("config/read", config_request, config_response),
@@ -726,7 +755,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     os.environ["CODEX_HOME"] = plan["codex_home"]
     os.environ["CODEX_ROLLOUT_TRACE_ROOT"] = plan["trace_root"]
     try:
-        observer = NativeObserver(plan)
+        observer = NativeObserver(
+            {**plan, "capture_dir": snapshot["snapshot_root"]} if snapshot else plan)
         chain = observer.make_chain(thread, turn)
         chain.configuration(config_request, config_response, thread_start)
         notices = _notifications(rows, "item/completed")

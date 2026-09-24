@@ -160,6 +160,10 @@ class CommentaryNativeProfileTests(unittest.TestCase):
         self.assertEqual(profile._source_delta_descriptor(
             {**base, "source_delta": {"path": "/proof", "sha256": "a" * 64}}),
             {"path": "/proof", "sha256": "a" * 64})
+        self.assertEqual(profile._source_delta_descriptor(
+            {**base, "source_delta": {"path": "/proof", "sha256": "a" * 64},
+             "capture_snapshot": {"path": "/snapshot", "sha256": "b" * 64}}),
+            {"path": "/proof", "sha256": "a" * 64})
         for changed in ({**base, "unexpected": {}},
                         {**base, "checkout_projection": {"path": "/tmp"}},
                         {**base, "source_delta": {"path": "/proof"}},
@@ -183,10 +187,12 @@ class CommentaryNativeProfileTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(("base " + name + "\n").encode())
             base_contents = {name: (repo / name).read_bytes() for name in names}
-            subprocess.run(["git", "-C", str(repo), "add", "--", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false",
+                            "add", "--", "."], check=True)
 
             def commit(message):
-                subprocess.run(["git", "-C", str(repo), "-c", "user.name=Codex",
+                subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false",
+                                "-c", "user.name=Codex",
                                 "-c", "user.email=12345+codex@users.noreply.github.com",
                                 "commit", "-qm", message], check=True)
                 return subprocess.check_output([
@@ -195,11 +201,13 @@ class CommentaryNativeProfileTests(unittest.TestCase):
 
             base = commit("base")
             (repo / "fixtures/file-000.txt").write_bytes(b"parent-only change\n")
-            subprocess.run(["git", "-C", str(repo), "add", "--", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false",
+                            "add", "--", "."], check=True)
             parent = commit("unrelated parent")
             for name in paths:
                 (repo / name).write_bytes(("reviewed " + name + "\n").encode())
-            subprocess.run(["git", "-C", str(repo), "add", "--", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "core.autocrlf=false",
+                            "add", "--", "."], check=True)
             reviewed = commit("four-file review")
             checkout = root / "harness"
             subprocess.run(["git", "-c", "core.autocrlf=false", "clone", "-q",
@@ -218,7 +226,8 @@ class CommentaryNativeProfileTests(unittest.TestCase):
             patch_path = root / "four-files.patch"
             patch_path.write_bytes(patch)
             patch_sha = profile._digest(patch)
-            subprocess.run(["git", "-C", str(checkout), "apply", str(patch_path)],
+            subprocess.run(["git", "-C", str(checkout), "-c", "core.autocrlf=false",
+                            "apply", str(patch_path)],
                            check=True, capture_output=True)
             files = {name: profile._digest(
                 (repo / name).read_bytes() if name in paths else base_contents[name])
@@ -285,6 +294,83 @@ class CommentaryNativeProfileTests(unittest.TestCase):
                 with self.assertRaisesRegex(profile.ReplayError,
                                             "source_delta_manifest_or_disk_changed"):
                     profile._verify_source_delta(manifest, plan, files, proof, repo)
+
+    def test_sealed_capture_snapshot_preserves_historical_closure_after_append(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, snapshot = root / "shared-capture", root / "snapshot"
+            source.mkdir()
+            snapshot.mkdir()
+            files = {}
+            events = (("SessionStart", "startup"), ("PreCompact", "auto"),
+                      ("SessionStart", "compact"))
+            for number, (event, trigger) in enumerate(events, 1):
+                stem = f"capture-{number:06d}"
+                value = {"session_id": "thread", "hook_event_name": event}
+                value["trigger" if event == "PreCompact" else "source"] = trigger
+                raw = json.dumps(value).encode()
+                meta = json.dumps({"raw_sha256": profile._digest(raw),
+                                   "raw_bytes": len(raw), "expected_event": event,
+                                   "runtime_tree_sha256": "b" * 64}).encode()
+                for directory in (source, snapshot):
+                    (directory / (stem + ".raw")).write_bytes(raw)
+                    (directory / (stem + ".meta.json")).write_bytes(meta)
+                files[stem + ".raw"] = profile._digest(raw)
+                files[stem + ".meta.json"] = profile._digest(meta)
+            original_capture_sha = profile._tree_digest(snapshot)
+            parent_path = root / "parent.json"
+            parent_path.write_text(json.dumps({
+                "original_capture_root": str(source),
+                "files": {name: files[name] for name in sorted(files)[:2]}}))
+            evidence = {"schema": "cg142-private-capture-snapshot/v1",
+                        "original_capture_root": str(source),
+                        "snapshot_root": str(snapshot),
+                        "capture_tree_sha256": original_capture_sha,
+                        "files": files,
+                        "parent_snapshot_manifest_path": str(parent_path),
+                        "parent_snapshot_manifest_sha256": profile._digest(
+                            parent_path.read_bytes())}
+            proof_path = root / "snapshot.json"
+            proof_path.write_text(json.dumps(evidence))
+            home = root / "home"
+            session = (home / "plugins/data/context-guard-cg-candidate-unit"
+                       / "sessions/thread")
+            run, trace = root / "run", root / "trace"
+            for directory in (session, run, trace):
+                directory.mkdir(parents=True)
+                (directory / "record").write_bytes(b"sealed")
+            plan = {"capture_dir": str(source), "runtime_tree_sha256": "b" * 64,
+                    "run_dir": str(run), "trace_root": str(trace),
+                    "codex_home": str(home), "namespace": "cg-candidate-unit"}
+            closure = {name: {"root": str(path), "sha256": profile._tree_digest(path)}
+                       for name, path in (("run", run), ("trace", trace),
+                                          ("session", session))}
+            closure["capture"] = {"root": str(source),
+                                  "sha256": original_capture_sha}
+            manifest = {"closures": closure, "capture_snapshot": {
+                "path": str(proof_path), "sha256": profile._digest(proof_path.read_bytes())}}
+            (source / "capture-000004.raw").write_bytes(b"later scenario")
+            (source / "capture-000004.meta.json").write_bytes(b"later meta")
+            with self.assertRaisesRegex(profile.ReplayError,
+                                        "evidence_closure_changed:capture"):
+                profile._closures({"closures": closure}, plan)
+            profile._closures(manifest, plan)
+            self.assertEqual(profile._capture_snapshot(
+                manifest, plan, "thread")["snapshot_root"], str(snapshot))
+            wrong_closure = deepcopy(manifest)
+            wrong_closure["closures"]["capture"]["sha256"] = "0" * 64
+            with self.assertRaisesRegex(profile.ReplayError,
+                                        "capture_snapshot_closure_mismatch"):
+                profile._closures(wrong_closure, plan)
+            with self.assertRaisesRegex(profile.ReplayError, "capture_snapshot_invalid"):
+                profile._capture_snapshot(manifest, plan, "foreign")
+            (snapshot / "extra").write_bytes(b"extra")
+            with self.assertRaisesRegex(profile.ReplayError, "capture_snapshot_invalid"):
+                profile._closures(manifest, plan)
+            (snapshot / "extra").unlink()
+            (source / "capture-000002.raw").write_bytes(b"changed original")
+            with self.assertRaisesRegex(profile.ReplayError, "capture_snapshot_invalid"):
+                profile._closures(manifest, plan)
 
     def test_failed_product_hook_blocks_replay_even_if_other_chain_observed(self):
         plan = {"hook_source": "/installed/hooks.json"}
