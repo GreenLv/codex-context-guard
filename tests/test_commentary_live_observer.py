@@ -1,6 +1,7 @@
 """Native observer source selection with bounded, injected offline records."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import tempfile
@@ -10,7 +11,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from tools.validation import commentary_live_runner as runner
 from tools.validation import commentary_trace
+from tools.validation.commentary_live_controller import Controller
 from tools.validation.commentary_live_observer import NativeObserver, PendingEvidence
 from tools.validation.host_capture import (
     CaptureError,
@@ -35,6 +38,198 @@ class ObserverSourceTest(unittest.TestCase):
             "item": {"type": "agentMessage", "id": "answer-1",
                      "phase": "commentary", "text": "answer"},
         }}
+
+    def _real_trace_fixture(self, root):
+        """Create a real official bundle, with no model or private HOME."""
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        spec = importlib.util.spec_from_file_location(
+            "cg_test_real_binding", scripts / "cg_commentary_binding.py")
+        binding = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(binding)
+        trace = binding.trace_module()
+        bundle = root / "trace-trace-1-thread"
+        (bundle / "payloads").mkdir(parents=True)
+        manifest = {"schema_version": 1, "trace_id": "trace-1",
+                    "root_thread_id": "thread", "rollout_id": "thread",
+                    "raw_event_log": "trace.jsonl", "payloads_dir": "payloads"}
+        (bundle / "manifest.json").write_text(json.dumps(manifest))
+        payload = bundle / "payloads/1.json"
+        payload.write_text('{"input":[]}')
+        first = {"schema_version": 1, "seq": 1, "rollout_id": "thread",
+                 "payload": {"type": "rollout_started", "trace_id": "trace-1",
+                             "root_thread_id": "thread"}}
+        second = {"schema_version": 1, "seq": 2, "rollout_id": "thread",
+                  "payload": {"type": "inference_started",
+                              "request_payload": {"path": "payloads/1.json"}}}
+        event_file = bundle / "trace.jsonl"
+        event_file.write_bytes(b"".join(json.dumps(row).encode() + b"\n"
+                                        for row in (first, second)))
+        binding.trace_module = lambda: trace
+        self.observer.binding = binding
+        self.observer.trace = trace
+        self.observer.plan["trace_root"] = str(root)
+        return bundle, event_file, payload, trace
+
+    def test_real_product_reader_sustained_append_waits_then_controller_advances(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
+                _bundle, event_file, _payload, trace = self._real_trace_fixture(root)
+                self.observer._snapshot("thread")
+                original = trace.stable_read
+                append = {"enabled": True, "seq": 2, "reads": 0}
+
+                def read_with_concurrent_append(bundle, relative):
+                    raw = original(bundle, relative)
+                    if append["enabled"] and relative == "trace.jsonl":
+                        append["reads"] += 1
+                        if append["reads"] % 2 == 1:
+                            append["seq"] += 1
+                            row = {"schema_version": 1, "seq": append["seq"],
+                                   "rollout_id": "thread", "payload": {"type": "heartbeat"}}
+                            def write():
+                                with event_file.open("ab") as stream:
+                                    stream.write(json.dumps(row).encode() + b"\n")
+                            worker = threading.Thread(target=write)
+                            worker.start()
+                            worker.join()
+                    return raw
+
+                trace.stable_read = read_with_concurrent_append
+                controller = Controller({"question_client_id": "question-client"}, self.observer)
+                controller.phase = "awaiting_compaction_evidence"
+                controller.compaction_item = {"id": "compact"}
+                controller.thread, controller.turn = "thread", "turn"
+                controller.barrier = SimpleNamespace(chain=SimpleNamespace(compaction=mock.Mock()))
+                self.observer.compaction_source = lambda *_args: (
+                    (self.observer._snapshot("thread") and []), {})
+                with mock.patch("tools.validation.commentary_live_runner.time.monotonic",
+                                return_value=99):
+                    deadline = 100
+                    for _ in range(5):
+                        self.assertFalse(controller.try_compaction())
+                        self.assertEqual(controller.phase, "awaiting_compaction_evidence")
+                        runner.check_stage_deadline(deadline, "turn", controller.phase)
+                    self.assertGreaterEqual(append["seq"], 7)
+                    with mock.patch("tools.validation.commentary_live_runner.time.monotonic",
+                                    return_value=100):
+                        with self.assertRaisesRegex(TimeoutError, "matching_compaction_evidence_missing"):
+                            runner.check_stage_deadline(deadline, "turn", controller.phase)
+                append["enabled"] = False
+                self.assertTrue(controller.try_compaction())
+                self.assertEqual(controller.phase, "awaiting_cold_recovery")
+                controller.barrier.chain.compaction.assert_called_once()
+
+    def test_real_product_reader_rejects_old_prefix_and_payload_rewrites(self):
+        for mutation in ("prefix", "payload", "identity"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
+                    _bundle, event_file, payload, _trace = self._real_trace_fixture(root)
+                    self.observer._accepted_trace = None
+                    self.observer._snapshot("thread")
+                    if mutation == "prefix":
+                        rows = [json.loads(row) for row in event_file.read_bytes().splitlines()]
+                        rows[1]["payload"]["inference_call_id"] = "rewritten"
+                        event_file.write_bytes(b"".join(json.dumps(row).encode() + b"\n"
+                                                        for row in rows))
+                    elif mutation == "payload":
+                        payload.write_text('{"input":[1]}')
+                    else:
+                        replacement = event_file.with_name("replacement.jsonl")
+                        replacement.write_bytes(event_file.read_bytes())
+                        replacement.replace(event_file)
+                    with self.assertRaises(ValueError) as raised:
+                        self.observer._snapshot("thread")
+                    self.assertNotIsInstance(raised.exception, PendingEvidence)
+
+    def test_real_product_reader_during_read_append_is_bounded_pending(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
+                _bundle, event_file, _payload, trace = self._real_trace_fixture(root)
+                self.observer._snapshot("thread")
+                original_fstat = os.fstat
+                trace_inode = event_file.stat().st_ino
+                armed = {"value": True}
+
+                def fstat_with_writer(fd):
+                    status = original_fstat(fd)
+                    if armed["value"] and status.st_ino == trace_inode:
+                        armed["value"] = False
+                        row = {"schema_version": 1, "seq": 3, "rollout_id": "thread",
+                               "payload": {"type": "heartbeat"}}
+                        def write():
+                            with event_file.open("ab") as stream:
+                                stream.write(json.dumps(row).encode() + b"\n")
+                        worker = threading.Thread(target=write)
+                        worker.start()
+                        worker.join()
+                    return status
+
+                with mock.patch.object(trace.os, "fstat", side_effect=fstat_with_writer):
+                    with self.assertRaisesRegex(PendingEvidence, "official_trace_append_pending"):
+                        self.observer._snapshot("thread")
+                self.assertFalse(armed["value"])
+                self.assertEqual(len(self.observer._snapshot("thread")["events"]), 3)
+
+    def test_real_product_reader_later_acquisition_append_is_pending(self):
+        for target in (5, 7):
+            with self.subTest(fstat_index=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
+                    _bundle, event_file, _payload, trace = self._real_trace_fixture(root)
+                    self.observer._accepted_trace = None
+                    self.observer._snapshot("thread")
+                    original_fstat = os.fstat
+                    trace_inode = event_file.stat().st_ino
+                    count = {"trace": 0}
+
+                    def fstat_with_late_writer(fd):
+                        status = original_fstat(fd)
+                        if status.st_ino == trace_inode:
+                            count["trace"] += 1
+                            if count["trace"] == target:
+                                row = {"schema_version": 1, "seq": 3,
+                                       "rollout_id": "thread",
+                                       "payload": {"type": "heartbeat"}}
+                                def write():
+                                    with event_file.open("ab") as stream:
+                                        stream.write(json.dumps(row).encode() + b"\n")
+                                worker = threading.Thread(target=write)
+                                worker.start()
+                                worker.join()
+                        return status
+
+                    with mock.patch.object(trace.os, "fstat",
+                                           side_effect=fstat_with_late_writer):
+                        with self.assertRaisesRegex(PendingEvidence,
+                                                    "official_trace_append_pending"):
+                            self.observer._snapshot("thread")
+                    self.assertGreaterEqual(count["trace"], target)
+                    self.assertEqual(len(self.observer._snapshot("thread")["events"]), 3)
+
+    def test_real_product_reader_rejects_same_bytes_replaced_between_snapshots(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
+                _bundle, event_file, _payload, _trace = self._real_trace_fixture(root)
+                original_snapshot = self.observer.binding.snapshot
+                calls = {"count": 0}
+
+                def replace_after_first_snapshot(thread):
+                    result = original_snapshot(thread)
+                    calls["count"] += 1
+                    if calls["count"] == 1:
+                        replacement = event_file.with_name("replacement.jsonl")
+                        replacement.write_bytes(event_file.read_bytes())
+                        replacement.replace(event_file)
+                    return result
+
+                self.observer.binding.snapshot = replace_after_first_snapshot
+                with self.assertRaisesRegex(ValueError, "trace_source_identity_changed"):
+                    self.observer._snapshot("thread")
+                self.assertEqual(calls["count"], 2)
 
     def test_live_trace_append_is_pending_only_with_verified_prior_prefix(self):
         class SnapshotChanged(ValueError):

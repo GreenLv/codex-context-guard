@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -110,13 +111,26 @@ class NativeObserver:
             result = self.binding.snapshot(thread)
         except self.trace.Unknown as exc:
             prior = getattr(self, "_accepted_trace", None)
-            if (str(exc) != "snapshot_changed" or prior is None
+            if (str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}
+                    or prior is None
                     or prior[0] != thread or not self._verified_trace_append(
-                        thread, prior[1], prior[2], prior[3])):
+                        thread, prior[1], prior[2], prior[3],
+                        prior[4] if len(prior) > 4 else None)):
                 raise
             raise PendingEvidence("official_trace_append_pending") from exc
         if result is None or not result["events"] or not result["payloads"]:
             raise PendingEvidence("official_trace_pending")
+        prior = getattr(self, "_accepted_trace", None)
+        if prior is not None and prior[0] == thread:
+            try:
+                self._require_accepted_prefix(result, prior, thread)
+            except self.trace.Unknown as exc:
+                if (str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}
+                        or not self._live_prefix_intact(
+                            thread, prior[1], prior[2], prior[3],
+                            prior[4] if len(prior) > 4 else None)):
+                    raise
+                raise PendingEvidence("official_trace_append_pending") from exc
         # The installed product reader intentionally retains only inference
         # and compaction payloads. The acceptance probe also needs the
         # official inner tool invocation/result payloads for exec-wrapped
@@ -146,7 +160,9 @@ class NativeObserver:
                     "raw_payload:" + path.removeprefix("payloads/").removesuffix(".json")):
                 raise ValueError("invalid_nested_payload_ref")
             if path not in extra:
-                extra[path] = self.trace.stable_read(bundle, path)
+                extra[path] = self._read_live_source(
+                    bundle, path, thread, result["events"], result["hashes"],
+                    result.get("identities"))
                 extra_size += len(extra[path])
                 if len(extra) > 1024 or extra_size > self.trace.MAX_TOTAL:
                     raise ValueError("nested_payload_budget")
@@ -154,7 +170,9 @@ class NativeObserver:
         for path, expected in result["hashes"].items():
             if path == "trace.jsonl":
                 continue  # append-only events may arrive after this snapshot
-            if hashlib.sha256(self.trace.stable_read(bundle, path)).hexdigest() != expected:
+            if hashlib.sha256(self._read_live_source(
+                    bundle, path, thread, result["events"], result["hashes"],
+                    result.get("identities"))).hexdigest() != expected:
                 raise ValueError("trace_snapshot_changed")
         verified_hashes = {path: expected for path, expected in result["hashes"].items()
                            if path != "trace.jsonl"}
@@ -163,25 +181,88 @@ class NativeObserver:
         try:
             later = self.binding.snapshot(thread)
         except self.trace.Unknown as exc:
-            if (str(exc) != "snapshot_changed" or not self._verified_trace_append(
+            if (str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}
+                    or not self._verified_trace_append(
                     thread, result["events"], verified_hashes,
-                    result["hashes"]["trace.jsonl"])):
+                    result["hashes"]["trace.jsonl"], result.get("identities"))):
                 raise
             raise PendingEvidence("official_trace_append_pending") from exc
         if later is None or later["events"][:len(result["events"])] != result["events"]:
             raise ValueError("trace_event_prefix_changed")
-        if any(self.trace.stable_read(bundle, path) != raw for path, raw in extra.items()):
+        try:
+            self._require_accepted_prefix(
+                later, (thread, result["events"], verified_hashes,
+                        result["hashes"]["trace.jsonl"], result.get("identities")),
+                thread)
+        except self.trace.Unknown as exc:
+            if (str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}
+                    or not self._live_prefix_intact(
+                        thread, result["events"], verified_hashes,
+                        result["hashes"]["trace.jsonl"], result.get("identities"))):
+                raise
+            raise PendingEvidence("official_trace_append_pending") from exc
+        if any(self._read_live_source(
+                bundle, path, thread, result["events"],
+                {**verified_hashes, "trace.jsonl": result["hashes"]["trace.jsonl"]},
+                result.get("identities")) != raw for path, raw in extra.items()):
             raise ValueError("nested_payload_changed")
         result["payloads"] = {**result["payloads"], **extra}
         self._accepted_trace = (thread, result["events"], verified_hashes,
-                                result["hashes"]["trace.jsonl"])
+                                result["hashes"]["trace.jsonl"], result.get("identities"))
         return result
 
-    def _verified_trace_append(self, thread, prior_events, prior_hashes, prior_trace_hash):
+    def _read_live_source(self, bundle, path, thread, events, hashes, identities):
+        try:
+            return self.trace.stable_read(bundle, path)
+        except self.trace.Unknown as exc:
+            checked = {name: digest for name, digest in hashes.items()
+                       if name != "trace.jsonl"}
+            if (str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}
+                    or not self._live_prefix_intact(
+                        thread, events, checked, hashes["trace.jsonl"], identities)):
+                raise
+            raise PendingEvidence("official_trace_append_pending") from exc
+
+    def _require_accepted_prefix(self, current, prior, thread):
+        old_events, old_hashes, old_trace_hash = prior[1:4]
+        old_identities = prior[4] if len(prior) > 4 else None
+        events = current["events"]
+        if len(events) < len(old_events) or events[:len(old_events)] != old_events:
+            raise ValueError("trace_event_prefix_changed")
+        trace_id = old_events[0].get("payload", {}).get("trace_id")
+        if not isinstance(trace_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", trace_id):
+            raise ValueError("invalid_trace_identity")
+        bundle = Path(self.plan["trace_root"]) / f"trace-{trace_id}-{thread}"
+        lines = self.trace.stable_read(bundle, "trace.jsonl").splitlines(keepends=True)
+        if (len(lines) < len(old_events)
+                or hashlib.sha256(b"".join(lines[:len(old_events)])).hexdigest()
+                != old_trace_hash):
+            raise ValueError("trace_byte_prefix_changed")
+        if old_identities and any(current.get("identities", {}).get(path) != identity
+                                  for path, identity in old_identities.items()):
+            raise ValueError("trace_source_identity_changed")
+        for path, expected in old_hashes.items():
+            if not re.fullmatch(r"(?:manifest\.json|payloads/[1-9][0-9]{0,12}\.json)", path):
+                raise ValueError("invalid_prior_payload_path")
+            if hashlib.sha256(self.trace.stable_read(bundle, path)).hexdigest() != expected:
+                raise ValueError("trace_old_payload_changed")
+
+    def _verified_trace_append(self, thread, prior_events, prior_hashes, prior_trace_hash,
+                               prior_identities=None):
         """Only a fresh product snapshot extending immutable observed bytes may wait."""
-        later = self.binding.snapshot(thread)
+        try:
+            later = self.binding.snapshot(thread)
+        except self.trace.Unknown as exc:
+            if str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}:
+                raise
+            return self._live_prefix_intact(thread, prior_events, prior_hashes,
+                                            prior_trace_hash, prior_identities)
         if (later is None or len(later["events"]) <= len(prior_events)
                 or later["events"][:len(prior_events)] != prior_events):
+            return False
+        if prior_identities and any(
+                later.get("identities", {}).get(path) != identity
+                for path, identity in prior_identities.items()):
             return False
         first = later["events"][0]
         trace_id = first.get("payload", {}).get("trace_id")
@@ -189,13 +270,21 @@ class NativeObserver:
                 or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", trace_id)):
             return False
         bundle = Path(self.plan["trace_root"]) / f"trace-{trace_id}-{thread}"
-        lines = self.trace.stable_read(bundle, "trace.jsonl").splitlines(keepends=True)
+        try:
+            lines = self.trace.stable_read(bundle, "trace.jsonl").splitlines(keepends=True)
+        except self.trace.Unknown as exc:
+            if (str(exc) not in {"snapshot_changed", "partial_event_log", "bundle_changed"}
+                    or not self._live_prefix_intact(
+                        thread, prior_events, prior_hashes, prior_trace_hash,
+                        prior_identities)):
+                raise
+            return True
         if (len(lines) < len(later["events"]) or
                 hashlib.sha256(b"".join(lines[:len(prior_events)])).hexdigest()
                 != prior_trace_hash):
             return False
         for path, expected in prior_hashes.items():
-            if not re.fullmatch(r"payloads/[1-9][0-9]{0,12}\.json", path):
+            if not re.fullmatch(r"(?:manifest\.json|payloads/[1-9][0-9]{0,12}\.json)", path):
                 return False
             current = later["hashes"].get(path)
             if current is None:
@@ -203,6 +292,64 @@ class NativeObserver:
             if current != expected:
                 return False
         return True
+
+    def _live_prefix_intact(self, thread, prior_events, prior_hashes, prior_trace_hash,
+                            prior_identities=None):
+        """Allow a changing new tail to wait, never an altered accepted prefix."""
+        if not prior_events or not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", thread):
+            return False
+        trace_id = prior_events[0].get("payload", {}).get("trace_id")
+        if not isinstance(trace_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", trace_id):
+            return False
+        root = Path(self.plan["trace_root"])
+        bundle = root / f"trace-{trace_id}-{thread}"
+        trace_file = bundle / "trace.jsonl"
+        for path in (*root.parents, root, bundle, trace_file):
+            if (path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())):
+                return False
+        try:
+            before = trace_file.lstat()
+            limit = getattr(self.trace, "MAX_FILE", 32 * 1024 * 1024)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_size > limit):
+                return False
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            with os.fdopen(os.open(trace_file, flags), "rb") as stream:
+                opened = os.fstat(stream.fileno())
+                prefix = bytearray()
+                for _ in prior_events:
+                    remaining = limit - len(prefix)
+                    if remaining <= 0:
+                        return False
+                    line = stream.readline(min(2 * 1024 * 1024, remaining) + 1)
+                    if (not line or len(line) > min(2 * 1024 * 1024, remaining)
+                            or not line.endswith(b"\n")):
+                        return False
+                    prefix.extend(line)
+                consumed = len(prefix)
+                after_handle = os.fstat(stream.fileno())
+            after = trace_file.lstat()
+            if (prior_identities
+                    and [after.st_dev, after.st_ino] != prior_identities.get("trace.jsonl")):
+                return False
+            if ((before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                    or (opened.st_dev, opened.st_ino) != (after_handle.st_dev, after_handle.st_ino)
+                    or (after_handle.st_dev, after_handle.st_ino) != (after.st_dev, after.st_ino)
+                    or after.st_size <= consumed or consumed > limit
+                    or hashlib.sha256(prefix).hexdigest() != prior_trace_hash):
+                return False
+            for path, expected in prior_hashes.items():
+                if not re.fullmatch(r"(?:manifest\.json|payloads/[1-9][0-9]{0,12}\.json)", path):
+                    return False
+                if prior_identities and path in prior_identities:
+                    status = (bundle / path).lstat()
+                    if [status.st_dev, status.st_ino] != prior_identities.get(path):
+                        return False
+                if hashlib.sha256(self.trace.stable_read(bundle, path)).hexdigest() != expected:
+                    return False
+            return True
+        except (OSError, ValueError, self.trace.Unknown):
+            return False
 
     def _pending_inferences(self, source, thread, turn, *, question=None):
         """Recognize incomplete official attempts without treating them as proof."""
