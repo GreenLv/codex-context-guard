@@ -10124,6 +10124,7 @@ def _current_action_basis(
     allowed_item_ids: set[str] | None = None,
     include_unready: bool = False, include_controlled: bool = False,
     _root_records: dict[str, dict[str, Any]] | None = None,
+    _scoped_item_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     """Bind a candidate action to an unmet, current root requirement.
 
@@ -10132,7 +10133,8 @@ def _current_action_basis(
     """
     if state is None or session_dir is None or category == "generic_work":
         return None
-    current_ids = current_scope_projection(state)["scoped_item_ids"]
+    current_ids = (set(_scoped_item_ids) if _scoped_item_ids is not None
+                   else current_scope_projection(state)["scoped_item_ids"])
     if include_controlled:
         current_ids |= {
             str(ref["id"])
@@ -11015,6 +11017,7 @@ def current_persistence_actions(
 
 def current_core_projections(
     state: dict[str, Any], session_dir: Path, *, limit: int | None = 16,
+    _scope: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Read-only current Stop status from genuine root and host observations."""
     rows: list[dict[str, Any]] = []
@@ -11023,14 +11026,17 @@ def current_core_projections(
     roots = {str(prompt["id"]): record for prompt in state.get("prompts", [])
              if prompt.get("origin", "human") == "human"
              and (record := read_prompt_record(session_dir, prompt)) is not None}
+    scope = _scope if _scope is not None else current_scope_projection(state)
+    scoped_item_ids = scope["scoped_item_ids"]
     candidates = ((item_id, category)
-                  for item_id in sorted(current_scope_projection(state)["scoped_item_ids"],
+                  for item_id in sorted(scoped_item_ids,
                                         key=lambda item_id: (not item_id.startswith("R"), item_id))
                   for category, _ in (*ACTION_PATTERNS, ("state_readback", None)))
     for item_id, category in candidates:
         basis = _current_action_basis(state, category, "", session_dir,
                                       include_satisfied=True, allowed_item_ids={item_id},
-                                      _root_records=roots)
+                                      _root_records=roots,
+                                      _scoped_item_ids=scoped_item_ids)
         if basis is None or basis["requirement_id"] in seen:
             continue
         if any(all(previous.get(key) == basis.get(key) for key in
@@ -15186,7 +15192,7 @@ def current_feedback_view(
     """
     scope = current_scope_projection(state)
     healthy = state.get("integrity", {}).get("status") == "ok"
-    core = (current_core_projections(state, session_dir, limit=None)
+    core = (current_core_projections(state, session_dir, limit=None, _scope=scope)
             if session_dir is not None and healthy else [])
     by_id = {row["requirement_id"]: row for row in core}
     prompts = {p["id"]: p for p in state.get("prompts", [])}

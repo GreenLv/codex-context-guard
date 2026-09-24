@@ -1,5 +1,6 @@
 """Real-shape Host terminal records paired with string PostToolUse responses."""
 
+import copy
 import hashlib
 import json
 import os
@@ -1133,6 +1134,76 @@ class HostTerminalWireTests(unittest.TestCase):
         self.write_file(target, "changed-without-host-event\n")
         after_projection = cg.current_core_projections(state, session_dir)
         self.assertEqual(after_projection, before_projection)
+
+    def test_feedback_reuses_one_scope_without_reusing_later_source(self):
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        self.start(f"请修改 {self.root_target(target)}。")
+        cg.dispatch(self.event("UserPromptSubmit", prompt="请检查工作状态。"))
+        state = self.state()
+        session_dir = self.root / "private/sessions" / self.session_id
+        original_scope = cg.current_scope_projection
+        original_basis = cg._current_action_basis
+        original_core = cg.current_core_projections
+
+        def uncached_basis(*args, **kwargs):
+            kwargs.pop("_scoped_item_ids", None)
+            return original_basis(*args, **kwargs)
+
+        def uncached_core(*args, **kwargs):
+            kwargs.pop("_scope", None)
+            return original_core(*args, **kwargs)
+
+        # The prior per-category path is a result oracle, including rows that
+        # are current, historical, unknown, or have a terminal status.
+        variants = [state]
+        historical = copy.deepcopy(state)
+        historical["requirements"][0]["status"] = "superseded"
+        variants.append(historical)
+        waiting = copy.deepcopy(state)
+        waiting["wait_conditions"].append({
+            "condition_id": "WAIT-SYNTHETIC",
+            "condition_type": "user_input",
+            "status": "waiting",
+            "owner_work_unit_id": waiting["work_state"]["active_work_unit_id"],
+        })
+        variants.append(waiting)
+        ancestor = copy.deepcopy(state)
+        ancestor_unit = ancestor["work_units"][0]
+        child_unit = copy.deepcopy(ancestor_unit)
+        child_unit.update(id="WU0002", parent_id=ancestor_unit["id"])
+        ancestor["work_units"].append(child_unit)
+        ancestor["work_state"]["active_work_unit_id"] = child_unit["id"]
+        ancestor["requirements"][0]["constraint_scope"] = "session"
+        variants.append(ancestor)
+        baseline = None
+        for variant in variants:
+            with mock.patch.object(cg, "_current_action_basis", side_effect=uncached_basis), \
+                    mock.patch.object(cg, "current_core_projections", side_effect=uncached_core):
+                expected = cg.current_feedback_view(variant, session_dir)
+            with mock.patch.object(cg, "current_scope_projection", wraps=original_scope) as scoped:
+                actual = cg.current_feedback_view(variant, session_dir)
+            self.assertEqual(actual, expected)
+            self.assertEqual(scoped.call_count, 1)
+            if variant is state:
+                baseline = actual
+            elif variant is historical:
+                self.assertGreater(actual["counts"]["historical"], 0)
+            elif variant is waiting:
+                self.assertGreater(actual["counts"]["waiting"], 0)
+            elif variant is ancestor:
+                self.assertIn(ancestor["requirements"][0]["id"],
+                              original_scope(ancestor)["persistent_constraint_ids"])
+
+        prompt = state["prompts"][-1]
+        (session_dir / prompt["file"]).write_text("{}", encoding="utf-8")
+        with mock.patch.object(cg, "current_scope_projection", wraps=original_scope) as scoped:
+            damaged = cg.current_feedback_view(state, session_dir)
+        self.assertEqual(scoped.call_count, 1)
+        self.assertNotEqual(damaged, baseline)
+        self.assertEqual(next(row for row in damaged["items"]
+                              if row["id"] == state["requirements"][-1]["id"])["source_state"],
+                         "unknown")
 
     def test_prior_root_edit_and_readback_do_not_close_new_root_edit(self):
         target = self.cwd / "module.py"
