@@ -35,6 +35,7 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
             "runtime_root": str(self.root / "runtime"),
             "namespace": "cg-candidate-test",
             "hook_source": str(self.hooks),
+            "capture_hook_source": "/<session-flags>/config.toml",
             "trace_root": str(self.root / "trace"),
             "capture_dir": str(self.root / "captures"),
             "run_dir": str(self.root / "new-run"),
@@ -79,6 +80,10 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
     def test_plan_rejects_synthetic_threshold_or_expanded_budget(self):
         path = self.root / "plan.json"
         for change, reason in [
+            ({"capture_hook_source": str(self.hooks)},
+             "unfrozen_capture_hook_source"),
+            ({"capture_hook_source": "/foreign/config.toml"},
+             "unfrozen_capture_hook_source"),
             ({"threshold_proposal": {"limit": 4096, "fallback_buffer": 0,
                                       "before_business": 1024, "after_business": 5000}},
              "unmeasured_threshold_must_remain_proposal"),

@@ -61,6 +61,7 @@ class ChainTests(unittest.TestCase):
             turn=self.turn,
             cwd="/fixture",
             hook_source="/fixture/hooks.json",
+            capture_hook_source=fixture.CAPTURE_HOOK_SOURCE,
             frozen_config=config,
             threshold=dict(
                 limit=4096, fallback_buffer=0, before_business=1024, after_business=5000
@@ -259,7 +260,7 @@ class ChainTests(unittest.TestCase):
                         "status": "completed",
                         "handlerType": "command",
                         "executionMode": "sync",
-                        "sourcePath": "/fixture/hooks.json",
+                        "sourcePath": fixture.CAPTURE_HOOK_SOURCE,
                         "entries": [
                             {"kind": "warning", "text": fixture.marker(raw, capture_id)}
                         ],
@@ -295,6 +296,31 @@ class ChainTests(unittest.TestCase):
             request_id="compact-request",
             completed_item=completed,
         )
+
+    def test_compaction_capture_source_is_distinct_from_product_hook(self):
+        self.ready_business()
+        self.observe_business()
+        self.review_and_release()
+        captures, inputs = self.compaction_inputs()
+        for index in (0, 1):
+            for source in (self.chain.scope["source_path"], "/foreign/config.toml"):
+                altered = copy.deepcopy(captures)
+                altered[index]["notification"]["params"]["run"]["sourcePath"] = source
+                with self.subTest(index=index, source=source), self.assertRaisesRegex(
+                    fixture.Unknown, "unbound_handler"
+                ):
+                    self.chain.compaction(altered, **inputs)
+            altered = copy.deepcopy(captures)
+            altered[index]["notification"]["params"]["run"]["eventName"] = (
+                "sessionStart" if index == 0 else "preCompact"
+            )
+            with self.subTest(index=index, kind="swapped_event"), self.assertRaisesRegex(
+                fixture.Unknown, "unbound_handler"
+            ):
+                self.chain.compaction(altered, **inputs)
+        self.assertEqual(self.chain.scope["source_path"], "/fixture/hooks.json")
+        self.assertEqual(self.chain.capture_source_path, fixture.CAPTURE_HOOK_SOURCE)
+        self.chain.compaction(captures, **inputs)
 
     def test_full_offline_chain_real_product_barrier_and_cold_process(self):
         self.ready_business()

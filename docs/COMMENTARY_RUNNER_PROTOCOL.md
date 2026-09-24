@@ -176,6 +176,21 @@ barrier and fresh-process projection. The fourth attempt remains failed. The
 older v6 entrypoint remains an offline-only probe. Injected wire tests do not
 establish native acceptance.
 
+A later single-run candidate crossed the business and review barriers and
+observed the automatic PreCompact and compact-sourced SessionStart captures,
+but stopped before cold recovery. The offline harness incorrectly compared
+those two private capture notifications with the product Hook's
+`hooks/hooks.json` source path. The official `hooks/list` readback made before
+that run had already identified the two capture commands as `sessionFlags`
+Hooks with source path `/<session-flags>/config.toml`; the path was not inferred
+from the failed notification. The repaired plan freezes that separate capture
+source, and the official readback must match its event, key, hash, source,
+source path, trusted status and enabled state before a thread starts. Missing,
+duplicate, foreign or changed capture Hooks fail closed. The product Hook
+source remains independently bound. Replaying the retained native inputs
+through the repaired offline chain reaches cold product projection equality,
+but does not change the failed run or establish native acceptance.
+
 The cold subprocess loads product state code from the pinned installed runtime
 and the checkpoint helper from the pinned external source harness. Preflight
 checks that helper's SHA-256; a cached or changed helper fails. The source

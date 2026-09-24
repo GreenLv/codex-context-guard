@@ -173,8 +173,12 @@ def nested_business_proof(events, payloads, *, thread, turn,
 
 
 class Chain:
-    def __init__(self, *, thread, turn, cwd, hook_source, frozen_config, threshold):
+    def __init__(self, *, thread, turn, cwd, hook_source, capture_hook_source,
+                 frozen_config, threshold):
+        if not isinstance(capture_hook_source, str) or not capture_hook_source or capture_hook_source == hook_source:
+            raise ValueError("distinct_capture_hook_source_required")
         self.scope = dict(thread=thread, turn=turn, source_path=hook_source)
+        self.capture_source_path = capture_hook_source
         self.cwd = cwd
         self.frozen_config = frozen_config
         self.threshold = threshold
@@ -380,7 +384,8 @@ class Chain:
             business_result=self.business_output,
             invocation=self.business_invocation,
             events=events, payloads=payloads,
-            **self.scope,
+            thread=self.scope["thread"], turn=self.scope["turn"],
+            source_path=self.capture_source_path,
         )
         params = completed_item.get("params", {})
         item = params.get("item", {})

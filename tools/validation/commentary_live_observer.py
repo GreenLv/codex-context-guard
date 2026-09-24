@@ -62,6 +62,7 @@ class NativeObserver:
         return Chain(
             thread=thread, turn=turn, cwd=self.plan["cwd"],
             hook_source=self.plan["hook_source"],
+            capture_hook_source=self.plan["capture_hook_source"],
             frozen_config=self.plan["effective_config"],
             threshold=self.plan["threshold_proposal"],
         )

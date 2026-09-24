@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 from scripts.cg_process_tree import OwnedProcess
+from tools.validation import commentary_fixture as fixture
 from tools.validation import commentary_runner as legacy
 from tools.validation.commentary_live_controller import Controller
 from tools.validation.commentary_live_observer import NativeObserver
@@ -96,6 +97,8 @@ def load_plan(path):
     if any(type(plan.get(k)) is not str or not Path(plan[k]).is_absolute()
            for k in required_paths):
         raise ValueError("absolute_paths_required")
+    if plan.get("capture_hook_source") != fixture.CAPTURE_HOOK_SOURCE:
+        raise ValueError("unfrozen_capture_hook_source")
     for k in ("binary_sha256", "runtime_tree_sha256", "source_tree_sha256",
               "cold_helper_sha256"):
         if not _hex(plan.get(k)):

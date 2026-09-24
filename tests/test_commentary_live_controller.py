@@ -94,7 +94,9 @@ class ControllerTest(unittest.TestCase):
         self.controller = Controller({
             "cwd": self.temp.name, "run_dir": self.temp.name,
             "codex_home": self.temp.name,
-            "hook_source": "/hooks.json", "root_client_id": "root-id",
+            "hook_source": "/hooks.json",
+            "capture_hook_source": "/<session-flags>/config.toml",
+            "root_client_id": "root-id",
             "root_prompt": "main task", "question_client_id": "question-id",
             "question": "side question", "values": [2, 3],
             "developer_instructions": "Use the three bounded tools in order.",
@@ -395,3 +397,64 @@ class ControllerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact_trusted_hooks_required"):
             self.reply(hooks, {"data": [{"cwd": self.temp.name,
                                           "errors": [], "warnings": [], "hooks": rows}]})
+
+    def test_capture_hooks_require_the_frozen_session_flags_source(self):
+        for field, value in (("source", "user"),
+                             ("sourcePath", "/foreign/config.toml")):
+            with self.subTest(field=field):
+                self.controller = Controller(dict(self.controller.plan), StubObserver())
+                initialize, = self.controller.start()
+                _initialized, config = self.reply(initialize, {})
+                hooks, = self.reply(config, {"config": {}, "origins": {}})
+                rows = [dict(source="plugin", sourcePath="/hooks.json", eventName=event,
+                             key="plugin:" + event, trustStatus="trusted", enabled=True,
+                             currentHash="sha256:" + "a" * 64)
+                        for event in PRODUCT_EVENTS]
+                rows += [dict(source="sessionFlags",
+                              sourcePath="/<session-flags>/config.toml",
+                              eventName=event, key="capture:" + event,
+                              command="capture --digest-echo", trustStatus="trusted",
+                              enabled=True, currentHash="sha256:" + "b" * 64)
+                         for event in ("preCompact", "sessionStart")]
+                self.controller.plan["selected_hook_hashes"] = {
+                    row["key"]: row["currentHash"] for row in rows
+                }
+                rows[-1][field] = value
+                with self.assertRaisesRegex(ValueError, "exact_trusted_hooks_required"):
+                    self.reply(hooks, {"data": [{"cwd": self.temp.name,
+                                                  "errors": [], "warnings": [],
+                                                  "hooks": rows}]})
+
+    def test_capture_hook_readback_rejects_identity_and_trust_drift(self):
+        changes = {
+            "missing": lambda rows: rows.pop(),
+            "duplicate": lambda rows: rows.append(dict(rows[-1])),
+            "hash": lambda rows: rows[-1].update(currentHash="sha256:" + "c" * 64),
+            "untrusted": lambda rows: rows[-1].update(trustStatus="modified"),
+            "disabled": lambda rows: rows[-1].update(enabled=False),
+            "event": lambda rows: rows[-1].update(eventName="preCompact"),
+        }
+        for name, change in changes.items():
+            with self.subTest(name=name):
+                self.controller = Controller(dict(self.controller.plan), StubObserver())
+                initialize, = self.controller.start()
+                _initialized, config = self.reply(initialize, {})
+                hooks, = self.reply(config, {"config": {}, "origins": {}})
+                rows = [dict(source="plugin", sourcePath="/hooks.json", eventName=event,
+                             key="plugin:" + event, trustStatus="trusted", enabled=True,
+                             currentHash="sha256:" + "a" * 64)
+                        for event in PRODUCT_EVENTS]
+                rows += [dict(source="sessionFlags",
+                              sourcePath="/<session-flags>/config.toml",
+                              eventName=event, key="capture:" + event,
+                              command="capture --digest-echo", trustStatus="trusted",
+                              enabled=True, currentHash="sha256:" + "b" * 64)
+                         for event in ("preCompact", "sessionStart")]
+                self.controller.plan["selected_hook_hashes"] = {
+                    row["key"]: row["currentHash"] for row in rows
+                }
+                change(rows)
+                with self.assertRaisesRegex(ValueError, "exact_trusted_hooks_required"):
+                    self.reply(hooks, {"data": [{"cwd": self.temp.name,
+                                                  "errors": [], "warnings": [],
+                                                  "hooks": rows}]})

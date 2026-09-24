@@ -106,7 +106,8 @@ class Controller:
                        h.get("source") == "plugin" and
                        h.get("sourcePath") == self.plan["hook_source"]]
             captures = [h for h in rows if isinstance(h, dict) and
-                        h.get("sourcePath") == "/<session-flags>/config.toml" and
+                        h.get("source") == "sessionFlags" and
+                        h.get("sourcePath") == self.plan["capture_hook_source"] and
                         "--digest-echo" in h.get("command", "")]
             selected = product + captures
             expected = self.plan["selected_hook_hashes"]

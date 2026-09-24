@@ -117,7 +117,9 @@ class NestedBusinessSourceTests(unittest.TestCase):
             result, _ = fixture.business_result([2, 3], challenge)
             fixture.exclusive(path, result)
             chain = Chain(thread="thread", turn="turn", cwd="/fixture",
-                          hook_source="/fixture/hooks.json", frozen_config={}, threshold={})
+                          hook_source="/fixture/hooks.json",
+                          capture_hook_source=fixture.CAPTURE_HOOK_SOURCE,
+                          frozen_config={}, threshold={})
             chain.phase = "challenge_issued"
             chain.business_challenge = challenge
             chain.business([2, 3], path, events=events, payloads=payloads,

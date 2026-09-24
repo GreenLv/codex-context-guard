@@ -12,6 +12,9 @@ class Unknown(ValueError):
     pass
 
 
+CAPTURE_HOOK_SOURCE = "/<session-flags>/config.toml"
+
+
 def pair(raw, capture_id, notification, *, thread, turn, source_path, event):
     """A paired observation only: trust and compaction install remain external."""
     if event not in ("PreCompact", "SessionStart"):
