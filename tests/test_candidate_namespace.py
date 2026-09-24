@@ -37,6 +37,8 @@ class FakeCLI:
                 raise candidate.Rejected('synthetic_registration_failure')
             return {'name': self.namespace}
         if args[:2] == ('plugin', 'add'):
+            if self.failure == 'plugin_add':
+                raise candidate.Rejected('official_cli_failed')
             product = self.wrapper / 'product'
             version = candidate.manager.source_plugin_version(product)
             installed = self.home / 'plugins/cache' / self.namespace / 'context-guard' / version
@@ -462,3 +464,24 @@ class NamespaceTests(unittest.TestCase):
         self.assertEqual(record['reason'], 'concurrent_config_change_not_overwritten')
         self.assertNotIn('synthetic_registration_failure', json.dumps(record))
         self.assertFalse(record['automatic_retry'])
+
+    def test_plugin_add_failure_stage_precedes_external_call(self):
+        self.cli.failure = 'plugin_add'
+        with self.assertRaises(candidate.Rejected):
+            candidate.install(**self.args, apply=True)
+        record = json.loads((self.args['transaction'] / 'failure.json').read_bytes())
+        self.assertEqual(record['stage'], 'plugin_add')
+        self.assertEqual(record['reason'], 'official_cli_failed')
+        self.unchanged()
+
+    def test_only_identical_extended_local_drive_path_is_equivalent(self):
+        expected = r'C:\cg-fixture\marketplace'
+        self.assertTrue(candidate._same_cli_source(expected, expected))
+        self.assertTrue(candidate._same_cli_source(r'\\?\C:\cg-fixture\marketplace', expected))
+        for value in (None, '', r'\\server\share\marketplace',
+                      r'\\?\UNC\server\share\marketplace',
+                      r'\\?\C:\cg-fixture\other',
+                      r'\\?\C:\cg-fixture\..\marketplace',
+                      r'\\?\c:\cg-fixture\marketplace'):
+            with self.subTest(value=value):
+                self.assertFalse(candidate._same_cli_source(value, expected))

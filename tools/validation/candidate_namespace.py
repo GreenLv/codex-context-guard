@@ -524,12 +524,13 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                     'after_sha256': digest(observed[0] if observed else b''),
                     'allowed_sections': ['marketplaces.' + namespace]})
                 # Read back the registered source, not just the add acknowledgment.
-                rows = cli.call('plugin', 'marketplace', 'list', '--json').get('marketplaces', [])
                 stage = 'marketplace_readback'
+                rows = cli.call('plugin', 'marketplace', 'list', '--json').get('marketplaces', [])
                 matching = [r for r in rows if r.get('name') == namespace]
                 if (not isinstance(added, dict) or len(matching) != 1
-                        or Path(matching[0].get('root', '')) != product.parent):
+                        or not _same_cli_source(matching[0].get('root'), str(product.parent))):
                     raise Rejected('marketplace_readback_mismatch')
+                stage = 'plugin_add'
                 installed = cli.call('plugin', 'add', 'context-guard@' + namespace, '--json')
                 observed = config_snapshot(config)
                 stage = 'plugin_config_delta'
@@ -538,15 +539,19 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                     'before_sha256': digest(before[0] if before else b''),
                     'after_sha256': digest(observed[0] if observed else b''),
                     'allowed_sections': ['marketplaces.' + namespace, 'plugins.context-guard@' + namespace]})
+                stage = 'plugin_readback'
                 if any(installed.get(k) != v for k, v in {
                     'pluginId': 'context-guard@' + namespace, 'name': 'context-guard',
                     'marketplaceName': namespace, 'version': version,
-                    'installedPath': str(cache / version)}.items()):
+                    }.items()) or not _same_cli_source(
+                        installed.get('installedPath'), str(cache / version)):
                     raise Rejected('installed_path_or_identity_mismatch')
+                stage = 'cache_parity'
                 safe_path(cache / version)
                 if manager.full_file_manifest(cache / version) != files:
                     raise Rejected('installed_full_source_mismatch')
                 manager.require_cache_parity(product, cache / version, version, same_version=True)
+                stage = 'archive_current'
                 manager.archive_verified_current_version(product, cache, archive, version)
             finally:
                 stage_before_restore = stage
