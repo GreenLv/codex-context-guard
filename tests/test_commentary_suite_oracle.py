@@ -2,6 +2,8 @@
 
 import copy
 import hashlib
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +17,7 @@ class SuiteOracleTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         cwd = Path(self.temp.name)
         script = cwd / "suite.py"
-        script.write_text(
+        script.write_bytes((
             "import unittest\n\nVALUES = tuple(range(-64, 64))\n\n"
             "class SquareFixture(unittest.TestCase):\n"
             "    def test_squared_rows(self):\n"
@@ -25,15 +27,23 @@ class SuiteOracleTests(unittest.TestCase):
             "        self.assertEqual(rows[-1], 3969)\n"
             "        self.assertEqual(sum(rows), 174784)\n\n"
             "if __name__ == \"__main__\":\n"
-            "    unittest.main()\n")
-        self.action = f"python3 {script}"
-        self.outer = f"/bin/zsh -lc '{self.action}'"
+            "    unittest.main()\n").encode("utf-8"))
+        if os.name == "nt":
+            python = sys.executable
+            self.action = f"& '{python}' '{script}'"
+            self.outer = f"pwsh -NoProfile -Command \"{self.action}\""
+            platform = "windows"
+        else:
+            python = "python3"
+            self.action = f"python3 '{script}'"
+            self.outer = f"/bin/zsh -lc \"{self.action}\""
+            platform = "posix"
         self.plan = {
             "cwd": str(cwd), "root_prompt": f"请运行 {script} 的测试并持续执行直到任务完成。",
             "main_requirement_text": f"请运行 {script} 的测试并持续执行直到任务完成。",
             "values": list(range(-64, 64)), "hook_source": "/installed/hooks.json",
             "suite_oracle": {"path": str(script), "sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
-                             "platform": "posix", "allowed_python": ["python3"],
+                             "platform": platform, "allowed_python": [python],
                              "allowed_outer_commands": [self.outer]},
         }
         item = {"type": "commandExecution", "id": "suite-call", "command": self.outer,
@@ -95,8 +105,10 @@ class SuiteOracleTests(unittest.TestCase):
                 oracle.verify_suite(rows, self.plan, "thread", "turn", "business")
         rows = copy.deepcopy(self.rows)
         other = Path(self.temp.name).parent / "elsewhere" / "suite.py"
+        foreign_action = (f"& '{sys.executable}' '{other}'" if os.name == "nt"
+                          else f"python3 '{other}'")
         for index in (1, 2):
-            rows[index]["raw"]["params"]["item"]["commandActions"][0]["command"] = f"python3 {other}"
+            rows[index]["raw"]["params"]["item"]["commandActions"][0]["command"] = foreign_action
         with self.assertRaisesRegex(oracle.SuiteEvidenceError, "foreign_same_name_suite"):
             oracle.verify_suite(rows, self.plan, "thread", "turn", "business")
 
@@ -111,8 +123,9 @@ class SuiteOracleTests(unittest.TestCase):
                        "& 'C:\\Python\\python.exe' \"$(whoami)\\suite.py\""):
             with self.subTest(unsafe=unsafe):
                 self.assertIsNone(oracle._action_argv(unsafe, "windows"))
-        self.assertEqual(oracle._action_argv(self.action, "posix"),
-                         ["python3", self.plan["suite_oracle"]["path"]])
+        self.assertEqual(
+            oracle._action_argv("python3 '/synthetic suite/suite.py'", "posix"),
+            ["python3", "/synthetic suite/suite.py"])
         with self.assertRaisesRegex(oracle.SuiteEvidenceError, "suite_not_bound_to_main_work"):
             oracle.validate_suite_plan({**self.plan, "values": [1, 2]})
         Path(self.plan["suite_oracle"]["path"]).write_text("changed")
