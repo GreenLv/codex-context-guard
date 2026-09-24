@@ -1071,7 +1071,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-url")
     parser.add_argument(
         "--profile",
-        choices=("portable_runtime", PROFILE, "commentary_chain/v1"),
+        choices=("portable_runtime", PROFILE, "commentary_chain/v1",
+                 "commentary_control_chain/v1"),
         default="portable_runtime",
     )
     parser.add_argument("--prepared-source-sha256")

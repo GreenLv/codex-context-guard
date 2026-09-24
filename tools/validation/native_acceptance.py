@@ -206,6 +206,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="Optional zero-model input manifest checked before acceptance execution")
     parser.add_argument("--commentary-replay-manifest", type=Path,
                         help="Immutable completed commentary run for zero-model replay")
+    parser.add_argument("--commentary-control-replay-manifest", type=Path,
+                        help="Immutable completed C2 control run for zero-model replay")
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
@@ -249,6 +251,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = commentary_native_profile.replay(args.commentary_replay_manifest)
             if result["original_source_commit"] != args.source_commit:
                 raise NativeRunError("commentary original source commit differs")
+            behavior.write_result(args.output, result)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            parser.error(str(exc))
+        print(f"native_acceptance={result['status']}")
+        return {"passed": 0, "failed": 1, "pending": 3}[result["status"]]
+    if args.profile == "commentary_control_chain/v1":
+        if args.commentary_control_replay_manifest is None:
+            parser.error("commentary_control_chain/v1 requires --commentary-control-replay-manifest")
+        try:
+            root_path = str(Path(__file__).resolve().parents[2])
+            if root_path not in sys.path:
+                sys.path.insert(0, root_path)
+            from tools.validation import commentary_control_native_profile
+            if args.preflight:
+                commentary_control_native_profile.preflight(
+                    args.commentary_control_replay_manifest, args.source_commit)
+                print("native_preflight=passed; input_checks_only; acceptance_not_written")
+                return 0
+            result = commentary_control_native_profile.replay(
+                args.commentary_control_replay_manifest)
+            if result["original_source_commit"] != args.source_commit:
+                raise NativeRunError("C2 original source commit differs")
             behavior.write_result(args.output, result)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             parser.error(str(exc))
