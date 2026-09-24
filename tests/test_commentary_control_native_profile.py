@@ -279,28 +279,99 @@ class CommentaryControlNativeProfileTests(unittest.TestCase):
 
     def test_hook_notifications_require_every_selected_run_to_complete(self):
         plan = {"hook_source": "/plugin/hooks.json",
-                "capture_hook_source": "/flags/config.toml"}
+                "capture_hook_source": "/flags/config.toml",
+                "codex_home": "/isolated/home"}
+        user_path = str(Path(plan["codex_home"]) / "hooks.json")
+        user_events = {"preToolUse", "postToolUse", "preCompact",
+                       "sessionStart", "sessionEnd", "userPromptSubmit", "stop"}
+        readback = {"hooks": [
+            {"key": "user-" + name, "source": "user", "sourcePath": user_path,
+             "eventName": name, "trustStatus": "trusted", "enabled": True}
+            for name in sorted(user_events)]}
+        user_notice = [{"direction": "receive", "raw": {
+            "method": "hook/started", "params": {"run": {"source": "user"}}}}]
+        allowed_user = profile._user_hook_events(readback, plan, user_notice)
+        self.assertEqual(allowed_user, {user_path: user_events})
 
-        def event(method, identity, *, status, source=None):
+        def event(method, identity, *, status, source=None, kind=None,
+                  event_name="sessionStart"):
+            source_path = source or plan["hook_source"]
+            origin = kind or ("plugin" if source_path == plan["hook_source"]
+                              else "sessionFlags" if source_path == plan["capture_hook_source"]
+                              else "user")
             return {"direction": "receive", "raw": {"method": method,
                     "params": {"threadId": "current", "run": {
                         "id": identity, "status": status, "statusMessage": None,
-                        "sourcePath": source or plan["hook_source"]}}}}
+                        "source": origin, "eventName": event_name,
+                        "sourcePath": source_path}}}}
 
         rows = [event("hook/started", "same", status="running"),
                 event("hook/completed", "same", status="completed"),
                 event("hook/started", "same", status="running",
                       source=plan["capture_hook_source"]),
                 event("hook/completed", "same", status="completed",
-                      source=plan["capture_hook_source"])]
-        profile._hooks(rows, plan, "current")
+                      source=plan["capture_hook_source"]),
+                event("hook/started", "user-1", status="running",
+                      source=user_path),
+                event("hook/completed", "user-1", status="completed",
+                      source=user_path)]
+        profile._hooks(rows, plan, "current", allowed_user)
         for changed in (rows[:-1],
-                        rows[:3] + [event("hook/completed", "same", status="timedOut")],
-                        rows[:3] + [event("hook/completed", "other", status="completed")],
+                        rows[:3] + [event("hook/completed", "same", status="timedOut",
+                                          source=plan["capture_hook_source"])],
+                        rows[:3] + [event("hook/completed", "other", status="completed",
+                                          source=plan["capture_hook_source"])],
                         rows[:3] + [event("hook/completed", "same", status="completed",
-                                           source="/unselected")]):
+                                           source="/unselected")],
+                        rows[:4] + [event("hook/started", "user-1", status="running",
+                                          source=user_path, event_name="subagentStart"),
+                                    event("hook/completed", "user-1", status="completed",
+                                          source=user_path, event_name="subagentStart")],
+                        rows[:4] + [event("hook/started", "user-1", status="running",
+                                          source=user_path, kind="plugin"),
+                                    event("hook/completed", "user-1", status="completed",
+                                          source=user_path, kind="plugin")],
+                        rows[:4] + [event("hook/started", "user-1", status="running",
+                                          source=plan["hook_source"], kind="user"),
+                                    event("hook/completed", "user-1", status="completed",
+                                          source=plan["hook_source"], kind="user")]):
             with self.subTest(changed=changed), self.assertRaises(profile.ControlReplayError):
-                profile._hooks(changed, plan, "current")
+                profile._hooks(changed, plan, "current", allowed_user)
+
+        inactive = deepcopy(readback)
+        for hook in inactive["hooks"]:
+            hook["trustStatus"] = "modified"
+        self.assertEqual(profile._user_hook_events(inactive, plan, rows[:4]), {})
+        profile._hooks(rows[:4], plan, "current",
+                       profile._user_hook_events(inactive, plan, rows[:4]))
+        with self.assertRaises(profile.ControlReplayError):
+            profile._user_hook_events(inactive, plan, rows)
+
+        for mutation in (
+            lambda row: row["raw"]["params"].update(threadId="foreign"),
+            lambda row: row["raw"]["params"]["run"].update(status="failed"),
+            lambda row: row["raw"]["params"]["run"].update(sourcePath="/unknown"),
+        ):
+            changed = deepcopy(rows)
+            mutation(changed[-1])
+            with self.subTest(mutation=mutation), self.assertRaises(
+                    profile.ControlReplayError):
+                profile._hooks(changed, plan, "current", allowed_user)
+
+        for change in (
+            lambda hooks: hooks[0].update(trustStatus="modified"),
+            lambda hooks: hooks[0].update(enabled=False),
+            lambda hooks: hooks[0].update(source="plugin"),
+            lambda hooks: hooks[0].update(sourcePath="/unlisted"),
+            lambda hooks: hooks[0].update(eventName="subagentStart"),
+            lambda hooks: hooks[0].update(key=hooks[1]["key"]),
+            lambda hooks: hooks.append({**hooks[0], "key": "extra"}),
+        ):
+            altered = deepcopy(readback)
+            change(altered["hooks"])
+            with self.subTest(change=change), self.assertRaises(
+                    profile.ControlReplayError):
+                profile._user_hook_events(altered, plan, user_notice)
 
     def test_cold_readback_requires_exact_release_and_future_pending(self):
         with tempfile.TemporaryDirectory() as temporary:

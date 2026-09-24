@@ -242,7 +242,39 @@ def _paired(rows: list[dict], method: str) -> list[tuple[int, dict, int, dict]]:
     return pairs
 
 
-def _hooks(rows: list[dict], plan: dict, thread: str) -> None:
+def _user_hook_events(readback: dict, plan: dict,
+                      rows: list[dict]) -> dict[str, set[str]]:
+    """Bind observed user runs to trusted Hooks in this official readback."""
+    if not any(row["direction"] == "receive"
+               and row["raw"].get("method") in {"hook/started", "hook/completed"}
+               and row["raw"].get("params", {}).get("run", {}).get("source") == "user"
+               for row in rows):
+        return {}
+    hooks = readback.get("hooks")
+    if (not isinstance(hooks, list)
+            or any(not isinstance(hook, dict) for hook in hooks)):
+        _fail("user_hook_readback_missing")
+    others = [hook for hook in hooks if hook.get("sourcePath") not in {
+        plan["hook_source"], plan["capture_hook_source"]}]
+    path = str(Path(plan["codex_home"]) / "hooks.json")
+    events = {"preToolUse", "postToolUse", "preCompact", "sessionStart",
+              "sessionEnd", "userPromptSubmit", "stop"}
+    if (len(others) != 7
+            or any(not isinstance(hook.get("key"), str) or not hook["key"]
+                   or not isinstance(hook.get("eventName"), str)
+                   for hook in others)
+            or {hook.get("eventName") for hook in others} != events
+            or len({hook.get("key") for hook in others}) != 7
+            or any(hook.get("source") != "user"
+                   or hook.get("sourcePath") != path
+                   or hook.get("trustStatus") != "trusted"
+                   or hook.get("enabled") is not True for hook in others)):
+        _fail("untrusted_or_ambiguous_user_hook_readback")
+    return {path: events}
+
+
+def _hooks(rows: list[dict], plan: dict, thread: str,
+           user_events: dict[str, set[str]] | None = None) -> None:
     starts = [row["raw"].get("params", {}).get("run", {}) for row in rows
               if row["direction"] == "receive" and row["raw"].get("method")
               == "hook/started" and row["raw"].get("params", {}).get("threadId") == thread]
@@ -261,9 +293,16 @@ def _hooks(rows: list[dict], plan: dict, thread: str) -> None:
             _fail("foreign_hook_notification")
         run = raw["params"].get("run", {})
         identity = run.get("id")
+        source_path = run.get("sourcePath")
+        selected = ((source_path == plan["hook_source"]
+                     and run.get("source") == "plugin")
+                    or (source_path == plan["capture_hook_source"]
+                        and run.get("source") == "sessionFlags"))
+        known_user = (user_events is not None and source_path in user_events
+                      and run.get("source") == "user"
+                      and run.get("eventName") in user_events[source_path])
         if (not isinstance(identity, str) or not identity
-                or run.get("sourcePath") not in {plan["hook_source"],
-                                                plan["capture_hook_source"]}):
+                or not (selected or known_user)):
             _fail("unbound_hook_notification")
         if raw["method"] == "hook/started":
             if identity in open_runs or run.get("status") != "running":
@@ -569,7 +608,7 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             or Path(manifest["closures"]["session"]["root"]).name != thread):
         _fail("session_closure_subject_mismatch")
     snapshot = _snapshot(_descriptor(manifest, "capture_snapshot", 65536), plan, thread)
-    _hooks(rows, plan, thread)
+    _hooks(rows, plan, thread, _user_hook_events(items[0], plan, rows))
     challenge, business_id = _source_control(rows, plan, result, thread)
     compaction_id = _capture_bindings(snapshot, plan, thread,
                                       result["turn_ids"][2], rows)
