@@ -7,16 +7,29 @@ controller refuses to replace any of those sources with notification order.
 
 from __future__ import annotations
 
+import copy
 import re
 from pathlib import Path
 
 from tools.validation import commentary_live_adapter as wire
+from tools.validation import commentary_suite_oracle as suite_oracle
 from tools.validation.commentary_controls import valid_c1_partial_answer
 from tools.validation.commentary_live_observer import PendingEvidence
 
 PRODUCT_EVENTS = {
     "preToolUse", "postToolUse", "preCompact", "sessionStart", "sessionEnd",
     "userPromptSubmit", "subagentStart", "subagentStop", "stop",
+}
+SUITE_PHASES = {
+    "awaiting_auto_compaction", "awaiting_compaction_evidence",
+    "awaiting_cold_recovery", "awaiting_suite",
+}
+APPROVAL_FIELDS = {
+    "additionalPermissions", "approvalId", "availableDecisions", "command",
+    "commandActions", "cwd", "environmentId", "itemId", "kind",
+    "networkApprovalContext", "proposedExecpolicyAmendment",
+    "proposedNetworkPolicyAmendments", "reason", "startedAtMs", "threadId",
+    "turnId",
 }
 
 
@@ -47,6 +60,9 @@ class Controller:
         self.business_reply_sent = False
         self.business_terminal_item = None
         self.business_post_hook = None
+        self.suite_item_started = None
+        self.suite_item_completed = False
+        self.suite_approval_sent = False
 
     def request(self, method, params):
         self.serial += 1
@@ -171,6 +187,9 @@ class Controller:
             raise ValueError("unexpected_rpc_response")
 
     def _server_request(self, raw):
+        if raw.get("method") == "item/commandExecution/requestApproval":
+            self._suite_approval(raw)
+            return
         if raw.get("method") != "item/tool/call" or self.barrier is None:
             raise ValueError("unreviewed_server_request")
         call = self.barrier.receive(raw)
@@ -192,6 +211,38 @@ class Controller:
             # product projection; a caller's success flag cannot release it.
         else:
             raise ValueError("tool_call_out_of_phase")
+
+    def _suite_approval(self, raw):
+        """Answer only the one already-authorized, exact suite command."""
+        params = raw.get("params")
+        started = self.suite_item_started
+        if (self.phase not in SUITE_PHASES or not self.business_reply_sent
+                or started is None or self.suite_item_completed
+                or self.suite_approval_sent or type(raw.get("id")) is not int
+                or raw["id"] < 0 or not isinstance(params, dict)
+                or set(params) - APPROVAL_FIELDS):
+            raise ValueError("unreviewed_server_request")
+        suite_oracle.suite_item_identity(started, self.plan)
+        permissions = params.get("additionalPermissions")
+        network = params.get("networkApprovalContext")
+        network_rules = params.get("proposedNetworkPolicyAmendments")
+        decisions = params.get("availableDecisions")
+        if (params.get("threadId") != self.thread
+                or params.get("turnId") != self.turn
+                or params.get("itemId") != started["id"]
+                or params.get("command") != started["command"]
+                or params.get("cwd") != started["cwd"]
+                or params.get("commandActions") != started["commandActions"]
+                or params.get("kind") != "command"
+                or params.get("environmentId") != "local"
+                or type(params.get("startedAtMs")) is not int
+                or permissions not in (None, {}) or network is not None
+                or network_rules not in (None, [])
+                or params.get("approvalId") is not None
+                or not isinstance(decisions, list) or decisions.count("accept") != 1):
+            raise ValueError("unreviewed_suite_approval")
+        self.suite_approval_sent = True
+        self.outbox.append({"id": raw["id"], "result": {"decision": "accept"}})
 
     def try_answer(self):
         if self.phase != "awaiting_answer_evidence":
@@ -255,7 +306,7 @@ class Controller:
 
     def _notification(self, raw):
         method, params = raw.get("method"), raw.get("params", {})
-        if method not in {"item/completed", "hook/completed", "turn/completed"}:
+        if method not in {"item/started", "item/completed", "hook/completed", "turn/completed"}:
             return
         if self.thread is None or self.turn is None:
             if len(self.deferred) >= 128:
@@ -268,8 +319,20 @@ class Controller:
                 or (method == "turn/completed"
                     and (not isinstance(params.get("turn"), dict)
                          or params["turn"].get("id") != self.turn))
-                or (method == "item/completed" and params.get("turnId") != self.turn)):
+                or (method in {"item/started", "item/completed"}
+                    and params.get("turnId") != self.turn)):
             raise ValueError("foreign_notification")
+        if method == "item/started":
+            item = params.get("item", {})
+            if isinstance(item, dict) and item.get("type") == "commandExecution":
+                if (self.phase not in SUITE_PHASES or not self.business_reply_sent
+                        or not self.plan.get("suite_oracle")
+                        or self.suite_item_started is not None
+                        or item.get("status") != "inProgress"):
+                    raise ValueError("unreviewed_command_start")
+                suite_oracle.suite_item_identity(item, self.plan)
+                self.suite_item_started = copy.deepcopy(item)
+            return
         if method == "turn/completed":
             turn = params.get("turn", {})
             if (self.phase != "awaiting_suite" or turn.get("status") != "completed"
@@ -321,6 +384,10 @@ class Controller:
                 self.try_compaction()
             return
         item = params.get("item", {})
+        if (item.get("type") == "commandExecution"
+                and self.suite_item_started is not None
+                and item.get("id") == self.suite_item_started["id"]):
+            self.suite_item_completed = True
         if (self.plan.get("review_coverage") == "partial"
                 and self.business_reply_sent and self.business_post_hook is None
                 and item.get("type") in {"commandExecution", "fileChange",

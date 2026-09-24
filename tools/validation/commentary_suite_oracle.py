@@ -30,17 +30,55 @@ def _action_argv(command: str, platform: str) -> list[str] | None:
         except ValueError:
             return None
     if platform == "windows":
-        # Only a plain two-argument PowerShell invocation is accepted. No
-        # pipelines, expansions, redirection, semicolons or extra arguments.
-        if any(character in command for character in "$`;|<>()"):
+        # The quoted executable needs PowerShell's call operator. No
+        # pipelines, expansions, redirection, separators or extra arguments.
+        if any(character in command for character in "$`;|<>()\r\n"):
             return None
-        token = r"(?:'[^']*'|\"[^\"]*\"|[^\s'\";&|`$()<>]+)"
-        match = re.fullmatch(r"\s*&?\s*(" + token + r")\s+(" + token + r")\s*", command)
+        token = r"'[^']*'"
+        match = re.fullmatch(r"\s*&\s+(" + token + r")\s+(" + token + r")\s*", command)
         if match is None:
             return None
-        return [part[1:-1] if part[:1] in {"'", '"'} else part
-                for part in match.groups()]
+        return [part[1:-1] for part in match.groups()]
     return None
+
+
+def _windows_literal_path(value: str) -> str | None:
+    """Normalize only repeated separators in a literal local drive path."""
+    if (not isinstance(value, str) or len(value) < 4
+            or not re.fullmatch(r"[A-Za-z]:\\.*", value)
+            or any(char in value for char in '/*?"<>|\r\n\0')
+            or ':' in value[2:]):
+        return None
+    parts = [part for part in value[3:].split("\\") if part]
+    if not parts or any(part in {".", ".."} or part.endswith((" ", ".")) for part in parts):
+        return None
+    return value[0].upper() + ":\\" + "\\".join(parts)
+
+
+def _windows_outer_argv(outer: str) -> tuple[str, list[str]] | None:
+    """Parse only the observed quoted pwsh -Command two-argument form."""
+    if not isinstance(outer, str):
+        return None
+    match = re.fullmatch(r'"([^"\r\n]+)" -Command "([^"\r\n]+)"', outer)
+    if match is None:
+        return None
+    shell = _windows_literal_path(match.group(1))
+    argv = _action_argv(match.group(2), "windows")
+    if shell is None or PureWindowsPath(shell).name.lower() != "pwsh.exe" or argv is None:
+        return None
+    return shell, argv
+
+
+def _windows_outer_matches(outer: str, path: str, allowed_python: list[str]) -> bool:
+    parsed = _windows_outer_argv(outer)
+    if parsed is None or len(parsed[1]) != 2:
+        return False
+    python, suite = parsed[1]
+    return (_windows_literal_path(suite) == _windows_literal_path(path)
+            and _windows_literal_path(suite) is not None
+            and any(_windows_literal_path(python) == _windows_literal_path(candidate)
+                    and _windows_literal_path(python) is not None
+                    for candidate in allowed_python))
 
 
 def validate_suite_plan(plan: dict) -> dict:
@@ -78,14 +116,47 @@ def validate_suite_plan(plan: dict) -> dict:
                     or not any(_action_argv(shell_argv[2], "posix") == [python, str(path)]
                                for python in suite["allowed_python"])):
                 raise SuiteEvidenceError("suite_outer_shell_invalid")
-        elif (any(character in outer for character in "$`;|<>()")
-              or "-Command" not in outer):
-            raise SuiteEvidenceError("suite_outer_shell_invalid")
+        else:
+            if not _windows_outer_matches(outer, str(path), suite["allowed_python"]):
+                raise SuiteEvidenceError("suite_outer_shell_invalid")
     if (plan.get("main_requirement_text") != plan.get("root_prompt")
             or plan["root_prompt"] != f"请运行 {path} 的测试并持续执行直到任务完成。"
             or plan.get("values") != list(range(-64, 64))):
         raise SuiteEvidenceError("suite_not_bound_to_main_work")
     return suite
+
+
+def suite_item_identity(item: dict, plan: dict) -> str:
+    """Bind one command item to the frozen suite, before or after execution."""
+    suite = validate_suite_plan(plan)
+    if not isinstance(item, dict) or item.get("type") != "commandExecution":
+        raise SuiteEvidenceError("suite_invocation_not_bound")
+    actions = item.get("commandActions")
+    if not isinstance(actions, list) or len(actions) != 1 or not isinstance(actions[0], dict):
+        raise SuiteEvidenceError("suite_invocation_not_plain_argv")
+    action = actions[0]
+    argv = _action_argv(action.get("command"), suite["platform"])
+    if argv is None or len(argv) != 2:
+        raise SuiteEvidenceError("suite_invocation_not_plain_argv")
+    basename = (PureWindowsPath(argv[1]).name if suite["platform"] == "windows"
+                else Path(argv[1]).name)
+    action_path = (_windows_literal_path(argv[1]) if suite["platform"] == "windows"
+                   else argv[1])
+    suite_path = (_windows_literal_path(suite["path"])
+                  if suite["platform"] == "windows" else suite["path"])
+    if basename == "suite.py" and action_path != suite_path:
+        raise SuiteEvidenceError("foreign_same_name_suite")
+    identity = item.get("id")
+    if (basename != "suite.py" or action_path is None or action_path != suite_path
+            or action.get("type") != "unknown"
+            or not any((_windows_literal_path(argv[0]) == _windows_literal_path(python)
+                        if suite["platform"] == "windows" else argv[0] == python)
+                       for python in suite["allowed_python"])
+            or item.get("command") not in suite["allowed_outer_commands"]
+            or item.get("cwd") != plan["cwd"]
+            or not isinstance(identity, str) or not identity):
+        raise SuiteEvidenceError("suite_invocation_not_bound")
+    return identity
 
 
 def verify_suite(rows: list[dict], plan: dict, thread: str, turn: str,
@@ -120,16 +191,14 @@ def verify_suite(rows: list[dict], plan: dict, thread: str, turn: str,
             if isinstance(action_command, str) and path in action_command:
                 raise SuiteEvidenceError("suite_invocation_not_plain_argv")
             continue
-        if argv[1] != path:
+        if ((suite["platform"] == "windows" and
+             _windows_literal_path(argv[1]) != _windows_literal_path(path))
+                or (suite["platform"] == "posix" and argv[1] != path)):
             raise SuiteEvidenceError("foreign_same_name_suite")
-        if (params.get("threadId") != thread or params.get("turnId") != turn
-                or action.get("type") != "unknown"
-                or argv[0] not in suite["allowed_python"]
-                or item.get("command") not in suite["allowed_outer_commands"]
-                or item.get("cwd") != plan["cwd"]
-                or not isinstance(item.get("id"), str)):
+        if params.get("threadId") != thread or params.get("turnId") != turn:
             raise SuiteEvidenceError("suite_invocation_not_bound")
-        phases = candidates.setdefault(item["id"], {})
+        identity = suite_item_identity(item, plan)
+        phases = candidates.setdefault(identity, {})
         phase = raw["method"]
         if phase in phases:
             raise SuiteEvidenceError("suite_item_repeated")

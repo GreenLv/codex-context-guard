@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from tools.validation import commentary_suite_oracle as oracle
+from tools.validation.commentary_live_controller import Controller
 
 
 class SuiteOracleTests(unittest.TestCase):
@@ -31,7 +32,8 @@ class SuiteOracleTests(unittest.TestCase):
         if os.name == "nt":
             python = sys.executable
             self.action = f"& '{python}' '{script}'"
-            self.outer = f"pwsh -NoProfile -Command \"{self.action}\""
+            doubled_action = self.action.replace("\\", "\\\\")
+            self.outer = f'"C:\\\\Synthetic\\\\pwsh.exe" -Command "{doubled_action}"'
             platform = "windows"
         else:
             python = "python3"
@@ -118,6 +120,10 @@ class SuiteOracleTests(unittest.TestCase):
                          ["C:\\Python\\python.exe", "C:\\work\\suite.py"])
         self.assertIsNone(oracle._action_argv("& 'C:\\Python\\python.exe' 'C:\\work\\suite.py'; whoami",
                                                "windows"))
+        self.assertIsNone(oracle._action_argv("'C:\\Python\\python.exe' 'C:\\work\\suite.py'",
+                                               "windows"))
+        self.assertIsNone(oracle._action_argv("& C:\\Python\\python.exe C:\\work\\suite.py",
+                                               "windows"))
         for unsafe in ("& 'C:\\Python\\python.exe' \"$env:TEMP\\suite.py\"",
                        "& 'C:\\Python\\python.exe' 'C:\\work\\suite.py`whoami'",
                        "& 'C:\\Python\\python.exe' \"$(whoami)\\suite.py\""):
@@ -131,6 +137,116 @@ class SuiteOracleTests(unittest.TestCase):
         Path(self.plan["suite_oracle"]["path"]).write_text("changed")
         with self.assertRaisesRegex(oracle.SuiteEvidenceError, "suite_source_changed"):
             oracle.validate_suite_plan(self.plan)
+
+    def test_windows_outer_is_one_literal_shell_and_one_plain_action(self):
+        body = r"& 'C:\\Python\\python.exe' 'C:\\work\\suite.py'"
+        outer = '"C:\\\\Tools\\\\pwsh.exe" -Command "' + body + '"'
+        parsed = oracle._windows_outer_argv(outer)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[0], r"C:\Tools\pwsh.exe")
+        self.assertEqual([oracle._windows_literal_path(x) for x in parsed[1]],
+                         [r"C:\Python\python.exe", r"C:\work\suite.py"])
+        self.assertTrue(oracle._windows_outer_matches(
+            outer, r"C:\work\suite.py", [r"C:\Python\python.exe"]))
+        self.assertFalse(oracle._windows_outer_matches(
+            outer, r"C:\other\suite.py", [r"C:\Python\python.exe"]))
+        self.assertFalse(oracle._windows_outer_matches(
+            outer, r"C:\work\suite.py", [r"C:\Other\python.exe"]))
+        for bad in (
+            outer + "; whoami",
+            outer.replace(" -Command ", " -NoProfile -Command "),
+            outer.replace("pwsh.exe", "other.exe"),
+            outer.replace("suite.py'", "suite.py'; whoami"),
+            outer.replace("C:\\\\work", "C:\\\\work\\\\..\\\\elsewhere"),
+            outer.replace("& '", "'", 1),
+        ):
+            with self.subTest(bad=bad):
+                parsed = oracle._windows_outer_argv(bad)
+                if parsed is not None:
+                    self.assertIsNone(oracle._windows_literal_path(parsed[1][1]))
+
+    def controller(self, phase="awaiting_suite"):
+        controller = Controller({**self.plan, "question_client_id": "question"}, object())
+        controller.thread, controller.turn = "thread", "turn"
+        controller.phase = phase
+        controller.business_reply_sent = True
+        return controller
+
+    def approval(self):
+        item = self.rows[1]["raw"]["params"]["item"]
+        return {"id": 3, "method": "item/commandExecution/requestApproval", "params": {
+            "threadId": "thread", "turnId": "turn", "itemId": item["id"],
+            "startedAtMs": 100, "kind": "command", "environmentId": "local",
+            "command": item["command"], "commandActions": copy.deepcopy(item["commandActions"]),
+            "cwd": item["cwd"], "availableDecisions": [
+                "accept", {"acceptWithExecpolicyAmendment": {
+                    "execpolicy_amendment": ["unselected"]}}, "cancel"],
+            "proposedExecpolicyAmendment": ["unselected"],
+        }}
+
+    def test_exact_suite_approval_is_single_use_and_not_terminal_proof(self):
+        for phase in ("awaiting_auto_compaction", "awaiting_compaction_evidence",
+                      "awaiting_cold_recovery", "awaiting_suite"):
+            controller = self.controller(phase)
+            self.assertEqual(controller.ingest(self.rows[1]["raw"]), [])
+            self.assertEqual(controller.ingest(self.approval()),
+                             [{"id": 3, "result": {"decision": "accept"}}])
+            with self.assertRaisesRegex(ValueError, "unreviewed_server_request"):
+                controller.ingest(self.approval())
+        with self.assertRaises(oracle.SuiteEvidenceError):
+            oracle.verify_suite(self.rows[:2], self.plan, "thread", "turn", "business")
+
+    def test_suite_approval_rejects_early_or_unbound_requests(self):
+        with self.assertRaisesRegex(ValueError, "unreviewed_server_request"):
+            self.controller().ingest(self.approval())
+        for change in (
+            lambda p: p.update(threadId="foreign"),
+            lambda p: p.update(turnId="foreign"),
+            lambda p: p.update(itemId="foreign"),
+            lambda p: p.update(command="pwsh -NoProfile -Command 'other'"),
+            lambda p: p.update(cwd="/foreign"),
+            lambda p: p["commandActions"][0].update(command="other"),
+            lambda p: p.update(kind="writeStdin"),
+            lambda p: p.update(environmentId="remote"),
+            lambda p: p.update(additionalPermissions={"fs": "all"}),
+            lambda p: p.update(networkApprovalContext={"host": "example.test"}),
+            lambda p: p.update(proposedNetworkPolicyAmendments=["allow"]),
+            lambda p: p.update(approvalId="bridge"),
+            lambda p: p.update(availableDecisions=["cancel"]),
+            lambda p: p.update(startedAtMs="100"),
+            lambda p: p.update(unknownFutureAuthority=True),
+        ):
+            controller = self.controller()
+            controller.ingest(self.rows[1]["raw"])
+            request = self.approval()
+            change(request["params"])
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                controller.ingest(request)
+            self.assertFalse(controller.suite_approval_sent)
+        controller = self.controller()
+        extra = copy.deepcopy(self.rows[1]["raw"])
+        extra["params"]["item"]["commandActions"][0]["command"] += "; whoami"
+        with self.assertRaises(oracle.SuiteEvidenceError):
+            controller.ingest(extra)
+        controller = self.controller()
+        controller.ingest(self.rows[1]["raw"])
+        with self.assertRaisesRegex(ValueError, "unreviewed_command_start"):
+            controller.ingest(self.rows[1]["raw"])
+
+    def test_suite_change_or_completed_item_blocks_late_approval(self):
+        controller = self.controller()
+        controller.ingest(self.rows[1]["raw"])
+        Path(self.plan["suite_oracle"]["path"]).write_bytes(b"changed")
+        with self.assertRaisesRegex(oracle.SuiteEvidenceError, "suite_source_changed"):
+            controller.ingest(self.approval())
+        self.assertFalse(controller.suite_approval_sent)
+
+        controller = self.controller()
+        controller.suite_item_started = copy.deepcopy(self.rows[1]["raw"]["params"]["item"])
+        controller.ingest(self.rows[2]["raw"])
+        with self.assertRaisesRegex(ValueError, "unreviewed_server_request"):
+            controller.ingest(self.approval())
+        self.assertFalse(controller.suite_approval_sent)
 
 
 if __name__ == "__main__":
