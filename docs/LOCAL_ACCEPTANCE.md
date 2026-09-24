@@ -11,17 +11,164 @@ compares with this business-after projection, allowing the main item to leave
 current while the partial question stays current. A three-turn C2 app-server
 collector checks source-bound wait identity, official turn success, one
 nonce-bound business result, fixed deadlines and owned-process cleanup.
-C1 and C2 each produced one bounded native macOS model result on the same
-installed candidate. C1 stopped before independent review: its two-part
+C1 and C2 each produced one bounded native macOS model result on the earlier
+installed candidate. That C1 run stopped before independent review: its two-part
 question was reviewable, but the commentary source binder used the narrower
 automatic-delivery classifier and omitted that question ID. The retained run
 is failed, and its prepared business artifact does not prove business release.
 The offline candidate repair shares the independent-review catalog with the
 source binder while leaving automatic delivery narrower. Focused positive and
 negative regressions cover direct compound questions, quoted examples, mixed
-execution requests, source identity and pending main work. This changed
-runtime requires a fresh isolated installation and native rerun; offline
-replay cannot upgrade the failed C1 run.
+execution requests, source identity and pending main work. The runtime change
+required a fresh isolated installation and native run; offline replay cannot
+upgrade the earlier failed C1 run. The fresh result is reported below.
+
+The repaired C1 source is commit `0eee42386f79a75c151e36813aeb623129dbaab7`
+with runtime-tree SHA-256
+`11be412834c8832dff4b741e8d1ae6fb84bdb3264087ca5b0e1abb4c8e0a4f14`.
+It was installed in a new isolated namespace with a strict second no-op,
+source/cache parity and lifecycle smoke. Official readback showed exactly the
+selected nine product Hooks and two private capture Hooks trusted; seven older
+user Hooks remained modified and unselected, without a trust change. One bounded
+C1 run observed a source-bound answer, sealed partial review, challenge and
+successful business dynamic-tool result,
+product PostToolUse, real automatic compaction, and cold recovery. The
+original runner result, SHA-256
+`6f636f56548c5b0e1c48db0fafd57a07c960b83195729f82c7801a83a5fb3fe7`,
+reports `source_chain_observed` and `native_acceptance=not_established`. It
+does not certify native transport/source authenticity, the actual-host
+threshold basis, or cold-reader process provenance. No `suite.py` command
+execution appeared in the official RPC; the 128 rows were business dynamic-tool
+output, and the main execution requirement stayed pending.
+
+A later zero-model cold read with the partial-review expectation reproduced the
+original projection. Its first diagnostic read used the complete-review
+default and failed with `review_not_consumed_or_main_lost`; that failed record
+is retained. A repository-owned `commentary_chain/v1` replay then bound the
+original RPC, trace, Hook events, sealed review, installed product and cold
+readback. With clean mapper commit
+`1b10baecb488be5c26ed6889b631b98365e37e8c`, all seven scoped gates
+passed; its result SHA-256 is
+`8c2086985b27a8212e2a0c1195fb72d0ba6515a02a76117bdd62b77677a223bf`.
+The mapper changed no installed runtime bytes and started no model. This
+independent source replay does not upgrade the original runner's conclusion or
+establish full-answer, Windows, or suite-execution acceptance.
+
+Later full-answer controls on the same installed runtime used fresh,
+preflighted producer/reviewer plans. An initial launch reached no model because
+the local execution sandbox denied state initialization in the private HOME;
+its failed record remains separate. Two host-permitted runs each delivered the
+complete two-part commentary answer and reached a sealed complete-review
+barrier. Both proceeded through business and automatic compaction, then their
+collectors failed with `Unknown:snapshot_changed` while reading the live
+trace. Both owned process trees exited cleanly. Later stable trace reads cannot
+turn either failed collector result into acceptance. Neither official RPC
+contains a `suite.py` command before its collector stopped. A tool-only
+bounded append-race repair leaves the installed runtime unchanged.
+
+The full-answer C1 plan then ran once on clean source commit
+`7bbb6ebe2417f95dc2e23e7201eafd0f4126b9c6`, retaining runtime-tree
+SHA-256 `11be412834c8832dff4b741e8d1ae6fb84bdb3264087ca5b0e1abb4c8e0a4f14`.
+The original runner result (SHA-256
+`53ae989b3f3986f8cbdff75fa5abc7937c22a73eb1054e0c4858f700edfabd36`)
+observed the complete two-part commentary answer, independent review,
+nonce-bound business call, automatic compaction, cold recovery and one
+post-compaction suite command that ran one test over 128 rows and exited zero.
+Its own status remains `source_chain_observed` with
+`native_acceptance=not_established`.
+The repository-owned zero-model replay, using the original RPC and captured
+review/cold product timepoints, passed all ten scoped gates with the same clean
+source and mapper commit. The independent result (SHA-256
+`2fc18a6d2e189dcf5edfc823ff835284fc16bfe16379c10f938cae81f53f5a20`)
+also verified official Hook trust and owned-process cleanup. Final product
+readback showed the question complete and noncurrent, with unrelated
+obligations preserved; the synthetic main item `R001` remained pending, so
+its product closure is unknown even though the requested suite ran. No model
+retry or installed-runtime change followed this run.
+
+On Windows, the subsequent tool-only source revisions preserved the installed
+runtime-tree digest. The expanded related tests passed (88 tests; six
+host-capability skips), and the fixed-byte suite fixture ran one test in a
+manual shell check. The exact native plan passed `--preflight`, and official
+readback confirmed trust of its nine selected product Hooks and two selected
+capture Hooks. One bounded native run used four producer and one reviewer
+inferences. It reached the suite command's official
+`item/commandExecution/requestApproval` request, but the controller handled
+only dynamic-tool server requests and stopped with
+`unreviewed_server_request`. There is no completed suite item or successful
+suite result in that run; its failed record remains separate from acceptance.
+An isolated zero-model execution of the exact quoted PowerShell command ran
+the fixture once with exit zero. That shell check does not upgrade the failed
+native run. A later tool-only source revision binds one-shot approval to the
+frozen suite command; its separate Windows source checks and input preflight
+are reported below, while a new native run is still needed before native
+acceptance can be assessed.
+
+The subsequent test-only candidate leaves runtime bytes and trusted Hook
+commands unchanged. On Windows, its two changed test modules passed 27 tests
+with two capability skips; the earlier five-module set passed 50 tests with
+five skips. The ordinary nested-source snapshot positive case remains active
+when Windows lacks symlink privilege for the separate linked-payload negative
+case. A mixed-session zero-model check found that old captures do not fill a
+missing current-session pair, current captures were selected, and old capture
+files were unchanged. The revised native plan passed input preflight without
+a model call, reusing the selected Hook hashes and capture directory while
+allocating a new run and trace directory. The prior full-suite run retained
+one symlink-privilege error among 1,788 tests; that full suite has not yet been
+rerun on the test-only candidate. These checks do not establish Windows native
+acceptance or change the failed r22 result.
+
+One subsequent bounded Windows native run on source commit
+`5a85faba7c4247e63eb09afda7938638233421fc` used five producer and one
+reviewer inferences, retained the same installed runtime and trusted Hook
+hashes, and completed the requested suite with exit code zero. The original
+runner result (SHA-256
+`3f5f0320d7a4ca9168e2182b19e46e06688c13f924de23b401147a8aa8f346d3`)
+reports `source_chain_observed` and `native_acceptance=not_established`.
+Official records show selected product `sessionStart` and `stop` Hook runs
+timed out after 10 seconds. The six older capture files remained unchanged;
+new capture pairs were appended under the same trusted commands. A hand-run
+final read that omitted the profile's HOME and trace environment incorrectly
+reported obligation regression. The corrected fresh read found the question
+complete and noncurrent, unrelated obligations preserved, and the synthetic
+main item still pending. The first zero-model profile replay could not assess
+the chain because seven unchanged Windows CRLF checkout files differed from
+their LF Git blobs, and its POSIX-only process-group assertion would also
+reject the Windows Job result. A later validation-tool repair requires an
+exact seven-file byte projection, binds Windows Job cleanup to the official
+host and original source, and refuses failed product Hook runs. One separate
+offline replay of the retained r24 evidence exited 2 with
+`product_hook_failed`. It preserved the original result and confirms that the
+selected Hook timeouts still block native acceptance.
+
+A later source-only feedback performance repair is commit
+`c1382bb927c37c0a7d01245853874ebee10b567c`, with runtime-tree SHA-256
+`2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`.
+It computes the current-scope projection once per feedback read and reuses it
+for the action categories in that read; independent reads still compute fresh
+scope. A Windows zero-model comparison used the same synthetic 21-item,
+2,000-evidence fixture on the old and new source commits: 2.073866 seconds
+and 233 scope calls before, 0.039230 seconds and one scope call after, with
+equal returned counts. Windows passed 175 focused tests with six skips;
+macOS passed the full 1,794-test source behavior suite with 18 skips. The
+original r24 run and its Hook timeout verdict remain unchanged. This
+diagnostic is not native acceptance. A separate fresh unauthenticated macOS
+HOME installed this exact runtime, the strict second run was a no-op, all
+42 source/cache runtime files matched the digest, and the installed lifecycle
+smoke passed; that second run was a read-only check without `--apply`.
+
+One Windows zero-model read of a sealed copy of r24's final product state then
+compared source commits `3faa41b` and `c1382bb` under the same private HOME
+and trace environment. The former has the same runtime digest as the original
+r24 execution commit. Both returned the same 1,049-byte full feedback view and SHA-256
+`b469e0c379d5e5e7b4aa420d0830d55419b396536701cdeb11086a0cfc383aba`.
+The old source took 1.102964 seconds and 35 full-scope projections; the new
+source took 0.070652 seconds and one. The four original evidence trees and
+five pinned files matched before and after, and owned Job cleanup was
+verified. This one read-only final-state comparison does not exercise the
+timed-out Hook paths. The original r24 `sessionStart` and `stop` timeouts
+remain failures, and both platforms still require native acceptance of the
+new runtime.
 
 C2 observed the exact-marker control chain and one completed business call.
 The future-observation file remained absent and its requirement stayed pending.
@@ -132,10 +279,10 @@ exact new-runtime acceptance. Prior reviewer receipts do not validate the
 changed adapter bytes.
 The 4096-token
 `body_after_prefix` setting is not calibrated against an actual model prefix.
-Native macOS and Windows commentary chains, CI, public HOL refresh, tag and
-Release remain open. Synthetic source regressions and the earlier Windows
-partial result do not establish those gates. The original failed baseline is
-retained outside the source checkout. See the
+The Windows commentary chain, historical-case adjudication, exact-main CI,
+public HOL refresh, tag and Release remain open. The macOS result above does
+not establish those gates or synthetic main-task product closure. The failed
+baselines remain outside the source checkout. See the
 [development status](DEVELOPMENT_0.14.2.md) for the open evidence boundaries.
 
 ## 0.14.1 metadata patch (2026-09-22)

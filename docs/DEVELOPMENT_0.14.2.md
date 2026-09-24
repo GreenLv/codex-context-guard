@@ -9,10 +9,10 @@ authority; this public status intentionally omits private evidence locations.
 
 | Work package | Current implementation | Remaining acceptance |
 | --- | --- | --- |
-| CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch | Independent holdouts and final exact candidate checks; unsupported locators still cannot certify a target |
-| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and an explicit independent answer-review consumer keep information coverage separate from execution closure | Complete repaired macOS and Windows delivery, review, compaction and cold-recovery chains on their exact installed runtimes |
-| CG142-03 | Source-bound persistence, pause and cancellation remain; an explicitly named exact marker has its own byte-exact wait. A bounded macOS C2 run observed marker release and one business call with future observation pending; C1 stopped before review, and its compound-question binding has a source repair | Fresh installed-runtime C1 native control result, complete C1/C2 mapped control matrix and cross-platform acceptance |
-| CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting | Independent low-budget, damaged-source, wrong-target and multi-object review; model rerun behavior remains unmeasured |
+| CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch and independent path-family holdouts passed. The 26-current-case source identity map was independently checked against 50 references | Final adjudication of plan-required native cases and exact candidate checks; historical unknowns, including Archive 045, remain visible, and unsupported locators cannot certify a target |
+| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and an explicit independent answer-review consumer keep information coverage separate from execution closure. A full-answer macOS C1 run on an earlier installed runtime passed ten independent replay gates, including complete review and cold product readback | Native acceptance of the current runtime on both platforms; source replay does not prove every historical case |
+| CG142-03 | Source-bound persistence, pause and cancellation remain; an explicitly named exact marker has its own byte-exact wait. Bounded macOS C2 observed marker release and one business call with future observation pending; a full-answer C1 run on an earlier runtime executed the requested suite after compaction | Complete C1/C2 mapped control matrix and current-runtime cross-platform acceptance; the synthetic main item remained pending in that C1 final readback |
+| CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting. Independent low-budget, damaged-source, wrong-target and multi-object synthetic review passed; F09 has eight model samples | Final historical-case adjudication and behavior beyond the sampled native runs remain open |
 
 Renaming a suite directory from `neutral` to `audit` must not remove an
 explicit request to continue until completion. The object's original text
@@ -93,13 +93,108 @@ No answer-coverage oracle is adopted by this feature.
 CG142-02 has a source-bound independent reviewer contract, with unknown or
 partial judgments leaving the question open. The observation reader alone
 does not upgrade old unknown records or close information requirements. Four
-earlier bounded macOS attempts remain failed. A later P7 run observed one
-full-answer, business, real automatic compaction and cold-recovery chain; its
-separate zero-model profile passed seven scoped gates for that installed
-runtime. The new exact-marker repair changes runtime bytes, so P7 does not
-establish acceptance of those bytes or either C1/C2 control. Windows native
-chains and the original plan's full-coverage and publication gates remain
-unmet.
+earlier bounded macOS attempts remain failed. P7 observed one full-answer,
+business, real automatic compaction and cold-recovery chain; its separate
+zero-model profile passed seven scoped gates for that earlier installed
+runtime. The exact-marker repair changed runtime bytes, so P7 does not
+establish acceptance of the current candidate.
+
+The repaired C1 macOS control used a fresh isolated installation and exactly
+trusted nine product Hooks and two private capture Hooks. Its one bounded run
+observed a source-bound answer, independent partial review, a business dynamic
+tool terminal and product PostToolUse, automatic compaction and cold recovery.
+The original runner recorded `source_chain_observed` and
+`native_acceptance=not_established`: it did not establish source authenticity,
+the actual-host compaction threshold, or cold-reader process provenance, and
+it did not execute the requested suite. A later repository-owned, zero-model
+`commentary_chain/v1` replay passed seven scoped gates with a clean mapper
+commit; it does not rewrite the original result or complete the full-answer
+and Windows native chains. The original plan's historical and publication
+gates also remain open.
+
+Two subsequent bounded full-answer macOS probes on the same installed runtime
+delivered both answers and reached sealed complete-review barriers. Their
+business tools and automatic compaction ran, but both collectors stopped on
+live trace snapshot races after compaction; the owned process trees were
+cleaned. No `suite.py` command appeared before either stop. Both failed
+records remain separate from acceptance. A tool-only observer repair now waits
+within the same deadline only for an append preserving accepted trace bytes, payloads and
+source identity. The installed runtime is unchanged.
+
+On source commit `7bbb6ebe2417f95dc2e23e7201eafd0f4126b9c6`, one later
+macOS run reached the complete review, business result, automatic compaction,
+cold recovery and one suite test covering 128 rows with exit code zero. Its
+original runner reported only `source_chain_observed`. The independent,
+zero-model `commentary_chain/v1` replay on that clean commit passed ten scoped
+gates, including official Hook trust, captured product timepoints, suite
+execution and owned cleanup. The final product readback showed the question
+complete and noncurrent while other obligations were preserved; the synthetic
+main item still had pending status, so product main-task closure remains unknown.
+Windows source and zero-model checks on the same runtime digest have since
+passed 88 related tests, with six host-capability skips. The Windows native
+plan passed input preflight, and official readback confirmed trust of the nine
+selected product Hooks and two selected capture Hooks. One bounded native run
+delivered the answer and proceeded through business, review and compaction,
+but stopped when the controller did not handle an official
+`item/commandExecution/requestApproval` request for the suite command. It
+recorded no completed suite item or successful suite result, so Windows native
+acceptance remains open. A tool-only source repair now binds a one-shot
+approval to that exact frozen command. The separate Windows source checks and
+input preflight are reported below; a new native run is still required for
+native evidence. Historical-case adjudication and publication gates remain
+separate.
+
+On the later tool-only source candidate, Windows independently passed 50
+focused tests across the five affected modules, with five capability skips.
+The normal nested-source snapshot test runs even when the host cannot create a
+symlink for its separate negative case. A zero-model check also confirmed
+that valid captures from an older session cannot satisfy missing current
+captures and that older capture files remain byte-identical. The new plan
+passed input preflight with the same selected Hook trust hashes and capture
+commands. Its model and Windows native outcomes remain unobserved; the earlier
+full-suite symlink-capability failure is preserved and has not been replaced
+by a full candidate pass.
+
+One bounded Windows native run on the same product runtime then executed the
+requested suite with exit code zero, but two selected product Hooks
+(`sessionStart` and `stop`) timed out at their 10-second host limit. The
+runner recorded `source_chain_observed` and
+`native_acceptance=not_established`. A correctly configured, fresh read of
+the final product state found the question complete and noncurrent while the
+synthetic main item remained pending; an earlier hand-run read without the
+required HOME and trace environment was invalid and cannot establish a
+regression. The first independent replay stopped at a Windows checkout-byte
+versus Git-blob mismatch. A separate tool-only mapper repair now requires
+an explicit, exact seven-file CRLF projection and treats failed product Hooks
+as a native acceptance blocker. One separate offline replay of the retained
+r24 evidence exited 2 with `product_hook_failed`. Neither the successful suite
+command nor the mapper repair upgrades the original run to Windows acceptance.
+
+A later source-only performance repair at commit
+`c1382bb927c37c0a7d01245853874ebee10b567c` reuses one current-scope
+projection within each feedback read. It does not cache across events or
+change the source, evidence, or as-of rules. The runtime-tree digest changed
+to `2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`,
+so the prior installed runtime remains a separate candidate. On one identical
+Windows synthetic load of 21 current items and 2,000 one-kilobyte evidence
+records, the old and new source returned equal item counts while feedback
+fell from 2.074 to 0.039 seconds and full scope projections from 233 to one.
+The Windows focused checks passed 175 tests with six capability skips;
+macOS source behavior passed 1,794 tests with 18 skips. A fresh unauthenticated
+macOS HOME installed the changed runtime, passed a strict second read-only
+no-op check,
+matched all 42 source/cache runtime files by digest, and passed installed
+lifecycle smoke. A separate Windows read of the frozen r24 final-state copy,
+under one fixed private HOME and trace environment, returned identical full
+feedback bytes on source commits `3faa41b` and `c1382bb`. The former has the
+same runtime digest as the original r24 execution commit. Feedback took 1.103 and
+0.071 seconds, with 35 and one full-scope projection respectively; the
+original four evidence trees and five files matched their seals before and
+after, and owned Job cleanup completed. This is one read-only function
+comparison, not a Hook run. The old function also completed below the Host's
+10-second limit on this final-state copy, so neither this comparison nor the
+isolated installation explains or clears the original r24 Hook timeouts.
+Native acceptance of the new runtime remains pending on both platforms.
 
 ## Follow-up tools and ownership
 
@@ -111,9 +206,9 @@ unmet.
 | F04 | Preflight always reports effective child permissions unknown; rejects unsupported route claims | Actual restricted child must exercise its cwd, interpreter, fixture, witness and Git object access; parent access does not pass this gate |
 | F05 | No login, credential read/copy, trust copy or consumed-cache mutation introduced | Before credentialed native work, use the official same-host authentication lifecycle separately from candidate isolation; no permanent or cross-host permission inferred |
 | F06 | Offline transfer states distinguish acceptance, receipt, digest verification, start and completion; identical retries are idempotent | Active-writer conflicts stay unknown; these checks do not send messages, retry a denied channel or prove receiver execution |
-| F07 | Offline evidence index binds source bytes and candidate identity, records provenance, rejects derived Hook trust and stale candidates | Valid receipt shape still awaits original-capture review by the existing native adapter and independent official trust readback |
+| F07 | Offline evidence index binds source bytes and candidate identity, records provenance, rejects derived Hook trust and stale candidates | A valid receipt shape alone cannot substitute for original-capture review by the native adapter or independent official Hook trust readback; the scoped macOS and Windows results above report those checks separately |
 | F08 | Existing Codex Host terminal adapters retained and replayed in owning tests | DSH renderer extension is external; absent process status remains unknown. No arbitrary command certification is added |
-| F09 | Shared current-fact view and recovery budgeting | Commentary semantics and native rerun measurements remain separate open gates |
+| F09 | Shared current-fact view and recovery budgeting | The scoped macOS replay above does not settle the remaining commentary semantics, Windows native result or historical cases |
 | F10 | Review table below separates observed facts, inference and unchecked prose | Independent model reader must adjudicate actual output; no generic truth verifier is claimed |
 
 ### Zero-model batch input contract
@@ -210,9 +305,10 @@ The five originally missing replay mappings were traced to the local archive:
   single-command parser has been repaired for private status, stage and proof
   readback; this does not establish the original Archive-045 failure chain.
 
-These local adjudications still require independent concentrated review.
-Historical Windows continuation/Stop chains remain unverified for this
-candidate. The historical corpus is not declared fully covered.
+The source mappings above have received independent concentrated review.
+The original Windows continuation/Stop native chains remain unverified for
+this candidate, and Archive-045's original failure chain remains unknown.
+The historical corpus is not declared fully covered.
 
 Do not freeze or publish 0.14.2 while required commentary, historical or native
 gates remain unresolved. Source tests, CI/HOL, immutable artifacts, isolated
@@ -228,8 +324,9 @@ fresh pinned Codex exec process, not a supplied assistant verdict. Zero-model
 fixtures exercise capture validation, exact question binding, correction,
 revocation and compact/resume. Attempt four recorded one independent reviewer
 inference and a complete judgment for the selected question; the complete
-native chain failed before releasing the business result. The repaired source
-needs a fresh installed runtime and both native chains, and the full candidate
-matrix remains an independent gate. Windows source-only focused checks do not
-establish installation or model behavior. No publication or daily-home update
-is implied.
+native chain failed before releasing the business result. At that candidate
+stage, the source repair still required a fresh installed runtime and both
+native chains. Later macOS and Windows evidence is bounded above; the full
+candidate matrix remains an independent gate. Windows source-only focused
+checks do not establish installation or model behavior. No publication or
+daily-home update is implied.
