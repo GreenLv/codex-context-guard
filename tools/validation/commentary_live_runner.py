@@ -14,6 +14,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -31,6 +32,22 @@ SCHEMA = "cg-commentary-native-plan/v1"
 MAX_PLAN = 64 * 1024
 MAX_JOURNAL = 14 * 1024 * 1024
 MAX_RPC_LINE = 2 * 1024 * 1024
+PARTIAL_INSTRUCTIONS = (
+    "This is a bounded local acceptance scenario. First call "
+    "cg_commentary_acceptance.ready with {{}}. When the user asks the two-part "
+    "same-turn question, send exactly one Chinese commentary message: 第一问是 49。 "
+    "Leave the second question unanswered. Then call "
+    "cg_commentary_acceptance.challenge with {{}}. Use the exact returned nonce "
+    "to call cg_commentary_acceptance.business exactly once. After its result, "
+    "continue the original user task using the built-in terminal once from the "
+    "current working directory to run exactly: {suite_action}. Wait for its "
+    "completion and verify exit code zero, one unittest test and OK. Do not run "
+    "another suite command. Keep the same turn active; do not issue a final "
+    "answer before the suite finishes. Do not use any other tool while the "
+    "challenge or business call is pending."
+)
+SUITE_ACTION_START = "run exactly: "
+SUITE_ACTION_END = ". Wait for its completion and verify exit code zero, one unittest test and OK."
 
 
 def digest(raw):
@@ -88,6 +105,38 @@ def _hex(value):
             and all(c in "0123456789abcdef" for c in value))
 
 
+def frozen_suite_action(instructions: str, cwd: str) -> str | None:
+    """Extract only the bounded native suite command slot of a fixed template."""
+    if (instructions.count(SUITE_ACTION_START) != 1
+            or instructions.count(SUITE_ACTION_END) != 1):
+        return None
+    action = instructions.split(SUITE_ACTION_START, 1)[1].split(
+        SUITE_ACTION_END, 1)[0]
+    platform = "windows" if os.name == "nt" else "posix"
+    argv = suite_oracle._action_argv(action, platform)
+    if argv is None or len(argv) != 2:
+        return None
+    python, suite = argv
+    if platform == "windows":
+        from pathlib import PureWindowsPath
+
+        normalized_python = suite_oracle._windows_literal_path(python)
+        normalized_suite = suite_oracle._windows_literal_path(suite)
+        expected_suite = suite_oracle._windows_literal_path(
+            str(PureWindowsPath(cwd) / "suite.py"))
+        if (normalized_python is None or normalized_suite is None
+                or normalized_suite != expected_suite
+                or PureWindowsPath(normalized_python).name.lower() != "python.exe"):
+            return None
+    elif (action != f"{shlex.quote(python)} {shlex.quote(suite)}"
+            or not Path(python).is_absolute() or Path(python).name not in {
+            "python", "python3", "python3.10", "python3.11", "python3.12",
+            "python3.13"}
+            or suite != str(Path(cwd) / "suite.py")):
+        return None
+    return action
+
+
 def load_plan(path):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_PLAN:
         raise ValueError("unsafe_plan")
@@ -122,6 +171,11 @@ def load_plan(path):
                 or plan.get("budget") != {"startup": 60, "turn": 240,
                                           "compact": 120, "cleanup": 15}):
             raise ValueError("unfrozen_partial_control_inputs")
+        instructions = plan["developer_instructions"]
+        action = frozen_suite_action(instructions, plan["cwd"])
+        if (action is None or instructions != PARTIAL_INSTRUCTIONS.format(
+                suite_action=action)):
+            raise ValueError("partial_output_contract_missing")
     if "suite_oracle" in plan:
         if plan.get("review_coverage", "complete") != "complete":
             raise ValueError("suite_oracle_requires_complete_review")

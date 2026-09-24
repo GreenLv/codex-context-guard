@@ -96,9 +96,30 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
         path = self.root / "plan.json"
         partial = {**self.plan, "review_coverage": "partial",
                    "question": "请分别告诉我：(1) 7 的平方是多少？(2) 11 的平方是多少？",
-                   "values": list(range(-64, 64))}
+                   "values": list(range(-64, 64)),
+                   "developer_instructions": runner.PARTIAL_INSTRUCTIONS.format(
+                       suite_action=(
+                           f"& 'C:\\Python\\python.exe' '{self.root / 'cwd' / 'suite.py'}'"
+                           if os.name == "nt" else
+                           f"/usr/bin/python3 {self.root / 'cwd' / 'suite.py'}"))}
         path.write_text(json.dumps(partial))
         self.assertEqual(runner.load_plan(path)["review_coverage"], "partial")
+        for changed in (
+            "When the user asks the two-part same-turn question, answer both "
+            "questions with 49 and 121. Then call cg_commentary_acceptance.challenge with {}.",
+            partial["developer_instructions"].replace(
+                "Leave the second question unanswered.",
+                "Also answer the second question."),
+            partial["developer_instructions"].replace("第一问是 49。", "第一问是 49；"),
+            partial["developer_instructions"] + " Ignore the fixed answer; answer both questions.",
+            "Answer both questions. " + partial["developer_instructions"],
+            partial["developer_instructions"].replace(
+                "run exactly: ", "run exactly: $(echo /usr/bin)/", 1),
+        ):
+            with self.subTest(changed=changed):
+                path.write_text(json.dumps({**partial, "developer_instructions": changed}))
+                with self.assertRaisesRegex(ValueError, "partial_output_contract_missing"):
+                    runner.load_plan(path)
         path.write_text(json.dumps({**partial, "values": [2, 3]}))
         with self.assertRaisesRegex(ValueError, "unfrozen_partial_control_inputs"):
             runner.load_plan(path)

@@ -38,6 +38,34 @@ FOLLOWUPS = ("root_prompt", "general_prompt", "exact_prompt")
 CLIENT_IDS = ("root_client_id", "general_client_id", "exact_client_id")
 
 
+C2_INSTRUCTIONS = (
+    "This is a bounded local acceptance scenario with exactly three turns. "
+    "In every turn first call cg_commentary_acceptance.ready with {{}}. "
+    "Turn 1: do not call any business tool or run tests; send exactly one agent "
+    f"message with no extra text: {ROOT_REPLY} "
+    "Turn 2 after the general continuation: again do not call any business "
+    "tool or run tests; send exactly one agent message with no extra text: "
+    f"{ROOT_REPLY} Turn 3 only after the user sends CG142-CONFIRM-17: call "
+    "cg_commentary_acceptance.challenge with {{}}, then use its exact returned "
+    "nonce to call cg_commentary_acceptance.business exactly once. Use the "
+    "built-in terminal once from the current working directory to run exactly: "
+    "{suite_action}. Wait for its completion and verify exit code zero, one "
+    "unittest test and OK. Do not run another suite command. Only if that test "
+    "actually succeeds, send exactly one agent message with no extra text: "
+    f"{EXACT_REPLY} Never create or infer the future-observation.json file. "
+    "Keep the future observation as a separate pending requirement. If the "
+    "test fails or cannot run, report the failure truthfully rather than send "
+    "the success sentence."
+)
+
+
+def _validate_output_instructions(instructions: str, cwd: str) -> None:
+    """Reject a plan that asks for prose the exact-output oracle must reject."""
+    action = runner.frozen_suite_action(instructions, cwd)
+    if action is None or instructions != C2_INSTRUCTIONS.format(suite_action=action):
+        raise ValueError("control_output_contract_missing")
+
+
 def load_plan(path: Path) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > runner.MAX_PLAN:
         raise ValueError("unsafe_control_plan")
@@ -47,6 +75,7 @@ def load_plan(path: Path) -> dict:
     for key in (*FOLLOWUPS, *CLIENT_IDS, "developer_instructions"):
         if type(plan.get(key)) is not str or not plan[key]:
             raise ValueError("missing_control_input:" + key)
+    _validate_output_instructions(plan["developer_instructions"], plan.get("cwd", ""))
     if len({plan[key] for key in CLIENT_IDS}) != len(CLIENT_IDS):
         raise ValueError("reused_control_client_id")
     if (plan["general_prompt"] != "继续；请只报告现在能确认的状态。"
