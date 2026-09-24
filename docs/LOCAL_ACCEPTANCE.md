@@ -220,12 +220,63 @@ The original collector retained `source_chain_observed`; the synthetic main
 item remained pending. This Windows-task result was independently reviewed,
 not rerun from raw Windows captures on macOS. Actual activity was five producer
 and one reviewer inferences, exceeding the one-generation wording of the
-direct authorization question; the discrepancy was disclosed and further
-Windows model work held. Windows partial C1, C2 and the original historical
-continuation/Stop chains remain unverified. The 26-current-case source identity
-map against 50 references remains accepted, while Archive-045 original linkage
-and these specific historical adjudications remain open. Final exact-source
-CI/HOL, publication and consumer adoption are separate gates.
+direct authorization question; the discrepancy was disclosed before the later,
+separately authorized bounded Windows controls.
+
+The Windows partial-answer C1 collector retained its original
+`source_chain_observed` and `native_acceptance=not_established` result
+(SHA-256 `9714db4d224a9b8cee08f11534b2606d39b83392a25ffbd877ce4054227ce67b`).
+Its execution checkout contained exactly four reviewed validation-tool files
+different from commit `afdb15e7f3b6b6ad15263a0ed20711fa4cd8d5a3`; the
+zero-model mapper bound that explicit Git-backed source delta and sealed
+capture snapshot without rewriting the original checkout or result. With
+validation bytes matching mapper commit
+`c93bdd48609031ca78d23818231b54ccd1d629f7` in a separate dirty checkout,
+the `commentary_chain/v1` result (SHA-256
+`4c6ba090cacfa3ff414823648d1db08c22d5f89e0b3859c5cce376115cc6aed0`)
+passed seven scoped gates. Business continuation and cold recovery were
+observed; the second question and synthetic main item stayed pending, and the
+suite was intentionally not run. The final selected product SessionStart had
+no completed notification before cleanup. The original capture files and
+failed earlier replay remain unchanged. This was Windows-task raw replay,
+reviewed through its sealed result and exact source closure rather than
+rerunning Windows captures on macOS.
+
+The Windows C2 run used execution source
+`1fc8a4632c92533a8ffb768962371f035cef0af6`, with the same installed
+runtime-tree SHA-256
+`2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`.
+The original three-turn collector returned `source_controls_observed` and
+`native_acceptance=not_established` (result SHA-256
+`94b86e685bd628cfd32e92b095ef47d21693f4a02dffe991b625fc7dfa61320b`).
+After its exact-marker user input, official RPC showed one source-bound
+business call, one literal approval for the frozen suite command, suite exit
+zero after business and before turn end, automatic compaction, and 39 Hook
+starts paired with 39 completions. The future file remained absent. The first
+two zero-model replays stopped on validation-tool assumptions about tied
+Windows clock samples and existing trusted user Hook notifications; both
+failures and the original sealed inputs remain retained. Tool-only mapper
+commit `534b5605d3b485277512941eaa00df6bc2ebad19` accepts the physical
+order of the sealed legacy journal when clock ticks tie and binds user Hook
+notifications only to the same official trusted/enabled readback. Windows
+applied those exact mapper bytes in a separate, dirty checkout; the 34-file
+mapper closure SHA-256 was
+`ab556e10d113261394723ca7a14086c67f30860706d5a41b657afc631ba33df0`.
+Its official zero-model `commentary_control_chain/v1` report (SHA-256
+`22439813ccbe7979c9b7d75396f19fe7ab65556b5e9e88b37f954980eaa3a128`)
+passed all nine scoped gates: host identity, official Hook trust, capture
+integrity, three-turn control, source-bound business, automatic compaction,
+suite execution, future cold readback and owned cleanup. Cold state retained
+the future observation and synthetic main item as pending. The report did not
+rewrite the collector verdict, calibrate the actual compaction threshold, or
+establish escaped-descendant absence. No model retry followed this run.
+
+The two original Windows historical continuation/Stop chains remain
+unverified. The 26-current-case source identity map against 50 references
+remains accepted, while Archive-045 original linkage and those historical
+adjudications remain open. Final exact-source CI/HOL, publication and consumer
+adoption are separate gates; the six scoped controls above do not establish
+whole-task completion.
 
 An earlier C2 run on the prior runtime observed the exact-marker control chain
 and one completed business call.

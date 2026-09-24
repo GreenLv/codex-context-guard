@@ -12,14 +12,15 @@ observed predicates from whole closure in feedback. Standard/strict still
 introduce no ordinary-tool execution approvals. The historical 0.14.1 native
 results do not validate these changed bytes. On the current runtime digest
 `2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`,
-macOS separately passed scoped complete-answer, partial-answer, and exact-marker
-control replays against bounded native runs. Windows independently reported a
-scoped complete-answer replay pass on the same runtime. The original collectors
+macOS and Windows each passed separate scoped complete-answer, partial-answer,
+and exact-marker control replays against bounded native runs. The original collectors
 retain their `native_acceptance=not_established` results; later zero-model
-profiles do not rewrite them. The macOS partial run did not execute the suite,
-and its final SessionStart had no completed notification before cleanup.
-Windows partial-answer and exact-marker controls, two original historical
-Windows chains, and the complete release gate remain open. See
+profiles do not rewrite them. Neither partial run executed the suite, and
+both final product SessionStart runs lacked a completed notification before
+cleanup. Both exact-marker
+controls left future observation pending. Two original historical Windows
+chains and the complete release gate remain open; these scoped results do not
+establish whole-task closure or actual compaction-threshold calibration. See
 [development status](DEVELOPMENT_0.14.2.md) and the
 [acceptance record](LOCAL_ACCEPTANCE.md).
 

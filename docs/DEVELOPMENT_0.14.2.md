@@ -10,8 +10,8 @@ authority; this public status intentionally omits private evidence locations.
 | Work package | Current implementation | Remaining acceptance |
 | --- | --- | --- |
 | CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch and independent path-family holdouts passed. The 26-current-case source identity map was independently checked against 50 references | Original Windows historical-chain adjudication and Archive-045 linkage remain open; the accepted source identity map is not reopened |
-| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and independent answer review. Current-runtime macOS complete and partial C1 controls passed separate scoped replays; Windows complete C1 passed a remotely reviewed scoped replay | Windows partial C1 and two original historical chains remain open; source replay does not prove every case or whole-task closure |
-| CG142-03 | Source-bound persistence, pause and cancellation remain; an exact marker has its own byte-exact wait. Current-runtime macOS C2 passed nine scoped replay gates: generic continuation did not release the explicit exact-marker wait, the exact marker released one business call and the suite, and future observation stayed pending | Windows C2 remains open; the synthetic main item stayed pending in complete-answer final readback |
+| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and independent answer review. Current-runtime macOS and Windows complete and partial C1 controls passed separate scoped replays | Two original Windows historical chains remain open; source replay does not prove every case or whole-task closure |
+| CG142-03 | Source-bound persistence, pause and cancellation remain; an exact marker has its own byte-exact wait. Current-runtime macOS and Windows C2 controls each passed nine scoped replay gates: generic continuation did not release the explicit wait, the exact marker released one business call and the suite, and future observation stayed pending | The synthetic main item stayed pending in complete-answer final readback; scoped controls do not establish whole-task closure or actual compaction-threshold calibration |
 | CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting. Independent low-budget, damaged-source, wrong-target and multi-object synthetic review passed; F09 has eight model samples | Final historical-case adjudication and behavior beyond the sampled native runs remain open |
 
 Renaming a suite directory from `neutral` to `audit` must not remove an
@@ -232,9 +232,23 @@ synthetic main item. An independently reviewed remote zero-model profile passed
 ten scoped gates; this is Windows-task evidence, not a macOS-local raw replay.
 The run used five producer inferences and one reviewer inference, beyond the
 one-generation wording of its direct authorization question. That discrepancy
-was disclosed, and further Windows model runs are held. Windows partial C1 and
-C2, the two original Windows historical chains, Archive-045 linkage, final
-candidate CI/HOL, reader freeze and publication remain separate open gates.
+was disclosed. Later, separately authorized Windows partial C1 and C2 runs
+used bounded plans on the unchanged installed runtime. The partial C1 original
+collector observed business continuation and cold recovery without a suite;
+its zero-model replay passed seven scoped gates while the second question and
+main item stayed pending. Its final product SessionStart was not completed
+before cleanup. The three-turn C2 collector observed one exact-marker release,
+nonce-bound business call, suite exit zero, automatic compaction and an absent
+future file. Its original status remains `native_acceptance=not_established`;
+a separate zero-model replay passed nine scoped gates against the sealed
+original journal, official Hook readback and final cold state. The C2 execution
+source is `1fc8a4632c92533a8ffb768962371f035cef0af6`; later tool-only mapper
+commit `534b5605d3b485277512941eaa00df6bc2ebad19` changed no installed
+runtime bytes. Windows applied those exact mapper bytes in a separate checkout,
+which was dirty; the original execution checkout and captures were unchanged.
+The two original Windows historical chains, Archive-045 linkage, actual
+compaction-threshold calibration, final candidate CI/HOL, reader freeze and
+publication remain separate open gates.
 
 ## Follow-up tools and ownership
 
@@ -248,7 +262,7 @@ candidate CI/HOL, reader freeze and publication remain separate open gates.
 | F06 | Offline transfer states distinguish acceptance, receipt, digest verification, start and completion; identical retries are idempotent | Active-writer conflicts stay unknown; these checks do not send messages, retry a denied channel or prove receiver execution |
 | F07 | Offline evidence index binds source bytes and candidate identity, records provenance, rejects derived Hook trust and stale candidates | A valid receipt shape alone cannot substitute for original-capture review by the native adapter or independent official Hook trust readback; the scoped macOS and Windows results above report those checks separately |
 | F08 | Existing Codex Host terminal adapters retained and replayed in owning tests | DSH renderer extension is external; absent process status remains unknown. No arbitrary command certification is added |
-| F09 | Shared current-fact view and recovery budgeting | Current-runtime macOS controls and the Windows complete chain have scoped replay passes; Windows partial/C2 and original historical cases remain open |
+| F09 | Shared current-fact view and recovery budgeting | Current-runtime macOS and Windows complete, partial and exact-marker controls have separate scoped replay passes; original historical cases remain open |
 | F10 | Review table below separates observed facts, inference and unchecked prose | Independent model reader must adjudicate actual output; no generic truth verifier is claimed |
 
 ### Zero-model batch input contract
