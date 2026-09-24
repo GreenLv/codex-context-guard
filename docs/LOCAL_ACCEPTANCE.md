@@ -168,9 +168,67 @@ five pinned files matched before and after, and owned Job cleanup was
 verified. This one read-only final-state comparison does not exercise the
 timed-out Hook paths. The original r24 `sessionStart` and `stop` timeouts
 remain failures, and both platforms still require native acceptance of the
-new runtime.
+new runtime at this point in the candidate sequence.
 
-C2 observed the exact-marker control chain and one completed business call.
+The later execution source `afdb15e7f3b6b6ad15263a0ed20711fa4cd8d5a3`
+retained the `c1382bb` runtime-tree SHA-256
+`2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`.
+An isolated macOS install passed a strict second no-op, 42-file source/cache
+parity and lifecycle smoke; official readback confirmed precisely nine product
+and two private capture Hooks trusted. The bounded complete-answer C1 runner
+result (SHA-256
+`b914e66467af387f2475e7fe9b56eb8d7c78bacff70bc1865693e5132ef28c48`)
+reported `source_chain_observed` and `native_acceptance=not_established`.
+Independent zero-model `commentary_chain/v1` replay (SHA-256
+`651f3784a65fc58355304c6c6d0fe7b0ead4b7d51c4c374882a93ef4d8bff757`)
+passed ten scoped gates. Both answers, review, source-bound business, real
+automatic compaction, the requested suite exit zero, cold question closure and
+owned cleanup were observed. Synthetic main item `R001` remained pending;
+whole-task closure and threshold calibration were not established.
+
+The separate macOS partial-answer C1 runner (SHA-256
+`4bc9a02b6533d2b3882c93e06c3033c8c429539a329d78e72bd19e22140d96ff`)
+also retained the original collector's narrow verdict. Independent replay
+(SHA-256 `b01bd751caeb7a67423dca082ea9354d7b5c1228a80ca05ab14ed7217a29626d`)
+passed seven scoped gates: the second question and `R001` stayed pending after
+business and cold recovery. The suite was deliberately not run under this
+control contract. A final selected product SessionStart started but had no
+completed notification before cleanup, so that event is not counted as a
+completed Hook.
+
+The macOS C2 exact-marker control retained its original `source_controls_observed`
+and `native_acceptance=not_established` result (SHA-256
+`eda1cafeb9779f367e4dddebea2145f4868b358e4d8691947b4d0c096612c93e`).
+Its three official turns showed that generic continuation did not release the
+explicit exact-marker wait; the later marker released that wait, completed one nonce-bound business call, ran
+the suite with exit zero and left the future file absent with its requirement
+pending. A later validation-tool-only mapper commit
+`4babfc242c5fce0ef9837bdf4df670778c682462` replayed the sealed evidence
+without another model or runtime installation. Its separate
+`commentary_control_chain/v1` result (SHA-256
+`b28480960261e5bee88e4834e0d173dfab91624457e89e8d3e8a955fd1a7535c`)
+passed nine scoped gates with a clean mapper and left the original collector
+verdict unchanged.
+
+Windows independently reported the same afdb/runtime installation, exact
+11-Hook trust and a bounded complete-answer C1 chain. Its remote zero-model
+`commentary_chain/v1` result (SHA-256
+`cfef97d121acc3621b0c28623280207710ce046415880755a0531456284a897a`)
+passed ten scoped gates, including source-bound business, complete review,
+automatic compaction, a 128-row suite with exit zero and cold question readback.
+The original collector retained `source_chain_observed`; the synthetic main
+item remained pending. This Windows-task result was independently reviewed,
+not rerun from raw Windows captures on macOS. Actual activity was five producer
+and one reviewer inferences, exceeding the one-generation wording of the
+direct authorization question; the discrepancy was disclosed and further
+Windows model work held. Windows partial C1, C2 and the original historical
+continuation/Stop chains remain unverified. The 26-current-case source identity
+map against 50 references remains accepted, while Archive-045 original linkage
+and these specific historical adjudications remain open. Final exact-source
+CI/HOL, publication and consumer adoption are separate gates.
+
+An earlier C2 run on the prior runtime observed the exact-marker control chain
+and one completed business call.
 The future-observation file remained absent and its requirement stayed pending.
 This scoped result is not the complete 0.14.2 native acceptance gate. P7 remains
 evidence for its earlier runtime digest only.

@@ -1,28 +1,27 @@
 # Compatibility and Verification Status
 
-The `commentary_chain/v1` native-acceptance profile is separate from portable
-runtime checks and the existing six-gate `host_behavior` profile. A macOS P7
-commentary-chain profile pass is not Windows acceptance,
-nor a complete 0.14.2 release gate. The profile reuses installed 0.14.2
-runtime bytes and makes no new Hook or state-schema compatibility claim.
+The `commentary_chain/v1` and `commentary_control_chain/v1` native-acceptance
+profiles are separate from portable runtime checks and the existing six-gate
+`host_behavior` profile. Their scoped results reuse installed 0.14.2 runtime
+bytes; neither profile changes the Hook or state-schema compatibility contract.
 
 ## 0.14.2 source candidate — Unreleased
 
 The candidate separates action speech from object data and distinguishes
 observed predicates from whole closure in feedback. Standard/strict still
 introduce no ordinary-tool execution approvals. The historical 0.14.1 native
-results do not validate these changed bytes. A source-bound independent answer
-reviewer now provides a candidate association and completeness route; the
-fourth macOS attempt recorded one reviewer judgment but failed before business
-result release. One later macOS P7 chain passed its scoped replay profile on
-the earlier 0.14.2 runtime. A later bounded C2 macOS control observed one
-business call after exact-marker release with future observation still pending;
-C1 failed before review and has only a subsequent source repair. Neither these
-runs nor P7 establish complete C1/C2 native control acceptance. Windows
-real delivery, compaction and cold-recovery chains remain unverified. The Windows process-tree
-route passed a separate zero-model Job and child-exit probe, which does not
-establish Hook trust, installed behavior or the model chain. See
-[development status](DEVELOPMENT_0.14.2.md).
+results do not validate these changed bytes. On the current runtime digest
+`2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`,
+macOS separately passed scoped complete-answer, partial-answer, and exact-marker
+control replays against bounded native runs. Windows independently reported a
+scoped complete-answer replay pass on the same runtime. The original collectors
+retain their `native_acceptance=not_established` results; later zero-model
+profiles do not rewrite them. The macOS partial run did not execute the suite,
+and its final SessionStart had no completed notification before cleanup.
+Windows partial-answer and exact-marker controls, two original historical
+Windows chains, and the complete release gate remain open. See
+[development status](DEVELOPMENT_0.14.2.md) and the
+[acceptance record](LOCAL_ACCEPTANCE.md).
 
 The candidate's commentary and derived-sidecar readers compare `lstat` before/after
 and `fstat` before/after separately, retaining `ctime_ns` in each stability check.

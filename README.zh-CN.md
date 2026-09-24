@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> **0.14.2 源码候选 — Unreleased。** 正在开发路径／动作分离和当前事实恢复。较早候选的一条有界 macOS commentary 链通过独立重放；当前运行时仍需在双平台完成原生验收，参见[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新已发布版本仍为 0.14.1。
+> **0.14.2 源码候选 — Unreleased。** 正在开发路径／动作分离和当前事实恢复。当前运行时的 macOS 完整回答、部分回答和精确口令控制分别通过有界原生证据重放；Windows 完整回答链通过限定范围的重放。Windows 部分回答与精确口令控制、历史案例及发布门仍待验，参见[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新已发布版本仍为 0.14.1。
 
 > **0.14.1（2026-09-22）** 为市场元数据补充现有 Apache-2.0 许可证链接，Hook 行为不变。参见[发布说明](docs/releases/v0.14.1.md)及[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)。
 

@@ -9,9 +9,9 @@ authority; this public status intentionally omits private evidence locations.
 
 | Work package | Current implementation | Remaining acceptance |
 | --- | --- | --- |
-| CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch and independent path-family holdouts passed. The 26-current-case source identity map was independently checked against 50 references | Final adjudication of plan-required native cases and exact candidate checks; historical unknowns, including Archive 045, remain visible, and unsupported locators cannot certify a target |
-| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and an explicit independent answer-review consumer keep information coverage separate from execution closure. A full-answer macOS C1 run on an earlier installed runtime passed ten independent replay gates, including complete review and cold product readback | Native acceptance of the current runtime on both platforms; source replay does not prove every historical case |
-| CG142-03 | Source-bound persistence, pause and cancellation remain; an explicitly named exact marker has its own byte-exact wait. Bounded macOS C2 observed marker release and one business call with future observation pending; a full-answer C1 run on an earlier runtime executed the requested suite after compaction | Complete C1/C2 mapped control matrix and current-runtime cross-platform acceptance; the synthetic main item remained pending in that C1 final readback |
+| CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch and independent path-family holdouts passed. The 26-current-case source identity map was independently checked against 50 references | Original Windows historical-chain adjudication and Archive-045 linkage remain open; the accepted source identity map is not reopened |
+| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and independent answer review. Current-runtime macOS complete and partial C1 controls passed separate scoped replays; Windows complete C1 passed a remotely reviewed scoped replay | Windows partial C1 and two original historical chains remain open; source replay does not prove every case or whole-task closure |
+| CG142-03 | Source-bound persistence, pause and cancellation remain; an exact marker has its own byte-exact wait. Current-runtime macOS C2 passed nine scoped replay gates: generic continuation did not release the explicit exact-marker wait, the exact marker released one business call and the suite, and future observation stayed pending | Windows C2 remains open; the synthetic main item stayed pending in complete-answer final readback |
 | CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting. Independent low-budget, damaged-source, wrong-target and multi-object synthetic review passed; F09 has eight model samples | Final historical-case adjudication and behavior beyond the sampled native runs remain open |
 
 Renaming a suite directory from `neutral` to `audit` must not remove an
@@ -194,7 +194,47 @@ after, and owned Job cleanup completed. This is one read-only function
 comparison, not a Hook run. The old function also completed below the Host's
 10-second limit on this final-state copy, so neither this comparison nor the
 isolated installation explains or clears the original r24 Hook timeouts.
-Native acceptance of the new runtime remains pending on both platforms.
+At this point in the candidate sequence, native acceptance of the new runtime
+remained pending on both platforms. The later bounded runs are recorded below.
+
+### Current-runtime bounded native controls
+
+The current execution source `afdb15e7f3b6b6ad15263a0ed20711fa4cd8d5a3`
+uses runtime-tree SHA-256
+`2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`.
+In a separately trusted isolated macOS HOME, the complete-answer C1 run
+delivered both answers, completed independent review, made the source-bound
+business call, automatically compacted, ran the requested suite with exit zero,
+and preserved the final cold readback. Its original collector reported
+`source_chain_observed`; an independent zero-model `commentary_chain/v1` replay
+passed ten scoped gates. The question was complete and noncurrent, but the
+synthetic main item `R001` remained pending. Whole-task closure and the actual
+compaction threshold are not certified by this run.
+
+A separate macOS partial-answer C1 run left the second question and `R001`
+pending after business continuation and cold recovery. Its zero-model profile
+passed seven scoped gates. No requested suite was run in this partial control;
+the final product SessionStart started but did not send a completed notification
+before collector cleanup. A third macOS C2 run delivered three official turns:
+generic continuation did not release the explicit byte-exact wait, while the later exact
+marker released one business call and a suite run with exit zero. The future
+file stayed absent and its requirement pending. The original C2 collector
+retained `native_acceptance=not_established`; the separate zero-model
+`commentary_control_chain/v1` result passed nine scoped gates using the same
+sealed runtime evidence. Mapper commit
+`4babfc242c5fce0ef9837bdf4df670778c682462` changed only validation tools,
+not installed runtime bytes or the original results.
+
+Windows independently installed and trusted the same runtime in an isolated
+HOME. Its bounded complete-answer C1 run reported a 128-row suite with exit
+zero, real automatic compaction, a complete/noncurrent question and a pending
+synthetic main item. An independently reviewed remote zero-model profile passed
+ten scoped gates; this is Windows-task evidence, not a macOS-local raw replay.
+The run used five producer inferences and one reviewer inference, beyond the
+one-generation wording of its direct authorization question. That discrepancy
+was disclosed, and further Windows model runs are held. Windows partial C1 and
+C2, the two original Windows historical chains, Archive-045 linkage, final
+candidate CI/HOL, reader freeze and publication remain separate open gates.
 
 ## Follow-up tools and ownership
 
@@ -208,7 +248,7 @@ Native acceptance of the new runtime remains pending on both platforms.
 | F06 | Offline transfer states distinguish acceptance, receipt, digest verification, start and completion; identical retries are idempotent | Active-writer conflicts stay unknown; these checks do not send messages, retry a denied channel or prove receiver execution |
 | F07 | Offline evidence index binds source bytes and candidate identity, records provenance, rejects derived Hook trust and stale candidates | A valid receipt shape alone cannot substitute for original-capture review by the native adapter or independent official Hook trust readback; the scoped macOS and Windows results above report those checks separately |
 | F08 | Existing Codex Host terminal adapters retained and replayed in owning tests | DSH renderer extension is external; absent process status remains unknown. No arbitrary command certification is added |
-| F09 | Shared current-fact view and recovery budgeting | The scoped macOS replay above does not settle the remaining commentary semantics, Windows native result or historical cases |
+| F09 | Shared current-fact view and recovery budgeting | Current-runtime macOS controls and the Windows complete chain have scoped replay passes; Windows partial/C2 and original historical cases remain open |
 | F10 | Review table below separates observed facts, inference and unchecked prose | Independent model reader must adjudicate actual output; no generic truth verifier is claimed |
 
 ### Zero-model batch input contract
@@ -305,10 +345,12 @@ The five originally missing replay mappings were traced to the local archive:
   single-command parser has been repaired for private status, stage and proof
   readback; this does not establish the original Archive-045 failure chain.
 
-The source mappings above have received independent concentrated review.
-The original Windows continuation/Stop native chains remain unverified for
-this candidate, and Archive-045's original failure chain remains unknown.
-The historical corpus is not declared fully covered.
+The 26-current-case / 50-reference source identity map and the source mappings
+above have received independent concentrated review. The original Windows
+continuation/Stop native chains remain unverified for this candidate, and
+Archive-045's original linkage and failure chain remain unknown. These are
+specific adjudication gaps, not a rejection or reopening of the accepted
+source identity map.
 
 Do not freeze or publish 0.14.2 while required commentary, historical or native
 gates remain unresolved. Source tests, CI/HOL, immutable artifacts, isolated
