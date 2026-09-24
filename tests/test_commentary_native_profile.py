@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from copy import deepcopy
@@ -11,6 +12,14 @@ from tools.validation import commentary_native_profile as profile
 
 
 class CommentaryNativeProfileTests(unittest.TestCase):
+    def symlink_or_skip(self, link, target):
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                self.skipTest("Windows host lacks symbolic-link privilege")
+            raise
+
     def test_codex_version_comes_from_official_initialize_not_reviewer_policy(self):
         self.assertEqual(profile._official_codex_version(
             {"codexHome": "/isolated", "userAgent":
@@ -89,7 +98,7 @@ class CommentaryNativeProfileTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(profile.ReplayError):
                 profile._rpc(encode(changed))
 
-    def test_bounded_file_read_rejects_symlink_and_changed_bytes(self):
+    def test_bounded_file_read_rejects_changed_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             source = root / "source.json"
@@ -100,8 +109,15 @@ class CommentaryNativeProfileTests(unittest.TestCase):
                 profile._read(source, "0" * 64, 2)
             with self.assertRaises(profile.ReplayError):
                 profile._read(source, digest, 1)
+
+    def test_bounded_file_read_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "source.json"
+            source.write_bytes(b"{}")
+            digest = hashlib.sha256(b"{}").hexdigest()
             link = root / "link.json"
-            link.symlink_to(source)
+            self.symlink_or_skip(link, source)
             with self.assertRaises(profile.ReplayError):
                 profile._read(link, digest, 2)
 
@@ -123,7 +139,7 @@ class CommentaryNativeProfileTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(profile.ReplayError):
                 profile._response(changed, "initialize")
 
-    def test_evidence_tree_digest_detects_changed_or_linked_member(self):
+    def test_evidence_tree_digest_detects_changed_member(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             first = root / "capture.raw"
@@ -131,8 +147,14 @@ class CommentaryNativeProfileTests(unittest.TestCase):
             original = profile._tree_digest(root)
             first.write_bytes(b"changed")
             self.assertNotEqual(profile._tree_digest(root), original)
+
+    def test_evidence_tree_digest_rejects_linked_member(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            first = root / "capture.raw"
+            first.write_bytes(b"original")
             linked = root / "linked.raw"
-            linked.symlink_to(first)
+            self.symlink_or_skip(linked, first)
             with self.assertRaisesRegex(profile.ReplayError, "linked_tree_member"):
                 profile._tree_digest(root)
 
