@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from copy import deepcopy
@@ -33,6 +34,10 @@ class CommentaryNativeProfileTests(unittest.TestCase):
                 "/isolated")
 
     def test_owned_cleanup_requires_original_collector_shape_and_all_positive_facts(self):
+        root = Path(__file__).resolve().parents[1]
+        process_tree = root / "scripts/cg_process_tree.py"
+        source = {"scripts/cg_process_tree.py":
+                  hashlib.sha256(process_tree.read_bytes()).hexdigest()}
         result = {"status": "source_chain_observed",
                   "phase": "offline_chain_checked",
                   "cleanup": {"owned_process_exited": True,
@@ -44,14 +49,130 @@ class CommentaryNativeProfileTests(unittest.TestCase):
                               "process_group_signal_denied": False,
                               "process_group_query_denied": False,
                               "escaped_descendants": "not_established"}}
-        profile._verify_owned_cleanup(result)
+        profile._verify_owned_cleanup(result, "linux", source, root)
         for field, value in (("owned_tree_empty", False),
                              ("process_group_cleanup_error", "denied"),
                              ("escaped_descendants", "passed")):
             changed = deepcopy(result)
             changed["cleanup"][field] = value
             with self.subTest(field=field), self.assertRaises(profile.ReplayError):
-                profile._verify_owned_cleanup(changed)
+                profile._verify_owned_cleanup(changed, "linux", source, root)
+        windows = deepcopy(result)
+        windows["cleanup"]["process_group_absent"] = None
+        profile._verify_owned_cleanup(windows, "windows", source, root)
+        with self.assertRaises(profile.ReplayError):
+            profile._verify_owned_cleanup(windows, "linux", source, root)
+        with self.assertRaises(profile.ReplayError):
+            profile._verify_owned_cleanup(result, "windows", source, root)
+        with self.assertRaises(profile.ReplayError):
+            profile._verify_owned_cleanup(windows, "windows", {}, root)
+        for field, value in (("owned_tree_empty", False),
+                             ("owned_tree_no_running_members", False),
+                             ("process_group_cleanup_error", "job_query_denied"),
+                             ("process_group_query_denied", True)):
+            changed = deepcopy(windows)
+            changed["cleanup"][field] = value
+            with self.subTest(field=field), self.assertRaises(profile.ReplayError):
+                profile._verify_owned_cleanup(changed, "windows", source, root)
+
+    def test_official_host_os_requires_matching_server_identity(self):
+        for agent, host in (("Codex/0.153.4 (Windows; x86_64)", "windows"),
+                            ("Codex Desktop/0.153.4 (Mac OS; arm64)", "darwin"),
+                            ("Codex/0.153.4 (Linux; x86_64)", "linux")):
+            self.assertEqual(profile._official_host_os({"userAgent": agent}, host), host)
+        for agent, host in (("Codex/0.153.4 (Windows; x86_64)", "linux"),
+                            ("Codex/0.153.4", "windows"),
+                            ("Codex/0.153.4 (Windows; Linux)", "windows")):
+            with self.assertRaises(profile.ReplayError):
+                profile._official_host_os({"userAgent": agent}, host)
+
+    def test_checkout_projection_binds_original_disk_bytes_to_exact_git_blob(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            subprocess.run(["git", "init", "-q", str(root)], check=True,
+                           capture_output=True)
+            blob = b"one\ntwo\n"
+            converted = blob.replace(b"\n", b"\r\n")
+            (root / "converted.txt").write_bytes(blob)
+            (root / "plain.txt").write_bytes(b"unchanged\n")
+            subprocess.run(["git", "-C", str(root), "-c", "core.autocrlf=false",
+                            "add", "converted.txt", "plain.txt"], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Codex",
+                            "-c", "user.email=12345+codex@users.noreply.github.com",
+                            "commit", "-qm", "fixture"], check=True,
+                           capture_output=True)
+            commit = subprocess.check_output(["git", "-C", str(root),
+                                              "rev-parse", "HEAD"], text=True).strip()
+            (root / "converted.txt").write_bytes(converted)
+            files = {"converted.txt": profile._digest(converted),
+                     "plain.txt": profile._digest(b"unchanged\n")}
+            manifest = {"original_source_commit": commit,
+                        "source_manifest": {"sha256": "a" * 64}}
+            plan = {"harness_root": str(root),
+                    "source_tree_sha256": profile._digest(profile.fixture.canonical(files))}
+            proof = {"schema": profile.PROJECTION_SCHEMA, "source_commit": commit,
+                     "source_manifest_sha256": "a" * 64,
+                     "source_tree_sha256": plan["source_tree_sha256"],
+                     "files": {"converted.txt": {
+                         "conversion": "lf_to_crlf_exact",
+                         "blob_sha256": profile._digest(blob),
+                         "disk_sha256": profile._digest(converted),
+                         "blob_bytes": len(blob), "disk_bytes": len(converted)}}}
+            allowed = frozenset({"converted.txt"})
+            profile._verify_checkout_source(manifest, plan, files, proof, root, allowed)
+            with self.assertRaises(profile.ReplayError):
+                profile._verify_checkout_source(manifest, plan, files, None, root, allowed)
+            for mutate in (
+                lambda p: p.update(source_commit="0" * 40),
+                lambda p: p.update(source_manifest_sha256="b" * 64),
+                lambda p: p["files"]["converted.txt"].update(blob_sha256="0" * 64),
+                lambda p: p["files"]["converted.txt"].update(disk_bytes=99),
+                lambda p: p["files"]["converted.txt"].update(conversion="normalize"),
+                lambda p: p["files"].update({"../outside": deepcopy(
+                    p["files"]["converted.txt"])}),
+            ):
+                changed = deepcopy(proof)
+                mutate(changed)
+                with self.subTest(mutate=mutate), self.assertRaises(profile.ReplayError):
+                    profile._verify_checkout_source(manifest, plan, files, changed,
+                                                    root, allowed)
+            (root / "converted.txt").write_bytes(b"one\r\nchanged\r\n")
+            with self.assertRaisesRegex(profile.ReplayError,
+                                        "original_checkout_bytes_changed"):
+                profile._verify_checkout_source(manifest, plan, files, proof,
+                                                root, allowed)
+            (root / "converted.txt").write_bytes(converted)
+            changed_files = {**files, "converted.txt": profile._digest(b"one\r\nchanged\r\n")}
+            with self.assertRaisesRegex(profile.ReplayError,
+                                        "checkout_projection_invalid"):
+                profile._verify_checkout_source(manifest, plan, changed_files,
+                                                proof, root, allowed)
+            with self.assertRaisesRegex(profile.ReplayError,
+                                        "checkout_projection_subject_mismatch"):
+                profile._verify_checkout_source(manifest, plan, files, proof,
+                                                root, frozenset({"scripts/cg_hook.py"}))
+
+    def test_checkout_projection_descriptor_rejects_unlisted_fields(self):
+        base = {key: None for key in profile.REPLAY_FIELDS}
+        self.assertIsNone(profile._projection_descriptor(base))
+        for changed in ({**base, "unexpected": {}},
+                        {**base, "checkout_projection": {"path": "/tmp"}}):
+            with self.assertRaises(profile.ReplayError):
+                profile._projection_descriptor(changed)
+
+    def test_failed_product_hook_blocks_replay_even_if_other_chain_observed(self):
+        plan = {"hook_source": "/installed/hooks.json"}
+        def row(source, status):
+            return {"direction": "receive", "raw": {"method": "hook/completed",
+                    "params": {"threadId": "thread", "run": {
+                        "sourcePath": source, "source": "plugin", "status": status}}}}
+        good = [row(plan["hook_source"], "completed"),
+                row("/other/hooks.json", "failed")]
+        profile._verify_product_hook_outcomes(good, plan, "thread")
+        with self.assertRaisesRegex(profile.ReplayError, "product_hook_failed"):
+            profile._verify_product_hook_outcomes(
+                good + [row(plan["hook_source"], "failed")], plan, "thread")
 
     def test_official_hook_readback_requires_roles_events_and_trust(self):
         product_events = ("preToolUse", "postToolUse", "preCompact",

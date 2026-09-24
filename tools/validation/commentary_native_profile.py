@@ -28,6 +28,13 @@ GATES = ("host_identity", "official_hook_trust", "answer_delivery",
          "post_answer_business", "auto_compaction", "cold_recovery",
          "owned_cleanup")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+REPLAY_FIELDS = {"schema", "original_source_commit", "plan", "result",
+                 "journal", "later_cold_receipt", "source_manifest", "closures"}
+PROJECTION_SCHEMA = "checkout-byte-projection/v1"
+WINDOWS_CRLF_PATHS = frozenset({
+    ".codexignore", ".gitattributes", ".gitignore", "LICENSE",
+    "pyproject.toml", "requirements-lock.txt", "uv.lock",
+})
 
 
 class ReplayError(ValueError):
@@ -134,6 +141,80 @@ def _object(raw: bytes) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ReplayError("expected_json_object")
     return value
+
+
+def _projection_descriptor(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    fields = set(manifest)
+    if fields not in (REPLAY_FIELDS, REPLAY_FIELDS | {"checkout_projection"}):
+        raise ReplayError("invalid_replay_manifest")
+    descriptor = manifest.get("checkout_projection")
+    if descriptor is not None and (not isinstance(descriptor, dict)
+                                   or set(descriptor) != {"path", "sha256"}):
+        raise ReplayError("invalid_checkout_projection_descriptor")
+    return descriptor
+
+
+def _verify_checkout_source(manifest: dict[str, Any], plan: dict[str, Any],
+                            source_files: dict[str, str],
+                            projection: dict[str, Any] | None,
+                            repo_root: Path,
+                            allowed_crlf_paths: frozenset[str] = WINDOWS_CRLF_PATHS) -> None:
+    """Bind original disk bytes and Git blobs through explicit LF to CRLF proof."""
+    declared = {}
+    if projection is not None:
+        if (set(projection) != {"schema", "source_commit", "source_manifest_sha256",
+                                "source_tree_sha256", "files"}
+                or projection["schema"] != PROJECTION_SCHEMA
+                or projection["source_commit"] != manifest["original_source_commit"]
+                or projection["source_manifest_sha256"]
+                != manifest["source_manifest"]["sha256"]
+                or projection["source_tree_sha256"] != plan["source_tree_sha256"]
+                or not isinstance(projection["files"], dict)
+                or set(projection["files"]) != allowed_crlf_paths):
+            raise ReplayError("checkout_projection_subject_mismatch")
+        declared = projection["files"]
+        original_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=Path(plan["harness_root"]),
+            capture_output=True, text=True, check=False)
+        if (original_head.returncode
+                or original_head.stdout.strip() != manifest["original_source_commit"]):
+            raise ReplayError("original_checkout_commit_changed")
+    mismatched = set()
+    for name, disk_digest in source_files.items():
+        blob = subprocess.run(
+            ["git", "show", manifest["original_source_commit"] + ":" + name],
+            cwd=repo_root, capture_output=True, check=False)
+        if blob.returncode:
+            raise ReplayError("original_commit_source_missing")
+        if _digest(blob.stdout) == disk_digest:
+            if name in declared:
+                raise ReplayError("unneeded_checkout_projection")
+            continue
+        mismatched.add(name)
+        item = declared.get(name)
+        if (not isinstance(item, dict)
+                or set(item) != {"conversion", "blob_sha256", "disk_sha256",
+                                 "blob_bytes", "disk_bytes"}
+                or item["conversion"] != "lf_to_crlf_exact"
+                or item["blob_sha256"] != _digest(blob.stdout)
+                or item["disk_sha256"] != disk_digest
+                or type(item["blob_bytes"]) is not int
+                or item["blob_bytes"] != len(blob.stdout)
+                or type(item["disk_bytes"]) is not int
+                or not blob.stdout or b"\n" not in blob.stdout
+                or b"\r" in blob.stdout or b"\0" in blob.stdout
+                or blob.stdout.startswith(b"\xef\xbb\xbf")):
+            raise ReplayError("checkout_projection_invalid")
+        converted = blob.stdout.replace(b"\n", b"\r\n")
+        if (item["disk_bytes"] != len(converted)
+                or _digest(converted) != disk_digest):
+            raise ReplayError("checkout_projection_not_exact_crlf")
+        original_disk = _read_unpinned(Path(plan["harness_root"]) / name,
+                                       32 * 1024 * 1024)
+        if original_disk != converted:
+            raise ReplayError("original_checkout_bytes_changed")
+    if set(declared) != mismatched:
+        raise ReplayError("checkout_projection_path_set_mismatch")
 
 
 def _gate(name: str, status: str, reason: str | None = None) -> dict[str, Any]:
@@ -285,8 +366,28 @@ def _official_codex_version(initialized: dict[str, Any], home: str) -> str:
     return match.group(1) if match else "unknown"
 
 
-def _verify_owned_cleanup(result: dict[str, Any]) -> None:
+def _official_host_os(initialized: dict[str, Any], local_os: str) -> str:
+    """Require the official initialize response to agree with the replay host."""
+    agent = initialized.get("userAgent")
+    if not isinstance(agent, str):
+        raise ReplayError("official_host_os_missing")
+    names = {"Windows": "windows", "Mac OS": "darwin",
+             "macOS": "darwin", "Darwin": "darwin", "Linux": "linux"}
+    observed = {target for name, target in names.items() if name in agent}
+    if len(observed) != 1 or local_os not in observed:
+        raise ReplayError("official_host_os_mismatch")
+    return local_os
+
+
+def _verify_owned_cleanup(result: dict[str, Any], host_os: str,
+                          source_files: dict[str, str], mapper_root: Path) -> None:
     cleanup = result.get("cleanup", {})
+    process_tree = "scripts/cg_process_tree.py"
+    if (host_os not in {"windows", "darwin", "linux"}
+            or source_files.get(process_tree)
+            != _digest(_read_unpinned(mapper_root / process_tree, 2 * 1024 * 1024))):
+        raise ReplayError("owned_cleanup_source_or_host_unbound")
+    group_absent = None if host_os == "windows" else True
     if (result.get("status") != "source_chain_observed"
             or result.get("phase") != "offline_chain_checked"
             or set(cleanup) != {"owned_process_exited", "process_group_kill_attempted",
@@ -298,7 +399,7 @@ def _verify_owned_cleanup(result: dict[str, Any]) -> None:
             or cleanup.get("process_group_kill_attempted") is not True
             or cleanup.get("owned_tree_empty") is not True
             or cleanup.get("owned_tree_no_running_members") is not True
-            or cleanup.get("process_group_absent") is not True
+            or cleanup.get("process_group_absent") is not group_absent
             or cleanup.get("process_group_cleanup_error") is not None
             or cleanup.get("process_group_signal_denied") is not False
             or cleanup.get("process_group_query_denied") is not False
@@ -306,18 +407,31 @@ def _verify_owned_cleanup(result: dict[str, Any]) -> None:
         raise ReplayError("owned_cleanup_failed")
 
 
+def _verify_product_hook_outcomes(rows: list[dict[str, Any]], plan: dict[str, Any],
+                                  thread: str) -> None:
+    product = [raw["params"]["run"] for raw in _notifications(rows, "hook/completed")
+               if raw.get("params", {}).get("threadId") == thread
+               and raw.get("params", {}).get("run", {}).get("sourcePath")
+               == plan["hook_source"]]
+    if any(not isinstance(run, dict) or run.get("source") != "plugin"
+           or run.get("status") != "completed" for run in product):
+        raise ReplayError("product_hook_failed")
+
+
 def preflight(manifest_path: Path, source_commit: str) -> None:
     """Check frozen local inputs without reading host state or starting a child."""
     manifest = _object(_read_unpinned(manifest_path, 8192))
-    if (set(manifest) != {"schema", "original_source_commit", "plan", "result",
-                         "journal", "later_cold_receipt", "source_manifest", "closures"}
-            or manifest["schema"] != SCHEMA
+    _projection_descriptor(manifest)
+    if (manifest["schema"] != SCHEMA
             or manifest["original_source_commit"] != source_commit):
         raise ReplayError("invalid_replay_manifest")
-    for name, limit in (("plan", 65536), ("result", 65536),
-                        ("journal", runner.MAX_JOURNAL),
-                        ("later_cold_receipt", 65536),
-                        ("source_manifest", 1024 * 1024)):
+    descriptors = [("plan", 65536), ("result", 65536),
+                   ("journal", runner.MAX_JOURNAL),
+                   ("later_cold_receipt", 65536),
+                   ("source_manifest", 1024 * 1024)]
+    if "checkout_projection" in manifest:
+        descriptors.append(("checkout_projection", 65536))
+    for name, limit in descriptors:
         item = manifest[name]
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
             raise ReplayError("invalid_input_descriptor")
@@ -335,15 +449,17 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     """Read the original run and return a new source-bound result; never start Codex."""
     manifest_raw = _read_unpinned(manifest_path, 8192)
     manifest = _object(manifest_raw)
-    if set(manifest) != {"schema", "original_source_commit", "plan", "result",
-                         "journal", "later_cold_receipt", "source_manifest",
-                         "closures"} or manifest["schema"] != SCHEMA:
+    _projection_descriptor(manifest)
+    if manifest["schema"] != SCHEMA:
         raise ReplayError("invalid_replay_manifest")
     inputs = {}
-    for name, limit in (("plan", 65536), ("result", 65536),
-                        ("journal", runner.MAX_JOURNAL),
-                        ("later_cold_receipt", 65536),
-                        ("source_manifest", 1024 * 1024)):
+    descriptors = [("plan", 65536), ("result", 65536),
+                   ("journal", runner.MAX_JOURNAL),
+                   ("later_cold_receipt", 65536),
+                   ("source_manifest", 1024 * 1024)]
+    if "checkout_projection" in manifest:
+        descriptors.append(("checkout_projection", 65536))
+    for name, limit in descriptors:
         item = manifest[name]
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
             raise ReplayError("invalid_input_descriptor")
@@ -379,12 +495,11 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                 or ":" in name or "\\" in name
                 or not isinstance(digest, str) or not HEX64.fullmatch(digest)):
             raise ReplayError("unsafe_original_source_member")
-        object_bytes = subprocess.run(
-            ["git", "show", manifest["original_source_commit"] + ":" + name],
-            cwd=Path(__file__).resolve().parents[2], capture_output=True,
-            check=False)
-        if object_bytes.returncode or _digest(object_bytes.stdout) != digest:
-            raise ReplayError("original_commit_source_mismatch")
+    _verify_checkout_source(
+        manifest, plan, source_files,
+        _object(inputs["checkout_projection"])
+        if "checkout_projection" in inputs else None,
+        Path(__file__).resolve().parents[2])
     original_components = (
         "tools/validation/commentary_live_runner.py",
         "tools/validation/commentary_live_controller.py",
@@ -409,6 +524,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     initialize_request, initialize_response = _response(rows, "initialize")
     codex_version = _official_codex_version(initialize_response["result"],
                                              plan["codex_home"])
+    host_os = _official_host_os(initialize_response["result"],
+                                platform.system().lower())
     config_request, config_response = _response(rows, "config/read")
     thread_start, thread_response = _response(rows, "thread/start")
     turn_start, turn_response = _response(rows, "turn/start")
@@ -442,6 +559,7 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     data = _one(hook_response["result"].get("data", []), "wrong_hook_readback_count")
     _verify_hook_readback(data, plan)
     gates.append(_gate("official_hook_trust", "passed"))
+    _verify_product_hook_outcomes(rows, plan, thread)
     previous_home = os.environ.get("CODEX_HOME")
     previous_trace = os.environ.get("CODEX_ROLLOUT_TRACE_ROOT")
     final_product = None
@@ -690,7 +808,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = previous
-    _verify_owned_cleanup(result)
+    _verify_owned_cleanup(result, host_os, source_files,
+                          mapper_root)
     gates.append(_gate("owned_cleanup", "passed"))
     status = "passed" if all(g["status"] == "passed" for g in gates) else "pending"
     mapper_commit = subprocess.run(
