@@ -33,6 +33,36 @@ APPROVAL_FIELDS = {
 }
 
 
+def exact_suite_approval(raw, *, started, plan, thread, turn):
+    """Approve only the pinned current command, without accepting amendments."""
+    params = raw.get("params")
+    if (raw.get("method") != "item/commandExecution/requestApproval"
+            or started is None or type(raw.get("id")) is not int
+            or raw["id"] < 0 or not isinstance(params, dict)
+            or set(params) - APPROVAL_FIELDS):
+        raise ValueError("unreviewed_server_request")
+    suite_oracle.suite_item_identity(started, plan)
+    permissions = params.get("additionalPermissions")
+    network = params.get("networkApprovalContext")
+    network_rules = params.get("proposedNetworkPolicyAmendments")
+    decisions = params.get("availableDecisions")
+    if (params.get("threadId") != thread
+            or params.get("turnId") != turn
+            or params.get("itemId") != started["id"]
+            or params.get("command") != started["command"]
+            or params.get("cwd") != started["cwd"]
+            or params.get("commandActions") != started["commandActions"]
+            or params.get("kind") != "command"
+            or params.get("environmentId") != "local"
+            or type(params.get("startedAtMs")) is not int
+            or permissions not in (None, {}) or network is not None
+            or network_rules not in (None, [])
+            or params.get("approvalId") is not None
+            or not isinstance(decisions, list) or decisions.count("accept") != 1):
+        raise ValueError("unreviewed_suite_approval")
+    return {"id": raw["id"], "result": {"decision": "accept"}}
+
+
 class Controller:
     def __init__(self, plan, observer):
         self.plan = plan
@@ -214,35 +244,15 @@ class Controller:
 
     def _suite_approval(self, raw):
         """Answer only the one already-authorized, exact suite command."""
-        params = raw.get("params")
         started = self.suite_item_started
         if (self.phase not in SUITE_PHASES or not self.business_reply_sent
                 or started is None or self.suite_item_completed
-                or self.suite_approval_sent or type(raw.get("id")) is not int
-                or raw["id"] < 0 or not isinstance(params, dict)
-                or set(params) - APPROVAL_FIELDS):
+                or self.suite_approval_sent):
             raise ValueError("unreviewed_server_request")
-        suite_oracle.suite_item_identity(started, self.plan)
-        permissions = params.get("additionalPermissions")
-        network = params.get("networkApprovalContext")
-        network_rules = params.get("proposedNetworkPolicyAmendments")
-        decisions = params.get("availableDecisions")
-        if (params.get("threadId") != self.thread
-                or params.get("turnId") != self.turn
-                or params.get("itemId") != started["id"]
-                or params.get("command") != started["command"]
-                or params.get("cwd") != started["cwd"]
-                or params.get("commandActions") != started["commandActions"]
-                or params.get("kind") != "command"
-                or params.get("environmentId") != "local"
-                or type(params.get("startedAtMs")) is not int
-                or permissions not in (None, {}) or network is not None
-                or network_rules not in (None, [])
-                or params.get("approvalId") is not None
-                or not isinstance(decisions, list) or decisions.count("accept") != 1):
-            raise ValueError("unreviewed_suite_approval")
+        response = exact_suite_approval(raw, started=started, plan=self.plan,
+                                        thread=self.thread, turn=self.turn)
         self.suite_approval_sent = True
-        self.outbox.append({"id": raw["id"], "result": {"decision": "accept"}})
+        self.outbox.append(response)
 
     def try_answer(self):
         if self.phase != "awaiting_answer_evidence":

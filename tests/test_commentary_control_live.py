@@ -1,6 +1,8 @@
 """Synthetic app-server boundaries for the bounded C2 collector; no model."""
 
+import hashlib
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -32,6 +34,157 @@ class _Observer:
 
 
 class C2ControllerTests(unittest.TestCase):
+    def approval_fixture(self):
+        script = self.root / "suite.py"
+        script.write_bytes((
+            "import unittest\n\nVALUES = tuple(range(-64, 64))\n\n"
+            "class SquareFixture(unittest.TestCase):\n"
+            "    def test_squared_rows(self):\n"
+            "        rows = [value * value for value in VALUES]\n"
+            "        self.assertEqual(len(rows), 128)\n"
+            "        self.assertEqual(rows[0], 4096)\n"
+            "        self.assertEqual(rows[-1], 3969)\n"
+            "        self.assertEqual(sum(rows), 174784)\n\n"
+            "if __name__ == \"__main__\":\n"
+            "    unittest.main()\n").encode())
+        python = sys.executable
+        if os.name == "nt":
+            action = f"& '{python}' '{script}'"
+            outer = f'"C:\\\\Synthetic\\\\pwsh.exe" -Command "{action.replace(chr(92), chr(92) * 2)}"'
+            platform = "windows"
+        else:
+            action = f"{python} {script}"
+            outer = f"/bin/zsh -lc '{action}'"
+            platform = "posix"
+        plan = {**self.plan, "cwd": str(self.root),
+                "developer_instructions": control_live.C2_INSTRUCTIONS.format(
+                    suite_action=action),
+                "suite_oracle": {"path": str(script),
+                                 "sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+                                 "platform": platform, "allowed_python": [python],
+                                 "allowed_outer_commands": [outer]}}
+        item = {"type": "commandExecution", "id": "suite-item", "command": outer,
+                "commandActions": [{"type": "unknown", "command": action}],
+                "cwd": str(self.root), "status": "inProgress"}
+        return plan, item
+
+    def test_exact_suite_approval_requires_business_send_and_current_third_turn(self):
+        plan, item = self.approval_fixture()
+        self.assertIsNotNone(control_live._approval_suite_plan(plan))
+        controller = C2Controller(plan, self.observer, self.oracle)
+        controller.thread, controller.turn = "thread", "turn-3"
+        controller.turn_index, controller.phase = 2, "active_turn"
+        controller.challenge = {"nonce": "a" * 64}
+        controller.business_source = {"source": "synthetic"}
+        controller.business_request_id = 42
+        controller.oracle.stage = "passed"
+        started = {"method": "item/started", "params": {
+            "threadId": "thread", "turnId": "turn-3", "item": item}}
+        approval = {"id": 99, "method": "item/commandExecution/requestApproval",
+                    "params": {"threadId": "thread", "turnId": "turn-3",
+                               "itemId": item["id"], "command": item["command"],
+                               "commandActions": deepcopy(item["commandActions"]),
+                               "cwd": item["cwd"], "kind": "command",
+                               "environmentId": "local", "startedAtMs": 100,
+                               "availableDecisions": ["accept", "cancel"],
+                               "proposedExecpolicyAmendment": ["unused"]}}
+        with self.assertRaises(ValueError):
+            controller.ingest(approval)
+        with self.assertRaises(ValueError):
+            controller.ingest(started)
+
+        class Transport:
+            def __init__(self, fail):
+                self.fail = fail
+
+            def send(self, _row, *, timeout):
+                if self.fail:
+                    raise OSError("synthetic send failure")
+
+        response = {"id": 42, "result": {"contentItems": [], "success": True}}
+        controller.business_response = response
+        with self.assertRaisesRegex(ValueError,
+                                    "control_business_reply_send_out_of_order"):
+            controller.sent({"id": 42, "result": {"contentItems": ["changed"]}})
+        self.assertFalse(controller.business_reply_sent)
+        recorded = []
+        with self.assertRaises(OSError):
+            control_live._send_with_receipt(
+                [response], Transport(True), lambda *row: recorded.append(row),
+                controller)
+        self.assertEqual([row[0] for row in recorded], ["send"])
+        self.assertFalse(controller.business_reply_sent)
+        control_live._send_with_receipt(
+            [response], Transport(False), lambda *row: recorded.append(row), controller)
+        self.assertTrue(controller.business_reply_sent)
+        self.assertEqual(recorded[-1][0], "send_complete")
+        self.assertEqual(controller.ingest(started), [])
+        for change in (
+            lambda p: p.update(threadId="foreign"),
+            lambda p: p.update(turnId="foreign"),
+            lambda p: p.update(itemId="foreign"),
+            lambda p: p.update(cwd="foreign"),
+            lambda p: p.update(command="other"),
+            lambda p: p["commandActions"][0].update(command="other"),
+            lambda p: p.update(availableDecisions=["cancel"]),
+            lambda p: p.update(availableDecisions=[
+                {"acceptWithExecpolicyAmendment": {"execpolicy_amendment": []}}]),
+            lambda p: p.update(additionalPermissions={"fs": "all"}),
+            lambda p: p.update(networkApprovalContext={"host": "example.test"}),
+            lambda p: p.update(unknownAuthority=True),
+        ):
+            changed = deepcopy(approval)
+            change(changed["params"])
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                controller.ingest(changed)
+            self.assertFalse(controller.suite_approval_sent)
+        self.assertEqual(controller.ingest(approval),
+                         [{"id": 99, "result": {"decision": "accept"}}])
+        with self.assertRaises(ValueError):
+            controller.ingest(approval)
+        completed = deepcopy(started)
+        completed["method"] = "item/completed"
+        completed["params"]["item"]["status"] = "completed"
+        controller.ingest(completed)
+        with self.assertRaises(ValueError):
+            controller.ingest(approval)
+        with self.assertRaises(ValueError):
+            control_live._approval_suite_plan({**plan, "suite_oracle": {
+                **plan["suite_oracle"], "allowed_outer_commands": ["other"]}})
+
+    def test_wrong_nonce_never_reaches_suite_approval(self):
+        self.controller.turn_index = 2
+        self.controller.phase = "active_turn"
+        self.controller.challenge = {"nonce": "a" * 64}
+        with self.assertRaisesRegex(ValueError,
+                                    "premature_duplicate_or_unbound_business"):
+            self.controller._server_request(self.call(
+                55, wire.BUSINESS, {"nonce": "b" * 64}))
+        self.assertIsNone(self.controller.business_call)
+        self.assertFalse(self.controller.business_reply_sent)
+
+    def test_legacy_c2_command_notifications_remain_readable_without_approval(self):
+        self.controller.turn_index = 2
+        self.controller.turn = "turn-exact"
+        self.controller.phase = "active_turn"
+        self.controller.business_reply_sent = True
+        item = {"type": "commandExecution", "id": "legacy-suite",
+                "status": "inProgress"}
+        started = {"method": "item/started", "params": {
+            "threadId": self.controller.thread, "turnId": self.controller.turn,
+            "item": item}}
+        completed = deepcopy(started)
+        completed["method"] = "item/completed"
+        completed["params"]["item"]["status"] = "completed"
+        self.assertEqual(self.controller.ingest(started), [])
+        self.assertEqual(self.controller.ingest(completed), [])
+        with self.assertRaisesRegex(ValueError,
+                                    "unreviewed_control_suite_approval"):
+            self.controller.ingest({
+                "id": 12, "method": "item/commandExecution/requestApproval",
+                "params": {"threadId": self.controller.thread,
+                           "turnId": self.controller.turn, "itemId": item["id"]}})
+
     def test_output_contract_requires_exact_status_messages_before_host(self):
         root = ROOT_REPLY
         exact = EXACT_REPLY

@@ -9,6 +9,7 @@ model behavior or replace a versioned native-acceptance result.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -21,13 +22,14 @@ from scripts import context_guard as product
 from tools.validation import commentary_fixture as fixture
 from tools.validation import commentary_live_adapter as wire
 from tools.validation import commentary_live_runner as runner
+from tools.validation import commentary_suite_oracle as suite_oracle
 from tools.validation.commentary_controls import (
     ControlOracle,
     c2_future_preserved,
     c2_root_sources,
     c2_wait_status,
 )
-from tools.validation.commentary_live_controller import Controller
+from tools.validation.commentary_live_controller import Controller, exact_suite_approval
 from tools.validation.commentary_live_observer import NativeObserver, PendingEvidence
 
 SCHEMA = "cg-commentary-control-native-plan/v1"
@@ -64,6 +66,28 @@ def _validate_output_instructions(instructions: str, cwd: str) -> None:
     action = runner.frozen_suite_action(instructions, cwd)
     if action is None or instructions != C2_INSTRUCTIONS.format(suite_action=action):
         raise ValueError("control_output_contract_missing")
+
+
+def _approval_suite_plan(plan: dict) -> dict | None:
+    """Bind a future C2 approval to the literal action in its frozen prompt."""
+    suite = plan.get("suite_oracle")
+    if suite is None:
+        return None
+    action = runner.frozen_suite_action(plan["developer_instructions"], plan["cwd"])
+    if action is None or not isinstance(suite, dict):
+        raise ValueError("control_suite_contract_missing")
+    platform = suite.get("platform")
+    argv = suite_oracle._action_argv(action, platform)
+    if (argv is None or len(argv) != 2
+            or suite.get("allowed_python") != [argv[0]]
+            or suite.get("path") != argv[1]
+            or type(suite.get("allowed_outer_commands")) is not list
+            or len(suite["allowed_outer_commands"]) != 1):
+        raise ValueError("control_suite_contract_missing")
+    root = f"请运行 {suite['path']} 的测试并持续执行直到任务完成。"
+    adapted = {**plan, "root_prompt": root, "main_requirement_text": root}
+    suite_oracle.validate_suite_plan(adapted)
+    return adapted
 
 
 def load_plan(path: Path) -> dict:
@@ -137,6 +161,7 @@ def load_plan(path: Path) -> dict:
                    for key, value in common["selected_hook_hashes"].items())):
         raise ValueError("frozen_control_hooks_required")
     plan["question_client_id"] = plan["general_client_id"]
+    _approval_suite_plan(plan)
     return plan
 
 
@@ -169,6 +194,13 @@ class C2Controller(Controller):
         self.stage_deadline = None
         self.call_ids: set[str] = set()
         self.deferred_control: list[dict] = []
+        self.approval_plan = _approval_suite_plan(plan)
+        self.business_request_id = None
+        self.business_response = None
+        self.business_reply_sent = False
+        self.suite_item_started = None
+        self.suite_item_completed = False
+        self.suite_approval_sent = False
 
     def start(self):
         self.stage_deadline = time.monotonic() + 60
@@ -219,6 +251,19 @@ class C2Controller(Controller):
     def _server_request(self, raw):
         if self.phase != "active_turn" or self.turn is None:
             raise ValueError("control_tool_out_of_turn")
+        if raw.get("method") == "item/commandExecution/requestApproval":
+            if (self.turn_index != 2 or self.approval_plan is None
+                    or self.challenge is None or self.business_source is None
+                    or self.oracle.stage != "passed" or not self.business_reply_sent
+                    or self.suite_item_started is None or self.suite_item_completed
+                    or self.suite_approval_sent):
+                raise ValueError("unreviewed_control_suite_approval")
+            response = exact_suite_approval(
+                raw, started=self.suite_item_started, plan=self.approval_plan,
+                thread=self.thread, turn=self.turn)
+            self.suite_approval_sent = True
+            self.outbox.append(response)
+            return
         call = wire.parse_call(raw, thread=self.thread, turn=self.turn)
         if call.call_id in self.call_ids:
             raise ValueError("reused_control_call_id")
@@ -251,7 +296,8 @@ class C2Controller(Controller):
 
     def _notification(self, raw):
         method = raw.get("method")
-        if method not in {"item/completed", "hook/completed", "turn/completed"}:
+        if method not in {"item/started", "item/completed", "hook/completed",
+                          "turn/completed"}:
             return
         if self.thread is None or self.turn is None:
             if len(self.deferred_control) >= 128:
@@ -270,6 +316,19 @@ class C2Controller(Controller):
             raise ValueError("foreign_control_notification")
         if method == "hook/completed":
             return
+        if method == "item/started":
+            item = params.get("item", {})
+            if isinstance(item, dict) and item.get("type") == "commandExecution":
+                if self.approval_plan is None:
+                    return
+                if (self.turn_index != 2 or self.phase != "active_turn"
+                        or not self.business_reply_sent
+                        or self.suite_item_started is not None
+                        or item.get("status") != "inProgress"):
+                    raise ValueError("unreviewed_control_command_start")
+                suite_oracle.suite_item_identity(item, self.approval_plan)
+                self.suite_item_started = copy.deepcopy(item)
+            return
         if method == "item/completed":
             item = params.get("item", {})
             if item.get("type") == "userMessage":
@@ -286,6 +345,14 @@ class C2Controller(Controller):
                 "commandExecution", "fileChange", "webSearch", "mcpToolCall",
             }:
                 raise ValueError("business_tool_before_confirmation")
+            elif item.get("type") == "commandExecution" and self.approval_plan is not None:
+                if (self.turn_index != 2 or self.suite_item_started is None
+                        or self.suite_item_completed
+                        or item.get("id") != self.suite_item_started["id"]
+                        or item.get("status") != "completed"):
+                    raise ValueError("unreviewed_control_command_completion")
+                suite_oracle.suite_item_identity(item, self.approval_plan)
+                self.suite_item_completed = True
             return
         completed = params.get("turn")
         if (not isinstance(completed, dict)
@@ -343,7 +410,9 @@ class C2Controller(Controller):
                 return []
             value, _report = fixture.business_result(self.plan["values"], self.challenge)
             fixture.exclusive(Path(self.plan["run_dir"]) / "business-result.json", value)
-            self.outbox.append(wire.response(self.business_call, value))
+            self.business_response = wire.response(self.business_call, value)
+            self.outbox.append(self.business_response)
+            self.business_request_id = self.business_call.request_id
             self.oracle.c2_business(
                 now_ns=time.monotonic_ns(), call_id=self.business_call.call_id,
                 nonce=self.business_call.arguments["nonce"],
@@ -391,10 +460,21 @@ class C2Controller(Controller):
             c2_future_preserved(self._product_state(), self.plan["root_prompt"],
                                 self.root_sources["future_id"],
                                 Path(self.plan["future_path"]))
-            if self.messages[2] != [EXACT_REPLY] or self.oracle.stage != "passed":
+            if (self.messages[2] != [EXACT_REPLY] or self.oracle.stage != "passed"
+                    or (self.approval_plan is not None
+                        and not self.suite_item_completed)):
                 raise ValueError("exact_status_or_business_unfit")
             self.phase = "complete"
         return self.drain()
+
+    def sent(self, row: dict) -> None:
+        """Release suite approval only after the business response was written."""
+        if self.business_request_id is None or row.get("id") != self.business_request_id:
+            return
+        if (self.phase != "active_turn" or self.business_reply_sent
+                or self.business_source is None or row != self.business_response):
+            raise ValueError("control_business_reply_send_out_of_order")
+        self.business_reply_sent = True
 
 
 def collect(plan: dict, *, execute: bool) -> dict:
@@ -436,10 +516,7 @@ def collect(plan: dict, *, execute: bool) -> dict:
                 journal.flush()
 
             def send_all(rows):
-                for row in rows:
-                    record("send", row)
-                    transport.send(row, timeout=10)
-                    record("send_complete", row)
+                _send_with_receipt(rows, transport, record, controller)
 
             send_all(controller.start())
             while time.monotonic() < deadline - budget.cleanup:
@@ -497,6 +574,15 @@ def collect(plan: dict, *, execute: bool) -> dict:
                 else:
                     os.environ[name] = prior
     return result
+
+
+def _send_with_receipt(rows, transport, record, controller):
+    """A failed transport write must never authorize a later suite request."""
+    for row in rows:
+        record("send", row)
+        transport.send(row, timeout=10)
+        record("send_complete", row)
+        controller.sent(row)
 
 
 def main(argv=None):

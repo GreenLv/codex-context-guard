@@ -45,6 +45,10 @@ class CommentaryControlNativeProfileTests(unittest.TestCase):
                 widened = {**spec, "allowed_python": [str(python), str(root / "other")]}
                 with self.assertRaises(ValueError):
                     profile._suite_adapter({"suite_oracle": widened}, original)
+                with self.assertRaisesRegex(ValueError, "suite_adapter_not_frozen"):
+                    profile._suite_adapter({"suite_oracle": spec},
+                                           {**original, "suite_oracle": {
+                                               **spec, "allowed_outer_commands": ["foreign"]}})
 
     def test_official_items_bind_both_thread_and_turn(self):
         with tempfile.TemporaryDirectory() as temporary:

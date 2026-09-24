@@ -197,7 +197,8 @@ def _suite_adapter(manifest: dict, plan: dict) -> dict:
             or not isinstance(suite["allowed_outer_commands"], list)
             or len(suite["allowed_outer_commands"]) != 1
             or suite["path"] != str(Path(plan["cwd"]) / "suite.py")
-            or suite["sha256"] != commentary_suite_oracle.SUITE_FIXTURE_SHA256):
+            or suite["sha256"] != commentary_suite_oracle.SUITE_FIXTURE_SHA256
+            or ("suite_oracle" in plan and plan["suite_oracle"] != suite)):
         _fail("suite_adapter_not_frozen")
     python = suite["allowed_python"][0]
     if not isinstance(python, str) or not Path(python).is_absolute():
