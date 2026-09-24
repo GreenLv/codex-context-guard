@@ -263,6 +263,9 @@ def authorized_home(record, pin, subject, home):
 
 def require_idle_home(home):
     """Bounded native open-file observation, not a security/exclusivity proof."""
+    if sys.platform == 'win32':
+        _require_windows_home_without_conflicting_handles(home)
+        return
     if sys.platform != 'darwin':
         raise Rejected('authenticated_home_observation_unavailable')
     result = subprocess.run(['/usr/sbin/lsof', '-nP', '+D', str(home), '-F', 'p'],
@@ -274,6 +277,104 @@ def require_idle_home(home):
         raise Rejected('home_activity_observation_unknown')
     if any(int(row[1:]) != os.getpid() for row in rows):
         raise Rejected('target_home_has_active_process')
+
+
+def _windows_home_entries(home, *, deadline, max_entries=8192):
+    """List a bounded, non-reparse tree without reading file contents."""
+    pending = [safe_path(home)]
+    entries = []
+    while pending:
+        if time.monotonic() >= deadline or len(entries) + len(pending) > max_entries:
+            raise Rejected('home_activity_observation_unknown')
+        path = safe_path(pending.pop())
+        try:
+            info = path.stat(follow_symlinks=False)
+            if (getattr(info, 'st_file_attributes', 0) & 0x400
+                    or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
+                raise Rejected('home_activity_observation_unknown')
+            is_dir = stat.S_ISDIR(info.st_mode)
+            entries.append((path, is_dir))
+            if is_dir:
+                with os.scandir(path) as listing:
+                    children = []
+                    for item in listing:
+                        if (time.monotonic() >= deadline
+                                or len(entries) + len(pending) + len(children) >= max_entries):
+                            raise Rejected('home_activity_observation_unknown')
+                        children.append(Path(item.path))
+                pending.extend(children)
+        except (OSError, ValueError) as exc:
+            raise Rejected('home_activity_observation_unknown') from exc
+    return entries
+
+
+class _WindowsFileApi:
+    """Narrow injectable Win32 surface; no process or credential enumeration."""
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes = ctypes
+        self.invalid_handle = ctypes.c_void_p(-1).value
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        self.create = kernel.CreateFileW
+        self.create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                wintypes.HANDLE)
+        self.create.restype = wintypes.HANDLE
+        self.close = kernel.CloseHandle
+        self.close.argtypes = (wintypes.HANDLE,)
+        self.close.restype = wintypes.BOOL
+        self.information = kernel.GetFileInformationByHandleEx
+        self.information.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                     wintypes.DWORD)
+        self.information.restype = wintypes.BOOL
+        class AttributeTag(ctypes.Structure):
+            _fields_ = [('attributes', wintypes.DWORD), ('reparse_tag', wintypes.DWORD)]
+        self.attribute_tag = AttributeTag
+
+    def attributes(self, handle):
+        observed = self.attribute_tag()
+        if not self.information(handle, 9, self.ctypes.byref(observed),
+                                self.ctypes.sizeof(observed)):
+            raise Rejected('home_activity_observation_unknown')
+        return observed.attributes
+
+    def last_error(self):
+        return self.ctypes.get_last_error()
+
+
+def _win32_open_exclusive(path, is_dir, api):
+    """Observe conflicting data/list handles on one existing path."""
+    flags = 0x00200000 | (0x02000000 if is_dir else 0)
+    handle = api.create(str(path), 0x0001, 0, None, 3, flags, None)
+    if handle == api.invalid_handle:
+        if api.last_error() == 32:
+            raise Rejected('target_home_has_active_process')
+        raise Rejected('home_activity_observation_unknown')
+    try:
+        _verify_opened_windows_attributes(api.attributes(handle), is_dir)
+    finally:
+        if not api.close(handle):
+            raise Rejected('home_activity_observation_unknown')
+
+
+def _verify_opened_windows_attributes(attributes, is_dir):
+    if (attributes & 0x400 or bool(attributes & 0x10) != is_dir):
+        raise Rejected('home_activity_observation_unknown')
+
+
+def _require_windows_home_without_conflicting_handles(home, *, api=None):
+    """Advisory scan of enumerable conflicts, not a hard-timeout or global idle proof."""
+    deadline = time.monotonic() + 20
+    entries = _windows_home_entries(home, deadline=deadline)
+    api = api or _WindowsFileApi()
+    for path, is_dir in entries:
+        if time.monotonic() >= deadline:
+            raise Rejected('home_activity_observation_unknown')
+        _win32_open_exclusive(path, is_dir, api)
+    if time.monotonic() >= deadline:
+        raise Rejected('home_activity_observation_unknown')
 
 
 def install(*, root, home, transaction, manifest, source_pin, runtime_pin, namespace, binary,
@@ -379,6 +480,8 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                 'name': 'context-guard', 'source': {'source': 'local', 'path': './product'},
                 'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}}]})
             try:
+                if scoped:
+                    idle_checker(home)
                 added = cli.call('plugin', 'marketplace', 'add', str(product.parent), '--json')
                 observed = config_snapshot(config)
                 expected = namespace_config_delta(before, observed, namespace, product.parent)

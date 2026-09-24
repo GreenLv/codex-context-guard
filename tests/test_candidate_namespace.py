@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.validation import candidate_namespace as candidate
 
@@ -150,7 +151,7 @@ class NamespaceTests(unittest.TestCase):
         args = {**self.args, 'authorization': path, 'authorization_pin': candidate.digest(path.read_bytes()),
                 'idle_checker': lambda home: observations.append(home)}
         self.assertEqual(candidate.install(**args, apply=True)['status'], 'installed')
-        self.assertEqual(observations, [self.home, self.home])
+        self.assertEqual(observations, [self.home] * 3)
         self.assertEqual(candidate.install(**args, apply=True)['status'], 'strict_noop')
         self.unchanged()
 
@@ -189,6 +190,115 @@ class NamespaceTests(unittest.TestCase):
                               idle_checker=occupied, apply=True)
         self.assertFalse(self.args['transaction'].exists())
         self.unchanged()
+
+    def test_windows_idle_observation_covers_each_file_and_directory_without_content_read(self):
+        child = self.home / 'nested'
+        child.mkdir()
+        (child / 'sample.txt').write_text('synthetic')
+        observed = []
+        with mock.patch.object(candidate, '_win32_open_exclusive',
+                               side_effect=lambda path, is_dir, api: observed.append((path, is_dir))):
+            candidate._require_windows_home_without_conflicting_handles(self.home, api=object())
+        self.assertIn((self.home, True), observed)
+        self.assertIn((child, True), observed)
+        self.assertIn((child / 'sample.txt', False), observed)
+        with mock.patch.object(candidate, '_win32_open_exclusive',
+                               side_effect=candidate.Rejected('target_home_has_active_process')):
+            with self.assertRaisesRegex(candidate.Rejected, 'active_process'):
+                candidate._require_windows_home_without_conflicting_handles(self.home,
+                                                                             api=object())
+
+    def test_windows_exclusive_open_closes_every_created_handle_and_classifies_errors(self):
+        class FakeApi:
+            invalid_handle = -1
+            handle = 17
+            error = 0
+            attributes_value = 0x10
+            attributes_error = False
+            close_ok = True
+
+            def __init__(self):
+                self.calls = []
+
+            def create(self, *args):
+                self.calls.append(('create', args))
+                return self.handle
+
+            def last_error(self):
+                return self.error
+
+            def attributes(self, handle):
+                self.calls.append(('attributes', handle))
+                if self.attributes_error:
+                    raise candidate.Rejected('home_activity_observation_unknown')
+                return self.attributes_value
+
+            def close(self, handle):
+                self.calls.append(('close', handle))
+                return self.close_ok
+
+        api = FakeApi()
+        candidate._win32_open_exclusive(self.home, True, api)
+        self.assertEqual(api.calls[0][1][1:6], (1, 0, None, 3, 0x02200000))
+        self.assertEqual([call[0] for call in api.calls], ['create', 'attributes', 'close'])
+        for error, reason in ((32, 'active_process'), (5, 'observation_unknown')):
+            api = FakeApi()
+            api.handle, api.error = -1, error
+            with self.subTest(error=error), self.assertRaisesRegex(candidate.Rejected, reason):
+                candidate._win32_open_exclusive(self.home, True, api)
+            self.assertEqual([call[0] for call in api.calls], ['create'])
+        for field, value in (('attributes_error', True), ('attributes_value', 0x410),
+                             ('close_ok', False)):
+            api = FakeApi()
+            setattr(api, field, value)
+            with self.subTest(field=field), self.assertRaisesRegex(candidate.Rejected,
+                                                                    'observation_unknown'):
+                candidate._win32_open_exclusive(self.home, True, api)
+            self.assertEqual([call[0] for call in api.calls], ['create', 'attributes', 'close'])
+        # A metadata-only directory handle can coexist with our exclusive open.
+        # This successful observation does not certify global HOME idleness.
+        api = FakeApi()
+        candidate._win32_open_exclusive(self.home, True, api)
+
+    def test_windows_tree_limit_stops_consuming_a_lazy_directory(self):
+        consumed = []
+        class Listing:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def __iter__(self):
+                for index in range(100):
+                    consumed.append(index)
+                    yield type('Entry', (), {'path': str(self_home / str(index))})()
+
+        self_home = self.home
+        with mock.patch.object(candidate.os, 'scandir', return_value=Listing()):
+            with self.assertRaisesRegex(candidate.Rejected, 'observation_unknown'):
+                candidate._windows_home_entries(self.home, deadline=time.monotonic() + 5,
+                                                max_entries=2)
+        self.assertEqual(len(consumed), 2)
+
+    def test_windows_idle_observation_fails_closed_on_links_limits_and_changed_type(self):
+        with self.assertRaisesRegex(candidate.Rejected, 'observation_unknown'):
+            candidate._windows_home_entries(self.home, deadline=time.monotonic() - 1)
+        with self.assertRaisesRegex(candidate.Rejected, 'observation_unknown'):
+            candidate._windows_home_entries(self.home, deadline=time.monotonic() + 5,
+                                            max_entries=1)
+        for attributes, is_dir in ((0x400, False), (0x410, True),
+                                   (0x10, False), (0, True)):
+            with self.subTest(attributes=attributes, is_dir=is_dir):
+                with self.assertRaisesRegex(candidate.Rejected, 'observation_unknown'):
+                    candidate._verify_opened_windows_attributes(attributes, is_dir)
+        link = self.home / 'linked'
+        try:
+            link.symlink_to(self.old, target_is_directory=False)
+        except OSError:
+            self.skipTest('host cannot create fixture symlink')
+        with self.assertRaisesRegex(candidate.Rejected, 'observation_unknown|linked_path'):
+            candidate._windows_home_entries(self.home, deadline=time.monotonic() + 5)
 
     def test_handled_partial_failure_retains_unattributed_config_and_cache(self):
         self.cli.failure = 'partial_cache'
