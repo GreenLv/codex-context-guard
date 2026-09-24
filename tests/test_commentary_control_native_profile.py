@@ -18,6 +18,30 @@ from tools.validation.host_capture import digest_echo
 
 
 class CommentaryControlNativeProfileTests(unittest.TestCase):
+    def test_c2_tied_legacy_clock_still_requires_rpc_causality(self):
+        request = {"id": 7, "method": "initialize"}
+        reply = {"id": 7, "result": {}}
+        rows = [
+            {"direction": "send", "raw": request, "monotonic_ns": 100},
+            {"direction": "send_complete", "raw": request,
+             "monotonic_ns": 100},
+            {"direction": "receive", "raw": reply, "monotonic_ns": 100},
+        ]
+
+        def parse(value):
+            raw = ("\n".join(json.dumps(row) for row in value) + "\n").encode()
+            return profile.common._rpc(raw, allow_legacy_equal_ticks=True)
+
+        self.assertEqual(len(profile._paired(parse(rows), "initialize")), 1)
+        for changed in (
+            [rows[0], rows[2], rows[1]],
+            [rows[0], rows[1], rows[1], rows[2]],
+            [rows[1], rows[0], rows[2]],
+        ):
+            with self.subTest(changed=changed), self.assertRaises(
+                    profile.ControlReplayError):
+                profile._paired(parse(changed), "initialize")
+
     def test_suite_adapter_requires_original_instruction_and_one_pinned_command(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -403,7 +403,7 @@ def _one(rows: list[Any], reason: str) -> Any:
     return rows[0]
 
 
-def _rpc(journal: bytes) -> list[dict[str, Any]]:
+def _rpc(journal: bytes, *, allow_legacy_equal_ticks: bool = False) -> list[dict[str, Any]]:
     rows = []
     prior = -1
     mode = None
@@ -419,6 +419,7 @@ def _rpc(journal: bytes) -> list[dict[str, Any]]:
                 or type(row["monotonic_ns"]) is not int
                 or row["monotonic_ns"] < 0
                 or (row["monotonic_ns"] < prior if current_mode == "ordered"
+                    or allow_legacy_equal_ticks
                     else row["monotonic_ns"] <= prior)
                 or not isinstance(row["raw"], dict)
                 or (current_mode == "ordered"

@@ -454,6 +454,31 @@ class CommentaryNativeProfileTests(unittest.TestCase):
                     profile.ReplayError, "invalid_rpc_journal_order_or_shape"):
                 profile._rpc(encode(changed))
 
+    def test_c2_legacy_equal_ticks_keep_line_order_and_reject_clock_rollback(self):
+        def encode(rows):
+            return ("\n".join(json.dumps(row) for row in rows) + "\n").encode()
+        request = {"id": 7, "method": "initialize"}
+        reply = {"id": 7, "result": {}}
+        rows = [
+            {"direction": "send", "raw": request, "monotonic_ns": 100},
+            {"direction": "send_complete", "raw": request,
+             "monotonic_ns": 100},
+            {"direction": "receive", "raw": reply, "monotonic_ns": 100},
+        ]
+        with self.assertRaisesRegex(profile.ReplayError,
+                                    "invalid_rpc_journal_order_or_shape"):
+            profile._rpc(encode(rows))
+        self.assertEqual(profile._rpc(
+            encode(rows), allow_legacy_equal_ticks=True), rows)
+        for changed in (
+            [rows[0], dict(rows[1], monotonic_ns=99), rows[2]],
+            [rows[0], dict(rows[1], record_index=2), rows[2]],
+            [rows[0], dict(rows[1], monotonic_ns=True), rows[2]],
+        ):
+            with self.subTest(changed=changed), self.assertRaisesRegex(
+                    profile.ReplayError, "invalid_rpc_journal_order_or_shape"):
+                profile._rpc(encode(changed), allow_legacy_equal_ticks=True)
+
     def test_bounded_file_read_rejects_changed_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

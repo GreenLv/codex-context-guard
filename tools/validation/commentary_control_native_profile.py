@@ -542,7 +542,10 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     if any(_digest(common._read_unpinned(mapper_root / name, 2 * 1024 * 1024))
            != files.get(name) for name in ORIGINAL_COMPONENTS):
         _fail("original_collector_or_oracle_bytes_changed")
-    rows = common._rpc(journal)
+    # The pinned C2 collector appends and flushes each JSONL row in call order,
+    # but its legacy rows lack record_index. Windows monotonic_ns may tie;
+    # physical line order plus the independent RPC/Hook bindings is authoritative.
+    rows = common._rpc(journal, allow_legacy_equal_ticks=True)
     if (_digest(Path(plan["codex"]).read_bytes()) != plan["binary_sha256"]
             or measure_runtime(Path(plan["runtime_root"]))[0]
             != plan["runtime_tree_sha256"]):
