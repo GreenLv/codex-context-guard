@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 from tools.validation import candidate_namespace as candidate
@@ -432,3 +432,33 @@ class NamespaceTests(unittest.TestCase):
             with self.assertRaises(candidate.Rejected):
                 candidate.namespace_config_delta((old, 0o600, 0), (after, 0o600, 1),
                                                  'cg-candidate-unit', Path('/fixture'))
+
+    def test_windows_official_literal_extended_source_is_exact_delta(self):
+        namespace = 'cg-candidate-c1c2-win-r17'
+        wrapper = PureWindowsPath(r'C:\cg-fixture\marketplace')
+        before = b'[features]\nfixture = true\n'
+        section = (f'\n[marketplaces.{namespace}]\nsource_type = "local"\n'
+                   "source = '\\\\?\\C:\\cg-fixture\\marketplace'\n").encode()
+        accepted = candidate.namespace_config_delta(
+            (before, 0o600, 0), (before + section, 0o600, 1), namespace, wrapper)
+        self.assertEqual(accepted[0], before + section)
+        for source in (r'\\?\C:\cg-fixture\other',
+                       r'\\?\C:\cg-fixture\..\marketplace',
+                       r'\\?\UNC\server\share\marketplace',
+                       r'\\?\c:\cg-fixture\marketplace'):
+            with self.subTest(source=source), self.assertRaises(candidate.Rejected):
+                changed = (f'\n[marketplaces.{namespace}]\nsource_type = "local"\n'
+                           f"source = '{source}'\n").encode()
+                candidate.namespace_config_delta(
+                    (before, 0o600, 0), (before + changed, 0o600, 1), namespace, wrapper)
+
+    def test_failure_receipt_reports_stage_without_config_or_cli_text(self):
+        self.cli.failure = 'registration'
+        with self.assertRaises(candidate.Rejected):
+            candidate.install(**self.args, apply=True)
+        record = json.loads((self.args['transaction'] / 'failure.json').read_bytes())
+        self.assertEqual(record['stage'], 'config_restore')
+        self.assertEqual(record['prior_stage'], 'marketplace_add')
+        self.assertEqual(record['reason'], 'concurrent_config_change_not_overwritten')
+        self.assertNotIn('synthetic_registration_failure', json.dumps(record))
+        self.assertFalse(record['automatic_retry'])

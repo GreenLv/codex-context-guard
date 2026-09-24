@@ -16,6 +16,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import ntpath
 import os
 import re
 import stat
@@ -185,7 +186,7 @@ def restore_config(path, before, expected):
 def namespace_config_delta(before, after, namespace, wrapper, *, plugin=False):
     """Accept only complete CLI-owned sections plus separator blank lines.
 
-    This intentionally rejects alternate TOML spellings rather than guessing.
+    Only the official CLI's bounded scalar spellings are accepted.
     Every preexisting nonblank byte and every unrelated comment must survive.
     A CLI failure is never permission to adopt its partially written config.
     """
@@ -196,7 +197,12 @@ def namespace_config_delta(before, after, namespace, wrapper, *, plugin=False):
     prior = tomllib.loads(old.decode('utf-8'))
     actual = tomllib.loads(new.decode('utf-8'))
     desired = copy.deepcopy(prior)
-    additions = {'marketplaces': {namespace: {'source_type': 'local', 'source': str(wrapper)}}}
+    marketplaces = actual.get('marketplaces', {})
+    entry = marketplaces.get(namespace, {}) if isinstance(marketplaces, dict) else {}
+    source = entry.get('source') if isinstance(entry, dict) else None
+    if not _same_cli_source(source, str(wrapper)):
+        raise Rejected('unattributed_config_delta')
+    additions = {'marketplaces': {namespace: {'source_type': 'local', 'source': source}}}
     if plugin:
         additions['plugins'] = {'context-guard@' + namespace: {'enabled': True}}
     for table, entries in additions.items():
@@ -206,13 +212,18 @@ def namespace_config_delta(before, after, namespace, wrapper, *, plugin=False):
         target.update(entries)
     if actual != desired:
         raise Rejected('unattributed_config_delta')
-    sections = [f'[marketplaces.{namespace}]\nsource_type = "local"\n'
-                f'source = {json.dumps(str(wrapper), ensure_ascii=False)}\n']
+    marketplace = re.compile(
+        rb'(?m)^\[marketplaces\.' + namespace.encode() +
+        rb'\]\nsource_type = (?:"local"|\'local\')\n'
+        rb'source = (?:"[^"\r\n]*"|\'[^\'\r\n]*\')\n')
+    matches = list(marketplace.finditer(new))
+    if len(matches) != 1:
+        raise Rejected('unattributed_config_delta')
+    sections = [matches[0].group()]
     if plugin:
-        sections.append(f'[plugins."context-guard@{namespace}"]\nenabled = true\n')
+        sections.append(f'[plugins."context-guard@{namespace}"]\nenabled = true\n'.encode())
     remainders = {new}
-    for section in sections:
-        raw = section.encode()
+    for raw in sections:
         if raw in old or new.count(raw) != 1:
             raise Rejected('unattributed_config_delta')
         candidates = set()
@@ -230,6 +241,24 @@ def namespace_config_delta(before, after, namespace, wrapper, *, plugin=False):
     if before and after and before[1] != after[1]:
         raise Rejected('unattributed_config_mode_change')
     return after
+
+
+def _same_cli_source(observed, expected):
+    """Accept only the Windows extended spelling of the same local drive path."""
+    if not isinstance(observed, str):
+        return False
+    if observed == expected:
+        return True
+    if not observed.startswith('\\\\?\\'):
+        return False
+    ordinary = observed[4:]
+    if (not re.fullmatch(r'[A-Za-z]:\\[^\r\n]*', ordinary)
+            or not re.fullmatch(r'[A-Za-z]:\\[^\r\n]*', expected)
+            or '..' in ntpath.normpath(ordinary).split('\\')
+            or '..' in ordinary.split('\\')
+            or ordinary != expected):
+        return False
+    return True
 
 
 def authorized_home(record, pin, subject, home):
@@ -461,8 +490,11 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
     except BaseException:
         ownership.rmdir()
         raise
+    stage = 'cache_install_lock'
+    prior_stage = None
     try:
         with manager.cache_install_lock(cache):
+            stage = 'staging_source'
             product.mkdir(parents=True)
             for name, sha in files.items():
                 target = product / name
@@ -482,8 +514,10 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
             try:
                 if scoped:
                     idle_checker(home)
+                stage = 'marketplace_add'
                 added = cli.call('plugin', 'marketplace', 'add', str(product.parent), '--json')
                 observed = config_snapshot(config)
+                stage = 'marketplace_config_delta'
                 expected = namespace_config_delta(before, observed, namespace, product.parent)
                 write_new(transaction / 'marketplace-config-delta.json', {
                     'before_sha256': digest(before[0] if before else b''),
@@ -491,12 +525,14 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                     'allowed_sections': ['marketplaces.' + namespace]})
                 # Read back the registered source, not just the add acknowledgment.
                 rows = cli.call('plugin', 'marketplace', 'list', '--json').get('marketplaces', [])
+                stage = 'marketplace_readback'
                 matching = [r for r in rows if r.get('name') == namespace]
                 if (not isinstance(added, dict) or len(matching) != 1
                         or Path(matching[0].get('root', '')) != product.parent):
                     raise Rejected('marketplace_readback_mismatch')
                 installed = cli.call('plugin', 'add', 'context-guard@' + namespace, '--json')
                 observed = config_snapshot(config)
+                stage = 'plugin_config_delta'
                 expected = namespace_config_delta(before, observed, namespace, product.parent, plugin=True)
                 write_new(transaction / 'plugin-config-delta.json', {
                     'before_sha256': digest(before[0] if before else b''),
@@ -513,6 +549,9 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                 manager.require_cache_parity(product, cache / version, version, same_version=True)
                 manager.archive_verified_current_version(product, cache, archive, version)
             finally:
+                stage_before_restore = stage
+                prior_stage = stage_before_restore
+                stage = 'config_restore'
                 try:
                     restore_config(config, before, expected)
                 except Rejected:
@@ -524,6 +563,8 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                         'retained_sha256': digest(current[0] if current else b''),
                         'automatic_restore': False})
                     raise
+                stage = stage_before_restore
+            stage = 'post_install_verify'
             if old_cache_snapshot(home, namespace) != old:
                 raise Rejected('old_cache_changed')
             if executable_digest(binary) != binary_sha:
@@ -541,6 +582,21 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
                       'native_acceptance': 'not_established', 'automatic_cleanup': False}
             write_new(receipt, result)
             return result
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        # No exception text, CLI output or configuration content enters this receipt.
+        if transaction.is_dir() and not (transaction / 'failure.json').exists():
+            code = str(exc) if isinstance(exc, Rejected) else ''
+            if code not in {'unattributed_config_delta', 'unattributed_config_mode_change',
+                            'concurrent_config_change_not_overwritten',
+                            'official_cli_failed', 'marketplace_readback_mismatch',
+                            'installed_path_or_identity_mismatch'}:
+                code = 'other_failure'
+            write_new(transaction / 'failure.json', {
+                'status': 'failed', 'stage': stage, 'prior_stage': prior_stage,
+                'reason': code,
+                'exception_class': type(exc).__name__,
+                'automatic_retry': False, 'model_calls': 0})
+        raise
     finally:
         ownership.rmdir()
 
