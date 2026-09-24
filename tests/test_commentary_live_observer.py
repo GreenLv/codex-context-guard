@@ -36,6 +36,96 @@ class ObserverSourceTest(unittest.TestCase):
                      "phase": "commentary", "text": "answer"},
         }}
 
+    def test_live_trace_append_is_pending_only_with_verified_prior_prefix(self):
+        class SnapshotChanged(ValueError):
+            pass
+
+        prior_events = [{"seq": 1, "payload": {"trace_id": "trace-1"}}]
+        prior_hashes = {"payloads/1.json": "a" * 64}
+        event_prefix = b'{"seq":1}\n'
+        grown = {"events": [*prior_events, {"seq": 2}],
+                 "hashes": {**prior_hashes, "trace.jsonl": "b" * 64}}
+        self.observer.plan["trace_root"] = "/tmp/synthetic-trace"
+        self.observer.trace = SimpleNamespace(
+            Unknown=SnapshotChanged,
+            stable_read=mock.Mock(return_value=event_prefix + b'{"seq":2}\n'))
+        self.observer._accepted_trace = (
+            "thread", prior_events, prior_hashes, hashlib.sha256(event_prefix).hexdigest())
+        self.observer.binding = SimpleNamespace(snapshot=mock.Mock(
+            side_effect=[SnapshotChanged("snapshot_changed"), grown]))
+        with self.assertRaisesRegex(PendingEvidence, "official_trace_append_pending"):
+            self.observer._snapshot("thread")
+        self.assertEqual(self.observer.binding.snapshot.call_count, 2)
+
+        for changed in (
+            {"events": prior_events, "hashes": prior_hashes},
+            {"events": [{"seq": 9}, {"seq": 2}], "hashes": prior_hashes},
+            {"events": grown["events"], "hashes": {"payloads/1.json": "c" * 64}},
+        ):
+            with self.subTest(changed=changed):
+                self.observer.binding.snapshot = mock.Mock(side_effect=[
+                    SnapshotChanged("snapshot_changed"), changed])
+                with self.assertRaisesRegex(SnapshotChanged, "snapshot_changed"):
+                    self.observer._snapshot("thread")
+        self.observer.binding.snapshot = mock.Mock(side_effect=SnapshotChanged("bundle_changed"))
+        with self.assertRaisesRegex(SnapshotChanged, "bundle_changed"):
+            self.observer._snapshot("thread")
+        self.observer.binding.snapshot = mock.Mock(
+            side_effect=SnapshotChanged("snapshot_changed"))
+        with self.assertRaisesRegex(SnapshotChanged, "snapshot_changed"):
+            self.observer._snapshot("thread")
+        self.assertEqual(self.observer.binding.snapshot.call_count, 2)
+        self.observer.trace.stable_read.return_value = b'{"seq":999}\n{"seq":2}\n'
+        self.observer.binding.snapshot = mock.Mock(side_effect=[
+            SnapshotChanged("snapshot_changed"), grown])
+        with self.assertRaisesRegex(SnapshotChanged, "snapshot_changed"):
+            self.observer._snapshot("thread")
+        self.observer._accepted_trace = None
+        self.observer.binding.snapshot = mock.Mock(side_effect=SnapshotChanged("snapshot_changed"))
+        with self.assertRaisesRegex(SnapshotChanged, "snapshot_changed"):
+            self.observer._snapshot("thread")
+
+    def test_second_snapshot_append_checks_extra_payload_and_keeps_corruption_fatal(self):
+        class SnapshotChanged(ValueError):
+            pass
+
+        extra = b'{"tool":"synthetic"}'
+        product = b'{"request":"synthetic"}'
+        first = {"seq": 1, "payload": {"trace_id": "trace-1"}}
+        nested = {"seq": 2, "payload": {"type": "tool_call_started",
+                                  "invocation_payload": {
+                                      "path": "payloads/2.json", "kind": {"type": "tool_invocation"},
+                                      "raw_payload_id": "raw_payload:2"}}}
+        source = {"events": [first, nested], "payloads": {"payloads/1.json": product},
+                  "hashes": {"trace.jsonl": hashlib.sha256(b'one\ntwo\n').hexdigest(),
+                             "payloads/1.json": hashlib.sha256(product).hexdigest()}}
+        grown = {"events": [first, nested, {"seq": 3}],
+                 "hashes": {"trace.jsonl": "d" * 64,
+                            "payloads/1.json": hashlib.sha256(product).hexdigest()}}
+        self.observer.plan["trace_root"] = "/tmp/synthetic-trace"
+        self.observer.trace = SimpleNamespace(
+            Unknown=SnapshotChanged, MAX_TOTAL=1024 * 1024,
+            stable_read=mock.Mock(side_effect=lambda _bundle, path:
+                                  (b'one\ntwo\nthree\n' if path == "trace.jsonl" else
+                                   product if path == "payloads/1.json" else extra)),
+            decode=json.loads,
+        )
+        self.observer.binding = SimpleNamespace(snapshot=mock.Mock(
+            side_effect=[source, SnapshotChanged("snapshot_changed"), grown]))
+        with self.assertRaisesRegex(PendingEvidence, "official_trace_append_pending"):
+            self.observer._snapshot("thread")
+        self.assertEqual(self.observer.binding.snapshot.call_count, 3)
+
+        reads = iter((extra, b'{"tool":"changed"}'))
+        self.observer.trace.stable_read.side_effect = lambda _bundle, path: (
+            b'one\ntwo\nthree\n' if path == "trace.jsonl" else
+            product if path == "payloads/1.json" else next(reads))
+        self.observer.binding.snapshot = mock.Mock(side_effect=[
+            source, SnapshotChanged("snapshot_changed"), grown])
+        with self.assertRaisesRegex(SnapshotChanged, "snapshot_changed"):
+            self.observer._snapshot("thread")
+        self.assertEqual(self.observer.binding.snapshot.call_count, 3)
+
     def test_cold_reader_uses_frozen_external_helper(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

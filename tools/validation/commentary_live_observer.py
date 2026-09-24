@@ -106,7 +106,15 @@ class NativeObserver:
         return directory
 
     def _snapshot(self, thread):
-        result = self.binding.snapshot(thread)
+        try:
+            result = self.binding.snapshot(thread)
+        except self.trace.Unknown as exc:
+            prior = getattr(self, "_accepted_trace", None)
+            if (str(exc) != "snapshot_changed" or prior is None
+                    or prior[0] != thread or not self._verified_trace_append(
+                        thread, prior[1], prior[2], prior[3])):
+                raise
+            raise PendingEvidence("official_trace_append_pending") from exc
         if result is None or not result["events"] or not result["payloads"]:
             raise PendingEvidence("official_trace_pending")
         # The installed product reader intentionally retains only inference
@@ -148,13 +156,53 @@ class NativeObserver:
                 continue  # append-only events may arrive after this snapshot
             if hashlib.sha256(self.trace.stable_read(bundle, path)).hexdigest() != expected:
                 raise ValueError("trace_snapshot_changed")
-        later = self.binding.snapshot(thread)
+        verified_hashes = {path: expected for path, expected in result["hashes"].items()
+                           if path != "trace.jsonl"}
+        verified_hashes.update({path: hashlib.sha256(raw).hexdigest()
+                                for path, raw in extra.items()})
+        try:
+            later = self.binding.snapshot(thread)
+        except self.trace.Unknown as exc:
+            if (str(exc) != "snapshot_changed" or not self._verified_trace_append(
+                    thread, result["events"], verified_hashes,
+                    result["hashes"]["trace.jsonl"])):
+                raise
+            raise PendingEvidence("official_trace_append_pending") from exc
         if later is None or later["events"][:len(result["events"])] != result["events"]:
             raise ValueError("trace_event_prefix_changed")
         if any(self.trace.stable_read(bundle, path) != raw for path, raw in extra.items()):
             raise ValueError("nested_payload_changed")
         result["payloads"] = {**result["payloads"], **extra}
+        self._accepted_trace = (thread, result["events"], verified_hashes,
+                                result["hashes"]["trace.jsonl"])
         return result
+
+    def _verified_trace_append(self, thread, prior_events, prior_hashes, prior_trace_hash):
+        """Only a fresh product snapshot extending immutable observed bytes may wait."""
+        later = self.binding.snapshot(thread)
+        if (later is None or len(later["events"]) <= len(prior_events)
+                or later["events"][:len(prior_events)] != prior_events):
+            return False
+        first = later["events"][0]
+        trace_id = first.get("payload", {}).get("trace_id")
+        if (not isinstance(trace_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", trace_id)):
+            return False
+        bundle = Path(self.plan["trace_root"]) / f"trace-{trace_id}-{thread}"
+        lines = self.trace.stable_read(bundle, "trace.jsonl").splitlines(keepends=True)
+        if (len(lines) < len(later["events"]) or
+                hashlib.sha256(b"".join(lines[:len(prior_events)])).hexdigest()
+                != prior_trace_hash):
+            return False
+        for path, expected in prior_hashes.items():
+            if not re.fullmatch(r"payloads/[1-9][0-9]{0,12}\.json", path):
+                return False
+            current = later["hashes"].get(path)
+            if current is None:
+                current = hashlib.sha256(self.trace.stable_read(bundle, path)).hexdigest()
+            if current != expected:
+                return False
+        return True
 
     def _pending_inferences(self, source, thread, turn, *, question=None):
         """Recognize incomplete official attempts without treating them as proof."""
