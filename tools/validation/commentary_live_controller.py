@@ -265,10 +265,18 @@ class Controller:
         if (not isinstance(params, dict) or params.get("threadId") != self.thread
                 or (method == "hook/completed"
                     and params.get("turnId") not in (None, self.turn))
-                or (method != "hook/completed" and params.get("turnId") != self.turn)):
+                or (method == "turn/completed"
+                    and (not isinstance(params.get("turn"), dict)
+                         or params["turn"].get("id") != self.turn))
+                or (method == "item/completed" and params.get("turnId") != self.turn)):
             raise ValueError("foreign_notification")
         if method == "turn/completed":
-            raise ValueError("turn_ended_before_auto_compaction")
+            turn = params.get("turn", {})
+            if (self.phase != "awaiting_suite" or turn.get("status") != "completed"
+                    or turn.get("error") is not None):
+                raise ValueError("turn_ended_before_suite_or_compaction")
+            self.phase = "turn_completed"
+            return
         if method == "hook/completed":
             if self.plan.get("review_coverage") == "partial":
                 run = params.get("run", {})
@@ -360,5 +368,5 @@ class Controller:
         if self.phase != "awaiting_cold_recovery":
             raise ValueError("compaction_not_complete")
         result = self.barrier.chain.cold_recovery(self.observer.cold_reader)
-        self.phase = "complete"
+        self.phase = "awaiting_suite" if self.plan.get("suite_oracle") else "complete"
         return result

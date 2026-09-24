@@ -113,6 +113,29 @@ class ControllerTest(unittest.TestCase):
             "developer_instructions": "Use the three bounded tools in order.",
         }, StubObserver())
 
+    def test_cold_recovery_keeps_suite_turn_alive_with_same_turn_terminal(self):
+        controller = self.controller
+        controller.plan["suite_oracle"] = {"bounded": True}
+        controller.thread, controller.turn = "thread", "turn"
+        controller.phase = "awaiting_cold_recovery"
+        controller.barrier = SimpleNamespace(chain=StubChain("thread", "turn"))
+        terminal = {"method": "turn/completed", "params": {
+            "threadId": "thread", "turn": {"id": "turn", "status": "completed", "error": None}}}
+        with self.assertRaisesRegex(ValueError, "turn_ended_before_suite"):
+            controller._notification(terminal)
+        self.assertEqual(controller.cold_recovery()["phase"], "offline_chain_checked")
+        self.assertEqual(controller.phase, "awaiting_suite")
+        failed = copy.deepcopy(terminal)
+        failed["params"]["turn"]["status"] = "failed"
+        with self.assertRaisesRegex(ValueError, "turn_ended_before_suite"):
+            controller._notification(failed)
+        foreign = copy.deepcopy(terminal)
+        foreign["params"]["turn"]["id"] = "other"
+        with self.assertRaisesRegex(ValueError, "foreign_notification"):
+            controller._notification(foreign)
+        controller._notification(terminal)
+        self.assertEqual(controller.phase, "turn_completed")
+
     def test_partial_postbusiness_requires_sent_terminal_item_then_product_hook(self):
         controller = self.controller
         controller.plan["review_coverage"] = "partial"

@@ -1,6 +1,7 @@
 """Native runner preflight and cleanup boundaries without model execution."""
 
 import hashlib
+import itertools
 import json
 import os
 import subprocess
@@ -122,10 +123,77 @@ class NativeRunnerBoundaryTest(unittest.TestCase):
             for phase, reason in [
                 ("awaiting_answer_evidence", "answer_inference_completion_missing"),
                 ("awaiting_business_evidence", "business_inference_completion_missing"),
+                ("awaiting_suite", "suite_execution_or_turn_completion_missing"),
             ]:
                 with self.assertRaisesRegex(TimeoutError, reason):
                     runner.check_stage_deadline(100, "turn", phase)
             runner.check_stage_deadline(101, "turn", "awaiting_answer_evidence")
+
+    def test_collect_continues_after_cold_read_until_suite_turn_and_keeps_deadline(self):
+        class FakeController:
+            instances = []
+
+            def __init__(self, _plan, _observer):
+                self.phase = "waiting_ready"
+                self.thread, self.turn, self.business_call_id = "thread", "turn", "business"
+                self.seen = 0
+                self.instances.append(self)
+
+            def start(self):
+                return []
+
+            def ingest(self, _raw):
+                self.seen += 1
+                self.phase = "awaiting_cold_recovery" if self.seen == 1 else "turn_completed"
+                return []
+
+            def cold_recovery(self):
+                self.phase = "awaiting_suite"
+                return {"native_acceptance": "not_established", "evidence": {"cold": True}}
+
+        class FakeTransport:
+            def __init__(self, _plan, _log):
+                self.receives = 0
+
+            def receive(self, _timeout):
+                self.receives += 1
+                return {"method": "fixture/event"} if self.receives <= 2 else {"transport_poll": True}
+
+            def close(self, _budget):
+                return {"owned_process_exited": True, "owned_tree_no_running_members": True,
+                        "process_group_cleanup_error": None}
+
+        plan = {**self.plan, "execute_producer": True, "execute_review": True,
+                "suite_oracle": {"frozen": True}}
+        with (mock.patch.object(runner, "preflight"),
+              mock.patch.object(runner, "NativeObserver"),
+              mock.patch.object(runner, "Controller", FakeController),
+              mock.patch.object(runner, "AppServer", FakeTransport),
+              mock.patch.object(runner.suite_oracle, "verify_suite",
+                                return_value={"item_id": "suite-call"}) as check):
+            result = runner.collect(plan, execute=True)
+        self.assertEqual(result["status"], "source_chain_observed")
+        self.assertEqual(result["suite_execution"], {"item_id": "suite-call"})
+        self.assertEqual(FakeController.instances[-1].seen, 2)
+        self.assertEqual(check.call_count, 1)
+
+        plan["run_dir"] = str(self.root / "timeout-run")
+        plan["budget"] = {**plan["budget"], "compact": 20}
+        class PollingTransport(FakeTransport):
+            def receive(self, _timeout):
+                self.receives += 1
+                return ({"method": "fixture/event"} if self.receives == 1
+                        else {"transport_poll": True})
+
+        ticks = itertools.count()
+        with (mock.patch.object(runner, "preflight"),
+              mock.patch.object(runner, "NativeObserver"),
+              mock.patch.object(runner, "Controller", FakeController),
+              mock.patch.object(runner, "AppServer", PollingTransport),
+              mock.patch.object(runner.time, "monotonic", side_effect=lambda: next(ticks))):
+            timed = runner.collect(plan, execute=True)
+        self.assertEqual(timed["status"], "failed")
+        self.assertIn("suite_execution_or_turn_completion_missing", timed["reason"])
 
     @unittest.skipUnless(os.name == "posix", "POSIX process groups required")
     def test_owned_process_group_cleanup(self):

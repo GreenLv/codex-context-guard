@@ -18,6 +18,7 @@ from typing import Any
 
 from tools.validation import commentary_fixture as fixture
 from tools.validation import commentary_live_runner as runner
+from tools.validation import commentary_suite_oracle
 from tools.validation.commentary_live_observer import NativeObserver
 from tools.validation.host_capture import measure_runtime
 
@@ -373,7 +374,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
         "tools/validation/commentary_trace.py",
         "tools/validation/host_capture.py",
         "scripts/cg_process_tree.py",
-    )
+    ) + (("tools/validation/commentary_suite_oracle.py",)
+         if plan.get("suite_oracle") else ())
     mapper_root = Path(__file__).resolve().parents[2]
     if any(_digest(_read_unpinned(mapper_root / name, 2 * 1024 * 1024))
            != source_files.get(name) for name in original_components):
@@ -596,6 +598,15 @@ def replay(manifest_path: Path) -> dict[str, Any]:
         if cold["evidence"]["cold_product"] != result["evidence"].get("cold_product"):
             raise ReplayError("cold_projection_disagrees_with_original")
         gates.append(_gate("cold_recovery", "passed"))
+        if plan.get("suite_oracle"):
+            try:
+                suite_evidence = commentary_suite_oracle.verify_suite(
+                    rows, plan, thread, turn, business_call)
+            except commentary_suite_oracle.SuiteEvidenceError as exc:
+                raise ReplayError("suite_execution_unverified:" + str(exc)) from exc
+            if suite_evidence != result.get("suite_execution"):
+                raise ReplayError("suite_result_disagrees_with_raw_source")
+            gates.append(_gate("suite_execution", "passed"))
     finally:
         for key, previous in (("CODEX_HOME", previous_home),
                               ("CODEX_ROLLOUT_TRACE_ROOT", previous_trace)):

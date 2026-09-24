@@ -22,6 +22,7 @@ from pathlib import Path
 from scripts.cg_process_tree import OwnedProcess
 from tools.validation import commentary_fixture as fixture
 from tools.validation import commentary_runner as legacy
+from tools.validation import commentary_suite_oracle as suite_oracle
 from tools.validation.commentary_live_controller import Controller
 from tools.validation.commentary_live_observer import NativeObserver
 
@@ -45,6 +46,7 @@ def deadline_reason(stage, phase):
         "awaiting_answer_evidence": "answer_inference_completion_missing",
         "awaiting_business_evidence": "business_inference_completion_missing",
         "awaiting_compaction_evidence": "matching_compaction_evidence_missing",
+        "awaiting_suite": "suite_execution_or_turn_completion_missing",
     }
     return missing.get(phase, stage + "_deadline")
 
@@ -118,6 +120,8 @@ def load_plan(path):
                 or plan.get("budget") != {"startup": 60, "turn": 240,
                                           "compact": 120, "cleanup": 15}):
             raise ValueError("unfrozen_partial_control_inputs")
+    if "suite_oracle" in plan:
+        suite_oracle.validate_suite_plan(plan)
     if (type(plan.get("values")) is not list or not 1 <= len(plan["values"]) <= 256
             or any(type(x) is not int or not -64 <= x <= 63 for x in plan["values"])
             or type(plan.get("overrides")) is not dict
@@ -187,6 +191,8 @@ def preflight(plan):
         raise ValueError("installed_runtime_changed")
     source_manifest(root, Path(plan["source_manifest_path"]),
                     plan["source_tree_sha256"], plan["runtime_tree_sha256"])
+    if "suite_oracle" in plan:
+        suite_oracle.validate_suite_plan(plan)
     if Path(plan["harness_root"]) != root:
         raise ValueError("external_harness_root_mismatch")
     helper = root / "tools/validation/commentary_fixture.py"
@@ -271,6 +277,7 @@ def collect(plan, *, execute=False):
     journal_size = 0
     result = {"status": "failed", "reason": "unstarted",
               "native_acceptance": "not_established", "model_calls": "unknown"}
+    cold_result = None
     try:
         observer = NativeObserver(plan)
         controller = Controller(plan, observer)
@@ -318,11 +325,12 @@ def collect(plan, *, execute=False):
                     send_all(reviewed)
                 if controller.phase == "awaiting_cold_recovery":
                     require_remaining(min(deadline, stage_deadline), 16, "cold_recovery")
-                    result = {"status": "source_chain_observed",
-                              **controller.cold_recovery()}
+                    cold_result = controller.cold_recovery()
                     if time.monotonic() >= min(deadline, stage_deadline):
                         raise TimeoutError("cold_recovery_deadline")
-                    break
+                    if controller.phase == "complete":
+                        result = {"status": "source_chain_observed", **cold_result}
+                        break
                 raw = transport.receive(0.25)
                 if raw is None:
                     raise ValueError("host_eof")
@@ -332,6 +340,16 @@ def collect(plan, *, execute=False):
                     raise ValueError("host_read_error")
                 record("receive", raw)
                 send_all(controller.ingest(raw))
+                if controller.phase == "turn_completed":
+                    if cold_result is None or not plan.get("suite_oracle"):
+                        raise ValueError("suite_before_cold_recovery")
+                    rows = [json.loads(line) for line in (directory / "rpc.jsonl").read_bytes().splitlines()]
+                    suite = suite_oracle.verify_suite(
+                        rows, plan, controller.thread, controller.turn,
+                        controller.business_call_id)
+                    result = {"status": "source_chain_observed", **cold_result,
+                              "suite_execution": suite}
+                    break
             else:
                 raise TimeoutError(deadline_reason("native_chain", controller.phase))
     except (OSError, ValueError, TypeError, TimeoutError, KeyError) as exc:
