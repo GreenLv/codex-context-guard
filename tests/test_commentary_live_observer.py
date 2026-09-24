@@ -696,11 +696,19 @@ class ObserverSourceTest(unittest.TestCase):
                     },
                 }}
 
+            capture("PreCompact", session_id="old-thread", trigger="auto",
+                    turn_id="old-turn")
+            capture("SessionStart", session_id="old-thread", source="compact")
+            old_files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                         for path in self.observer.capture_dir.glob("capture-*")}
+            completed = {"params": {"item": {"id": "compact-item"}}}
+            with self.assertRaises(PendingEvidence):
+                self.observer.compaction_source("thread", "turn", [], completed)
+
             startup = capture("SessionStart", source="startup")
             pre = capture("PreCompact", trigger="auto", turn_id="turn")
             hooks = [notification("SessionStart", *startup, "startup-run"),
                      notification("PreCompact", *pre, "pre-run")]
-            completed = {"params": {"item": {"id": "compact-item"}}}
             with self.assertRaises(PendingEvidence):
                 self.observer.compaction_source("thread", "turn", hooks, completed)
             post = capture("SessionStart", source="compact")
@@ -711,7 +719,12 @@ class ObserverSourceTest(unittest.TestCase):
                 "thread", "turn", hooks, completed
             )
             self.assertEqual(len(captures), 2)
+            self.assertEqual({commentary_trace.decode(row["raw"])["session_id"]
+                              for row in captures}, {"thread"})
             self.assertEqual(source["request_id"], "request-1")
+            self.assertEqual(old_files, {
+                name: hashlib.sha256((self.observer.capture_dir / name).read_bytes()).hexdigest()
+                for name in old_files})
             capture("PreCompact", trigger="auto", turn_id="turn")
             with self.assertRaisesRegex(ValueError, "repeated_auto_compaction_capture"):
                 self.observer.compaction_source("thread", "turn", hooks, completed)

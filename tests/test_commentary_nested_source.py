@@ -263,35 +263,50 @@ class NestedBusinessSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(fixture.Unknown, "nested_business_result_mismatch"):
             fixture.compact_outcome(captures, **args)
 
-    def test_snapshot_reads_nested_payloads_from_same_verified_bundle(self):
+    def snapshot_fixture(self, root):
         events, payloads, _challenge = nested_source()
+        bundle = root / "trace-trace-id-thread"
+        (bundle / "payloads").mkdir(parents=True)
+        manifest = {"schema_version": 1, "trace_id": "trace-id",
+                    "root_thread_id": "thread", "rollout_id": "thread",
+                    "raw_event_log": "trace.jsonl", "payloads_dir": "payloads"}
+        (bundle / "manifest.json").write_bytes(fixture.canonical(manifest))
+        first = {"schema_version": 1, "seq": 1, "rollout_id": "thread",
+                 "thread_id": "thread", "codex_turn_id": None,
+                 "payload": {"type": "rollout_started", "trace_id": "trace-id",
+                             "root_thread_id": "thread"}}
+        shifted = [{**e, "seq": e["seq"] + 1} for e in events]
+        (bundle / "trace.jsonl").write_bytes(
+            b"".join(fixture.canonical(e) + b"\n" for e in [first, *shifted]))
+        for relative, raw in payloads.items():
+            (bundle / relative).write_bytes(raw)
+        observer = NativeObserver.__new__(NativeObserver)
+        observer.plan = {"trace_root": str(root)}
+        observer.binding = cg_commentary_binding
+        observer.trace = cg_commentary_trace
+        return observer, bundle, payloads
+
+    def test_snapshot_reads_nested_payloads_from_same_verified_bundle(self):
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             root = Path(directory)
-            bundle = root / "trace-trace-id-thread"
-            (bundle / "payloads").mkdir(parents=True)
-            manifest = {"schema_version": 1, "trace_id": "trace-id",
-                        "root_thread_id": "thread", "rollout_id": "thread",
-                        "raw_event_log": "trace.jsonl", "payloads_dir": "payloads"}
-            (bundle / "manifest.json").write_bytes(fixture.canonical(manifest))
-            first = {"schema_version": 1, "seq": 1, "rollout_id": "thread",
-                     "thread_id": "thread", "codex_turn_id": None,
-                     "payload": {"type": "rollout_started", "trace_id": "trace-id",
-                                 "root_thread_id": "thread"}}
-            shifted = [{**e, "seq": e["seq"] + 1} for e in events]
-            (bundle / "trace.jsonl").write_bytes(
-                b"".join(fixture.canonical(e) + b"\n" for e in [first, *shifted]))
-            for relative, raw in payloads.items():
-                (bundle / relative).write_bytes(raw)
-            observer = NativeObserver.__new__(NativeObserver)
-            observer.plan = {"trace_root": str(root)}
-            observer.binding = cg_commentary_binding
-            observer.trace = cg_commentary_trace
+            observer, _bundle, payloads = self.snapshot_fixture(root)
             with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
                 snapshot = observer._snapshot("thread")
                 self.assertEqual(set(snapshot["payloads"]), set(payloads))
-                extra = bundle / "payloads/7.json"
-                extra.unlink()
+
+    def test_snapshot_rejects_linked_nested_payload_when_supported(self):
+        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
+            root = Path(directory)
+            observer, bundle, _payloads = self.snapshot_fixture(root)
+            extra = bundle / "payloads/7.json"
+            extra.unlink()
+            try:
                 extra.symlink_to(bundle / "payloads/3.json")
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows host cannot create symlinks")
+                raise
+            with mock.patch.dict(os.environ, {"CODEX_ROLLOUT_TRACE_ROOT": str(root)}):
                 with self.assertRaises(ValueError):
                     observer._snapshot("thread")
 
