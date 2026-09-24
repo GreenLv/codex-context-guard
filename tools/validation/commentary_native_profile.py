@@ -191,6 +191,45 @@ def _notifications(rows, method):
             and r["raw"].get("method") == method]
 
 
+def _postbusiness_source(rows, plan, thread, turn, business_call, business_reply):
+    """Rebind the partial-control baseline to its terminal item and product Hook."""
+    terminal = _position(
+        rows, "receive", lambda raw: raw.get("method") == "item/completed"
+        and raw.get("params", {}).get("threadId") == thread
+        and raw.get("params", {}).get("turnId") == turn
+        and raw.get("params", {}).get("item", {}).get("type") == "dynamicToolCall"
+        and raw["params"]["item"].get("id") == business_call
+        and raw["params"]["item"].get("status") == "completed"
+        and raw["params"]["item"].get("success") is True,
+        "business_terminal_item_missing_or_repeated")
+    hook = _position(
+        rows, "receive", lambda raw: raw.get("method") == "hook/completed"
+        and raw.get("params", {}).get("threadId") == thread
+        and raw.get("params", {}).get("turnId") == turn
+        and raw.get("params", {}).get("run", {}).get("sourcePath") == plan["hook_source"]
+        and raw["params"]["run"].get("eventName") == "postToolUse"
+        and re.fullmatch(
+            r"post-tool-use:\d+:" + re.escape(plan["hook_source"])
+            + ":" + re.escape(business_call),
+            str(raw["params"]["run"].get("id", ""))) is not None
+        and raw["params"]["run"].get("status") == "completed"
+        and raw["params"]["run"].get("statusMessage") is None
+        and raw["params"]["run"].get("source") == "plugin"
+        and raw["params"]["run"].get("handlerType") == "command"
+        and raw["params"]["run"].get("executionMode") == "sync"
+        and raw["params"]["run"].get("scope") == "turn",
+        "business_post_hook_missing_or_repeated")
+    if not business_reply < terminal < hook:
+        raise ReplayError("postbusiness_source_out_of_order")
+    for row in rows[terminal + 1:hook]:
+        raw = row["raw"]
+        if (row["direction"] == "receive" and raw.get("method") == "item/completed"
+                and raw.get("params", {}).get("item", {}).get("type") in
+                {"commandExecution", "fileChange", "mcpToolCall", "webSearch"}):
+            raise ReplayError("intervening_tool_before_postbusiness_baseline")
+    return business_call, rows[hook]["raw"]["params"]["run"]["id"], hook
+
+
 def _verify_hook_readback(data: dict[str, Any], plan: dict[str, Any]) -> None:
     if data.get("cwd") != plan["cwd"] or data.get("errors") or data.get("warnings"):
         raise ReplayError("official_hook_readback_error")
@@ -486,11 +525,16 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                 or review_request.get("answer_texts", {}).get(message_id)
                 != chain.commentary_text):
             raise ReplayError("sealed_review_not_bound_to_answer")
+        coverage = plan.get("review_coverage", "complete")
+        if coverage not in {"complete", "partial"}:
+            raise ReplayError("unsupported_review_coverage")
         before = fixture.product_review_checkpoint(
             observer.runtime, state, session_dir=directory,
             codex_home=plan["codex_home"],
             question_id=question_id,
-            main_ids=result["evidence"]["precompact_product"]["main_ids"])
+            main_ids=result["evidence"]["precompact_product"]["main_ids"],
+            expected_coverage=coverage,
+            expected_main_current=True if coverage == "complete" else None)
         if before != result["evidence"]["precompact_product"]:
             raise ReplayError("review_projection_changed")
         barrier = _object(_read_unpinned(run_dir / "review-barrier.json", 65536))
@@ -502,6 +546,19 @@ def replay(manifest_path: Path) -> dict[str, Any]:
         chain.main_ids = before["main_ids"]
         observer.question_id = before["question_id"]
         observer.main_ids = before["main_ids"]
+        chain.evidence["precompact_product"] = before
+        chain.phase = "review_consumed"
+        postbusiness_hook = None
+        if coverage == "partial":
+            item_id, hook_id, postbusiness_hook = _postbusiness_source(
+                rows, plan, thread, turn, business_call, business_reply)
+            checkpoint = observer.postbusiness_projection(
+                thread, before["question_id"], before["main_ids"])
+            if (checkpoint != result["evidence"].get("postbusiness_product")
+                    or item_id != result["evidence"].get("business_terminal_item_id")
+                    or hook_id != result["evidence"].get("business_post_hook_id")):
+                raise ReplayError("postbusiness_projection_changed")
+            chain.postbusiness(checkpoint, item_id=item_id, hook_id=hook_id)
         completed = _one([n for n in notices if n.get("params", {}).get("item", {}).get("type") == "contextCompaction"],
                          "completed_compaction_missing_or_repeated")
         precompact_event = _position(
@@ -523,10 +580,10 @@ def replay(manifest_path: Path) -> dict[str, Any]:
         if (len(compact_start_events) != 2 or not business_reply < precompact_event
                 < completed_event < compact_start_events[1]):
             raise ReplayError("compaction_order_or_resume_missing")
+        if postbusiness_hook is not None and postbusiness_hook >= precompact_event:
+            raise ReplayError("postbusiness_hook_after_compaction")
         captures, source = observer.compaction_source(
             thread, turn, _notifications(rows, "hook/completed"), completed)
-        chain.evidence["precompact_product"] = before
-        chain.phase = "review_consumed"
         chain.compaction(captures, completed_item=completed, **source)
         if chain.evidence["compaction"] != result["evidence"].get("compaction"):
             raise ReplayError("compaction_result_disagrees_with_raw_source")

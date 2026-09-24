@@ -139,6 +139,43 @@ class CommentaryNativeProfileTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(profile.ReplayError):
                 profile._response(changed, "initialize")
 
+    def test_partial_postbusiness_source_requires_matching_terminal_and_product_hook(self):
+        source = "/plugin/hooks.json"
+        thread, turn, call = "thread-1", "turn-1", "exec-1"
+        terminal = {"method": "item/completed", "params": {
+            "threadId": thread, "turnId": turn, "item": {
+                "type": "dynamicToolCall", "id": call,
+                "status": "completed", "success": True}}}
+        hook_id = f"post-tool-use:10:{source}:{call}"
+        hook = {"method": "hook/completed", "params": {
+            "threadId": thread, "turnId": turn, "run": {
+                "id": hook_id, "sourcePath": source, "eventName": "postToolUse",
+                "status": "completed", "statusMessage": None,
+                "source": "plugin", "handlerType": "command",
+                "executionMode": "sync", "scope": "turn"}}}
+        def row(raw):
+            return {"direction": "receive", "raw": raw}
+        rows = [{"direction": "send_complete", "raw": {"id": "reply"}},
+                row(terminal), row(hook)]
+        args = ({"hook_source": source}, thread, turn, call, 0)
+        self.assertEqual(profile._postbusiness_source(rows, *args),
+                         (call, hook_id, 2))
+        variants = []
+        for target, field, value in ((1, "success", False),
+                                     (2, "sourcePath", "/other/hooks.json"),
+                                     (2, "status", "failed"),
+                                     (2, "id", hook_id + "-other")):
+            changed = deepcopy(rows)
+            branch = changed[target]["raw"]["params"]
+            (branch["item"] if target == 1 else branch["run"])[field] = value
+            variants.append(changed)
+        variants.append([rows[0], rows[2], rows[1]])
+        variants.append([rows[0], rows[1], row({"method": "item/completed",
+            "params": {"item": {"type": "commandExecution"}}}), rows[2]])
+        for changed in variants:
+            with self.subTest(changed=changed), self.assertRaises(profile.ReplayError):
+                profile._postbusiness_source(changed, *args)
+
     def test_evidence_tree_digest_detects_changed_member(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
