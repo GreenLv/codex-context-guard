@@ -11,7 +11,7 @@ authority; this public status intentionally omits private evidence locations.
 | --- | --- | --- |
 | CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch | Independent holdouts and final exact candidate checks; unsupported locators still cannot certify a target |
 | CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and an explicit independent answer-review consumer keep information coverage separate from execution closure | Complete repaired macOS and Windows delivery, review, compaction and cold-recovery chains on their exact installed runtimes |
-| CG142-03 | Source-bound persistence, pause and cancellation remain; an explicitly named exact marker has its own byte-exact wait, and offline C1/C2 controls separate partial answers from future observations | Fresh installed-runtime C1/C2 native control results and the full mapped control matrix |
+| CG142-03 | Source-bound persistence, pause and cancellation remain; an explicitly named exact marker has its own byte-exact wait. A bounded macOS C2 run observed marker release and one business call with future observation pending; C1 stopped before review, and its compound-question binding has a source repair | Fresh installed-runtime C1 native control result, complete C1/C2 mapped control matrix and cross-platform acceptance |
 | CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting | Independent low-budget, damaged-source, wrong-target and multi-object review; model rerun behavior remains unmeasured |
 
 Renaming a suite directory from `neutral` to `audit` must not remove an

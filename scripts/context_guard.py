@@ -202,6 +202,15 @@ def commentary_observation(
         return names == {str(p.get("id")) + ".json" for p in state.get("prompts", [])}
     if source_bound and not complete_prompt_catalog():
         return module.unknown("incomplete_root_catalog")
+    # Source binding and independent review must use the same question catalog.
+    # Delivery eligibility is narrower: a reviewed answer never closes a
+    # compound information request or adjacent execution obligation by itself.
+    reviewable_by_root: dict[str, list[str]] = {}
+    for entry in answer_review_catalog(session_dir, state):
+        subject = entry["subject"]
+        reviewable_by_root.setdefault(subject["root_id"], []).append(
+            subject["question_id"]
+        )
     root_records = []
     for prompt in state.get("prompts", []):
         if prompt.get("origin", "human") != "human":
@@ -214,9 +223,7 @@ def commentary_observation(
                       "text": record["text"],
                       "record_sha256": record.get("record_sha256"),
                       "turn_id": record.get("turn_id"), "sha256": record["sha256"],
-                      "question_ids": [i["id"] for i in state.get("requirements", [])
-                                       if i.get("prompt_id") == record["id"]
-                                       and _delivable_question(i, state)]})
+                      "question_ids": reviewable_by_root.get(record["id"], [])})
     home = Path(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().absolute()
     result = module.observe(Path(path), home / "sessions", str(session["id"]), roots, prior=prior, review_roots=review_roots)
     if source_bound and (not complete_prompt_catalog() or any(
@@ -430,6 +437,27 @@ def answer_review_subject(session_dir, state, item):
     root = read_prompt_record(session_dir, metadata) if metadata else None
     if not root or root.get("origin", "human") != "human" or not root.get("turn_id"):
         raise ValueError("missing_question_source")
+    if re.match(
+        r"^\s*(?:(?:以下|下面|这里)(?:是|有).{0,32}(?:示例|规格|引用|原文|问句|文档|日志|报告)"
+        r"|(?:示例问句|文档|报告|日志|测试规格)\s*(?:写着|描述|包含|列出|记录)"
+        r"|(?:here\s+is|the\s+following\s+is)\s+(?:an?\s+)?(?:example|specification|quote))\s*[:：]",
+        root["text"], re.I,
+    ):
+        raise ValueError("described_question_is_not_request")
+    if item.get("information_source_span") is None:
+        clauses = item.get("clause_metadata", {}).get("clauses", [])
+        action_operations = {name for name, _pattern in ACTION_PATTERNS}
+        direct_action = re.match(
+            r"^\s*(?:(?:请|请你|帮我|麻烦你|现在|先)\s*)*"
+            r"(?:运行|执行|检查|核对|审查|修改|编辑|实现|修复|提交|推送|发布|部署|"
+            r"run\b|execute\b|check\b|review\b|edit\b|fix\b|commit\b|push\b|publish\b|deploy\b)",
+            root["text"], re.I,
+        )
+        if (direct_action and isinstance(clauses, list)
+                and any(isinstance(clause, dict)
+                        and clause.get("operation") in action_operations
+                        for clause in clauses)):
+            raise ValueError("mixed_action_is_not_independent_question")
     raw = root["text"].encode("utf-8")
     span = item.get("information_source_span", [0, len(raw)])
     if (not isinstance(span, list) or len(span) != 2 or any(type(v) is not int for v in span)

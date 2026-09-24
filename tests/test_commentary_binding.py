@@ -382,3 +382,84 @@ class BindingTests(unittest.TestCase):
         shutil.rmtree(second)
         (self.p.trace_bundle / 'payloads/1.json').unlink()
         self.unknown()
+
+
+class CompoundQuestionBindingTests(unittest.TestCase):
+    """A reviewable two-part question can be bound without closing main work."""
+
+    def setUp(self):
+        self.host = reviews.wire.HostTerminalWireTests()
+        self.host.setUp()
+        self.addCleanup(self.host.doCleanups)
+        host = self.host
+        cg.dispatch(host.event('UserPromptSubmit', prompt='context-guard on'))
+        host.turn_id = 'compound-turn'
+        cg.dispatch(host.event('UserPromptSubmit',
+                               prompt='请运行 /work/suite.py 的测试并持续执行直到完成。'))
+        cg.dispatch(host.event('UserPromptSubmit',
+                               prompt='请分别告诉我：(1) 7 的平方是多少？(2) 11 的平方是多少？'))
+        answer = reviews.message(turn=host.turn_id, text='第一问是 49。')
+        answer['payload']['thread_id'] = host.session_id
+        host.rows.append(answer)
+        host.write_rows()
+        self.directory = host.root / 'private/sessions' / host.session_id
+        self.state = host.state()
+        self.item = self.state['requirements'][-1]
+        fixture.prepare(self)
+
+    def test_reviewable_compound_question_binds_without_business_completion(self):
+        before = copy.deepcopy(self.host.state())
+        self.assertEqual(len(cg.answer_review_catalog(self.directory, before)), 1)
+        self.assertFalse(cg._delivable_question(self.item, before))
+        request = cg.answer_review_request(self.directory, before, self.item)
+        self.assertEqual(request['subject']['question_id'], self.item['id'])
+        self.assertEqual(len(request['messages']), 1)
+        self.assertEqual(request['messages'][0]['association'], 'source_bound_input_response')
+        self.assertEqual(self.host.state(), before)
+        self.assertTrue(any(row['text'].startswith('请运行 /work/suite.py')
+                            and row['status'] == 'pending'
+                            for row in before['requirements']))
+
+    def test_compound_question_requires_exact_user_input_source(self):
+        path = self.trace_bundle / 'payloads/1.json'
+        request = json.loads(path.read_text())
+        request['input'][0]['role'] = 'tool'
+        path.write_text(json.dumps(request), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'no_source_bound_commentary'):
+            cg.answer_review_request(self.directory, self.host.state(), self.item)
+
+    def test_compound_question_does_not_lend_answer_to_other_root(self):
+        cg.dispatch(self.host.event('UserPromptSubmit',
+                                    prompt='请分别告诉我：(1) 8 的平方是多少？(2) 12 的平方是多少？'))
+        state = self.host.state()
+        other = state['requirements'][-1]
+        with self.assertRaisesRegex(ValueError, 'no_source_bound_commentary'):
+            cg.answer_review_request(self.directory, state, other)
+
+    def test_enforced_execution_contract_is_not_review_question(self):
+        state = copy.deepcopy(self.host.state())
+        state['requirements'][-1]['verification_contract']['mode'] = 'enforced'
+        self.assertEqual(cg.answer_review_catalog(self.directory, state), [])
+        self.assertFalse(cg._delivable_question(state['requirements'][-1], state))
+
+    def test_described_question_and_mixed_execution_are_not_review_roots(self):
+        for prompt in (
+            '以下是示例：请分别告诉我：(1) 7 的平方是多少？(2) 11 的平方是多少？',
+            '下面是测试规格：请分别告诉我：(1) 7 的平方是多少？(2) 11 的平方是多少？',
+            '请运行 /work/suite.py 的测试，并告诉我是否通过？',
+        ):
+            with self.subTest(prompt=prompt):
+                cg.dispatch(self.host.event('UserPromptSubmit', prompt=prompt))
+                state = self.host.state()
+                subject = state['requirements'][-1]['id']
+                self.assertNotIn(subject, [row['subject']['question_id'] for row in
+                                           cg.answer_review_catalog(self.directory, state)])
+
+    def test_test_topic_information_question_remains_reviewable(self):
+        cg.dispatch(self.host.event('UserPromptSubmit',
+                                    prompt='请说明测试结果为什么失败？'))
+        state = self.host.state()
+        item = state['requirements'][-1]
+        self.assertEqual(item['clause_metadata']['clauses'][0]['operation'], 'test_verify')
+        catalog = cg.answer_review_catalog(self.directory, state)
+        self.assertIn(item['id'], [row['subject']['question_id'] for row in catalog])

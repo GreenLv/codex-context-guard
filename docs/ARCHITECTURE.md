@@ -48,6 +48,12 @@ security boundary against the same OS account. Semantic conclusions remain
 fallible reviewer judgments, never Host facts.
 
 `answer-review/v2` is an independent private ledger, not a core-state migration.
+The commentary source binder uses the same reviewable-question catalog as the
+independent reviewer. A direct compound information request can therefore bind
+its real answer without becoming automatically deliverable or closing adjacent
+execution work. Described examples are excluded from review; mixed execution
+requests are excluded from whole-root review unless an explicit source span
+identifies the question.
 Current scope replays it against current source on every read. Only a complete,
 information-only judgment removes the matching pending information item from
 the current answer projection. It does not mutate the requirement, work unit,

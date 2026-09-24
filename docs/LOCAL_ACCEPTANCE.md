@@ -11,10 +11,22 @@ compares with this business-after projection, allowing the main item to leave
 current while the partial question stays current. A three-turn C2 app-server
 collector checks source-bound wait identity, official turn success, one
 nonce-bound business result, fixed deadlines and owned-process cleanup.
-These paths have not produced a C1 or C2 native model result. The new
-`exact_input` runtime bytes require a fresh isolated installation and Hook
-trust readback before affected native work; P7 remains evidence for its
-earlier runtime digest only.
+C1 and C2 each produced one bounded native macOS model result on the same
+installed candidate. C1 stopped before independent review: its two-part
+question was reviewable, but the commentary source binder used the narrower
+automatic-delivery classifier and omitted that question ID. The retained run
+is failed, and its prepared business artifact does not prove business release.
+The offline candidate repair shares the independent-review catalog with the
+source binder while leaving automatic delivery narrower. Focused positive and
+negative regressions cover direct compound questions, quoted examples, mixed
+execution requests, source identity and pending main work. This changed
+runtime requires a fresh isolated installation and native rerun; offline
+replay cannot upgrade the failed C1 run.
+
+C2 observed the exact-marker control chain and one completed business call.
+The future-observation file remained absent and its requirement stayed pending.
+This scoped result is not the complete 0.14.2 native acceptance gate. P7 remains
+evidence for its earlier runtime digest only.
 
 The P7 macOS run on source commit `0bcb53328bbe70b6fae539d6bed2768f6a1e2cb5`
 observed one source-bound side-question answer, a challenge-bound business
