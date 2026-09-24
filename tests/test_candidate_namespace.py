@@ -1,6 +1,7 @@
 """Synthetic CLI mutations exercise the namespace transaction, not native trust."""
 import copy
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -485,3 +486,74 @@ class NamespaceTests(unittest.TestCase):
                       r'\\?\c:\cg-fixture\marketplace'):
             with self.subTest(value=value):
                 self.assertFalse(candidate._same_cli_source(value, expected))
+
+    def test_idle_observation_precedes_own_install_lock(self):
+        lock = (self.home / 'plugins/cache/cg-candidate-unit'
+                / '.context-guard.install.lock')
+        calls = []
+
+        def idle(_home):
+            calls.append(True)
+            if lock.exists():
+                raise candidate.Rejected('self_lock_conflict')
+
+        self.cli.failure = 'authenticated'
+        with mock.patch.object(candidate, 'authorized_home', return_value=True):
+            result = candidate.install(**self.args, apply=True, idle_checker=idle)
+        self.assertEqual(result['status'], 'installed')
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(lock.is_file())
+        self.unchanged()
+
+    def test_second_idle_failure_stops_before_cli_and_keeps_failure_record(self):
+        calls = []
+
+        def idle(_home):
+            calls.append(True)
+            if len(calls) == 3:
+                raise candidate.Rejected('target_home_has_active_process')
+
+        self.cli.failure = 'authenticated'
+        with mock.patch.object(candidate, 'authorized_home', return_value=True):
+            with self.assertRaisesRegex(candidate.Rejected, 'target_home_has_active_process'):
+                candidate.install(**self.args, apply=True, idle_checker=idle)
+        record = json.loads((self.args['transaction'] / 'failure.json').read_bytes())
+        self.assertEqual(record['stage'], 'pre_cli_idle_observation')
+        self.assertFalse((self.home / 'plugins/cache/cg-candidate-unit'
+                          / '.context-guard.install.lock').exists())
+        self.assertFalse(any(call[:3] == ('plugin', 'marketplace', 'add')
+                             for call in self.cli.calls))
+
+    @unittest.skipUnless(os.name == 'nt', 'requires native Windows Win32 handle semantics')
+    def test_windows_real_idle_scan_with_manager_lock_sequence(self):
+        self.cli.failure = 'authenticated'
+        with mock.patch.object(candidate, 'authorized_home', return_value=True):
+            result = candidate.install(**self.args, apply=True,
+                                       idle_checker=candidate.require_idle_home)
+        self.assertEqual(result['status'], 'installed')
+        self.unchanged()
+
+    @unittest.skipUnless(os.name == 'nt', 'requires native Windows Win32 handle semantics')
+    def test_windows_real_idle_rejects_other_held_file_before_manager_lock(self):
+        import ctypes
+        target = self.home / 'held.txt'
+        target.write_bytes(b'held')
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = kernel.CreateFileW
+        create.argtypes = (ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                           ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                           ctypes.c_void_p)
+        create.restype = ctypes.c_void_p
+        handle = create(str(target), 0x80000000, 0, None, 3, 0x80, None)
+        self.assertNotEqual(handle, ctypes.c_void_p(-1).value)
+        self.cli.failure = 'authenticated'
+        try:
+            with mock.patch.object(candidate, 'authorized_home', return_value=True):
+                with self.assertRaisesRegex(candidate.Rejected, 'target_home_has_active_process'):
+                    candidate.install(**self.args, apply=True,
+                                      idle_checker=candidate.require_idle_home)
+        finally:
+            kernel.CloseHandle(ctypes.c_void_p(handle))
+        self.assertFalse(self.args['transaction'].exists())
+        self.assertFalse(any(call[:3] == ('plugin', 'marketplace', 'add')
+                             for call in self.cli.calls))

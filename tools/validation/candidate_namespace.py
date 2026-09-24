@@ -490,30 +490,33 @@ def install(*, root, home, transaction, manifest, source_pin, runtime_pin, names
     except BaseException:
         ownership.rmdir()
         raise
-    stage = 'cache_install_lock'
+    stage = 'staging_source'
     prior_stage = None
     try:
+        product.mkdir(parents=True)
+        for name, sha in files.items():
+            target = product / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            raw = read(root / name)
+            if digest(raw) != sha:
+                raise Rejected('source_changed_during_staging')
+            with target.open('xb') as stream:
+                stream.write(raw)
+        if manager.full_file_manifest(product) != files:
+            raise Rejected('staged_source_mismatch')
+        wrapper = product.parent / '.agents/plugins/marketplace.json'
+        wrapper.parent.mkdir(parents=True)
+        write_new(wrapper, {'name': namespace, 'plugins': [{
+            'name': 'context-guard', 'source': {'source': 'local', 'path': './product'},
+            'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}}]})
+        # This scan must precede the manager lock: on Windows our own open
+        # lock handle would otherwise be reported as a conflicting HOME user.
+        stage = 'pre_cli_idle_observation'
+        if scoped:
+            idle_checker(home)
+        stage = 'cache_install_lock'
         with manager.cache_install_lock(cache):
-            stage = 'staging_source'
-            product.mkdir(parents=True)
-            for name, sha in files.items():
-                target = product / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                raw = read(root / name)
-                if digest(raw) != sha:
-                    raise Rejected('source_changed_during_staging')
-                with target.open('xb') as stream:
-                    stream.write(raw)
-            if manager.full_file_manifest(product) != files:
-                raise Rejected('staged_source_mismatch')
-            wrapper = product.parent / '.agents/plugins/marketplace.json'
-            wrapper.parent.mkdir(parents=True)
-            write_new(wrapper, {'name': namespace, 'plugins': [{
-                'name': 'context-guard', 'source': {'source': 'local', 'path': './product'},
-                'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}}]})
             try:
-                if scoped:
-                    idle_checker(home)
                 stage = 'marketplace_add'
                 added = cli.call('plugin', 'marketplace', 'add', str(product.parent), '--json')
                 observed = config_snapshot(config)
