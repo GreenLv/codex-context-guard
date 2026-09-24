@@ -152,6 +152,42 @@ class C2ControllerTests(unittest.TestCase):
             control_live._approval_suite_plan({**plan, "suite_oracle": {
                 **plan["suite_oracle"], "allowed_outer_commands": ["other"]}})
 
+    def test_preflight_adapts_suite_validation_without_changing_c2_root(self):
+        plan, _ = self.approval_fixture()
+        plan["run_dir"] = str(self.root / "new-run")
+        original = deepcopy(plan)
+        checked = []
+
+        def validate(candidate):
+            control_live.suite_oracle.validate_suite_plan(candidate)
+            checked.append(candidate)
+            return {"status": "inputs_checked_only", "model_calls": 0}
+
+        with mock.patch.object(control_live.runner, "preflight", side_effect=validate):
+            result = control_live.preflight(plan)
+        self.assertEqual(result["model_calls"], 0)
+        self.assertEqual(result["scenario"], "C2")
+        self.assertEqual(plan, original)
+        self.assertEqual(checked[0]["root_prompt"],
+                         checked[0]["main_requirement_text"])
+        self.assertNotEqual(checked[0]["root_prompt"], plan["root_prompt"])
+        self.assertEqual(checked[0]["future_path"], plan["future_path"])
+
+        bad = deepcopy(plan)
+        bad["suite_oracle"]["allowed_outer_commands"] = ["other"]
+        with mock.patch.object(control_live.runner, "preflight") as generic:
+            with self.assertRaises(ValueError):
+                control_live.preflight(bad)
+            generic.assert_not_called()
+
+    def test_preflight_without_suite_preserves_legacy_validation_input(self):
+        plan = {**self.plan, "run_dir": str(self.root / "new-run")}
+        with mock.patch.object(control_live.runner, "preflight", return_value={
+                "status": "inputs_checked_only", "model_calls": 0}) as generic:
+            result = control_live.preflight(plan)
+        self.assertEqual(result["scenario"], "C2")
+        self.assertIs(generic.call_args.args[0], plan)
+
     def test_wrong_nonce_never_reaches_suite_approval(self):
         self.controller.turn_index = 2
         self.controller.phase = "active_turn"

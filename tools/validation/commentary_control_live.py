@@ -166,7 +166,10 @@ def load_plan(path: Path) -> dict:
 
 
 def preflight(plan: dict) -> dict:
-    result = runner.preflight(plan)
+    # The shared runner checks the suite against an execution-only root.
+    # Keep the C2 wait/future root in the original plan and adapt only its
+    # read-only suite validation view.
+    result = runner.preflight(_approval_suite_plan(plan) or plan)
     future = Path(plan["future_path"])
     if future.exists() or future.is_symlink() or future.parent != Path(plan["run_dir"]).parent:
         raise ValueError("future_observation_not_fresh_and_isolated")
