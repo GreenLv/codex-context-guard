@@ -4,19 +4,27 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from tools.validation import commentary_trace
 from tools.validation.commentary_live_observer import NativeObserver, PendingEvidence
-from tools.validation.host_capture import digest_echo, record_payload
+from tools.validation.host_capture import (
+    CaptureError,
+    digest_echo,
+    inspect_directory,
+    record_payload,
+)
 
 
 class ObserverSourceTest(unittest.TestCase):
     def setUp(self):
         self.observer = NativeObserver.__new__(NativeObserver)
-        self.observer.plan = {"question": "question", "main_requirement_text": "main"}
+        self.observer.plan = {"question": "question", "main_requirement_text": "main",
+                              "capture_hook_source": "/<session-flags>/config.toml"}
         self.user = {"method": "item/completed", "params": {
             "threadId": "thread", "turnId": "turn",
             "item": {"type": "userMessage", "id": "user-1", "clientId": "client-1",
@@ -417,6 +425,162 @@ class ObserverSourceTest(unittest.TestCase):
             self.assertEqual(source["request_id"], "request-1")
             capture("PreCompact", trigger="auto", turn_id="turn")
             with self.assertRaisesRegex(ValueError, "repeated_auto_compaction_capture"):
+                self.observer.compaction_source("thread", "turn", hooks, completed)
+
+    def test_compaction_observer_waits_for_capture_metadata_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.observer.capture_dir = Path(temporary) / "captures"
+            self.observer.runtime_root = Path(__file__).resolve().parents[1]
+            self.observer.trace = SimpleNamespace(
+                decode=commentary_trace.decode,
+                attempt_pair=lambda *args, **kwargs: ({}, {}, {"compaction_id": "compact-item"}),
+            )
+            self.observer._snapshot = lambda _thread: {
+                "events": [{"thread_id": "thread", "codex_turn_id": "turn",
+                            "payload": {"type": "compaction_request_completed",
+                                        "compaction_request_id": "request-1"}}],
+                "payloads": {},
+            }
+
+            def capture(event, **fields):
+                raw = json.dumps({"hook_event_name": event, "session_id": "thread",
+                                  "cwd": "/fixture", **fields}).encode()
+                meta = record_payload(raw, total_bytes=len(raw), truncated=False,
+                                      expected_event=event, capture_dir=self.observer.capture_dir,
+                                      runtime_root=self.observer.runtime_root, echo=True)
+                return raw, json.loads(meta.read_bytes())["capture_id"]
+
+            def notification(event, raw, capture_id):
+                return {"method": "hook/completed", "params": {
+                    "threadId": "thread", "turnId": "turn", "run": {
+                        "id": event, "eventName": event[0].lower() + event[1:],
+                        "status": "completed", "handlerType": "command",
+                        "executionMode": "sync",
+                        "sourcePath": "/<session-flags>/config.toml",
+                        "entries": [{"kind": "warning", "text": digest_echo(raw, capture_id)}],
+                    },
+                }}
+
+            pre = capture("PreCompact", trigger="auto", turn_id="turn")
+            startup = capture("SessionStart", source="startup")
+            hooks = [notification("SessionStart", *startup),
+                     notification("PreCompact", *pre)]
+            completed = {"params": {"item": {"id": "compact-item"}}}
+            raw_created = threading.Event()
+            allow_meta = threading.Event()
+            result = []
+            original_replace = os.replace
+
+            def pause_before_publish(source, target):
+                raw_created.set()
+                if not allow_meta.wait(5):
+                    raise TimeoutError("test_metadata_publication_deadline")
+                return original_replace(source, target)
+
+            def write_post():
+                try:
+                    result.append(capture("SessionStart", source="compact"))
+                except Exception as exc:  # make worker failure visible to the test
+                    result.append(exc)
+
+            with mock.patch("tools.validation.host_capture.os.replace",
+                            side_effect=pause_before_publish):
+                writer = threading.Thread(target=write_post)
+                writer.start()
+                try:
+                    self.assertTrue(raw_created.wait(5))
+                    with self.assertRaisesRegex(
+                        PendingEvidence, "matching_hook_notification_pending"
+                    ):
+                        self.observer.compaction_source("thread", "turn", hooks, completed)
+                finally:
+                    allow_meta.set()
+                    writer.join(5)
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(len(result), 1)
+            if isinstance(result[0], Exception):
+                raise result[0]
+            self.assertEqual(inspect_directory(
+                self.observer.capture_dir, self.observer.runtime_root
+            )["capture_count"], 3)
+            hooks.append(notification("SessionStart", *result[0]))
+            captures, source = self.observer.compaction_source(
+                "thread", "turn", hooks, completed
+            )
+            self.assertEqual(len(captures), 2)
+            self.assertEqual(source["request_id"], "request-1")
+            malformed_hooks = json.loads(json.dumps(hooks))
+            malformed_hooks[-1]["params"]["run"]["entries"] = ["not-an-entry"]
+            with self.assertRaisesRegex(ValueError, "invalid_capture_hook_completion"):
+                self.observer.compaction_source(
+                    "thread", "turn", malformed_hooks, completed
+                )
+
+            # A different thread may publish raw bytes at the same instant;
+            # the current thread cannot pass until strict global inspection.
+            raw_created = threading.Event()
+            allow_meta = threading.Event()
+            foreign = []
+
+            def write_foreign():
+                try:
+                    foreign.append(capture("SessionStart", source="startup",
+                                           session_id="other-thread"))
+                except Exception as exc:
+                    foreign.append(exc)
+
+            with mock.patch("tools.validation.host_capture.os.replace",
+                            side_effect=pause_before_publish):
+                writer = threading.Thread(target=write_foreign)
+                writer.start()
+                try:
+                    self.assertTrue(raw_created.wait(5))
+                    with self.assertRaisesRegex(CaptureError, "orphan raw or metadata"):
+                        self.observer.compaction_source("thread", "turn", hooks, completed)
+                finally:
+                    allow_meta.set()
+                    writer.join(5)
+            self.assertFalse(writer.is_alive())
+            if isinstance(foreign[0], Exception):
+                raise foreign[0]
+            self.assertEqual(len(self.observer.compaction_source(
+                "thread", "turn", hooks, completed
+            )[0]), 2)
+
+            orphan = self.observer.capture_dir / "capture-000005.raw"
+            orphan.write_bytes(b"permanent orphan")
+            with self.assertRaisesRegex(CaptureError, "orphan raw or metadata"):
+                self.observer.compaction_source("thread", "turn", hooks, completed)
+            orphan.unlink()
+            outside = Path(temporary) / "outside.json"
+            outside.write_text('{"harmless": true}')
+            extra_meta = self.observer.capture_dir / "capture-000005.meta.json"
+            original_read = Path.read_bytes
+
+            def no_outside_read(path):
+                if path.resolve() == outside.resolve():
+                    raise AssertionError("outside capture file was read")
+                return original_read(path)
+
+            for raw_file in (str(outside), "../outside.json"):
+                with self.subTest(raw_file=raw_file):
+                    malformed = json.loads((self.observer.capture_dir /
+                                            "capture-000001.meta.json").read_bytes())
+                    malformed.update(sequence=5, raw_file=raw_file)
+                    extra_meta.write_text(json.dumps(malformed))
+                    try:
+                        with mock.patch.object(Path, "read_bytes", no_outside_read):
+                            with self.assertRaises(CaptureError):
+                                self.observer.compaction_source(
+                                    "thread", "turn", hooks, completed
+                                )
+                    finally:
+                        extra_meta.unlink()
+            metadata = self.observer.capture_dir / "capture-000001.meta.json"
+            bad = json.loads(metadata.read_bytes())
+            bad["raw_sha256"] = "0" * 64
+            metadata.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(CaptureError, "hash or length mismatch"):
                 self.observer.compaction_source("thread", "turn", hooks, completed)
 
 

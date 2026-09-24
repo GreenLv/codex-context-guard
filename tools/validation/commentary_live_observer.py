@@ -372,6 +372,44 @@ class NativeObserver:
         return self.runtime, state, directory, question_id, mains
 
     def compaction_source(self, thread, turn, hook_runs, completed_item):
+        # A recorder publishes raw bytes before atomically publishing metadata.
+        # Its digest echo is returned only after that rename, and the official
+        # completed notification follows the command result. Check only the
+        # official notification envelope first: do not read unvalidated meta
+        # paths or raw bytes before strict whole-directory inspection.
+        # The first sessionStart is the startup capture. The compact-sourced
+        # sessionStart follows contextCompaction and has a distinct raw echo.
+        for event, expected_count in (("preCompact", 1), ("sessionStart", 2)):
+            ready = [row for row in hook_runs
+                     if row.get("method") == "hook/completed"
+                     and isinstance(row.get("params"), dict)
+                     and isinstance(row["params"].get("run"), dict)
+                     and row["params"].get("threadId") == thread
+                     and row["params"].get("turnId") == turn
+                     and row["params"]["run"].get("sourcePath") ==
+                     self.plan["capture_hook_source"]
+                     and row["params"]["run"].get("eventName") == event]
+            if len(ready) > expected_count:
+                raise ValueError("duplicate_capture_hook_completion")
+            if len(ready) < expected_count:
+                raise PendingEvidence("matching_hook_notification_pending")
+            markers = set()
+            for row in ready:
+                run = row["params"]["run"]
+                entries = run.get("entries")
+                if (run.get("status") != "completed"
+                        or run.get("handlerType") != "command"
+                        or run.get("executionMode") != "sync"
+                        or not isinstance(entries, list) or len(entries) != 1
+                        or not isinstance(entries[0], dict)
+                        or entries[0].get("kind") != "warning"
+                        or not isinstance(entries[0].get("text"), str)
+                        or not re.fullmatch(r"cg-hook-input-pair/v1:[0-9a-f]{32}:[0-9a-f]{64}",
+                                            entries[0]["text"])):
+                    raise ValueError("invalid_capture_hook_completion")
+                markers.add(entries[0]["text"])
+            if len(markers) != expected_count:
+                raise ValueError("duplicate_capture_hook_echo")
         report = inspect_directory(self.capture_dir, self.runtime_root)
         if report["status"] not in {"observed", "pending"}:
             raise ValueError("hook_capture_inspection_failed")

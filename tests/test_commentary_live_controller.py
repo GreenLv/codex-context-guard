@@ -324,6 +324,7 @@ class ControllerTest(unittest.TestCase):
         observer = NativeObserver.__new__(NativeObserver)
         observer.capture_dir = Path(self.temp.name) / "captures"
         observer.runtime_root = Path(__file__).resolve().parents[1]
+        observer.plan = self.controller.plan
         observer.trace = SimpleNamespace(
             decode=commentary_trace.decode,
             attempt_pair=lambda *args, **kwargs: ({}, {}, {"compaction_id": "compact-1"}),
@@ -352,12 +353,18 @@ class ControllerTest(unittest.TestCase):
             return raw, json.loads(meta.read_bytes())["capture_id"]
 
         def hook(raw, identity):
+            event = json.loads(raw[0])["hook_event_name"]
             return {"method": "hook/completed", "params": {
-                "threadId": "thread", "run": {"id": identity, "entries": [
-                    {"kind": "warning", "text": digest_echo(*raw)}]},
+                "threadId": "thread", "turnId": "turn", "run": {
+                    "id": identity, "eventName": event[0].lower() + event[1:],
+                    "status": "completed", "handlerType": "command",
+                    "executionMode": "sync",
+                    "sourcePath": "/<session-flags>/config.toml",
+                    "entries": [{"kind": "warning", "text": digest_echo(*raw)}]},
             }}
 
-        capture("SessionStart", source="startup")
+        startup = capture("SessionStart", source="startup")
+        self.controller.ingest(hook(startup, "startup-run"))
         pre = capture("PreCompact", trigger="auto", turn_id="turn")
         self.controller.ingest({"method": "item/completed", "params": {
             "threadId": "thread", "turnId": "turn",

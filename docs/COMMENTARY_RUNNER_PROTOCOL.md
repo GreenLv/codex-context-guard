@@ -191,6 +191,21 @@ source remains independently bound. Replaying the retained native inputs
 through the repaired offline chain reaches cold product projection equality,
 but does not change the failed run or establish native acceptance.
 
+The next bounded macOS run again reached business and review, then stopped
+while collecting compaction evidence because whole-directory inspection saw
+an unmatched raw capture file. The six earlier capture files stayed unchanged;
+all raw and metadata files were paired after the run. This is consistent with
+the recorder's raw-write-before-metadata-publication window, but the failed
+RPC journal lacks the later compact-sourced `hook/completed` notification and
+cannot prove a completed recovery chain. The observer now waits for one
+completed capture PreCompact and two distinct capture SessionStart echoes
+(startup and compact) before inspecting the whole directory. The recorder
+emits each echo only after its metadata rename. A missing echo remains pending
+only until the fixed compaction deadline. The strict inspection then rejects
+orphans, corrupt files and foreign recorders before any metadata path or raw
+file is read for source pairing. Finally, each echo must match its raw input.
+The run remains failed and native acceptance remains `not_established`.
+
 The cold subprocess loads product state code from the pinned installed runtime
 and the checkpoint helper from the pinned external source harness. Preflight
 checks that helper's SHA-256; a cached or changed helper fails. The source
