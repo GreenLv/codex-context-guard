@@ -158,7 +158,8 @@ def _closures(manifest: dict, plan: dict) -> None:
 def _read_inputs(manifest_path: Path, source_commit: str) -> tuple[dict, dict, dict, bytes]:
     raw = common._read_unpinned(manifest_path, 8192)
     manifest = common._object(raw)
-    if (set(manifest) not in (FIELDS, FIELDS | {"checkout_projection"})
+    if (set(manifest) not in (FIELDS, FIELDS | {"checkout_projection"},
+                              FIELDS | {"source_delta"})
             or manifest["schema"] != SCHEMA
             or manifest["original_source_commit"] != source_commit
             or not re.fullmatch(r"[0-9a-f]{40}", source_commit)):
@@ -169,6 +170,8 @@ def _read_inputs(manifest_path: Path, source_commit: str) -> tuple[dict, dict, d
     _descriptor(manifest, "source_manifest", 1024 * 1024)
     if "checkout_projection" in manifest:
         _descriptor(manifest, "checkout_projection", 65536)
+    if "source_delta" in manifest:
+        _descriptor(manifest, "source_delta", 65536)
     snapshot = _descriptor(manifest, "capture_snapshot", 65536)
     plan = control.load_plan(Path(manifest["plan"]["path"]))
     run = Path(plan["run_dir"])
@@ -526,9 +529,15 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             or _digest(fixture.canonical(files)) != plan["source_tree_sha256"]):
         _fail("original_source_manifest_changed")
     mapper_root = Path(__file__).resolve().parents[2]
-    projection = (common._object(_descriptor(manifest, "checkout_projection", 65536))
-                  if "checkout_projection" in manifest else None)
-    common._verify_checkout_source(manifest, plan, files, projection, mapper_root)
+    source_delta = None
+    if "source_delta" in manifest:
+        source_delta = common._verify_source_delta(
+            manifest, plan, files,
+            common._object(_descriptor(manifest, "source_delta", 65536)), mapper_root)
+    else:
+        projection = (common._object(_descriptor(manifest, "checkout_projection", 65536))
+                      if "checkout_projection" in manifest else None)
+        common._verify_checkout_source(manifest, plan, files, projection, mapper_root)
     if any(_digest(common._read_unpinned(mapper_root / name, 2 * 1024 * 1024))
            != files.get(name) for name in ORIGINAL_COMPONENTS):
         _fail("original_collector_or_oracle_bytes_changed")
@@ -661,6 +670,7 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             "repository": {"commit": manifest["original_source_commit"]},
             "original_source_commit": manifest["original_source_commit"],
             "prepared_source_sha256": plan["source_tree_sha256"],
+            **({"source_delta": source_delta} if source_delta else {}),
             "runtime_tree_sha256": plan["runtime_tree_sha256"],
             "platform": {"os": host_os, "shell": "python-subprocess",
                          "toolchain": {"python": platform.python_version(),

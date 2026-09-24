@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest import mock
 
 from tools.validation import commentary_native_profile as profile
 
@@ -156,10 +157,134 @@ class CommentaryNativeProfileTests(unittest.TestCase):
     def test_checkout_projection_descriptor_rejects_unlisted_fields(self):
         base = {key: None for key in profile.REPLAY_FIELDS}
         self.assertIsNone(profile._projection_descriptor(base))
+        self.assertEqual(profile._source_delta_descriptor(
+            {**base, "source_delta": {"path": "/proof", "sha256": "a" * 64}}),
+            {"path": "/proof", "sha256": "a" * 64})
         for changed in ({**base, "unexpected": {}},
-                        {**base, "checkout_projection": {"path": "/tmp"}}):
+                        {**base, "checkout_projection": {"path": "/tmp"}},
+                        {**base, "source_delta": {"path": "/proof"}},
+                        {**base, "source_delta": {"path": "/proof",
+                                                   "sha256": "a" * 64},
+                         "checkout_projection": {"path": "/projection",
+                                                 "sha256": "b" * 64}}):
             with self.assertRaises(profile.ReplayError):
-                profile._projection_descriptor(changed)
+                profile._source_delta_descriptor(changed)
+
+    def test_reviewed_four_file_delta_reconstructs_source_without_widening_projection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repo = root / "objects"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            paths = sorted(profile.SOURCE_DELTA_PATHS)
+            names = paths + [f"fixtures/file-{index:03d}.txt" for index in range(208)]
+            for name in names:
+                target = repo / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(("base " + name + "\n").encode())
+            base_contents = {name: (repo / name).read_bytes() for name in names}
+            subprocess.run(["git", "-C", str(repo), "add", "--", "."], check=True)
+
+            def commit(message):
+                subprocess.run(["git", "-C", str(repo), "-c", "user.name=Codex",
+                                "-c", "user.email=12345+codex@users.noreply.github.com",
+                                "commit", "-qm", message], check=True)
+                return subprocess.check_output([
+                    "git", "-C", str(repo), "rev-parse", "HEAD"
+                ]).decode().strip()
+
+            base = commit("base")
+            (repo / "fixtures/file-000.txt").write_bytes(b"parent-only change\n")
+            subprocess.run(["git", "-C", str(repo), "add", "--", "."], check=True)
+            parent = commit("unrelated parent")
+            for name in paths:
+                (repo / name).write_bytes(("reviewed " + name + "\n").encode())
+            subprocess.run(["git", "-C", str(repo), "add", "--", "."], check=True)
+            reviewed = commit("four-file review")
+            checkout = root / "harness"
+            subprocess.run(["git", "-c", "core.autocrlf=false", "clone", "-q",
+                            "--no-hardlinks", str(repo), str(checkout)], check=True)
+            subprocess.run(["git", "-C", str(checkout), "-c", "core.autocrlf=false",
+                            "checkout", "-q", base], check=True)
+            tracked = subprocess.check_output([
+                "git", "-C", str(repo), "ls-tree", "-r", "--name-only", base
+            ]).decode().splitlines()
+            self.assertEqual(len(tracked), 212)
+            for name in tracked:
+                (checkout / name).write_bytes(base_contents[name])
+            patch = subprocess.check_output([
+                "git", "-C", str(repo), "diff", "--no-ext-diff", "--no-textconv",
+                "--no-color", "--binary", base, reviewed, "--", *paths])
+            patch_path = root / "four-files.patch"
+            patch_path.write_bytes(patch)
+            patch_sha = profile._digest(patch)
+            subprocess.run(["git", "-C", str(checkout), "apply", str(patch_path)],
+                           check=True, capture_output=True)
+            files = {name: profile._digest(
+                (repo / name).read_bytes() if name in paths else base_contents[name])
+                for name in tracked}
+            tree_sha = profile._digest(profile.fixture.canonical(files))
+            runtime_sha = "d" * 64
+            base_tree = profile._git_tree(repo, base)
+            reviewed_tree = profile._git_tree(repo, reviewed)
+            proof = {"schema": profile.SOURCE_DELTA_SCHEMA,
+                     "base_commit": base, "reviewed_commit": reviewed,
+                     "reviewed_parent": parent,
+                     "patch": {"path": str(patch_path),
+                               "sha256": patch_sha},
+                     "source_manifest_sha256": "a" * 64,
+                     "source_tree_sha256": tree_sha,
+                     "runtime_tree_sha256": runtime_sha,
+                     "paths": {name: {"base_blob": base_tree[name],
+                                      "reviewed_blob": reviewed_tree[name]}
+                               for name in paths}}
+            manifest = {"original_source_commit": base,
+                        "source_manifest": {"sha256": "a" * 64}}
+            plan = {"harness_root": str(checkout),
+                    "source_tree_sha256": tree_sha,
+                    "runtime_tree_sha256": runtime_sha}
+            with mock.patch.multiple(profile, SOURCE_DELTA_BASE=base,
+                                     SOURCE_DELTA_REVIEWED=reviewed,
+                                     SOURCE_DELTA_PARENT=parent,
+                                     SOURCE_DELTA_PATCH_SHA256=patch_sha,
+                                     SOURCE_DELTA_TREE_SHA256=tree_sha,
+                                     SOURCE_DELTA_RUNTIME_SHA256=runtime_sha):
+                self.assertEqual(profile._verify_source_delta(
+                    manifest, plan, files, proof, repo)["reviewed_commit"], reviewed)
+                with self.assertRaisesRegex(profile.ReplayError,
+                                            "checkout_projection_invalid"):
+                    profile._verify_checkout_source(manifest, plan, files, None, repo)
+                for mutate in (
+                    lambda p: p.update(reviewed_commit="0" * 40),
+                    lambda p: p.update(base_commit="0" * 40),
+                    lambda p: p.update(reviewed_parent="0" * 40),
+                    lambda p: p["patch"].update(sha256="0" * 64),
+                    lambda p: p["paths"][paths[0]].update(base_blob="0" * 40),
+                    lambda p: p["paths"][paths[0]].update(reviewed_blob="0" * 40),
+                    lambda p: p["paths"].update({"tools/validation/other.py": {}}),
+                    lambda p: p.update(runtime_tree_sha256="0" * 64),
+                    lambda p: p.update(source_manifest_sha256="0" * 64),
+                ):
+                    changed = deepcopy(proof)
+                    mutate(changed)
+                    with self.subTest(mutate=mutate), self.assertRaises(profile.ReplayError):
+                        profile._verify_source_delta(manifest, plan, files, changed, repo)
+                altered = {**files, paths[0]: "0" * 64}
+                with self.assertRaisesRegex(profile.ReplayError,
+                                            "source_delta_manifest_or_disk_changed"):
+                    profile._verify_source_delta(manifest, plan, altered, proof, repo)
+                extra = {**files, "tools/validation/unreviewed.py": "0" * 64}
+                with self.assertRaisesRegex(profile.ReplayError,
+                                            "source_delta_file_inventory_changed"):
+                    profile._verify_source_delta(manifest, plan, extra, proof, repo)
+                patch_path.write_bytes(patch + b"\n")
+                with self.assertRaisesRegex(profile.ReplayError, "input_digest_changed"):
+                    profile._verify_source_delta(manifest, plan, files, proof, repo)
+                patch_path.write_bytes(patch)
+                (checkout / paths[0]).write_bytes(b"changed after collection")
+                with self.assertRaisesRegex(profile.ReplayError,
+                                            "source_delta_manifest_or_disk_changed"):
+                    profile._verify_source_delta(manifest, plan, files, proof, repo)
 
     def test_failed_product_hook_blocks_replay_even_if_other_chain_observed(self):
         plan = {"hook_source": "/installed/hooks.json"}

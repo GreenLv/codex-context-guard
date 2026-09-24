@@ -31,6 +31,19 @@ HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 REPLAY_FIELDS = {"schema", "original_source_commit", "plan", "result",
                  "journal", "later_cold_receipt", "source_manifest", "closures"}
 PROJECTION_SCHEMA = "checkout-byte-projection/v1"
+SOURCE_DELTA_SCHEMA = "cg142-source-delta/v1"
+SOURCE_DELTA_BASE = "afdb15e7f3b6b6ad15263a0ed20711fa4cd8d5a3"
+SOURCE_DELTA_REVIEWED = "b60d1e218118ca91ca5b4ac2a3df4dc46f9520b6"
+SOURCE_DELTA_PARENT = "16501dd5b0e0362539c59dd5e623262df8a90565"
+SOURCE_DELTA_PATCH_SHA256 = "8c6a1b33cb50fa8ed2f033ed942c6283427649c58e535a41a1473afa42c51c07"
+SOURCE_DELTA_TREE_SHA256 = "00f0ec39ab2ee89e9a6e4057e4f098e08f95df8e5dee67054ab17d6280c78ed6"
+SOURCE_DELTA_RUNTIME_SHA256 = "2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f"
+SOURCE_DELTA_PATHS = frozenset({
+    "tools/validation/commentary_live_runner.py",
+    "tools/validation/commentary_control_live.py",
+    "tests/test_commentary_live_runner.py",
+    "tests/test_commentary_control_live.py",
+})
 WINDOWS_CRLF_PATHS = frozenset({
     ".codexignore", ".gitattributes", ".gitignore", "LICENSE",
     "pyproject.toml", "requirements-lock.txt", "uv.lock",
@@ -145,13 +158,152 @@ def _object(raw: bytes) -> dict[str, Any]:
 
 def _projection_descriptor(manifest: dict[str, Any]) -> dict[str, Any] | None:
     fields = set(manifest)
-    if fields not in (REPLAY_FIELDS, REPLAY_FIELDS | {"checkout_projection"}):
+    if fields not in (REPLAY_FIELDS, REPLAY_FIELDS | {"checkout_projection"},
+                      REPLAY_FIELDS | {"source_delta"}):
         raise ReplayError("invalid_replay_manifest")
     descriptor = manifest.get("checkout_projection")
     if descriptor is not None and (not isinstance(descriptor, dict)
                                    or set(descriptor) != {"path", "sha256"}):
         raise ReplayError("invalid_checkout_projection_descriptor")
     return descriptor
+
+
+def _source_delta_descriptor(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    _projection_descriptor(manifest)
+    descriptor = manifest.get("source_delta")
+    if descriptor is not None and (not isinstance(descriptor, dict)
+                                   or set(descriptor) != {"path", "sha256"}):
+        raise ReplayError("invalid_source_delta_descriptor")
+    return descriptor
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                            check=False)
+    if result.returncode or len(result.stdout) > 32 * 1024 * 1024:
+        raise ReplayError("source_delta_git_object_missing")
+    return result.stdout
+
+
+def _git_tree(repo: Path, commit: str) -> dict[str, str]:
+    entries = _git_bytes(repo, "ls-tree", "-r", "-z", commit).split(b"\0")
+    if entries[-1] != b"":
+        raise ReplayError("source_delta_tree_object_invalid")
+    tree = {}
+    for entry in entries[:-1]:
+        try:
+            header, name = entry.split(b"\t", 1)
+            mode, kind, blob = header.split(b" ")
+            path = name.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ReplayError("source_delta_tree_object_invalid") from exc
+        if (mode not in {b"100644", b"100755"} or kind != b"blob"
+                or not re.fullmatch(rb"[0-9a-f]{40}", blob)
+                or path in tree):
+            raise ReplayError("source_delta_tree_object_invalid")
+        tree[path] = blob.decode("ascii")
+    return tree
+
+
+def _git_blobs(repo: Path, oids: set[str]) -> dict[str, bytes]:
+    ordered = sorted(oids)
+    query = ("\n".join(ordered) + "\n").encode("ascii")
+    result = subprocess.run(["git", "cat-file", "--batch"], cwd=repo,
+                            input=query, capture_output=True, check=False)
+    if result.returncode or len(result.stdout) > 32 * 1024 * 1024:
+        raise ReplayError("source_delta_git_object_missing")
+    raw = result.stdout
+    offset = 0
+    blobs = {}
+    for oid in ordered:
+        end = raw.find(b"\n", offset)
+        if end < 0:
+            raise ReplayError("source_delta_blob_object_invalid")
+        header = raw[offset:end].split(b" ")
+        if (len(header) != 3 or header[0] != oid.encode("ascii")
+                or header[1] != b"blob" or not header[2].isdigit()):
+            raise ReplayError("source_delta_blob_object_invalid")
+        size = int(header[2])
+        offset = end + 1
+        if size > 2 * 1024 * 1024 or raw[offset + size:offset + size + 1] != b"\n":
+            raise ReplayError("source_delta_blob_object_invalid")
+        blobs[oid] = raw[offset:offset + size]
+        offset += size + 1
+    if offset != len(raw):
+        raise ReplayError("source_delta_blob_object_invalid")
+    return blobs
+
+
+def _verify_source_delta(manifest: dict[str, Any], plan: dict[str, Any],
+                         source_files: dict[str, str], proof: dict[str, Any],
+                         repo_root: Path) -> dict[str, str]:
+    """Rebuild the exact prepared tree from immutable base and reviewed blobs."""
+    if (not isinstance(proof, dict)
+            or set(proof) != {"schema", "base_commit", "reviewed_commit",
+                              "reviewed_parent", "patch", "source_manifest_sha256",
+                              "source_tree_sha256", "runtime_tree_sha256", "paths"}
+            or proof["schema"] != SOURCE_DELTA_SCHEMA
+            or proof["base_commit"] != manifest["original_source_commit"]
+            or proof["base_commit"] != SOURCE_DELTA_BASE
+            or proof["reviewed_commit"] != SOURCE_DELTA_REVIEWED
+            or proof["reviewed_parent"] != SOURCE_DELTA_PARENT
+            or proof["source_manifest_sha256"]
+            != manifest["source_manifest"]["sha256"]
+            or proof["source_tree_sha256"] != plan["source_tree_sha256"]
+            or proof["source_tree_sha256"] != SOURCE_DELTA_TREE_SHA256
+            or proof["runtime_tree_sha256"] != plan["runtime_tree_sha256"]
+            or proof["runtime_tree_sha256"] != SOURCE_DELTA_RUNTIME_SHA256
+            or not isinstance(proof["paths"], dict)
+            or set(proof["paths"]) != SOURCE_DELTA_PATHS):
+        raise ReplayError("source_delta_subject_mismatch")
+    patch = proof["patch"]
+    if (not isinstance(patch, dict) or set(patch) != {"path", "sha256"}
+            or patch["sha256"] != SOURCE_DELTA_PATCH_SHA256):
+        raise ReplayError("source_delta_patch_mismatch")
+    patch_bytes = _read(Path(patch["path"]), patch["sha256"], 65536)
+    base, reviewed, parent = (proof[key] for key in (
+        "base_commit", "reviewed_commit", "reviewed_parent"))
+    if (_git_bytes(repo_root, "rev-parse", reviewed + "^").decode().strip() != parent
+            or set(_git_bytes(repo_root, "diff-tree", "--no-commit-id", "--name-only",
+                              "-r", parent, reviewed).decode().splitlines())
+            != SOURCE_DELTA_PATHS
+            or _git_bytes(repo_root, "diff", "--no-ext-diff", "--no-textconv",
+                          "--no-color", "--binary", base, reviewed, "--",
+                          *sorted(SOURCE_DELTA_PATHS)) != patch_bytes
+            or _git_bytes(repo_root, "diff", "--name-only", base, reviewed, "--",
+                          ".codex-plugin", "assets", "hooks", "scripts", "skills")):
+        raise ReplayError("source_delta_git_lineage_or_patch_changed")
+    base_tree = _git_tree(repo_root, base)
+    reviewed_tree = _git_tree(repo_root, reviewed)
+    if len(base_tree) != 212 or set(base_tree) != set(source_files):
+        raise ReplayError("source_delta_file_inventory_changed")
+    harness = Path(plan["harness_root"])
+    if (_git_bytes(harness, "rev-parse", "HEAD").decode().strip() != base
+            or not harness.is_dir() or harness.is_symlink()):
+        raise ReplayError("source_delta_harness_changed")
+    selected_blobs = {name: reviewed_tree[name] if name in SOURCE_DELTA_PATHS
+                      else base_tree[name] for name in base_tree}
+    blobs = _git_blobs(repo_root, set(selected_blobs.values()))
+    reconstructed = {}
+    for name in base_tree:
+        base_blob = base_tree[name]
+        reviewed_blob = selected_blobs[name]
+        item = proof["paths"].get(name)
+        if name in SOURCE_DELTA_PATHS and (not isinstance(item, dict)
+                or set(item) != {"base_blob", "reviewed_blob"}
+                or item != {"base_blob": base_blob, "reviewed_blob": reviewed_blob}
+                or base_blob == reviewed_blob):
+            raise ReplayError("source_delta_blob_identity_changed")
+        raw = blobs[reviewed_blob]
+        digest = _digest(raw)
+        if (source_files[name] != digest
+                or _read_unpinned(harness / name, 32 * 1024 * 1024) != raw):
+            raise ReplayError("source_delta_manifest_or_disk_changed")
+        reconstructed[name] = digest
+    if _digest(fixture.canonical(reconstructed)) != SOURCE_DELTA_TREE_SHA256:
+        raise ReplayError("source_delta_tree_changed")
+    return {"base_commit": base, "reviewed_commit": reviewed,
+            "patch_sha256": patch["sha256"]}
 
 
 def _verify_checkout_source(manifest: dict[str, Any], plan: dict[str, Any],
@@ -421,7 +573,7 @@ def _verify_product_hook_outcomes(rows: list[dict[str, Any]], plan: dict[str, An
 def preflight(manifest_path: Path, source_commit: str) -> None:
     """Check frozen local inputs without reading host state or starting a child."""
     manifest = _object(_read_unpinned(manifest_path, 8192))
-    _projection_descriptor(manifest)
+    _source_delta_descriptor(manifest)
     if (manifest["schema"] != SCHEMA
             or manifest["original_source_commit"] != source_commit):
         raise ReplayError("invalid_replay_manifest")
@@ -431,6 +583,8 @@ def preflight(manifest_path: Path, source_commit: str) -> None:
                    ("source_manifest", 1024 * 1024)]
     if "checkout_projection" in manifest:
         descriptors.append(("checkout_projection", 65536))
+    if "source_delta" in manifest:
+        descriptors.append(("source_delta", 65536))
     for name, limit in descriptors:
         item = manifest[name]
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
@@ -459,6 +613,8 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                    ("source_manifest", 1024 * 1024)]
     if "checkout_projection" in manifest:
         descriptors.append(("checkout_projection", 65536))
+    if "source_delta" in manifest:
+        descriptors.append(("source_delta", 65536))
     for name, limit in descriptors:
         item = manifest[name]
         if not isinstance(item, dict) or set(item) != {"path", "sha256"}:
@@ -495,11 +651,16 @@ def replay(manifest_path: Path) -> dict[str, Any]:
                 or ":" in name or "\\" in name
                 or not isinstance(digest, str) or not HEX64.fullmatch(digest)):
             raise ReplayError("unsafe_original_source_member")
-    _verify_checkout_source(
-        manifest, plan, source_files,
-        _object(inputs["checkout_projection"])
-        if "checkout_projection" in inputs else None,
-        Path(__file__).resolve().parents[2])
+    mapper_root = Path(__file__).resolve().parents[2]
+    source_delta = None
+    if "source_delta" in inputs:
+        source_delta = _verify_source_delta(
+            manifest, plan, source_files, _object(inputs["source_delta"]), mapper_root)
+    else:
+        _verify_checkout_source(
+            manifest, plan, source_files,
+            _object(inputs["checkout_projection"])
+            if "checkout_projection" in inputs else None, mapper_root)
     original_components = (
         "tools/validation/commentary_live_runner.py",
         "tools/validation/commentary_live_controller.py",
@@ -512,7 +673,6 @@ def replay(manifest_path: Path) -> dict[str, Any]:
     ) + (("tools/validation/commentary_suite_oracle.py",
           "tools/validation/commentary_timepoint.py")
          if plan.get("suite_oracle") else ())
-    mapper_root = Path(__file__).resolve().parents[2]
     if any(_digest(_read_unpinned(mapper_root / name, 2 * 1024 * 1024))
            != source_files.get(name) for name in original_components):
         raise ReplayError("original_runner_oracle_bytes_changed")
@@ -838,6 +998,7 @@ def replay(manifest_path: Path) -> dict[str, Any]:
             "repository": {"commit": manifest["original_source_commit"]},
             "original_source_commit": manifest["original_source_commit"],
             "prepared_source_sha256": plan["source_tree_sha256"],
+            **({"source_delta": source_delta} if source_delta else {}),
             "runtime_tree_sha256": plan["runtime_tree_sha256"],
             "platform": {"os": platform.system().lower(), "shell": "python-subprocess",
                          "toolchain": {"python": platform.python_version(),
