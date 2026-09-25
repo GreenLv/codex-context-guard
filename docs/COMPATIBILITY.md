@@ -5,7 +5,7 @@ profiles are separate from portable runtime checks and the existing six-gate
 `host_behavior` profile. Their scoped results reuse installed 0.14.2 runtime
 bytes; neither profile changes the Hook or state-schema compatibility contract.
 
-## 0.14.2 source candidate — Unreleased
+## 0.14.2 source candidate (2026-09-25; publication pending)
 
 The candidate separates action speech from object data and distinguishes
 observed predicates from whole closure in feedback. Standard/strict still
@@ -18,9 +18,11 @@ retain their `native_acceptance=not_established` results; later zero-model
 profiles do not rewrite them. Neither partial run executed the suite, and
 both final product SessionStart runs lacked a completed notification before
 cleanup. Both exact-marker
-controls left future observation pending. Two original historical Windows
-chains and the complete release gate remain open; these scoped results do not
-establish whole-task closure or actual compaction-threshold calibration. See
+controls left future observation pending. The original Windows compaction and
+Stop chains plus Archive-045 remain unresolved. The user allowed this release
+scope without adjudicating those cases; they are not verified fixes or passes.
+These scoped results do not establish whole-task closure or actual
+compaction-threshold calibration. Final publication identity remains separate. See
 [development status](DEVELOPMENT_0.14.2.md) and the
 [acceptance record](LOCAL_ACCEPTANCE.md).
 

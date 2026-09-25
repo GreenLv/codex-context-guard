@@ -1,4 +1,4 @@
-# 0.14.2 development status — Unreleased
+# 0.14.2 release candidate status (2026-09-25; publication pending)
 
 This is a source candidate, not a release or native acceptance receipt. The
 development baseline is published 0.14.1. Existing caches and historical
@@ -9,10 +9,10 @@ authority; this public status intentionally omits private evidence locations.
 
 | Work package | Current implementation | Remaining acceptance |
 | --- | --- | --- |
-| CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch and independent path-family holdouts passed. The 26-current-case source identity map was independently checked against 50 references | Original Windows historical-chain adjudication and Archive-045 linkage remain open; the accepted source identity map is not reopened |
-| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and independent answer review. Current-runtime macOS and Windows complete and partial C1 controls passed separate scoped replays | Two original Windows historical chains remain open; source replay does not prove every case or whole-task closure |
+| CG142-01 | Shared lossless instruction/object view, action consumers and source-offset tests; directory substitution through real Hook dispatch and independent path-family holdouts passed. The 26-current-case source identity map was independently checked against 50 references | Original Windows historical-chain adjudication and Archive-045 linkage remain unresolved under the user-approved release scope; the accepted source identity map is not reopened |
+| CG142-02 | Versioned Host message reader at PreCompact/SessionStart; source-bound root association and independent answer review. Current-runtime macOS and Windows complete and partial C1 controls passed separate scoped replays | Two original Windows historical chains remain unresolved; source replay does not prove every case or whole-task closure |
 | CG142-03 | Source-bound persistence, pause and cancellation remain; an exact marker has its own byte-exact wait. Current-runtime macOS and Windows C2 controls each passed nine scoped replay gates: generic continuation did not release the explicit wait, the exact marker released one business call and the suite, and future observation stayed pending | The synthetic main item stayed pending in complete-answer final readback; scoped controls do not establish whole-task closure or actual compaction-threshold calibration |
-| CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting. Independent low-budget, damaged-source, wrong-target and multi-object synthetic review passed; F09 has eight model samples | Final historical-case adjudication and behavior beyond the sampled native runs remain open |
+| CG142-04 | Read-only observed/remaining/waiting/unknown/historical fact view used by recovery, status, detail and Stop; whole-row recovery budgeting. Independent low-budget, damaged-source, wrong-target and multi-object synthetic review passed; F09 has eight model samples | Historical adjudication and behavior beyond the sampled native runs remain open; neither is represented as a pass |
 
 Renaming a suite directory from `neutral` to `audit` must not remove an
 explicit request to continue until completion. The object's original text
@@ -366,11 +366,23 @@ Archive-045's original linkage and failure chain remain unknown. These are
 specific adjudication gaps, not a rejection or reopening of the accepted
 source identity map.
 
-Do not freeze or publish 0.14.2 while required commentary, historical or native
-gates remain unresolved. Source tests, CI/HOL, immutable artifacts, isolated
-installation, live host behavior, tag and public Release readback are separate
-facts. The required future Release title is `Context Guard 0.14.2`; this file
-does not authorize publication or daily consumer installation.
+The user changed this release's acceptance scope: the original
+`CGI-20260913-codex-compaction-continuation`,
+`CGI-20260914-codex-windows-stop-feedback-confirmed-chain`, and
+`CGI-20260913-codex-archive-045` remain unresolved but do not block 0.14.2
+publication. Their original case records and the frozen 26-case denominator
+are unchanged. No source, scoped native, or CI result is a claim that any of
+these three cases was fixed, passed, or not applicable.
+
+Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the
+[12-lane Candidate CI matrix and required summary](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152)
+and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
+A documentation-only release commit must pass its own exact-commit CI/HOL;
+unchanged runtime evidence retains its original identity. Source checks,
+CI/HOL, immutable artifacts, isolated installation, live host behavior, tag
+and public Release readback remain separate facts. The intended Release title
+is `Context Guard 0.14.2`; this file does not authorize publication or daily
+consumer installation.
 
 ## Independent reviewer implementation candidate
 

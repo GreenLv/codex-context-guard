@@ -4,7 +4,7 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.14.2 — Unreleased
+## 0.14.2 — 2026-09-25
 
 ### Highlights
 
@@ -33,8 +33,9 @@
 
 ### Validation
 
-- 当前仍是开发中的源码候选。当前运行时的 macOS 与 Windows 完整回答、部分回答和精确口令运行分别通过限定范围的原生重放；各原始采集器保留较窄的观察结论。完整回答中的合成主任务仍待办，部分回答控制有意不运行测试，精确口令控制中的未来观察仍待办。整体任务的产品闭包和实际压缩阈值校准尚未证实。
-- 两条原始 Windows 历史链、Archive-045 关联及最终候选 CI/HOL 仍待验。当前尚不能发布，参见[开发状态](docs/DEVELOPMENT_0.14.2.md)和[本地验收](docs/LOCAL_ACCEPTANCE.md)。
+- 当前运行时的 macOS 与 Windows 完整回答、部分回答和精确口令运行分别通过限定范围的原生重放；各原始采集器保留较窄的观察结论。完整回答中的合成主任务仍待办，部分回答控制有意不运行测试，精确口令控制中的未来观察仍待办。整体任务的产品闭包和实际压缩阈值校准尚未证实。
+- 源码提交 `514f41d67d8be3930aaa63450456a0a5c375e9d0` 的 [12 通道 Candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152)和 [HOL 扫描](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966)通过；最终文档提交仍须通过自身精确提交检查。
+- 原始 Windows 压缩续接链、Stop 反馈链和 Archive-045 继续未决。用户允许带着这三项未决发布，不据此声称已修复或通过。tag 与 GitHub Release 读回仍是独立事项；详见[开发状态](docs/DEVELOPMENT_0.14.2.md)和[本地验收](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.14.1 — 2026-09-22
 

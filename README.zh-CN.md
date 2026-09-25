@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> **0.14.2 源码候选 — Unreleased。** 正在开发路径／动作分离和当前事实恢复。当前运行时的完整回答、部分回答和精确口令控制已在 macOS 与 Windows 分别通过限定范围的原生证据重放。两条原始 Windows 历史链及发布门仍待验；这些控制不证明整体任务闭包。参见[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新已发布版本仍为 0.14.1。
+> **0.14.2 源码候选（2026-09-25）；尚待发布。** 路径／动作分离和当前事实恢复已有 macOS 与 Windows 的有界原生控制；限定范围的重放不证明整体任务闭包。三项原始历史案例仍未决；依用户确定的发布范围，它们不阻塞本版，但不宣称已修复或通过。参见[发布线说明](docs/releases/v0.14.2.md)和[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新公开版本以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 为准。
 
 > **0.14.1（2026-09-22）** 为市场元数据补充现有 Apache-2.0 许可证链接，Hook 行为不变。参见[发布说明](docs/releases/v0.14.1.md)及[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)。
 
@@ -42,7 +42,7 @@ py -3.10 scripts\manage_plugin.py --apply
 
 ### 升级说明
 
-确认 0.14.1 Release 已发布后，请使用受管安装器升级并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。宿主 Goal 完成拦截仍须先验证同步 Hook 路径，当前不可采用；Guard 的显式 proof 与整体完成检查仍有效。降级或查看 0.13.x 历史行为前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
+升级到 0.14.2 前，先核实其公开 Release，再使用受管安装器并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。宿主 Goal 完成拦截仍须先验证同步 Hook 路径，当前不可采用；Guard 的显式 proof 与整体完成检查仍有效。降级或查看 0.13.x 历史行为前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
 
 若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，当前行为与平台边界见[兼容性说明](docs/COMPATIBILITY.md)；[0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)保留为历史记录。
 

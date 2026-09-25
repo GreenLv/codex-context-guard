@@ -12,7 +12,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
-> **0.14.2 source candidate — Unreleased.** Path/action separation and current-fact recovery are under development. On the current runtime, bounded complete-answer, partial-answer, and exact-marker controls passed separate scoped native evidence replays on macOS and Windows. Two original Windows historical chains and release gates remain open; these controls do not establish whole-task closure. See [development status](docs/DEVELOPMENT_0.14.2.md). Latest published version remains 0.14.1.
+> **0.14.2 source candidate (2026-09-25); publication pending.** Path/action separation and current-fact recovery have bounded macOS and Windows native controls. Their scoped replays do not establish whole-task closure. Three original historical cases remain unresolved; by the user's release-scope decision they do not block this version and are not claimed fixed or passed. See the [release-line notes](docs/releases/v0.14.2.md) and [development status](docs/DEVELOPMENT_0.14.2.md). Check [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for the latest published version.
 
 > **0.14.1 (2026-09-22)** adds a marketplace link to the existing Apache-2.0 license. Hook behavior is unchanged. See the [release notes](docs/releases/v0.14.1.md) and [published releases](https://github.com/GreenLv/codex-context-guard/releases).
 
@@ -42,7 +42,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-After verifying the published 0.14.1 Release, use the managed installer and check its installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. Host Goal-completion interception remains unavailable until its synchronous Hook path is verified; Guard's explicit proof and whole-completion checks still apply. See [compatibility](docs/COMPATIBILITY.md) before downgrading or reviewing earlier 0.13.x behavior.
+Before upgrading to 0.14.2, verify its published Release, then use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. Host Goal-completion interception remains unavailable until its synchronous Hook path is verified; Guard's explicit proof and whole-completion checks still apply. See [compatibility](docs/COMPATIBILITY.md) before downgrading or reviewing earlier 0.13.x behavior.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); current behavior and platform limits are in [compatibility](docs/COMPATIBILITY.md). The [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) is historical.
 

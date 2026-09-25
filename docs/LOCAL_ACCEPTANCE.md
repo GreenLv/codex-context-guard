@@ -1,6 +1,6 @@
 # Local Release Acceptance
 
-## 0.14.2 source candidate — Unreleased
+## 0.14.2 release candidate (2026-09-25; publication pending)
 
 The C1 partial-answer gate and C2 exact-marker/future-observation gate now
 have zero-model source oracles and focused regressions. The C1 native path
@@ -274,9 +274,19 @@ establish escaped-descendant absence. No model retry followed this run.
 The two original Windows historical continuation/Stop chains remain
 unverified. The 26-current-case source identity map against 50 references
 remains accepted, while Archive-045 original linkage and those historical
-adjudications remain open. Final exact-source CI/HOL, publication and consumer
-adoption are separate gates; the six scoped controls above do not establish
-whole-task completion.
+adjudications remain open. The user explicitly allowed 0.14.2 publication
+with these three original cases unresolved; their case truth and frozen
+denominator remain unchanged, and none is claimed fixed, passed, or not
+applicable. The six scoped controls above do not establish whole-task
+completion.
+
+Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the
+[12-lane Candidate CI matrix and required summary](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152)
+and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
+The one-line test repair relative to `4dc35ee` left the plugin runtime digest
+unchanged at `2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`.
+The final documentation commit still needs its own exact-commit CI/HOL.
+Publication and consumer adoption remain separate gates.
 
 An earlier C2 run on the prior runtime observed the exact-marker control chain
 and one completed business call.
@@ -298,7 +308,8 @@ original supervised runner's exact `OwnedProcess.close` observation. Escaped
 descendants remain unestablished. This mapping did not start another model or
 rewrite the original runner result. The new profile's pass covers this one
 macOS commentary chain; Windows commentary-chain acceptance and the separate
-control scenarios remain outstanding. 0.14.2 is not release-ready.
+control scenarios remained outstanding for that earlier P7 runtime; its result
+alone was not release readiness for 0.14.2.
 
 Development starts from published 0.14.1. The R33 source candidate passed
 1595 local tests with no failures or errors and 16 skips. Its 41-file plugin
