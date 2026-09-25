@@ -371,7 +371,7 @@ class C2ControllerTests(unittest.TestCase):
         controller = C2Controller(self.plan, self.observer, self.oracle)
         controller.start()
         startup_deadline = controller.stage_deadline
-        self.assertLessEqual(startup_deadline - time.monotonic(), 60)
+        self.assertLessEqual(startup_deadline, time.monotonic() + 60)
         controller.thread = self.host.session
         controller._start_turn(0)
         turn_deadline = controller.stage_deadline
