@@ -2175,3 +2175,32 @@ payload, native macOS/Windows, isolated installation, CI and publication were
 separate pending gates at that boundary. The current 0.12.4 release status is
 recorded at the top of this document.
 No historical business commit or remote is used as a regression fixture.
+
+## Before a costly native batch
+
+Run the repository-owned synthetic toolchain checks on each intended platform:
+
+```sh
+python tools/validation/native_toolchain_preflight.py --output /outside/source/preflight.json
+```
+
+Use a new writable output path (on Windows, for example a file under `$env:TEMP`)
+from a real Git checkout. This single entrypoint exercises batch inputs, namespace
+preparation, platform path handling, runner ordering, C2 capture, mapper and
+result contracts with positive and negative fixtures. Its receipt is written
+only after terminal test results, includes the toolkit's disk-byte identity and
+lists skipped platform checks. It is reusable while those inputs remain equal.
+It neither starts Codex nor proves live login, Hook trust, child permissions or
+model lifecycle. Retain those unknowns for the actual bounded native batch.
+
+These same test classes run in the existing current-behavior CI matrix. A green
+Linux or macOS lane is not Windows host evidence. After a tooling-only repair,
+replay retained captures first; rerun the costly scene only for a named missing
+observation or changed runtime/input. Do not request another login merely to
+validate a mapper change.
+
+The preflight distinguishes assertion/execution failure (exit 1) from incomplete
+coverage caused by unexpected or all-skipped tests (exit 3). Input/output errors
+use exit 2. Only `synthetic_checks_passed` exits 0. Skip test IDs and reasons stay
+in the receipt. An incomplete result is not a pass and cannot establish the
+missing capability; it does not authorize changing host security settings.
