@@ -1,6 +1,6 @@
 # Local Release Acceptance
 
-## 0.14.2 release candidate (2026-09-25; publication pending)
+## 0.14.2 — 2026-09-25
 
 The C1 partial-answer gate and C2 exact-marker/future-observation gate now
 have zero-model source oracles and focused regressions. The C1 native path
@@ -285,7 +285,7 @@ Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the
 and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
 The one-line test repair relative to `4dc35ee` left the plugin runtime digest
 unchanged at `2bd5abc8baa71abddd9e80e3194eb6aac8fc10f6ad1bba97b0742208aa07830f`.
-The final documentation commit still needs its own exact-commit CI/HOL.
+Publication requires green CI/HOL for the exact release commit; their receipts are recorded separately.
 Publication and consumer adoption remain separate gates.
 
 An earlier C2 run on the prior runtime observed the exact-marker control chain

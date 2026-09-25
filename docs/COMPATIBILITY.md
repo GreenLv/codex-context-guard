@@ -5,9 +5,9 @@ profiles are separate from portable runtime checks and the existing six-gate
 `host_behavior` profile. Their scoped results reuse installed 0.14.2 runtime
 bytes; neither profile changes the Hook or state-schema compatibility contract.
 
-## 0.14.2 source candidate (2026-09-25; publication pending)
+## 0.14.2 — 2026-09-25
 
-The candidate separates action speech from object data and distinguishes
+The 0.14.2 release line separates action speech from object data and distinguishes
 observed predicates from whole closure in feedback. Standard/strict still
 introduce no ordinary-tool execution approvals. The historical 0.14.1 native
 results do not validate these changed bytes. On the current runtime digest
@@ -26,7 +26,7 @@ compaction-threshold calibration. Final publication identity remains separate. S
 [development status](DEVELOPMENT_0.14.2.md) and the
 [acceptance record](LOCAL_ACCEPTANCE.md).
 
-The candidate's commentary and derived-sidecar readers compare `lstat` before/after
+The 0.14.2 commentary and derived-sidecar readers compare `lstat` before/after
 and `fstat` before/after separately, retaining `ctime_ns` in each stability check.
 Cross-API binding compares device, inode, size, modification time, mode and link
 count. CPython 3.12.10 Windows [path stat](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L2139)

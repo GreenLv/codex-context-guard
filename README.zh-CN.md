@@ -12,11 +12,11 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
 
-> **0.14.2 源码候选（2026-09-25）；尚待发布。** 路径／动作分离和当前事实恢复已有 macOS 与 Windows 的有界原生控制；限定范围的重放不证明整体任务闭包。三项原始历史案例仍未决；依用户确定的发布范围，它们不阻塞本版，但不宣称已修复或通过。参见[发布线说明](docs/releases/v0.14.2.md)和[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新公开版本以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 为准。
+> **0.14.2 — 2026-09-25。** 路径／动作分离和当前事实恢复已有 macOS 与 Windows 的有界原生控制；限定范围的重放不证明整体任务闭包。三项原始历史案例仍未决；依用户确定的发布范围，它们不阻塞本版，但不宣称已修复或通过。参见[发布线说明](docs/releases/v0.14.2.md)和[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新公开版本以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 为准。
 
 > **0.14.1（2026-09-22）** 为市场元数据补充现有 Apache-2.0 许可证链接，Hook 行为不变。参见[发布说明](docs/releases/v0.14.1.md)及[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)。
 
-> 行为基线：`0.14.0` 发布线（2026-09-21）。当前公开版本请以[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)的读回为准；本发布线的范围见[发布线说明](docs/releases/v0.14.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> 较早的行为基线：`0.14.0` 发布线（2026-09-21）。当前公开版本请以[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)的读回为准；本发布线的范围见[发布线说明](docs/releases/v0.14.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 > `0.14.0` 发布线源码（公开 tag 与安装状态须单独读回）：修复后的“长期收益以后再观察”仍属未来观察；用户现在要求但尚未运行的测试仍是当前工作。简短“继续”只恢复有来源且已就绪的工作，后来的暂停或取消只改变各自的范围。普通编辑与测试仍由 Codex 执行，Guard 核验已持久化的结果。共享核心 v2 契约由本仓维护，DSH 的镜像与 pin 身份须独立核验。详情及平台边界见[更新日志](CHANGELOG.zh-CN.md)和[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 

@@ -34,7 +34,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 ### Validation
 
 - Current-runtime macOS and Windows complete-answer, partial-answer and exact-marker runs passed separate scoped native replays. Each original collector retains its narrower observation verdict. Complete runs left a synthetic main item pending; the partial controls intentionally did not run a suite, and future observation stayed pending in the exact-marker controls. Whole-task product closure and actual compaction-threshold calibration remain unestablished.
-- Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the [12-lane Candidate CI matrix](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152) and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966). The final documentation commit still needs its own exact-commit checks.
+- Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the [12-lane Candidate CI matrix](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152) and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
+- Publication requires green CI/HOL for the exact release commit; their receipts are recorded separately.
 - The original Windows compaction-continuation and Stop-feedback chains plus Archive-045 remain unresolved. The user allowed release with these three cases open, without claiming a fix or pass. Tag and GitHub Release readback remain separate; see [development status](docs/DEVELOPMENT_0.14.2.md) and [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.14.1 — 2026-09-22

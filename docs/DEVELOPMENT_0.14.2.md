@@ -1,7 +1,7 @@
-# 0.14.2 release candidate status (2026-09-25; publication pending)
+# 0.14.2 development record — 2026-09-25
 
-This is a source candidate, not a release or native acceptance receipt. The
-development baseline is published 0.14.1. Existing caches and historical
+This page records development evidence, not a publication or native acceptance receipt. The
+development baseline was published 0.14.1. Existing caches and historical
 incident records remain unchanged. The external development plan retains
 authority; this public status intentionally omits private evidence locations.
 
@@ -377,8 +377,8 @@ these three cases was fixed, passed, or not applicable.
 Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the
 [12-lane Candidate CI matrix and required summary](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152)
 and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
-A documentation-only release commit must pass its own exact-commit CI/HOL;
-unchanged runtime evidence retains its original identity. Source checks,
+Publication requires green CI/HOL for the exact release commit; their receipts
+are recorded separately. Unchanged runtime evidence retains its original identity. Source checks,
 CI/HOL, immutable artifacts, isolated installation, live host behavior, tag
 and public Release readback remain separate facts. The intended Release title
 is `Context Guard 0.14.2`; this file does not authorize publication or daily
