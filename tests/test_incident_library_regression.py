@@ -739,9 +739,8 @@ class DshSharedSemanticsCases(unittest.TestCase):
         fixture2 = CaseFixture("dsh-ux11b")
         suite2 = Path(fixture2.root) / "suite.py"
         suite2.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture2.prompt(f"继续执行，运行 {suite2} 的测试。")
-        fixture2.after("exec_command", {"cmd": f"test -f {suite2}", "shell": "bash"},
-                       {"exit_code": 0, "output": ""})
+        fixture2.prompt(f'继续执行，运行 "{suite2}" 的测试。')
+        fixture2.ready_file(suite2)
         second = fixture2.stop("任务完成。")
         self.assertEqual(second.get("decision"), "block")
         self.assertEqual(first["reason"], second["reason"])
