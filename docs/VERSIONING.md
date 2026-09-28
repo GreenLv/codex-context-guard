@@ -21,11 +21,23 @@ no durable core completion field is added or migrated. Old state with no review
 ledger follows existing behavior. Every read revalidates source and current
 authority; unsupported or damaged records remain unknown. Collector code bytes
 are pinned inside captures, so changed adapter bytes invalidate old review
-receipts. Candidate repairs remain 0.14.2 Unreleased and require new isolated
+receipts. Candidate repairs published as 0.14.2 required new isolated
 installation evidence. No existing cache or historical receipt is overwritten.
 
 
-## 0.14.2 source candidate (Unreleased)
+## 0.14.3 — 2026-09-29
+
+- Runtime `PRODUCT_VERSION` `0.14.3`; schema 13, Stop 5.0.0 and all protocol
+  constants unchanged. The runtime tree digest changes (event-scoped Stop
+  evaluation context, information-grammar extension); consumed 0.14.2 caches
+  stay immutable.
+- Observable behavior changes: long-session Stop latency (event-scoped reuse
+  with per-phase invalidation), a `consumed_source_changed_before_commit`
+  integrity outcome when a consumed prompt record changes between read time
+  and commit, and delivery closure for bounded Chinese why-interrogative
+  information requests.
+
+## 0.14.2 — 2026-09-25 (published)
 
 The unpublished candidate extends schema-13 one-shot wait classification with
 `exact_input` for a source-bound, explicitly named root-user marker. Its

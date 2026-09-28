@@ -4,6 +4,35 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 0.14.3 — 2026-09-29
+
+### Highlights
+
+- 长会话的 Stop 评估明显加快，完成与恢复检查仍然保留。事故形状夹具在 macOS 上的全进程中位耗时从 0.14.2 的 7.252 秒降至 0.472 秒；候选在原生 Windows 上为 0.489 秒。各项计时边界见下文。
+- 源记录在 Stop 评估中途发生变化时，提交失败并回滚本次事件的业务状态改动。完整性检查失败后，已关闭单元或已接受证明不会作为成功结果留在磁盘上。
+- 已回答的有界中文 why 疑问可在交付时闭合，不再回到恢复待办。“解释模块为什么失败再修复模块”等混合请求仍保留执行工作；无法识别或有歧义的尾句保持未闭合。
+- 完整历史错误库（context-guard-effectiveness @ `16fc0a8d`：案例注册表 44 条 active + legacy 谱系 8 条 active，两套编号互不等同）已逐案映射并执行正负断言；superseded 记录均注明承接者。
+
+### Changes
+
+- `EvaluationContext`（私有、显式传参）在一次 Stop 事件内按内容键复用词法解析（fragments 与两种保位视图）、按阶段复用 scope 投影、每阶段每条 prompt 仅一次验证读取、根/项索引以及纯 (类别, 子句) 来源过滤。没有任何模块级缓存、没有跨事件数据；做过严格符号链接解析的完整 action basis 永不进入缓存。
+- 确定性工作量门槛与全进程计时进入 `tools/validation/benchmark_stop.py`（`count` / `process` / `pretool` 三种模式）；夹具完全通过真实 hook dispatch 构建（`tools/validation/stop_performance_fixture.py`）。CI 断言计数而非墙钟。历史 PreToolUse 50ms Phase-2 门槛保持退役；本机普通 PreToolUse 冷启动为 0.173 秒中位 / 0.180 秒最大（基线 0.164 秒，解释器与导入占主导），远低于 10 秒 Hook 时限。
+- 信息交付语法新增有界中文 why 疑问（可带"顺便"缓和词）；未知残余、时间尾句与并列动作子句仍然不会闭合。
+- `tests/test_incident_library_regression.py`、`tests/test_stop_performance.py` 与 `tests/test_evaluation_context.py` 增加逐案、完整 Stop 与上下文安全回归；`tests/fixtures/incidents/historical_case_coverage.json` 冻结逐案映射与分平台结果；`scripts/check_incident_coverage.py` 拒绝漏项、空断言、判定词汇漂移与无证据 pending。DSH 谱系案例以已执行的 Codex 侧共享语义回归裁定为 `analogue_only`，绝不宣称修复 DSH。
+- Schema 13、Stop 5.0.0、九个 Hook 事件与 POSIX/Windows 两种命令形式不变。已消费的 0.14.2 缓存保持不可变。使用受管安装器升级，在新任务中检查九个 Hook，再启动另一任务加载新版；无需迁移状态。
+
+### Validation
+
+- 源码级：完整测试套、仓库校验器、隐私审计、Ruff 与 compileall 在候选树全部通过（精确命令与输出见开发交接）。新增工作量回归在 0.14.2 基线（`aea556d`）上失败，该基线复现事故族：S1 进程内 7.138 秒，17,758 次根记录读取、97,335 次 fragments（仅 113 个不同文本）。
+- 本机（macOS，Python 3.12.2）两条计时轨道，互不混用：进程内 dispatch 轨（开发诊断；每样本克隆夹具，计时覆盖加载→锁→判定→保存的 harness 内路径）与全进程轨（每样本为全新 `context_guard.py hook` CLI 子进程，父进程墙钟计时，并校验退出码/stdout JSON/状态/锁/决策账本增长）。
+  - 全进程轨，20 样本：候选 S1 中位 0.425 秒 / p95 0.452 秒 / 最大 0.626 秒；S4 p95 0.722 秒 / 最大 0.879 秒；S2→S4 中位增长比 1.243（门槛 ≤ 2.8）；S0 中位 0.340 秒对基线 0.365 秒（无倒退）；普通 PreToolUse 冷启动中位 0.352 秒 / 最大 0.529 秒（基线 0.305 秒，解释器/导入主导）。基线全进程 S1 中位 7.252 秒 / 最大 8.130 秒、S4 中位 44.563 秒——均未达门槛，经真实 Hook 入口复现事故族。
+  - 进程内 dispatch 轨（诊断）：候选 S1 中位 0.084 秒 / p95 0.108 秒 / 最大 0.268 秒，S4 p95 0.262 秒；基线 S1 中位 5.860 秒、S4 中位 36.890 秒；每事件计数为 2 次 scope 构造、13 次记录读取加 13 次消费复核、113 次 fragments（基线对同样 113 个文本做了 17,758 次读取与 97,335 次解析）。
+- 最终运行时的 macOS 全进程结果读回（20 样本）：S1 中位 0.4715 秒 / p95 0.9602 秒 / 最大 1.6844 秒；S4 中位 0.6617 秒 / p95 1.6312 秒 / 最大 1.6937 秒；S4/S2 比值 1.0912；PreToolUse 中位 0.3689 秒。上方早期开发测量保留原有口径。
+- 历史错误库：37 条 active 记录 executed_pass，15 条 DSH 记录经 Codex 侧回归裁定 analogue_only，Windows 进程验收待办为零；19 条 superseded 记录保留真实承接者。所有必需测试节点通过。Windows 子进程重放不证明真实 Codex 宿主调度。
+- 原生 Windows 11 / Python 3.12.10：各形状 20 个全进程样本，S1 中位 0.489 秒 / p95 0.513 秒 / 最大 0.522 秒；S4 p95 0.764 秒 / 最大 0.772 秒；S4/S2 中位增长比 1.051；PreToolUse 中位 0.459 秒。五项 Windows 事故链 driver 通过。macOS 与 Windows 各自的真实 `stop_host/v1` 批次已在 CLI 0.158.0 上通过：四次 Stop 完成、预期等待纠正、真实压缩及冷续接后待办保留。有界合成场景不复现原始事故全状态；官方 Hook 状态/时长不等于 OS 退出码。精确提交的 CI/HOL 与发布另行核验。
+
+
+
 ## 0.14.2 — 2026-09-25
 
 ### Highlights

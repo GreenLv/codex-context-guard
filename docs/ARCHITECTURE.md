@@ -111,6 +111,38 @@ maintains private local task state, compiles a bounded recovery packet, and
 gates completion claims against successful, contract-compatible evidence. It does not replace or
 control Codex-native orchestration.
 
+## Event-scoped Stop evaluation reuse (0.14.3 candidate)
+
+One Stop event evaluates through a single private, explicitly passed
+`EvaluationContext` whose lifetime is one stable state phase.
+
+- **Content-keyed lexical layer.** Fragments and both position-preserving
+  instruction views are computed once per distinct source text. Keys are the
+  unchanged original strings; no whitespace folding, case folding,
+  normalization or path canonicalization happens before caching, and a
+  changed source can never reuse a previous parse.
+- **Phase-bound state projections.** The scope projection, the verified
+  prompt-record set (one read per prompt per phase), the root/item index,
+  disk-record catalogs and the control-catalog projection are memoized for
+  the current phase only. Every state-mutating Stop boundary — delivery
+  recording, checkpoint application, unit closure, visible-correction
+  accounting, proof derivation, ordinary-result retirement — calls
+  `new_phase`, which drops all state-bound memos. Lexical entries survive
+  phase changes because they are addressed by content.
+- **Not memoized.** A full action basis that performed a strict symlink
+  resolution keeps its original freshness check and is never cached; final
+  allow/block results, budget/scope/private-control/integrity checks and any
+  filesystem, Git, Host or review-sidecar read stay on their existing paths.
+- **Consumption-time source recheck.** Before an allowed decision is
+  committed, every root record the event consumed is read and compared once
+  more. A record that changed, vanished or lost its integrity binding turns
+  the commit into `fail_closed_integrity`
+  (`consumed_source_changed_before_commit`) instead of saving a completion
+  built from stale bytes.
+- **Failure strategy.** Memo exhaustion falls back to direct computation;
+  nothing is truncated, dropped or fabricated. Nothing is written to product
+  state, no module-level cache exists, and no memo crosses events.
+
 ## Responsibility boundary
 
 The unreleased 0.14.0 source candidate records schema-13 append sequence

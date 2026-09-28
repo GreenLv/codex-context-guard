@@ -1,0 +1,662 @@
+{
+  "schema": "incident-library-index/v3",
+  "description": "Per-record identity pins for the canonical historical incident library (context-guard-effectiveness at the frozen commit). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
+  "frozen_at": "2026-09-28",
+  "library_commit": "16fc0a8d677bb2fe01e60b7312da83b468adc309",
+  "case_registry": {
+    "raw_record_count": 55,
+    "active_case_count": 44,
+    "records": {
+      "CGI-20260913-codex-archive-009": {
+        "title": "旧契约下缺少动作前授权判定",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "e29d745d3c020e7e96877d87d6203e802c754d35c3b00452a6ce5d1086106537",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-010": {
+        "title": "终止分类允许越过原范围",
+        "family": "stop-disposition-validation",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "7bf28c98d99a3ea20b448699e5f5e2558792c1a1104dc637dae91cdd8047ff15",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-011": {
+        "title": "后续请求错误替代既有要求",
+        "family": "supersession-attribution",
+        "runtime": "codex",
+        "platform": "unknown",
+        "supersedes": null,
+        "record_sha256": "932b225f76ad46e2dc22ae8080629cdbdcbb3d4b783cd0face61b27c0a7dcb6f",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-012": {
+        "title": "范围切换缺少权威依据",
+        "family": "scope-transition-authority",
+        "runtime": "codex",
+        "platform": "unknown",
+        "supersedes": null,
+        "record_sha256": "ca5508a07b35af67c297b683be18af2fdc61985e3e41981604e1c110f64bc87d",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-013": {
+        "title": "已结束任务仍串成活动祖先",
+        "family": "completion-semantics",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "aeac657932f4fb8bf45d0fa838c91d8a7fc2c25b3bfb8a7630039acd5d6260b9",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-022"
+      },
+      "CGI-20260913-codex-archive-014": {
+        "title": "终止分类纠错形成重复续接",
+        "family": "stop-disposition-validation",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "3fc50d167144fef88316a2968d27778a8f5a4e14cd3a35ed4076dee4c65db660",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-023"
+      },
+      "CGI-20260913-codex-archive-015": {
+        "title": "等待子类型差异触发多余续接",
+        "family": "stop-disposition-validation",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "9c19ec969ff29ecf84f5728ca196a7059365e74af2bde26ca88f5f8b9a9d3a2b",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-024"
+      },
+      "CGI-20260913-codex-archive-016": {
+        "title": "成功 Hook 路径产生持续状态噪声",
+        "family": "receipt-adapter",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "17a4fcd73ee5b653e05f0ba9afa24d1a3afe3f4240a59aff011d14f8b88112f1",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-025"
+      },
+      "CGI-20260913-codex-archive-017": {
+        "title": "默认路径被精确发布票据约束",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "60e59e72cd9f2ac867f913142cb0c006e5ddd7c7e497b72b2673c17b98b41c95",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-026"
+      },
+      "CGI-20260913-codex-archive-018": {
+        "title": "参数中的命令词被误判为执行",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "c9bdabff2cebcf09dc807077a45ac67f129636a82082f3404fd85c5c6d1b5582",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-027"
+      },
+      "CGI-20260913-codex-archive-019": {
+        "title": "dry-run 被误判为真实远端变更",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "812e195c55b9dde388caf2b04885a3aff07eef2822c4605de2eb67d58eef4d73",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-028"
+      },
+      "CGI-20260913-codex-archive-020": {
+        "title": "完成纠正消息携带全历史标识",
+        "family": "completion-semantics",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "42991396f976c867dd98a98703c6de4cb190d11ea0dece2ee685c82f5402603c",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-029"
+      },
+      "CGI-20260913-codex-archive-021": {
+        "title": "任务读回工具名与对象绑定遗漏",
+        "family": "proof-scope-visual",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "0b8f09de25da3205dcb9f4e5de9ab4c658f9d226603462c88042b78153c72c35",
+        "status": "superseded",
+        "successor": "CGI-20260913-codex-archive-030"
+      },
+      "CGI-20260913-codex-archive-022": {
+        "title": "已结束任务仍串成活动祖先（历史复现记录）",
+        "family": "completion-semantics",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-013",
+        "record_sha256": "8d668f2ccb88dfc26fa5c018c99bc5e2b880af652502ccfcd02a30233e35e85b",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-023": {
+        "title": "终止分类纠错形成重复续接（历史复现记录）",
+        "family": "stop-disposition-validation",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-014",
+        "record_sha256": "596090edff9bcdc18b358ef583ba5392a24090c92d908f2ebf2e4f58ba4cab43",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-024": {
+        "title": "等待子类型差异触发多余续接（历史复现记录）",
+        "family": "stop-disposition-validation",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-015",
+        "record_sha256": "b1d0ad811be3c886d4f70bd327ef68625162b37b00806737a58dd48dcc21fba4",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-025": {
+        "title": "成功 Hook 路径产生持续状态噪声（历史复现记录）",
+        "family": "receipt-adapter",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-016",
+        "record_sha256": "eeb05a7762801651514917e211b525d2e440d5deac86b2d6f4fb4511dbb4a6c3",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-026": {
+        "title": "默认路径被精确发布票据约束（历史复现记录）",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-017",
+        "record_sha256": "1f2fc8ebc24993ae6c0d1588b332f44393bbd8e4d7d5824911e3d4e912d39923",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-027": {
+        "title": "参数中的命令词被误判为执行（历史复现记录）",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-018",
+        "record_sha256": "1f6053c46e5502a156d3cba01f2f0e568d0725afbcefa2fdc48766c3f6ec92a0",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-028": {
+        "title": "dry-run 被误判为真实远端变更（历史复现记录）",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-019",
+        "record_sha256": "fb538baeddf074964e6e334af34c2bad6de90f2a2e730f4b79ddcd432a234f7c",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-029": {
+        "title": "完成纠正消息携带全历史标识（历史复现记录）",
+        "family": "completion-semantics",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-020",
+        "record_sha256": "15672d10093a93c7a5c480dc04761f9ac3232da5133b6aa538bbcf9a82c43252",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-030": {
+        "title": "任务读回工具名与对象绑定遗漏（历史复现记录）",
+        "family": "proof-scope-visual",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20260913-codex-archive-021",
+        "record_sha256": "cab6c12ca52eb01bad3b8fd5404a675fd1a50d3e4520f2470393f3e68d98a01b",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-040": {
+        "title": "已回答问题在压缩恢复后重现",
+        "family": "compaction-recovery",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "87457a232b74af6113bd729e0e10e3c08946337742f2eec792a9143f3238ecb6",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-041": {
+        "title": "混合更新请求被压缩成只清理",
+        "family": "scope-transition-authority",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "2837d913a1d6ebe8a1d427affe5d31757e7fdfe0bbf306f43fdbf86ae52d7467",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-042": {
+        "title": "编辑观察缺失引发重复授权",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "d61251a6a30729c9a842be1d45fa791705a9b3eeb28570f32bba71693323a9e1",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-043": {
+        "title": "旧 Windows 运行时未识别已完成提交",
+        "family": "pre-action-authorization",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "d1077cffee2affb5853e3125e11622df50e0d8f551ca949c221f11f5737f7b53",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-044": {
+        "title": "后续请求触发不必要的替代确认",
+        "family": "supersession-attribution",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "72f8fb9607e546a210e595f07062ba8aa16f575d7b3038d996b847511ad83f1e",
+        "status": "active"
+      },
+      "CGI-20260913-codex-archive-045": {
+        "title": "诊断控制被拒但拒绝链不完整",
+        "family": "stop-disposition-validation",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "a98ba40a12b171084fff356bc16e56426198c0469fae4feb97ec8fbeca2fbc71",
+        "status": "active"
+      },
+      "CGI-20260913-codex-compaction-continuation": {
+        "title": "压缩后执行任务偏移为重复只读分析",
+        "family": "native-continuation",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "0d9a1e6a22a4300a834fda1ac3ce81e420cdc003206c42ae8c778608c3f348eb",
+        "status": "active"
+      },
+      "CGI-20260913-codex-execution-tail": {
+        "title": "解释请求后的执行尾句被错误闭合",
+        "family": "information-action-boundary",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "8728ade234c3b9a30d500b89cb1b967bf38286f93b721629f7ad515b459edfcd",
+        "status": "active"
+      },
+      "CGI-20260913-codex-tutorial-delivery": {
+        "title": "操作教程已回答但信息义务仍未闭合",
+        "family": "information-action-boundary",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "fb418c4f8475e19a9805f4ad9c58bd5b10b755c4eac98c4a952e30b42bcbe3aa",
+        "status": "active"
+      },
+      "CGI-20260914-codex-conditional-wait-stop": {
+        "title": "条件授权和时间等待被误判为立即可执行工作",
+        "family": "stop-wait-action-fallback",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "4fa0148925e51b119864b121e099b6410f3250d18d20f66d3268290f9643b730",
+        "status": "active"
+      },
+      "CGI-20260914-codex-windows-stop-feedback-confirmed-chain": {
+        "title": "Windows 两次 Stop 分类链已核对，第二次误报性质仍未定",
+        "family": "stop-wait-action-fallback",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": "CGI-20260914-codex-windows-stop-feedback-review",
+        "record_sha256": "9a9fb3a368d9dd770945145ec8cfcc7fa8ed76ebf29e638939605df79071b2a2",
+        "status": "active"
+      },
+      "CGI-20260914-codex-windows-stop-feedback-review": {
+        "title": "Windows 阶段总结后的 Hook 反馈待事件级核验",
+        "family": "stop-wait-action-fallback",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "453aec5060b96c210b8bb1287e965d48dedb2f0e1cab53ac46001bfb9d4750b3",
+        "status": "superseded",
+        "successor": "CGI-20260914-codex-windows-stop-feedback-confirmed-chain"
+      },
+      "CGI-20260914-dsh-prepare-output-invalid": {
+        "title": "DSH prepare 工具对任何已存在契约项都返回不可序列化输出",
+        "family": "diagnostic-surface-unavailable",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "51f8781bed233e15587b23360b31dad177e89164c508c9e97541c55114245518",
+        "status": "superseded",
+        "successor": "CGI-20260914-dsh-prepare-output-root-cause"
+      },
+      "CGI-20260914-dsh-prepare-output-root-cause": {
+        "title": "DSH prepare 的可选 reason_code 泄漏 undefined；0.5.3 已修复",
+        "family": "diagnostic-surface-unavailable",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": "CGI-20260914-dsh-prepare-output-invalid",
+        "record_sha256": "81b9f6f17e64e07f99adb3c173f5fc94caee2c1ff1198a0c54445ec8ce6a8566",
+        "status": "active"
+      },
+      "CGI-20260915-dsh-asset-interpretation-dead-end": {
+        "title": "附件身份被保留，但解释义务落入执行认证死路",
+        "family": "asset-interpretation",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "bd474f2fbc2a0edb38b314552a8f039b8cbbca0df9e4260c73abe3d7cf4caaad",
+        "status": "active"
+      },
+      "CGI-20260915-dsh-discovery-truncation": {
+        "title": "准备入口截断旧条目，无法翻页获取新动作",
+        "family": "discovery-incomplete",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "3e4ef9fba9248001f15306293361f91a9ab2e67fea6a5cb5ba7103bd59b38eb8",
+        "status": "active"
+      },
+      "CGI-20260915-dsh-ordinary-git-diagnosis": {
+        "title": "普通 Git 观察事实与严格证据诊断脱节",
+        "family": "diagnosis-observation-gap",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "129466012a81c074f6647b360be1007cf8cb5205d4056fdd3b33c4a3ac59f5ba",
+        "status": "active"
+      },
+      "CGI-20260915-dsh-positive-default-authority": {
+        "title": "背景与连接片段默认成为可执行要求",
+        "family": "semantic-authority-default",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "7e7d326a9ee1d90644ea72620a61fe952486056d5f48ea17be794f47b234e30e",
+        "status": "active"
+      },
+      "CGI-20260915-dsh-readonly-historical-gap": {
+        "title": "只读验证误报历史前置证据缺失",
+        "family": "diagnosis-facet-contract",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "40e1f9bbe3eb1357ebefbaea8d6620e6bc46dda5c0d557b5d675ea8fd8cd8024",
+        "status": "active"
+      },
+      "CGI-20260916-dsh-062-cwd-promoted-to-requested-target": {
+        "title": "启动目录被当成用户已经选定的 Git 目标",
+        "family": "target-source-authority",
+        "runtime": "dsh",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "804e1fee80da7db7622090494a050a81d9409f20bbe0a670eba5143585296e7f",
+        "status": "active"
+      },
+      "CGI-20260916-dsh-062-mixed-question-closes-actions": {
+        "title": "混合请求中的问句标记导致执行义务被回答关闭",
+        "family": "mixed-intent-delivery",
+        "runtime": "dsh",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "773dad14ea24dc550448d72aff5cd3a32607e88652a463cbb6784275b9e83d8e",
+        "status": "active"
+      },
+      "CGI-20260916-dsh-062-prepare-item-compatibility": {
+        "title": "准备配方未反映当前条目动作与目标不相容",
+        "family": "prepare-execute-consistency",
+        "runtime": "dsh",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "7e0355432117ca4d5724fa9cde80a9e67b76bd32ae604338a6b3d20594a496c6",
+        "status": "active"
+      },
+      "CGI-20260916-dsh-cleanup-live-dependency-partial-result": {
+        "title": "工作树清理未先证明无依赖，部分失败后仍过度报告完成",
+        "family": "execution-workflow-dependency",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "c65671fba46c1ca7e1f8338913890e701d95775819149d8d9ad28e351f90ab92",
+        "status": "active"
+      },
+      "CGI-20260916-dsh-shell-process-operation-boundary": {
+        "title": "复合脚本的工具返回与局部失败需要分层表达",
+        "family": "shell-outcome-attribution",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "b7a0bc8d6ace25b0cfef425d8cb9a8be70cef47a32fc81cfae2a2b5c225f2538",
+        "status": "active"
+      },
+      "CGI-20260916-dsh-unsupported-cleanup-diagnosis": {
+        "title": "普通清理的认证能力不足被误归因于用户输入",
+        "family": "capability-diagnosis",
+        "runtime": "dsh",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "d0898db0a49840df26d7e92b60c67f47110c10b43c52daa53b625ade13c7590f",
+        "status": "active"
+      },
+      "CGI-20260918-codex-future-observation-stop": {
+        "title": "Codex 0.13.9 将未来效果观察误判为已授权剩余工作并错误声明持续执行要求",
+        "family": "stop-actionability-provenance",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "ba78e98c53f1ea3a53153f90053bd718c87a5d19692154eb999bdc5e34a58acd",
+        "status": "active"
+      },
+      "CGI-20260920-codex-side-question-compaction-stop": {
+        "title": "执行中插问已在进度回复回答，压缩后重复回答并静默停止主任务",
+        "family": "side-question-continuation-and-delivery",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "51b0a065cdc6428c812c8d19752bfa2802bcb484fae0e4826e5ef72ef3935db5",
+        "status": "active"
+      },
+      "CGI-20260922-dsh-v6-recovery-feedback-divergence": {
+        "title": "v6 恢复仍使用旧认证诊断，普通任务被导向澄清和无收益记账",
+        "family": "diagnosis-observation-gap",
+        "runtime": "dsh",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "7c05eece42d080e86cf9cceb1bba3452f2a990c033311928324c8c92e9f2d147",
+        "status": "active"
+      },
+      "CGI-20260923-codex-path-action-continuation": {
+        "title": "路径中的动作词污染持续执行控制分类",
+        "family": "instruction-object-boundary",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "dc82f72079150221ffbf13a4840b7be79753f1b7b64f9372784b5e79046d8433",
+        "status": "active"
+      },
+      "CGI-20260928-codex-archive-pretool-cold-start": {
+        "title": "历史 PreToolUse 冷启动与模块导入未达到性能门槛",
+        "family": "hook-cold-start-performance",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "76ed8cadb1f86622bed15e320a5eb2ce7ef68dfdab486ec597ffa0be61ab0306",
+        "status": "active"
+      },
+      "CGI-20260928-codex-stop-performance-timeout": {
+        "title": "长会话 Stop 重复计算超过十秒 Hook 时限",
+        "family": "full-stop-performance",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "76a2979a01f62cd2eae397b97cf1c96ba10caf4b7241e9f2dce4ac2c1aa8547d",
+        "status": "active"
+      },
+      "CGI-20260928-dsh-archive-ux10-target-pollution": {
+        "title": "历史 DSH 目标标识吸收相邻文本导致证据无法匹配",
+        "family": "subject-target-boundary",
+        "runtime": "dsh",
+        "platform": "unknown",
+        "supersedes": null,
+        "record_sha256": "78ed44a33788dd352a9dff6d6adf595122532057942ca3869021aaa1bb2594cd",
+        "status": "active"
+      },
+      "CGI-20260928-dsh-archive-ux11-unreachable-remediation": {
+        "title": "历史 DSH 纠错提示导向仍被拒绝的证据链",
+        "family": "unreachable-remediation-chain",
+        "runtime": "dsh",
+        "platform": "unknown",
+        "supersedes": null,
+        "record_sha256": "940615e5cd7c4f7e19a9ca011c307f2e5be367555f2debc995e1cda83df03042",
+        "status": "active"
+      }
+    }
+  },
+  "legacy_source": {
+    "raw_record_count": 16,
+    "active_case_count": 8,
+    "records": {
+      "CGI-2026-001": {
+        "diagnostic_outcome": "gate_completion_claim",
+        "record_sha256": "ffcacd261eeba8a793ccf3dd0f8f9d1e3a14cc0d62dcdb5fbadbcd1a801eb2e0",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-009"
+      },
+      "CGI-2026-002": {
+        "diagnostic_outcome": "gate_completion_claim",
+        "record_sha256": "1feb98fc8b069d1082c430150cdad505a02c5b611efdaf9af3faf03dd063fae7",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-010"
+      },
+      "CGI-2026-003": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "f3a548b65bbcc9a5593718a1df9fb2d20c0112e88212775a1979f99a889208b2",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-011"
+      },
+      "CGI-2026-004": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "0f1bd6f722e767689c6c50012746c137402d986d39363ab69f623a12b8927e8f",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-012"
+      },
+      "CGI-2026-005": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "d090d52ce65dd9e335e54b62ffaa811907bc266b75555b2af0953ede62ab747a",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-013"
+      },
+      "CGI-2026-006": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "f34a8b36f9174863c1e72a8755250373273d5d4f236becb0f6df7a8c756d0abf",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-014"
+      },
+      "CGI-2026-007": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "51dd4dbc257ad1b8ad42a206a689f0ab76037a5bdc3d16dc03cb104b6708a3f9",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-015"
+      },
+      "CGI-2026-008": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "50c188812720838a01b9fa4008cb6382a87d002f8aba419158e5c52cdca3f24d",
+        "status": "legacy-superseded",
+        "successor": "CGI-2026-016"
+      },
+      "CGI-2026-009": {
+        "diagnostic_outcome": "gate_completion_claim",
+        "record_sha256": "d637c88213b2d5a0ba74d8efb647dea3fbe4095eecbeba83dd9ccaf001192be3",
+        "status": "legacy-active"
+      },
+      "CGI-2026-010": {
+        "diagnostic_outcome": "gate_completion_claim",
+        "record_sha256": "9701ce8d5b9b0b7b5f6376eb8fc2b1aca9bfa82e101304e6a281bf27f5c28161",
+        "status": "legacy-active"
+      },
+      "CGI-2026-011": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "26863455728218d5621068ce9d161fcea8ca5ccb646c6490b4388d36f09ab164",
+        "status": "legacy-active"
+      },
+      "CGI-2026-012": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "142a446795f138dae24ad73dd6887ddad08e802922b44d492f4b0c50c520801b",
+        "status": "legacy-active"
+      },
+      "CGI-2026-013": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "e8ae4c63052238cc55d3537a92149478d2f88e2417ca8c12629711748d506a41",
+        "status": "legacy-active"
+      },
+      "CGI-2026-014": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "d209dfa8038db09e98c9f5a24d8604119933e3a6c88b3d29839d1f7828a076d9",
+        "status": "legacy-active"
+      },
+      "CGI-2026-015": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "ac536588904e771fda7b24b2aacb2ca5ce5bde7127e184cdc8478a8bc8d2715a",
+        "status": "legacy-active"
+      },
+      "CGI-2026-016": {
+        "diagnostic_outcome": "allow_neutral",
+        "record_sha256": "62911c0bffebd8eb52b99b853b379c0281919baa30290419d28b588b8bc5ddbe",
+        "status": "legacy-active"
+      }
+    }
+  },
+  "windows_not_required_case_ids": [
+    "CGI-2026-009",
+    "CGI-2026-010",
+    "CGI-2026-011",
+    "CGI-2026-012",
+    "CGI-2026-013",
+    "CGI-2026-014",
+    "CGI-2026-015",
+    "CGI-2026-016",
+    "CGI-20260913-codex-archive-009",
+    "CGI-20260913-codex-archive-010",
+    "CGI-20260913-codex-archive-011",
+    "CGI-20260913-codex-archive-012",
+    "CGI-20260913-codex-archive-013",
+    "CGI-20260913-codex-archive-014",
+    "CGI-20260913-codex-archive-015",
+    "CGI-20260913-codex-archive-016",
+    "CGI-20260913-codex-archive-017",
+    "CGI-20260913-codex-archive-018",
+    "CGI-20260913-codex-archive-019",
+    "CGI-20260913-codex-archive-020",
+    "CGI-20260913-codex-archive-021",
+    "CGI-20260913-codex-archive-022",
+    "CGI-20260913-codex-archive-023",
+    "CGI-20260913-codex-archive-024",
+    "CGI-20260913-codex-archive-025",
+    "CGI-20260913-codex-archive-026",
+    "CGI-20260913-codex-archive-027",
+    "CGI-20260913-codex-archive-028",
+    "CGI-20260913-codex-archive-029",
+    "CGI-20260913-codex-archive-030",
+    "CGI-20260913-codex-archive-040",
+    "CGI-20260913-codex-archive-041",
+    "CGI-20260913-codex-archive-042",
+    "CGI-20260913-codex-execution-tail",
+    "CGI-20260913-codex-tutorial-delivery",
+    "CGI-20260914-codex-conditional-wait-stop",
+    "CGI-20260916-dsh-062-cwd-promoted-to-requested-target",
+    "CGI-20260916-dsh-062-mixed-question-closes-actions",
+    "CGI-20260916-dsh-062-prepare-item-compatibility",
+    "CGI-20260918-codex-future-observation-stop",
+    "CGI-20260920-codex-side-question-compaction-stop",
+    "CGI-20260922-dsh-v6-recovery-feedback-divergence",
+    "CGI-20260923-codex-path-action-continuation",
+    "CGI-20260928-codex-archive-pretool-cold-start",
+    "CGI-20260928-codex-stop-performance-timeout",
+    "CGI-20260928-dsh-archive-ux10-target-pollution",
+    "CGI-20260928-dsh-archive-ux11-unreachable-remediation"
+  ],
+  "windows_applicability_note": "Frozen from the library contract: a case id appears here only when its frozen record is not Windows-originated (platform != windows) or it is an active legacy-lineage record. Rows cannot waive themselves; editing this set requires independent review of the library mapping."
+}

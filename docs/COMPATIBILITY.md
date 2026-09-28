@@ -5,6 +5,21 @@ profiles are separate from portable runtime checks and the existing six-gate
 `host_behavior` profile. Their scoped results reuse installed 0.14.2 runtime
 bytes; neither profile changes the Hook or state-schema compatibility contract.
 
+## 0.14.3 — 2026-09-29
+
+Compatible with schema-13 states written by 0.12–0.14.2; no migration. The
+Stop decision surface is unchanged for identical inputs (verified by a
+normalized old-vs-new full-process differential on neutral, claim, wait and
+compact/resume scenarios). New observable outcome:
+`consumed_source_changed_before_commit` when a consumed prompt record changes
+between read time and commit. Native Windows Hook-process checks passed;
+both macOS and Windows passed the bounded `stop_host/v1` profile on CLI
+0.158.0: official trusted Hook observations, successful Stops, a waiting-condition
+correction, actual compaction and cold continuation with pending work retained.
+Older CLI versions are not retested. This profile does not certify all six
+`host_behavior` gates or reproduce the original incident state. See
+[local acceptance](LOCAL_ACCEPTANCE.md) for exact boundaries.
+
 ## 0.14.2 — 2026-09-25
 
 The 0.14.2 release line separates action speech from object data and distinguishes

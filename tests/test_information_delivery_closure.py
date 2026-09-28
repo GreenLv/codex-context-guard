@@ -394,5 +394,61 @@ class UncertifiedClaimDiagnosticTests(InformationDeliveryHarness):
         )
 
 
+class BoundedWhyQuestionTests(InformationDeliveryHarness):
+    """Why-interrogative delivery is bounded: execution and temporal tails
+    never close (review counterexamples R2), pure why questions do."""
+
+    SHAPE_CASES = [
+        # (prompt, closes_on_delivery)
+        ("解释模块为什么失败再修复模块", False),
+        ("解释模块为什么失败后运行测试", False),
+        ("解释模块为什么失败，然后再修复它", False),
+        ("解释模块为什么失败之后提交改动", False),
+        ("解释模块为什么失败完成后运行测试", False),
+        ("解释模块为什么失败并运行 tests/test_a.py", False),
+        ("解释模块为什么失败,然后更新配置", False),
+        ("解释模块为什么失败再部署服务", False),
+        ("解释模块为什么失败然后把 `git push` 跑一遍", False),
+        # Review round-2 counterexamples: unknown execution verbs inside the
+        # residual stay open under the POSITIVE grammar (they are simply not
+        # in the closed descriptive-predicate list; no blacklist growth).
+        ("解释模块为什么失败顺手清理缓存", False),
+        ("解释模块为什么失败顺手删掉缓存", False),
+        ("解释模块为什么失败顺手重启服务", False),
+        ("解释模块为什么失败顺手格式化硬盘", False),
+        ("解释模块为什么失败然后编译项目", False),
+        ("解释模块为什么失败再迁移数据库", False),
+        ("解释模块为什么失败要失败再清理", False),
+        ("解释一下这个函数为什么要处理空输入。", True),
+        ("顺便解释一下这个函数为什么要处理空输入？", True),
+        ("这个函数为什么要处理空输入？", True),
+        ("解释一下这个模块为什么要有两层缓存？", True),
+        ("解释 `parse()` 为什么要返回元组？", True),
+        ("说明这个配置文件为什么要加载两次", True),
+    ]
+
+    def test_why_shape_table(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        for prompt, closes in self.SHAPE_CASES:
+            with self.subTest(prompt=prompt):
+                item = self.answer(prompt, reply="失败原因是配置与接口不匹配。"
+                                  if not closes else "该行为的原因如下：入口契约要求。")
+                self.assertEqual(item["status"],
+                                 "answered" if closes else "pending", prompt)
+
+    def test_counterexample_survives_delivery_and_recovery(self) -> None:
+        self.cg.dispatch(self.payload("UserPromptSubmit", prompt="context-guard on"))
+        item = self.answer("解释模块为什么失败再修复模块",
+                           reply="失败原因是配置与接口不匹配。")
+        self.assertEqual(item["status"], "pending")
+        self.cg.dispatch(self.payload("PreCompact", turn="t1"))
+        resumed = self.cg.dispatch(self.payload("SessionStart", source="compact",
+                                                turn="t1"))
+        packet = json.dumps(resumed, ensure_ascii=False)
+        self.assertIn(item["id"], packet)  # the repair duty stays listed
+        projection = self.cg.current_scope_projection(self.state())
+        self.assertIn(item["id"], projection["current_item_ids"])
+
+
 if __name__ == "__main__":
     unittest.main()

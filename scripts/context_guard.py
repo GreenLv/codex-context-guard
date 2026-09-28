@@ -48,7 +48,7 @@ except ModuleNotFoundError as exc:
     governed_test_action = _instruction_module.governed_test_action
     instruction_text = _instruction_module.instruction_text
 
-PRODUCT_VERSION = "0.14.2"
+PRODUCT_VERSION = "0.14.3"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -7658,6 +7658,51 @@ def explicit_execution_resume(text: str) -> bool:
     return any(EXECUTION_RESUME_RE.search(clause) for clause in control_speech_clauses(text))
 
 
+# A why-interrogative tail is a POSITIVE, closed grammar over descriptive
+# predicates, never a keyword blacklist: the residual is either empty or
+# ``(要|得|会|能|需要)? + <descriptive predicate> + <=10 noun characters``.
+# Any other residual — unknown verbs such as 清理/删掉/重启/格式化, requests,
+# continuation connectors like 再/后/顺手 — fails the grammar and keeps the
+# request open (unknown text never closes on delivery).
+_INFORMATION_WHY_PREDICATES = (
+    "处理|返回|加载|存在|包含|使用|需要|重复|触发|失败|生效|失效|"
+    "保留|省略|跳过|等待|区分|支持|涉及|要求|有|是"
+)
+_INFORMATION_WHY_TAIL_RE = re.compile(
+    rf"(?:要|得|会|能|需要)(?:{_INFORMATION_WHY_PREDICATES})"
+    rf"[\u4e00-\u9fffA-Za-z0-9]{{0,8}}"
+)
+# The short noun run after the predicate may not contain coordination or
+# sequence markers: a second act inside one residual is a mixed request.
+_INFORMATION_WHY_NOUN_FORBIDDEN = re.compile(
+    r"再|然后|随后|之后|后|顺手|顺便|并且|同时|以及|接着|先|又|就|还")
+
+
+def _information_why_question(body: str) -> bool:
+    """Bounded Chinese why-question about an information topic.
+
+    ``<head>(一下)?<topic>(为什么|为何)<residual>`` or the bare
+    ``<topic>(为什么|为何)<residual>``. The residual must be empty or match
+    the closed descriptive grammar above; anything else stays unknown and
+    never closes on delivery.
+    """
+    for pattern in (
+        rf"(?:{_INFORMATION_ZH_HEAD})(?:一下)?\s*({_INFORMATION_ZH_TOPIC})\s*(?:为什么|为何)(.*)$",
+        rf"({_INFORMATION_ZH_TOPIC})\s*(?:为什么|为何)(.*)$",
+    ):
+        match = re.fullmatch(pattern, body, re.I)
+        if match is None:
+            continue
+        residual = match.group(match.lastindex).strip("？?。.！!，,；;：: ")
+        if not residual:
+            return True
+        tail = _INFORMATION_WHY_TAIL_RE.fullmatch(residual)
+        if tail is None:
+            return False
+        return _INFORMATION_WHY_NOUN_FORBIDDEN.search(tail.group(0)) is None
+    return False
+
+
 def _reply_only_request_shape(text: str) -> bool:
     """Recognize complete reply-only clauses; unknown residuals never close.
 
@@ -7673,7 +7718,7 @@ def _reply_only_request_shape(text: str) -> bool:
         return False
     for index, segment in enumerate(segments):
         body = re.sub(
-            r"^(?:(?:请|帮我|麻烦|你|您|给我|能否|能不能|可不可以)\s*|"
+            r"^(?:(?:请|帮我|麻烦|顺便|你|您|给我|能否|能不能|可不可以)\s*|"
             r"(?:本轮|当前)?(?:只|仅|先)\s*|please\s+|"
             r"(?:can|could|would)\s+you\s+)+", "", segment, flags=re.I
         )
@@ -7686,6 +7731,8 @@ def _reply_only_request_shape(text: str) -> bool:
         )
         subsequent = re.search(r"(?:后|之后|然后|随后|再|\bthen\b).+$", body, re.I)
         if explanatory and not subsequent:
+            continue
+        if not subsequent and _information_why_question(body):
             continue
         if _INFORMATION_CLAUSE_RE.fullmatch(body):
             continue
@@ -10118,6 +10165,322 @@ def _literal_old_file_context(clause: str, target: str) -> bool:
     ))
 
 
+class _ParsedText:
+    """One lossless lexical parse bound to one exact source string.
+
+    The original string stays the sole authority. Fragments and both
+    position-preserving views are derived once per unchanged text; a changed
+    source can never reuse them because every entry is keyed by content.
+    """
+
+    __slots__ = ("text", "parts", "view", "flat_view")
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.parts = fragments(text)
+        self.view: str | None = None
+        self.flat_view: str | None = None
+
+    def instruction_view(self, *, preserve_newlines: bool) -> str:
+        if preserve_newlines:
+            if self.view is None:
+                self.view = instruction_text(self.text, preserve_newlines=True)
+            return self.view
+        if self.flat_view is None:
+            self.flat_view = instruction_text(self.text, preserve_newlines=False)
+        return self.flat_view
+
+
+class EvaluationContext:
+    """Event-scoped reuse of pure computations within stable state phases.
+
+    One context serves one top-level hook computation (a Stop evaluation).
+    Lexical results are content-keyed by the exact source text and survive
+    phase changes. State-bound results — the scope projection, verified root
+    records, the item index, per-phase prompt-record reads, control
+    projections, and pure action-basis decisions — are dropped at every
+    ``new_phase`` call, which each state-mutating Stop boundary performs.
+    Nothing is stored at module level, no memo crosses events, and a memo
+    hit never substitutes for the consumption-time source recheck
+    (``verify_consumed_sources``) that guards the committed decision.
+
+    A full action basis that touched the live filesystem (a strict symlink
+    resolution) is never memoized: the TOCTOU check keeps its original
+    freshness. Counters are opt-in (tests and benchmarks pass a dict); the
+    production path keeps no performance data and persists no memo content.
+    """
+
+    _TEXT_BUDGET_BYTES = 8 * 1024 * 1024
+    _SEARCH_MEMO_LIMIT = 50_000
+    _DECISION_MEMO_LIMIT = 5_000
+
+    def __init__(self, state: dict[str, Any], session_dir: Path | None,
+                 *, counters: dict[str, int] | None = None,
+                 text_budget_bytes: int | None = None) -> None:
+        self.state = state
+        self.session_dir = session_dir
+        self.counters = counters
+        self.text_budget_bytes = (self._TEXT_BUDGET_BYTES if text_budget_bytes is None
+                                  else int(text_budget_bytes))
+        self.phase = 0
+        self.phase_log: list[tuple[int, str]] = [(0, "init")]
+        # Content-keyed pure lexical results (valid across phases).
+        self._parsed: dict[str, _ParsedText] = {}
+        self._parsed_bytes = 0
+        self._searches: dict[tuple[int, str], tuple[re.Pattern[str], str, list[re.Match[str]]]] = {}
+        self._source_clauses: dict[str, list[str]] = {}
+        self._reply_clause_memo: dict[str, list[str]] = {}
+        # Phase-bound state projections (cleared by new_phase).
+        self._scope: dict[str, Any] | None = None
+        self._prompt_record_memo: dict[str, dict[str, Any] | None] = {}
+        self._root_records: dict[str, dict[str, Any]] | None = None
+        self._prompt_records: dict[Any, dict[str, Any] | None] | None = None
+        self._disk_records: list[dict[str, Any]] | None = None
+        self._item_index: dict[Any, list[dict[str, Any]]] | None = None
+        self._control_projection: dict[str, Any] | None = None
+        self._control_projection_done = False
+        self._bases: dict[tuple, dict[str, Any] | None] = {}
+        self._action_sources: dict[tuple[str, str, str], list[str]] = {}
+        # Root-record identities consumed this event, for the commit recheck.
+        self._consumed: dict[str, tuple[str, str]] = {}
+        self._basis_impure = False
+
+    def _count(self, name: str) -> None:
+        if self.counters is not None:
+            self.counters[name] = self.counters.get(name, 0) + 1
+
+    def new_phase(self, reason: str) -> None:
+        """Drop every state-bound memo after a write that affects projections.
+
+        Lexical content keys stay valid because they are addressed by the
+        unchanged source text itself; any state-derived view is recomputed
+        from the mutated state on next use.
+        """
+        self.phase += 1
+        if len(self.phase_log) < 64:
+            self.phase_log.append((self.phase, reason))
+        self._scope = None
+        self._prompt_record_memo = {}
+        self._root_records = None
+        self._prompt_records = None
+        self._disk_records = None
+        self._item_index = None
+        self._control_projection = None
+        self._control_projection_done = False
+        self._bases = {}
+        self._action_sources = {}
+        self._count("phase")
+
+    # -- pure lexical layer -------------------------------------------------
+
+    def parsed(self, text: str) -> _ParsedText:
+        cached = self._parsed.get(text)
+        if cached is not None:
+            return cached
+        parsed = _ParsedText(text)
+        self._count("fragments_computed")
+        budget = len(text.encode("utf-8"))
+        if self._parsed_bytes + budget <= self.text_budget_bytes:
+            self._parsed[text] = parsed
+            self._parsed_bytes += budget
+        return parsed
+
+    def fragments_of(self, text: str) -> tuple[Any, ...]:
+        return self.parsed(text).parts
+
+    def instruction_view(self, text: str, *, preserve_newlines: bool = True) -> str:
+        parsed = self.parsed(text)
+        if (preserve_newlines and parsed.view is None) or (
+                not preserve_newlines and parsed.flat_view is None):
+            self._count("instruction_view_computed")
+        return parsed.instruction_view(preserve_newlines=preserve_newlines)
+
+    def action_matches_of(self, pattern: re.Pattern[str], text: str) -> list[re.Match[str]]:
+        key = (id(pattern), text)
+        cached = self._searches.get(key)
+        if cached is not None and cached[0] is pattern:
+            return cached[2]
+        self._count("action_matches_computed")
+        matches = action_matches(pattern, text)
+        if len(self._searches) < self._SEARCH_MEMO_LIMIT:
+            # Pin the pattern and text so an id can never be reused by the key.
+            self._searches[key] = (pattern, text, matches)
+        return matches
+
+    def action_search_of(self, pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+        return next(iter(self.action_matches_of(pattern, text)), None)
+
+    def action_source_clauses_of(self, text: str) -> list[str]:
+        clauses = self._source_clauses.get(text)
+        if clauses is None:
+            self._count("action_source_clauses_computed")
+            clauses = _action_source_clauses(text)
+            if len(self._source_clauses) < self._DECISION_MEMO_LIMIT:
+                self._source_clauses[text] = clauses
+        return clauses
+
+    def reply_clauses_of(self, text: str) -> list[str]:
+        clauses = self._reply_clause_memo.get(text)
+        if clauses is None:
+            self._count("reply_clauses_computed")
+            clauses = _reply_clauses(text)
+            if len(self._reply_clause_memo) < self._DECISION_MEMO_LIMIT:
+                self._reply_clause_memo[text] = clauses
+        return clauses
+
+    # -- verified source records (one read per prompt per phase) ------------
+
+    def _read_prompt_record(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
+        prompt_id = str(metadata.get("id"))
+        if prompt_id in self._prompt_record_memo:
+            return self._prompt_record_memo[prompt_id]
+        self._count("prompt_record_read")
+        record = read_prompt_record(self.session_dir, metadata)
+        if record is not None and prompt_id not in self._consumed:
+            self._consumed[prompt_id] = (
+                str(record.get("record_sha256") or ""), str(record.get("sha256") or ""))
+        self._prompt_record_memo[prompt_id] = record
+        return record
+
+    def root_records(self) -> dict[str, dict[str, Any]]:
+        if self._root_records is None:
+            records: dict[str, dict[str, Any]] = {}
+            for prompt in self.state.get("prompts", []):
+                if not (isinstance(prompt, dict) and prompt.get("origin", "human") == "human"):
+                    continue
+                record = self._read_prompt_record(prompt)
+                if record is not None:
+                    records[str(prompt["id"])] = record
+            self._root_records = records
+        return self._root_records
+
+    def prompt_records(self) -> dict[Any, dict[str, Any] | None]:
+        if self._prompt_records is None:
+            records: dict[Any, dict[str, Any] | None] = {}
+            for prompt in self.state.get("prompts", []):
+                if isinstance(prompt, dict):
+                    records[prompt.get("id")] = self._read_prompt_record(prompt)
+            self._prompt_records = records
+        return self._prompt_records
+
+    def disk_prompt_records(self) -> list[dict[str, Any]]:
+        if self._disk_records is None:
+            self._count("disk_prompt_records_read")
+            self._disk_records = prompt_records_from_disk(self.session_dir)
+        return self._disk_records
+
+    def verify_consumed_sources(self) -> bool:
+        """Recheck every consumed root record before a decision is committed.
+
+        A record that verified at read time but changed, vanished, or lost
+        its integrity binding before the commit invalidates the conclusion
+        built on it; the caller must keep the existing unknown/integrity
+        failure path instead of saving a completion from stale bytes.
+        """
+        if not self._consumed:
+            return True
+        metadata_by_id = {str(p.get("id")): p for p in self.state.get("prompts", [])
+                          if isinstance(p, dict)}
+        unchanged = True
+        for prompt_id, identity in self._consumed.items():
+            metadata = metadata_by_id.get(prompt_id)
+            if metadata is None:
+                unchanged = False
+                continue
+            self._count("consumption_recheck_read")
+            record = read_prompt_record(self.session_dir, metadata)
+            if record is None or (str(record.get("record_sha256") or ""),
+                                  str(record.get("sha256") or "")) != identity:
+                unchanged = False
+        return unchanged
+
+    # -- state-bound projections --------------------------------------------
+
+    def scope(self) -> dict[str, Any]:
+        if self._scope is None:
+            self._count("scope_computed")
+            self._scope = current_scope_projection(self.state)
+        return self._scope
+
+    def item_index(self) -> dict[Any, list[dict[str, Any]]]:
+        if self._item_index is None:
+            index: dict[Any, list[dict[str, Any]]] = {}
+            for collection in ("requirements", "acceptance_items"):
+                for item in self.state.get(collection, []):
+                    if isinstance(item, dict):
+                        index.setdefault(item.get("id"), []).append(item)
+            self._item_index = index
+        return self._item_index
+
+    def resolve_strict(self, target: str) -> str:
+        """One real TOCTOU resolution; marks the basis non-cacheable."""
+        self._basis_impure = True
+        return str(Path(target).resolve(strict=True))
+
+    def cached_basis(self, key: tuple) -> Any:
+        import copy
+
+        if key in self._bases:
+            self._count("basis_memo_hit")
+            return copy.deepcopy(self._bases[key])
+        return _MEMO_MISS
+
+    def store_basis(self, key: tuple, value: dict[str, Any] | None) -> None:
+        if self._basis_impure or len(self._bases) >= self._DECISION_MEMO_LIMIT:
+            return
+        self._bases[key] = value
+
+    def basis_key(self, category: str, reply_clause: str, *, include_satisfied: bool,
+                  include_unready: bool, include_controlled: bool,
+                  allowed_item_ids: set[str] | None) -> tuple:
+        return (category, reply_clause, bool(include_satisfied), bool(include_unready),
+                bool(include_controlled),
+                frozenset(allowed_item_ids) if allowed_item_ids is not None else None)
+
+    def action_sources_of(self, root_text: str, category: str,
+                          execution_kind: Any) -> list[str]:
+        key = (root_text, category, "" if execution_kind is None else str(execution_kind))
+        cached = self._action_sources.get(key)
+        if cached is not None:
+            return cached
+        self._count("action_sources_computed")
+        clauses = self.action_source_clauses_of(root_text)
+        pattern = dict(ACTION_PATTERNS).get(category)
+        if pattern is None:
+            pattern = re.compile(r"(?!)")  # state_readback: the command object supplies it.
+        sources = _action_source_filter(
+            clauses, category=category, pattern=pattern,
+            execution_kind=execution_kind, context=self)
+        if len(self._action_sources) < self._DECISION_MEMO_LIMIT:
+            self._action_sources[key] = sources
+        return sources
+
+
+_MEMO_MISS = object()
+
+
+def _action_source_filter(
+    clauses: list[str], *, category: str, pattern: re.Pattern[str],
+    execution_kind: Any, context: "EvaluationContext | None",
+) -> list[str]:
+    """One definition of the per-clause authority filter for action sources."""
+    if context is not None:
+        search, view = context.action_search_of, context.instruction_view
+    else:
+        search, view = action_search, instruction_text
+    return [clause for clause in clauses
+            if (execution_kind == category
+                or search(pattern, clause)
+                or category == "local_edit" and _direct_anaphoric_edit(clause)
+                or (command_object := _direct_shell_command_object(clause)) is not None
+                and command_object[0] == category)
+            and ((category == "local_edit" and _direct_anaphoric_edit(clause))
+                 or _action_clause_time_state(clause, category) in {"current", "waiting"})
+            and not _result_report_clause(clause)
+            and not CLAUSE_NEGATION_RE.search(view(clause).replace("分别", ""))
+            and not DESCRIPTION_FRAME_RE.search(view(clause))]
+
+
 def _current_action_basis(
     state: dict[str, Any] | None, category: str, reply_clause: str,
     session_dir: Path | None = None, *, include_satisfied: bool = False,
@@ -10125,6 +10488,7 @@ def _current_action_basis(
     include_unready: bool = False, include_controlled: bool = False,
     _root_records: dict[str, dict[str, Any]] | None = None,
     _scoped_item_ids: set[str] | None = None,
+    _context: "EvaluationContext | None" = None,
 ) -> dict[str, Any] | None:
     """Bind a candidate action to an unmet, current root requirement.
 
@@ -10133,8 +10497,31 @@ def _current_action_basis(
     """
     if state is None or session_dir is None or category == "generic_work":
         return None
+    if _context is not None:
+        memo_key = _context.basis_key(
+            category, reply_clause, include_satisfied=include_satisfied,
+            include_unready=include_unready, include_controlled=include_controlled,
+            allowed_item_ids=allowed_item_ids)
+        _context._basis_impure = False
+        memo_hit = _context.cached_basis(memo_key)
+        if memo_hit is not _MEMO_MISS:
+            return memo_hit
+        _context._count("basis_evaluated")
+    if _context is not None:
+        _fragments_of = _context.fragments_of
+        _view_of = _context.instruction_view
+        _search_of = _context.action_search_of
+        _matches_of = _context.action_matches_of
+        _source_clauses_of = _context.action_source_clauses_of
+        _sources_of = _context.action_sources_of
+    else:
+        _fragments_of, _view_of = fragments, instruction_text
+        _search_of, _matches_of = action_search, action_matches
+        _source_clauses_of = _action_source_clauses
+        _sources_of = None
     current_ids = (set(_scoped_item_ids) if _scoped_item_ids is not None
-                   else current_scope_projection(state)["scoped_item_ids"])
+                   else (_context.scope()["scoped_item_ids"] if _context is not None
+                         else current_scope_projection(state)["scoped_item_ids"]))
     if include_controlled:
         current_ids |= {
             str(ref["id"])
@@ -10150,9 +10537,16 @@ def _current_action_basis(
         if category != "state_readback":
             return None
         pattern = re.compile(r"(?!)")  # The audited command object supplies this action.
-    for collection in ("requirements", "acceptance_items"):
-        for item in state.get(collection, []):
-            if not isinstance(item, dict) or item.get("id") not in current_ids:
+    if _context is not None and allowed_item_ids is not None and len(allowed_item_ids) == 1:
+        # A single allowed id filters to the same rows as the full scan; with
+        # unique ids the collection order cannot change which rows survive.
+        candidates = [item for item in _context.item_index().get(
+            next(iter(allowed_item_ids)), []) if isinstance(item, dict)]
+    else:
+        candidates = [item for collection in ("requirements", "acceptance_items")
+                      for item in state.get(collection, []) if isinstance(item, dict)]
+    for item in candidates:
+            if item.get("id") not in current_ids:
                 continue
             if allowed_item_ids is not None and item.get("id") not in allowed_item_ids:
                 continue
@@ -10168,17 +10562,22 @@ def _current_action_basis(
                            and p.get("origin", "human") == "human"), None)
             if prompt is None:
                 continue
-            roots = _root_records if _root_records is not None else {
-                str(p["id"]): record
-                for p in state.get("prompts", [])
-                if isinstance(p, dict) and p.get("origin", "human") == "human"
-                and (record := read_prompt_record(session_dir, p)) is not None
-            }
+            if _root_records is not None:
+                roots = _root_records
+            elif _context is not None:
+                roots = _context.root_records()
+            else:
+                roots = {
+                    str(p["id"]): record
+                    for p in state.get("prompts", [])
+                    if isinstance(p, dict) and p.get("origin", "human") == "human"
+                    and (record := read_prompt_record(session_dir, p)) is not None
+                }
             root_record = roots.get(str(item.get("prompt_id")))
             if root_record is None:
                 continue
             root_text = root_record["text"]
-            if any(part.kind == "ambiguous_object" for part in fragments(root_text)):
+            if any(part.kind == "ambiguous_object" for part in _fragments_of(root_text)):
                 continue
             if item.get("execution_source_span") is None and any(
                 child.get("parent_id") == item.get("id")
@@ -10186,7 +10585,7 @@ def _current_action_basis(
                 for child in state.get("requirements", []) if isinstance(child, dict)
             ):
                 continue
-            clauses = _action_source_clauses(root_text)
+            clauses = _source_clauses_of(root_text)
             if item.get("execution_source_span") is not None:
                 span = item["execution_source_span"]
                 if (not isinstance(span, list) or len(span) != 2
@@ -10200,18 +10599,12 @@ def _current_action_basis(
                         or item.get("execution_kind") != category):
                     continue
                 clauses = [child_scope]
-            sources = [c for c in clauses
-                       if (item.get("execution_kind") == category
-                           or action_search(pattern, c)
-                           or category == "local_edit" and _direct_anaphoric_edit(c)
-                           or (command_object := _direct_shell_command_object(c)) is not None
-                           and command_object[0] == category)
-                       and ((category == "local_edit" and _direct_anaphoric_edit(c))
-                            or _action_clause_time_state(c, category)
-                            in {"current", "waiting"})
-                       and not _result_report_clause(c)
-                       and not CLAUSE_NEGATION_RE.search(instruction_text(c).replace("分别", ""))
-                       and not DESCRIPTION_FRAME_RE.search(instruction_text(c))]
+            if _sources_of is not None and item.get("execution_source_span") is None:
+                sources = _sources_of(root_text, category, item.get("execution_kind"))
+            else:
+                sources = _action_source_filter(
+                    clauses, category=category, pattern=pattern,
+                    execution_kind=item.get("execution_kind"), context=_context)
             if len(sources) != 1:
                 continue
             source = sources[0]
@@ -10240,13 +10633,13 @@ def _current_action_basis(
                 sentence_start = max(root_text.rfind(mark, 0, source_at)
                                      for mark in "\n。！？!?；;") + 1
                 candidate = root_text[sentence_start:source_at + len(source)].strip()
-                candidate_action = _root_action_head(candidate, pattern) if action_search(pattern, candidate) else None
+                candidate_action = _root_action_head(candidate, pattern) if _search_of(pattern, candidate) else None
                 if (candidate_action is not None
                         and candidate.count(",") + candidate.count("，") > 0
                         and _root_action_condition(candidate, candidate_action)):
                     source = candidate
             condition_action = (_root_action_head(source, pattern)
-                                if action_search(pattern, source) else None)
+                                if _search_of(pattern, source) else None)
             if condition_action is None and direct_command is not None:
                 condition_action = re.search(re.escape(direct_command[2]), source)
             condition_scope = (_root_action_condition(source, condition_action)
@@ -10305,13 +10698,13 @@ def _current_action_basis(
                     continue
             # A single sentence can carry independent effects. One host test
             # result cannot interpret and close an adjacent edit/review verb.
-            semantic_source = instruction_text(source)
+            semantic_source = _view_of(source)
             if any(other != category and not (
                 category == "local_edit" and other in {"local_review", "test_verify"}
                 and (dependent_readback or re.search(r"(?:并|然后)\s*核对(?:文件)?内容|\band\s+verify\s+the\s+changed\s+file\b", source, re.I))
             ) and any(
                 not semantic_source[match.end():].startswith("的")
-                for match in action_matches(other_pattern, source)
+                for match in _matches_of(other_pattern, source)
             ) for other, other_pattern in ACTION_PATTERNS):
                 continue
             if WINDOWS_UNC_PATH_RE.search(source):
@@ -10402,8 +10795,10 @@ def _current_action_basis(
                     # Lexical containment is necessary but insufficient when
                     # a symlink can redirect the actual Host target elsewhere.
                     if selections:
+                        resolver = (_context.resolve_strict if _context is not None
+                                    else (lambda value: str(Path(value).resolve(strict=True))))
                         try:
-                            if str(Path(target).resolve(strict=True)) != target:
+                            if resolver(target) != target:
                                 continue
                         except (OSError, RuntimeError):
                             continue
@@ -10464,7 +10859,7 @@ def _current_action_basis(
                         and (resume_match := EXECUTION_RESUME_RE.search(prefix)) is not None
                         and resume_match.end() == len(prefix)
                         and len(control_speech_clauses(prefix)) == 1
-                        and not any(action_search(p, prefix) for _, p in ACTION_PATTERNS)
+                        and not any(_search_of(p, prefix) for _, p in ACTION_PATTERNS)
                     ),
                 )
                 if category == "state_readback" and direct_command is not None:
@@ -10503,7 +10898,7 @@ def _current_action_basis(
                     and not (include_satisfied and constraint_kind == "exact"
                              and resolved_constraint is not None)):
                 continue
-            return {
+            result = {
                 "schema": "current-action-basis/v1", "requirement_id": str(item["id"]),
                 "unit": str(item.get("work_unit_id") or active_id),
                 "revision": str(unit.get("scope_sha256") or ""),
@@ -10527,11 +10922,17 @@ def _current_action_basis(
                 "core_projection": projected,
                 "core_snapshot": snapshot,
             }
+            if _context is not None:
+                _context.store_basis(memo_key, result)
+            return result
+    if _context is not None:
+        _context.store_basis(memo_key, None)
     return None
 
 
 def _live_current_action_bases(
     state: dict[str, Any], session_dir: Path,
+    _context: "EvaluationContext | None" = None,
 ) -> list[dict[str, Any]]:
     """Resolve current executable steps, preferring a ready substep.
 
@@ -10541,12 +10942,15 @@ def _live_current_action_bases(
     state into a request to repeat the edit.
     """
     selected: dict[str, dict[str, Any]] = {}
-    item_ids = sorted(current_scope_projection(state)["scoped_item_ids"])
+    scope = (_context.scope() if _context is not None
+             else current_scope_projection(state))
+    item_ids = sorted(scope["scoped_item_ids"])
     categories = [*(name for name, _ in ACTION_PATTERNS), "state_readback"]
     for item_id in item_ids:
         for category in categories:
             basis = _current_action_basis(
-                state, category, "", session_dir, allowed_item_ids={item_id}
+                state, category, "", session_dir, allowed_item_ids={item_id},
+                _context=_context,
             )
             if basis is None:
                 continue
@@ -10581,6 +10985,7 @@ def _dedupe_action_bases(bases: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _root_control_decomposition_valid(
     state: dict[str, Any], session_dir: Path,
     additional_prompt_ids: set[str] | None = None,
+    _context: "EvaluationContext | None" = None,
 ) -> bool:
     """Compare controlled execution children with immutable root bytes."""
     controls = [c for c in state.get("root_controls", [])
@@ -10591,7 +10996,8 @@ def _root_control_decomposition_valid(
     # companion, including roots whose requirement and acceptance rows have
     # since been deleted. A survivor-only catalog cannot prove completeness.
     try:
-        records = prompt_records_from_disk(session_dir)
+        records = (_context.disk_prompt_records() if _context is not None
+                   else prompt_records_from_disk(session_dir))
     except (OSError, StateIntegrityError, TypeError, ValueError):
         return False
     metadata = {str(p.get("id")): p for p in state.get("prompts", [])
@@ -10716,7 +11122,8 @@ def _root_control_decomposition_valid(
     from cg_core_v2 import _action_class_scope_speech, _current_unit_scope_speech
     for control in controls:
         prompt = prompt_rows.get(str(control["source_prompt_id"]))
-        record = read_prompt_record(session_dir, prompt) if prompt else None
+        record = ((_context._read_prompt_record(prompt) if _context is not None
+                   else read_prompt_record(session_dir, prompt)) if prompt else None)
         if record is None:
             return False
         matches = [clause for kind, begin, end, clause in
@@ -10748,7 +11155,8 @@ def _root_control_decomposition_valid(
                          | (additional_prompt_ids or set()))
     for prompt_id in candidate_prompts:
         prompt = prompt_rows.get(prompt_id)
-        record = read_prompt_record(session_dir, prompt) if prompt else None
+        record = ((_context._read_prompt_record(prompt) if _context is not None
+                   else read_prompt_record(session_dir, prompt)) if prompt else None)
         if record is None:
             return False
         expected, related = _execution_child_specs(record["text"])
@@ -10773,32 +11181,46 @@ def _root_control_decomposition_valid(
 
 def current_root_control_projection(
     state: dict[str, Any], session_dir: Path,
+    _context: "EvaluationContext | None" = None,
 ) -> dict[str, Any] | None:
     """Project the full ledger-bound control catalog through the shared core.
 
     A partial or unselected catalog is unavailable, never a smaller scope.
     The returned normalized projection is ephemeral; persisted Stop rows use
-    only a bounded hash-free summary of it.
+    only a bounded hash-free summary of it. Within one stable state phase the
+    read-only projection is reused; every write boundary opens a new phase.
     """
     import copy
 
     from cg_core_v2 import project as project_core
 
+    if _context is not None and _context._control_projection_done:
+        return _context._control_projection
     active = state.get("work_state", {}).get("active_work_unit_id")
     controls = [c for c in state.get("root_controls", [])
                 if isinstance(c, dict) and c.get("work_unit_id") == active
                 and "kind" in c]
     if not controls or not isinstance(active, str):
+        if _context is not None:
+            _context._control_projection = None
+            _context._control_projection_done = True
         return None
     current_catalog = _root_control_catalog(
         state, active, int(state.get("core_event_sequence") or 0))
     if current_catalog is None:
+        if _context is not None:
+            _context._control_projection = None
+            _context._control_projection_done = True
         return None
     # A candidate cannot silently shrink its inventory and recompute its own
     # catalog hash: the original user root determines every recognized child.
     if not _root_control_decomposition_valid(
-        state, session_dir, {str(row["prompt_id"]) for row in current_catalog}
+        state, session_dir, {str(row["prompt_id"]) for row in current_catalog},
+        _context=_context,
     ):
+        if _context is not None:
+            _context._control_projection = None
+            _context._control_projection_done = True
         return None
     for binding in controls:
         at_receipt = _root_control_catalog(state, active, binding["source_seq"])
@@ -10823,7 +11245,7 @@ def current_root_control_projection(
         basis = _current_action_basis(
             state, category, "", session_dir, include_satisfied=True,
             allowed_item_ids={item_id}, include_unready=True,
-            include_controlled=True,
+            include_controlled=True, _context=_context,
         )
         if basis is None or basis["requirement_id"] != item_id:
             return None
@@ -10981,16 +11403,21 @@ def current_root_control_projection(
                             sha256=root["sha256"]), kind=kind,
             ))
     try:
-        return project_core(combined)
+        projection = project_core(combined)
     except (ValueError, KeyError, TypeError):
-        return None
+        projection = None
+    if _context is not None:
+        _context._control_projection = projection
+        _context._control_projection_done = True
+    return projection
 
 
 def current_persistence_actions(
     state: dict[str, Any], session_dir: Path,
+    _context: "EvaluationContext | None" = None,
 ) -> tuple[bool, list[dict[str, Any]], dict[str, str]]:
     """Consume shared normalized control states, never a second private fold."""
-    normalized = current_root_control_projection(state, session_dir)
+    normalized = current_root_control_projection(state, session_dir, _context)
     if normalized is None or normalized["root_control_errors"]:
         return False, [], {} if normalized is None else normalized["root_control_states"]
     requirements = {str(i.get("id")): i for i in state.get("requirements", [])
@@ -11018,15 +11445,20 @@ def current_persistence_actions(
 def current_core_projections(
     state: dict[str, Any], session_dir: Path, *, limit: int | None = 16,
     _scope: dict[str, Any] | None = None,
+    _context: "EvaluationContext | None" = None,
 ) -> list[dict[str, Any]]:
     """Read-only current Stop status from genuine root and host observations."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     bases: list[dict[str, Any]] = []
-    roots = {str(prompt["id"]): record for prompt in state.get("prompts", [])
-             if prompt.get("origin", "human") == "human"
-             and (record := read_prompt_record(session_dir, prompt)) is not None}
-    scope = _scope if _scope is not None else current_scope_projection(state)
+    if _context is not None:
+        roots = _context.root_records()
+        scope = _scope if _scope is not None else _context.scope()
+    else:
+        roots = {str(prompt["id"]): record for prompt in state.get("prompts", [])
+                 if prompt.get("origin", "human") == "human"
+                 and (record := read_prompt_record(session_dir, prompt)) is not None}
+        scope = _scope if _scope is not None else current_scope_projection(state)
     scoped_item_ids = scope["scoped_item_ids"]
     candidates = ((item_id, category)
                   for item_id in sorted(scoped_item_ids,
@@ -11035,8 +11467,9 @@ def current_core_projections(
     for item_id, category in candidates:
         basis = _current_action_basis(state, category, "", session_dir,
                                       include_satisfied=True, allowed_item_ids={item_id},
-                                      _root_records=roots,
-                                      _scoped_item_ids=scoped_item_ids)
+                                      _root_records=None if _context is not None else roots,
+                                      _scoped_item_ids=scoped_item_ids,
+                                      _context=_context)
         if basis is None or basis["requirement_id"] in seen:
             continue
         if any(all(previous.get(key) == basis.get(key) for key in
@@ -11913,13 +12346,16 @@ def deferred_action_bindings(
 def remaining_action_facts(
     text: str, prompt_text: str, *, state: dict[str, Any] | None = None,
     session_dir: Path | None = None,
+    _context: "EvaluationContext | None" = None,
 ) -> list[dict[str, Any]]:
     scope = prompt_action_scope(prompt_text)
     resume_requested = explicit_execution_resume(prompt_text)
     actions: list[dict[str, str]] = []
     seen: set[tuple[str, str, str]] = set()
     explicit_assistant_facts: set[tuple[str, str, str]] = set()
-    for clause in _reply_clauses(text):
+    reply_clauses = (_context.reply_clauses_of(text) if _context is not None
+                     else _reply_clauses(text))
+    for clause in reply_clauses:
         user_handoff = bool(USER_HANDOFF_RE.search(clause))
         if user_handoff:
             fact = ("user_action", "user", "user_only")
@@ -12002,10 +12438,13 @@ def remaining_action_facts(
             authorization = _action_authorization(category, scope)
             bases: list[dict[str, Any]] = []
             if state is not None and session_dir is not None:
-                for item_id in sorted(current_scope_projection(state)["scoped_item_ids"]):
+                scoped_ids = (_context.scope()["scoped_item_ids"] if _context is not None
+                              else current_scope_projection(state)["scoped_item_ids"])
+                for item_id in sorted(scoped_ids):
                     candidate = _current_action_basis(
                         state, category, assistant_clause, session_dir,
                         allowed_item_ids={item_id},
+                        _context=_context,
                     )
                     if candidate is not None:
                         bases.append(candidate)
@@ -12013,7 +12452,8 @@ def remaining_action_facts(
             basis = bases[0] if bases else None
             if state is not None and basis is None:
                 completed_basis = _current_action_basis(
-                    state, category, assistant_clause, session_dir, include_satisfied=True
+                    state, category, assistant_clause, session_dir, include_satisfied=True,
+                    _context=_context,
                 )
                 if completed_basis is not None and completed_basis["predicate_state"] == "satisfied":
                     continue
@@ -12059,7 +12499,7 @@ def remaining_action_facts(
             # A reply may name an unfinished predicate without repeating the
             # root's verb. Resolve it only when exactly one live, sourced,
             # ready root action exists; never upgrade a stored generic row.
-            live_bases = (_live_current_action_bases(state, session_dir)
+            live_bases = (_live_current_action_bases(state, session_dir, _context)
                           if state is not None and session_dir is not None else [])
             unique_bases = {basis["requirement_id"]: basis for basis in live_bases}
             if len(unique_bases) == 1:
@@ -12082,7 +12522,7 @@ def remaining_action_facts(
         # same live unit. The resume text itself supplies no new target or
         # predicate, and completed/future rows cannot become work.
         existing_ids = {a.get("basis", {}).get("requirement_id") for a in actions}
-        for basis in _live_current_action_bases(state, session_dir):
+        for basis in _live_current_action_bases(state, session_dir, _context):
             if basis["requirement_id"] in existing_ids:
                 continue
             actions.append({"category": basis["action"], "owner": "assistant",
@@ -12104,7 +12544,8 @@ def remaining_action_facts(
         r"(?:以后|后续|未来|将来|尚待|有待|\b(?:later|future|eventually|remains? to be)\b)",
         text, re.I,
     ):
-        basis = _current_action_basis(state, "local_review", text, session_dir)
+        basis = _current_action_basis(state, "local_review", text, session_dir,
+                                       _context=_context)
         if basis is not None and basis["action"] == "evaluate_current_effect":
             if not any(a.get("basis", {}).get("requirement_id") == basis["requirement_id"]
                        for a in actions):
@@ -12117,9 +12558,10 @@ def remaining_action_facts(
 def classify_stop_decision(
     text: str, prompt_text: str = "", *, prompt_integrity: bool = True,
     state: dict[str, Any] | None = None, session_dir: Path | None = None,
+    _context: "EvaluationContext | None" = None,
 ) -> dict[str, Any]:
     interpretation = interpret_stop_reply(text, prompt_text, state=state,
-                                          session_dir=session_dir)
+                                          session_dir=session_dir, _context=_context)
     if not prompt_integrity:
         outcome = "fail_closed_integrity"
         reasons = ["prompt_integrity_unavailable"]
@@ -12328,7 +12770,8 @@ def _stop_claim_subject(
 
 
 def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, Any] | None = None,
-                         session_dir: Path | None = None) -> dict[str, Any]:
+                         session_dir: Path | None = None,
+                         _context: "EvaluationContext | None" = None) -> dict[str, Any]:
     """One bounded semantic projection; unknown subjects never auto-complete.
 
     This is deterministic clause/subject interpretation, not semantic proof.
@@ -12363,7 +12806,7 @@ def interpret_stop_reply(text: str, prompt_text: str = "", *, state: dict[str, A
                            "source": source, "clause_sha256": sha256_text(match.group(0))})
     action_text = authoritative_supersession_text(text)
     actions = remaining_action_facts(action_text, prompt_text, state=state,
-                                     session_dir=session_dir)
+                                     session_dir=session_dir, _context=_context)
     owner_source = "reply_action"
     # The standalone compatibility classifier reports wording. A production
     # Stop never treats that report as a registered lifecycle operation.
@@ -13919,7 +14362,8 @@ def _applicable_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str
 
 
 def current_scope_projection(state: dict[str, Any], *, session_dir: Path | None = None,
-                             codex_home: Path | None = None) -> dict[str, Any]:
+                             codex_home: Path | None = None,
+                             _context: "EvaluationContext | None" = None) -> dict[str, Any]:
     """Shared current-scope projection (frozen plan section 3.3).
 
     One deterministic view of what is CURRENT: the active unit and its
@@ -13930,6 +14374,9 @@ def current_scope_projection(state: dict[str, Any], *, session_dir: Path | None 
     ledger invalidates stale cursors. Recovery packets, completion checks,
     and default diagnostics all read through this helper.
     """
+    if (_context is not None and session_dir is None and codex_home is None
+            and _context.state is state):
+        return _context.scope()
     scoped, ancestor_constraints = _applicable_scope_item_ids(state)
     _current, descendants, ancestors = work_unit_relations(state)
     live_units = {
@@ -14303,9 +14750,12 @@ def capture_persistence_scope(
         scopes.append(binding)
 
 
-def checkpoint_scope_item_ids(state: dict[str, Any]) -> tuple[set[str], set[str]]:
+def checkpoint_scope_item_ids(
+    state: dict[str, Any], _context: "EvaluationContext | None" = None,
+) -> tuple[set[str], set[str]]:
     """Completion and diagnostic callers consume the same applicable projection."""
-    projection = current_scope_projection(state)
+    projection = (current_scope_projection(state, _context=_context)
+                  if _context is not None else current_scope_projection(state))
     return projection["scoped_item_ids"], projection["ancestor_constraint_ids"]
 
 
@@ -15183,21 +15633,25 @@ def clip_preserving_suffix(
 
 def current_feedback_view(
     state: dict[str, Any], session_dir: Path | None,
+    _context: "EvaluationContext | None" = None,
 ) -> dict[str, Any]:
     """Read-only facts at the current watermark, never a completion transition.
 
     No cached Stop result supplies current truth. Missing source/capability
     remains unknown; a supported observed predicate does not discharge proofs,
-    required descendants, delivery, or the whole work-unit closure.
+    required descendants, delivery, or whole work-unit closure.
     """
-    scope = current_scope_projection(state)
+    scope = (_context.scope() if _context is not None
+             else current_scope_projection(state))
     healthy = state.get("integrity", {}).get("status") == "ok"
-    core = (current_core_projections(state, session_dir, limit=None, _scope=scope)
+    core = (current_core_projections(state, session_dir, limit=None, _scope=scope,
+                                     _context=_context)
             if session_dir is not None and healthy else [])
     by_id = {row["requirement_id"]: row for row in core}
     prompts = {p["id"]: p for p in state.get("prompts", [])}
     proofs = unresolved_proof_obligations(state)
     units = {u["id"]: u for u in state.get("work_units", [])}
+    records_by_id = _context.prompt_records() if _context is not None else None
     def applicable_waits(item: dict[str, Any]) -> list[str]:
         chain: set[str] = set()
         unit_id = item.get("work_unit_id")
@@ -15212,7 +15666,9 @@ def current_feedback_view(
     for collection in ("requirements", "acceptance_items"):
         for item in state.get(collection, []):
             item_id = item["id"]
-            record = (read_prompt_record(session_dir, prompts[item["prompt_id"]])
+            record = ((records_by_id.get(item.get("prompt_id"))
+                       if _context is not None else
+                       read_prompt_record(session_dir, prompts[item["prompt_id"]]))
                       if session_dir is not None and item.get("prompt_id") in prompts else None)
             source_known = healthy and record is not None
             predicate = by_id.get(item_id) if source_known else None
@@ -18989,6 +19445,15 @@ def handle_stop(
                 "preserved corrupt state and immutable prompt ledger."
             ),
         }
+    import copy
+
+    evaluation = EvaluationContext(state, session_dir)
+    # Transaction snapshot: a Stop may apply checkpoints, close units, stage
+    # proofs or count corrections in place before its final commit. If the
+    # consumption-time source recheck fails, the business state rolls back
+    # to this entry view; only the diagnostic decision log keeps the failed
+    # attempt. A fail-closed commit must never persist success state.
+    entry_snapshot = copy.deepcopy(state)
     stop3_mod = stop3()
     text = assistant_text(payload)
     authoritative_prompt = latest_requirement_text(session_dir, state)
@@ -19008,11 +19473,12 @@ def handle_stop(
     prompt_integrity = bool(authoritative_prompt) or not state.get("requirements")
     observed = classify_stop_decision(
         text, authoritative_prompt, prompt_integrity=prompt_integrity, state=state,
-        session_dir=session_dir,
+        session_dir=session_dir, _context=evaluation,
     )
     decision: dict[str, Any] = dict(observed)
-    decision["core_projections"] = current_feedback_view(state, session_dir)["core_projections"][:16]
-    normalized_control = current_root_control_projection(state, session_dir)
+    decision["core_projections"] = current_feedback_view(
+        state, session_dir, evaluation)["core_projections"][:16]
+    normalized_control = current_root_control_projection(state, session_dir, evaluation)
     if normalized_control is not None:
         # The complete projection is available to local conformance replay;
         # only bounded state names and IDs enter the private decision ledger.
@@ -19132,14 +19598,15 @@ def handle_stop(
             if answer_can_close:
                 item["status"] = "answered"
                 item["answer_state"] = "answered"
+        evaluation.new_phase("delivery_recorded")
         outcome = str(decision.get("outcome") or "")
         if outcome in {"consume_checkpoint", "auto_complete_verified"}:
             resolution = "verified"
         elif outcome == "protocol_waiting_boundary":
             resolution = "waiting"
         elif (
-            not current_scope_projection(state)["current_item_ids"]
-            and not current_scope_projection(state)["waiting_conditions"]
+            not current_scope_projection(state, _context=evaluation)["current_item_ids"]
+            and not current_scope_projection(state, _context=evaluation)["waiting_conditions"]
         ):
             resolution = "not_applicable"
         else:
@@ -19160,7 +19627,38 @@ def handle_stop(
         state["core_event_sequence"] = int(state.get("core_event_sequence") or 0) + 1
         return record
 
+    def _commit_integrity_failure() -> dict[str, Any]:
+        # Final-boundary failure: roll every in-place business write (applied
+        # checkpoints, closed units, staged proofs, delivery records,
+        # ordinary retirements, correction accounting) back to the event
+        # entry, then persist ONLY the failure decision and its diagnostics.
+        decision_rows = list(state.get("decision_log") or [])
+        state.clear()
+        state.update(entry_snapshot)
+        state["decision_log"] = decision_rows
+        decision["outcome"] = "fail_closed_integrity"
+        decision["decision_source"] = "integrity"
+        decision.setdefault("reason_codes", []).append(
+            "consumed_source_changed_before_commit")
+        envelope = stop3_mod.stop_decision_event(
+            str(state.get("session", {}).get("id") or ""), turn_id, decision)
+        decision["event_type"] = str(envelope.event_type)
+        append_decision_log(state, decision, turn_id)
+        save_state(session_dir, state)
+        return {
+            "continue": False,
+            "stopReason": (
+                "Context Guard stopped completion because a verified "
+                "prompt source changed before the decision was committed."
+            ),
+            "systemMessage": (
+                "Context Guard source-integrity recheck failed at "
+                "commit time. Review the immutable prompt ledger."
+            ),
+        }
+
     def finish(result: dict[str, Any], *reason_codes: str) -> dict[str, Any]:
+        evaluation.new_phase("finish")
         codes = list(decision.get("reason_codes", []))
         for code in reason_codes:
             if code not in codes:
@@ -19185,6 +19683,7 @@ def handle_stop(
                                 state, exact_edit, delivered_record):
                             decision.setdefault("reason_codes", []).append(
                                 "ordinary_core_result_verified")
+                            evaluation.new_phase("ordinary_result_retired")
                     current_test = delivered_current_test_projection(
                         state, session_dir, delivered_record, text)
                     if current_test is not None:
@@ -19193,8 +19692,15 @@ def handle_stop(
                                 state, current_test, delivered_record):
                             decision.setdefault("reason_codes", []).append(
                                 "ordinary_core_result_verified")
+                            evaluation.new_phase("ordinary_result_retired")
             except delivery_mod.DeliveryValueError:
                 pass
+            # Final commit boundary: every source-identity-dependent business
+            # computation and write has now happened. A root record that
+            # verified at read time must still verify before anything from
+            # this event reaches the disk.
+            if not evaluation.verify_consumed_sources():
+                return _commit_integrity_failure()
         # Protocol envelope consumption: the heavy path routes its terminal
         # decision through the model-agnostic protocol layer.
         envelope = stop3_mod.stop_decision_event(
@@ -19324,6 +19830,7 @@ def handle_stop(
                     ),
                 )
             bind_external_waits(state, unit_id)
+        evaluation.new_phase("current_unit_closed")
         return unit_id
 
     def visible_correction(
@@ -19334,9 +19841,10 @@ def handle_stop(
         if used >= stop3_mod.VISIBLE_INTERRUPTION_BUDGET:
             return finish({}, "visible_interruption_budget_exhausted", *codes)
         state["continuation_attempts"] = used + 1
+        evaluation.new_phase("continuation_counted")
         # Acceptance-D: the default feedback carries the current unit's
         # pending-item COUNT, never IDs (those live in diagnose/--full).
-        scoped_now, _ = checkpoint_scope_item_ids(state)
+        scoped_now, _ = checkpoint_scope_item_ids(state, evaluation)
         pending_count = pending_scoped_item_count(state, scoped_now)
         feedback = stop3_mod.bounded_stop_feedback(pending_count, reason, next_step)
         decision["outcome"] = "visible_correction"
@@ -19355,6 +19863,7 @@ def handle_stop(
             )
         apply_checkpoint(state, checkpoint, turn_id)
         state["continuation_attempts"] = 0
+        evaluation.new_phase("checkpoint_applied")
         decision["outcome"] = "consume_checkpoint"
         decision["decision_source"] = "protocol_checkpoint"
         return finish({}, "validated_turn_bound_checkpoint")
@@ -19362,7 +19871,7 @@ def handle_stop(
     interpretation = observed["interpretation"]
     completion_claim = bool(interpretation["whole_completion_claim"])
     current_waits = [
-        wait for wait in current_scope_projection(state)["waiting_conditions"]
+        wait for wait in current_scope_projection(state, _context=evaluation)["waiting_conditions"]
         if wait.get("raised_by_kind") == "root_user"
         or (wait.get("raised_by_kind") == "external" and wait.get("external_source_sha256"))
     ]
@@ -19372,7 +19881,7 @@ def handle_stop(
             "obtain the matching confirmation or external lifecycle fact",
             "waiting_condition_pending", "wrong_whole_completion",
         )
-    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
+    scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state, evaluation)
     unresolved_all = unresolved_proof_obligations(state)
     scoped_unresolved = {
         item_id: obligations
@@ -19380,7 +19889,7 @@ def handle_stop(
         if item_id in scoped_ids
     }
     explicit_persistence, persistence_actions, root_control_states = current_persistence_actions(
-        state, session_dir
+        state, session_dir, evaluation
     )
     # A later root-user pause is a current control fact for this unit. Keep
     # the earlier persistence source in history, but do not present its work
@@ -19483,6 +19992,7 @@ def handle_stop(
         # close the unit only when verification is complete and unambiguous.
         for manifest in derive_ordinary_proofs(state):
             append_normalized_proof(state, manifest)
+        evaluation.new_phase("ordinary_proofs_derived")
         unresolved_all = unresolved_proof_obligations(state)
         scoped_unresolved = {
             item_id: obligations
@@ -19496,6 +20006,7 @@ def handle_stop(
                 if not problems:
                     apply_checkpoint(state, auto_checkpoint, turn_id)
                     state["continuation_attempts"] = 0
+                    evaluation.new_phase("auto_checkpoint_applied")
                     decision["outcome"] = "auto_complete_verified"
                     decision["decision_source"] = "protocol_auto_completion"
                     return finish({}, "auto_verified_completion")

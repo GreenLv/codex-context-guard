@@ -1,5 +1,62 @@
 # Local Release Acceptance
 
+## 0.14.3 — 2026-09-29
+
+macOS development machine (arm64, Python 3.12.2), synthetic fixtures built
+only through real hook dispatch; see `tools/validation/benchmark_stop.py`
+and `tools/validation/stop_performance_fixture.py`:
+
+- Baseline `aea556d` (0.14.2), 20 dispatch-in-process samples: S1 (incident shape:
+  12 roots, 113 scoped items, 200 evidence, 3 units) median 5.860 s, p95
+  6.944 s, max 7.086 s; S4 (4× items) median 36.890 s, max 37.516 s — the
+  same family as the reported 11.951 s incident replay. Profile: 17,758
+  prompt-record reads and 97,335 fragment parses for 113 distinct texts.
+- Candidate 0.14.3, same fixtures and machine: S1 median 0.084 s, p95
+  0.108 s, max 0.268 s; S4 p95 0.262 s, max 0.439 s. Per-event counters: 2
+  scope constructions, 13 record reads + 13 consumption rechecks, 113
+  fragment parses, 110 source-filter computations.
+- Earlier development PreToolUse cold-start measurement (the historical 50 ms
+  Phase-2 threshold stays retired): baseline median 0.164 s vs candidate
+  0.173 s — interpreter/import dominated, no regression attributable to this
+  change, far inside the 10 s hook timeout.
+- Full-process track (each sample is a fresh `context_guard.py hook` CLI
+  subprocess, parent-side wall clock, with exit/stdout-JSON/state/lock/
+  decision-growth verification): candidate S1 median 0.425 s / p95 0.452 s /
+  max 0.626 s; S4 p95 0.722 s / max 0.879 s; S2→S4 median growth 1.243;
+  S0 median 0.340 s vs baseline 0.365 s; PreToolUse cold start median
+  0.352 s vs baseline 0.305 s. Baseline full-process S1 median 7.252 s /
+  max 8.130 s; S4 median 44.563 s (gate-failing, the incident family
+  through the real hook entry).
+- The dispatch-in-process numbers above are the development diagnostic
+  track and keep their original scope; the two tracks are never mixed.
+- The final v2 old-vs-new differential matched all nine neutral/claim/wait/compact-resume scenarios using equal-length clone roots and a shared working directory. Only the explicit field allowlist is normalized; source, subject and evidence identities remain compared. Negative controls reject changes to those identities. Earlier path-length packing differences remain part of the development record, not the final differential result.
+
+### Final-runtime macOS readback and CLI 0.158.0
+
+The final-runtime development artifacts were independently read back against their handoff SHA-256 values. Full-process S1 (20 samples) measured median 0.4715 s / p95 0.9602 s / max 1.6844 s; S4 median 0.6617 s / p95 1.6312 s / max 1.6937 s; S4/S2 median ratio 1.0912. PreToolUse median/p95/max were 0.3689/0.5922/0.6538 s. These are the final artifact values; earlier development timings above retain their original subjects. The final S1 artifact SHA-256 is `3e1b26d29c2766b2359e9450cc3d8c962711f553fea75df65efbd6a1ca3f6191`.
+
+The coordinator upgraded macOS to CLI 0.158.0 and verified an isolated first install, strict no-op, all 43 runtime files and installed lifecycle smoke. The official Hook inventory reported all nine product Hooks trusted and enabled. A bounded `stop_host/v1` run then observed four completed Stop runs (442/2448/2190/2157 ms), one expected waiting-condition correction followed by a completed Stop, actual compaction completion, and continuation after a new process resumed the thread. Pending requirements remained pending and the recovery package was consumed. Both owned process groups had no running members at cleanup; residual zombies are not claimed absent.
+
+The live scenario contains 113 numbered prompt entries; it does not recreate the original incident state or imply 113 independently extracted requirements. Hook status and duration are official observations, not OS exit codes. Earlier exploratory probes retain their failures and narrower results: a post-compaction request sent before the host became idle was rejected, and inputs without activation or a deterministic blocking condition were not accepted as correction controls. The Windows live-host result is recorded below; publication identities remain separately verified.
+
+### Windows process acceptance (2026-09-28)
+
+Native Windows 11, PowerShell 5.1, Python 3.12.10: each timing shape used 20 fresh Hook CLI subprocesses. S1 median/p95/max were 0.4892/0.5134/0.5221 s; S2 0.6567/0.7716/0.8058 s; S4 0.6902/0.7639/0.7716 s. The S4/S2 median ratio was 1.051. PreToolUse median/p95/max were 0.4586/0.4958/0.5312 s. The retired 50 ms threshold was not reinstated.
+
+The five incident-chain drivers (archive-043/044/045, compaction-continuation and the Windows Stop feedback chain) passed against actual Windows Hook subprocesses. The frozen runtime-tree digest is `802640bf72862ed1aa092691e25f5af67dcc961a609b891ca5bb84436416fbb7`; the executed prepared-source digest is `7a64339a70629eb1d40b7af507a528fea1ab96ced2e4d6fc40427d121b10bc53`. Input identities matched before and after execution. The coordinator verified all 18 payload hashes in the returned bundle, SHA-256 `92fd472687d328e42ac98ed530f853af18d40979ddc6d5f2ff8f0555eb55d19b`. Later coverage/test/document edits leave these runtime bytes unchanged and do not relabel the original prepared source.
+
+The historical coverage table now records 37 executed_pass and 15 analogue_only active records, with no Windows process rows pending. All required test nodes passed; 19 superseded records retain their true successors. The DSH analogue results certify only Codex-side shared semantics. These process results do not certify real Codex-host scheduling, loaded Hook trust or live model behavior; those are separately exercised by the live-host profile below.
+
+### Windows live-host acceptance and final source checks (2026-09-29)
+
+CLI 0.158.0, on the same runtime digest above, passed `stop_host/v1` in an isolated, normally trusted HOME. Four positive Stop observations completed in 1937/4167/3898/4241 ms. The waiting negative control produced blocked then completed. A 6489 ms PreCompact run preceded the matched contextCompaction item start/completion and later idle boundary. A separate owned process resumed the thread with a completed SessionStart (6664 ms); compactions increased from zero to one, the original pending set was retained, and recovery was consumed. Both process cleanups reported no running owned members; no scoped lock remained.
+
+The coordinator verified all 16 payload hashes in the redacted evidence bundle (`360ff8d35420ae13d0d2245abd1dd7271bb85e18cb28b10090f3271f214f6875`) and independently replayed the same source-bound Hook, ordering, recovery and cleanup oracles. The original result SHA-256 is `a0c886ae29454e0f6f9dbb8dd74b452a49e6f2653e211831409ecff5e046717f`; its prepared-source identity remains `6c5e975cdb046b18484b7ba83963c085b02a7e68a0b77a68b0b2fcd2c2282287`. Final documentation edits do not change those runtime bytes or relabel the original source. Authentication/account events and raw prompts were excluded from the cross-host bundle; originals remain on the originating host.
+
+The collector has 34 focused negative-control families covering source/handler identity, foreign turns/threads, missing/failed Hook pairs, compaction item pairing, idle ordering, pending recovery and cleanup. The final macOS behavior suite ran 2036 tests with zero failures and 22 capability/platform skips. Repository validation, privacy audit, phase-3 frozen-baseline manifest, self-test, Ruff and compileall passed. The historical 012 baseline remains byte-frozen; its audit is not a bare pytest pass claim.
+
+This closes the plan's bounded two-platform Stop/continuation/compact requirement. It does not establish a raw SessionStart(source=compact) payload, escaped-descendant cleanup, the original incident's entire private state, or universal six-gate host behavior. Exact clean-commit portable install/lifecycle, main CI/HOL, tag and public Release readback remain separate release-stage receipts.
+
 ## 0.14.2 — 2026-09-25
 
 The C1 partial-answer gate and C2 exact-marker/future-observation gate now

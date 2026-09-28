@@ -73,6 +73,14 @@ ledger is migrated or promoted.
 Context Guard deliberately separates public plugin code from private runtime
 state.
 
+## 0.14.3 source candidate
+
+The event-scoped Stop evaluation context is process memory only. It caches
+lexical parses of texts the event already read, plus per-phase projections
+of already-loaded state; nothing is persisted, exported or logged, and no
+new persisted field exists. Counters exist only when a test or benchmark
+explicitly passes a dictionary.
+
 ## Where data is stored
 
 When installed as a plugin, Codex supplies:

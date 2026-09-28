@@ -12,6 +12,8 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
 
+> **0.14.3 — 2026-09-29.** Long-session Stop evaluation is faster through the full Hook process; source records changed during evaluation now abort the commit and roll back business state. macOS and Windows process checks and bounded live Stop/compaction/resume checks passed on CLI 0.158.0. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+>
 > **0.14.2 — 2026-09-25.** Path/action separation and current-fact recovery have bounded macOS and Windows native controls. Their scoped replays do not establish whole-task closure. Three original historical cases remain unresolved; by the user's release-scope decision they do not block this version and are not claimed fixed or passed. See the [release-line notes](docs/releases/v0.14.2.md) and [development status](docs/DEVELOPMENT_0.14.2.md). Check [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for the latest published version.
 
 > **0.14.1 (2026-09-22)** adds a marketplace link to the existing Apache-2.0 license. Hook behavior is unchanged. See the [release notes](docs/releases/v0.14.1.md) and [published releases](https://github.com/GreenLv/codex-context-guard/releases).
@@ -22,7 +24,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transc
 
 ## Install
 
-Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. Portable acceptance used Codex CLI `0.153.4` on macOS and `0.149.0` on native Windows; see [compatibility](docs/COMPATIBILITY.md) for the full evidence boundary.
+Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The 0.14.3 acceptance batch targets Codex CLI `0.158.0`; earlier CLI versions are not retested for this release. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -33,7 +35,7 @@ python3 scripts/manage_plugin.py --apply
 On Windows:
 
 ```powershell
-py -3.10 scripts\manage_plugin.py --apply
+py -3 scripts\manage_plugin.py --apply
 ```
 
 The installer adds this repository as a marketplace, installs `context-guard@codex-context-guard`, and verifies the installed copy. It also keeps versioned copies needed by tasks that started before an upgrade.
@@ -42,7 +44,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-Before upgrading to 0.14.2, verify its published Release, then use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. Host Goal-completion interception remains unavailable until its synchronous Hook path is verified; Guard's explicit proof and whole-completion checks still apply. See [compatibility](docs/COMPATIBILITY.md) before downgrading or reviewing earlier 0.13.x behavior.
+Before upgrading to 0.14.3, verify its published Release, then use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. Host Goal-completion interception remains unavailable until its synchronous Hook path is verified; Guard's explicit proof and whole-completion checks still apply. See [compatibility](docs/COMPATIBILITY.md) before downgrading or reviewing earlier 0.13.x behavior.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); current behavior and platform limits are in [compatibility](docs/COMPATIBILITY.md). The [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) is historical.
 

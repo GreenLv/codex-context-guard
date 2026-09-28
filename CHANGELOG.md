@@ -4,6 +4,35 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.14.3 — 2026-09-29
+
+### Highlights
+
+- Long conversations finish Stop evaluation faster while retaining completion and recovery checks. In the incident-shaped fixture, the macOS full-process median fell from 7.252 s on 0.14.2 to 0.472 s; native Windows measured 0.489 s on the candidate. Detailed timing boundaries are recorded below.
+- If a source record changes during Stop evaluation, the commit fails and all business-state changes from that event are rolled back. A failed integrity check cannot leave completed units or accepted proofs persisted as success.
+- Answered Chinese why-questions can close on delivery and stay out of recovery debt. A mixed request such as “解释模块为什么失败再修复模块” keeps its execution work pending; unfamiliar or ambiguous tails remain open.
+- The complete historical incident library (context-guard-effectiveness at `16fc0a8d`, 44 active registry cases plus 8 active legacy records, separately numbered lineages) is now mapped case-by-case with executed positive and negative assertions; superseded records carry successor attribution.
+
+### Changes
+
+- `EvaluationContext` (private, explicitly passed) memoizes content-keyed lexical parses (fragments and both position-preserving views), per-phase scope projections, one verified prompt-record read per prompt per phase, the root/item index and pure per-(category, clause) source filters inside a single Stop event. Nothing is cached at module level, nothing crosses events, and a full action basis that performed a strict symlink resolution is never memoized.
+- Deterministic work-count gates and full-process timing moved into `tools/validation/benchmark_stop.py` (`count`, `process`, `pretool` modes); the fixtures are built exclusively through real hook dispatch (`tools/validation/stop_performance_fixture.py`). CI asserts counts, not wall clocks. The historical 50 ms PreToolUse Phase-2 threshold stays retired; ordinary PreToolUse cold start measured 0.173 s median / 0.180 s max on this machine against a 0.164 s baseline (interpreter and import dominate), far inside the 10 s hook timeout.
+- Information-delivery grammar now recognizes bounded Chinese why-interrogatives with an optional "顺便" softener; unknown residuals, temporal tails and coordinated action clauses still never close.
+- `tests/test_incident_library_regression.py`, `tests/test_stop_performance.py` and `tests/test_evaluation_context.py` add per-case, full-Stop and context-safety regressions; `tests/fixtures/incidents/historical_case_coverage.json` freezes the per-case mapping with platform-split results, and `scripts/check_incident_coverage.py` rejects missing ids, empty assertions, verdict-vocabulary drift and pending rows without evidence. DSH-lineage cases are adjudicated `analogue_only` through executed Codex-side shared-semantics regressions and never claim a DSH fix.
+- Schema 13, Stop 5.0.0, all nine hook events and both POSIX/Windows command forms are unchanged. Consumed 0.14.2 caches stay immutable. Upgrade with the managed installer, review all nine Hooks in a fresh task, then start another task to load the new version. No state migration is needed.
+
+### Validation
+
+- Source-level: full suite, repo validator, privacy audit, Ruff and compileall pass on the candidate tree (see the development handoff for exact commands and outputs). The new work-count regressions fail on the 0.14.2 baseline (`aea556d`), which reproduces the incident family: S1 7.138 s in-process with 17,758 prompt-record reads and 97,335 fragment parses for 113 texts.
+- Two macOS timing tracks on this machine (Python 3.12.2), never mixed: the dispatch-in-process track (development diagnostic; fixture cloned per sample, timing covers load→lock→dispatch→save inside the harness) and the full-process track (each sample is a fresh `context_guard.py hook` CLI subprocess measured wall-clock from the parent, with exit/stdout-JSON/state/lock/decision-growth verification).
+  - Full-process track, 20 samples: candidate S1 median 0.425 s / p95 0.452 s / max 0.626 s; S4 p95 0.722 s / max 0.879 s; S2→S4 median growth ratio 1.243 (gate ≤ 2.8); S0 median 0.340 s vs baseline 0.365 s (no regression); ordinary PreToolUse cold start median 0.352 s / max 0.529 s against a 0.305 s baseline (interpreter/import dominated). Baseline full-process S1 median 7.252 s / max 8.130 s and S4 median 44.563 s — both fail the gates, reproducing the incident family through the real hook entry.
+  - Dispatch-in-process track (diagnostic): candidate S1 median 0.084 s / p95 0.108 s / max 0.268 s, S4 p95 0.262 s; baseline S1 median 5.860 s, S4 median 36.890 s; per-event counters show 2 scope constructions, 13 record reads plus 13 consumption rechecks, and 113 fragment parses against the baseline's 17,758 reads and 97,335 parses of the same 113 texts.
+- Final-runtime macOS full-process readback (20 samples): S1 median 0.4715 s / p95 0.9602 s / max 1.6844 s; S4 median 0.6617 s / p95 1.6312 s / max 1.6937 s; S4/S2 ratio 1.0912; PreToolUse median 0.3689 s. Earlier development measurements above retain their original scope.
+- Historical library: 37 active records executed_pass, 15 DSH records analogue_only through Codex-side regressions, and no pending Windows process rows; 19 superseded records retain successor attribution. All required test nodes passed. Windows subprocess replay does not establish real Codex-host scheduling.
+- Native Windows 11 / Python 3.12.10: 20 full-process samples per shape, S1 median 0.489 s / p95 0.513 s / max 0.522 s; S4 p95 0.764 s / max 0.772 s; S4/S2 median ratio 1.051; PreToolUse median 0.459 s. Five Windows incident-chain drivers passed. Separate macOS and Windows live `stop_host/v1` batches passed on CLI 0.158.0: four completed Stops, an expected waiting correction, actual compaction and cold continuation with pending work retained. These bounded synthetic scenarios do not reproduce the original incident state; official Hook status/duration are not OS exit codes. Exact-commit CI/HOL and publication are separately verified release gates.
+
+
+
 ## 0.14.2 — 2026-09-25
 
 ### Highlights
