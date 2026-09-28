@@ -368,7 +368,7 @@ class WindowsPlatformSourceCases(unittest.TestCase):
             self.assertLess(len(text), 20000)
         code = cg.command_stage_disposition(SimpleNamespace(
             data_dir=Path(fixture.root), session_id=fixture.session,
-            turn_id="t-invalid", token="wrong-token", disposition="user_wait",
+            turn_id="t-invalid", token="", disposition="user_wait",
             replace=False))
         self.assertNotEqual(code, 0)
 

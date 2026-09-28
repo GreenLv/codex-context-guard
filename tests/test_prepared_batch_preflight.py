@@ -325,17 +325,34 @@ class PreparedBatchPreflightTests(unittest.TestCase):
             completed.stderr)
 
     def test_portable_runtime_contract_untouched(self):
+        # Own the dirty fixture: CI checks out a clean source tree and need
+        # not have Codex installed to test the earlier source-identity gate.
+        dirty = self.work / "dirty-repo"
+        dirty.mkdir()
+        for args in (("init",), ("config", "user.name", "Fixture"),
+                     ("config", "user.email", "fixture@users.noreply.github.com")):
+            subprocess.run(["git", "-C", str(dirty), *args], check=True,
+                           capture_output=True)
+        tracked = dirty / "fixture.txt"
+        tracked.write_text("before\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(dirty), "add", "fixture.txt"], check=True)
+        subprocess.run(["git", "-C", str(dirty), "commit", "-m", "fixture"],
+                       check=True, capture_output=True)
+        head = subprocess.check_output(
+            ["git", "-C", str(dirty), "rev-parse", "HEAD"], text=True).strip()
+        tracked.write_text("after\n", encoding="utf-8")
         completed = subprocess.run(
             [sys.executable,
              str(REPO_ROOT / "tools/validation/native_acceptance.py"),
-             "--preflight",
-             "--source-commit", self.ident["head"],
-             "--profile", "portable_runtime",
+             "--preflight", "--source-commit", head,
+             "--profile", "portable_runtime", "--codex", sys.executable,
              "--output", str(self.work / "native.json"),
-             "--repo-root", str(REPO_ROOT)],
+             "--repo-root", str(dirty)],
             capture_output=True, text=True, timeout=300)
         self.assertNotEqual(completed.returncode, 0,
                             "dirty tree must still fail portable_runtime")
         self.assertIn("must be clean", completed.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

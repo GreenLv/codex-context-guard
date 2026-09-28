@@ -15,7 +15,9 @@ classifiers = [
 dependencies = []
 
 [dependency-groups]
+test = ["pytest==8.4.2"]
 validation = [
+  {include-group = "test"},
   "ruff==0.16.1",
   "plugin-scanner==3.0.157",
 ]

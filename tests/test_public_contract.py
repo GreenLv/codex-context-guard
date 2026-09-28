@@ -180,17 +180,17 @@ class PublicContractTests(unittest.TestCase):
         )
         self.assertEqual(workflow.validate_lane_failure_propagation(lane), [])
         merged = lane.replace(
-            "        run: python scripts/run_current_behavior_suite.py\n"
+            "        run: uv run --locked --only-group test --python python python scripts/run_current_behavior_suite.py\n"
             "      - name: Audit historical phase 3 transition\n"
-            "        run: python scripts/check_phase3_transition.py",
+            "        run: uv run --locked --only-group test --python python python scripts/check_phase3_transition.py",
             "        run: |\n"
             "          python scripts/run_current_behavior_suite.py\n"
             "          python scripts/check_phase3_transition.py",
         )
         self.assertIn("distinct CI steps", workflow.validate_lane_failure_propagation(merged)[0])
         ignored = lane.replace(
-            "        run: python scripts/run_current_behavior_suite.py",
-            "        run: python scripts/run_current_behavior_suite.py\n"
+            "        run: uv run --locked --only-group test --python python python scripts/run_current_behavior_suite.py",
+            "        run: uv run --locked --only-group test --python python python scripts/run_current_behavior_suite.py\n"
             "        continue-on-error: true",
         )
         self.assertIn("propagate failures", workflow.validate_lane_failure_propagation(ignored)[0])
