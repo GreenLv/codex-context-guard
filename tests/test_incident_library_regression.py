@@ -48,7 +48,9 @@ class CaseFixture:
     """One isolated synthetic session driven through real dispatch."""
 
     def __init__(self, prefix, activate=True):
-        self.root = tempfile.mkdtemp(prefix=prefix)
+        # Windows TEMP can use an 8.3 alias; observations require the exact
+        # physical path, as in the existing native action-grounding fixtures.
+        self.root = str(Path(tempfile.mkdtemp(prefix=prefix)).resolve())
         os.environ["CONTEXT_GUARD_DATA_DIR"] = self.root
         self.session = prefix
         self.directory = Path(self.root) / "sessions" / self.session

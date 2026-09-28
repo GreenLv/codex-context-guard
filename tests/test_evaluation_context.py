@@ -134,7 +134,8 @@ class EvaluationContextTests(unittest.TestCase):
 
     def test_t14_cached_basis_copy_isolated_from_caller(self):
         # A live test_verify basis: executable root plus a real suite file.
-        root = tempfile.mkdtemp(prefix="cg-ctx-t14-")
+        # Expand Windows TEMP aliases before constructing the observed target.
+        root = str(Path(tempfile.mkdtemp(prefix="cg-ctx-t14-")).resolve())
         os.environ["CONTEXT_GUARD_DATA_DIR"] = root
         suite = Path(root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
