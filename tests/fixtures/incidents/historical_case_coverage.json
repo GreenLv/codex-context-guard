@@ -18,7 +18,7 @@
     "analogue_only",
     "pending"
   ],
-  "description": "Per-case mapping of the canonical historical incident library (context-guard-effectiveness at the frozen commit) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit.",
+  "description": "Per-case mapping of the anonymized historical incident corpus (bound to the frozen source snapshot) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit.",
   "cases": [
     {
       "id": "CGI-20260913-codex-archive-009",

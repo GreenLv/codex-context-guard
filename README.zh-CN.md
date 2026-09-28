@@ -8,19 +8,11 @@
 
 [English](README.md) | [介绍文章](https://blog.csdn.net/LvGreat/article/details/163534498) | [更新日志](CHANGELOG.zh-CN.md)
 
-Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要求。它在 compact 或 resume 后恢复私有检查表，并要求每个待办都有成功证据，任务才能报告完成。它不会用自带的审批提示去门禁普通编辑、提交或推送。
+Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要求。它在上下文压缩或恢复任务后还原私有检查表，并核对已记录的证据，再判断任务是否完成。
 
-它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录并行工作，不会替代或控制这些原生能力。
+它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.14.3 — 2026-09-29。** 长会话 Stop 全进程评估显著加快；源记录在评估中途发生变化时，提交失败并回滚业务状态。macOS 与 Windows 的进程检查及有界真实 Stop/压缩/恢复检查已在 CLI 0.158.0 上通过。详见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
->
-> **0.14.2 — 2026-09-25。** 路径／动作分离和当前事实恢复已有 macOS 与 Windows 的有界原生控制；限定范围的重放不证明整体任务闭包。三项原始历史案例仍未决；依用户确定的发布范围，它们不阻塞本版，但不宣称已修复或通过。参见[发布线说明](docs/releases/v0.14.2.md)和[开发状态](docs/DEVELOPMENT_0.14.2.md)。最新公开版本以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 为准。
-
-> **0.14.1（2026-09-22）** 为市场元数据补充现有 Apache-2.0 许可证链接，Hook 行为不变。参见[发布说明](docs/releases/v0.14.1.md)及[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)。
-
-> 较早的行为基线：`0.14.0` 发布线（2026-09-21）。当前公开版本请以[已发布 Release](https://github.com/GreenLv/codex-context-guard/releases)的读回为准；本发布线的范围见[发布线说明](docs/releases/v0.14.0.md)、[更新日志](CHANGELOG.zh-CN.md)、[兼容性说明](docs/COMPATIBILITY.md)和[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
-
-> `0.14.0` 发布线源码（公开 tag 与安装状态须单独读回）：修复后的“长期收益以后再观察”仍属未来观察；用户现在要求但尚未运行的测试仍是当前工作。简短“继续”只恢复有来源且已就绪的工作，后来的暂停或取消只改变各自的范围。普通编辑与测试仍由 Codex 执行，Guard 核验已持久化的结果。共享核心 v2 契约由本仓维护，DSH 的镜像与 pin 身份须独立核验。详情及平台边界见[更新日志](CHANGELOG.zh-CN.md)和[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **0.14.3 — 2026-09-29。** 长任务的完成检查更快；评估期间源记录变化时会回滚本次状态改动。无需迁移状态。变更见[发布说明](docs/releases/v0.14.3.md)，已验证范围见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -44,7 +36,7 @@ py -3 scripts\manage_plugin.py --apply
 
 ### 升级说明
 
-升级到 0.14.3 前，先核实其公开 Release，再使用受管安装器并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。宿主 Goal 完成拦截仍须先验证同步 Hook 路径，当前不可采用；Guard 的显式 proof 与整体完成检查仍有效。降级或查看 0.13.x 历史行为前请阅读[兼容性说明](docs/COMPATIBILITY.md)。
+升级到 0.14.3 前，先核实其公开 Release，再使用受管安装器并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。可选控制能力和降级限制见[兼容性说明](docs/COMPATIBILITY.md)。
 
 若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，当前行为与平台边界见[兼容性说明](docs/COMPATIBILITY.md)；[0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)保留为历史记录。
 

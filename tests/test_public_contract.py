@@ -322,11 +322,11 @@ class PublicContractTests(unittest.TestCase):
             ):
                 self.assertIn(term, readme)
         self.assertIn(
-            "`0.14.0` release line",
+            f"[release notes](docs/releases/v{contract.VERSION}.md)",
             english,
         )
         self.assertIn(
-            "`0.14.0` 发布线",
+            f"[发布说明](docs/releases/v{contract.VERSION}.md)",
             chinese,
         )
         self.assertIn("Waiting for the user, an external result", english)

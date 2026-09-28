@@ -8,19 +8,11 @@
 
 [简体中文](README.zh-CN.md) | [Introduction](https://greenlv.github.io/blogs/protecting-context-in-long-running-agent-tasks/) | [Changelog](CHANGELOG.md)
 
-Context Guard keeps important requirements from disappearing during a long Codex task. It restores a private checklist after compaction or resume and requires successful evidence before the task can be reported complete. It does not gate ordinary edits, commits, or pushes with its own approval prompts.
+Context Guard keeps important requirements from disappearing during a long Codex task. It restores a private checklist when a task is compacted or resumed, and checks recorded evidence before accepting a completion claim.
 
-It works beside Codex Plan, Goal, memories, subagents, worktrees, and the transcript; it does not replace or control them.
+It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **0.14.3 — 2026-09-29.** Long-session Stop evaluation is faster through the full Hook process; source records changed during evaluation now abort the commit and roll back business state. macOS and Windows process checks and bounded live Stop/compaction/resume checks passed on CLI 0.158.0. See the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
->
-> **0.14.2 — 2026-09-25.** Path/action separation and current-fact recovery have bounded macOS and Windows native controls. Their scoped replays do not establish whole-task closure. Three original historical cases remain unresolved; by the user's release-scope decision they do not block this version and are not claimed fixed or passed. See the [release-line notes](docs/releases/v0.14.2.md) and [development status](docs/DEVELOPMENT_0.14.2.md). Check [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) for the latest published version.
-
-> **0.14.1 (2026-09-22)** adds a marketplace link to the existing Apache-2.0 license. Hook behavior is unchanged. See the [release notes](docs/releases/v0.14.1.md) and [published releases](https://github.com/GreenLv/codex-context-guard/releases).
-
-> Earlier behavior baseline: Version `0.14.0` release line (2026-09-21). Check the [published releases](https://github.com/GreenLv/codex-context-guard/releases) for the current public version; see the [release-line notes](docs/releases/v0.14.0.md), [changelog](CHANGELOG.md), [compatibility matrix](docs/COMPATIBILITY.md), and [local acceptance record](docs/LOCAL_ACCEPTANCE.md) for this line’s scope.
-
-> In the `0.14.0` release-line source (public tag and installation require separate readback), a completed repair can leave “observe its long-term benefit later” as a future observation. An unfinished test the user requests now remains current. A short “continue” resumes only sourced, ready work, while a later pause or cancellation changes only its own scope. Codex still performs ordinary edits and tests, and Guard checks their persisted results. The shared core v2 contract is maintained here; DSH verifies its mirror and pin separately. See the [changelog](CHANGELOG.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for details and platform limits.
+> **0.14.3 — 2026-09-29.** Faster completion checks for long tasks, with rollback if source records change during evaluation. No state migration is needed. See the [release notes](docs/releases/v0.14.3.md) for the changes and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for the tested scope.
 
 ## Install
 
@@ -44,7 +36,7 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-Before upgrading to 0.14.3, verify its published Release, then use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. Host Goal-completion interception remains unavailable until its synchronous Hook path is verified; Guard's explicit proof and whole-completion checks still apply. See [compatibility](docs/COMPATIBILITY.md) before downgrading or reviewing earlier 0.13.x behavior.
+Before upgrading to 0.14.3, verify its published Release, then use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. See [compatibility](docs/COMPATIBILITY.md) for optional controls and downgrade limits.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); current behavior and platform limits are in [compatibility](docs/COMPATIBILITY.md). The [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) is historical.
 

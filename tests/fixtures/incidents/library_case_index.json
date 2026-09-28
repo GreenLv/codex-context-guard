@@ -1,6 +1,6 @@
 {
   "schema": "incident-library-index/v3",
-  "description": "Per-record identity pins for the canonical historical incident library (context-guard-effectiveness at the frozen commit). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
+  "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "frozen_at": "2026-09-28",
   "library_commit": "16fc0a8d677bb2fe01e60b7312da83b468adc309",
   "case_registry": {

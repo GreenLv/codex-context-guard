@@ -1,6 +1,6 @@
 # Stop 全路径性能修复开发计划
 
-状态：实现与协调者源码复核已完成；当前推进双平台原生验收和发布门槛，未发布。原始计划要求及各轮执行索引保留。
+状态：0.14.3 的实现、独立复核和有界双平台原生验收已完成；正式发布另需精确提交的 CI/HOL 与公开读回。第 1–11 节保留最初的技术计划，第 12 节记录最终结果。
 
 编写日期：2026-09-28。
 
@@ -14,9 +14,9 @@
 
 消除长会话中 Stop 对相同输入重复解析、重复构造动作依据、重复读取根记录造成的时间放大。在保留既有完整性、证据、作用域、等待、交付和完成语义的条件下，让完整 Stop 在现有 10 秒时限内有充分余量，并用可复现的合成数据、确定性计数和真实宿主证据验证。
 
-运行时实现只在这个公开产品仓库修改；历史错误库的唯一维护入口是 `context-guard-effectiveness`，其案例、映射和验收清单维护属于本计划的配套范围。开发 Harness 在 macOS 完成实现、历史错误库逐案回归、本机性能与安装验证，并交回源码、测试和候选说明。本聊天协调者负责独立开发复核，以及候选交回后的 Windows 跨主机线程协调和综合验收；不要求开发 Harness 拥有 Windows。其他仓库的实现、用户日常安装及发布不是默认开发范围。结构化交接文件只传递状态与对象，不授予额外操作权限。
+运行时实现只在这个公开产品仓库修改；历史错误库的唯一维护入口是 匿名历史案例库，其案例、映射和验收清单维护属于本计划的配套范围。开发执行者 在 macOS 完成实现、历史错误库逐案回归、测试环境性能与安装验证，并交回源码、测试和候选说明。验收协调者负责独立开发复核，以及候选交回后的 Windows 跨主机线程协调和综合验收；不要求开发执行者 拥有 Windows。其他仓库的实现、用户日常安装及发布不是默认开发范围。结构化交接文件只传递状态与对象，不授予额外操作权限。
 
-用户补充的硬条件：本次案例已在 `context-guard-effectiveness` 正式收录为 `CGI-20260928-codex-stop-performance-timeout`（旧本机来源编号 `CGI-2026-046`）；这一版必须在完整历史错误库上全部通过。开发 Harness 执行历史库回归，Windows 原生部分由协调者组织；上一版本的豁免和 unknown 不自动继承到本版。
+验收要求：本次案例已在 匿名历史案例库 正式收录为 `CGI-20260928-codex-stop-performance-timeout`（旧测试环境来源编号 `CGI-2026-046`）；这一版必须在完整历史错误库上全部通过。开发执行者 执行历史库回归，Windows 原生部分由协调者组织；上一版本的豁免和 unknown 不自动继承到本版。
 
 ### 1.1 必须保持的契约
 
@@ -40,7 +40,7 @@
 | 事实 | 已核查边界 | 不可推导的结论 |
 | --- | --- | --- |
 | 事故 UI 显示 194 次 Hook、0 次阻止、1 次未成功，失败项为 Stop | 用户提供截图 | 截图未展开宿主 timeout 字段，不能声称直接读到了该字段 |
-| 最后回复至 turn 完成约 10.976 秒；残留锁且无对应 Stop 决策 | 本机持久化记录只读检查 | 不能仅凭残留锁认定锁竞争或状态损坏 |
+| 最后回复至 turn 完成约 10.976 秒；残留锁且无对应 Stop 决策 | 测试环境持久化记录只读检查 | 不能仅凭残留锁认定锁竞争或状态损坏 |
 | 隔离副本重构 Stop 输入，未带残留锁，11.951 秒后退出 0、返回空 JSON、无 stderr | macOS，已安装 0.14.2；运行文件与检查基线相同；原始状态摘要前后不变 | 不是原始宿主 payload 捕获；不能称为新版本原生验收 |
 | 单独 cProfile 重放约 25.248 秒 | 定位热点；含 profiler 开销 | 不得把 25.248 秒当作原始钩子的真实耗时 |
 | 旧 Windows 原生 r24 曾有 SessionStart/Stop 10 秒超时 | [本地验收历史](LOCAL_ACCEPTANCE.md)，2026-09-24 的 `5a85faba7c4247e63eb09afda7938638233421fc` | 同类性能故障，不证明历史调用栈与本次完全相同 |
@@ -202,24 +202,24 @@ SP-02/SP-03 可以小步交错，但不要每次局部修复就运行全矩阵�
 
 ### 6.5 完整历史错误库硬门槛
 
-本版同时承担“修复本次性能问题”和“历史错误库全过”。后者不是可选质量加分，也不是只跑几个精选反例。“历史错误库”一律指 `context-guard-effectiveness`。本次 intake 后，该仓库 `benchmarks/incidents/cases/` 有 52 条记录、41 个 active case，包含新增 `CGI-20260928-codex-stop-performance-timeout`。原始记录数、supersession 后 active 数、产品适用数及实际执行数必须分别报告；旧本机来源库的 29 条不是本版验收分母。执行入口按 `AGENTS.md`、`docs/INCIDENT_WORKFLOW.md` 读取当前 registry、冻结 legacy 谱系与关联索引，消除身份重复并绑定逐文件摘要。若新增记录，保留已有结果并加入新增项，不能沿用更小的分母。
+本版同时承担“修复本次性能问题”和“历史错误库全过”。后者不是可选质量加分，也不是只跑几个精选反例。“历史错误库”一律指 匿名历史案例库。本次 intake 后，冻结案例注册表 有 52 条记录、41 个 active case，包含新增 `CGI-20260928-codex-stop-performance-timeout`。原始记录数、supersession 后 active 数、产品适用数及实际执行数必须分别报告；旧测试环境来源库的 29 条不是本版验收分母。执行入口读取经脱敏审查的案例注册表、冻结的历史谱系与关联索引，消除身份重复并绑定逐文件摘要。若新增记录，保留已有结果并加入新增项，不能沿用更小的分母。
 
-开发 Harness 的职责：
+开发执行者 的职责：
 
-1. 读取 `context-guard-effectiveness` 的完整 case registry、有效 supersession 关系、冻结 legacy 谱系及 source references；生成一份冻结清单和逐案覆盖表，保留原始记录 ID。不要使用产品仓库 public fixtures、旧本机 archive 或旧 26/28/29-case 表替代完整清单。该库同时包含 Codex/DSH；逐案写明当前产品适用性及不变量映射，由协调者复核，不能自行删去 DSH 来源的通用语义反例，也不能把 DSH 的通过结果移作 Codex 证据。
+1. 读取 匿名历史案例库 的完整 case registry、有效 supersession 关系、冻结 legacy 谱系及 source references；生成一份冻结清单和逐案覆盖表，保留原始记录 ID。不要使用产品仓库 public fixtures、旧测试环境 archive 或旧 26/28/29-case 表替代完整清单。该库同时包含 Codex/DSH；逐案写明当前产品适用性及不变量映射，由协调者复核，不能自行删去 DSH 来源的通用语义反例，也不能把 DSH 的通过结果移作 Codex 证据。
 2. 将每个历史案例映射到当前产品仍必须保持的具体不变量、真实触发序列、输入、可观察输出与断言。对完整链路案例，必须复现相应 Stop/compact/resume、授权延续、丢失编辑 provenance 等链路；单次函数、普通首次启动或配置存在不能代替。
 3. 对已经被版本化契约明确替代的旧行为，保留 original 与 current 两栏，说明替代依据，执行当前不变量的正/负验证并由协调者复核。不能恢复已移除的默认工具审批；仅标 not_applicable/retired/analogue_only 或写“设计不同”不算通过。
 4. 对源证据不足的案例主动补齐可证实的重现条件。旧报告中的 unknown、documented_only、缺失宿主链以及上一版本获准放宽的条目仍在本版清单；未解决前标 pending，不得改名、删除或排除后报全过。
-5. macOS 上先执行所有可移植源码和本机案例，包含本次完整 Stop 性能回归。为每案关联候选源码/运行树、fixture 摘要、测试函数及断言、实际命令、原始结果和反例。
-6. 需要 Windows OS 或真实宿主才能成立的断言单列，由开发 Harness 提供同一候选的精确输入、命令和期望；协调者组织 Windows 线程执行并回读结果。开发侧不能完成该子门槛不影响交回，但不允许将其标成已通过。
+5. macOS 上先执行所有可移植源码和测试环境案例，包含本次完整 Stop 性能回归。为每案关联候选源码/运行树、fixture 摘要、测试函数及断言、实际命令、原始结果和反例。
+6. 需要 Windows OS 或真实宿主才能成立的断言单列，由开发执行者 提供同一候选的精确输入、命令和期望；协调者组织 Windows 线程执行并回读结果。开发侧不能完成该子门槛不影响交回，但不允许将其标成已通过。
 
 历史覆盖表至少包含：`incident_id`、原始记录摘要、当前契约依据、触发/状态转换序列、正例/反例、test locator、candidate identity、source_result、macos_result、windows_result、evidence locator、missing evidence、owner、final verdict。无要求的平台可明确“不要求”，但不能把案例本身标 N/A 计作通过。
 
-`CGI-20260928-codex-stop-performance-timeout` 必须使用 full Hook process 重放及性能门槛；旧 `scripts/incident_corpus.py benchmark` 主要验证文本/协议 fixture，不能证明本次性能故障或原生生命周期闭合。它可以作为必要子集执行，不能作为全库验收的唯一入口。若现有 tooling 缺少统一逐案 runner/coverage validator，开发 Harness 补充测试/验证层入口，要求拒绝漏项、重复项、空断言、缺少候选绑定，以及把 skipped/unknown 当 pass 的报告。
+`CGI-20260928-codex-stop-performance-timeout` 必须使用 full Hook process 重放及性能门槛；旧 `scripts/incident_corpus.py benchmark` 主要验证文本/协议 fixture，不能证明本次性能故障或原生生命周期闭合。它可以作为必要子集执行，不能作为全库验收的唯一入口。若现有 tooling 缺少统一逐案 runner/coverage validator，开发执行者 补充测试/验证层入口，要求拒绝漏项、重复项、空断言、缺少候选绑定，以及把 skipped/unknown 当 pass 的报告。
 
 本版“历史库全过”的判定：冻结清单逐案全部为经证据支持的 `passed`，相关平台子门槛全部满足，failed/pending/unknown/unmapped/skipped-required 均为零。仅 source 全过而 Windows pending 时，报告“历史库源码回归通过，平台验收未闭合”，不得用任何仅源码的 N/N 数字报告“全库全过”。真实反例按家族修复后重跑受影响组；最终必须有一份完整清单的结果，不靠分散摘要猜测覆盖率。
 
-canonical registry 清单以 `context-guard-effectiveness` 为准；私有现场来源仅通过该库 Git 忽略的本地 mapping 在同机定位。不提交原始库、会话、截图或机密路径。公共仓库只新增经过隐私审查的合成夹具、测试映射和匿名结果说明。未获得全库访问时，将 intake 访问标成依赖，不用公共子集假装完成。
+canonical registry 清单以 匿名历史案例库 为准；原始来源与公开案例之间的映射仅在受控环境保存。不提交原始库、会话、截图或机密路径。公共仓库只新增经过隐私审查的合成夹具、测试映射和匿名结果说明。未获得全库访问时，将 intake 访问标成依赖，不用公共子集假装完成。
 
 ## 7. 正向、负向和对抗测试矩阵
 
@@ -280,17 +280,17 @@ git diff --check
 ### 8.3 原生验收分层
 
 1. macOS/Windows 零模型：完整 Hook stdin 子进程、各自实际 shell wrapper、退出码、耗时、状态和锁；运行 S0/S1/S4/CT/EV。该结果是平台进程/文件系统证据，不是 Codex 宿主调度证据。
-2. macOS/Windows 宿主：开发 Harness 负责 macOS 可执行部分；协调者在开发复核后负责 Windows 线程调度、输入身份核对与结果回读。获得相应执行授权且平台可用后，经正常信任加载候选，在新任务上执行长会话 Stop 正例、应纠正反例和一次后续继续。官方记录核对 Hook start/completed/exit/duration、candidate runtime、状态决策与无残留锁。保留 10 秒时限。
+2. macOS/Windows 宿主：开发执行者 负责 macOS 可执行部分；协调者在开发复核后负责 Windows 线程调度、输入身份核对与结果回读。获得相应执行授权且平台可用后，经正常信任加载候选，在新任务上执行长会话 Stop 正例、应纠正反例和一次后续继续。官方记录核对 Hook start/completed/exit/duration、candidate runtime、状态决策与无残留锁。保留 10 秒时限。
 3. 共享恢复路径：在真实 compact/resume 上检查 SessionStart、PreCompact 的时延与恢复语义；不把手工构造 SessionStart 输入当作真实 compaction 证据。
 4. 仓库现有 `tools/validation/native_acceptance.py` 版本化入口：先用实际参数 `--preflight`。若现有 profile 不能表达本次性能场景，补充一个版本化、可验证的性能附件/映射，并保留原 profile 的边界；不可把任意自制 JSON 填成已通过的 `native-acceptance/v2`。
 
 原生准备时读取 native repair/auth lifecycle 指引。优先复用有效登录；每个协作批次最多一次交互登录，不能因 fresh HOME 或换候选重新消耗登录。不能复制凭据或信任状态来跨越边界。缺少认证/宿主能力时返回明确 pending，不静默转成合成验收。
 
-开发 Harness 不承担 Windows 执行。开发侧完成源码、完整历史库可移植回归与 macOS 验证后，一次性交回 Windows 所需精确输入和命令；协调者负责通过跨主机线程执行并回读，必要修复回送开发侧收敛。不能把 macOS/CI 当作 Windows native pass。既有 scoped native 结果保留历史身份，不替新运行字节背书。
+开发执行者 不承担 Windows 执行。开发侧完成源码、完整历史库可移植回归与 macOS 验证后，一次性交回 Windows 所需精确输入和命令；协调者负责通过跨主机线程执行并回读，必要修复回送开发侧收敛。不能把 macOS/CI 当作 Windows native pass。既有 scoped native 结果保留历史身份，不替新运行字节背书。
 
 ### 8.4 私有事故回放
 
-公共合成夹具是跨 Harness 的主要复现材料。原始会话只在持有者本机、用户授权的范围内以隔离副本回放；缺少私有数据不阻塞其他执行者开发，不要求将状态/正文导出到公共仓库。回传只含经审查的耗时、计数、结果摘要及身份，不含原始提示词、路径或控制数据。
+公共合成夹具是跨执行环境 的主要复现材料。原始会话只在持有者测试环境、用户授权的范围内以隔离副本回放；缺少私有数据不阻塞其他执行者开发，不要求将状态/正文导出到公共仓库。回传只含经审查的耗时、计数、结果摘要及身份，不含原始提示词、路径或控制数据。
 
 私有回放通过也不能代替公共回归或真实宿主验收。
 
@@ -324,7 +324,7 @@ git diff --check
 | G8 独立审核 | 协调者对 diff、证据和故障族的复核 | 由协调者完成 |
 | G9 发布/日常安装 | 授权后的 CI/HOL/tag/release/readback/consumer | 本开发交接 out of scope |
 
-开发完成交回不等于新版本已发布。G1–G5 通过、GH 的源码/本机部分逐案完成且明确列出 GH/G6/G7 的平台缺口，可提交给协调者审核；协调者完成开发复核与 Windows 跨主机验收后，只有 GH/G6/G7 的全部必需项均通过才可宣称本版验收闭合。不能把 pending 项隐藏在附注。
+开发完成交回不等于新版本已发布。G1–G5 通过、GH 的源码/测试环境部分逐案完成且明确列出 GH/G6/G7 的平台缺口，可提交给协调者审核；协调者完成开发复核与 Windows 跨主机验收后，只有 GH/G6/G7 的全部必需项均通过才可宣称本版验收闭合。不能把 pending 项隐藏在附注。
 
 交回采用 Outcome / Evidence / Validation / Limitations / Next，附：
 
@@ -334,7 +334,7 @@ git diff --check
 - 每条测试的入口和结果位置、failed/skipped/not_run；被修复反例及旧基线失败证据。
 - 每个 context 字段、依赖、缓存键、失效点和不能缓存的读取清单。
 - 安装和原生验证的独立结果；未执行项、负责者、恢复条件。
-- 完整历史库清单与逐案回归表，Windows 待办包，以及一份验证通过的 `agent-handoff/v1` 结果；原始私有证据留在所属本机。
+- 完整历史库清单与逐案回归表，Windows 待办包，以及一份验证通过的 `agent-handoff/v1` 结果；原始私有证据留在所属测试环境。
 
 不要把尚未执行的阶段写成勾选完成，不自动提交、推送、发布或启动用户宿主。取得新的明确授权后只推进对应动作，不重新询问已经包含在那次授权中的普通实现和检查。
 
@@ -347,67 +347,38 @@ git diff --check
 
 ---
 
-## 12. 执行结果索引（2026-09-28 开发侧交回；不改动上文任何诊断与旧失败记录）
+## 12. 实施结果（2026-09-29）
 
-本节由开发 Harness 在候选实现完成后追加；上文第 1–11 节保持原样。
+本节汇总最终实现与验收范围。早期失败作为修复依据保留在下表中，不将后来的通过结果回填到旧候选。详细计时及平台边界统一见[验收记录](LOCAL_ACCEPTANCE.md#0143--2026-09-29)。
 
-- 基线与候选：基线 `aea556d8ac651b1b94c200f88108c87cf8371893`；候选为未提交 prepared source（版本 0.14.3 Unreleased，运行树摘要 `abcffa8423a56f0ccb8b2e75db29c6f12999006d42d571084f81dc0c43e9e3f5`，43 文件）。
-- SP-01/02：夹具 `tools/validation/stop_performance_fixture.py`（S0/S1/S2/S4/LX/CT/EV，全部经真实 dispatch 构建）；基准 `tools/validation/benchmark_stop.py`（count/process/pretool）。旧基线复现：S1 进程内 7.138 s（profile 12.744 s：2,487 basis / 17,758 记录读取 / 97,335 fragments），20 样本进程 S1 median 5.860 s、S4 median 36.890 s。候选：S1 median 0.084 s / p95 0.108 s / max 0.268 s；S4 p95 0.262 s / max 0.439 s；计数门槛 S1/S4 passed。
-- SP-03：`scripts/context_guard.py` 新增 `EvaluationContext`（内容键词法层、按阶段失效的状态投影、单次已验证记录读取/阶段、纯 (root,category) 来源过滤、不含 TOCTOU 解析的纯 basis memo、提交前消费复核 `consumed_source_changed_before_commit`）。
-- SP-04：T01–T20 映射于 `tests/test_evaluation_context.py`、`tests/test_stop_performance.py`（关键计数断言在旧基线 12 项失败）；旧/新归一化差分 9/9 场景一致（恢复包仅存 checkout 路径长度打包噪声，已归一化并记录）。
-- 历史错误库（验收范围更新后唯一指 `context-guard-effectiveness` @ `16fc0a8d`）：逐案矩阵 `tests/fixtures/incidents/historical_case_coverage.json`（schema v2，55+16 行）与校验器 `scripts/check_incident_coverage.py`。52 条 active 裁定：31 executed_pass、15 DSH analogue_only（仅 Codex 侧共享语义）、6 pending（全部为原生 Windows 证据：043/044/045、压缩续行、Windows 反馈链、本性能修复的 Windows 计时）；19 条 superseded 已注明承接者。本批顺带修复 040 家族的 why 疑问信息闭合（0.14.2 基线可复现其仍不闭合）。
-- PreToolUse 冷启动（CGI-20260928-codex-archive-pretool-cold-start）：候选 median 0.173 s / max 0.180 s vs 基线 0.164 s（同机 20 样本，解释器/导入主导；无本版新门槛，50 ms 旧门槛保持退役）。
-- SP-05：0.14.3 版本号、双语 CHANGELOG（Unreleased）、README 双语候选段、ARCHITECTURE/PRIVACY/VERSIONING/COMPATIBILITY/LOCAL_ACCEPTANCE、validation-map 已同步；VERSIONING 中 0.14.2 遗留的 Unreleased 标注已按发布事实更正。
-- SP-06：完整源码门槛全绿（validate/audit/behavior 1880 测试 0 失败/phase3 matches_manifest/self-test/ruff/compileall/diff --check）；最终字节上的全新隔离 HOME：首装、严格 no-op、43 文件字节 parity、SMOKE_PASS。
-- SP-07：Windows 待办包与 agent-handoff/v1 交回（含全部工件 sha256）；原始私有证据留在所属本机。
-- 门槛未变；本节不将任何 pending 项记为通过。
+| 计划项 | 实施结果与公开入口 |
+| --- | --- |
+| SP-01/02：复现与基准 | 合成夹具和真实 Hook CLI 基准分别位于 `tools/validation/stop_performance_fixture.py` 与 `tools/validation/benchmark_stop.py`。保留计数、全进程和 PreToolUse 三种测量。 |
+| SP-03：事件内复用 | `EvaluationContext` 在单次事件内复用解析和已验证记录，状态改写后使对应结果失效；不跨事件缓存。 |
+| SP-04：完整性与语义 | 提交前重新核对已消费的源记录。变化、损坏或删除时回滚事件业务状态，仅保留失败诊断。混合疑问与执行请求继续保留执行义务。 |
+| SP-05：版本与文档 | 0.14.3 保持 schema 13、Stop 5.0.0 与九个 Hook，无需状态迁移。中英文用户文档同步。 |
+| SP-06：源码与安装 | 行为套件 2,036 项，0 失败、0 错误、22 项平台或能力跳过；仓库、隐私、冻结基线、静态和编译检查通过。macOS 与 Windows 隔离安装、严格 no-op、一致性及生命周期检查通过。 |
+| SP-07：平台验收 | Windows 原生进程门槛和两平台的有界真实宿主 Stop、纠正、压缩及冷恢复通过。验收使用 CLI 0.158.0，不补测旧 CLI。 |
 
+### 历史案例覆盖
 
-### 复审修复轮（2026-09-28，R1–R5）
+公开冻结清单为 `tests/fixtures/incidents/library_case_index.json`，逐案结果为同目录的 `historical_case_coverage.json`。两套独立编号的谱系包含 55 条案例记录与 16 条历史记录；其中 52 条活动记录逐案执行，19 条已取代记录保留承接关系，不按编号后缀合并。
 
-- R1：Stop 入口保存事务快照；`consumed_source_changed_before_commit` 失败分支回滚全部原地业务写入（显式/自动 checkpoint、单元闭合、proof、纠正计数）后仅落盘失败决策与诊断。5 项新测试直接断言磁盘 state.json 原始字段（三种损坏模式 × 显式 checkpoint、自动 checkpoint、delivery/retirement 未提交、干净提交正控）。
-- R2：why 疑问改为受限尾部解析（拒绝继续/时间连接与执行动词，尾部 ≤40 字符、无句读）；协调者两个反例恢复 0.14.2 行为（pending），纯 why 问答保留闭合收益；17 项形状表 + 交付/恢复全链回归（tests/test_information_delivery_closure.py::BoundedWhyQuestionTests）。
-- R3：`benchmark_stop.py` process/pretool 改为真实 `context_guard.py hook` CLI 全进程外层计时（路径走 argv，无代码字面量；Windows unicodeescape 消除），校验退出码/stdout JSON/状态完整/无残留锁/decision log 增长，产品失败与环境缺失分类（failed vs environment_unutable）。新增 S0/S2/S4/CT/EV 与 S2→S4 增长比门槛（实测 1.243）。候选全进程：S1 median 0.425 s / p95 0.452 s / max 0.626 s；基线同机 S1 median 7.252 s / S4 median 44.563 s（failed）；S0 候选 0.340 s vs 基线 0.365 s（无倒退）。差分 v2（等长克隆 + 共用 cwd + 字段级白名单归一 + 内置负控自检）9/9 场景 match，source_sha256/subject/evidence 身份差异保持可检；旧 dispatch 级数据保留原口径不冒充。
-- R4：`library_case_index.json` 升级 v3，逐条钉住库内 55+16 条记录的 title/family/runtime/status/真实承接者与记录摘要；`check_incident_coverage.py` v3 逐条身份核验 + 类-方法从属解析 + `--execute` 执行回执（52/52 行通过）；`tests/test_incident_coverage_negative_controls.py` 10 项对抗负控（换 ID/假 successor/假文件/错类属/pass 盖 pending 等）。040 链保持 Guard 开启贯穿 compact/restore 并断言恢复包内容；042 链补真实编辑观察缺失→提交观察→push→Stop→恢复与 release-lane 负控。
-- R5：见本轮 agent-handoff/v1（正式 schema，经 validate_agent_handoff.py 校验通过）与可执行 Windows 待办包；运行树摘要改用仓库正式 tree_manifest 编码。`stop-performance-agent-handoff.json` 确认位于本聊天输出目录，第一轮"未找到"表述有误。
+最终结果为 37 条直接通过、15 条仅验证 Codex 侧共享语义的 DSH 类比，Windows 进程待办为零。类比验证不认证 DSH 产品。校验器核对每条记录的身份、标题、适用范围、承接者和所有必需测试节点；跳过、预期失败、零收集及进程失败均不能计为通过。
 
-### 库清点文件核对（2026-09-28 补充）
+### 复审发现及修复
 
-已读 `benchmarks/incidents/local-archive-index.json`（29 条正式来源记录全部映射到脱敏案例，`legacy_relation: distinct_bytes_same_numeric_id`）与 `local-archive-reconciliation.json`（89 个业务文件、3 条辅助新案、031–039 保持草稿未提升）。程序化核对确认：29 条映射全部落在本次冻结的 55 案注册表内；89 文件引用的案例 ID 无一未知；ux10/ux11/pretool-cold-start 三条辅助案在册；数字后缀重叠（009–016）在两谱系中保持不同记录。分母口径与执行索引一致，无增量需要纳入。
+| 问题族 | 最终处理 |
+| --- | --- |
+| 完整性失败后成功状态已落盘 | 在最终提交边界复核，失败恢复事件入口快照。覆盖显式/自动 checkpoint、信息交付和普通结果关闭等路径，并直接核对磁盘字段。 |
+| why 疑问尾部吞掉执行请求 | 采用有界解析，拒绝动作尾句和时间连接词；纯疑问可关闭，混合请求的执行工作仍待办。 |
+| 计时范围混淆、差分归一化过宽 | 全进程基准从父进程测量真实 Hook CLI；旧 dispatch 数据保持诊断口径。差分保留来源、对象和证据身份比较，九个场景一致。 |
+| 覆盖表或 pytest 输出可能冒充通过 | 全部必需节点使用 JUnit 回执，同时要求进程退出成功；setup/teardown 错误、skip、xfail、XPASS 和空收集均拒绝。 |
+| 候选身份遗漏新目录或驱动清单 | 绑定 HEAD、完整脏文件集合及路径类型；驱动包使用固定相对路径和逐文件摘要。缺文件、重复、逃逸或篡改均停止预检。 |
+| Windows 合成输入不符合宿主格式 | 路径明确引用，文件就绪观察使用对应平台的原生命令；保留相同产品断言。非法文件名和缺少符号链接权限按具体能力跳过。 |
 
+### 证据边界
 
-### 复审第二轮修复（R1–R4 问题族闭合）
+公开仓库仅保存合成夹具、匿名案例标识、产品源码身份与汇总结果。原始会话、截图、认证状态、测试目录及来源映射不随产品发布。完整重放记录留在受控验收环境。
 
-- R1：消费复核移至最终提交边界（record_delivery、delivered 投影、ordinary retirement 全部完成之后、save_state 之前）；失败恢复事件入口快照并仅落盘失败诊断。`tests/test_stop_commit_boundary.py`：4 路径（显式/自动 checkpoint、问答 delivery、ordinary retirement）× 4 注入阶段（源读取后/闭合应用后/delivery 构造中/retirement 中）× 3 损坏方式（改写/删除/等长替换）= 48 格矩阵，直接断言原始磁盘 state.json；30 格注入回滚全部通过，18 格生产不可达如实记录（retirement 阶段在现有合成形状下不被生产调用，由 reachability 测试固定该事实而非伪造）。
-- R2：why 尾部改为正向受限文法（白名单描述性谓语 + 结构约束，无动词黑名单）。复审反例（顺手清理缓存/删掉缓存/重启服务）与全新未知动词（格式化/编译/迁移）全部保持 pending；纯 why 正例保留闭合；表驱动与 delivery→Stop→恢复全链回归通过。
-- R3：process/pretool 在 runner 层断言语义 oracle（期望 stdout、decision outcome 与 turn 绑定）；fail_closed/block JSON、未增日志、错 turn 一律 failed。count 模式要求必需计数键存在（缺失即 failed，不默认 0）；SyntaxError 归为候选失败；`--json` 对已存在目标 exit 3 拒绝覆盖。`tests/test_benchmark_oracle.py` 9 项负控通过。
-- R4：覆盖表校验采用封闭平台/源结果枚举与适用性规则（任何 failed/not_run/环境缺失不得与 executed_pass 共存）；`--execute` 展开并执行每行**全部**必需 nodeid（61 个，含多 locator 行的第二断言），回执绑定测试文件字节摘要并带陈旧防护；汇总绑定候选 prepared_source。`tests/test_incident_coverage_negative_controls.py` 扩至 17 项（平台失败提升、词表外状态、pending 无未过平台、第二 locator 必败、空收集、回执陈旧等）。
-- Windows 接收包：`windows-acceptance/` 提供单命令入口（真实 native 入口 --preflight + W1/W2 oracle 计时 + W3–W7 每案专属进程重放 driver，全部经真实 hook CLI 子进程）；macOS 冒烟通过，Windows 结果待跨主机批次。不覆盖声明与工具行为一致。
-
-
-### 复审第三轮修复（R4/R1/Windows 包）
-
-- R4 结构化回执：必需 nodeid 依 pytest `-rA` 摘要归类（passed/skipped/xfailed/xpassed/failed/error/not_collected），仅 passed 记执行通过；skip/xfail/零收集即使退出码 0 也判未过。平台适用性冻结进 `library_case_index.json` 的 `windows_not_required_case_ids`（由库契约派生：非 Windows 起源案例 + 活动 legacy 行），待验证行不得自我豁免（负控覆盖 archive-043 自豁免反例）。
-- R4 身份统一：默认 CLI 的 hashlib NameError 修复（模块级导入）；`prepared_source_identity()` 成为 checker/handoff/`tools/validation/acceptance_identity.py` 三方共用的规范编码（sha256 over sorted dirty paths：path+NUL+文件摘要），负控断言 checker 输出与手工重算逐字节相等。
-- R1 覆盖缺口关闭：ordinary retirement 经真实 `test_host_terminal_wire` harness 链（结构化 transcript + pytest 终端摘要 + 陈述式报告回复）在 P4 路径真实到达 `retire_verified_ordinary_core_result`；矩阵 P4×S4×3 损坏全部注入并断言原始磁盘回滚。reachability 测试固定生产可达性（含 `ordinary_core_result_verified`）。
-- Windows 接收包：入口脚本对每个原生命令检查 `$LASTEXITCODE` 即刻传播；执行前用 `acceptance_identity.py` 重算候选 prepared/runtime digest 并与交接身份比对（错 digest exit 3 拒绝）；秒级目录存在即拒绝；五个 driver 各自校验候选身份、拒绝已存在输出；W5 改为真实 turn + 错误 token 负控与 diagnose 正控分离。native preflight 保持 base-commit portable_runtime（其校验对象是工具与存储而非工作树；候选身份由 digest 门禁单独验证）。
-
-
-### 复审第四轮修复（Windows 预检 / pytest 回执 / prepared-source 编码）
-
-- Windows 预检：新增版本化 `tools/validation/prepared_batch_preflight.py`（schema `prepared-batch-preflight/v1`），绑定 base HEAD + 候选 prepared/runtime digest + driver 清单逐文件 SHA-256，全部重算比对；错 HEAD/digest/driver、已存在输出 fail-closed；仅认证 W 类输入准备并显式声明不冒充 portable_runtime。8 项正负控（`tests/test_prepared_batch_preflight.py`）含“portable_runtime 对未提交候选仍拒绝（clean 契约不动）”负控。PS 入口替换为该入口并保持逐步 `Assert-Exit` 传播。
-- pytest 回执：`execute_receipts` 改用 JUnit XML 机器可读报告 + 非零退出码双重门——必需节点须“实际 passed 且子进程 exit 0 且无 failure/error/skipped 子节点”；teardown/setup 错误、call 失败、skip、xfail、XPASS、零收集、后续节点失败九格矩阵全部拒绝（含协调者 teardown 反例：pass 表面 + 非零退出 = 拒绝）。
-- prepared-source 编码 v2（`acceptance_identity.py` 单一实现，checker 委托）：HEAD 绑定进摘要；`--porcelain=v1 -z --untracked-files=all`（新目录展开、空格/中文/引号/换行字节精确）；删除绑 `deleted`、重命名绑目的内容 + 来源 `renamed-away`、symlink 显式编码链接目标；未知文件类型拒绝而非 missing。真实临时仓库正负控 8 项（新目录内容变化改变摘要、同 dirty 集 不同 HEAD 不共享身份等）；checker/工具/独立重算三方相等断言。
-
-
-### 复审第五轮修复（driver 身份链）
-
-- driver-manifest 改为**包相对路径 + 逐文件 SHA-256** 的冻结交付文件（`prepared-batch-drivers/v1`），显式 REQUIRED 集合（PS 入口 + 五个 per-case driver）；manifest 字节与摘要跨主机一致，`--driver-package-root` 指定本机解析根。
-- `prepared_batch_preflight.py` 增加完整 manifest 验证：schema、非空、必需集合完整、唯一路径、逃逸/绝对路径拒绝、逐文件 sha 重算、（可选）冻结 manifest sha 比对——空集、删项、换 manifest、篡改 driver 全部 fail-closed。
-- PS 入口删除缺失 manifest 时的自签 fallback：缺 manifest 即 exit 2 不生成替代清单；`--expected-manifest-sha256` 必参。
-- 交付物补齐 `driver-package-identity.json`（schema v1：manifest sha + 全部文件 sha，已逐项核对），并给出两根迁移正控与 PS 静态契约负控（无自签 fallback、冻结 sha 必参、staged manifest 完整性）。
-- 运行树字节本轮未变化（runtime digest 与 r4 一致），既有 runtime/install 证据按字节同一性复用；prepared 身份因 tools/tests 变化重算。
-
-## 协调者最终验收索引（2026-09-29）
-
-R1–R4 修复族独立复核通过；Windows W1–W7 进程门槛及 macOS/Windows CLI 0.158.0 的 `stop_host/v1` 有界真实宿主批次已通过并由协调者重放。历史库活动行 37 executed_pass + 15 analogue_only，无 Windows pending；DSH 类比不认证 DSH。最终源码套件 2036 项、零失败、22 跳过；012 字节冻结与库红项未改。具体计时轨道、宿主边界及不可变证据摘要见 [LOCAL_ACCEPTANCE](LOCAL_ACCEPTANCE.md)。本索引不将过程内 dispatch 计时改称全进程，也不将编号输入条数改称抽取义务数。原先各轮 pending 与 prepared-source 身份保留为历史事实；发布阶段的精确提交安装、CI/HOL 与公开身份独立核验。
+源码通过、隔离安装、原生进程、真实宿主、CI/HOL 与公开发布是分别核验的事实。宿主合成场景不复现原始事故的全部状态，也不证明所有模型或宿主行为。发布身份以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 为准。

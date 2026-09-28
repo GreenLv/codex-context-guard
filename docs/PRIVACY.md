@@ -25,7 +25,7 @@ to a model. A missing key or capture is unknown, never reconstructed from an
 assistant claim. A successful run is review evidence, not native acceptance.
 
 
-## 0.14.2 source candidate
+## Data introduced in 0.14.2
 
 An explicit exact-marker wait uses the existing private prompt source and
 wait-condition record. Its condition stores a source-clause SHA-256 and marker
@@ -73,7 +73,7 @@ ledger is migrated or promoted.
 Context Guard deliberately separates public plugin code from private runtime
 state.
 
-## 0.14.3 source candidate
+## Event-local data in 0.14.3
 
 The event-scoped Stop evaluation context is process memory only. It caches
 lexical parses of texts the event already read, plus per-phase projections
@@ -95,7 +95,7 @@ execution should use the Codex-provided data directory.
 
 No plugin runtime state belongs in this Git repository.
 
-The unreleased schema-13 candidate adds a private monotonic event watermark,
+Schema 13 adds a private monotonic event watermark,
 per-prompt and per-host-call/result append numbers, UTF-8 byte offsets for
 information and bounded execution children, and the root event's canonical
 locator base/flavor in its immutable, hashed private prompt record (used only
