@@ -107,7 +107,7 @@ def _acceptance_line(root_index: int, line_index: int, flavor: str) -> str:
 def _control_root(index: int, acceptance_lines: list[str], suite: str) -> str:
     if index == 0:
         # The executable test root that the persistence control binds.
-        return f"继续执行，运行 {suite} 的测试。"
+        return f'继续执行，运行 "{suite}" 的测试。'
     if index == 1:
         # A standalone persistence marker; attached clauses would break the
         # exact control grammar.

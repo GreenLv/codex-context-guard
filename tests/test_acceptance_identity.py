@@ -62,10 +62,11 @@ class PreparedIdentityTests(unittest.TestCase):
             names = ["with space.txt", "中文文件.py", 'quote".txt',
                      "line\nbreak.txt"]
             for name in names:
-                (repo.root / name).write_text(name, encoding="utf-8")
-            identity = repo.identity()
-            for name in names:
-                self.assertIn(name, identity["dirty_paths"])
+                with self.subTest(path=name):
+                    if os.name == "nt" and ('"' in name or "\n" in name):
+                        self.skipTest("Windows forbids quote/newline file names")
+                    (repo.root / name).write_text(name, encoding="utf-8")
+                    self.assertIn(name, repo.identity()["dirty_paths"])
         finally:
             repo.temp.cleanup()
 
@@ -115,7 +116,12 @@ class PreparedIdentityTests(unittest.TestCase):
     def test_symlink_encoding_explicit(self):
         repo = TempRepo()
         try:
-            os.symlink("seed.txt", repo.root / "link.txt")
+            try:
+                os.symlink("seed.txt", repo.root / "link.txt")
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows host lacks symlink creation privilege")
+                raise
             identity = repo.identity()
             self.assertIn("link.txt", identity["dirty_paths"])
             os.remove(repo.root / "link.txt")
@@ -131,9 +137,15 @@ class PreparedIdentityTests(unittest.TestCase):
         if ever handed a non-regular, non-symlink path."""
         repo = TempRepo()
         try:
-            os.mkfifo(repo.root / "pipe")
+            # A directory exercises the non-regular rejection on every OS;
+            # additionally cover FIFO where the host can create one.
+            (repo.root / "directory").mkdir()
             with self.assertRaises(ValueError):
-                ai._file_binding(repo.root, "pipe")
+                ai._file_binding(repo.root, "directory")
+            if hasattr(os, "mkfifo"):
+                os.mkfifo(repo.root / "pipe")
+                with self.assertRaises(ValueError):
+                    ai._file_binding(repo.root, "pipe")
         finally:
             repo.temp.cleanup()
 

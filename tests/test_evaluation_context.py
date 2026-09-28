@@ -146,10 +146,17 @@ class EvaluationContextTests(unittest.TestCase):
 
         cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
         cg.dispatch(event("UserPromptSubmit", "t1",
-                          prompt=f"继续执行，运行 {suite} 的测试。"))
+                          prompt=f'继续执行，运行 "{suite}" 的测试。'))
+        if os.name == "nt":
+            escaped = str(suite).replace("'", "''")
+            command = f"Test-Path -LiteralPath '{escaped}' -PathType Leaf"
+            shell, output = "powershell", "True\r\n"
+        else:
+            command = f"test -f '{suite}'"
+            shell, output = "bash", ""
         cg.dispatch(event("PostToolUse", "t1", tool_name="exec_command",
-                          tool_input={"cmd": f"test -f {suite}", "shell": "bash"},
-                          tool_response={"exit_code": 0, "output": ""}))
+                          tool_input={"cmd": command, "shell": shell},
+                          tool_response={"exit_code": 0, "output": output}))
         directory = Path(root) / "sessions" / session
         state = cg.load_state(directory, event("Stop", "t1"))
         evaluation = cg.EvaluationContext(state, directory)

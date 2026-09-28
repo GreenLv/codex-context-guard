@@ -74,6 +74,18 @@ class CaseFixture:
                                  tool_input=tool_input,
                                  tool_response=tool_response))
 
+    def ready_file(self, target):
+        if os.name == "nt":
+            escaped = str(target).replace("'", "''")
+            tool_input = {"cmd": f"Test-Path -LiteralPath '{escaped}' -PathType Leaf",
+                          "shell": "powershell"}
+            output = "True\r\n"
+        else:
+            tool_input = {"cmd": f"test -f '{target}'", "shell": "bash"}
+            output = ""
+        return self.after("exec_command", tool_input,
+                          {"exit_code": 0, "output": output})
+
     def stop(self, reply, *, new_turn=True):
         if new_turn:
             self.turn += 1
@@ -153,9 +165,8 @@ class StopDispositionCases(unittest.TestCase):
         fixture = CaseFixture("case-disposition")
         suite = Path(fixture.root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
-        fixture.after("exec_command", {"cmd": f"test -f {suite}", "shell": "bash"},
-                      {"exit_code": 0, "output": ""})
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
+        fixture.ready_file(suite)
         # A wrong whole-completion claim over pending work draws exactly one
         # bounded correction; the budget never repeats it.
         first = fixture.stop("任务完成。")
@@ -176,9 +187,8 @@ class StopDispositionCases(unittest.TestCase):
         fixture = CaseFixture("case-declared")
         suite = Path(fixture.root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
-        fixture.after("exec_command", {"cmd": f"test -f {suite}", "shell": "bash"},
-                      {"exit_code": 0, "output": ""})
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
+        fixture.ready_file(suite)
         # A declared user_wait cannot silently absorb remaining assistant
         # work: the turn still draws its single correction.
         result = fixture.stop("我还需要继续修复两项。")
@@ -203,9 +213,8 @@ class StopDispositionCases(unittest.TestCase):
         fixture = CaseFixture("case-feedback")
         suite = Path(fixture.root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
-        fixture.after("exec_command", {"cmd": f"test -f {suite}", "shell": "bash"},
-                      {"exit_code": 0, "output": ""})
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
+        fixture.ready_file(suite)
         result = fixture.stop("任务完成。")
         self.assertEqual(result.get("decision"), "block")
         reason = result["reason"]
@@ -417,9 +426,8 @@ class ExtendedCodexCases(unittest.TestCase):
         self.assertEqual(fixture.stop(
             "这个函数处理空输入是因为入口契约允许缺失值，返回空列表保持类型稳定。",
             new_turn=False), {})
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
-        fixture.after("exec_command", {"cmd": f"test -f {suite}", "shell": "bash"},
-                      {"exit_code": 0, "output": ""})
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
+        fixture.ready_file(suite)
         result = fixture.stop("如前所述，该函数处理空输入是为了入口契约的稳定性。")
         self.assertEqual(result.get("decision"), "block")
         cg.dispatch(_hook("PreCompact", fixture.session, fixture.root, "t9",
@@ -454,7 +462,7 @@ class ExtendedCodexCases(unittest.TestCase):
         fixture = CaseFixture("case-future-obs")
         suite = Path(fixture.root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
         fixture.after("exec_command", {"cmd": f"python3 {suite}", "shell": "bash"},
                       {"exit_code": 0, "output": "ok"})
         self.assertEqual(fixture.stop(
@@ -471,9 +479,8 @@ class ExtendedCodexCases(unittest.TestCase):
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
         fixture.prompt("顺便解释一下这个函数为什么要处理空输入？")
         fixture.stop("该函数处理空输入是因为入口契约允许缺失值。", new_turn=False)
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
-        fixture.after("exec_command", {"cmd": f"test -f {suite}", "shell": "bash"},
-                      {"exit_code": 0, "output": ""})
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
+        fixture.ready_file(suite)
         result = fixture.stop("解释已在前面给出：入口契约允许缺失值。")
         self.assertEqual(result.get("decision"), "block")
 
@@ -665,7 +672,7 @@ class DshSharedSemanticsCases(unittest.TestCase):
         fixture = CaseFixture("dsh-partial")
         suite = Path(fixture.root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture.prompt(f"清理临时文件并运行 {suite} 的测试，必须验证。")
+        fixture.prompt(f'清理临时文件并运行 "{suite}" 的测试，必须验证。')
         fixture.after("exec_command", {"cmd": "rm -rf tmp", "shell": "bash"},
                       {"exit_code": 0, "output": ""})
         fixture.stop("清理完成，任务完成。")
@@ -723,9 +730,8 @@ class DshSharedSemanticsCases(unittest.TestCase):
         fixture = CaseFixture("dsh-ux11")
         suite = Path(fixture.root) / "suite.py"
         suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        fixture.prompt(f"继续执行，运行 {suite} 的测试。")
-        fixture.after("exec_command", {"cmd": f"test -f {suite}", "shell": "bash"},
-                      {"exit_code": 0, "output": ""})
+        fixture.prompt(f'继续执行，运行 "{suite}" 的测试。')
+        fixture.ready_file(suite)
         first = fixture.stop("任务完成。")
         self.assertEqual(first.get("decision"), "block")
         # The stated next step is executable and deterministic: the same
