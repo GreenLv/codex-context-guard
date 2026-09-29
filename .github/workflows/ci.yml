@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      profile:
+        description: Full is required for release; daily is for routine coverage
+        type: choice
+        options: [full, daily]
+        default: full
 
 permissions:
   contents: read
@@ -14,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       invalidates: ${{ steps.select.outputs.invalidates }}
+      profile: ${{ steps.profile.outputs.profile }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -29,6 +36,18 @@ jobs:
             base_sha="$(git hash-object -t tree /dev/null)"
           fi
           python tools/validation/select_validation.py --repo-root . --base "$base_sha" --head "$EVENT_HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+      - id: profile
+        env:
+          EVENT_BASE_SHA: ${{ github.event.before }}
+          EVENT_HEAD_SHA: ${{ github.sha }}
+          REQUESTED_PROFILE: ${{ inputs.profile || 'auto' }}
+        run: |
+          set -euo pipefail
+          base_sha="$EVENT_BASE_SHA"
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$(git hash-object -t tree /dev/null)"
+          fi
+          python -m tools.validation.ci_policy select --profile "$REQUESTED_PROFILE" --base "$base_sha" --head "$EVENT_HEAD_SHA" --github-output "$GITHUB_OUTPUT"
 
   static:
     name: Identity, repository, privacy, lint, and compile
@@ -61,6 +80,7 @@ jobs:
 
   ubuntu_py310:
     name: Ubuntu / Python 3.10
+    needs: classify
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -68,6 +88,8 @@ jobs:
 
   ubuntu_py311:
     name: Ubuntu / Python 3.11
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -75,6 +97,8 @@ jobs:
 
   ubuntu_py312:
     name: Ubuntu / Python 3.12
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
@@ -82,13 +106,25 @@ jobs:
 
   ubuntu_py313:
     name: Ubuntu / Python 3.13
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: ubuntu-latest
       python-version: "3.13"
 
+  ubuntu_py314:
+    name: Ubuntu / Python 3.14
+    needs: classify
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: ubuntu-latest
+      python-version: "3.14"
+
   macos_py310:
     name: macOS / Python 3.10
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -96,6 +132,8 @@ jobs:
 
   macos_py311:
     name: macOS / Python 3.11
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -103,6 +141,7 @@ jobs:
 
   macos_py312:
     name: macOS / Python 3.12
+    needs: classify
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
@@ -110,13 +149,26 @@ jobs:
 
   macos_py313:
     name: macOS / Python 3.13
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: macos-latest
       python-version: "3.13"
 
+  macos_py314:
+    name: macOS / Python 3.14
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: macos-latest
+      python-version: "3.14"
+
   windows_py310:
     name: Windows / Python 3.10
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -124,6 +176,8 @@ jobs:
 
   windows_py311:
     name: Windows / Python 3.11
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -131,6 +185,7 @@ jobs:
 
   windows_py312:
     name: Windows / Python 3.12
+    needs: classify
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
@@ -138,15 +193,46 @@ jobs:
 
   windows_py313:
     name: Windows / Python 3.13
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
     uses: ./.github/workflows/ci-lane.yml
     with:
       runner: windows-latest
       python-version: "3.13"
 
+  windows_py314:
+    name: Windows / Python 3.14
+    needs: classify
+    if: needs.classify.outputs.profile == 'full'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: windows-latest
+      python-version: "3.14"
+
+  windows_platform_py310:
+    name: Windows platform / Python 3.10
+    needs: classify
+    if: needs.classify.outputs.profile == 'daily'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: windows-latest
+      python-version: "3.10"
+      suite: windows-platform
+
+  windows_platform_py314:
+    name: Windows platform / Python 3.14
+    needs: classify
+    if: needs.classify.outputs.profile == 'daily'
+    uses: ./.github/workflows/ci-lane.yml
+    with:
+      runner: windows-latest
+      python-version: "3.14"
+      suite: windows-platform
+
   portable_windows:
     name: Windows portable installed-runtime acceptance
     needs: [classify, static]
-    if: github.event_name == 'workflow_dispatch' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime')
+    if: needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -158,7 +244,15 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
-      - run: npm install --global @openai/codex@0.150.1
+      - run: npm install --global @openai/codex@0.158.0
+      - name: Preflight versioned portable acceptance
+        shell: pwsh
+        run: |
+          python tools/validation/native_acceptance.py `
+            --source-commit "${{ github.sha }}" `
+            --output "$env:RUNNER_TEMP/native-acceptance-windows.json" `
+            --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" `
+            --preflight
       - name: Run versioned portable acceptance entrypoint
         shell: pwsh
         run: |
@@ -177,49 +271,32 @@ jobs:
     name: Candidate CI required
     if: always()
     needs:
-      - static
       - classify
+      - static
       - ubuntu_py310
       - ubuntu_py311
       - ubuntu_py312
       - ubuntu_py313
+      - ubuntu_py314
       - macos_py310
       - macos_py311
       - macos_py312
       - macos_py313
+      - macos_py314
       - windows_py310
       - windows_py311
       - windows_py312
       - windows_py313
+      - windows_py314
+      - windows_platform_py310
+      - windows_platform_py314
       - portable_windows
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Fail closed over every required lane
+      - name: Fail closed over the selected required lanes
         env:
-          STATIC_RESULT: ${{ needs.static.result }}
-          CLASSIFY_RESULT: ${{ needs.classify.result }}
-          U310: ${{ needs.ubuntu_py310.result }}
-          U311: ${{ needs.ubuntu_py311.result }}
-          U312: ${{ needs.ubuntu_py312.result }}
-          U313: ${{ needs.ubuntu_py313.result }}
-          M310: ${{ needs.macos_py310.result }}
-          M311: ${{ needs.macos_py311.result }}
-          M312: ${{ needs.macos_py312.result }}
-          M313: ${{ needs.macos_py313.result }}
-          W310: ${{ needs.windows_py310.result }}
-          W311: ${{ needs.windows_py311.result }}
-          W312: ${{ needs.windows_py312.result }}
-          W313: ${{ needs.windows_py313.result }}
-          PORTABLE_RESULT: ${{ needs.portable_windows.result }}
-          PORTABLE_REQUIRED: ${{ github.event_name == 'workflow_dispatch' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime') }}
-        run: |
-          set -euo pipefail
-          if [[ "$PORTABLE_REQUIRED" == "true" ]]; then
-            printf '%s\n' '["classify","static","ubuntu_py310","ubuntu_py311","ubuntu_py312","ubuntu_py313","macos_py310","macos_py311","macos_py312","macos_py313","windows_py310","windows_py311","windows_py312","windows_py313","portable_windows"]' > "$RUNNER_TEMP/required.json"
-          else
-            printf '%s\n' '["classify","static","ubuntu_py310","ubuntu_py311","ubuntu_py312","ubuntu_py313","macos_py310","macos_py311","macos_py312","macos_py313","windows_py310","windows_py311","windows_py312","windows_py313"]' > "$RUNNER_TEMP/required.json"
-          fi
-          printf '{"classify":"%s","static":"%s","ubuntu_py310":"%s","ubuntu_py311":"%s","ubuntu_py312":"%s","ubuntu_py313":"%s","macos_py310":"%s","macos_py311":"%s","macos_py312":"%s","macos_py313":"%s","windows_py310":"%s","windows_py311":"%s","windows_py312":"%s","windows_py313":"%s","portable_windows":"%s"}\n' \
-            "$CLASSIFY_RESULT" "$STATIC_RESULT" "$U310" "$U311" "$U312" "$U313" "$M310" "$M311" "$M312" "$M313" "$W310" "$W311" "$W312" "$W313" "$PORTABLE_RESULT" > "$RUNNER_TEMP/observed.json"
-          python tools/validation/verify_required_jobs.py --required "$RUNNER_TEMP/required.json" --observed "$RUNNER_TEMP/observed.json"
+          CI_PROFILE: ${{ needs.classify.outputs.profile }}
+          ALL_NEEDS: ${{ toJSON(needs) }}
+          PORTABLE_REQUIRED: ${{ needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime') }}
+        run: python -m tools.validation.ci_policy verify --profile "$CI_PROFILE" --portable "$PORTABLE_REQUIRED" --needs-json "$ALL_NEEDS"

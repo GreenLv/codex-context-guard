@@ -104,7 +104,7 @@ class PublicContractTests(unittest.TestCase):
         self.assertNotIn("matrix:", caller)
         self.assertEqual(
             caller.count("uses: ./.github/workflows/ci-lane.yml"),
-            len(workflow.CI_LANES),
+            len(workflow.CI_LANES) + len(workflow.DAILY_FOCUSED),
         )
         self.assertEqual(caller.count("python scripts/audit_public_tree.py ."), 1)
         self.assertEqual(caller.count("ruff check ."), 1)
@@ -182,6 +182,7 @@ class PublicContractTests(unittest.TestCase):
         merged = lane.replace(
             "        run: uv run --locked --only-group test --python python python scripts/run_current_behavior_suite.py\n"
             "      - name: Audit historical phase 3 transition\n"
+            "        if: inputs.suite == 'full'\n"
             "        run: uv run --locked --only-group test --python python python scripts/check_phase3_transition.py",
             "        run: |\n"
             "          python scripts/run_current_behavior_suite.py\n"

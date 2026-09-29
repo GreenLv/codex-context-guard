@@ -5,25 +5,14 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 FULL_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_USE = re.compile(r"^\s*(?:-\s*)?uses:\s+([^\s#]+)@([^\s#]+)", re.MULTILINE)
-CI_LANES = (
-    ("ubuntu_py310", "Ubuntu / Python 3.10", "ubuntu-latest", "3.10"),
-    ("ubuntu_py311", "Ubuntu / Python 3.11", "ubuntu-latest", "3.11"),
-    ("ubuntu_py312", "Ubuntu / Python 3.12", "ubuntu-latest", "3.12"),
-    ("ubuntu_py313", "Ubuntu / Python 3.13", "ubuntu-latest", "3.13"),
-    ("macos_py310", "macOS / Python 3.10", "macos-latest", "3.10"),
-    ("macos_py311", "macOS / Python 3.11", "macos-latest", "3.11"),
-    ("macos_py312", "macOS / Python 3.12", "macos-latest", "3.12"),
-    ("macos_py313", "macOS / Python 3.13", "macos-latest", "3.13"),
-    ("windows_py310", "Windows / Python 3.10", "windows-latest", "3.10"),
-    ("windows_py311", "Windows / Python 3.11", "windows-latest", "3.11"),
-    ("windows_py312", "Windows / Python 3.12", "windows-latest", "3.12"),
-    ("windows_py313", "Windows / Python 3.13", "windows-latest", "3.13"),
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tools.validation.ci_policy import CI_LANES, DAILY_FOCUSED, DAILY_FULL  # noqa: E402
 
 
 def validate_action_pins(workflows: Path) -> list[str]:
@@ -82,19 +71,41 @@ def validate(root: Path) -> list[str]:
     if "strategy:" in candidate or "matrix:" in candidate:
         errors.append("candidate lanes must remain independent jobs")
     reusable_call = "uses: ./.github/workflows/ci-lane.yml"
-    if candidate.count(reusable_call) != len(CI_LANES):
-        errors.append(f"candidate CI must call exactly {len(CI_LANES)} lanes")
+    if candidate.count(reusable_call) != len(CI_LANES) + len(DAILY_FOCUSED):
+        errors.append("candidate CI must declare all full and focused lanes")
     for job_id, display_name, runner, python_version in CI_LANES:
         expected = (
             f"  {job_id}:\n"
             f"    name: {display_name}\n"
-            f"    {reusable_call}\n"
+            "    needs: classify\n"
+            + ("" if job_id in DAILY_FULL else "    if: needs.classify.outputs.profile == 'full'\n")
+            + f"    {reusable_call}\n"
             "    with:\n"
             f"      runner: {runner}\n"
             f'      python-version: "{python_version}"'
         )
         if expected not in candidate:
             errors.append(f"candidate lane is missing or malformed: {job_id}")
+    required_section = candidate.split("  required:\n", 1)[-1]
+    for job_id in ["classify", "static", *[row[0] for row in CI_LANES], *DAILY_FOCUSED, "portable_windows"]:
+        if f"      - {job_id}\n" not in required_section:
+            errors.append(f"required summary does not depend on {job_id}")
+    for job_id, version in zip(DAILY_FOCUSED, ("3.10", "3.14")):
+        expected = (
+            f"  {job_id}:\n"
+            f"    name: Windows platform / Python {version}\n"
+            "    needs: classify\n"
+            "    if: needs.classify.outputs.profile == 'daily'\n"
+            f"    {reusable_call}\n"
+            "    with:\n"
+            "      runner: windows-latest\n"
+            f'      python-version: "{version}"\n'
+            "      suite: windows-platform"
+        )
+        if expected not in candidate:
+            errors.append(f"focused platform lane is missing or malformed: {job_id}")
+    if "continue-on-error" in candidate or "continue-on-error" in lane:
+        errors.append("candidate jobs must propagate failures")
     for forbidden in ("pull_request:", 'tags: ["v*"]'):
         if forbidden in candidate:
             errors.append(f"candidate CI must not run on {forbidden.rstrip(':')}")
@@ -108,7 +119,10 @@ def validate(root: Path) -> list[str]:
         "python -m compileall -q scripts tests tools",
         "  required:",
         "if: always()",
-        "python tools/validation/verify_required_jobs.py",
+        "python -m tools.validation.ci_policy verify",
+        "${{ toJSON(needs) }}",
+        "default: full",
+        "python -m tools.validation.ci_policy select",
     ):
         if fragment not in candidate:
             errors.append(f"candidate workflow contract is missing: {fragment}")
@@ -119,6 +133,9 @@ def validate(root: Path) -> list[str]:
         "python scripts/run_current_behavior_suite.py",
         "python scripts/check_phase3_transition.py",
         "python scripts/context_guard.py self-test",
+        "python -m tools.validation.run_windows_platform_suite",
+        "if: inputs.suite == 'full'",
+        "if: inputs.suite == 'windows-platform'",
     ):
         if fragment not in lane:
             errors.append(f"reusable lane contract is missing: {fragment}")

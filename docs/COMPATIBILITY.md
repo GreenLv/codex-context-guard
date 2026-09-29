@@ -5,6 +5,14 @@ profiles are separate from portable runtime checks and the existing six-gate
 `host_behavior` profile. Their scoped results reuse installed 0.14.2 runtime
 bytes; neither profile changes the Hook or state-schema compatibility contract.
 
+## Python CI coverage
+
+The runtime minimum remains Python 3.10. [CI policy](CI_POLICY.md) separates
+routine coverage from the full release screen through Python 3.14; it does not
+change the interpreter requirement or certify untested future versions. CI
+runner results remain distinct from native Codex host acceptance. Historical
+results below retain the versions and platforms actually exercised.
+
 ## 0.14.3 — 2026-09-29
 
 Compatible with schema-13 states written by 0.12–0.14.2; no migration. The

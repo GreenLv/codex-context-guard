@@ -148,11 +148,15 @@ authoritative.
   POSIX shell, `bash`, PowerShell, or another runtime.
 - For documentation-only changes, run the affected contract tests, repository
   validator, privacy audit, and `git diff --check`.
-- Use the required PR validation summary for mapped fast checks. Candidate CI
-  runs the Ubuntu/macOS/Windows and Python 3.10-3.13 portability screen once on
-  exact `main` candidates or manual dispatch; tags do not rerun that matrix.
-  Identity, repository, privacy, Ruff, and compile checks run once outside the
-  twelve independent test lanes.
+- Use the required PR validation summary for mapped fast checks. Main CI uses
+  daily coverage by default: full behavior on Linux Python 3.10/3.14 and
+  macOS/Windows Python 3.12, plus Windows platform regressions on 3.10/3.14.
+  Compatibility, dependency, installer, version-metadata and CI-policy changes
+  automatically select full coverage (three OSes × Python 3.10–3.14).
+  Release candidates require a successful full-profile run on the exact commit;
+  dispatch `ci.yml` with `profile=full` if the automatic run selected daily.
+  Tags do not rerun CI. See `docs/CI_POLICY.md` for triggers and evidence scope.
+  Identity, repository, privacy, Ruff and compile checks run once per candidate.
 - During conformance, schema, or digest repair loops, first replay the focused
   reproducer and close the affected input family across the reference encoder,
   shared fixtures, validators, and mirrors. Run the complete repository matrix
