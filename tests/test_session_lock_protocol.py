@@ -23,6 +23,9 @@ import time
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from cg_process_tree import OwnedProcess  # noqa: E402
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "context_guard.py"
 SPEC = importlib.util.spec_from_file_location("context_guard", MODULE_PATH)
 assert SPEC and SPEC.loader
@@ -33,13 +36,14 @@ SPEC.loader.exec_module(cg)
 # parent can build deterministic barriers without shared memory.
 WORKER = textwrap.dedent(
     """
-    import importlib.util, json, sys, time
+    import importlib.util, json, os, sys, time
     from pathlib import Path
     spec = importlib.util.spec_from_file_location("context_guard", sys.argv[1])
     cg = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cg)
     session_dir = Path(sys.argv[2])
     out = Path(sys.argv[3])
+    out.with_suffix(".pid").write_text(str(os.getpid()), encoding="ascii")
     go = Path(sys.argv[4])
     timeout = float(sys.argv[5])
     try:
@@ -66,7 +70,7 @@ WORKER = textwrap.dedent(
 
 class SessionLockProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.children: list[subprocess.Popen] = []
+        self.children: list[OwnedProcess] = []
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.session_dir = self.root / "private" / "sessions-v2" / "lock-proto"
@@ -76,21 +80,20 @@ class SessionLockProtocolTests(unittest.TestCase):
         # A failed assertion must not leave a holder blocking Windows cleanup.
         try:
             for child in self.children:
-                if child.poll() is None:
-                    child.kill()
-                child.wait(timeout=10)
+                result = child.close(timeout=10)
+                self.assertTrue(result["owned_tree_no_running_members"], result)
         finally:
             self.temp.cleanup()
 
     def _spawn(self, session_dir: Path, out: Path, go: Path, timeout: float):
-        child = subprocess.Popen(
+        child = OwnedProcess.spawn(
             [sys.executable, "-c", WORKER, str(MODULE_PATH), str(session_dir),
              str(out), str(go), str(timeout)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         self.children.append(child)
-        return child
+        return child.process
 
     def _try_acquire(self, session_dir: Path, out: Path, timeout: float):
         return self._spawn(session_dir, out, Path("-"), timeout)
@@ -157,7 +160,7 @@ class SessionLockProtocolTests(unittest.TestCase):
         # is locked is correctly denied; inspect the durable record afterward.
         record = json.loads(cg.lifecycle_lock_path(self.session_dir).read_text(encoding="ascii"))
         self.assertEqual(record["lock_protocol"], 2)
-        self.assertEqual(record["pid"], holder.pid)
+        self.assertEqual(record["pid"], int(ready.with_suffix(".pid").read_text(encoding="ascii")))
 
     def test_commit_ownership_check_blocks_write_after_lock_replacement(self) -> None:
         """A dispossessed writer fails closed instead of committing (N07)."""
@@ -183,8 +186,11 @@ class SessionLockProtocolTests(unittest.TestCase):
         ready, go = self.root / "ready", self.root / "go"
         holder = self._spawn(self.session_dir, ready, go, 30.0)
         self._wait_for(ready, "acquired")
-        holder.kill()
-        holder.wait(timeout=10)
+        # A Windows venv launcher can have a different PID from the worker.
+        # Terminate the owned tree, including the actual lock owner.
+        owned = next(child for child in self.children if child.process is holder)
+        result = owned.close(timeout=10)
+        self.assertTrue(result["owned_tree_no_running_members"], result)
         start = time.monotonic()
         with cg.session_lock(self.session_dir, timeout=5.0):
             self.assertLess(time.monotonic() - start, 4.0)
