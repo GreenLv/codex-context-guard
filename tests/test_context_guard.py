@@ -6383,8 +6383,27 @@ class ContextGuardTests(unittest.TestCase):
             / "SKILL.md"
         ).read_text(encoding="utf-8")
         self.assertNotIn("<!-- context-guard-checkpoint", skill_text)
-        self.assertIn("stage-checkpoint", skill_text)
-        self.assertIn("stage-disposition", skill_text)
+        # GPT-6 slimming: the root routes to the advanced reference instead
+        # of carrying the command inventory; the commands remain discoverable
+        # in the reference and through checkpoint-status output.
+        self.assertIn("advanced-completion.md", skill_text)
+        advanced_text = (
+            MODULE_PATH.parent.parent
+            / "skills"
+            / "context-guard"
+            / "references"
+            / "advanced-completion.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("stage-checkpoint", advanced_text)
+        self.assertIn("stage-disposition", advanced_text)
+        self.assertIn("checkpoint-status", advanced_text)
+        self.assertIn("register-proof", advanced_text)
+        for reference in (
+            "authority-and-controls.md",
+            "answer-review.md",
+            "successor-pack.md",
+        ):
+            self.assertIn(reference, skill_text)
         windows_command = cg.shell_join(
             ["python", r"C:\Plugin Root\context_guard.py", "--token", "abc"],
             windows=True,
