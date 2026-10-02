@@ -23,7 +23,7 @@ def fake_record(**overrides):
     record = {"classification": "completed", "wall": 0.01,
               "returncode": 0, "stderr": "",
               "stdout_json": {}, "decision_log_len": 999,
-              "integrity": "ok", "residual_lock": False,
+              "integrity": "ok", "lock_released": True,
               "final_outcome": "silent_end_owner_ambiguous",
               "final_turn": "t-final"}
     record.update(overrides)

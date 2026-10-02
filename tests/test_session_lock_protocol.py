@@ -238,7 +238,6 @@ class SessionLockProtocolTests(unittest.TestCase):
                 lock_path.unlink()
             """
         )
-        ready, go = self.root / "ready", self.root / "go"
         go_event = threading.Event()
         holder_ready = threading.Event()
         holder_error: list[str] = []

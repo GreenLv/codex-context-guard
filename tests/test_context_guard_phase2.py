@@ -373,8 +373,9 @@ class RouterFastPathTests(_RouterHarness):
     def test_delegate_falls_back_to_subprocess_on_import_failure(self):
         """If the heavy core cannot be imported in-process, the legacy
         subprocess path keeps the wire contract (bytes, streams, exit)."""
-        import cg_hook
         import importlib.util as _ilu
+
+        import cg_hook
 
         raw = self._payload_bytes(
             "bash", {"command": "git tag v9.9.9"}, session_id="fp-fallback"

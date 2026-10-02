@@ -186,8 +186,22 @@ def _run_hook_cli(data_dir: str, event: dict) -> dict:
     state = json.loads(state_path.read_text(encoding="utf-8"))
     record["decision_log_len"] = len(state.get("decision_log") or [])
     record["integrity"] = state.get("integrity", {}).get("status")
-    record["residual_lock"] = (session_dir / ".lock").exists()
-    if record["integrity"] != "ok" or record["residual_lock"]:
+    # Lock-release oracle: protocol 2 keeps a stable lock FILE, so the check
+    # is functional — a second process must be able to acquire the kernel
+    # lock immediately. A held lock means the hook leaked ownership.
+    import importlib.util as _ilu
+
+    _spec = _ilu.spec_from_file_location(
+        "benchmark_context_guard",
+        REPO_ROOT / "scripts" / "context_guard.py")
+    _cg = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_cg)
+    try:
+        with _cg.session_lock(session_dir, timeout=2.0):
+            record["lock_released"] = True
+    except TimeoutError:
+        record["lock_released"] = False
+    if record["integrity"] != "ok" or not record["lock_released"]:
         record["classification"] = "failed"
         return record
     final_decision = (state.get("decision_log") or [{}])[-1]
