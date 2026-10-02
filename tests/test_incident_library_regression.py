@@ -638,6 +638,28 @@ class DshSharedSemanticsCases(unittest.TestCase):
         # missing three-part change-evidence chain.
         self.assertEqual(obligations, {})
 
+    def test_warm_scope_resolution_freshness(self):
+        # analogue: CGI-20260928-dsh-warm-resolver-scope-drift — a warmed
+        # in-process resolver must never mask a scope routing change; the
+        # same input must reach the same verdict in a fresh resolver.
+        fixture = CaseFixture("dsh-warm-resolver")
+        fixture.prompt("修复模块T的问题，必须验证行为。")
+        state = fixture.state()
+        evaluation = cg.EvaluationContext(state, fixture.directory)
+        stale_revision = evaluation.scope()["revision"]
+        for unit in state["work_units"]:
+            unit["status"] = "historical_unresolved"
+        state["work_state"]["active_work_unit_id"] = None
+        # The warm memo serves the old routing until the phase boundary...
+        self.assertEqual(evaluation.scope()["revision"], stale_revision)
+        evaluation.new_phase("state_mutated")
+        fresh = evaluation.scope()
+        self.assertNotEqual(fresh["revision"], stale_revision)
+        # ...and a fresh context (fresh process/event analogue) agrees with
+        # the fresh resolution, never with the warmed one.
+        fresh_context = cg.EvaluationContext(state, fixture.directory)
+        self.assertEqual(fresh_context.scope()["revision"], fresh["revision"])
+
     def test_cwd_never_promotes_to_target(self):
         fixture = CaseFixture("dsh-cwd")
         fixture.prompt("修复模块T的问题，必须验证行为。")

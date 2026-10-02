@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
+  "library_commit": "d31504dd3c4f2679311480699994b6170afd0d5a",
+  "frozen_at": "2026-10-02",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
-  "frozen_at": "2026-09-28",
-  "library_commit": "16fc0a8d677bb2fe01e60b7312da83b468adc309",
   "case_registry": {
-    "raw_record_count": 55,
-    "active_case_count": 44,
+    "raw_record_count": 56,
+    "active_case_count": 45,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -512,6 +512,15 @@
         "supersedes": null,
         "record_sha256": "940615e5cd7c4f7e19a9ca011c307f2e5be367555f2debc995e1cda83df03042",
         "status": "active"
+      },
+      "CGI-20260928-dsh-warm-resolver-scope-drift": {
+        "title": "宿主路由新鲜校验仍采用进程内旧 package scope 解析",
+        "family": "host-lock-resolution-freshness",
+        "runtime": "dsh",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "0aef24c2ff1171d94886d5bef66538611f1d3dcb3a8f3da18e9166d67d0dd5db",
+        "status": "active"
       }
     }
   },
@@ -609,6 +618,7 @@
       }
     }
   },
+  "windows_applicability_note": "Frozen from the library contract: a case id appears here only when its frozen record is not Windows-originated (platform != windows) or it is an active legacy-lineage record. Rows cannot waive themselves; editing this set requires independent review of the library mapping.",
   "windows_not_required_case_ids": [
     "CGI-2026-009",
     "CGI-2026-010",
@@ -656,7 +666,7 @@
     "CGI-20260928-codex-archive-pretool-cold-start",
     "CGI-20260928-codex-stop-performance-timeout",
     "CGI-20260928-dsh-archive-ux10-target-pollution",
-    "CGI-20260928-dsh-archive-ux11-unreachable-remediation"
-  ],
-  "windows_applicability_note": "Frozen from the library contract: a case id appears here only when its frozen record is not Windows-originated (platform != windows) or it is an active legacy-lineage record. Rows cannot waive themselves; editing this set requires independent review of the library mapping."
+    "CGI-20260928-dsh-archive-ux11-unreachable-remediation",
+    "CGI-20260928-dsh-warm-resolver-scope-drift"
+  ]
 }

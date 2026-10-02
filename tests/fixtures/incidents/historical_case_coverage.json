@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "16fc0a8d677bb2fe01e60b7312da83b468adc309",
+  "library_commit": "d31504dd3c4f2679311480699994b6170afd0d5a",
   "denominator": {
     "case_registry": {
-      "records": 55,
-      "active": 44
+      "records": 56,
+      "active": 45
     },
     "legacy_source": {
       "records": 16,
@@ -1113,6 +1113,27 @@
       "positive": "Codex-side regression passes",
       "negative": "the DSH-native scenario remains a DSH-product fact, not claimed fixed here",
       "test_locator": "tests/test_incident_library_regression.py::DshSharedSemanticsCases::test_ux11_remediation_chain_reachable",
+      "deeper_authority": "case-level analogues only; DSH execution is out of scope for this repository",
+      "final_verdict": "analogue_only",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "not_required",
+      "missing_evidence": [],
+      "owner": "development (analogue) / DSH maintainers"
+    },
+    {
+      "id": "CGI-20260928-dsh-warm-resolver-scope-drift",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "宿主路由新鲜校验仍采用进程内旧 package scope 解析",
+      "runtime": "dsh",
+      "platform": "macos",
+      "family": "host-lock-resolution-freshness",
+      "current_contract": "Shared semantic (Codex side): scope/authority projections resolve from fresh per-event inputs; a warm in-process memo never masks a scope change across a phase boundary, and a fresh context agrees with the fresh resolution. The DSH implementation itself is not certified by this run",
+      "trigger": "synthetic dispatch-level shared-semantics replay",
+      "positive": "Codex-side regression passes (warm memo invalidated at the phase boundary; fresh resolver matches)",
+      "negative": "the DSH-native scenario remains a DSH-product fact, not claimed fixed here",
+      "test_locator": "tests/test_incident_library_regression.py::DshSharedSemanticsCases::test_warm_scope_resolution_freshness",
       "deeper_authority": "case-level analogues only; DSH execution is out of scope for this repository",
       "final_verdict": "analogue_only",
       "source_result": "passed",
