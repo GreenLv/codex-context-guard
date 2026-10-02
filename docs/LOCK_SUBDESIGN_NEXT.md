@@ -1,143 +1,164 @@
-# 会话锁与状态所有权子设计（下一版本候选）
+# 会话锁与状态所有权子设计（修订 2：命名空间隔离与迁移）
 
-状态：WP-01 交付稿，供协调者有界审查；不是已冻结的运行契约。日期：2026-10-02。
-源码 subject：基线 `d24899d8202a58d7426208541c58d193464e93de`，候选分支
-`candidate/next-gpt6-perf`（实现提交见回交）。对应缺陷：CGN-01（已复现，P1）、
-CGN-08（故障注入核实中）。不变量：N07（单 writer）、N05（fail closed）、N09
-（旧缓存/旧任务不可变）。
+状态：WP-01 交付稿 v2，供协调者有界审查；**修订 1（方案 A，共置互操作）已被
+R1 复核否决**（CGR-L1/CGR-L2），本文按否决意见重写。日期：2026-10-02。
+对应缺陷：CGN-01/CGN-08、CGR-L1、CGR-L2。不变量：N05、N06、N07、N09、N10。
+规划版本仍为 0.15.0，本设计通过并实现前不冻结任何版本契约。
 
-## 1. 缺陷与目标
+## 0. R1 否决的结构性结论
 
-基线 `filesystem_session_lock` 有两类已证实缺陷：
+R1 证明的三件事使"同一状态树上的跨版本互斥"不可实现：
 
-1. **mtime 租约**：锁文件 mtime 超过 30 秒即被竞争者 unlink。持锁进程被暂停、
-   遇到慢 I/O 或时钟变化时可被第二个进程夺锁，两个真实进程同时进入临界区
-   （合成反例已重放）。finally 还按路径无条件 unlink，旧 owner 退出时可以删除
-   新 owner 的锁文件。
-2. **所有权无提交校验（CGN-08）**：owner 内容写在进入 try/finally 之前，写失败
-   会遗留 descriptor/文件；进程内 `threading.Lock.acquire()` 无界等待，而宿主给
-   SessionEnd 只有 3 秒。
+1. 年龄不能证明退出（活的 legacy writer 持锁 31s 后被新 writer 接管，同 inode
+   使所有权复核无法区分两者）。
+2. 空的/畸形的 owner 记录不能证明 writer 缺席（legacy 在 O_EXCL 创建与写入
+   owner 之间被暂停时，新 writer 把空文件当作无主锁）。
+3. 提交前 inode 复核与实际落盘之间存在抢占窗口（复核后、`os.replace` 前被
+   legacy 替换并成功落盘，candidate 恢复后覆盖其状态并成功返回）。
 
-目标：把"同一私有状态最多一个 writer"从"路径排他存在"升级为内核锁 +
-提交时所有权复核，使任何一方的锁文件被删除、替换或偷取都不能变成一次成功
-的状态写入。不引入后台进程、网络锁或分布式语义；网络/多主机共享 HOME 仍明确
-不支持。
+protocol-1 不认识任何新内核锁原语；不读新 marker；换锁文件名只影响新 writer。
+因此**任何让新旧 writer 打开同一批状态文件的设计都无法给出可行的互斥证明**。
+修订 2 放弃共置互操作，改为结构隔离：新旧 writer 从推导上就不可能打开同一
+可变状态；互斥只在各自命名空间内部由本方原语保证。
 
-## 2. 协议（lock protocol 2）
+## 1. 命名空间选择与推导
 
-- **原语**：稳定的 `<session>/.lock` 文件上的内核咨询锁。
-  - POSIX：`fcntl.flock(fd, LOCK_EX | LOCK_NB)`，非阻塞重试。
-  - Windows：`msvcrt.locking(fd, LK_NBLCK, 1)`，先 `os.lseek(fd, 0, SEEK_SET)`，
-    锁偏移 0 的 1 个字节；字节范围锁允许超出文件末尾。
-  - 两者都只在标准库内；fd 以 `O_RDWR | O_CREAT`、0o600 打开，默认不可被子
-    进程继承（PEP 446）。
-- **线性化点**：内核锁获取成功的那次系统调用。protocol 2 writer 之间，互斥
-  由内核保证，与文件内容、mtime、PID 无关。
-- **持有者身份**：获取内核锁后，writer 在文件偏移 0 写入一条 advisory owner
-  记录（JSON：`lock_protocol=2`、`pid`、`token`（`secrets.token_hex(16)`）、
-  `created_at`）。记录仅用于诊断与 legacy 判别，不是锁本体；新 writer 获锁后
-  直接覆写。
-- **等待**：25ms 重试间隔 + monotonic deadline（沿用 `timeout` 参数，默认 5s；
-  SessionEnd 路径由调用方传入 ≤3s 预算）。超时抛 `TimeoutError`，fail closed，
-  与现状一致。进程内 `threading.Lock.acquire()` 改为带剩余时间的有界等待
-  （修复 CGN-08 的无界排队）。
-- **文件生命周期**：protocol 2 **永不 unlink** `.lock`。文件随会话目录生命周期
-  存亡（`cleanup_old_sessions` 清理整个会话目录；其必须跳过活跃会话，见 §6）。
-- **退出/崩溃**：进程死亡时内核自动释放锁；遗留的 owner 记录是过时数据，下个
-  writer 获锁后覆写。不存在"崩溃遗留永久不可恢复锁"的状态：获取只依赖内核
-  锁，不依赖文件内容。
-- **提交时所有权复核**：`session_lock` 把当前 guard 登记到线程局部；
-  `save_state`（及经由它的 `atomic_write_json` 路径）在写 state.json 前调用
-  `verify_lock_ownership()`：`os.fstat(lock_fd)` 与 `os.stat(lock_path)` 的
-  `(st_dev, st_ino)` 必须一致，否则抛 `LockOwnershipError`，本次事务不落任何
-  私有状态（fail closed）。这是对"失去所有权者不能提交成功"（N07）的直接
-  承接：即使本进程的锁文件被外部 unlink/替换，状态也不会被偷写。`st_ino` 为 0
-  的文件系统无法核验，复核跳过并在日志层记录（不视为失败）。
-- **CGN-08 打开序列**：`open → flock → (try: 写 owner 记录) → yield → 释放`。
-  owner 写失败时关闭 fd 并抛错；因文件不会被 unlink，无需清理路径，下一 writer
-  直接对同一文件获锁。
+- protocol-2 运行时（本候选）：`<data_root>/sessions-v2/<session_id>/`。
+- protocol-1 运行时（0.14.3 及更早）：`<data_root>/sessions/<session_id>/`，原样保留。
+- 推导是**唯一函数** `resolve_session_dir(root, session_id, *, for_write)`：
 
-## 3. 旧版本（protocol 1）互操作
+  1. `sessions-v2/<id>` 存在 → 返回 v2（已迁移或新会话）。
+  2. `sessions/<id>` 不存在 → 返回 v2（全新会话；首次写时创建。无 legacy
+     历史，直接空起步不违反"禁止静默空历史"——本来就没有历史可掩盖）。
+  3. `sessions/<id>` 存在且 v2 不存在（升级后恢复旧会话）：
+     - `for_write=False`（status/diagnose/recovery-page/profile hint 等只读
+       路径）→ 返回 legacy 树（只读视图）。
+     - `for_write=True` → 执行 §2 迁移；被阻断时抛
+       `SessionLockedByLegacyError`，事件按各自 fail 策略失败，**不写任何树**。
 
-protocol 1 = 现状算法：`O_EXCL` 创建 + mtime>30s 即偷取 + finally 按路径
-unlink；它不认识内核锁。**在同一会话目录上，protocol 1 与 protocol 2 无法
-互相提供硬互斥**——这是旧算法自身缺陷的推论，不是新协议可以单方面修复的。
+- 写入口审计（实现时逐点核对，全部经推导函数或显式双命名空间清扫）：
+  `state.json`、`release-required` latch、`action-profile.json`、
+  `recovery.json/md`、`prompts/` 记录、commentary 快照、corrupt 备份、
+  decision log（state 内）全部位于 session_dir 之下；`cleanup_old_sessions`
+  与 `find_latest_state` 扫描两个命名空间；export/successor pack 写入项目根
+  （私有树之外），不属于本边界。Host transcript（`CODEX_HOME/sessions`）是
+  宿主自有目录，不在本设计范围。
 
-已实现的防御规则（保守方向，全部 fail closed）：
+## 2. 旧会话恢复：显式迁移（禁止静默空历史）
 
-| 发现的 `.lock` | protocol 2 行为 |
-| --- | --- |
-| 不存在 | `O_CREAT` 创建并获内核锁（与 protocol 1 的 O_EXCL 竞争在同一 syscall 线性化） |
-| 内容为 protocol 2 owner 记录（或不可解析） | 直接对当前 inode 获内核锁；内核锁是权威 |
-| 内容为 protocol 1 记录（`<pid> <epoch>`）且 mtime 年龄 < 30s | **拒绝获锁**（TimeoutError，带诊断）。无法证明旧 writer 已死，不得接管（P07"无法独占必须不写"） |
-| 内容为 protocol 1 记录且年龄 ≥ 30s | 按旧协议自身语义判定为已崩溃的旧 writer，获内核锁接管并覆写记录（与旧代码对 30s 陈锁的处置一致，不引入更差行为） |
+触发：legacy 树存在、v2 树不存在、写上下文。
 
-边界（如实声明，不以经验判断替代）：
+### 2.1 阻断条件（先于一切写入）
 
-- **旧 → 新**：一个仍在运行的 protocol 1 进程可以在 POSIX 上 unlink protocol 2
-  的锁文件并进入临界区（mtime 偷取）。protocol 2 writer 的提交时复核会把这次
-  干扰转为自身 fail closed（不写状态、不提交成功），但**不能阻止旧进程写**。
-  旧进程的写入保持原子替换（整文件），不会与 protocol 2 的写入字节交错。
-- **新 → 旧**：protocol 2 从不 unlink、从不按年龄偷取，因此 protocol 2 不会
-  破坏一个活的 protocol 1 持有者。回滚到旧版本时，遗留的 protocol 2 锁文件会让
-  旧 writer 在首个事件上经历一次 30s 偷取等待（SessionEnd 3s 预算下表现为
-  fail closed 超时）；旧 writer 完成该事件后会 unlink，其后恢复正常。此为
-  回滚场景的已知降级，不产生状态损坏。
-- **部署边界**：一个会话在受支持的操作模型下绑定一个已安装插件版本（不可变
-  缓存；一个宿主持有一个会话）。跨版本并发写同一会话目录不在支持范围内；
-  上述规则只是把该越界情形的后果收敛为"新 writer fail closed + 原子替换不
-  交错"，而不是宣称双向硬互斥。
+若 `sessions/<id>/.lock` **存在**——无论内容为 legacy 记录、protocol-2 记录、
+空字节还是畸形数据——**立即拒绝**：抛 `SessionLockedByLegacyError`，事件
+fail closed（PreCompact→systemMessage、Stop→stopReason、PreToolUse 保持
+既有策略、显式命令→stderr [FAIL]），迁移不开始、不写任何树。
+理由：文件存在即无法证明 writer 缺席（CGR-L1a/1b）；本设计**从不解析、
+从不以年龄或内容推断 legacy writer 的生死**。
 
-### 备选方案 B（未实施，需协调者决定）
+### 2.2 排他窗口（可行证明）
 
-数据目录命名空间隔离（例如 `sessions-v2/` + 迁移）可以把旧→新方向也变为硬
-互斥，但改变安装/恢复契约，需要真实停写/独占证明与不可变源快照迁移。本候选
-保留现有存储（方案 A），不切换私有数据目录；若协调者要求硬隔离，方案 B 的
-迁移设计在此子设计审查通过后另行提交。
+`.lock` 不存在时：以 `O_RDWR|O_CREAT` 创建它并取**本方内核锁**
+（fcntl/msvcrt，即 §3 原语），持有至迁移完成。窗口内对 legacy writer 的
+排除由 **protocol-1 自身的公开获取算法**给出，不依赖对方读任何新协议：
 
-## 4. 与默认路径的关系
+- legacy 获取 = `O_EXCL` 创建；文件已存在 → 失败进入竞争路径；
+- 竞争路径仅在 `mtime > 30s` 时 unlink 偷取；窗口标记文件的 mtime 是新鲜的；
+- legacy 的锁预算是 5s（`session_lock(timeout=5.0)`）< 30s；
+- 因此窗口内每个 legacy 竞争者都在 5s 内超时 fail closed，不能进入、
+  不能偷取、不能写 legacy 树。
+- 并发的新 writer（同候选版本）由同一内核锁互斥；第二个迁移者在获锁后
+  **复查 v2 树**：已被第一个迁移者 rename 发布 → 跳过迁移，释放窗口，
+  正常进入 v2。
 
-锁变更只影响需要写私有状态的事件路径（`dispatch` 及显式命令的
-`session_lock`）。PreToolUse SAFE 快路径本来就不加锁、不读私有状态，保持
-零变化。普通工具不因锁失败新增审批或阻止；锁超时/所有权失败按各事件既有
-fail 策略呈现（PreCompact systemMessage、Stop stopReason、PreToolUse fail-open
-除非显式 release 契约生效）。
+该证明只用对方的既有语义（O_EXCL、新鲜 mtime 不偷、5s 预算），不需要
+对方配合、不读任何 marker、不用年龄断言对方生死。
 
-## 5. 测试矩阵（P06/P07 映射）
+### 2.3 快照与原子发布
 
-`tests/test_session_lock_protocol.py`（真实子进程 + 确定性屏障，无 monkeypatch
-理想状态；可移植测试在 POSIX/macOS 上执行，Windows 字节范围锁语义留待
-Windows 原生批次确认）：
+- 窗口内把整个 legacy 树复制到
+  `sessions-v2/.migrate-<id>-<uniq>/`（`copytree(symlinks=True)`；
+  legacy 树在此期间只读——本设计不修改来源）。
+- 写入 `migration.json`：`{schema: "session-migration/v1", source_namespace,
+  source_state_sha256（content_hash）, source_prompts_sha256,
+  window_acquired_at, migrated_at, runtime_tree_digest}`——**权威状态身份**：
+  v2 树以自身 content_hash 链继续，migration.json 绑定分叉点；两个分支是
+  不同身份，永不合并。
+- `fsync` 后 `os.rename(staging, sessions-v2/<id>)`——目标是**唯一发布点**，
+  rename 原子；发布前 v2 树对外不存在。
+- 窗口锁文件**保留**（不 unlink）：迁移后 ~30s 内继续阻断 legacy writer；
+  超时老化后 legacy 可按自身语义偷回旧树继续其历史分支。
 
-1. 两个真实进程竞争：同一时刻至多一个持有者（共享 state append 计数验证）。
-2. **CGN-01 回归（旧代码失败）**：持锁者存活、锁文件 mtime 被人工老化 31s，
-   竞争者必须超时失败而不是偷取。
-3. 释放不删后来者的锁：释放后 `.lock` 仍在，后续获锁成功（替代旧的
-   "释放后文件不存在"断言——这是有意的行为变更）。
-4. **提交复核（旧代码失败）**：事务中外部 unlink+替换锁文件 → `save_state`
-   抛 `LockOwnershipError`，state.json 未被写入。
-5. 崩溃注入：`SIGKILL` 持锁子进程 → 竞争者在 deadline 内获锁，owner 记录被
-   覆写，状态可用。
-6. legacy 双向：新鲜 legacy 记录 → 快速拒绝；≥30s legacy 记录 → 接管并覆写；
-   protocol 2 记录 → 正常竞争。
-7. 旧算法模拟器（按 protocol 1 步骤逐步执行的真实子进程）与 protocol 2 持有者
-   并发：protocol 2 提交复核拦截自身写入（POSIX 观察点），旧模拟器的写入落地；
-   断言无字节交错。
-8. 进程内有界等待：`threading` 队列在 deadline 内得到 `TimeoutError`；既有
-   `test_process_queue_wait_does_not_consume_filesystem_lock_timeout` 语义保留
-   （更新文件存活断言）。
-9. SessionEnd 预算：竞争下 `session_lock(timeout=2.5)` 在 3s 内失败，无状态
-   破坏。
-10. 各边界崩溃注入（acquire/write/save/release）：`save_state` 失败不留成功
-    状态（N08）。
+### 2.4 回滚边界
 
-## 6. 复核项（交协调者确认）
+- 迁移中途崩溃：staging 目录残留；来源树完好（全程只读）。下一事件重试
+  迁移；迁移开始时先清扫本会话的陈旧 staging（>1 天或 pid 不存在）。
+  staging 永不成为权威（唯一发布点是 rename）。
+- 阻断路径无写入 → 无需回滚。
+- 迁移成功后旧树保持原样：旧任务（旧版本 Hook）继续在 `sessions/<id>` 上
+  工作直至结束，其写入留在旧树，由 migration.json 的分叉身份记录为历史
+  分支；v2 树不受影响，也不回迁。
 
-1. 方案 A（保留现有存储 + 上述互操作边界）是否接受，或要求方案 B 命名空间
-   隔离另行设计。
-2. "释放后锁文件不存在" → "稳定锁文件" 的可观察行为变更，以及随之而来的
-   版本处理（建议按新 writer 生命周期记 0.15.0，Unreleased 标签保持到发布）。
-3. 提交时复核跳过 `st_ino == 0` 文件系统的可接受性（主流 macOS/Windows 本地
-   文件系统均提供 inode 等价物；FAT/exFAT 类不支持）。
-4. Windows `msvcrt.locking` 字节范围语义、关闭/继承行为需 Windows 原生批次
-   确认（本批次无法原生验证，已标 pending，不算通过）。
+### 2.5 降级与旧任务
+
+- 降级到 0.14.3：旧运行时推导 `sessions/<id>`——若迁移已发生，它继续使用
+  旧树（≤30s 的 marker 延迟后按自身语义接管），v2 树对它不可见，成为
+  历史分支。双向都不产生同树并发写。
+- 同一会话的旧任务仍活着时升级恢复：§2.1 阻断（旧 writer 持锁）或 §2.2
+  窗口期失败 fail closed（旧 writer 在窗口内竞争）；旧任务完成后重试迁移。
+  网络文件系统/多主机共享 HOME 仍明确不支持。
+
+## 3. v2 命名空间内的单 writer
+
+- 原语：`fcntl.flock`/`msvcrt.locking`（偏移 0，1 字节，非阻塞重试 +
+  monotonic deadline），`<session>/.lock` 稳定文件，writer 永不 unlink。
+- 持有覆盖整个事件事务（load → 变更 → save）；owner 记录（protocol 2 JSON）
+  仅诊断用，在新 writer 之间内核锁是权威，记录缺失/畸形无妨——**新命名
+  空间内不存在需要从记录推断生死的对象**。
+- 竞争超时按事件 fail 策略 fail closed；SessionEnd 保持 1.2s 有界预算。
+
+## 4. 提交边界与所有权复核（CGR-L2 关闭）
+
+- `save_state` 在构建内容前验证 `(st_dev, st_ino)`（fd vs path）；
+- **第二次验证移入原子写内部、紧贴 `os.replace` 之前执行**，把检查-写入
+  窗口压缩到相邻 syscall 级。残余窗口只剩"能进入私有目录的外部敌意进程"，
+  与"能直接删除 state.json 的敌意进程"同级，超出威胁模型并如实记录。
+- `st_ino == 0` 或身份原语不可用（FAT/exFAT 类）→ 抛 `LockOwnershipError`
+  fail closed；**不再静默豁免**（CGR-L2b）。
+- 失去所有权者不能提交成功、不能 unlink 后继者的锁文件、没有任何删除
+  v2 状态的代码路径。
+
+## 5. 双平台实现
+
+- 内核锁与窗口锁共用 §3 抽象（POSIX fcntl / Windows msvcrt）；路径全程
+  pathlib，长/CJK/空白路径行为与现状一致；staging 与 rename 在 Windows 上
+  用 `os.rename`（目标不存在时原子）；`msvcrt.locking` 的字节范围/继承语义
+  留待 Windows 原生批次确认（pending，不算通过）。终止测试平台感知：
+  POSIX `SIGKILL`，Windows `terminate()`。
+
+## 6. 全族回归（设计通过后实现，映射 R1 清单）
+
+1. new/new 竞争（真实子进程，互斥 + 状态一致）。
+2. old/new 双向：活 legacy holder（含人工老化 >30s）→ 候选**拒绝**（替代
+   被 R1 点名的 aged-takeover 测试）；legacy 在 O_EXCL/写 owner 间暂停
+   （空文件）→ 候选拒绝。
+3. 窗口期 legacy 竞争者 fail closed（≤5s）；窗口后 legacy 按自身语义接管
+   旧树，v2 树不受影响。
+4. 提交检查后抢占（R1 CGR-L2 调度）：新命名空间内由内核锁排除；外部替换
+   v2 锁文件 → 提交前/replace 前双重验证拦截，断言 state.json 未写、无
+   成功返回。
+5. 空/部分/畸形记录（legacy 树 → 拒绝；v2 树 → 内核锁权威，正常竞争）。
+6. 获取/复制/rename 各阶段崩溃注入：staging 清扫、来源完好、无部分发布。
+7. 排队 deadline；后继清理跨两命名空间；`st_ino=0` 注入 → 拒绝。
+8. 写入口矩阵（state/latch/action-profile/recovery/prompts/decision log）
+   全部落于解析后命名空间；断言**最终状态一致性**（content_hash 链、prompt
+   计数、无丢失更新），不仅进程标记。
+9. 真实 production API 驱动（R1 independent_probes.py 的三个调度转成
+   断言：aged→refuse、empty-window→refuse、after-check→no-commit）。
+
+## 7. 明确的非目标
+
+- 不阻止旧任务在旧树上完成；不合并历史分支；不做后台守护或网络锁；
+  不把 `sessions-v2` 出现当作已发布契约（Unreleased 标签保持到发布）。
+- 本设计不改变默认 PreToolUse 快路径（零状态 I/O）与普通工具零审批。
