@@ -666,7 +666,6 @@
     "CGI-20260928-codex-archive-pretool-cold-start",
     "CGI-20260928-codex-stop-performance-timeout",
     "CGI-20260928-dsh-archive-ux10-target-pollution",
-    "CGI-20260928-dsh-archive-ux11-unreachable-remediation",
-    "CGI-20260928-dsh-warm-resolver-scope-drift"
+    "CGI-20260928-dsh-archive-ux11-unreachable-remediation"
   ]
 }

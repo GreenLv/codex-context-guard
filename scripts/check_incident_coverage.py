@@ -214,7 +214,8 @@ def validate_coverage(index: dict, coverage: dict) -> list[str]:
     return errors
 
 
-def validate_rows(rows: list, root: Path, errors: list[str]) -> dict[str, int]:
+def validate_rows(rows: list, root: Path, errors: list[str],
+                  exceptions: dict | None = None) -> dict[str, int]:
     verdicts: dict[str, int] = {}
     for row in rows:
         rid = row.get("id", "<unknown>")
@@ -242,8 +243,54 @@ def validate_rows(rows: list, root: Path, errors: list[str]) -> dict[str, int]:
         if verdict == "not_applicable":
             errors.append(f"{rid}: not_applicable requires a reviewed product "
                           "boundary; batch exclusions are not accepted here")
+        missing = " ".join(str(item) for item in (row.get("missing_evidence") or []))
+        if "incomplete-exception:" in missing:
+            _check_incomplete_exception(rid, missing, exceptions, errors, root)
         resolve_locator(root, str(row.get("test_locator") or ""), errors)
     return verdicts
+
+
+INCOMPLETE_EXCEPTION_MARKER = "incomplete-exception:"
+
+
+def _check_incomplete_exception(rid: str, missing: str,
+                                exceptions: dict | None,
+                                errors: list[str],
+                                root: Path) -> None:
+    """A row citing an incomplete-case exception must reference a reviewed
+    entry with the required fields; the exception stays pending, never a
+    pass, and its retained generic boundary must really resolve."""
+    entry_id = None
+    for token in missing.split():
+        if token.startswith(INCOMPLETE_EXCEPTION_MARKER):
+            entry_id = token[len(INCOMPLETE_EXCEPTION_MARKER):]
+            break
+    entries = {item.get("id"): item
+               for item in ((exceptions or {}).get("exceptions") or [])
+               if isinstance(item, dict)}
+    entry = entries.get(entry_id)
+    if entry is None:
+        errors.append(
+            f"{rid}: incomplete-exception reference {entry_id!r} has no "
+            "reviewed entry in the exceptions fixture")
+        return
+    for field in ("kind", "missing", "sources_checked",
+                  "why_no_faithful_oracle", "retained_generic_boundary",
+                  "counts_as"):
+        if not entry.get(field):
+            errors.append(
+                f"{rid}: exception {entry_id} is missing field {field}")
+    if entry.get("coordinator_review") != "required":
+        errors.append(
+            f"{rid}: exception {entry_id} must require coordinator review")
+    if "pass" in str(entry.get("counts_as", "")).lower() \
+            and "never" not in str(entry.get("counts_as", "")).lower():
+        errors.append(
+            f"{rid}: exception {entry_id} must not count as a pass")
+    boundary = entry.get("retained_generic_boundary") or {}
+    locator = str(boundary.get("test_locator") or "")
+    if locator:
+        resolve_locator(root, locator, errors)
 
 
 def locator_nodeids(locator: str) -> list[str]:
@@ -440,6 +487,11 @@ def main() -> int:
                         default="tests/fixtures/incidents/library_case_index.json")
     parser.add_argument("--coverage",
                         default="tests/fixtures/incidents/historical_case_coverage.json")
+    parser.add_argument(
+        "--exceptions",
+        default="tests/fixtures/incidents/incomplete_case_exceptions.json",
+        help="reviewed incomplete-case exception entries; a coverage row "
+             "citing incomplete-exception:<id> must match an entry here")
     parser.add_argument("--execute", action="store_true",
                         help="run each active row's first in-repo locator and "
                              "require a passing execution receipt")
@@ -448,12 +500,15 @@ def main() -> int:
     root = Path(args.root).resolve()
     index = json.loads((root / args.index).read_text(encoding="utf-8"))
     coverage = json.loads((root / args.coverage).read_text(encoding="utf-8"))
+    exceptions_path = root / args.exceptions
+    exceptions = (json.loads(exceptions_path.read_text(encoding="utf-8"))
+                  if exceptions_path.is_file() else None)
     global WINDOWS_NOT_REQUIRED_FROZEN
     WINDOWS_NOT_REQUIRED_FROZEN = set(
         index.get("windows_not_required_case_ids") or set())
     errors = validate_coverage(index, coverage)
     rows = coverage.get("cases", []) + coverage.get("legacy", [])
-    verdicts = validate_rows(rows, root, errors)
+    verdicts = validate_rows(rows, root, errors, exceptions)
     receipts = execute_receipts(root, rows, errors) if args.execute else None
     expected = (index["case_registry"]["active_case_count"]
                 + index["legacy_source"]["active_case_count"])
@@ -482,6 +537,11 @@ def main() -> int:
                          "active_total": expected},
         "adjudicated": adjudicated, "verdicts": verdicts,
         "superseded_attributed": len(rows) - adjudicated,
+        "incomplete_exceptions": sorted(
+            {token[len(INCOMPLETE_EXCEPTION_MARKER):]
+             for row in rows
+             for token in " ".join(str(x) for x in (row.get("missing_evidence") or [])).split()
+             if token.startswith(INCOMPLETE_EXCEPTION_MARKER)}),
         "execution_receipts": receipts,
         "errors": errors, "valid": not errors,
     }

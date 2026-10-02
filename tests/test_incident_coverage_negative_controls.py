@@ -39,6 +39,53 @@ def pending_windows_case(table):
     return row
 
 
+class IncompleteExceptionControls(unittest.TestCase):
+    """A row citing incomplete-exception:<id> must match a reviewed entry
+    with required fields; forged or pass-counting exceptions fail."""
+
+    def setUp(self):
+        self.index, self.base = load_pair()
+        self.exceptions = json.loads(
+            (REPO_ROOT / "tests/fixtures/incidents/incomplete_case_exceptions.json")
+            .read_text(encoding="utf-8"))
+
+    def _rows(self):
+        errors: list[str] = []
+        cic.WINDOWS_NOT_REQUIRED_FROZEN = set(
+            self.index.get("windows_not_required_case_ids") or [])
+        try:
+            verdicts = cic.validate_rows(self.base["cases"] + self.base["legacy"],
+                                         REPO_ROOT, errors, self.exceptions)
+        finally:
+            cic.WINDOWS_NOT_REQUIRED_FROZEN = None
+        return verdicts, errors
+
+    def test_reviewed_exception_is_accepted_and_pending(self):
+        verdicts, errors = self._rows()
+        self.assertEqual(errors, [])
+        self.assertEqual(verdicts.get("pending"), 2)
+        row = next(r for r in self.base["cases"]
+                   if r["id"] == "CGI-20260913-codex-archive-045")
+        self.assertEqual(row["final_verdict"], "pending")
+
+    def test_unknown_exception_reference_rejected(self):
+        row = next(r for r in self.base["cases"]
+                   if r["id"] == "CGI-20260913-codex-archive-045")
+        row["missing_evidence"] = ["incomplete-exception:CGI-20990101-not-reviewed"]
+        _, errors = self._rows()
+        self.assertTrue(any("no reviewed entry" in e for e in errors), errors)
+
+    def test_exception_without_coordinator_review_rejected(self):
+        self.exceptions["exceptions"][0]["coordinator_review"] = "optional"
+        _, errors = self._rows()
+        self.assertTrue(any("coordinator review" in e for e in errors), errors)
+
+    def test_exception_counting_as_pass_rejected(self):
+        self.exceptions["exceptions"][0]["counts_as"] = "pass"
+        _, errors = self._rows()
+        self.assertTrue(any("must not count as a pass" in e for e in errors), errors)
+
+
 class CoverageForgeryTests(unittest.TestCase):
     def setUp(self):
         self.index, self.base = load_pair()
@@ -52,9 +99,11 @@ class CoverageForgeryTests(unittest.TestCase):
         cic.WINDOWS_NOT_REQUIRED_FROZEN = set(
             self.index.get("windows_not_required_case_ids") or [])
         try:
-            verdicts = cic.validate_rows(self.base["cases"]
-                                         + self.base["legacy"],
-                                         REPO_ROOT, errors)
+            verdicts = cic.validate_rows(
+                self.base["cases"] + self.base["legacy"], REPO_ROOT, errors,
+                json.loads((REPO_ROOT
+                            / "tests/fixtures/incidents/incomplete_case_exceptions.json")
+                           .read_text(encoding="utf-8")))
         finally:
             cic.WINDOWS_NOT_REQUIRED_FROZEN = None
         self.assertEqual(errors, [])
@@ -347,9 +396,11 @@ class FrozenWaiverControls(unittest.TestCase):
         cic.WINDOWS_NOT_REQUIRED_FROZEN = set(
             self.index.get("windows_not_required_case_ids") or [])
         try:
-            verdicts = cic.validate_rows(self.table["cases"]
-                                         + self.table["legacy"],
-                                         REPO_ROOT, errors)
+            verdicts = cic.validate_rows(
+                self.table["cases"] + self.table["legacy"], REPO_ROOT, errors,
+                json.loads((REPO_ROOT
+                            / "tests/fixtures/incidents/incomplete_case_exceptions.json")
+                           .read_text(encoding="utf-8")))
         finally:
             cic.WINDOWS_NOT_REQUIRED_FROZEN = None
         self.assertEqual(errors, [])

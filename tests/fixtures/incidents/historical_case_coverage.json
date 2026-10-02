@@ -525,17 +525,19 @@
       "runtime": "codex",
       "platform": "windows",
       "family": "stop-disposition-validation",
-      "current_contract": "Default path never re-issues the historical denial family; native Windows confirmation is the coordinator gate",
+      "current_contract": "Default path never re-issues the historical denial family; the original chain lacks a faithful oracle (reviewed incomplete-case exception); native Windows confirmation of the retained boundary is a coordinator gate",
       "trigger": "valid session -> diagnose; wrong-token control",
-      "positive": "source assertion passes (see locator)",
-      "negative": "historical denial strings never appear",
+      "positive": "retained generic boundary executed and passed (bounded direct diagnosis; invalid private control rejected); the original rejection chain stays unestablished",
+      "negative": "historical denial strings never appear; the original rejection chain is not reproduced and is not claimed",
       "test_locator": "tests/test_incident_library_regression.py::WindowsPlatformSourceCases::test_cgi_2026_045_diagnose_bounded_and_controls_rejected",
       "deeper_authority": "tests/test_cg130_default_path.py::test_sequential_multi_remote_pushes_are_not_denied",
-      "final_verdict": "executed_pass",
-      "source_result": "passed",
+      "final_verdict": "pending",
+      "source_result": "pending",
       "macos_result": "passed",
       "windows_result": "passed",
-      "missing_evidence": [],
+      "missing_evidence": [
+        "incomplete-exception:CGI-20260913-codex-archive-045 (tests/fixtures/incidents/incomplete_case_exceptions.json)"
+      ],
       "owner": "coordinator",
       "windows_evidence": {
         "batch_id": "cg0143-w-r5-20260928",
@@ -545,7 +547,8 @@
         "prepared_source_sha256": "7a64339a70629eb1d40b7af507a528fea1ab96ced2e4d6fc40427d121b10bc53",
         "runtime_tree_sha256": "802640bf72862ed1aa092691e25f5af67dcc961a609b891ca5bb84436416fbb7",
         "result_bundle_sha256": "92fd472687d328e42ac98ed530f853af18d40979ddc6d5f2ff8f0555eb55d19b"
-      }
+      },
+      "windows_evidence_binding": "historical 0.14.3 runtime digest (802640bf...); requires revalidation on the new runtime before release"
     },
     {
       "id": "CGI-20260913-codex-compaction-continuation",
@@ -1135,12 +1138,15 @@
       "negative": "the DSH-native scenario remains a DSH-product fact, not claimed fixed here",
       "test_locator": "tests/test_incident_library_regression.py::DshSharedSemanticsCases::test_warm_scope_resolution_freshness",
       "deeper_authority": "case-level analogues only; DSH execution is out of scope for this repository",
-      "final_verdict": "analogue_only",
+      "final_verdict": "pending",
       "source_result": "passed",
       "macos_result": "passed",
-      "windows_result": "not_required",
-      "missing_evidence": [],
-      "owner": "development (analogue) / DSH maintainers"
+      "windows_result": "pending",
+      "missing_evidence": [
+        "canonical record includes a Windows failure for the same trigger; a native Windows run of the applicable freshness analogue is pending"
+      ],
+      "owner": "coordinator (platform) / development (source analogue)",
+      "windows_evidence_note": "not_required waiver withdrawn per review R1; the portable source analogue remains executed source evidence, not a Windows pass"
     }
   ],
   "legacy": [
@@ -1336,5 +1342,9 @@
       "missing_evidence": [],
       "owner": "development"
     }
-  ]
+  ],
+  "windows_results_binding": {
+    "historical_runtime_digest": "802640bf72862ed1aa092691e25f5af67dcc961a609b891ca5bb84436416fbb7",
+    "note": "windows_result=passed cells are historical evidence from the 0.14.3 runtime; they cannot certify new lock/router bytes and affected cells stay pending until revalidated on the candidate runtime."
+  }
 }

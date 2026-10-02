@@ -1,0 +1,30 @@
+{
+  "schema": "incident-incomplete-exception/v1",
+  "created_at": "2026-10-02",
+  "description": "Reviewed incomplete-case exceptions for the historical incident coverage table. An entry records a case whose original trigger cannot be faithfully reconstructed from retained material; the referenced coverage row stays pending and the exception is never counted as a pass. Each entry must keep the retained generic regression boundary that was actually executed.",
+  "exceptions": [
+    {
+      "id": "CGI-20260913-codex-archive-045",
+      "kind": "incomplete_original_chain",
+      "missing": [
+        "original Hook event identity",
+        "original private-control command syntax",
+        "original timing/window under the 3s SessionEnd budget",
+        "host wrapper shape",
+        "the full original rejection-chain transcript"
+      ],
+      "sources_checked": [
+        "canonical case record (library benchmarks/incidents/cases)",
+        "legacy lineage records",
+        "local archive index and reconciliation"
+      ],
+      "why_no_faithful_oracle": "The canonical diagnosis explicitly records the original Hook, syntax, timing and wrapper as unknown; no retained artifact reconstructs the original rejection chain, so any chain-level oracle would be fabricated rather than faithful.",
+      "retained_generic_boundary": {
+        "test_locator": "tests/test_incident_library_regression.py::WindowsPlatformSourceCases::test_cgi_2026_045_diagnose_bounded_and_controls_rejected",
+        "note": "Bounded direct diagnosis plus rejection of an invalid private control; explicitly NOT a reproduction of the original historical rejection chain."
+      },
+      "counts_as": "pending (never a pass)",
+      "coordinator_review": "required"
+    }
+  ]
+}
