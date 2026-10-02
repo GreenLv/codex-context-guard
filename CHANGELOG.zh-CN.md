@@ -4,6 +4,28 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## Unreleased（source candidate）
+
+### Highlights
+
+- 私有状态不再可能被失去所有权的 writer 写入。会话锁改为基于稳定锁文件的内核锁（`fcntl`/`msvcrt`）线性化，取代按 mtime 的 30 秒租约：被暂停或缓慢的持有者不再被夺锁，释放时也不会删除后来持有者的锁文件；锁文件被外部替换时，状态写入按 fail closed 拒绝而不是提交成功。
+- Hook 路由器改为同进程运行重量级核心，非快速路径事件不再付出第二次解释器启动；同机诊断采样中委派事件的生产入口中位耗时下降约 46%。
+- 每回合常驻指令块只携带一条回合绑定的 `checkpoint-status` 发现命令，取代四条私有命令；staging、disposition 与 proof 命令改为按需从 status 输出发现。标准激活场景下常驻注入下降约 57%。
+- 面向 GPT-6 系列大幅缩短 Skill root 与 description（root 字节 −40%），可选流程移入既有 references；每条删去或外移的规则都标注了承接位置（代码、规范或引用）。
+- 冻结历史索引刷新到当前历史库 HEAD（56 条原始 / 45 条活动）；每条活动案例保留真实执行测试回执。
+
+### Changes
+
+- 全部评估 memo 现在按保守确定性字节估算计入一个总预算：search、clause 与 basis memo 不再可能在预算外滞留无界文本；超大单条不缓存，预算耗尽时决策与完整范围保持不变。
+- 进程内锁排队等待有界，SessionEnd 在其 3 秒宿主时限下使用 1.2 秒锁预算；竞争下的 SessionEnd 退化为 fail closed 超时而不是越界。
+- 锁文件随会话生命周期存续（"已释放"不再意味着"已删除"）；旧协议特有的 Windows ERROR_ACCESS_DENIED O_EXCL 规避已不再需要。
+- 旧协议（protocol 1）锁记录在可能属于活着的旧 writer 时被拒绝，超过旧协议 30 秒边界后才接管。跨版本并发访问同一会话被声明为不支持的操作；残余边界与命名空间隔离备选方案记录在锁子设计中待审查。
+
+### Validation
+
+- 源码层面：候选提交上完整行为套件、仓库验证器、隐私审计、lint、编译与自检通过；历史覆盖验证器以通过回执运行全部必需测试节点（53 条活动记录对应 44 个去重节点）。
+- 未发布候选：仅 macOS 诊断采样。原生 Windows、安装、真实宿主、GPT-6 模型、精确提交 CI/HOL 与发布门槛均待执行，不在此声称。
+
 ## 0.14.3 — 2026-09-29
 
 ### Highlights

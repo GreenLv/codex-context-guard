@@ -4,6 +4,28 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## Unreleased (source candidate)
+
+### Highlights
+
+- Session state can no longer be written by a dispossessed writer. The session lock now linearizes on a kernel lock (`fcntl`/`msvcrt`) over a stable lock file instead of an mtime-based 30-second lease, so a suspended or slow holder is never stolen from, and a released lock never deletes a successor's file. A state write whose lock file was replaced externally fails closed instead of committing.
+- The Hook router runs the heavy core in the same process instead of starting a second interpreter for every non-fast-path event; the production-entry median for a delegating event fell about 46% in same-machine diagnostic sampling.
+- The resident per-turn instruction block carries one turn-bound `checkpoint-status` discovery command instead of four private commands; staging, disposition, and proof commands are discovered on demand through the status output. Resident injection fell about 57% in the standard activation scenario.
+- The Skill root file and description are substantially shorter for the GPT-6 series (root bytes −40%), moving optional flows to the existing references; every removed rule is mapped to its enforcing code, spec, or reference.
+- The frozen historical incident index is refreshed to the current library head (56 raw / 45 active records); every active case keeps a real executed test receipt.
+
+### Changes
+
+- All evaluation memos now charge a conservative deterministic byte estimate against one total budget, so search, clause, and basis memos can no longer retain unbounded text outside the budget; oversized entries are never cached and decisions stay identical when the budget is exhausted.
+- The in-process lock queue wait is bounded, and SessionEnd uses a 1.2 s lock budget under its 3 s host deadline; contended SessionEnd events degrade to a fail-closed timeout instead of overrunning.
+- Lock files persist for the session's lifetime ("released" no longer means "unlinked"); the previous Windows ERROR_ACCESS_DENIED O_EXCL workaround is obsolete because the protocol no longer creates files exclusively.
+- Legacy protocol-1 lock records are refused while they may belong to a live old writer and are taken over only past the legacy 30-second boundary. Cross-version concurrent access to one session is declared out of supported operation; the residual boundary and the namespace-isolation alternative are documented in the lock sub-design for review.
+
+### Validation
+
+- Source-level: full behavior suite, repository validator, privacy audit, lint, compile, and self-test pass on the candidate commit; the historical coverage validator runs every required test node with passing receipts (44 unique nodes for 53 active records).
+- Unreleased candidate: macOS diagnostic samples only. Native Windows, installed, live-host, GPT-6 model, exact-commit CI/HOL, and publication gates are pending and are not claimed.
+
 ## 0.14.3 — 2026-09-29
 
 ### Highlights
