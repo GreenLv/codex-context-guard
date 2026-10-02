@@ -18,7 +18,9 @@ assert SPEC and SPEC.loader
 cg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cg)
 
-THREAD_UUID = "01a01503-a631-7681-92cb-cac150d2b94a"
+
+# Synthetic locator; never use a real Codex task identifier in public fixtures.
+THREAD_UUID = "aa11bb33-c0de-4d5e-8f90-1234567890ab"
 THREAD_URI = f"codex://threads/{THREAD_UUID}"
 
 

@@ -5844,7 +5844,8 @@ class ContextGuardTests(unittest.TestCase):
     def test_prompt_subjects_reject_prose_slashes_and_preserve_real_locators(
         self,
     ) -> None:
-        thread_uri = "codex://threads/01a01503-a631-7681-92cb-cac150d2b94a"
+        # Synthetic locator; no private task identity is retained.
+        thread_uri = "codex://threads/aa11bb33-c0de-4d5e-8f90-1234567890ab"
         prose = (
             f"接续{thread_uri}的任务；覆盖原始字节/哈希场景、newline；"
             "不修改公共/macOS规则或运行时应用。"
