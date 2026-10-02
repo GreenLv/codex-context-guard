@@ -15031,14 +15031,24 @@ def record_supersession(
             "reason": bounded(authoritative_supersession_text(text), 400),
         }
     )
+    superseded_prompt_id = None
     for item in state["requirements"]:
         if item["id"] == target:
             item["status"] = "superseded"
-            # Acceptance extracted from the revoked requirement is not a
-            # separate continuing obligation. Independently sourced items stay.
-            for acceptance in state.get("acceptance_items", []):
-                if acceptance.get("prompt_id") == item.get("prompt_id"):
-                    acceptance["status"] = "superseded"
+            superseded_prompt_id = item.get("prompt_id")
+    # Acceptance extracted from a prompt survives while any requirement from
+    # that same prompt stays active: one prompt can produce a main
+    # requirement plus session-scope constraints, and superseding only one of
+    # them must not revoke the acceptance obligations of the others.
+    # Independently sourced items always stay.
+    if superseded_prompt_id is not None and not any(
+        req.get("prompt_id") == superseded_prompt_id
+        and req.get("status") != "superseded"
+        for req in state["requirements"]
+    ):
+        for acceptance in state.get("acceptance_items", []):
+            if acceptance.get("prompt_id") == superseded_prompt_id:
+                acceptance["status"] = "superseded"
     return "superseded"
 
 
@@ -16964,8 +16974,9 @@ def checkpoint_status_snapshot(
     result["wait_condition_count"] = len(current_scope_projection(state)["waiting_conditions"])
     result["ancestor_constraint_count"] = len(ancestor_ids)
     result["ancestor_constraint_ids"] = sorted(ancestor_ids)[:12]
-    if advanced_commands is not None:
-        result["advanced_commands"] = advanced_commands
+    # Obligations and evidence keep the full clip budget; discovery commands
+    # are appended beyond it so they can never evict a successful-evidence
+    # row (recovery priority: obligations > evidence > operation hints).
     while len(json.dumps(result, ensure_ascii=True).encode('utf-8')) > 3800:
         if result["recent_successful_evidence"]:
             result["recent_successful_evidence"].pop(0)
@@ -16975,6 +16986,8 @@ def checkpoint_status_snapshot(
             result["items_truncated"] = True
         else:
             break
+    if advanced_commands is not None:
+        result["advanced_commands"] = advanced_commands
     return result
 
 
@@ -20944,6 +20957,15 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
             )
         except Exception:  # noqa: BLE001 - classification failure stays fail-open
             pre_class = STATE_SAFE
+            # Fail-open must not launder a candidate through an adopted
+            # release gate: probe the posture and deny when one is active.
+            if _release_posture_plausibly_active(payload):
+                return _pre_tool_decision(
+                    "deny",
+                    "An adopted release contract is active but Context Guard could not "
+                    "complete release verification; run 'context-guard diagnose' before "
+                    "retrying this action.",
+                )
         if pre_class in {STATE_SAFE, STATE_AMBIGUOUS}:
             return {}
         if not _requires_release_verification(payload, pre_class):
@@ -21090,6 +21112,16 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                     return {}
             except Exception:  # noqa: BLE001 - classification must not deny on its own failure
                 tool_class = STATE_AMBIGUOUS
+                # The classification failure itself stays fail-open, but it
+                # must not launder a candidate through an adopted release
+                # gate: probe the posture and keep the release deny below.
+                if _release_posture_plausibly_active(payload):
+                    return _pre_tool_decision(
+                        "deny",
+                        "An adopted release contract is active but Context Guard could not "
+                        "complete release verification; run 'context-guard diagnose' before "
+                        "retrying this action.",
+                    )
             if tool_class not in {STATE_CANDIDATE, STATE_AMBIGUOUS_CANDIDATE}:
                 return {}
             if _release_posture_plausibly_active(payload):

@@ -58,7 +58,9 @@ class CoverageForgeryTests(unittest.TestCase):
         finally:
             cic.WINDOWS_NOT_REQUIRED_FROZEN = None
         self.assertEqual(errors, [])
-        self.assertEqual(sum(verdicts.values()), 52)
+        expected = (self.index["case_registry"]["active_case_count"]
+                    + self.index["legacy_source"]["active_case_count"])
+        self.assertEqual(sum(verdicts.values()), expected)
 
     def test_swapped_case_id_rejected(self):
         forged = self.forge()
@@ -351,7 +353,9 @@ class FrozenWaiverControls(unittest.TestCase):
         finally:
             cic.WINDOWS_NOT_REQUIRED_FROZEN = None
         self.assertEqual(errors, [])
-        self.assertEqual(sum(verdicts.values()), 52)
+        expected = (self.index["case_registry"]["active_case_count"]
+                    + self.index["legacy_source"]["active_case_count"])
+        self.assertEqual(sum(verdicts.values()), expected)
 
 
 class DefaultCliAndIdentityControls(unittest.TestCase):

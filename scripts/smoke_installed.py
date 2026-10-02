@@ -379,8 +379,13 @@ def main() -> int:
                 ),
             ),
         )
-        if "stage-disposition" not in context_text(resumed_turn):
-            raise RuntimeError("new turn did not receive the disposition protocol")
+        # The resident context carries only the checkpoint-status discovery
+        # entry; advanced commands are discovered through its output, not
+        # resident text.
+        if "checkpoint-status" not in context_text(resumed_turn):
+            raise RuntimeError("new turn did not receive the discovery entry")
+        if "stage-disposition" in context_text(resumed_turn):
+            raise RuntimeError("resident context still carries advanced commands")
         compact = hook(
             runtime,
             environment,
@@ -398,10 +403,11 @@ def main() -> int:
             "Latest Codex plan mirror",
             "Bounded subagent coordination state",
             "checkpoint-status",
-            "stage-disposition",
         ):
             if expected not in restored_context:
                 raise RuntimeError(f"recovery context is missing {expected!r}")
+        if "stage-disposition" in restored_context:
+            raise RuntimeError("recovery context still carries advanced commands")
 
         token = option_from_command_context(restored_context, "--token")
         common = [

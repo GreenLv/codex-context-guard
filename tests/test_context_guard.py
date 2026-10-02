@@ -4853,6 +4853,52 @@ class ContextGuardTests(unittest.TestCase):
             self.assertIn(name.replace("_", "-"), command)
             self.assertIn(self.current_turn, command)
 
+    def test_supersession_scoped_to_targeted_requirement(self) -> None:
+        """record_supersession revokes acceptance items only when the LAST
+        active requirement of their prompt is superseded; one prompt can
+        carry a main requirement plus session constraints, and superseding
+        one of them must not revoke the others' acceptance obligations."""
+        state = cg.new_state({"session_id": "supersede-scope"})
+        state["prompts"].append(
+            {"id": "P0001", "origin": "human", "text": "root", "sha256": "x"}
+        )
+        state["requirements"].extend(
+            [
+                {"id": "R001", "prompt_id": "P0001", "text": "实现导出功能",
+                 "status": "active"},
+                {"id": "R002", "prompt_id": "P0001",
+                 "text": "整个会话期间不要修改部署配置",
+                 "status": "active", "constraint_scope": "session"},
+            ]
+        )
+        state["acceptance_items"].extend(
+            [
+                {"id": "A001", "prompt_id": "P0001", "text": "验收导出",
+                 "status": "pending", "evidence": []},
+            ]
+        )
+        result = cg.record_supersession(state, "取代 R002。", "R003")
+        self.assertEqual(result, "superseded")
+        self.assertEqual(
+            next(i for i in state["requirements"] if i["id"] == "R002")["status"],
+            "superseded",
+        )
+        self.assertEqual(
+            next(i for i in state["requirements"] if i["id"] == "R001")["status"],
+            "active",
+        )
+        # R001 is still active from P0001: its acceptance stays.
+        self.assertEqual(state["acceptance_items"][0]["status"], "pending")
+
+        result = cg.record_supersession(state, "取代 R001。", "R004")
+        self.assertEqual(result, "superseded")
+        self.assertEqual(
+            next(i for i in state["requirements"] if i["id"] == "R001")["status"],
+            "superseded",
+        )
+        # No active P0001 requirement remains: the acceptance goes with it.
+        self.assertEqual(state["acceptance_items"][0]["status"], "superseded")
+
     def test_private_checkpoint_cli_roundtrip(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"

@@ -67,7 +67,12 @@ def _delegate_subprocess(raw_stdin: bytes) -> None:
     sys.stdout.buffer.flush()
     sys.stderr.buffer.write(result.stderr)
     sys.stderr.buffer.flush()
-    sys.exit(result.returncode)
+    code = result.returncode
+    if code is not None and code < 0:
+        # A child killed by signal N reports -N; keep the conventional
+        # 128+N exit surface instead of an unsigned byte wrap.
+        code = 128 + (-code)
+    sys.exit(code)
 
 
 class _PreReadStdin:

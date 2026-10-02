@@ -386,6 +386,33 @@ class ReleaseIsolationTests(DefaultPathHarness):
         self.assertEqual(self.dispatch("PreToolUse", tool_name="shell",
                          tool_input={"command": "git tag v1.2.3"}), {})
 
+    def test_classifier_exception_keeps_release_gate_and_ordinary_path(self) -> None:
+        """A classification failure itself stays fail-open, but it must not
+        launder a candidate through an adopted release gate."""
+        self.dispatch("UserPromptSubmit", prompt="context-guard release")
+        payload = self.payload("PreToolUse", tool_name="shell",
+                               tool_input={"command": "git tag v1.2.3"})
+        ordinary = self.payload("PreToolUse", tool_name="shell",
+                                tool_input={"command": "echo hello"})
+        with mock.patch.object(self.cg, "classify_pre_tool_state",
+                               side_effect=RuntimeError("classifier boom")):
+            self.assertEqual(
+                self.cg.safe_dispatch(payload)[
+                    "hookSpecificOutput"]["permissionDecision"],
+                "deny",
+            )
+            # Inside the adopted release session an unclassifiable tool
+            # fails closed too (bounded to the release profile only).
+            ordinary = self.payload("PreToolUse", tool_name="shell",
+                                    tool_input={"command": "echo hello"})
+            self.assertEqual(
+                self.cg.safe_dispatch(ordinary)[
+                    "hookSpecificOutput"]["permissionDecision"],
+                "deny",
+            )
+        # After the outage the ordinary path is open again.
+        self.assertEqual(self.cg.dispatch(ordinary), {})
+
     def test_unknown_legacy_posture_blocks_publication_only(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard release")
         session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
