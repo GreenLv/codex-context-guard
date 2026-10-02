@@ -10,6 +10,7 @@ raw rows, blocks acceptance, exits nonzero, and preserves the partial report.
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,13 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "validation" / "perf_ab.py"
 BASELINE = REPO_ROOT.parent / "codex-context-guard"  # placeholder; overridden below
+
+
+def shell_output(value: str) -> str:
+    """Emit the same fixture bytes through the driver's actual shell."""
+    if sys.platform == "win32":
+        return "Write-Output '" + value.replace("'", "''") + "'"
+    return "printf '%s\\n' " + shlex.quote(value)
 
 
 def run_driver(args: list[str]) -> tuple[int, dict | None, str]:
@@ -66,14 +74,14 @@ class PerfDriverNegativeTests(unittest.TestCase):
         return completed.returncode, report, completed.stderr
 
     def test_noop_hook_fails_posttool_semantics(self):
-        code, report, _ = self.drive("posttool_active", "printf '{}\\n'")
+        code, report, _ = self.drive("posttool_active", shell_output("{}"))
         self.assertEqual(code, 1)
         self.assertFalse(report["accepted"])
         rows = report["cells"]["posttool_active"]["sides"]["baseline"]["raw_rows"]
         self.assertTrue(all(r.get("assertion") != "ok" for r in rows))
 
     def test_malformed_output_is_recorded(self):
-        code, report, _ = self.drive("user_prompt_active", "printf 'not-json'")
+        code, report, _ = self.drive("user_prompt_active", shell_output("not-json"))
         self.assertEqual(code, 1)
         rows = report["cells"]["user_prompt_active"]["sides"]["candidate"]["raw_rows"]
         self.assertEqual(rows[0].get("assertion"), "stdout_not_json")
@@ -88,7 +96,7 @@ class PerfDriverNegativeTests(unittest.TestCase):
 
     def test_timeout_is_censored_and_blocks(self):
         code, report, _ = self.drive(
-            "pretool_safe", "sleep 8", extra=["--timeout", "1"])
+            "pretool_safe", "Start-Sleep -Seconds 8" if sys.platform == "win32" else "sleep 8", extra=["--timeout", "1"])
         self.assertEqual(code, 1)
         rows = report["cells"]["pretool_safe"]["sides"]["baseline"]["raw_rows"]
         self.assertEqual(rows[0]["outcome_class"], "timeout")
@@ -99,7 +107,7 @@ class PerfDriverNegativeTests(unittest.TestCase):
     def test_semantic_success_but_wrong_persisted_state_fails(self):
         # A wrapper that prints the right object for the wrong reason:
         # posttool prints {} (valid JSON) — the evidence oracle must fail it.
-        code, report, _ = self.drive("posttool_active", "printf '{\"continue\": true}\\n'")
+        code, report, _ = self.drive("posttool_active", shell_output('{"continue": true}'))
         self.assertEqual(code, 1)
         rows = report["cells"]["posttool_active"]["sides"]["candidate"]["raw_rows"]
         self.assertNotEqual(rows[0].get("assertion"), "ok")
@@ -108,7 +116,7 @@ class PerfDriverNegativeTests(unittest.TestCase):
         empty = self.work / "empty-tree"
         (empty / "hooks").mkdir(parents=True)
         (empty / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {}}))
-        code, report, _ = self.drive("posttool_active", "printf '{}\\n'",
+        code, report, _ = self.drive("posttool_active", shell_output("{}"),
                                      extra=["--candidate", str(empty)])
         self.assertEqual(code, 1)
         rows = report["cells"]["posttool_active"]["sides"]["candidate"]["raw_rows"]
@@ -132,7 +140,7 @@ class PerfDriverNegativeTests(unittest.TestCase):
             [sys.executable, str(DRIVER), "--baseline", str(REPO_ROOT),
              "--candidate", str(REPO_ROOT), "--attempts", "20", "--formal",
              "--cells", "pretool_safe", "--out", str(out),
-             "--wrapper-override", "printf '{}'"],
+             "--wrapper-override", shell_output("{}")],
             capture_output=True, text=True, timeout=120, cwd=str(REPO_ROOT))
         self.assertEqual(completed.returncode, 2)
         self.assertIn("negative-testing only", completed.stderr)
