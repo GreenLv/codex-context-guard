@@ -7377,52 +7377,178 @@ def process_session_lock(lock_path: Path) -> threading.Lock:
         return PROCESS_SESSION_LOCKS.setdefault(key, threading.Lock())
 
 
-@contextlib.contextmanager
-def filesystem_session_lock(lock_path: Path, timeout: float) -> Iterator[None]:
-    deadline = time.monotonic() + timeout
-    descriptor: int | None = None
-    while descriptor is None:
+class LockOwnershipError(RuntimeError):
+    """A state write cannot prove the session lock file is still held."""
+
+
+try:  # Platform kernels: both branches stay inside the standard library.
+    import fcntl as _fcntl
+except ImportError:  # Windows
+    _fcntl = None  # type: ignore[assignment]
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # POSIX
+    _msvcrt = None  # type: ignore[assignment]
+
+LEGACY_LOCK_CONTENT_RE = re.compile(r"^\d{1,10} \d{1,19}(?:\.\d+)?\s*$")
+LEGACY_LOCK_STEAL_SECONDS = 30.0
+_LOCK_GUARD_STACK = threading.local()
+
+
+def _try_kernel_lock(descriptor: int) -> bool:
+    if _fcntl is not None:
         try:
-            descriptor = os.open(
-                str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            _fcntl.flock(descriptor, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+    assert _msvcrt is not None
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        _msvcrt.locking(descriptor, _msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+def _release_kernel_lock(descriptor: int) -> None:
+    if _fcntl is not None:
+        with contextlib.suppress(OSError):
+            _fcntl.flock(descriptor, _fcntl.LOCK_UN)
+        return
+    assert _msvcrt is not None
+    with contextlib.suppress(OSError):
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        _msvcrt.locking(descriptor, _msvcrt.LK_UNLCK, 1)
+
+
+def _read_lock_content(descriptor: int) -> bytes:
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return os.read(descriptor, 512)
+    except OSError:
+        return b""
+
+
+def _write_lock_owner(descriptor: int) -> None:
+    record = json.dumps(
+        {
+            "lock_protocol": 2,
+            "pid": os.getpid(),
+            "token": secrets.token_hex(16),
+            "created_at": utc_now(),
+        },
+        sort_keys=True,
+    ).encode("ascii")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    with contextlib.suppress(OSError):
+        os.ftruncate(descriptor, 0)
+    os.write(descriptor, record)
+
+
+class SessionLockGuard:
+    """Verifies, at commit time, that the locked inode is still the path's."""
+
+    __slots__ = ("lock_path", "_descriptor")
+
+    def __init__(self, lock_path: Path, descriptor: int) -> None:
+        self.lock_path = lock_path
+        self._descriptor = descriptor
+
+    def verify_ownership(self) -> None:
+        try:
+            held = os.fstat(self._descriptor)
+            current = os.stat(self.lock_path)
+        except OSError as exc:
+            raise LockOwnershipError(
+                f"session lock ownership was lost: {self.lock_path}"
+            ) from exc
+        if held.st_ino == 0 or current.st_ino == 0:
+            # Filesystem cannot report inode identity; verification is not
+            # possible and must not invent a failure.
+            return
+        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            raise LockOwnershipError(
+                f"session lock ownership was lost: {self.lock_path}"
             )
-            os.write(descriptor, f"{os.getpid()} {time.time()}".encode("ascii"))
-        except (FileExistsError, PermissionError) as exc:
-            # Windows can report an existing, still-open O_EXCL lock as
-            # ERROR_ACCESS_DENIED instead of ERROR_FILE_EXISTS. The holder may
-            # delete the lock before this thread can observe it, so absence is
-            # not enough to reject the Windows contention case.
-            if (
-                isinstance(exc, PermissionError)
-                and os.name != "nt"
-                and not lock_path.exists()
-            ):
-                raise
-            try:
-                if time.time() - lock_path.stat().st_mtime > 30:
-                    lock_path.unlink()
-                    continue
-            except FileNotFoundError:
-                pass
+
+
+def verify_session_lock_ownership() -> None:
+    """Fail closed before publishing state if the lock inode changed."""
+    stack = getattr(_LOCK_GUARD_STACK, "stack", None)
+    if stack:
+        stack[-1].verify_ownership()
+
+
+@contextlib.contextmanager
+def filesystem_session_lock(
+    lock_path: Path, timeout: float
+) -> Iterator[SessionLockGuard]:
+    """Kernel-lock session mutex (protocol 2).
+
+    Mutual exclusion linearizes on the kernel lock of the stable
+    ``<session>/.lock`` inode, never on file age or existence. The lock file
+    is never unlinked by this protocol; legacy (protocol 1) records are
+    refused while they may still belong to a live legacy writer and are
+    taken over only once the legacy protocol itself would consider them
+    stale. A holder whose lock file was replaced externally fails its state
+    write via :class:`LockOwnershipError` instead of committing.
+    """
+    deadline = time.monotonic() + max(timeout, 0.0)
+    descriptor = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    acquired = False
+    try:
+        while True:
+            if _try_kernel_lock(descriptor):
+                acquired = True
+                break
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"timed out waiting for {lock_path}")
             time.sleep(0.025)
-    try:
-        yield
+        content = _read_lock_content(descriptor)
+        try:
+            held_info = os.fstat(descriptor)
+            age = max(0.0, time.time() - held_info.st_mtime)
+        except OSError:
+            age = 0.0
+        if LEGACY_LOCK_CONTENT_RE.fullmatch(
+            content.decode("ascii", errors="replace").strip()
+        ) and age < LEGACY_LOCK_STEAL_SECONDS:
+            # A legacy O_EXCL writer may still be live; exclusivity cannot
+            # be proven, so this writer must not write state (fail closed).
+            raise TimeoutError(
+                f"legacy session lock may still be held: {lock_path}"
+            )
+        _write_lock_owner(descriptor)
+        yield SessionLockGuard(lock_path, descriptor)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        with contextlib.suppress(FileNotFoundError):
-            lock_path.unlink()
+        if acquired:
+            _release_kernel_lock(descriptor)
+        os.close(descriptor)
 
 
 @contextlib.contextmanager
-def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[None]:
+def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[SessionLockGuard]:
     secure_directory(session_dir)
     lock_path = session_dir / ".lock"
-    with process_session_lock(lock_path):
-        with filesystem_session_lock(lock_path, timeout):
-            yield
+    process_lock = process_session_lock(lock_path)
+    # The in-process queue wait is bounded (CGN-08); the filesystem kernel
+    # lock keeps its own full timeout budget once the queue admits us.
+    if not process_lock.acquire(timeout=max(timeout, 0.0)):
+        raise TimeoutError(f"timed out waiting for process lock {lock_path}")
+    try:
+        with filesystem_session_lock(lock_path, timeout) as guard:
+            stack = getattr(_LOCK_GUARD_STACK, "stack", None)
+            if stack is None:
+                stack = []
+                _LOCK_GUARD_STACK.stack = stack
+            stack.append(guard)
+            try:
+                yield guard
+            finally:
+                stack.pop()
+    finally:
+        process_lock.release()
 
 
 def session_dir_for(payload: dict[str, Any]) -> Path:
@@ -8379,6 +8505,10 @@ def clear_pending(state: dict[str, Any], *, operation: str | None = None) -> int
 
 
 def save_state(session_dir: Path, state: dict[str, Any]) -> None:
+    # Fail closed before publishing anything if this thread no longer holds
+    # the session lock inode it acquired (N07: a dispossessed writer cannot
+    # commit success).
+    verify_session_lock_ownership()
     state["open_items"] = open_item_ids(state)
     state["session"]["updated_at"] = utc_now()
     state["content_hash"] = state_content_hash(state)
@@ -20803,7 +20933,10 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                     "run 'context-guard diagnose' before retrying this action.",
                 )
     session_dir = session_dir_for(payload)
-    with session_lock(session_dir):
+    # SessionEnd runs under a 3s host budget; keep its lock wait bounded so
+    # contention degrades to a fail-closed timeout instead of an overruns.
+    lock_timeout = 1.2 if event == "SessionEnd" else 5.0
+    with session_lock(session_dir, timeout=lock_timeout):
         state = load_state(session_dir, payload)
         handlers = {
             "UserPromptSubmit": handle_user_prompt,

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -2999,7 +3000,7 @@ class ContextGuardTests(unittest.TestCase):
 
         def wait_for_lock() -> None:
             waiter_started.set()
-            with cg.session_lock(session_dir, timeout=0):
+            with cg.session_lock(session_dir, timeout=0.5):
                 waiter_acquired.set()
 
         local_lock.acquire()
@@ -3015,59 +3016,47 @@ class ContextGuardTests(unittest.TestCase):
             if local_lock.locked():
                 local_lock.release()
 
-        self.assertFalse(lock_path.exists())
+        # Protocol 2 keeps a stable lock file; the kernel lock is the mutex.
+        self.assertTrue(lock_path.exists())
 
-    def test_session_lock_treats_windows_access_denied_as_contention(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "lock-session"
+    def test_session_lock_bounded_queue_wait_fails_closed(self) -> None:
+        session_dir = self.root / "private" / "sessions" / "queue-timeout-session"
+        session_dir.mkdir(parents=True)
+        lock_path = session_dir / ".lock"
+        local_lock = cg.process_session_lock(lock_path)
+        waiter_started = threading.Event()
+        failure: list[str] = []
+
+        def wait_for_lock() -> None:
+            waiter_started.set()
+            start = time.monotonic()
+            try:
+                with cg.session_lock(session_dir, timeout=0.3):
+                    failure.append("waiter acquired a locked session")
+            except TimeoutError:
+                failure.append("timeout")
+            self.assertLess(time.monotonic() - start, 2.0)
+
+        local_lock.acquire()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(wait_for_lock)
+                self.assertTrue(waiter_started.wait(timeout=1))
+                future.result()
+        finally:
+            local_lock.release()
+        self.assertEqual(failure, ["timeout"])
+
+    def test_session_lock_accepts_unknown_lock_file_content(self) -> None:
+        session_dir = self.root / "private" / "sessions" / "lock-foreign-session"
         session_dir.mkdir(parents=True)
         lock_path = session_dir / ".lock"
         lock_path.write_text("other holder", encoding="ascii")
-        real_open = os.open
-        open_calls = 0
-
-        def transient_open(path: str, flags: int, mode: int) -> int:
-            nonlocal open_calls
-            open_calls += 1
-            if open_calls == 1:
-                raise PermissionError(13, "simulated Windows lock contention", path)
-            return real_open(path, flags, mode)
-
-        def release_other_holder(_: float) -> None:
-            lock_path.unlink()
-
-        with (
-            mock.patch.object(cg.os, "open", side_effect=transient_open),
-            mock.patch.object(cg.time, "sleep", side_effect=release_other_holder),
-            cg.session_lock(session_dir),
-        ):
-            self.assertTrue(lock_path.exists())
-
-        self.assertGreaterEqual(open_calls, 2)
-        self.assertFalse(lock_path.exists())
-
-    def test_session_lock_retries_windows_access_denied_after_holder_exits(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "lock-race-session"
-        session_dir.mkdir(parents=True)
-        lock_path = session_dir / ".lock"
-        real_open = os.open
-        open_calls = 0
-
-        def transient_open(path: str, flags: int, mode: int) -> int:
-            nonlocal open_calls
-            open_calls += 1
-            if open_calls == 1:
-                raise PermissionError(13, "simulated vanished Windows holder", path)
-            return real_open(path, flags, mode)
-
-        with (
-            mock.patch.object(cg.os, "name", "nt"),
-            mock.patch.object(cg.os, "open", side_effect=transient_open),
-            cg.session_lock(session_dir),
-        ):
-            self.assertTrue(lock_path.exists())
-
-        self.assertGreaterEqual(open_calls, 2)
-        self.assertFalse(lock_path.exists())
+        with cg.session_lock(session_dir):
+            # The kernel lock is authoritative; the advisory owner record is
+            # replaced with this holder's protocol-2 record.
+            self.assertIn(b'"lock_protocol": 2', lock_path.read_bytes())
+        self.assertTrue(lock_path.exists())
 
     def test_session_lock_rejects_unrelated_posix_permission_error(self) -> None:
         session_dir = self.root / "private" / "sessions" / "lock-error-session"
