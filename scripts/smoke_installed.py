@@ -380,7 +380,7 @@ def main() -> int:
             ),
         )
         # The resident context carries only the checkpoint-status discovery
-        # entry; advanced commands are discovered through its output, not
+        # entry; advanced commands are discovered through `--commands`, not
         # resident text.
         if "checkpoint-status" not in context_text(resumed_turn):
             raise RuntimeError("new turn did not receive the discovery entry")
@@ -419,6 +419,18 @@ def main() -> int:
             "turn-after-compact",
             f"--token={token}",
         ]
+        commands_probe = run(
+            [sys.executable, str(runtime), "checkpoint-status", "--commands",
+             *common],
+            environment=environment,
+        )
+        if commands_probe.returncode != 0:
+            raise RuntimeError("checkpoint-status --commands failed")
+        discovered = json.loads(commands_probe.stdout).get("advanced_commands", {})
+        if set(discovered) != {
+            "status", "stage_checkpoint", "stage_disposition", "register_proof"
+        }:
+            raise RuntimeError("advanced command discovery is incomplete")
         status = run(
             [sys.executable, str(runtime), "checkpoint-status", *common],
             environment=environment,

@@ -4822,7 +4822,7 @@ class ContextGuardTests(unittest.TestCase):
             self.assertNotIn(advanced, text)
         self.assertLess(len(text), 1800)
 
-    def test_checkpoint_status_output_discovers_advanced_commands(self) -> None:
+    def test_checkpoint_status_commands_flag_discovers_advanced_commands(self) -> None:
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
@@ -4844,12 +4844,21 @@ class ContextGuardTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(status.returncode, 0, status.stderr)
-        commands = json.loads(status.stdout)["advanced_commands"]
+        # The compact default snapshot carries no command inventory.
+        self.assertNotIn("advanced_commands", json.loads(status.stdout))
+        commands = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "checkpoint-status", "--commands", *common],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(commands.returncode, 0, commands.stderr)
+        discovered = json.loads(commands.stdout)["advanced_commands"]
         self.assertEqual(
-            set(commands),
+            set(discovered),
             {"status", "stage_checkpoint", "stage_disposition", "register_proof"},
         )
-        for name, command in commands.items():
+        for name, command in discovered.items():
             self.assertIn(name.replace("_", "-"), command)
             self.assertIn(self.current_turn, command)
 
@@ -4877,7 +4886,7 @@ class ContextGuardTests(unittest.TestCase):
                  "status": "pending", "evidence": []},
             ]
         )
-        result = cg.record_supersession(state, "取代 R002。", "R003")
+        result = cg.record_supersession(state, "取消 R002。", "R003")
         self.assertEqual(result, "superseded")
         self.assertEqual(
             next(i for i in state["requirements"] if i["id"] == "R002")["status"],
@@ -4890,7 +4899,7 @@ class ContextGuardTests(unittest.TestCase):
         # R001 is still active from P0001: its acceptance stays.
         self.assertEqual(state["acceptance_items"][0]["status"], "pending")
 
-        result = cg.record_supersession(state, "取代 R001。", "R004")
+        result = cg.record_supersession(state, "取消 R001。", "R004")
         self.assertEqual(result, "superseded")
         self.assertEqual(
             next(i for i in state["requirements"] if i["id"] == "R001")["status"],

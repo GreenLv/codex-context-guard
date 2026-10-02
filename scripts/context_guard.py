@@ -16180,8 +16180,8 @@ def completion_command_context(
         "waiting or deferred boundaries are detected from structured facts and "
         "end silently. For the explicit advanced path only (visual facts, human "
         "evidence selection, ambiguous evidence, or troubleshooting), run this "
-        "turn-bound read-only status command; its output lists the exact "
-        f"staging, disposition, and proof commands:\n{status_command}\n"
+        "turn-bound read-only status command and append `--commands` to print "
+        f"the exact staging, disposition, and proof commands:\n{status_command}\n"
         f"Tracked requirements: {','.join(requirement_ids[:16]) or 'none'}; "
         f"acceptance: {','.join(acceptance_ids[:16]) or 'none'}; "
         f"ancestor constraints: {','.join(sorted(ancestor_ids)[:16]) or 'none'}. "
@@ -16862,7 +16862,6 @@ def checkpoint_status_snapshot(
     state: dict[str, Any], turn_id: str, *, full: bool = False,
     item_id: str | None = None, after_revision: str | None = None,
     session_dir: Path | None = None,
-    advanced_commands: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return a bounded work-unit view; full/item modes are explicit audits."""
     revision = str(state.get("content_hash") or state_content_hash(state))
@@ -16974,9 +16973,6 @@ def checkpoint_status_snapshot(
     result["wait_condition_count"] = len(current_scope_projection(state)["waiting_conditions"])
     result["ancestor_constraint_count"] = len(ancestor_ids)
     result["ancestor_constraint_ids"] = sorted(ancestor_ids)[:12]
-    # Obligations and evidence keep the full clip budget; discovery commands
-    # are appended beyond it so they can never evict a successful-evidence
-    # row (recovery priority: obligations > evidence > operation hints).
     while len(json.dumps(result, ensure_ascii=True).encode('utf-8')) > 3800:
         if result["recent_successful_evidence"]:
             result["recent_successful_evidence"].pop(0)
@@ -16986,8 +16982,6 @@ def checkpoint_status_snapshot(
             result["items_truncated"] = True
         else:
             break
-    if advanced_commands is not None:
-        result["advanced_commands"] = advanced_commands
     return result
 
 
@@ -17046,15 +17040,24 @@ def checkpoint_status(
     root: Path, session_id: str, turn_id: str, token: str, *,
     full: bool = False, item_id: str | None = None,
     after_revision: str | None = None,
+    commands: bool = False,
 ) -> dict[str, Any]:
     session_dir = root / "sessions" / safe_session_id(session_id)
     state = load_state(session_dir, {"session_id": session_id})
     require_usable_state(state)
     completion_attempt_for(state, turn_id, token)
+    if commands:
+        # Read-only discovery output: the exact turn-bound advanced command
+        # set, nothing else. The compact default snapshot stays under its
+        # public size contract and never carries the command inventory.
+        return {
+            "turn_id": turn_id,
+            "revision": str(state.get("content_hash") or state_content_hash(state)),
+            "advanced_commands": advanced_command_context(state, turn_id, token),
+        }
     return checkpoint_status_snapshot(
         state, turn_id, full=full, item_id=item_id,
         after_revision=after_revision, session_dir=session_dir,
-        advanced_commands=advanced_command_context(state, turn_id, token),
     )
 
 
@@ -21354,6 +21357,7 @@ def command_checkpoint_status(args: argparse.Namespace) -> int:
             full=args.full,
             item_id=args.item,
             after_revision=args.after_revision,
+            commands=args.commands,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         console_write(f"[FAIL] {bounded(exc, 800)}", stream=sys.stderr)
@@ -21604,6 +21608,10 @@ def main() -> int:
             mode = command.add_mutually_exclusive_group()
             mode.add_argument("--full", action="store_true")
             mode.add_argument("--item")
+            mode.add_argument(
+                "--commands", action="store_true",
+                help="print only the turn-bound advanced command set",
+            )
             command.add_argument("--after-revision")
     args = parser.parse_args()
     if args.command == "hook":
