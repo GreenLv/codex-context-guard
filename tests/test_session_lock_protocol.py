@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Session lock protocol 2 regressions (CGN-01, CGN-08).
 
-The mutex linearizes on a kernel lock over the stable ``<session>/.lock``
+The mutex linearizes on a kernel lock over the stable ``sessions-v2/.locks/<id>.lock``
 inode, never on file age or path existence. Contention tests use real child
 processes and filesystem barriers, not monkeypatched ideal states. The
 Windows byte-range semantics (``msvcrt.locking``) are implemented behind the
@@ -14,7 +14,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -67,29 +66,34 @@ WORKER = textwrap.dedent(
 
 class SessionLockProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.children: list[subprocess.Popen] = []
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.session_dir = self.root / "private" / "sessions-v2" / "lock-proto"
         self.session_dir.mkdir(parents=True)
 
     def tearDown(self) -> None:
-        self.temp.cleanup()
+        # A failed assertion must not leave a holder blocking Windows cleanup.
+        try:
+            for child in self.children:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=10)
+        finally:
+            self.temp.cleanup()
 
     def _spawn(self, session_dir: Path, out: Path, go: Path, timeout: float):
-        return subprocess.Popen(
+        child = subprocess.Popen(
             [sys.executable, "-c", WORKER, str(MODULE_PATH), str(session_dir),
              str(out), str(go), str(timeout)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        self.children.append(child)
+        return child
 
     def _try_acquire(self, session_dir: Path, out: Path, timeout: float):
-        return subprocess.Popen(
-            [sys.executable, "-c", WORKER, str(MODULE_PATH), str(session_dir),
-             str(out), "-", str(timeout)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        return self._spawn(session_dir, out, Path("-"), timeout)
 
     def _wait_for(self, path: Path, value: str, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
@@ -146,11 +150,14 @@ class SessionLockProtocolTests(unittest.TestCase):
         ready, go = self.root / "ready", self.root / "go"
         holder = self._spawn(self.session_dir, ready, go, 5.0)
         self._wait_for(ready, "acquired")
-        record = json.loads((cg.lifecycle_lock_path(self.session_dir)).read_text(encoding="ascii"))
-        self.assertEqual(record["lock_protocol"], 2)
+        self.assertTrue(cg.lifecycle_lock_path(self.session_dir).exists())
         go.write_text("1", encoding="ascii")
         holder.wait(timeout=10)
-        self.assertTrue((cg.lifecycle_lock_path(self.session_dir)).exists())
+        # Reading a separately opened Windows descriptor while the byte range
+        # is locked is correctly denied; inspect the durable record afterward.
+        record = json.loads(cg.lifecycle_lock_path(self.session_dir).read_text(encoding="ascii"))
+        self.assertEqual(record["lock_protocol"], 2)
+        self.assertEqual(record["pid"], holder.pid)
 
     def test_commit_ownership_check_blocks_write_after_lock_replacement(self) -> None:
         """A dispossessed writer fails closed instead of committing (N07)."""
@@ -159,17 +166,24 @@ class SessionLockProtocolTests(unittest.TestCase):
         state_file = self.session_dir / "state.json"
         with cg.session_lock(self.session_dir):
             lock_path = cg.lifecycle_lock_path(self.session_dir)
-            lock_path.unlink()
-            lock_path.write_text("replacement holder", encoding="ascii")
-            with self.assertRaises(cg.LockOwnershipError):
+            if os.name == "nt":
+                # Windows prevents replacement of the open lock handle. Prove
+                # this native protection and the original owner's valid commit.
+                with self.assertRaises(PermissionError):
+                    lock_path.unlink()
                 cg.save_state(self.session_dir, empty)
-        self.assertFalse(state_file.exists())
+            else:
+                lock_path.unlink()
+                lock_path.write_text("replacement holder", encoding="ascii")
+                with self.assertRaises(cg.LockOwnershipError):
+                    cg.save_state(self.session_dir, empty)
+        self.assertEqual(state_file.exists(), os.name == "nt")
 
     def test_killed_holder_releases_within_deadline(self) -> None:
         ready, go = self.root / "ready", self.root / "go"
         holder = self._spawn(self.session_dir, ready, go, 30.0)
         self._wait_for(ready, "acquired")
-        holder.send_signal(signal.SIGKILL)
+        holder.kill()
         holder.wait(timeout=10)
         start = time.monotonic()
         with cg.session_lock(self.session_dir, timeout=5.0):

@@ -3059,10 +3059,10 @@ class ContextGuardTests(unittest.TestCase):
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("other holder", encoding="ascii")
         with cg.session_lock(session_dir):
-            # The kernel lock is authoritative; the advisory owner record is
-            # replaced with this holder's protocol-2 record.
-            self.assertIn(b'"lock_protocol": 2', lock_path.read_bytes())
-        self.assertTrue(lock_path.exists())
+            self.assertTrue(lock_path.exists())
+        # Windows byte-range locks deny a separate reader while held. The
+        # advisory record survives release and is not the exclusion oracle.
+        self.assertIn(b'"lock_protocol": 2', lock_path.read_bytes())
 
     def test_session_lock_rejects_unrelated_posix_permission_error(self) -> None:
         session_dir = self.root / "private" / "sessions-v2" / "lock-error-session"
