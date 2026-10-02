@@ -359,7 +359,7 @@ def main() -> int:
             )
         waiting_state = json.loads(
             (
-                private / "sessions" / session_id / "state.json"
+                private / "sessions-v2" / session_id / "state.json"
             ).read_text(encoding="utf-8")
         )
         waiting_attempt = waiting_state.get("completion_attempt")
@@ -524,7 +524,7 @@ def main() -> int:
         if stopped:
             raise RuntimeError(f"Stop did not accept the staged checkpoint: {stopped}")
 
-        state_path = private / "sessions" / session_id / "state.json"
+        state_path = private / "sessions-v2" / session_id / "state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         module = load_runtime_module(runtime)
         module.validate_state_integrity(state)

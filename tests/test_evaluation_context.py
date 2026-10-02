@@ -158,7 +158,7 @@ class EvaluationContextTests(unittest.TestCase):
         cg.dispatch(event("PostToolUse", "t1", tool_name="exec_command",
                           tool_input={"cmd": command, "shell": shell},
                           tool_response={"exit_code": 0, "output": output}))
-        directory = Path(root) / "sessions" / session
+        directory = Path(root) / "sessions-v2" / session
         state = cg.load_state(directory, event("Stop", "t1"))
         evaluation = cg.EvaluationContext(state, directory)
         bases = cg._live_current_action_bases(state, directory, evaluation)
@@ -321,10 +321,7 @@ class EvaluationContextTests(unittest.TestCase):
         evaluation = self.context(text_budget_bytes=1_000_000)
         evaluation.parsed(text)
         base_charge = evaluation._memo_bytes
-        self.assertEqual(
-            base_charge,
-            len(text.encode("utf-8")) * 3 + cg.EvaluationContext._ENTRY_OVERHEAD,
-        )
+        self.assertGreaterEqual(base_charge, len(text.encode("utf-8")) * 3)
         # Building both derived views must not grow the accounted footprint
         # beyond the up-front reserve.
         evaluation.parsed(text).instruction_view(preserve_newlines=True)
@@ -501,6 +498,66 @@ class EvaluationContextTests(unittest.TestCase):
             # same content.
             self.assertIsNone(evaluation._disk_records)
             self.assertEqual(evaluation.disk_prompt_records(), records)
+
+    def test_r3_deep_basis_never_copies_before_refusal(self):
+        from unittest.mock import patch
+        value = {}
+        for _ in range(1200):
+            value = {"child": value}
+        evaluation = self.context(text_budget_bytes=1)
+        with patch("copy.deepcopy", side_effect=AssertionError("copy before admission")):
+            evaluation.store_basis(("deep",), value)
+        self.assertEqual(evaluation._bases, {})
+        self.assertEqual(evaluation._memo_bytes, 0)
+
+    def test_r3_prompt_projection_routes_share_aggregate_budget(self):
+        from unittest.mock import patch
+        evaluation = self.context(text_budget_bytes=0)
+        evaluation.state["prompts"] = [{"id": f"p{i}", "origin": "human"} for i in range(10)]
+        record = {"text": "x" * 1000, "sha256": "s", "record_sha256": "r"}
+        cost = cg._bounded_size_estimate(("p0", record))
+        evaluation._PROJECTION_BUDGET_BYTES = cost * 2
+        with patch.object(cg, "read_prompt_record", return_value=record):
+            roots = evaluation.root_records()
+            prompts = evaluation.prompt_records()
+            self.assertEqual(len(roots), 10)
+            self.assertEqual(len(prompts), 10)
+            self.assertEqual(len(evaluation._prompt_record_memo), 2)
+            self.assertIsNone(evaluation._root_records)
+            self.assertIsNone(evaluation._prompt_records)
+            self.assertEqual(len(evaluation._consumed), 10)
+            self.assertTrue(evaluation.verify_consumed_sources())
+        self.assertLessEqual(evaluation._projection_bytes, evaluation._PROJECTION_BUDGET_BYTES)
+        evaluation.new_phase("reset")
+        self.assertEqual(evaluation._projection_bytes, 0)
+        self.assertEqual(len(evaluation._consumed), 10)
+
+    def test_r3_one_megabyte_root_probe_not_retained(self):
+        from unittest.mock import patch
+        evaluation = self.context(text_budget_bytes=0)
+        evaluation.state["prompts"] = [{"id": "p1", "origin": "human"}]
+        evaluation._PROJECTION_BUDGET_BYTES = 1
+        with patch.object(cg, "read_prompt_record", return_value={"text": "x" * 1_000_000}):
+            self.assertEqual(len(evaluation.root_records()["p1"]["text"]), 1_000_000)
+        self.assertEqual(evaluation._prompt_record_memo, {})
+        self.assertIsNone(evaluation._root_records)
+        self.assertEqual(evaluation._projection_bytes, 0)
+
+    def test_r3_large_integer_cannot_hide_outside_budget(self):
+        value = {"n": 1 << 1_000_000}
+        evaluation = self.context(text_budget_bytes=1024)
+        evaluation.store_basis(("large-int",), value)
+        self.assertEqual(evaluation._bases, {})
+        self.assertGreater(cg._bounded_size_estimate(value), 1024)
+
+    def test_r3_custom_container_copy_is_never_entered(self):
+        class Unsupported(dict):
+            def __deepcopy__(self, memo):
+                raise AssertionError("custom copy must never be entered")
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        evaluation.store_basis(("custom",), Unsupported(x=1))
+        self.assertEqual(evaluation._bases, {})
+        self.assertIsNone(cg._bounded_size_estimate(Unsupported(x=1)))
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "tools" / "validation" / "perf_ab.py"
@@ -149,6 +150,26 @@ class PerfDriverNegativeTests(unittest.TestCase):
         self.assertIn("posttool_active", report["cells"])
         self.assertFalse(report["accepted"])
 
+    def test_subagent_oracle_requires_matching_agent_and_status(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools" / "validation"))
+        import perf_ab
+
+        state_dir = perf_ab.payload_state_dir(self.work, "agent-oracle")
+        state_dir.mkdir(parents=True, exist_ok=True)
+        for cell, status in [("subagent_start", "running"), ("subagent_events", "stopped")]:
+            for agent_id, actual_status, accepted in [
+                ("perf-agent", status, True),
+                ("wrong-agent", status, False),
+                ("perf-agent", "pending", False),
+            ]:
+                with self.subTest(cell=cell, agent_id=agent_id, status=actual_status):
+                    (state_dir / "state.json").write_text(json.dumps({
+                        "agents": [{"agent_id": agent_id, "status": actual_status}]}))
+                    row = {"returncode": 0}
+                    perf_ab.check_semantics(cell, row, self.work, b"{}",
+                                            {"session": "agent-oracle"})
+                    self.assertEqual(row["assertion"] == "ok", accepted)
+
     def test_nearest_rank_uses_ceil(self):
         sys.path.insert(0, str(REPO_ROOT / "tools" / "validation"))
         import perf_ab
@@ -159,6 +180,83 @@ class PerfDriverNegativeTests(unittest.TestCase):
         self.assertIsNone(perf_ab.nearest_rank([], 95))
         # Non-integral rank: n=7, p=50 -> ceil(3.5)-1 = 3 (0-based).
         self.assertEqual(perf_ab.nearest_rank(list(range(1, 8)), 50), 4)
+
+    def test_r3_invalid_selection_and_attempts_refused(self):
+        for cells, attempts, formal in [("", "1", False), ("unknown", "1", False),
+                                       ("pretool_safe,pretool_safe", "1", False),
+                                       ("pretool_safe", "0", False),
+                                       ("memory_stop,stop_s1", "20", True)]:
+            with self.subTest(cells=cells, attempts=attempts):
+                proc = subprocess.run([sys.executable, str(DRIVER), "--baseline", str(REPO_ROOT),
+                                       "--candidate", str(REPO_ROOT), "--cells", cells,
+                                       "--attempts", attempts, "--out", str(self.work / "invalid.json")]
+                                      + (["--formal"] if formal else []), capture_output=True)
+                self.assertEqual(proc.returncode, 2)
+                self.assertFalse((self.work / "invalid.json").exists())
+
+    def test_r3_real_interruption_persists_started_attempt_and_cleans_home(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
+        import perf_ab
+        out = self.work / "interrupted.json"
+        homes = []
+        def interrupt(_tree, data_dir, _session):
+            homes.append(data_dir.parent)
+            saved = json.loads(out.read_text())
+            self.assertEqual(saved["cells"]["posttool_active"]["sides"]["baseline"]
+                             ["raw_rows"][0]["outcome_class"], "started")
+            raise KeyboardInterrupt()
+        argv = ["perf_ab", "--baseline", str(REPO_ROOT), "--candidate", str(REPO_ROOT),
+                "--attempts", "1", "--cells", "posttool_active", "--out", str(out)]
+        with patch.object(sys, "argv", argv), patch.object(perf_ab, "seed_active_session", interrupt):
+            self.assertEqual(perf_ab.main(), 1)
+        self.assertFalse(json.loads(out.read_text())["accepted"])
+        self.assertTrue(homes)
+        self.assertTrue(all(not home.exists() for home in homes))
+
+    def test_r3_wrong_command_evidence_cannot_satisfy_lifecycle_count(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
+        import perf_ab
+        directory = self.work / "sessions-v2/perf-life"
+        directory.mkdir(parents=True)
+        state = {"evidence": [{"id": "E0001", "tool": "bash", "outcome": "success",
+                               "summary": "input={'command': 'echo wrong'}; response={'stdout': 'echo wrong'}",
+                               "core_call_seq": 1, "core_result_seq": 2}]}
+        (directory / "state.json").write_text(json.dumps(state))
+        row = {"error": None, "returncode": 0}
+        perf_ab.check_semantics("lifecycle_matched", row, self.work, b"{}",
+                                {"kind": "post", "session": "perf-life", "pair": 0,
+                                 "command": "echo pair-0", "evidence_after": 1})
+        self.assertEqual(row["assertion"], "lifecycle_evidence_association_failed")
+
+    def test_r3_session_end_uses_three_second_deadline(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
+        import perf_ab
+        out = self.work / "deadline.json"
+        deadlines = []
+        def run(_wrapper, _tree, _cell, _spec, _data, timeout):
+            deadlines.append(timeout)
+            return {"outcome_class": "completed", "assertion": "ok", "elapsed": 0.1}
+        argv = ["perf_ab", "--baseline", str(REPO_ROOT), "--candidate", str(REPO_ROOT),
+                "--attempts", "1", "--cells", "session_end", "--out", str(out)]
+        with patch.object(sys, "argv", argv), patch.object(perf_ab, "seed_active_session"), \
+             patch.object(perf_ab, "run_standard_attempt", run):
+            self.assertEqual(perf_ab.main(), 0)
+        self.assertEqual(deadlines, [3.0, 3.0])
+
+    def test_r3_special_cells_execute_and_failure_blocks(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
+        import perf_ab
+        out = self.work / "special.json"
+        argv = ["perf_ab", "--baseline", str(REPO_ROOT), "--candidate", str(REPO_ROOT),
+                "--attempts", "1", "--cells", "memory_stop,stop_s1", "--out", str(out)]
+        failed = {"outcome_class": "failed", "assertion": "wrong", "elapsed": 0.1}
+        with patch.object(sys, "argv", argv), \
+             patch.object(perf_ab, "run_memory_attempt", return_value=failed) as memory, \
+             patch.object(perf_ab, "run_stop_cell", return_value=failed) as stop:
+            self.assertEqual(perf_ab.main(), 1)
+        self.assertEqual(memory.call_count, 2)
+        self.assertEqual(stop.call_count, 2)
+        self.assertFalse(json.loads(out.read_text())["accepted"])
 
 
 if __name__ == "__main__":

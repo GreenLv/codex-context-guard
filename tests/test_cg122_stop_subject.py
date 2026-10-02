@@ -44,7 +44,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
         self.build_single_read_task()
         state = self.state()
         phase3.append_distinct_host_evidence(state)
-        cg.save_state(self.root / 'private' / 'sessions' / 'p3', state)
+        cg.save_state(self.root / 'private' / "sessions-v2" / 'p3', state)
         reply = 'Atlas 任务已结束，但结果正文为空，尚无法确认验收结果。请提供最终回复，我收到后继续验收。'
         for _ in range(2):
             self.assertEqual(self.dispatch('Stop', turn='t1', last_assistant_message=reply), {})
@@ -62,7 +62,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
         self.build_single_read_task()
         state = self.state()
         phase3.append_distinct_host_evidence(state)
-        cg.save_state(self.root / 'private' / 'sessions' / 'p3', state)
+        cg.save_state(self.root / 'private' / "sessions-v2" / 'p3', state)
         reply = '当前整个任务已完成。另一个任务等待外部审核。'
         self.assertEqual(self.dispatch('Stop', turn='t1', last_assistant_message=reply).get('decision'), 'block')
         self.assertIn('evidence_ambiguous', self.state()['decision_log'][-1]['reason_codes'])
@@ -164,7 +164,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
         self.build_single_read_task()
         state = self.state()
         state['evidence'] = []
-        cg.save_state(self.root / 'private' / 'sessions' / 'p3', state)
+        cg.save_state(self.root / 'private' / "sessions-v2" / 'p3', state)
         result = self.dispatch('Stop', turn='t1', last_assistant_message='The current task is complete. Another job awaits review.')
         self.assertEqual(result.get('decision'), 'block')
         self.assertIn('deterministic_obligations_pending', self.state()['decision_log'][-1]['reason_codes'])
@@ -209,7 +209,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
                     h.build_single_read_task()
                     state = h.state()
                     phase3.append_distinct_host_evidence(state)
-                    cg.save_state(h.root / 'private' / 'sessions' / 'p3', state)
+                    cg.save_state(h.root / 'private' / "sessions-v2" / 'p3', state)
                     self.assertEqual(h.dispatch('Stop', turn='t1', last_assistant_message=reply), {})
                     self.assertEqual(h.state()['requirements'][0]['status'], 'pending')
                     self.assertIsNone(h.state()['completion_checkpoint'])
@@ -239,7 +239,7 @@ class StopSubjectTests(phase3.OrdinaryTerminalCompletionTests):
                     h.build_single_read_task()
                     state = h.state()
                     phase3.append_distinct_host_evidence(state)
-                    cg.save_state(h.root / 'private' / 'sessions' / 'p3', state)
+                    cg.save_state(h.root / 'private' / "sessions-v2" / 'p3', state)
                     self.assertEqual(h.dispatch('Stop', turn='t1', last_assistant_message=reply).get('decision'), 'block')
                     self.assertIn('evidence_ambiguous', h.state()['decision_log'][-1]['reason_codes'])
                     self.assertEqual(h.dispatch('Stop', turn='t1', last_assistant_message=reply), {})

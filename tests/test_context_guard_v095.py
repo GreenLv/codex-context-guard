@@ -125,7 +125,7 @@ class V095WindowsSubjectTests(unittest.TestCase):
                     }
                 )
                 state = json.loads(
-                    (root / "private" / "sessions" / "session-phys" / "state.json")
+                    (root / "private" / "sessions-v2" / "session-phys" / "state.json")
                     .read_text(encoding="utf-8")
                 )
                 item = state["requirements"][0]
@@ -167,7 +167,7 @@ class V095WindowsSubjectTests(unittest.TestCase):
                     }
                 )
                 state = json.loads(
-                    (root / "private" / "sessions" / "session-plain" / "state.json")
+                    (root / "private" / "sessions-v2" / "session-plain" / "state.json")
                     .read_text(encoding="utf-8")
                 )
                 contract = state["requirements"][0]["verification_contract"]
@@ -309,7 +309,7 @@ class V095AutoProofTests(unittest.TestCase):
         return result
 
     def state(self, session: str = "session-a") -> dict:
-        path = self.root / "private" / "sessions" / session / "state.json"
+        path = self.root / "private" / "sessions-v2" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def prompt(self, text: str, session: str = "session-a") -> dict:

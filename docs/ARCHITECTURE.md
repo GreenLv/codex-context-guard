@@ -111,7 +111,7 @@ maintains private local task state, compiles a bounded recovery packet, and
 gates completion claims against successful, contract-compatible evidence. It does not replace or
 control Codex-native orchestration.
 
-## Event-scoped Stop evaluation reuse (0.14.3 candidate)
+## Event-scoped Stop evaluation reuse
 
 One Stop event evaluates through a single private, explicitly passed
 `EvaluationContext` whose lifetime is one stable state phase.
@@ -143,9 +143,31 @@ One Stop event evaluates through a single private, explicitly passed
   nothing is truncated, dropped or fabricated. Nothing is written to product
   state, no module-level cache exists, and no memo crosses events.
 
+## Session ownership and bounded storage (0.15.0 source candidate)
+
+New sessions use `sessions-v2`. Every stateful writer and cleanup operation
+acquires the same kernel lifecycle lock under `sessions-v2/.locks`, outside
+the deletable session subtree. Cleanup rechecks eligibility while holding
+that lock; resumed activity clears the retention timestamp. Process-local
+queuing and kernel acquisition share one deadline. Elapsed lock age is never
+proof that a writer has exited.
+
+Legacy `sessions` remain read-only to this runtime. There is no migration or
+legacy cleanup: continue an existing task with its original loaded runtime.
+`ended_at` is not an irreversible terminal state in legacy runtimes. A missing
+session query must not create a directory or lock. Ordinary tool execution
+remains approval-free; unverifiable completion and adopted release evidence
+remain fail-closed. See [compatibility](COMPATIBILITY.md).
+
+Event-local memo admission is capped at 8 MiB in aggregate, with a separate
+32 MiB projection cap. Keys, containers and retained snapshots count toward
+their budget; unknown graph sizes decline admission before copying. Rejected
+entries use the uncached evaluation path without changing its decision or
+source-consumption tracking. See [storage inventory](EVALUATION_STORAGE_NEXT.md).
+
 ## Responsibility boundary
 
-The unreleased 0.14.0 source candidate records schema-13 append sequence
+Since 0.14.0, the runtime records schema-13 append sequence
 numbers for root prompts and observed host calls/results. Stop 5.0.0 projects
 only current, source-bound work through the shared core v2 reference; wall
 clock timestamps and reply wording cannot backfill an earlier Stop. A mixed

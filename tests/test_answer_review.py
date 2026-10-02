@@ -133,7 +133,7 @@ class ConsumerTests(unittest.TestCase):
         item['payload']['thread_id'] = h.session_id
         h.rows.append(item)
         h.write_rows()
-        self.directory = h.root / 'private/sessions' / h.session_id
+        self.directory = h.root / 'private/sessions-v2' / h.session_id
         self.state = h.state()
         self.item = self.state['requirements'][-1]
         prepare_source = getattr(self, 'prepare_commentary_source', None)

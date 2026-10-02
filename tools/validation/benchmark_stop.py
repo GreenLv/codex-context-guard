@@ -177,7 +177,9 @@ def _run_hook_cli(data_dir: str, event: dict) -> dict:
     # process env points elsewhere): state intact, no residual lock, the
     # decision ledger grew, and the final decision binds this event's turn
     # with the expected outcome.
-    session_dir = Path(data_dir) / "sessions" / str(event.get("session_id"))
+    session_dir = (Path(data_dir) / "sessions-v2" / str(event.get("session_id")))
+    if not session_dir.is_dir():
+        session_dir = Path(data_dir) / "sessions" / str(event.get("session_id"))
     state_path = session_dir / "state.json"
     if not state_path.is_file():
         record["classification"] = "failed"

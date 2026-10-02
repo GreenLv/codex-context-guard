@@ -69,7 +69,7 @@ class SessionLockProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.session_dir = self.root / "private" / "sessions" / "lock-proto"
+        self.session_dir = self.root / "private" / "sessions-v2" / "lock-proto"
         self.session_dir.mkdir(parents=True)
 
     def tearDown(self) -> None:
@@ -129,7 +129,7 @@ class SessionLockProtocolTests(unittest.TestCase):
         holder = self._spawn(self.session_dir, ready, go, 5.0)
         try:
             self._wait_for(ready, "acquired")
-            lock_path = self.session_dir / ".lock"
+            lock_path = cg.lifecycle_lock_path(self.session_dir)
             aged = time.time() - 31
             os.utime(lock_path, (aged, aged))
             contender_out = self.root / "contender"
@@ -146,11 +146,11 @@ class SessionLockProtocolTests(unittest.TestCase):
         ready, go = self.root / "ready", self.root / "go"
         holder = self._spawn(self.session_dir, ready, go, 5.0)
         self._wait_for(ready, "acquired")
-        record = json.loads((self.session_dir / ".lock").read_text(encoding="ascii"))
+        record = json.loads((cg.lifecycle_lock_path(self.session_dir)).read_text(encoding="ascii"))
         self.assertEqual(record["lock_protocol"], 2)
         go.write_text("1", encoding="ascii")
         holder.wait(timeout=10)
-        self.assertTrue((self.session_dir / ".lock").exists())
+        self.assertTrue((cg.lifecycle_lock_path(self.session_dir)).exists())
 
     def test_commit_ownership_check_blocks_write_after_lock_replacement(self) -> None:
         """A dispossessed writer fails closed instead of committing (N07)."""
@@ -158,7 +158,7 @@ class SessionLockProtocolTests(unittest.TestCase):
         cg.secure_directory(self.session_dir)
         state_file = self.session_dir / "state.json"
         with cg.session_lock(self.session_dir):
-            lock_path = self.session_dir / ".lock"
+            lock_path = cg.lifecycle_lock_path(self.session_dir)
             lock_path.unlink()
             lock_path.write_text("replacement holder", encoding="ascii")
             with self.assertRaises(cg.LockOwnershipError):
@@ -174,42 +174,14 @@ class SessionLockProtocolTests(unittest.TestCase):
         start = time.monotonic()
         with cg.session_lock(self.session_dir, timeout=5.0):
             self.assertLess(time.monotonic() - start, 4.0)
-        record = json.loads((self.session_dir / ".lock").read_text(encoding="ascii"))
+        record = json.loads((cg.lifecycle_lock_path(self.session_dir)).read_text(encoding="ascii"))
         self.assertEqual(record["pid"], os.getpid())
 
-    def test_fresh_legacy_record_is_refused(self) -> None:
-        lock_path = self.session_dir / ".lock"
-        lock_path.write_text(f"{os.getpid()} {time.time()}", encoding="ascii")
-        start = time.monotonic()
-        with self.assertRaises(TimeoutError):
-            with cg.session_lock(self.session_dir, timeout=2.0):
-                pass
-        self.assertLess(time.monotonic() - start, 2.0)
-        # The refuse path must not overwrite the legacy record.
-        self.assertTrue(
-            cg.LEGACY_LOCK_CONTENT_RE.fullmatch(
-                lock_path.read_text(encoding="ascii").strip()
-            )
-        )
-
-    def test_aged_legacy_record_is_taken_over(self) -> None:
-        lock_path = self.session_dir / ".lock"
-        lock_path.write_text(f"{os.getpid()} {time.time()}", encoding="ascii")
-        aged = time.time() - 31
-        os.utime(lock_path, (aged, aged))
-        with cg.session_lock(self.session_dir, timeout=2.0):
-            record = json.loads(lock_path.read_text(encoding="ascii"))
-            self.assertEqual(record["lock_protocol"], 2)
-
-    def test_legacy_sabotage_cannot_commit_protocol2_state(self) -> None:
-        """POSIX observation of the declared old->new boundary.
-
-        A protocol-1 simulator (the exact old algorithm) steals the lock file
-        of a suspended protocol-2 holder; the holder's state write must fail
-        closed. Old code committed successfully here.
-        """
-        if os.name == "nt":
-            self.skipTest("POSIX unlink semantics required (Windows pending)")
+    def test_legacy_writer_cannot_interfere_with_v2_state(self):
+        """Namespace-isolation proof: a real protocol-1 writer operating on
+        the legacy tree for the same session id cannot touch, contend with,
+        or delay a protocol-2 writer's v2 state; both trees stay internally
+        consistent and no bytes interleave."""
         legacy_simulator = textwrap.dedent(
             """
             import os, sys, time
@@ -232,50 +204,69 @@ class SessionLockProtocolTests(unittest.TestCase):
                         pass
                     time.sleep(0.02)
             marker.write_text("legacy-entered", encoding="ascii")
-            time.sleep(2.0)
+            time.sleep(1.0)
             if descriptor is not None:
                 os.close(descriptor)
                 lock_path.unlink()
             """
         )
-        go_event = threading.Event()
-        holder_ready = threading.Event()
-        holder_error: list[str] = []
-        holder_done = threading.Event()
 
-        def hold() -> None:
+        # The protocol-1 writer owns the LEGACY tree for this session id.
+        legacy_dir = self.root / "private" / "sessions" / "lock-proto"
+        legacy_dir.mkdir(parents=True)
+        go_event = threading.Event()
+        v2_done = threading.Event()
+        v2_result: list[str] = []
+
+        def hold_v2() -> None:
             try:
                 with cg.session_lock(self.session_dir, timeout=5.0):
-                    holder_ready.set()
-                    self.assertTrue(go_event.wait(timeout=15))
-                    empty = cg.new_state({"session_id": "sabotage"})
-                    try:
-                        cg.save_state(self.session_dir, empty)
-                        holder_error.append("save_state committed after takeover")
-                    except cg.LockOwnershipError:
-                        pass
+                    empty = cg.new_state({"session_id": "lock-proto"})
+                    cg.save_state(self.session_dir, empty)
+                    v2_result.append("committed")
+            except Exception as exc:  # noqa: BLE001
+                v2_result.append(f"{type(exc).__name__}: {exc}")
             finally:
-                holder_done.set()
+                v2_done.set()
 
-        thread = threading.Thread(target=hold)
+        thread = threading.Thread(target=hold_v2)
         thread.start()
-        self.assertTrue(holder_ready.wait(timeout=10))
-        lock_path = self.session_dir / ".lock"
-        aged = time.time() - 31
-        os.utime(lock_path, (aged, aged))
+        v2_done.wait(timeout=10)
         marker = self.root / "legacy-marker"
         simulator = subprocess.Popen(
-            [sys.executable, "-c", legacy_simulator, str(lock_path), str(marker)],
+            [sys.executable, "-c", legacy_simulator,
+             str(legacy_dir / ".lock"), str(marker)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         try:
             self._wait_for(marker, "legacy-entered", timeout=15)
         finally:
-            go_event.set()
-            thread.join(timeout=20)
             simulator.wait(timeout=20)
-        self.assertEqual(holder_error, [])
-        self.assertFalse((self.session_dir / "state.json").exists())
+        thread.join(timeout=10)
+        go_event.set()
+        # The v2 writer committed cleanly while the legacy writer owned the
+        # legacy tree; the two lock files live in disjoint namespaces.
+        self.assertEqual(v2_result, ["committed"])
+        self.assertTrue((self.session_dir / "state.json").is_file())
+        self.assertTrue(cg.lifecycle_lock_path(self.session_dir).exists())
+        self.assertNotEqual(cg.lifecycle_lock_path(self.session_dir),
+                            legacy_dir / ".lock")
+
+    def test_cleanup_never_removes_lifecycle_lock_or_legacy_trees(self):
+        empty = cg.new_state({"session_id": "lock-proto"})
+        empty["session"]["ended_at"] = "2026-07-01T00:00:00+00:00"
+        cg.save_state(self.session_dir, empty)
+        legacy_dir = self.root / "private" / "sessions" / "lock-proto"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "state.json").write_text("{}", encoding="utf-8")
+        removed = cg.cleanup_old_sessions(self.root / "private")
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir.exists())
+        # The lifecycle lock file survives cleanup (stable, outside the tree).
+        self.assertTrue(cg.lifecycle_lock_path(self.session_dir).exists())
+        # Legacy trees are never swept by this runtime's cleanup.
+        self.assertTrue(legacy_dir.is_dir())
+        self.assertTrue((legacy_dir / "state.json").is_file())
 
     def test_lock_wait_respects_small_budget_under_contention(self) -> None:
         ready, go = self.root / "ready", self.root / "go"

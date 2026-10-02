@@ -72,7 +72,7 @@ class ContextGuardTests(unittest.TestCase):
         return result
 
     def state(self, session: str = "session-a") -> dict:
-        path = self.root / "private" / "sessions" / session / "state.json"
+        path = self.root / "private" / "sessions-v2" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def execution_manifest(self, plan_sha256: str | None = None) -> dict:
@@ -173,7 +173,7 @@ class ContextGuardTests(unittest.TestCase):
         return result
 
     def test_find_latest_state_ignores_empty_session_directory(self) -> None:
-        empty = self.root / "private" / "sessions" / "empty"
+        empty = self.root / "private" / "sessions-v2" / "empty"
         empty.mkdir(parents=True)
         self.assertIsNone(cg.find_latest_state(self.root / "private"))
 
@@ -181,7 +181,7 @@ class ContextGuardTests(unittest.TestCase):
         self,
     ) -> None:
         self.prompt("simple prompt", session="session-a")
-        empty = self.root / "private" / "sessions" / "newer-empty"
+        empty = self.root / "private" / "sessions-v2" / "newer-empty"
         empty.mkdir(parents=True)
         latest = cg.find_latest_state(self.root / "private")
         self.assertIsNotNone(latest)
@@ -189,7 +189,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(latest[0].name, "session-a")
 
     def test_status_cli_handles_only_empty_session_directories(self) -> None:
-        empty = self.root / "private" / "sessions" / "empty"
+        empty = self.root / "private" / "sessions-v2" / "empty"
         empty.mkdir(parents=True)
         result = subprocess.run(
             [sys.executable, str(MODULE_PATH), "status"],
@@ -222,7 +222,7 @@ class ContextGuardTests(unittest.TestCase):
 
     def hook_session_state(self, session: str) -> dict:
         state_path = (
-            self.root / "hook-cli" / session / "sessions" / session / "state.json"
+            self.root / "hook-cli" / session / "sessions-v2" / session / "state.json"
         )
         return json.loads(state_path.read_text(encoding="utf-8"))
 
@@ -240,7 +240,7 @@ class ContextGuardTests(unittest.TestCase):
         stderr = result.stderr.decode("utf-8", "replace")
         self.assertEqual(result.returncode, 0, stderr)
         self.assertEqual(stderr, "")
-        session_dir = self.root / "hook-cli" / "utf8-stdin" / "sessions" / "utf8-stdin"
+        session_dir = self.root / "hook-cli" / "utf8-stdin" / "sessions-v2" / "utf8-stdin"
         state = self.hook_session_state("utf8-stdin")
         self.assertTrue(state["mode"]["active"])
         record = json.loads(
@@ -290,7 +290,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, stderr)
         self.assertIn("not valid UTF-8", result.stdout.decode("utf-8", "replace"))
         self.assertEqual(stderr, "")
-        session_dir = self.root / "hook-cli" / "bad-bytes" / "sessions" / "bad-bytes"
+        session_dir = self.root / "hook-cli" / "bad-bytes" / "sessions-v2" / "bad-bytes"
         self.assertFalse(session_dir.exists())
 
     def record_tool(
@@ -519,7 +519,7 @@ class ContextGuardTests(unittest.TestCase):
 
     def test_schema7_is_read_only_compatibility_input_and_upgrades(self) -> None:
         self.prompt("实现复杂系统并验证。")
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         legacy = self.state()
         legacy.pop("adapter_manifest")
         legacy.pop("classifier_metadata")
@@ -841,7 +841,7 @@ class ContextGuardTests(unittest.TestCase):
             (
                 self.root
                 / "private"
-                / "sessions"
+                / "sessions-v2"
                 / "session-a"
                 / metadata["file"]
             ).read_text(encoding="utf-8")
@@ -928,7 +928,7 @@ class ContextGuardTests(unittest.TestCase):
             self.payload("PreCompact", trigger="manual", transcript_path="/diagnostic")
         )
         self.assertTrue(result["continue"])
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         self.assertTrue((session_dir / "recovery.json").exists())
         restored = cg.dispatch(self.payload("SessionStart", source="compact"))
         packet = restored["hookSpecificOutput"]["additionalContext"]
@@ -967,7 +967,7 @@ class ContextGuardTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         state["completion_attempt"] = None
         state["session"]["transcript_path"] = str(transcript)
@@ -1000,7 +1000,7 @@ class ContextGuardTests(unittest.TestCase):
             + "\n",
             encoding="utf-8",
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         state["completion_attempt"] = None
         state["session"]["transcript_path"] = str(transcript)
@@ -1027,7 +1027,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt("context-guard off")
         result = cg.dispatch(self.payload("PreCompact", trigger="manual"))
         self.assertTrue(result["continue"])
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         self.assertFalse((session_dir / "recovery.json").exists())
         state = self.state()
         self.assertFalse(state["mode"]["active"])
@@ -1776,7 +1776,7 @@ class ContextGuardTests(unittest.TestCase):
 
     def test_checkpoint_status_is_compact_and_revision_stable_with_many_items(self) -> None:
         self.prompt("实现大规模验收。必须保存证据。")
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         active = state["work_state"]["active_work_unit_id"]
         template = state["acceptance_items"][0]
@@ -1904,7 +1904,7 @@ class ContextGuardTests(unittest.TestCase):
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         evidence_id = self.record_tool()
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         state["completion_attempt"]["staged_control"] = {
             "kind": "checkpoint",
@@ -1930,7 +1930,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         state["completion_attempt"]["staged_control"] = {
             "kind": "checkpoint",
@@ -2652,7 +2652,7 @@ class ContextGuardTests(unittest.TestCase):
             state = self.state()
             state["continuation_attempts"] = 0
             cg.save_state(
-                self.root / "private" / "sessions" / "session-a", state
+                self.root / "private" / "sessions-v2" / "session-a", state
             )
         state = self.state()
         self.assertEqual(len(state["decision_log"]), cg.DECISION_LOG_LIMIT)
@@ -2690,7 +2690,7 @@ class ContextGuardTests(unittest.TestCase):
             "pushing, and running CI."
         )
         self.prompt(prompt)
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         record_path = session_dir / "prompts" / "P0001.json"
         record = json.loads(record_path.read_text(encoding="utf-8"))
         record["text"] = "$context-guard\nReview the local checkpoint only."
@@ -2764,7 +2764,7 @@ class ContextGuardTests(unittest.TestCase):
             + secret
             + " 且 URL https://example.test/path?token=visible-secret&benign=value。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         target = cg.export_handoff(session_dir, state, "handoff/CONTEXT_HANDOFF.md")
         content = target.read_text(encoding="utf-8")
@@ -2806,7 +2806,7 @@ class ContextGuardTests(unittest.TestCase):
                 }
             ],
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
 
         output = cg.export_successor_pack(
@@ -2850,7 +2850,7 @@ class ContextGuardTests(unittest.TestCase):
                 }
             ]
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         with self.assertRaisesRegex(ValueError, "inside the current project"):
             cg.export_successor_pack(session_dir, state, "handoff/escape")
@@ -2875,7 +2875,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂插件。必须显式准备交接输入，且不得自动创建或退役任务。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         with self.assertRaisesRegex(ValueError, "missing successor input"):
             cg.export_successor_pack(session_dir, self.state())
 
@@ -2890,7 +2890,7 @@ class ContextGuardTests(unittest.TestCase):
             input_path.symlink_to(outside)
         except OSError:
             self.skipTest("symlinks unavailable")
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
 
         with self.assertRaisesRegex(ValueError, "must not be a symlink"):
             cg.export_successor_pack(session_dir, self.state())
@@ -2918,7 +2918,7 @@ class ContextGuardTests(unittest.TestCase):
                 }
             ]
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         with (
             mock.patch.object(cg, "MAX_SUCCESSOR_FULL_READ_BYTES", 16),
             mock.patch.object(cg, "inspect_regular_file") as inspect,
@@ -2944,20 +2944,20 @@ class ContextGuardTests(unittest.TestCase):
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
 
         with self.assertRaisesRegex(ValueError, "unknown IDs"):
             cg.export_successor_pack(session_dir, self.state())
 
     def test_cleanup_removes_only_old_ended_session(self) -> None:
-        old_dir = self.root / "private" / "sessions" / "old-session"
+        old_dir = self.root / "private" / "sessions-v2" / "old-session"
         old_dir.mkdir(parents=True)
         old = cg.new_state(self.payload("SessionEnd", session="old-session"))
         old["session"]["ended_at"] = (
             dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=31)
         ).isoformat()
         cg.save_state(old_dir, old)
-        active_dir = self.root / "private" / "sessions" / "active-session"
+        active_dir = self.root / "private" / "sessions-v2" / "active-session"
         active_dir.mkdir()
         active = cg.new_state(self.payload("UserPromptSubmit", session="active-session"))
         cg.save_state(active_dir, active)
@@ -2974,7 +2974,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(result, {})
         state = self.state()
         self.assertIsNotNone(state["session"]["ended_at"])
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         recovery = json.loads(
             (session_dir / "recovery.json").read_text(encoding="utf-8")
         )
@@ -2995,10 +2995,10 @@ class ContextGuardTests(unittest.TestCase):
             len({item["id"] for item in state["prompts"]}), 20
         )
 
-    def test_process_queue_wait_does_not_consume_filesystem_lock_timeout(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "queued-session"
+    def test_process_queue_wait_and_filesystem_share_total_timeout(self) -> None:
+        session_dir = self.root / "private" / "sessions-v2" / "queued-session"
         session_dir.mkdir(parents=True)
-        lock_path = session_dir / ".lock"
+        lock_path = cg.lifecycle_lock_path(session_dir)
         local_lock = cg.process_session_lock(lock_path)
         waiter_started = threading.Event()
         waiter_acquired = threading.Event()
@@ -3025,9 +3025,9 @@ class ContextGuardTests(unittest.TestCase):
         self.assertTrue(lock_path.exists())
 
     def test_session_lock_bounded_queue_wait_fails_closed(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "queue-timeout-session"
+        session_dir = self.root / "private" / "sessions-v2" / "queue-timeout-session"
         session_dir.mkdir(parents=True)
-        lock_path = session_dir / ".lock"
+        lock_path = cg.lifecycle_lock_path(session_dir)
         local_lock = cg.process_session_lock(lock_path)
         waiter_started = threading.Event()
         failure: list[str] = []
@@ -3053,9 +3053,10 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(failure, ["timeout"])
 
     def test_session_lock_accepts_unknown_lock_file_content(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "lock-foreign-session"
+        session_dir = self.root / "private" / "sessions-v2" / "lock-foreign-session"
         session_dir.mkdir(parents=True)
-        lock_path = session_dir / ".lock"
+        lock_path = cg.lifecycle_lock_path(session_dir)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("other holder", encoding="ascii")
         with cg.session_lock(session_dir):
             # The kernel lock is authoritative; the advisory owner record is
@@ -3064,7 +3065,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertTrue(lock_path.exists())
 
     def test_session_lock_rejects_unrelated_posix_permission_error(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "lock-error-session"
+        session_dir = self.root / "private" / "sessions-v2" / "lock-error-session"
         session_dir.mkdir(parents=True)
 
         with (
@@ -3084,7 +3085,7 @@ class ContextGuardTests(unittest.TestCase):
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         self.record_tool()
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         legacy = self.state()
         legacy["schema_version"] = 1
         legacy.pop("evidence_sequence")
@@ -3113,7 +3114,7 @@ class ContextGuardTests(unittest.TestCase):
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         self.record_tool()
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         legacy = self.state()
         legacy["schema_version"] = 2
         legacy.pop("work_state")
@@ -3155,7 +3156,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         legacy = self.state()
         legacy["schema_version"] = 3
         legacy.pop("decision_log")
@@ -3194,7 +3195,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         legacy = self.state()
         legacy["schema_version"] = 4
         legacy["completion_attempt"] = {
@@ -3241,7 +3242,7 @@ class ContextGuardTests(unittest.TestCase):
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         evidence_id = self.record_tool()
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         previous = self.state()
         previous["completion_attempt"]["protocol_version"] = "1.1.0"
         previous["completion_attempt"]["staged_control"] = (
@@ -3276,7 +3277,7 @@ class ContextGuardTests(unittest.TestCase):
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
         evidence_id = self.record_tool()
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         current = self.state()
         schema6 = cg.project_state_to_schema6(current)
         original_requirements = json.loads(json.dumps(schema6["requirements"]))
@@ -3315,7 +3316,7 @@ class ContextGuardTests(unittest.TestCase):
 
     def test_schema8_migrates_to_schema9_work_unit_and_execution_protocol(self) -> None:
         self.prompt("实现复杂系统并测试。")
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         legacy = self.state()
         legacy["schema_version"] = 8
         legacy.pop("work_units")
@@ -4447,7 +4448,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertEqual(execution["drift"][0]["state"], "detected")
         self.assertEqual(execution["action_tickets"], [])
         packet = cg.recovery_packet(
-            self.root / "private" / "sessions" / "session-a", state
+            self.root / "private" / "sessions-v2" / "session-a", state
         )
         self.assertIn("Execution contract recovery state", packet)
         self.assertIn("drift-1", packet)
@@ -4562,7 +4563,7 @@ class ContextGuardTests(unittest.TestCase):
     def test_invalid_schema7_execution_ledger_recovers_from_prompts(self) -> None:
         original = "实现复杂系统。必须保留原始需求，必须验证 schema 7 损坏恢复。"
         self.prompt(original)
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         invalid = self.state()
         invalid["execution"]["coverage_manifest"]["content"] = "copied private contract"
         invalid["content_hash"] = cg.state_content_hash(invalid)
@@ -4615,7 +4616,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         stale = self.state()
         stale["open_items"] = []
         stale["content_hash"] = cg.state_content_hash(stale)
@@ -4636,7 +4637,7 @@ class ContextGuardTests(unittest.TestCase):
     def test_tampered_state_recovers_from_immutable_prompts(self) -> None:
         original = "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         self.prompt(original)
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         tampered = self.state()
         tampered["requirements"][0]["text"] = "silently weakened requirement"
         cg.atomic_write_json(session_dir / "state.json", tampered)
@@ -4655,7 +4656,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保护用户权限，必须验证提示来源，且不得静默降权。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         prompt_path = next((session_dir / "prompts").glob("*.json"))
         record = json.loads(prompt_path.read_text(encoding="utf-8"))
         record["origin"] = "subagent_delegation"
@@ -4667,7 +4668,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保留初始边界，必须运行测试，且不得扩大范围。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         (session_dir / "state.json").write_text("{", encoding="utf-8")
 
         cg.dispatch(self.payload("PreCompact", trigger="manual"))
@@ -4681,7 +4682,7 @@ class ContextGuardTests(unittest.TestCase):
     def test_missing_state_recovers_from_existing_prompt_ledger(self) -> None:
         original = "实现复杂系统。必须保留原始边界，必须验证缺失状态恢复，且不得静默重置。"
         self.prompt(original)
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         (session_dir / "state.json").unlink()
 
         restored = cg.dispatch(self.payload("SessionStart", source="resume"))
@@ -4698,7 +4699,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         prompt_path = next((session_dir / "prompts").glob("*.json"))
         (session_dir / "state.json").write_text("{", encoding="utf-8")
         prompt_path.write_text("{}", encoding="utf-8")
@@ -4715,7 +4716,7 @@ class ContextGuardTests(unittest.TestCase):
     def test_failed_integrity_retries_after_prompt_ledger_repair(self) -> None:
         original = "实现复杂系统。必须保留初始需求，必须允许修复后恢复，且不得静默放行。"
         self.prompt(original)
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         prompt_path = next((session_dir / "prompts").glob("*.json"))
         prompt_record = prompt_path.read_text(encoding="utf-8")
         prompt_path.write_text("{}", encoding="utf-8")
@@ -4743,7 +4744,7 @@ class ContextGuardTests(unittest.TestCase):
         self.prompt(
             "实现复杂系统。必须保存边界，必须测试恢复，且不得静默放行。"
         )
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         unsupported = self.state()
         unsupported["schema_version"] = 999
         unsupported["content_hash"] = cg.state_content_hash(unsupported)
@@ -5712,7 +5713,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertNotIn("secret-space", serialized)
         self.assertNotIn("secret-equals", serialized)
 
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         exported = cg.export_handoff(
             session_dir,
             state,
@@ -6124,7 +6125,7 @@ class ContextGuardTests(unittest.TestCase):
             self.state()["work_state"]["plan_snapshot"]["sha256"], first_hash
         )
         packet = cg.recovery_packet(
-            self.root / "private" / "sessions" / "session-a",
+            self.root / "private" / "sessions-v2" / "session-a",
             self.state(),
         )
         self.assertIn("Latest Codex plan mirror", packet)
@@ -6349,7 +6350,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertTrue(record["transcript_available"])
         self.assertNotIn("transcript.jsonl", json.dumps(record))
         packet = cg.recovery_packet(
-            self.root / "private" / "sessions" / "session-a",
+            self.root / "private" / "sessions-v2" / "session-a",
             self.state(),
         )
         self.assertIn("Bounded subagent coordination state", packet)
@@ -6612,7 +6613,7 @@ class ContextGuardTests(unittest.TestCase):
         self.assertGreaterEqual(lines[-1]["elapsed_ms"], 0)
         self.assertNotIn("private input sentinel", raw)
         self.assertNotIn(str(self.root), raw)
-        state = json.loads((private / "sessions" / "trace-session" / "state.json")
+        state = json.loads((private / "sessions-v2" / "trace-session" / "state.json")
                            .read_text(encoding="utf-8"))
         self.assertIsNotNone(state["session"]["ended_at"])
 
@@ -6954,7 +6955,7 @@ class ContextGuardTests(unittest.TestCase):
         state = json.loads(
             (
                 private_root
-                / "sessions"
+                / "sessions-v2"
                 / "surrogate-session"
                 / "state.json"
             ).read_text(encoding="utf-8")
@@ -6964,7 +6965,7 @@ class ContextGuardTests(unittest.TestCase):
         record = json.loads(
             (
                 private_root
-                / "sessions"
+                / "sessions-v2"
                 / "surrogate-session"
                 / metadata["file"]
             ).read_text(encoding="utf-8")
@@ -7025,7 +7026,7 @@ class ContextGuardTests(unittest.TestCase):
             (
                 self.root
                 / "powershell-private"
-                / "sessions"
+                / "sessions-v2"
                 / "powershell-windows-session"
                 / "state.json"
             ).is_file()
@@ -7224,7 +7225,7 @@ class ContextGuardTests(unittest.TestCase):
         cg.dispatch(self.payload("PreCompact", transcript_path=str(transcript), trigger="manual"))
         state = self.state()
         state["session"]["transcript_path"] = str(self.root / "missing.jsonl")
-        cg.save_state(self.root / "private" / "sessions" / "session-a", state)
+        cg.save_state(self.root / "private" / "sessions-v2" / "session-a", state)
         cg.dispatch(self.payload("SessionStart", source="resume"))
         self.assertEqual(
             self.state()["requirements"][0]["verification_contract"]["mode"],
@@ -7274,7 +7275,7 @@ class ContextGuardTests(unittest.TestCase):
             self.assertEqual(scan.call_count, 2)
 
     def test_recovery_budget_always_preserves_completion_rule(self) -> None:
-        session_dir = self.root / "private" / "sessions" / "recovery-budget"
+        session_dir = self.root / "private" / "sessions-v2" / "recovery-budget"
         state = cg.new_state(self.payload("UserPromptSubmit", session="recovery-budget"))
         state["mode"]["active"] = True
         # One continuous ACTIVE unit owns the whole current set (plan 3.3:
@@ -7380,7 +7381,7 @@ class ContextGuardTests(unittest.TestCase):
             },
         )
         fact_id = input_proof["visual_facts"][0]["id"]
-        session_dir = self.root / "private" / "sessions" / "session-a"
+        session_dir = self.root / "private" / "sessions-v2" / "session-a"
         state = self.state()
         for normalized in [input_proof]:
             state["proof_sequence"] += 1

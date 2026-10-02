@@ -209,7 +209,7 @@ class Phase4Harness(unittest.TestCase):
         )
 
     def state(self, session: str = "p4") -> dict:
-        path = self.root / "private" / "sessions" / session / "state.json"
+        path = self.root / "private" / "sessions-v2" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def unit_record(self, session: str = "p4") -> dict:
@@ -2966,12 +2966,12 @@ class RunnerEnvelopeBoundaryTests(Phase4Harness):
             "tool_input": {"command": 'echo "oops'},
         })
         self.assertEqual(result, {})
-        sessions = self.root / "private" / "sessions"
+        sessions = self.root / "private" / "sessions-v2"
         self.assertFalse(sessions.exists(), "session state created for generic ambiguity")
 
     def test_generic_ambiguity_does_not_wait_for_a_held_lock(self) -> None:
         self.activate()
-        session_dir = self.data_dir / "sessions" / "held"
+        session_dir = self.data_dir / "sessions-v2" / "held"
         with cg.filesystem_session_lock(session_dir, 30):
             started = time.monotonic()
             result = cg.dispatch({
@@ -3074,7 +3074,7 @@ class ObserveNoSideEffectTests(Phase4Harness):
         return state
 
     def _release_session(self) -> Path:
-        session_dir = self.root / "private" / "sessions" / "obs"
+        session_dir = self.root / "private" / "sessions-v2" / "obs"
         session_dir.mkdir(parents=True, exist_ok=True)
         return session_dir
 

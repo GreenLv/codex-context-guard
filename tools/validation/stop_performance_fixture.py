@@ -179,7 +179,11 @@ def build_session(
                           tool_input={"cmd": f"echo step-{i}", "shell": "bash"},
                           tool_response={"exit_code": 0, "output": f"ok-{i}"}))
 
-    directory = Path(tmp) / "sessions" / session
+    # Dispatches land in sessions-v2 for genuinely new sessions; resolve the
+    # built session through the same namespace rules the runtime applies.
+    directory = (Path(tmp) / "sessions-v2" / session
+                 if (Path(tmp) / "sessions-v2" / session).is_dir()
+                 else Path(tmp) / "sessions" / session)
     state = cg.load_state(directory, event("Stop", "t1"))
     projection = cg.current_scope_projection(state, session_dir=directory)
     source_bytes = 0

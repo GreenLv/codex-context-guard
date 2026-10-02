@@ -1,5 +1,22 @@
 # Compatibility and Verification Status
 
+## 0.15.0 — Unreleased source candidate
+
+New sessions use `sessions-v2`; existing `sessions` trees stay with their
+original runtime and are read-only to the candidate. No migration or legacy
+cleanup is supported. A recorded SessionEnd does not prevent later writes.
+Do not resume an old task through the candidate expecting automatic import.
+Keep its original cache and session data; confirm the actual loaded Hook
+path and source identity before continuing under the original runtime.
+Cache preservation alone is disk evidence, not a host continuation proof.
+Ordinary tools retain their approval-free path; unverifiable adopted release
+state and completion cannot be certified. Read surfaces can inspect both
+namespaces. Lifecycle locks live outside deletable v2 session subtrees.
+Native old-task continuation, Windows kernel-lock behavior, candidate install,
+GPT-6 and publication remain separate pending gates until observed.
+See [the approved subdesign](LOCK_SUBDESIGN_NEXT.md).
+
+
 The `commentary_chain/v1` and `commentary_control_chain/v1` native-acceptance
 profiles are separate from portable runtime checks and the existing six-gate
 `host_behavior` profile. Their scoped results reuse installed 0.14.2 runtime

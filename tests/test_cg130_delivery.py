@@ -192,7 +192,7 @@ class DeliveryLifecycleHarness(unittest.TestCase):
 
     def state(self):
         return self.cg.load_state(
-            self.data_dir / "private" / "sessions" / "delivery-suite",
+            self.data_dir / "private" / "sessions-v2" / "delivery-suite",
             self.payload("Stop"),
         )
 

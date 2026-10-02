@@ -34,7 +34,7 @@ class ReviewR1Tests(unittest.TestCase):
             h.write_file(target, 'def test_ok(): assert True\n')
             h.start(f'请测试 {target}。')
             self.assertIsNone(cg._root_control_item_action(h.state()['requirements'][0]))
-            directory = h.root / 'private/sessions' / h.session_id
+            directory = h.root / 'private/sessions-v2' / h.session_id
             self.assertEqual(cg.current_core_projections(h.state(), directory), [])
         self.assertIsNotNone(cg._root_control_item_action({'text': '请测试 "/work/suite.py并提交修改"。'}))
 
@@ -45,7 +45,7 @@ class ReviewR1Tests(unittest.TestCase):
         h.start(f'请运行 {h.root_target(target)} 的测试并持续执行直到任务完成。')
         command = (f"Test-Path -LiteralPath '{target}' -PathType Leaf" if wire.os.name == 'nt' else f"test -f '{target}'")
         h.command('ready', command, stdout='True\r\n' if wire.os.name == 'nt' else '')
-        directory = h.root / 'private/sessions' / h.session_id
+        directory = h.root / 'private/sessions-v2' / h.session_id
         h.start('暂停当前任务。')
         view = cg.current_feedback_view(h.state(), directory)
         self.assertEqual(next(i for i in view['items'] if i['id']=='R001')['business_state'], 'waiting')
@@ -61,7 +61,7 @@ class ReviewR1Tests(unittest.TestCase):
         h.patch('patch', target, 'before\n', 'after\n')
         h.readback('read', target, 'after\n')
         h.start('暂停当前任务。')
-        directory = h.root / 'private/sessions' / h.session_id
+        directory = h.root / 'private/sessions-v2' / h.session_id
         view = cg.current_feedback_view(h.state(), directory)
         observed = [r for r in view['items'] if r['business_state']=='observed']
         self.assertTrue(observed)

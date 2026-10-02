@@ -44,6 +44,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_FILE = ROOT / "tests" / "test_context_guard_012_baseline.py"
@@ -237,7 +238,12 @@ def main() -> int:
     import tests.test_context_guard_012_baseline as baseline  # noqa: E402
 
     suite = unittest.TestLoader().loadTestsFromModule(baseline)
-    result = unittest.TextTestRunner(verbosity=0, stream=sys.stderr).run(suite)
+    # Frozen fixtures hard-code their synthetic data root's sessions/ path.
+    # Relocate only this imported test runtime's namespace, not production
+    # routing, files or fixture bytes. This retains the semantic manifest;
+    # actual dual-namespace refusal/cleanup is covered by test_session_namespace.
+    with patch.object(baseline.cg, "V2_NAMESPACE", "sessions"):
+        result = unittest.TextTestRunner(verbosity=0, stream=sys.stderr).run(suite)
 
     observed_fixed = sorted(short_id(test) for test in result.unexpectedSuccesses)
     observed_remaining = sorted(short_id(test) for test, _ in result.expectedFailures)
@@ -313,6 +319,7 @@ def main() -> int:
 
     report = {
         "baseline_sha256": digest,
+        "harness_namespace_adapter": "frozen synthetic sessions path; production namespace tested separately",
         "tests": result.testsRun,
         "fixed_targets": observed_fixed,
         "remaining_expected_failures": observed_remaining,

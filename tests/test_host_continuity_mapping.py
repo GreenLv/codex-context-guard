@@ -506,7 +506,7 @@ class ContinuityMappingTests(unittest.TestCase):
         guard = load("continuity_state_guard", ROOT / "scripts/context_guard.py")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
-            session_dir = root / "sessions" / "state-session"
+            session_dir = root / "sessions-v2" / "state-session"
             session_dir.mkdir(parents=True)
             state = guard.new_state({"session_id": "state-session", "cwd": str(root)})
             state["mode"]["active"] = True
@@ -520,7 +520,7 @@ class ContinuityMappingTests(unittest.TestCase):
             self.assertEqual(value["kind"], "state")
             self.assertNotIn("CONTEXT-GUARD RECOVERY PACKET", json.dumps(value))
             inventory = root / "witness" / "inventory.json"
-            observed = STATE.capture_inventory(root / "sessions", inventory,
+            observed = STATE.capture_inventory(root / "sessions-v2", inventory,
                                                ROOT, setup_hash)
             self.assertEqual(observed["facts"]["session_ids"], ["state-session"])
             self.assertIsNone(observed["facts"]["ended_at"]["state-session"])
@@ -538,7 +538,7 @@ class ContinuityMappingTests(unittest.TestCase):
                 path.unlink()
             workspace = fixture.root / "workspace"
             workspace.mkdir()
-            sessions = fixture.root / "private" / "sessions"
+            sessions = fixture.root / "private" / "sessions-v2"
             expired_dir = sessions / fixture.expired
             expired = guard.new_state({"session_id": fixture.expired, "cwd": str(workspace)})
             expired["session"]["ended_at"] = "2026-07-01T00:00:00+00:00"

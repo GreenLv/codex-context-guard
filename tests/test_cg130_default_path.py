@@ -87,7 +87,7 @@ class DefaultPathHarness(unittest.TestCase):
 
     def state(self):
         return self.cg.load_state(
-            self.data_dir / "private" / "sessions" / "default-path-suite",
+            self.data_dir / "private" / "sessions-v2" / "default-path-suite",
             self.payload("Stop"),
         )
 
@@ -98,7 +98,7 @@ class Report3SequenceTests(DefaultPathHarness):
     def test_full_default_pre_hook_never_loads_locks_or_repairs_state(self) -> None:
         for profile in ("on", "strict"):
             self.dispatch("UserPromptSubmit", prompt=f"context-guard {profile}")
-            session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+            session_dir = self.data_dir / "private" / "sessions-v2" / "default-path-suite"
             for corrupt in (False, True):
                 if corrupt:
                     (session_dir / "state.json").write_text("{broken", encoding="utf-8")
@@ -319,7 +319,7 @@ class ReleaseIsolationTests(DefaultPathHarness):
 
     def test_release_posture_survives_unreadable_state_and_internal_failure(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard release")
-        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        session_dir = self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         (session_dir / "state.json").write_text("{broken", encoding="utf-8")
         for command in ("git tag v1.2.3", "echo v1.2.3 | xargs git tag"):
             payload = self.payload("PreToolUse", tool_name="shell", tool_input={"command": command})
@@ -330,7 +330,7 @@ class ReleaseIsolationTests(DefaultPathHarness):
     def test_damaged_release_state_does_not_gate_ordinary_followon_work(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard release")
         state = self.state()
-        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        session_dir = self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         (session_dir / "state.json").write_text("{broken", encoding="utf-8")
         before = {p.name: p.read_bytes() for p in session_dir.iterdir() if p.is_file()}
         for command in (
@@ -356,7 +356,7 @@ class ReleaseIsolationTests(DefaultPathHarness):
     def test_damaged_release_state_still_gates_publication_and_envelopes(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard release")
         state = self.state()
-        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        session_dir = self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         (session_dir / "state.json").write_text("{broken", encoding="utf-8")
         for command in (
             "git tag v1.2.3", "git push origin v1.2.3", "npm publish package.tgz",
@@ -415,7 +415,7 @@ class ReleaseIsolationTests(DefaultPathHarness):
 
     def test_unknown_legacy_posture_blocks_publication_only(self) -> None:
         self.dispatch("UserPromptSubmit", prompt="context-guard release")
-        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        session_dir = self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         (session_dir / "release-required").unlink()
         (session_dir / "action-profile.json").unlink()
         (session_dir / "state.json").write_text("{broken", encoding="utf-8")
@@ -432,7 +432,7 @@ class ReleaseIsolationTests(DefaultPathHarness):
         state = self.state()
         state["execution"]["contract"]["state"] = "candidate"
         state["content_hash"] = self.cg.state_content_hash(state)
-        session_dir = self.data_dir / "private" / "sessions" / "default-path-suite"
+        session_dir = self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         self.cg.atomic_write_json(session_dir / "state.json", state)
         result = self.dispatch(
             "PreToolUse", turn="t1",
@@ -473,7 +473,7 @@ class Schema12MigrationTests(DefaultPathHarness):
             unit["protocol_version"] = "2.0.0"
         state["content_hash"] = self.cg.state_content_hash(state)
         session_dir = (
-            self.data_dir / "private" / "sessions" / "default-path-suite"
+            self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         )
         self.cg.atomic_write_json(session_dir / "state.json", state)
         return state
@@ -525,7 +525,7 @@ class Schema12MigrationTests(DefaultPathHarness):
             unit["protocol_version"] = "2.0.0"
         state["content_hash"] = self.cg.state_content_hash(state)
         session_dir = (
-            self.data_dir / "private" / "sessions" / "default-path-suite"
+            self.data_dir / "private" / "sessions-v2" / "default-path-suite"
         )
         self.cg.atomic_write_json(session_dir / "state.json", state)
 
@@ -537,7 +537,7 @@ class Schema12MigrationTests(DefaultPathHarness):
         # The recovery packet annotates the uncertainty instead of
         # demanding a mechanical re-answer.
         packet = self.cg.recovery_packet(
-            self.data_dir / "private" / "sessions" / "default-path-suite",
+            self.data_dir / "private" / "sessions-v2" / "default-path-suite",
             migrated,
         )
         self.assertIn("historical answer-delivery uncertain", packet)

@@ -1,5 +1,20 @@
 # Versioning policy
 
+## 0.15.0 — Unreleased source candidate
+
+This minor version changes the session-storage and upgrade contract. New sessions
+use `sessions-v2` and stable kernel lifecycle locks outside deletable session
+subtrees. Legacy `sessions` remain with their original runtime; the new runtime
+reads them without repair and refuses writes. No migration or legacy cleanup is
+provided. Retain consumed caches and verify actual host continuation before
+upgrading existing tasks. A SessionEnd timestamp is not a terminal-state fence.
+
+Schema 13, Stop 5.0.0 and the nine Hook events remain unchanged. Runtime,
+installer parity and native acceptance must bind the new runtime digest; earlier
+0.14.3 acceptance cannot certify these bytes. Same-process lazy delegation,
+bounded event-local caches and `checkpoint-status --commands` are observable
+runtime changes. The default standard/strict path still adds no execution approval.
+
 ## Commentary native replay profile candidate
 
 The repository-owned `native-acceptance/v2` result schema now permits the

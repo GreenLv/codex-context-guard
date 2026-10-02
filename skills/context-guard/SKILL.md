@@ -1,15 +1,13 @@
 ---
 name: context-guard
-description: Preserve task requirements and verified evidence across Codex compaction, resume, and subagent results. Enable with $context-guard or context-guard on, or for long, complex, or resumed tasks whose completion must be checked against an immutable private ledger.
+description: Preserve requirements and verified evidence across Codex compaction, resume, and delegation. Use $context-guard, context-guard on, or for long, complex, or resumed tasks requiring an immutable private completion ledger.
 ---
 
 # Context Guard
 
-A private requirement ledger and verified evidence keep long tasks correct.
-Codex owns Plan, Goal, compaction, subagents, permissions, and memories; this
-Skill replaces none of them.
+Codex retains Plan, Goal, compaction, subagents, permissions, and memories.
 
-## Keep the current work unit closed correctly
+## Completion scope
 
 - An injected recovery packet is the authoritative recovery index. Keep
   requirement and acceptance IDs in private planning. Later root-user
@@ -28,7 +26,7 @@ Skill replaces none of them.
 - The recovered Codex plan is a read-only mirror (update it through Codex
   tools); memories are recall, not authority.
 
-## End ordinary turns normally
+## Ordinary turns
 
 Ordinary verifiable completion binds unique successful evidence
 automatically — no commands. Progress, clarification, status, and valid
@@ -46,7 +44,7 @@ turn-bound status command (append `--commands`) discovers the exact staging
 and proof commands; do not invoke them merely because this Skill loaded. A
 visual tool's successful return alone proves no visual fact.
 
-## Authority stays with the user and the host
+## User and host authority
 
 The executing agent reads the real conversation, repository rules, and host
 permissions, and proceeds without re-asking when the user already authorized
@@ -59,8 +57,7 @@ A root-user request to push authorizes that ordinary push, not force-push,
 branch deletion, or publication. Cleanup does not silently become product
 implementation; stated user restrictions remain recoverable requirements.
 
-For release tickets, profile details, adoption, exports, and rollover
-requests, read
+For release tickets, profiles, adoption, exports, and rollover, read
 [authority-and-controls.md](references/authority-and-controls.md).
 
 ## Delegated results, side answers, controls, privacy

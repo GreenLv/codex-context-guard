@@ -6,6 +6,20 @@ from tools.validation import stop_host_acceptance as h
 
 
 class HostOracleTests(unittest.TestCase):
+    def test_state_snapshot_resolves_v2_and_preserves_legacy_replay(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / 'sessions/t/state.json'
+            old.parent.mkdir(parents=True)
+            old.write_text('{}')
+            self.assertEqual(h.session_state_path(root, 't'), old)
+            new = root / 'sessions-v2/t/state.json'
+            new.parent.mkdir(parents=True)
+            new.write_text('{}')
+            self.assertEqual(h.session_state_path(root, 't'), new)
+
     def inventory(self, event='stop'):
         return {event: {'key': 'product:' + event, 'eventName': event,
                        'sourcePath': '/cache/hooks.json', 'source': 'plugin',

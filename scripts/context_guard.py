@@ -48,7 +48,7 @@ except ModuleNotFoundError as exc:
     governed_test_action = _instruction_module.governed_test_action
     instruction_text = _instruction_module.instruction_text
 
-PRODUCT_VERSION = "0.14.3"
+PRODUCT_VERSION = "0.15.0"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -1805,6 +1805,8 @@ def console_write(value: Any, *, stream: Any = None) -> None:
 def safe_session_id(value: Any) -> str:
     raw = str(value or "unknown-session")
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw)[:160]
+    if safe in {".", "..", ".locks"}:
+        raise ValueError("reserved session identity")
     return safe or "unknown-session"
 
 
@@ -7464,9 +7466,7 @@ class SessionLockGuard:
                 f"session lock ownership was lost: {self.lock_path}"
             ) from exc
         if held.st_ino == 0 or current.st_ino == 0:
-            # Filesystem cannot report inode identity; verification is not
-            # possible and must not invent a failure.
-            return
+            raise LockOwnershipError("session lock inode identity is unavailable")
         if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
             raise LockOwnershipError(
                 f"session lock ownership was lost: {self.lock_path}"
@@ -7495,7 +7495,9 @@ def filesystem_session_lock(
     write via :class:`LockOwnershipError` instead of committing.
     """
     deadline = time.monotonic() + max(timeout, 0.0)
-    descriptor = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    _reject_linked_session_path(lock_path)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(str(lock_path), flags, 0o600)
     acquired = False
     try:
         while True:
@@ -7527,17 +7529,52 @@ def filesystem_session_lock(
         os.close(descriptor)
 
 
+V2_NAMESPACE = "sessions-v2"
+LEGACY_NAMESPACE = "sessions"
+
+
+def _reject_linked_session_path(path: Path) -> None:
+    """Reject product-directory links and Windows reparse paths before I/O.
+
+    Ancestors above the caller's configured root may be platform aliases
+    (for example macOS /tmp); this covers the root, namespace and child.
+    It is path hardening, not a hostile same-user race sandbox.
+    """
+    candidates = (path, path.parent, path.parent.parent)
+    for candidate in candidates:
+        try:
+            info = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise StateIntegrityError("linked session or lifecycle lock path")
+
+
+def lifecycle_lock_path(session_dir: Path) -> Path:
+    """Stable per-session lock OUTSIDE the deletable session subtree.
+
+    Cleanup acquires the same lock before re-reading eligibility and never
+    deletes the lock file, so a writer inside its transaction can never have
+    its session directory removed underneath it and a cleanup pass can never
+    race a writer's eligibility check.
+    """
+    return session_dir.parent / ".locks" / f"{session_dir.name}.lock"
+
+
 @contextlib.contextmanager
 def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[SessionLockGuard]:
-    secure_directory(session_dir)
-    lock_path = session_dir / ".lock"
+    deadline = time.monotonic() + max(timeout, 0.0)
+    _reject_linked_session_path(session_dir)
+    lock_path = lifecycle_lock_path(session_dir)
+    _reject_linked_session_path(lock_path)
+    secure_directory(lock_path.parent)
     process_lock = process_session_lock(lock_path)
-    # The in-process queue wait is bounded (CGN-08); the filesystem kernel
-    # lock keeps its own full timeout budget once the queue admits us.
-    if not process_lock.acquire(timeout=max(timeout, 0.0)):
+    # Queue and kernel acquisition share one total wall-clock budget.
+    if not process_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
         raise TimeoutError(f"timed out waiting for process lock {lock_path}")
     try:
-        with filesystem_session_lock(lock_path, timeout) as guard:
+        with filesystem_session_lock(lock_path, max(0.0, deadline - time.monotonic())) as guard:
+            secure_directory(session_dir)
             stack = getattr(_LOCK_GUARD_STACK, "stack", None)
             if stack is None:
                 stack = []
@@ -7551,8 +7588,79 @@ def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[SessionLoc
         process_lock.release()
 
 
+class LegacySessionWriteRefused(RuntimeError):
+    """The new runtime met an existing legacy session on a write path."""
+
+
+def session_namespace(root: Path, session_id: str) -> str:
+    """'v2' for new/continued v2 sessions, 'legacy' for preserved legacy
+    trees, 'fresh' when neither exists (a genuinely new session)."""
+    if (root / V2_NAMESPACE / session_id).exists() or (root / V2_NAMESPACE / session_id).is_symlink():
+        return "v2"
+    if (root / LEGACY_NAMESPACE / session_id).exists() or (root / LEGACY_NAMESPACE / session_id).is_symlink():
+        return "legacy"
+    return "fresh"
+
+
+def legacy_session_refusal(event: str) -> dict[str, Any]:
+    """Bounded actionable output for a write event on a legacy-bound session.
+
+    The legacy tree stays untouched and owned by its original runtime; the
+    new runtime never certifies completion from state it cannot verify or
+    persist, and never silently replaces the history with empty state.
+    """
+    message = (
+        "This session belongs to a previous Context Guard runtime; its "
+        "recorded requirements are preserved read-only and this runtime "
+        "will not write, verify, or clean them. Continue the task under "
+        "its original runtime (the installed 0.14.x cache remains usable), "
+        "or start a new session for new work."
+    )
+    if event == "Stop":
+        return {
+            "continue": False,
+            "stopReason": (
+                "Context Guard cannot verify or persist completion for a "
+                "session owned by a previous runtime. Continue under the "
+                "original runtime; nothing was discarded."
+            ),
+            "systemMessage": message,
+        }
+    if event == "PreCompact":
+        return {"continue": False, "systemMessage": message}
+    return {"systemMessage": message}
+
+
 def session_dir_for(payload: dict[str, Any]) -> Path:
-    return data_root() / "sessions" / safe_session_id(payload.get("session_id"))
+    """Read-only session resolution for hint/read paths (never creates)."""
+    root = data_root()
+    session_id = safe_session_id(payload.get("session_id"))
+    if session_namespace(root, session_id) == "legacy":
+        return root / LEGACY_NAMESPACE / session_id
+    return root / V2_NAMESPACE / session_id
+
+
+def write_session_dir(payload: dict[str, Any]) -> Path | None:
+    """Resolve the v2 session directory for a write event, or None when the
+    session is legacy-bound and the caller must refuse without writing."""
+    root = data_root()
+    session_id = safe_session_id(payload.get("session_id"))
+    if session_namespace(root, session_id) == "legacy":
+        return None
+    return root / V2_NAMESPACE / session_id
+
+def writable_session_dir(root: Path, session_id: str) -> Path:
+    """v2 session directory for an explicit write command; raises
+    LegacySessionWriteRefused for a legacy-bound session (fail closed,
+    actionable, nothing written)."""
+    session_id = safe_session_id(session_id)
+    if session_namespace(root, session_id) == "legacy":
+        raise LegacySessionWriteRefused(
+            f"session {session_id} belongs to a previous Context Guard "
+            "runtime; continue it under its original runtime (the refusal "
+            "is fail closed and nothing was written)")
+    return root / V2_NAMESPACE / session_id
+
 
 
 def new_state(payload: dict[str, Any]) -> dict[str, Any]:
@@ -10352,23 +10460,23 @@ class EvaluationContext:
     scope are identical to unbudgeted evaluation. ``new_phase`` releases
     the exact charged bytes of the phase-bound memo families.
 
-    Excluded storage, with bounds and lifetime (outside the text-budget
-    contract): the phase-bound single-slot state projections ``_scope``,
-    ``_root_records``, ``_prompt_records``, ``_disk_records`` and
-    ``_control_projection`` mirror data from the already-loaded persisted
-    state (size bounded by that state / the session's own journal), are
-    dropped at every phase boundary, and are never retained across
-    events; ``_consumed`` holds at most one id+digest pair per prompt.
+    State-derived containers share a separate aggregate projection cap;
+    all routes, including per-record and index caches, are charged. Only
+    references to the already-loaded baseline state and source-consumption
+    identities are excluded. See docs/EVALUATION_STORAGE_NEXT.md for the
+    complete inventory, traversal bounds and event/phase lifetimes.
     """
 
     _TEXT_BUDGET_BYTES = 8 * 1024 * 1024
     _SEARCH_MEMO_LIMIT = 50_000
     _DECISION_MEMO_LIMIT = 5_000
     _ENTRY_OVERHEAD = 96
-    # Separate finite cap for the phase-local journal-derived projection
-    # (disk prompt records): an aggregate byte bound, not "bounded by the
-    # journal". Over cap or unmeasurable -> not cached; every access
-    # recomputes, which is slower but semantically identical.
+    # Separate finite cap covering the AGGREGATE of every phase-local
+    # projection route (per-prompt records, root/prompt aggregates, disk
+    # records, scope, control projection). Over cap or unmeasurable -> not
+    # cached; every access recomputes, which is slower but semantically
+    # identical. Source-consumption integrity is independent of caching:
+    # _consumed identity tracking happens whether or not a record is cached.
     _PROJECTION_BUDGET_BYTES = 32 * 1024 * 1024
     # Parsed text charges the source once plus a 2x reserve for the two
     # lazily built position-preserving views derived from it.
@@ -10395,6 +10503,7 @@ class EvaluationContext:
         # a second-layer bound; the byte budget is authoritative (CGN-02).
         self._memo_bytes = 0
         self._memo_costs: dict[str, dict[Any, int]] = {}
+        self._projection_bytes = 0
         # Phase-bound state projections (cleared by new_phase).
         self._scope: dict[str, Any] | None = None
         self._prompt_record_memo: dict[str, dict[str, Any] | None] = {}
@@ -10437,6 +10546,11 @@ class EvaluationContext:
             costs = self._memo_costs.pop(family, None)
             if costs:
                 self._memo_bytes -= sum(costs.values())
+        for family in ("prompt_record", "root_records", "prompt_records",
+                       "disk_records", "scope", "control_projection", "item_index"):
+            costs = self._memo_costs.pop(family, None)
+            if costs:
+                self._projection_bytes -= sum(costs.values())
         self._bases = {}
         self._action_sources = {}
         self._count("phase")
@@ -10464,6 +10578,25 @@ class EvaluationContext:
         costs[key] = cost
         return True
 
+    def _projection_admit(self, family: str, cost: int | None, key: Any = None) -> bool:
+        """Charge a phase-local projection against the aggregate cap.
+
+        Unknown cost (unmeasurable shape) or an over-cap charge leaves the
+        projection uncached: callers recompute per access with identical
+        semantics. Charges are released exactly at new_phase.
+        """
+        if cost is None or cost < 0:
+            return False
+        costs = self._memo_costs.setdefault(family, {})
+        entry_key = family if key is None else key
+        previous = costs.get(entry_key, 0)
+        net = cost - previous
+        if net > 0 and self._projection_bytes + net > self._PROJECTION_BUDGET_BYTES:
+            return False
+        self._projection_bytes += net
+        costs[entry_key] = cost
+        return True
+
     # -- pure lexical layer -------------------------------------------------
 
     def parsed(self, text: str) -> _ParsedText:
@@ -10473,7 +10606,8 @@ class EvaluationContext:
         parsed = _ParsedText(text)
         self._count("fragments_computed")
         budget = len(text.encode("utf-8"))
-        cost = (budget * (1 + self._DERIVED_VIEW_RESERVE)
+        cost = ((64 + 4 * len(text)) * (1 + self._DERIVED_VIEW_RESERVE)
+                + sum(192 + 4 * len(part.text) for part in parsed.parts)
                 + self._ENTRY_OVERHEAD)
         if self._memo_admit("parsed", text, cost):
             self._parsed[text] = parsed
@@ -10501,8 +10635,8 @@ class EvaluationContext:
             # The retained key holds the source text; matches retain their
             # matched spans. Keys are part of the footprint (CGR-M1).
             estimated = (
-                len(text.encode("utf-8"))
-                + sum(len(match.group(0).encode("utf-8")) + 64 for match in matches)
+                (64 + 4 * len(text))
+                + sum(4 * len(match.group(0)) + 192 for match in matches)
                 + self._ENTRY_OVERHEAD
             )
             if self._memo_admit("searches", key, estimated):
@@ -10523,8 +10657,8 @@ class EvaluationContext:
             clauses = _action_source_clauses(text)
             if len(self._source_clauses) < self._DECISION_MEMO_LIMIT and self._memo_admit(
                 "source_clauses", text,
-                len(text.encode("utf-8"))
-                + sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+                (64 + 4 * len(text))
+                + sum(4 * len(clause) + 128 for clause in clauses)
                 + self._ENTRY_OVERHEAD,
             ):
                 self._source_clauses[text] = tuple(clauses)
@@ -10538,8 +10672,8 @@ class EvaluationContext:
             clauses = _reply_clauses(text)
             if len(self._reply_clause_memo) < self._DECISION_MEMO_LIMIT and self._memo_admit(
                 "reply_clauses", text,
-                len(text.encode("utf-8"))
-                + sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+                (64 + 4 * len(text))
+                + sum(4 * len(clause) + 128 for clause in clauses)
                 + self._ENTRY_OVERHEAD,
             ):
                 self._reply_clause_memo[text] = tuple(clauses)
@@ -10554,10 +10688,16 @@ class EvaluationContext:
             return self._prompt_record_memo[prompt_id]
         self._count("prompt_record_read")
         record = read_prompt_record(self.session_dir, metadata)
+        # Consumption-integrity tracking is independent of caching: even an
+        # uncached (over-cap or unmeasurable) record stays identity-tracked
+        # for the commit recheck.
         if record is not None and prompt_id not in self._consumed:
             self._consumed[prompt_id] = (
                 str(record.get("record_sha256") or ""), str(record.get("sha256") or ""))
-        self._prompt_record_memo[prompt_id] = record
+        if record is not None and self._projection_admit(
+            "prompt_record", _projection_size_estimate((prompt_id, record)), prompt_id
+        ):
+            self._prompt_record_memo[prompt_id] = record
         return record
 
     def root_records(self) -> dict[str, dict[str, Any]]:
@@ -10569,7 +10709,11 @@ class EvaluationContext:
                 record = self._read_prompt_record(prompt)
                 if record is not None:
                     records[str(prompt["id"])] = record
-            self._root_records = records
+            if self._projection_admit("root_records",
+                                      _projection_size_estimate(records)):
+                self._root_records = records
+            else:
+                return records
         return self._root_records
 
     def prompt_records(self) -> dict[Any, dict[str, Any] | None]:
@@ -10578,24 +10722,23 @@ class EvaluationContext:
             for prompt in self.state.get("prompts", []):
                 if isinstance(prompt, dict):
                     records[prompt.get("id")] = self._read_prompt_record(prompt)
-            self._prompt_records = records
+            if self._projection_admit("prompt_records",
+                                      _projection_size_estimate(records)):
+                self._prompt_records = records
+            else:
+                return records
         return self._prompt_records
 
     def disk_prompt_records(self) -> list[dict[str, Any]]:
         if self._disk_records is None:
             self._count("disk_prompt_records_read")
             records = prompt_records_from_disk(self.session_dir)
-            # Finite aggregate cap on the retained journal projection. The
-            # state itself and the journal on disk are the event's excluded
-            # baseline memory; this cache is an extra copy and is bounded
-            # independently. Unmeasurable shapes are not cached either.
-            measured = _bounded_size_estimate(records)
-            if (measured is not None
-                    and measured <= self._PROJECTION_BUDGET_BYTES):
+            if self._projection_admit("disk_records",
+                                      _projection_size_estimate(records)):
                 self._disk_records = records
             else:
                 self._count("disk_projection_uncached")
-            return records
+                return records
         return self._disk_records
 
     def verify_consumed_sources(self) -> bool:
@@ -10628,7 +10771,12 @@ class EvaluationContext:
     def scope(self) -> dict[str, Any]:
         if self._scope is None:
             self._count("scope_computed")
-            self._scope = current_scope_projection(self.state)
+            projection = current_scope_projection(self.state)
+            if self._projection_admit("scope",
+                                      _projection_size_estimate(projection)):
+                self._scope = projection
+            else:
+                return projection
         return self._scope
 
     def item_index(self) -> dict[Any, list[dict[str, Any]]]:
@@ -10638,7 +10786,10 @@ class EvaluationContext:
                 for item in self.state.get(collection, []):
                     if isinstance(item, dict):
                         index.setdefault(item.get("id"), []).append(item)
-            self._item_index = index
+            if self._projection_admit("item_index", _projection_size_estimate(index)):
+                self._item_index = index
+            else:
+                return index
         return self._item_index
 
     def resolve_strict(self, target: str) -> str:
@@ -10662,20 +10813,23 @@ class EvaluationContext:
         # means unknown size and is refused, never billed as a fixed guess.
         import copy
 
-        # Own a deep snapshot: later producer writes to the caller's object
-        # graph cannot grow the retained entry outside the budget, and the
-        # estimate is taken on the retained snapshot itself. Unmeasurable
-        # shapes (depth/width/cycle/unsupported/over node budget) are
-        # refused, never billed as a fixed guess. Readers still receive
-        # deep copies via cached_basis.
-        snapshot = copy.deepcopy(value) if value is not None else None
+        # Measure FIRST, copy only what is admitted: a deep copy before the
+        # bounded estimate would allocate the full object graph (and blow
+        # the interpreter stack on deep nesting) for entries that are then
+        # refused. The walk itself is iterative-budgeted and never recurses
+        # past its depth limit, so unmeasurable shapes cost a bounded probe
+        # and direct evaluation is preserved.
         key_size = _bounded_size_estimate(key)
-        value_size = _bounded_size_estimate(snapshot)
+        value_size = _bounded_size_estimate(value)
         if key_size is None or value_size is None:
             return
         estimated = key_size + value_size + self._ENTRY_OVERHEAD
         if self._memo_admit("bases", key, estimated):
-            self._bases[key] = snapshot
+            # Own a deep snapshot (bounded by the budget it was admitted
+            # against): later producer writes to the caller's object graph
+            # cannot grow the retained entry. Readers still receive deep
+            # copies via cached_basis.
+            self._bases[key] = copy.deepcopy(value) if value is not None else None
 
     def basis_key(self, category: str, reply_clause: str, *, include_satisfied: bool,
                   include_unready: bool, include_controlled: bool,
@@ -10700,9 +10854,8 @@ class EvaluationContext:
             execution_kind=execution_kind, context=self)
         if len(self._action_sources) < self._DECISION_MEMO_LIMIT and self._memo_admit(
             "action_sources", key,
-            len(root_text.encode("utf-8"))
-            + len(category.encode("utf-8")) + len(str(execution_kind).encode("utf-8"))
-            + sum(len(source.encode("utf-8")) + 64 for source in sources)
+            192 + 4 * (len(root_text) + len(category) + len(str(execution_kind)))
+            + sum(4 * len(source) + 128 for source in sources)
             + self._ENTRY_OVERHEAD,
         ):
             self._action_sources[key] = tuple(sources)
@@ -10721,7 +10874,9 @@ _MEASURE_WIDTH_LIMIT = 64
 _MEASURE_DEPTH_LIMIT = 6
 
 
-def _bounded_size_estimate(value: Any) -> int | None:
+def _bounded_size_estimate(value: Any, *, node_limit: int = _MEASURE_NODE_BUDGET,
+                           width_limit: int = _MEASURE_WIDTH_LIMIT,
+                           depth_limit: int = _MEASURE_DEPTH_LIMIT) -> int | None:
     """Conservative byte estimate for a memo key/value, without serializing.
 
     Returns ``None`` — meaning UNKNOWN, so the caller must refuse admission —
@@ -10730,56 +10885,65 @@ def _bounded_size_estimate(value: Any) -> int | None:
     unsupported type. The unvisited suffix is never undercounted as a fixed
     token size: an unknown tail makes the whole entry unmeasurable.
     """
-    budget = [_MEASURE_NODE_BUDGET]
+    budget = [node_limit]
     seen: set[int] = set()
 
     def walk(node: Any, depth: int) -> int | None:
         if budget[0] <= 0:
             return None
         budget[0] -= 1
-        if depth > _MEASURE_DEPTH_LIMIT:
+        if depth > depth_limit:
             return None
-        if node is None or isinstance(node, bool):
+        if node is None or type(node) is bool:
             return 8
-        if isinstance(node, str):
-            return len(node.encode("utf-8"))
-        if isinstance(node, (int, float)):
-            return 8
+        if type(node) is str:
+            return 64 + 4 * len(node)
+        if type(node) is int:
+            return 32 + 2 * ((node.bit_length() + 7) // 8)
+        if type(node) is float:
+            return 32
         node_id = id(node)
         if node_id in seen:
             return None  # reference cycle: size is unknowable
-        if isinstance(node, dict):
+        if type(node) is dict:
             seen.add(node_id)
             try:
-                total = 0
+                total = 96
                 for index, (item_key, item_value) in enumerate(node.items()):
-                    if index >= _MEASURE_WIDTH_LIMIT:
+                    if index >= width_limit:
                         return None  # unvisited suffix is unknown
                     measured_key = walk(item_key, depth + 1)
                     measured_value = walk(item_value, depth + 1)
                     if measured_key is None or measured_value is None:
                         return None
-                    total += measured_key + measured_value + 16
+                    total += measured_key + measured_value + 64
                 return total
             finally:
                 seen.discard(node_id)
-        if isinstance(node, (list, tuple, set, frozenset)):
+        if type(node) in (list, tuple, set, frozenset):
             seen.add(node_id)
             try:
-                total = 0
+                total = 96
                 for index, item in enumerate(node):
-                    if index >= _MEASURE_WIDTH_LIMIT:
+                    if index >= width_limit:
                         return None
                     measured = walk(item, depth + 1)
                     if measured is None:
                         return None
-                    total += measured + 16
+                    total += measured + 64
                 return total
             finally:
                 seen.discard(node_id)
         return None  # unsupported type: unknown, never a fixed guess
 
     return walk(value, 0)
+
+
+def _projection_size_estimate(value: Any) -> int | None:
+    """Finite projection traversal supports normal full-scope sets beyond
+    the small memo shape limit; unknown tails still refuse admission."""
+    return _bounded_size_estimate(value, node_limit=200_000,
+                                  width_limit=4096, depth_limit=16)
 
 
 def _action_source_filter(
@@ -11730,8 +11894,12 @@ def current_root_control_projection(
     except (ValueError, KeyError, TypeError):
         projection = None
     if _context is not None:
-        _context._control_projection = projection
-        _context._control_projection_done = True
+        # Cache only inside the aggregate projection cap; unmeasurable or
+        # over-cap projections recompute per access with identical output.
+        if _context._projection_admit("control_projection",
+                                      _projection_size_estimate(projection)):
+            _context._control_projection = projection
+            _context._control_projection_done = True
     return projection
 
 
@@ -16692,12 +16860,13 @@ def append_normalized_proof(state: dict[str, Any], normalized: dict[str, Any]) -
 def validate_proof_request(
     root: Path, session_id: str, turn_id: str, token: str, manifest_path: Path
 ) -> str:
-    session_dir = root / "sessions" / safe_session_id(session_id)
-    state = load_state(session_dir, {"session_id": session_id})
-    require_usable_state(state)
-    completion_attempt_for(state, turn_id, token)
-    normalized = normalized_proof_file(state, manifest_path)
-    return sha256_text(canonical_json(normalized))
+    session_dir = writable_session_dir(root, session_id)
+    with session_lock(session_dir):
+        state = load_state(session_dir, {"session_id": session_id})
+        require_usable_state(state)
+        completion_attempt_for(state, turn_id, token)
+        normalized = normalized_proof_file(state, manifest_path)
+        return sha256_text(canonical_json(normalized))
 
 
 def fulfilled_obligation_ids(state: dict[str, Any], item_id: str) -> set[str]:
@@ -17197,14 +17366,37 @@ def private_checkpoint(
     return checkpoint
 
 
+def existing_session_dir(root: Path, session_id: str) -> Path:
+    """Read-only resolution across namespaces (v2 preferred); callers only
+    read from the returned directory and never create it."""
+    if session_namespace(root, session_id) == "legacy":
+        return root / LEGACY_NAMESPACE / session_id
+    return root / V2_NAMESPACE / session_id
+
+
 def checkpoint_status(
     root: Path, session_id: str, turn_id: str, token: str, *,
     full: bool = False, item_id: str | None = None,
     after_revision: str | None = None,
     commands: bool = False,
 ) -> dict[str, Any]:
-    session_dir = root / "sessions" / safe_session_id(session_id)
-    state = load_state(session_dir, {"session_id": session_id})
+    namespace = session_namespace(root, safe_session_id(session_id))
+    session_dir = existing_session_dir(root, safe_session_id(session_id))
+    if namespace == "fresh" or not (session_dir / "state.json").is_file():
+        # A read-only discovery miss must not enter the creating/repairing
+        # loader or manufacture a legacy binding that rejects future Hooks.
+        raise RuntimeError("session_not_found")
+    if namespace == "legacy":
+        # Legacy read surface must never call the repairing state loader.
+        state = read_json(session_dir / "state.json")
+        if not isinstance(state, dict):
+            raise StateIntegrityError("legacy state is missing or invalid")
+        validate_state_integrity(state)
+        if state.get("session", {}).get("id") != session_id:
+            raise StateIntegrityError("legacy session identity mismatch")
+    else:
+        with session_lock(session_dir):
+            state = load_state(session_dir, {"session_id": session_id})
     require_usable_state(state)
     completion_attempt_for(state, turn_id, token)
     if commands:
@@ -17228,13 +17420,15 @@ def clear_pending_request(
     """Runtime entry for clear-pending: verify the turn, then clear only the
     pending operation ledger. Requirements, evidence, and checkpoints are
     immutable here, and the state is persisted in the same transaction."""
-    session_dir = root / "sessions" / safe_session_id(session_id)
-    state = load_state(session_dir, {"session_id": session_id})
-    require_usable_state(state)
-    completion_attempt_for(state, turn_id, token)
-    cleared = clear_pending(state)
-    save_state(session_dir, state)
-    return cleared
+    session_dir = writable_session_dir(root, session_id)
+    with session_lock(session_dir):
+        state = load_state(session_dir, {"session_id": session_id})
+        require_usable_state(state)
+        completion_attempt_for(state, turn_id, token)
+        cleared = clear_pending(state)
+        state["session"]["ended_at"] = None
+        save_state(session_dir, state)
+        return cleared
 
 
 def validate_checkpoint_request(
@@ -17246,31 +17440,32 @@ def validate_checkpoint_request(
     acceptance_values: list[str],
     replace: bool = False,
 ) -> str:
-    session_dir = root / "sessions" / safe_session_id(session_id)
-    state = load_state(session_dir, {"session_id": session_id})
-    require_usable_state(state)
-    attempt = completion_attempt_for(state, turn_id, token)
-    requirements = parse_evidence_assignments(
-        requirement_values, "requirement"
-    )
-    acceptance = parse_evidence_assignments(
-        acceptance_values, "acceptance"
-    )
-    # Precheck mirrors the staging transaction in memory: ordinary proofs are
-    # derived before validation, and the mutation is never persisted here.
-    proof_mark = len(state.get("proofs", []))
-    sequence_mark = int(state.get("proof_sequence", 0))
-    for normalized in derive_ordinary_proofs(state):
-        append_normalized_proof(state, normalized)
-    checkpoint = private_checkpoint(state, requirements, acceptance)
-    issues = checkpoint_issues(state, checkpoint)
-    del state["proofs"][proof_mark:]
-    state["proof_sequence"] = sequence_mark
-    if issues:
-        raise ValueError("; ".join(issues))
-    control = checkpoint_control(checkpoint)
-    validate_control_transition(attempt, control, replace=replace)
-    return control_request_sha256(session_id, turn_id, control, replace=replace)
+    session_dir = writable_session_dir(root, session_id)
+    with session_lock(session_dir):
+        state = load_state(session_dir, {"session_id": session_id})
+        require_usable_state(state)
+        attempt = completion_attempt_for(state, turn_id, token)
+        requirements = parse_evidence_assignments(
+            requirement_values, "requirement"
+        )
+        acceptance = parse_evidence_assignments(
+            acceptance_values, "acceptance"
+        )
+        # Precheck mirrors the staging transaction in memory: ordinary proofs are
+        # derived before validation, and the mutation is never persisted here.
+        proof_mark = len(state.get("proofs", []))
+        sequence_mark = int(state.get("proof_sequence", 0))
+        for normalized in derive_ordinary_proofs(state):
+            append_normalized_proof(state, normalized)
+        checkpoint = private_checkpoint(state, requirements, acceptance)
+        issues = checkpoint_issues(state, checkpoint)
+        del state["proofs"][proof_mark:]
+        state["proof_sequence"] = sequence_mark
+        if issues:
+            raise ValueError("; ".join(issues))
+        control = checkpoint_control(checkpoint)
+        validate_control_transition(attempt, control, replace=replace)
+        return control_request_sha256(session_id, turn_id, control, replace=replace)
 
 
 def checkpoint_control(checkpoint: dict[str, Any]) -> dict[str, Any]:
@@ -17361,13 +17556,14 @@ def validate_disposition_request(
     disposition: str,
     replace: bool = False,
 ) -> str:
-    session_dir = root / "sessions" / safe_session_id(session_id)
-    state = load_state(session_dir, {"session_id": session_id})
-    require_usable_state(state)
-    attempt = completion_attempt_for(state, turn_id, token)
-    control = disposition_control(disposition)
-    validate_control_transition(attempt, control, replace=replace)
-    return control_request_sha256(session_id, turn_id, control, replace=replace)
+    session_dir = writable_session_dir(root, session_id)
+    with session_lock(session_dir):
+        state = load_state(session_dir, {"session_id": session_id})
+        require_usable_state(state)
+        attempt = completion_attempt_for(state, turn_id, token)
+        control = disposition_control(disposition)
+        validate_control_transition(attempt, control, replace=replace)
+        return control_request_sha256(session_id, turn_id, control, replace=replace)
 
 
 def stage_private_checkpoint(
@@ -17379,7 +17575,7 @@ def stage_private_checkpoint(
     acceptance_values: list[str],
     replace: bool = False,
 ) -> dict[str, Any]:
-    session_dir = root / "sessions" / safe_session_id(session_id)
+    session_dir = writable_session_dir(root, session_id)
     with session_lock(session_dir):
         state = load_state(session_dir, {"session_id": session_id})
         require_usable_state(state)
@@ -17416,6 +17612,7 @@ def stage_private_checkpoint(
             ),
             "idempotent": idempotent,
         }
+        state["session"]["ended_at"] = None
         save_state(session_dir, state)
         return receipt
 
@@ -17428,7 +17625,7 @@ def stage_private_disposition(
     disposition: str,
     replace: bool = False,
 ) -> dict[str, Any]:
-    session_dir = root / "sessions" / safe_session_id(session_id)
+    session_dir = writable_session_dir(root, session_id)
     with session_lock(session_dir):
         state = load_state(session_dir, {"session_id": session_id})
         require_usable_state(state)
@@ -17444,6 +17641,7 @@ def stage_private_disposition(
             ),
             "idempotent": idempotent,
         }
+        state["session"]["ended_at"] = None
         save_state(session_dir, state)
         return receipt
 
@@ -21052,43 +21250,62 @@ def export_handoff(
 
 
 def cleanup_old_sessions(root: Path, current: Path | None = None) -> int:
-    sessions = root / "sessions"
+    """Sweep expired v2 sessions only; legacy trees are never touched.
+
+    Eligibility is RE-READ inside the session's lifecycle lock, which every
+    writer holds across its whole transaction, so a cleanup pass can never
+    delete a tree a writer is mid-write on, and the lock files themselves
+    (outside the session subtrees) are never removed.
+    """
+    sessions = root / V2_NAMESPACE
     if not sessions.is_dir():
         return 0
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
     removed = 0
     for candidate in sessions.iterdir():
+        if candidate.name == ".locks":
+            continue
         if candidate.is_symlink() or not candidate.is_dir():
             continue
         if current is not None and candidate.resolve() == current.resolve():
             continue
-        state_path = candidate / "state.json"
         try:
-            with state_path.open("r", encoding="utf-8") as handle:
-                state = json.load(handle)
-            if not isinstance(state, dict):
-                continue
-            validate_state_integrity(state)
-        except (
-            OSError,
-            UnicodeError,
-            json.JSONDecodeError,
-            StateIntegrityError,
-            TypeError,
-            ValueError,
-        ):
+            with session_lock(candidate, timeout=0.25):
+                if not _session_expired(candidate, cutoff):
+                    continue
+                for path in sorted(candidate.rglob("*"), reverse=True):
+                    if path.is_symlink() or path.is_file():
+                        path.unlink()
+                    elif path.is_dir():
+                        path.rmdir()
+                candidate.rmdir()
+        except (TimeoutError, OSError):
+            # A writer holds the lifecycle lock: skip this round; the
+            # session stays and a later pass re-reads eligibility.
             continue
-        ended = parse_time(state.get("session", {}).get("ended_at"))
-        if ended is None or ended >= cutoff:
-            continue
-        for path in sorted(candidate.rglob("*"), reverse=True):
-            if path.is_symlink() or path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                path.rmdir()
-        candidate.rmdir()
         removed += 1
     return removed
+
+
+def _session_expired(candidate: Path, cutoff: dt.datetime) -> bool:
+    state_path = candidate / "state.json"
+    try:
+        with state_path.open("r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        if not isinstance(state, dict):
+            return False
+        validate_state_integrity(state)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        StateIntegrityError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+    ended = parse_time(state.get("session", {}).get("ended_at"))
+    return ended is not None and ended < cutoff
 
 
 def handle_session_end(
@@ -21160,12 +21377,36 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
                     "deny", "Release verification state is unavailable or inconsistent; "
                     "run 'context-guard diagnose' before retrying this action.",
                 )
-    session_dir = session_dir_for(payload)
+    session_dir = write_session_dir(payload)
+    if session_dir is None:
+        # Legacy-bound session: strictly read-only for this runtime. The
+        # adopted release gate never weakens: a release/observe posture on a
+        # session this runtime cannot verify or persist denies publication
+        # actions instead of letting them proceed unrecorded.
+        if event == "PreToolUse":
+            try:
+                profile = _pre_tool_profile_hint(payload)
+            except Exception:  # noqa: BLE001 - hint failure keeps fail-open
+                profile = "unknown"
+            if profile in {"release", "observe"}:
+                return _pre_tool_decision(
+                    "deny",
+                    "This session belongs to a previous Context Guard runtime; "
+                    "its release state cannot be verified or persisted here. "
+                    "Run this publication action under the session's original "
+                    "runtime.",
+                )
+            return {}
+        return legacy_session_refusal(event)
     # SessionEnd runs under a 3s host budget; keep its lock wait bounded so
     # contention degrades to a fail-closed timeout instead of an overruns.
     lock_timeout = 1.2 if event == "SessionEnd" else 5.0
     with session_lock(session_dir, timeout=lock_timeout):
         state = load_state(session_dir, payload)
+        if event != "SessionEnd":
+            # An ended session may resume. Successful v2 writes retire the
+            # old retention marker; it must not delete an active task later.
+            state["session"]["ended_at"] = None
         handlers = {
             "UserPromptSubmit": handle_user_prompt,
             "PreToolUse": handle_pre_tool,
@@ -21340,9 +21581,18 @@ def command_hook() -> int:
 
 def find_latest_state(root: Path) -> tuple[Path, dict[str, Any]] | None:
     candidates: list[tuple[float, Path, dict[str, Any]]] = []
-    sessions = root / "sessions"
+    for sessions in (root / V2_NAMESPACE, root / LEGACY_NAMESPACE):
+        candidates.extend(_latest_state_candidates(sessions) or [])
+    if not candidates:
+        return None
+    _, session_dir, state = max(candidates, key=lambda item: item[0])
+    return session_dir, state
+
+
+def _latest_state_candidates(sessions: Path):
     if not sessions.is_dir():
         return None
+    candidates: list[tuple[float, Path, dict[str, Any]]] = []
     for candidate in sessions.iterdir():
         try:
             if candidate.is_symlink() or not candidate.is_dir():
@@ -21357,10 +21607,7 @@ def find_latest_state(root: Path) -> tuple[Path, dict[str, Any]] | None:
             continue
         if isinstance(state, dict):
             candidates.append((mtime, candidate, state))
-    if not candidates:
-        return None
-    _, session_dir, state = max(candidates, key=lambda item: item[0])
-    return session_dir, state
+    return candidates
 
 
 def command_status() -> int:
@@ -21382,7 +21629,8 @@ def command_recovery_page(args: argparse.Namespace) -> int:
     session_id = getattr(args, "session_id", None)
     if not isinstance(session_id, str) or not session_id or session_id != safe_session_id(session_id) or session_id in {".", ".."}:
         return error("explicit_session_required")
-    session_dir = data_root() / "sessions" / session_id
+    # Read surface: resolve across namespaces, never create.
+    session_dir = existing_session_dir(data_root(), session_id)
     if session_dir.is_symlink() or not (session_dir / "state.json").is_file():
         return error("session_not_found")
     try:
@@ -21598,7 +21846,7 @@ def command_register_proof(args: argparse.Namespace) -> int:
 
 def command_review_answer(args):
     """Explicit single-run entrypoint; Hooks never request semantic review."""
-    directory = args.data_dir.expanduser().resolve() / "sessions" / safe_session_id(args.session_id)
+    directory = writable_session_dir(args.data_dir.expanduser().resolve(), args.session_id)
     try:
         with session_lock(directory):
             state = load_state(directory, {"session_id": args.session_id})
@@ -21625,7 +21873,7 @@ def command_review_answer(args):
 
 def command_review_pending(args):
     """Agent invokes after commentary delivery; never invoked inside a Hook."""
-    directory = args.data_dir.expanduser().resolve() / "sessions" / safe_session_id(args.session_id)
+    directory = writable_session_dir(args.data_dir.expanduser().resolve(), args.session_id)
     try:
         with session_lock(directory):
             state = load_state(directory, {"session_id": args.session_id})

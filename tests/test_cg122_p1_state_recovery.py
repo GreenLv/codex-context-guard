@@ -242,7 +242,7 @@ class WaitLifecycleTests(P0Harness):
         self.prompt("请修复恢复模块。在我确认模型更换完成前，本任务保持等待。必须运行测试验证。")
         self.dispatch("Stop", last_assistant_message="已按要求暂停等待确认。")
         self.prompt("模型已换好，继续。")
-        session_dir = self.root / "private" / "sessions" / "p0"
+        session_dir = self.root / "private" / "sessions-v2" / "p0"
         before = self.state()
         reloaded = cg.load_state(session_dir, {"session_id": "p0"})
         self.assertEqual(
@@ -277,7 +277,7 @@ class WaitLifecycleTests(P0Harness):
         """[MIGRATION/WAIT] Explicit resume selects the old work unit, but a
         source-less migrated input condition cannot certify that the input
         arrived or acquire release provenance from generic Continue text."""
-        session_dir = self.root / "private" / "sessions" / "p0"
+        session_dir = self.root / "private" / "sessions-v2" / "p0"
         session_dir.mkdir(parents=True, exist_ok=True)
         (session_dir / "state.json").write_text(
             SCHEMA10_PARKED_FIXTURE, encoding="utf-8"
@@ -367,7 +367,7 @@ class RecoveryProjectionTests(P0Harness):
         self.dispatch("Stop", last_assistant_message="已按要求暂停等待确认。")
         self.prompt("模型已换好，继续。")
         packet = cg.recovery_packet(
-            self.root / "private" / "sessions" / "p0", self.state()
+            self.root / "private" / "sessions-v2" / "p0", self.state()
         )
         self.assertIn("[等待条件已解除/released", packet)
         self.assertNotIn("## Unreleased wait conditions", packet)
@@ -435,7 +435,7 @@ class RecoveryProjectionTests(P0Harness):
         """[MIGRATION] Persisting the migrated schema-11 state and loading
         it again neither duplicates nor re-derives conditions; the schema
         stays 11 and the ledger keeps exactly one migrated record."""
-        session_dir = self.root / "private" / "sessions" / "p0"
+        session_dir = self.root / "private" / "sessions-v2" / "p0"
         session_dir.mkdir(parents=True, exist_ok=True)
         (session_dir / "state.json").write_text(
             SCHEMA10_PARKED_FIXTURE, encoding="utf-8"

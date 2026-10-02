@@ -319,7 +319,7 @@ class SilentSuccessWireTests(unittest.TestCase):
             return self.dispatch("UserPromptSubmit", session=session, prompt=text)
 
     def state(self, session: str = "p5") -> dict:
-        path = self.data_dir / "sessions" / session / "state.json"
+        path = self.data_dir / "sessions-v2" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def private_common(self, session: str = "p5") -> list[str]:

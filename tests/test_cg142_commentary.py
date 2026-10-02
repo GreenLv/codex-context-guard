@@ -91,7 +91,7 @@ class CommentaryTests(unittest.TestCase):
         event['payload']['thread_id']=h.session_id
         h.rows.append(event)
         h.write_rows()
-        directory=h.root / 'private/sessions' / h.session_id
+        directory=h.root / 'private/sessions-v2' / h.session_id
         original=copy.deepcopy(h.state()['requirements'])
         for kind,extra in [('PreCompact', {}), ('SessionStart', {'source':'compact'}), ('SessionStart', {'source':'resume'})]:
             wire.cg.dispatch(h.event(kind, **extra))
@@ -124,7 +124,7 @@ class CommentaryTests(unittest.TestCase):
         event['payload']['thread_id']=h.session_id
         h.rows.append(event)
         h.write_rows()
-        directory=h.root/'private/sessions'/h.session_id
+        directory=h.root/'private/sessions-v2'/h.session_id
         result=wire.cg.commentary_observation(directory,h.state(),h.event('PreCompact'))
         self.assertEqual(result['messages'][0]['association'],'unique_root_candidate')
         self.assertTrue(result['messages'][0]['question_candidates'])
@@ -196,7 +196,7 @@ class CommentaryTests(unittest.TestCase):
         event['payload']['thread_id']=h.session_id
         h.rows.append(event)
         h.write_rows()
-        directory=h.root/'private/sessions'/h.session_id
+        directory=h.root/'private/sessions-v2'/h.session_id
         wire.cg.dispatch(h.event('PreCompact'))
         state=h.state()
         summary=wire.cg.commentary_summary(directory,state)
@@ -243,7 +243,7 @@ class CommentaryTests(unittest.TestCase):
         event['payload']['thread_id']=h.session_id
         h.rows.append(event)
         h.write_rows()
-        directory=h.root/'private/sessions'/h.session_id
+        directory=h.root/'private/sessions-v2'/h.session_id
         wire.cg.dispatch(h.event('PreCompact'))
         report=directory/'commentary-observation.json'
         anchor=json.loads(report.read_text())['integrity_anchor']

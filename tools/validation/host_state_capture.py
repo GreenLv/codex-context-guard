@@ -170,6 +170,10 @@ def capture_inventory(sessions: Path, output: Path, runtime_root: Path,
     state_hashes: dict[str, str] = {}
     ended_at: dict[str, str | None] = {}
     for directory in sorted(sessions.iterdir()):
+        if directory.name == ".locks" and sessions.name == "sessions-v2":
+            if directory.is_symlink() or not directory.is_dir():
+                raise WitnessError("invalid lifecycle lock directory")
+            continue
         if directory.is_symlink() or not directory.is_dir():
             continue
         path = directory / "state.json"

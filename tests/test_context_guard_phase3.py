@@ -103,7 +103,7 @@ class Phase3TestCase(unittest.TestCase):
         return cg.dispatch(payload)
 
     def state(self, session: str = "p3") -> dict:
-        path = self.root / "private" / "sessions" / session / "state.json"
+        path = self.root / "private" / "sessions-v2" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def prompt(self, text: str, turn: str = "turn-1", session: str = "p3") -> None:
@@ -123,7 +123,7 @@ class Schema10MigrationConformanceTests(Phase3TestCase):
         0.11.x would have written it."""
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
         self.prompt("切换到独立任务：请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         legacy = json.loads((session_dir / "state.json").read_text("utf-8"))
         units = legacy["work_units"]
         self.assertEqual(len(units), 2)
@@ -292,7 +292,7 @@ class LifecycleConformanceTests(Phase3TestCase):
         )
         state["work_state"]["active_work_unit_id"] = None
         state["work_unit_sequence"] = 92
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         cg.save_state(session_dir, state)
         self.prompt("继续刚才的任务。", turn="t9")
         reloaded = self.state()
@@ -362,7 +362,7 @@ class OrdinaryTerminalCompletionTests(Phase3TestCase):
         # Duplicate the unique read: candidates are no longer unique.
         state = self.state()
         append_distinct_host_evidence(state)
-        cg.save_state(self.root / "private" / "sessions" / "p3", state)
+        cg.save_state(self.root / "private" / "sessions-v2" / "p3", state)
         result = self.dispatch(
             "Stop", turn="t1", last_assistant_message="任务已经全部完成。"
         )
@@ -380,7 +380,7 @@ class OrdinaryTerminalCompletionTests(Phase3TestCase):
         self.build_single_read_task()
         state = self.state()
         append_distinct_host_evidence(state)
-        cg.save_state(self.root / "private" / "sessions" / "p3", state)
+        cg.save_state(self.root / "private" / "sessions-v2" / "p3", state)
         first = self.dispatch(
             "Stop", turn="t1", last_assistant_message="任务已经全部完成。"
         )
@@ -1099,7 +1099,7 @@ class VerificationContractIntegrityTests(Phase3TestCase):
             tool_input={"command": f"cat {target}"},
             tool_response={"exit_code": 0, "output": "subject"},
         )
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         tampered = json.loads((session_dir / "state.json").read_text("utf-8"))
         contract = tampered["requirements"][0]["verification_contract"]
         self.assertEqual(contract["mode"], "enforced")
@@ -1130,7 +1130,7 @@ class VerificationContractIntegrityTests(Phase3TestCase):
         target = self.project / "spec.txt"
         target.write_text("subject", encoding="utf-8")
         self.prompt(f"$context-guard\n请先核对 {target} 后修复文档。", turn="t1")
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         tampered = json.loads((session_dir / "state.json").read_text("utf-8"))
         contract = tampered["requirements"][0]["verification_contract"]
         contract["obligations"] = [
@@ -1732,7 +1732,7 @@ class SchemaUpgradePromptIntegrationTests(Phase3TestCase):
     def build_schema9_state(self) -> None:
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
         self.prompt("切换到独立任务：请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         legacy = json.loads((session_dir / "state.json").read_text("utf-8"))
         units = legacy["work_units"]
         for unit in units:
@@ -1820,7 +1820,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
     def build_schema9_state(self) -> None:
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
         self.prompt("切换到独立任务：请修复文档。必须逐项落实。必须运行测试验证。", turn="t2")
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         legacy = json.loads((session_dir / "state.json").read_text("utf-8"))
         units = legacy["work_units"]
         for unit in units:
@@ -1861,7 +1861,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
         active unit), dispatch the resume prompt, and return
         (state, statuses). Each row starts from a wiped session so rows
         cannot contaminate each other."""
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         if session_dir.exists():
             shutil.rmtree(session_dir)
         self.prompt("请修复模块。必须逐项落实。必须运行测试验证。", turn="t1")
@@ -1968,7 +1968,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
         defect). The migration path is reached only when the load completes
         without a corruption backup or prompt-record rebuild."""
         self.build_schema9_state()
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         migrated = cg.load_state(session_dir, {"session_id": "p3"})
         self.assertEqual(migrated["schema_version"], cg.SCHEMA_VERSION)
         self.assertEqual(migrated["integrity"]["status"], "ok")
@@ -1987,7 +1987,7 @@ class ResumePolicyMatrixTests(Phase3TestCase):
         migrated ledger obeys the identical resume policy (a migrated
         seq-less parked unit fails closed instead of auto-reopening)."""
         self.build_schema9_state()
-        session_dir = self.root / "private" / "sessions" / "p3"
+        session_dir = self.root / "private" / "sessions-v2" / "p3"
         migrated = cg.load_state(session_dir, {"session_id": "p3"})
         migrated["work_state"]["active_work_unit_id"] = None
         migrated["work_units"][0]["status"] = "awaiting_external"

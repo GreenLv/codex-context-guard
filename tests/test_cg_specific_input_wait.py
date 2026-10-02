@@ -181,7 +181,7 @@ class SpecificInputWaitTests(P0Harness):
                          old_decision)
 
     def test_migrated_input_wait_has_no_trusted_subject_to_release(self):
-        session_dir = self.root / "private" / "sessions" / "p0"
+        session_dir = self.root / "private" / "sessions-v2" / "p0"
         session_dir.mkdir(parents=True, exist_ok=True)
         (session_dir / "state.json").write_text(SCHEMA10_PARKED_FIXTURE,
                                                 encoding="utf-8")

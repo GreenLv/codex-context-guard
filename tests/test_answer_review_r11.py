@@ -73,7 +73,7 @@ class SourceBoundaryTests(unittest.TestCase):
         event.pop('turn_id')
         base.cg.dispatch(event)
         with self.assertRaises(ValueError):
-            base.cg.answer_review_subject(h.root / 'private/sessions' / h.session_id,
+            base.cg.answer_review_subject(h.root / 'private/sessions-v2' / h.session_id,
                                           h.state(), h.state()['requirements'][-1])
 
     def test_future_or_incomparable_signed_asof_is_rejected(self):

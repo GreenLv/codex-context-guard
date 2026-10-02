@@ -38,7 +38,7 @@ class FeedbackTests(unittest.TestCase):
                 host.command("ready", command, stdout="True\r\n" if os.name == "nt" else "")
                 state = host.state()
                 self.assertEqual(len(state["root_controls"]), 1)
-                directory = host.root / "private/sessions" / host.session_id
+                directory = host.root / "private/sessions-v2" / host.session_id
                 view = cg.current_feedback_view(state, directory)
                 self.assertTrue(any(row["business_state"] == "remaining"
                                     for row in view["items"]))
@@ -59,7 +59,7 @@ class FeedbackTests(unittest.TestCase):
         h.readback("read", target, "after\n")
         state = h.state()
         original = copy.deepcopy(state)
-        directory = h.root / "private/sessions" / h.session_id
+        directory = h.root / "private/sessions-v2" / h.session_id
         view = cg.current_feedback_view(state, directory)
         observed = [row for row in view["items"] if row["business_state"] == "observed"]
         self.assertTrue(observed)
@@ -80,7 +80,7 @@ class FeedbackTests(unittest.TestCase):
         h.write_file(target, "def test_ok(): assert True\n")
         h.start(f"运行 {h.root_target(target)} 的测试。")
         self.ready("exists", target)
-        directory = h.root / "private/sessions" / h.session_id
+        directory = h.root / "private/sessions-v2" / h.session_id
         state = h.state()
         view = cg.current_feedback_view(state, directory)
         self.assertTrue(any(row["business_state"] == "remaining" for row in view["items"]))
@@ -98,7 +98,7 @@ class FeedbackTests(unittest.TestCase):
         h.start(f'现在分别运行 "{first}" 和 "{second}" 的测试。')
         for index, target in enumerate((first, second)):
             self.ready(f"exists-{index}", target)
-        view = cg.current_feedback_view(h.state(), h.root / "private/sessions" / h.session_id)
+        view = cg.current_feedback_view(h.state(), h.root / "private/sessions-v2" / h.session_id)
         tests = [row for row in view["items"] if row["predicate"] == "test_run_completed"]
         self.assertEqual(len(tests), 2)
         self.assertTrue(all(row["business_state"] == "remaining" for row in tests))
@@ -108,7 +108,7 @@ class FeedbackTests(unittest.TestCase):
         marker = "APPROVE-" + "x" * 1000
         h.start(f"不得发布。收到 {marker} 后才运行测试。")
         state = h.state()
-        directory = h.root / "private/sessions" / h.session_id
+        directory = h.root / "private/sessions-v2" / h.session_id
         packet = cg.recovery_packet(directory, state, char_limit=1800)
         self.assertLessEqual(len(packet), 1800)
         self.assertIn("Integrity status:", packet)
@@ -125,7 +125,7 @@ class FeedbackTests(unittest.TestCase):
         cg.add_wait_condition(state, state["work_state"]["active_work_unit_id"],
                               kind="one_shot", condition_type="input",
                               raised_by_kind="root_user", raised_by_source=state["prompts"][-1]["id"])
-        directory = h.root / "private/sessions" / h.session_id
+        directory = h.root / "private/sessions-v2" / h.session_id
         for limit in (1800, 15000):
             packet = cg.recovery_packet(directory, state, char_limit=limit)
             total, listed, omitted = map(int, re.search(

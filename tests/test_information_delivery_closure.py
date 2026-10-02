@@ -62,7 +62,7 @@ class InformationDeliveryHarness(unittest.TestCase):
         return payload
 
     def session_dir(self) -> Path:
-        return self.data_dir / "private" / "sessions" / "information-delivery-suite"
+        return self.data_dir / "private" / "sessions-v2" / "information-delivery-suite"
 
     def state(self):
         return self.cg.load_state(self.session_dir(), self.payload("Stop"))

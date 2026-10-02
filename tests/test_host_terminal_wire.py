@@ -129,7 +129,7 @@ class HostTerminalWireTests(unittest.TestCase):
                                tool_input={"command": source}, tool_response=response))
 
     def state(self):
-        return cg.load_state(self.root / "private/sessions" / self.session_id,
+        return cg.load_state(self.root / "private/sessions-v2" / self.session_id,
                              self.event("Stop"))
 
     def test_real_wire_edit_test_readback_can_close_combined_root(self):
@@ -552,7 +552,7 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.patch(f"postimage-edit-{index}", target, "old\n", actual)
                 self.readback(f"postimage-read-{index}", target, actual)
                 basis = cg._current_action_basis(
-                    self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+                    self.state(), "local_edit", "", self.root / "private/sessions-v2" / self.session_id,
                     include_satisfied=True, include_unready=True)
                 self.assertIsNotNone(basis)
                 self.assertEqual(basis["predicate_state"],
@@ -564,7 +564,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.start(f'已知 "{target}"。请把它改为恰好 mode=on 加一个换行。')
         self.patch("first-edit", target, "old\n", "mode=on\n")
         self.readback("first-read", target, "mode=on\n")
-        session_dir = self.root / "private/sessions" / self.session_id
+        session_dir = self.root / "private/sessions-v2" / self.session_id
         first = cg._current_action_basis(self.state(), "local_edit", "", session_dir,
                                          include_satisfied=True)
         self.assertEqual(first["predicate_state"], "satisfied")
@@ -581,7 +581,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.write_file(other, "untouched\n")
         self.start("现在评估这次修改的效果并报告结果。")
         self.command("review-ready", f"test -f {target}", response="")
-        session_dir = self.root / "private/sessions" / self.session_id
+        session_dir = self.root / "private/sessions-v2" / self.session_id
         review = cg._current_action_basis(self.state(), "local_review", "", session_dir,
                                           include_unready=True)
         self.assertIsNotNone(review)
@@ -594,7 +594,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.start(f"请运行 `{command}`，并根据结果报告并检查文件 {other}。")
         self.command("test-only", command, stdout="1 passed\n", response="1 passed\n")
         test = cg._current_action_basis(
-            self.state(), "test_verify", "", self.root / "private/sessions" / self.session_id,
+            self.state(), "test_verify", "", self.root / "private/sessions-v2" / self.session_id,
             include_satisfied=True)
         self.assertIsNotNone(test)
         self.assertFalse(test["core_projection"]["certifiable"])
@@ -618,7 +618,7 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.start(root)
                 self.patch(f"negative-edit-{index}", target, "off\n", "mode=on\n")
                 self.assertIsNone(cg._current_action_basis(
-                    self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+                    self.state(), "local_edit", "", self.root / "private/sessions-v2" / self.session_id,
                     include_satisfied=True))
 
     def test_anaphoric_edit_does_not_choose_between_two_same_root_objects(self):
@@ -628,7 +628,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.start(f'已知 "{first}" 和 "{second}"。请把它改为 on。')
         self.patch("ambiguous-edit", first, "off\n", "on\n")
         self.assertIsNone(cg._current_action_basis(
-            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            self.state(), "local_edit", "", self.root / "private/sessions-v2" / self.session_id,
             include_satisfied=True))
         self.session_id = "ambiguous-english"
         self.rows = [self.record("session_meta", {
@@ -638,7 +638,7 @@ class HostTerminalWireTests(unittest.TestCase):
                    'Update it to mode=on plus newline and read it back.')
         self.patch("ambiguous-english-edit", first, "on\n", "mode=on\n")
         self.assertIsNone(cg._current_action_basis(
-            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            self.state(), "local_edit", "", self.root / "private/sessions-v2" / self.session_id,
             include_satisfied=True))
 
     def test_same_root_referent_and_readback_synonyms_close_from_real_host_facts(self):
@@ -1012,7 +1012,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.command("failing-test", command, code=1, stdout="1 failed\n")
         cg.dispatch(self.event("Stop", last_assistant_message="测试失败。退出码 1，失败 1。"))
         basis = cg._current_action_basis(
-            self.state(), "test_verify", "", self.root / "private/sessions" / self.session_id,
+            self.state(), "test_verify", "", self.root / "private/sessions-v2" / self.session_id,
             include_satisfied=True, include_unready=True)
         self.assertIsNotNone(basis)
         self.assertEqual(basis["predicate"], "test_passed")
@@ -1029,7 +1029,7 @@ class HostTerminalWireTests(unittest.TestCase):
                      parsed_cmd=[{"type": "read", "cmd": f"cat {target}",
                                   "name": target.name, "path": str(target)}])
         self.assertIsNone(cg._current_action_basis(
-            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            self.state(), "local_edit", "", self.root / "private/sessions-v2" / self.session_id,
             include_satisfied=True))
 
     def test_context_clause_with_preservation_rule_remains_uninterpreted(self):
@@ -1056,7 +1056,7 @@ class HostTerminalWireTests(unittest.TestCase):
         cg.dispatch(self.event("UserPromptSubmit", prompt="请把它改为 on。"))
         self.patch("cross-root-edit", target, "off\n", "on\n")
         self.assertIsNone(cg._current_action_basis(
-            self.state(), "local_edit", "", self.root / "private/sessions" / self.session_id,
+            self.state(), "local_edit", "", self.root / "private/sessions-v2" / self.session_id,
             include_satisfied=True))
 
     def test_backtick_test_object_is_not_authority_when_quoted_or_negated(self):
@@ -1077,7 +1077,7 @@ class HostTerminalWireTests(unittest.TestCase):
                 self.write_rows()
                 self.start(root)
                 self.assertIsNone(cg._current_action_basis(
-                    self.state(), "test_verify", "", self.root / "private/sessions" / self.session_id,
+                    self.state(), "test_verify", "", self.root / "private/sessions-v2" / self.session_id,
                     include_satisfied=True))
 
     def test_quoted_same_file_edit_and_test_remain_distinct(self):
@@ -1125,7 +1125,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.patch("patch", target, "before\n", "after\n")
         self.readback("read-after", target, "after\n")
         state = self.state()
-        session_dir = self.root / "private/sessions" / self.session_id
+        session_dir = self.root / "private/sessions-v2" / self.session_id
         before_projection = cg.current_core_projections(state, session_dir)
         self.assertTrue(before_projection[0]["certifiable"])
         # No new Host event or event watermark: a later filesystem change is
@@ -1141,7 +1141,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.start(f"请修改 {self.root_target(target)}。")
         cg.dispatch(self.event("UserPromptSubmit", prompt="请检查工作状态。"))
         state = self.state()
-        session_dir = self.root / "private/sessions" / self.session_id
+        session_dir = self.root / "private/sessions-v2" / self.session_id
         original_scope = cg.current_scope_projection
         original_basis = cg._current_action_basis
         original_core = cg.current_core_projections
@@ -1214,7 +1214,7 @@ class HostTerminalWireTests(unittest.TestCase):
         self.readback("first-read", target, "after\n")
         cg.dispatch(self.event("UserPromptSubmit", prompt=f"请修改 {locator}，并核对改动后的文件。"))
         state = self.state()
-        session_dir = self.root / "private/sessions" / self.session_id
+        session_dir = self.root / "private/sessions-v2" / self.session_id
         roots = {p["id"]: cg.read_prompt_record(session_dir, p)
                  for p in state["prompts"] if p.get("origin", "human") == "human"}
         from cg_codex_core_adapter import project_current_action

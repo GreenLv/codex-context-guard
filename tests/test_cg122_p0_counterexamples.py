@@ -273,12 +273,12 @@ class P0Harness(unittest.TestCase):
         self.assertTrue(self.state(session)["mode"]["active"])
 
     def state(self, session: str = "p0") -> dict:
-        path = self.root / "private" / "sessions" / session / "state.json"
+        path = self.root / "private" / "sessions-v2" / session / "state.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
     def save_state(self, state: dict, session: str = "p0") -> None:
         state["content_hash"] = cg.state_content_hash(state)
-        cg.save_state(self.root / "private" / "sessions" / session, state)
+        cg.save_state(self.root / "private" / "sessions-v2" / session, state)
 
     def unit(self, state: dict, unit_id: str) -> dict:
         return next(
@@ -1063,7 +1063,7 @@ class RecoveryCounterexampleTests(P0Harness):
     )
 
     def build_state_with_history(self, current_text: str) -> tuple[Path, dict]:
-        session_dir = self.root / "private" / "sessions" / "p0"
+        session_dir = self.root / "private" / "sessions-v2" / "p0"
         self.activate()
         self.prompt("请保持当前修复任务直到验证完成。必须运行测试验证。")
         state = self.state()
@@ -1609,7 +1609,7 @@ class MigrationCounterexampleTests(P0Harness):
 
     def load_frozen_schema10_fixture(self) -> tuple[Path, dict]:
         fixture = json.loads(SCHEMA10_PARKED_FIXTURE)
-        session_dir = self.root / "private" / "sessions" / "p0"
+        session_dir = self.root / "private" / "sessions-v2" / "p0"
         session_dir.mkdir(parents=True, exist_ok=True)
         (session_dir / "state.json").write_text(
             SCHEMA10_PARKED_FIXTURE, encoding="utf-8"

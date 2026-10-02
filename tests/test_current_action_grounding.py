@@ -49,7 +49,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
         return cg.dispatch(self.event("Stop", last_assistant_message=reply))
 
     def state(self):
-        return cg.load_state(self.data / "sessions" / self.session, self.event("Stop"))
+        return cg.load_state(self.data / "sessions-v2" / self.session, self.event("Stop"))
 
     def host(
         self, command: str, output: str = "", code: int = 0,
@@ -443,7 +443,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
         state = self.state()
         requirement = state["requirements"][-1]
         requirement["status"] = "pending"  # legacy residue, effect stays trusted
-        cg.save_state(self.data / "sessions" / self.session, state)
+        cg.save_state(self.data / "sessions-v2" / self.session, state)
         self.submit("继续。")
         self.assertFalse(self.state()["root_controls"])
 
@@ -659,7 +659,7 @@ class CurrentActionGroundingTests(unittest.TestCase):
                          "basis_requirement_id": None, "basis_as_of": None}],
             "core_projections": [],
         })
-        cg.save_state(self.data / "sessions" / self.session, state)
+        cg.save_state(self.data / "sessions-v2" / self.session, state)
         self.submit("继续。")
         self.stop("旧记录没有当前来源，因此没有可恢复的执行动作。")
         recovered = self.state()

@@ -64,7 +64,7 @@ class CommitBoundaryMatrix(unittest.TestCase):
     def raw_state(self):
         directory = getattr(self, "_wire_session_dir", None)
         if directory is None:
-            directory = self.root / "private/sessions" / SESSION
+            directory = self.root / "private/sessions-v2" / SESSION
         return json.loads(
             (directory / "state.json").read_text(encoding="utf-8"))
 
@@ -132,7 +132,7 @@ class CommitBoundaryMatrix(unittest.TestCase):
                           response="1 passed\n")
         # The Stop dispatch below uses self.event()/self.raw_state(); route
         # them to the harness session.
-        self._wire_session_dir = self.wire.root / "private/sessions" / self.wire.session_id
+        self._wire_session_dir = self.wire.root / "private/sessions-v2" / self.wire.session_id
         self._wire_event_base = {
             "session_id": self.wire.session_id,
             "cwd": str(self.wire.cwd),
@@ -146,7 +146,7 @@ class CommitBoundaryMatrix(unittest.TestCase):
         state = self.raw_state()
         directory = getattr(self, "_wire_session_dir", None)
         if directory is None:
-            directory = self.root / "private/sessions" / SESSION
+            directory = self.root / "private/sessions-v2" / SESSION
         metadata = next(p for p in state["prompts"]
                         if p.get("origin", "human") == "human" and p.get("file"))
         path = directory / metadata["file"]

@@ -41,7 +41,7 @@ class StopV5Tests(unittest.TestCase):
                     def event(kind, turn, **fields):
                         return dict(hook_event_name=kind, session_id=session,
                                     cwd=tmp, turn_id=turn, **fields)
-                    directory = Path(tmp) / "private/sessions" / session
+                    directory = Path(tmp) / "private/sessions-v2" / session
                     cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                     cg.dispatch(event("UserPromptSubmit", "t1", prompt=(
                         f"继续执行，运行 {root_locator(suite)} 的测试。")))
@@ -119,7 +119,7 @@ class StopV5Tests(unittest.TestCase):
                     cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                     cg.dispatch(event("UserPromptSubmit", "t1", prompt="运行 suite 测试。"))
                     cg.dispatch(event("UserPromptSubmit", "t2", prompt=text))
-                    directory = Path(tmp) / "private/sessions" / session
+                    directory = Path(tmp) / "private/sessions-v2" / session
                     state = cg.load_state(directory, event("Stop", "t2"))
                     self.assertEqual(state["root_controls"], [])
                     projected = cg.current_root_control_projection(state, directory)
@@ -150,7 +150,7 @@ class StopV5Tests(unittest.TestCase):
                     cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                     cg.dispatch(event("UserPromptSubmit", "t1", prompt="运行 suite 测试。"))
                     cg.dispatch(event("UserPromptSubmit", "t2", prompt=text))
-                    directory = Path(tmp) / "private/sessions" / session
+                    directory = Path(tmp) / "private/sessions-v2" / session
                     state = cg.load_state(directory, event("Stop", "t2"))
                     self.assertEqual(state["root_controls"][-1]["kind"], "cancel")
                     self.assertEqual(state["work_state"]["active_work_unit_id"], None)
@@ -183,7 +183,7 @@ class StopV5Tests(unittest.TestCase):
                 def event(kind, turn, **fields):
                     return dict(hook_event_name=kind, session_id=session,
                                 cwd=tmp, turn_id=turn, **fields)
-                directory = Path(tmp) / "private/sessions" / session
+                directory = Path(tmp) / "private/sessions-v2" / session
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                 cg.dispatch(event("UserPromptSubmit", "t1", prompt=(
                     f"请运行 {root_locator(suite)} 的测试并持续执行直到任务完成。")))
@@ -234,7 +234,7 @@ class StopV5Tests(unittest.TestCase):
                     cg.dispatch(event("t0", "context-guard on"))
                     for index, root in enumerate(roots, start=1):
                         cg.dispatch(event(f"t{index}", root))
-                    directory = Path(tmp) / "private/sessions" / session
+                    directory = Path(tmp) / "private/sessions-v2" / session
                     state = cg.load_state(directory, dict(hook_event_name="Stop",
                         session_id=session, cwd=tmp, turn_id=f"t{len(roots)}"))
                     controls = [c for c in state["root_controls"]
@@ -266,7 +266,7 @@ class StopV5Tests(unittest.TestCase):
                                 cwd=tmp, turn_id=turn, prompt=prompt)
                 cg.dispatch(event("t0", "context-guard on"))
                 cg.dispatch(event("t1", f"修改 {root_locator(target)} 并运行 {root_locator(target)} 的测试。不要停止,一直推进直到完成。"))
-                directory = Path(tmp) / "private/sessions" / session
+                directory = Path(tmp) / "private/sessions-v2" / session
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id=session, cwd=tmp, turn_id="t1"))
                 children = [r for r in state["requirements"]
@@ -304,7 +304,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("t0", "context-guard on"))
                 cg.dispatch(event("t1", f"修改 {root_locator(target)}，并运行 {root_locator(target)} 的单元测试，"
                           f"并运行 {root_locator(target)} 的回归测试。不要停止,一直推进直到完成。"))
-                directory = Path(tmp) / "private/sessions" / session
+                directory = Path(tmp) / "private/sessions-v2" / session
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id=session, cwd=tmp, turn_id="t1"))
                 children = [r for r in state["requirements"]
@@ -338,7 +338,7 @@ class StopV5Tests(unittest.TestCase):
                                 cwd=tmp, turn_id=turn, prompt=prompt)
                 cg.dispatch(event("t0", "context-guard on"))
                 cg.dispatch(event("t1", "运行 suite 测试。不要停止,一直推进直到完成。"))
-                directory = Path(tmp) / "private/sessions" / session
+                directory = Path(tmp) / "private/sessions-v2" / session
                 before = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id=session, cwd=tmp, turn_id="t1"))
                 prior = next(c for c in before["root_controls"]
@@ -753,7 +753,7 @@ class StopV5Tests(unittest.TestCase):
                 if preparation:
                     preparation(cg, event, tmp)
                 result = cg.dispatch(event("Stop", last_assistant_message=final))
-                state = cg.load_state(Path(tmp) / "private/sessions/synthetic-v5", event("Stop"))
+                state = cg.load_state(Path(tmp) / "private/sessions-v2/synthetic-v5", event("Stop"))
                 if include_state:
                     return result, state["decision_log"][-1], state
                 return result, state["decision_log"][-1]
@@ -801,12 +801,12 @@ class StopV5Tests(unittest.TestCase):
                                       prompt=interlude))
                     result = cg.dispatch(event(
                         "Stop", "t2", last_assistant_message="空输入需要返回默认结果。"))
-                    state = cg.load_state(Path(tmp) / "private/sessions/interlude-fixture",
+                    state = cg.load_state(Path(tmp) / "private/sessions-v2/interlude-fixture",
                                           event("Stop", "t2"))
                     decision = state["decision_log"][-1]
                     basis = cg._current_action_basis(
                         state, "test_verify", "",
-                        Path(tmp) / "private/sessions/interlude-fixture")
+                        Path(tmp) / "private/sessions-v2/interlude-fixture")
                     self.assertEqual(result.get("decision") == "block", expected_block,
                                      (decision["outcome"], decision["reason_codes"], decision["actions"],
                                       None if basis is None else {
@@ -820,7 +820,7 @@ class StopV5Tests(unittest.TestCase):
                     if expected_block:
                         self.assertIn("explicit_user_persistence", decision["reason_codes"])
                         normalized = cg.current_root_control_projection(
-                            state, Path(tmp) / "private/sessions/interlude-fixture")
+                            state, Path(tmp) / "private/sessions-v2/interlude-fixture")
                         self.assertIsNotNone(normalized)
                         self.assertIn("persistent", normalized["root_control_states"].values())
                         self.assertEqual([a["requirement_id"] for a in normalized["current_actions"]],
@@ -842,7 +842,7 @@ class StopV5Tests(unittest.TestCase):
                 def event(kind, turn, **fields):
                     return dict(hook_event_name=kind, session_id="control-catalog-v5",
                                 cwd=tmp, turn_id=turn, **fields)
-                session_dir = Path(tmp) / "private/sessions/control-catalog-v5"
+                session_dir = Path(tmp) / "private/sessions-v2/control-catalog-v5"
                 target = Path(tmp) / "a.py"
                 target.write_bytes(b"before\n")
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
@@ -938,7 +938,7 @@ class StopV5Tests(unittest.TestCase):
                                       prompt=f"请修改 {target}。"))
                     cg.dispatch(event("UserPromptSubmit", "t2",
                                       prompt=f"取消 {target if matching else other}。"))
-                    directory = Path(tmp) / "private/sessions/exact-control-v5"
+                    directory = Path(tmp) / "private/sessions-v2/exact-control-v5"
                     state = cg.load_state(directory, event("Stop", "t2"))
                     bindings = [c for c in state["root_controls"] if c.get("kind") == "cancel"]
                     self.assertEqual(bool(bindings), matching)
@@ -974,7 +974,7 @@ class StopV5Tests(unittest.TestCase):
                                   prompt=f"请修改 {root_locator(target)}，并运行 {root_locator(target)} 的测试。"))
                 cg.dispatch(event("UserPromptSubmit", "t2",
                                   prompt="持续执行直到当前任务完成。"))
-                directory = Path(tmp) / "private/sessions/drop-child-v5"
+                directory = Path(tmp) / "private/sessions-v2/drop-child-v5"
                 state = cg.load_state(directory, event("Stop", "t2"))
                 tampered = copy.deepcopy(state)
                 binding = tampered["root_controls"][0]
@@ -1021,7 +1021,7 @@ class StopV5Tests(unittest.TestCase):
                     cg.dispatch(event("UserPromptSubmit", "t2", prompt=f"请运行 {root_locator(b)} 的测试。"))
                     cg.dispatch(event("UserPromptSubmit", "t3",
                                       prompt="持续执行直到当前任务完成。"))
-                    directory = Path(tmp) / "private/sessions/independent-root-v5"
+                    directory = Path(tmp) / "private/sessions-v2/independent-root-v5"
                     state = cg.load_state(directory, event("Stop", "t3"))
                     self.assertEqual(state["integrity"]["status"], "ok")
                     self.assertEqual(len(state["root_controls"][0]["items"]), 2)
@@ -1076,7 +1076,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("UserPromptSubmit", "t2",
                                   prompt="持续执行直到当前任务完成。"))
                 cg.dispatch(event("UserPromptSubmit", "t3", prompt=f"请修改 {root_locator(b)}。"))
-                directory = Path(tmp) / "private/sessions/unsourced-successor-v5"
+                directory = Path(tmp) / "private/sessions-v2/unsourced-successor-v5"
                 state = cg.load_state(directory, event("Stop", "t3"))
                 self.assertEqual(state["supersedes"], [])
                 self.assertEqual(state["integrity"]["status"], "ok")
@@ -1118,7 +1118,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("t0", "context-guard on"))
                 cg.dispatch(event("t1", f"请修改 {root_locator(a)}。"))
                 cg.dispatch(event("t2", "持续执行直到当前任务完成。"))
-                directory = Path(tmp) / "private/sessions/uncommitted-root-v5"
+                directory = Path(tmp) / "private/sessions-v2/uncommitted-root-v5"
                 before = cg.load_state(directory, event("t2", ""))
                 self.assertEqual(before["integrity"]["status"], "ok")
                 self.assertIsNotNone(cg.current_root_control_projection(before, directory))
@@ -1155,7 +1155,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("UserPromptSubmit", "t1",
                                   prompt=f"请修复 {root_locator(target)}，并运行 {root_locator(target)} 的测试。"))
                 cg.dispatch(event("UserPromptSubmit", "t2", prompt="暂停这项修复。"))
-                directory = Path(tmp) / "private/sessions/parent-control-v5"
+                directory = Path(tmp) / "private/sessions-v2/parent-control-v5"
                 state = cg.load_state(directory, event("Stop", "t2"))
                 bindings = [c for c in state["root_controls"] if c.get("kind") == "pause"]
                 self.assertEqual(len(bindings), 1)
@@ -1185,7 +1185,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("UserPromptSubmit", "t0", prompt="context-guard on"))
                 cg.dispatch(event("UserPromptSubmit", "t1", prompt=(
                     "请持续完成本轮 parser 修复和测试，直到当前任务完成。")))
-                directory = Path(tmp) / "private/sessions/qualified-control-v5"
+                directory = Path(tmp) / "private/sessions-v2/qualified-control-v5"
                 state = cg.load_state(directory, event("Stop", "t1"))
                 controls = [c for c in state["root_controls"]
                             if c.get("kind") == "persistence"]
@@ -1212,7 +1212,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("t0", "context-guard on"))
                 cg.dispatch(event("t1", "请运行当前测试。"))
                 cg.dispatch(event("t2", "持续推进，直到本轮测试完成为止。"))
-                directory = Path(tmp) / "private/sessions/test-role-control-v5"
+                directory = Path(tmp) / "private/sessions-v2/test-role-control-v5"
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
                                     session_id="test-role-control-v5", cwd=tmp,
                                     turn_id="t2"))
@@ -1245,7 +1245,7 @@ class StopV5Tests(unittest.TestCase):
                     f"请修复 {root_locator(target)}，运行 {root_locator(target)} 的单元测试，"
                     f"然后运行 {root_locator(target)} 的回归测试。")))
                 cg.dispatch(event("repair-graph-positive", "t2", "暂停这项修复。"))
-                directory = Path(tmp) / "private/sessions/repair-graph-positive"
+                directory = Path(tmp) / "private/sessions-v2/repair-graph-positive"
                 state = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id="repair-graph-positive", cwd=tmp, turn_id="t2"))
                 children = [r for r in state["requirements"]
@@ -1270,7 +1270,7 @@ class StopV5Tests(unittest.TestCase):
                     f"请修复 {root_locator(target)}，并运行 {root_locator(other)} 的测试。")))
                 cg.dispatch(event("repair-graph-negative", "t2", "暂停这项修复。"))
                 other_state = cg.load_state(
-                    Path(tmp) / "private/sessions/repair-graph-negative",
+                    Path(tmp) / "private/sessions-v2/repair-graph-negative",
                     dict(hook_event_name="Stop", session_id="repair-graph-negative",
                          cwd=tmp, turn_id="t2"))
                 self.assertFalse(any(r.get("required_for_item_id")
@@ -1298,7 +1298,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("t0", "context-guard on"))
                 cg.dispatch(event("t1", f"请修改 {root_locator(a)}。"))
                 cg.dispatch(event("t2", "持续执行直到当前任务完成。"))
-                directory = Path(tmp) / "private/sessions/history-control-v5"
+                directory = Path(tmp) / "private/sessions-v2/history-control-v5"
                 earlier = cg.load_state(directory, dict(hook_event_name="Stop",
                     session_id="history-control-v5", cwd=tmp, turn_id="t2"))
                 before = cg.current_root_control_projection(earlier, directory)
@@ -1363,7 +1363,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("context-guard on"))
                 response = cg.dispatch(event("context-guard goal-adopt"))
                 self.assertIn("capability_unavailable", str(response))
-                state = cg.load_state(Path(tmp) / "private/sessions/goal-capability-v5",
+                state = cg.load_state(Path(tmp) / "private/sessions-v2/goal-capability-v5",
                                       event("context-guard status"))
                 self.assertEqual(state["requirements"], [])
                 self.assertIn("goal_host_completion=capability_unavailable",
@@ -1532,7 +1532,7 @@ class StopV5Tests(unittest.TestCase):
                 observed("push origin main", "To local fixture\n")
                 observed("ls-remote origin refs/heads/main", f"{new}\trefs/heads/main\n")
                 cg.dispatch(event("Stop", last_assistant_message="提交并推送完成。"))
-                state = cg.load_state(root / "private/sessions/git-replay-v5", event("Stop"))
+                state = cg.load_state(root / "private/sessions-v2/git-replay-v5", event("Stop"))
                 rows = state["decision_log"][-1]["core_projections"]
                 self.assertEqual({row["predicate"] for row in rows},
                                  {"commit_verified", "push_verified", "commit_and_push"})
@@ -1604,7 +1604,7 @@ class StopV5Tests(unittest.TestCase):
                         observed("ls-remote origin refs/heads/main",
                                  f"{new}\trefs/heads/main\n")
                         cg.dispatch(event("Stop", last_assistant_message="提交并推送完成。"))
-                    state = cg.load_state(Path(tmp) / "private/sessions/win-git-v5", event("Stop"))
+                    state = cg.load_state(Path(tmp) / "private/sessions-v2/win-git-v5", event("Stop"))
                     predicates = {r["predicate"] for r in state["decision_log"][-1]["core_projections"]}
                     self.assertEqual(predicates == {
                         "commit_verified", "push_verified", "commit_and_push"}, expected)
@@ -1643,7 +1643,7 @@ class StopV5Tests(unittest.TestCase):
                     if mode not in {"stale_selection", "reply_only"}:
                         selected(repo_c if mode == "wrong_target" else repo_b)
                     cg.dispatch(event("Stop", last_assistant_message=f"将在 {repo_b} 提交并推送。"))
-                    state = cg.load_state(root / "private/sessions/git-negative-v5", event("Stop"))
+                    state = cg.load_state(root / "private/sessions-v2/git-negative-v5", event("Stop"))
                     self.assertEqual(state["decision_log"][-1]["core_projections"], [])
                 finally:
                     if previous is None:
@@ -1686,7 +1686,7 @@ class StopV5Tests(unittest.TestCase):
                     remote = "c" * 40 if defect == "remote" else new
                     observed("ls-remote origin refs/heads/main", f"{remote}\trefs/heads/main\n")
                     cg.dispatch(event("Stop", last_assistant_message="已完成。"))
-                    state = cg.load_state(root / "private/sessions/git-effect-v5", event("Stop"))
+                    state = cg.load_state(root / "private/sessions-v2/git-effect-v5", event("Stop"))
                     aggregates = [row for row in state["decision_log"][-1]["core_projections"]
                                   if row["predicate"] == "commit_and_push"]
                     self.assertFalse(aggregates and aggregates[0]["certifiable"])
@@ -1869,7 +1869,7 @@ class StopV5Tests(unittest.TestCase):
                 cg.dispatch(event("PostToolUse", tool_name="exec_command",
                                   tool_input={"cmd": f"test -f {suite}"},
                                   tool_response={"exit_code": 0, "output": ""}))
-                directory = Path(tmp) / "private/sessions/sequence-v5"
+                directory = Path(tmp) / "private/sessions-v2/sequence-v5"
                 state = cg.load_state(directory, event("Stop"))
                 item = state["requirements"][-1]
                 root = next(p for p in state["prompts"] if p["id"] == item["prompt_id"])
@@ -1945,7 +1945,7 @@ class StopV5Tests(unittest.TestCase):
                                   tool_input={"cmd": f"cat {api}"},
                                   tool_response={"exit_code": 0, "output": "new\n"}))
                 cg.dispatch(event("Stop", "current", last_assistant_message="API 文件已修改并回读。"))
-                directory = Path(tmp) / "private/sessions/late-v5"
+                directory = Path(tmp) / "private/sessions-v2/late-v5"
                 state = cg.load_state(directory, event("Stop", "current"))
                 rows = [r for r in state["decision_log"][-1]["core_projections"]
                         if r["predicate"] == "edit_with_prohibition"]

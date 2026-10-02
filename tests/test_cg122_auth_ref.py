@@ -347,7 +347,7 @@ class RefStatementStandardProfileTransferTests(unittest.TestCase):
         # Plain allow wire: no permissionDecision text, no deny.
         self.assertEqual(result, {})
         state = json.loads(
-            (Path(self.temp.name) / "private" / "sessions" / "r5" / "state.json")
+            (Path(self.temp.name) / "private" / "sessions-v2" / "r5" / "state.json")
             .read_text(encoding="utf-8")
         )
         self.assertTrue(

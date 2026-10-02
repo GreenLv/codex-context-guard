@@ -25,6 +25,12 @@ from scripts.cg_process_tree import OwnedProcess  # noqa: E402
 from scripts.manage_plugin import tree_manifest  # noqa: E402
 from tools.validation.acceptance_identity import prepared_source_identity  # noqa: E402
 
+
+def session_state_path(root: Path, thread: str) -> Path:
+    """Read the observed session namespace; never create or import state."""
+    v2 = root / 'sessions-v2' / thread / 'state.json'
+    return v2 if v2.is_file() else root / 'sessions' / thread / 'state.json'
+
 PROFILE = 'stop_host/v1'
 EVENTS = {'preToolUse', 'postToolUse', 'preCompact', 'sessionStart', 'sessionEnd',
           'userPromptSubmit', 'subagentStart', 'subagentStop', 'stop'}
@@ -312,7 +318,7 @@ def collect(plan, output):
                      client.turn(thread, LONG),
                      client.turn(thread, '继续保留上述待办，不执行工作。仅回复“等待后续安排”。')]
         def snapshot(tid, name):
-            state = read_json(Path(plan['data_root']) / 'sessions' / tid / 'state.json')
+            state = read_json(session_state_path(Path(plan['data_root']), tid))
             (output / (name + '.json')).write_text(json.dumps(state), encoding='utf-8')
             return state
         before = snapshot(thread, 'before-compact')

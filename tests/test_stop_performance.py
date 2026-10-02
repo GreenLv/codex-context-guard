@@ -223,7 +223,7 @@ class CommitAtomicityTests(unittest.TestCase):
 
     def raw_state(self):
         return json.loads(
-            (self.root / "private/sessions/atomicity/state.json").read_text(
+            (self.root / "private/sessions-v2/atomicity/state.json").read_text(
                 encoding="utf-8"))
 
     def _activated_with_success_evidence(self, prompt):
@@ -248,7 +248,7 @@ class CommitAtomicityTests(unittest.TestCase):
     def _corrupt_prompt_record(self, state, mode):
         prompt = next(p for p in state["prompts"]
                       if p.get("origin", "human") == "human" and p.get("file"))
-        path = self.root / "private/sessions/atomicity" / prompt["file"]
+        path = self.root / "private/sessions-v2/atomicity" / prompt["file"]
         if mode == "delete":
             path.unlink()
             return

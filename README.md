@@ -12,7 +12,9 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **0.14.3 — 2026-09-29.** Faster completion checks for long tasks, with rollback if source records change during evaluation. No state migration is needed. See the [release notes](docs/releases/v0.14.3.md) for the changes and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for the tested scope.
+> **Latest published: 0.14.3 — 2026-09-29.** Faster completion checks for long tasks, with rollback if source records change during evaluation. No state migration is needed. See the [release notes](docs/releases/v0.14.3.md) for the changes and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for the tested scope.
+
+> **0.15.0 source candidate (Unreleased):** lower Hook startup overhead and shorter instructions. New sessions use isolated state; existing tasks must continue under their original runtime. There is no state migration. See the candidate [release notes](docs/releases/v0.15.0.md) and [upgrade boundaries](docs/COMPATIBILITY.md) before testing this source.
 
 ## Install
 

@@ -53,7 +53,7 @@ class CaseFixture:
         self.root = str(Path(tempfile.mkdtemp(prefix=prefix)).resolve())
         os.environ["CONTEXT_GUARD_DATA_DIR"] = self.root
         self.session = prefix
-        self.directory = Path(self.root) / "sessions" / self.session
+        self.directory = Path(self.root) / "sessions-v2" / self.session
         self.turn = 0
         if activate:
             self.prompt("context-guard on")

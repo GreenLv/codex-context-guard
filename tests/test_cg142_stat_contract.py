@@ -89,7 +89,7 @@ class StatContractTests(unittest.TestCase):
         item['payload']['thread_id'] = h.session_id
         h.rows.append(item)
         h.write_rows()
-        directory = h.root / 'private/sessions' / h.session_id
+        directory = h.root / 'private/sessions-v2' / h.session_id
         original = copy.deepcopy(h.state()['requirements'])
         with patch.object(obs.os, 'fstat', side_effect=self.shifted_fstat):
             wire.cg.dispatch(h.event('PreCompact'))

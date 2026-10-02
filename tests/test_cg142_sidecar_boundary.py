@@ -23,7 +23,7 @@ class SidecarBoundaryTests(unittest.TestCase):
         event['payload']['thread_id'] = h.session_id
         h.rows.append(event)
         h.write_rows()
-        directory = h.root / 'private/sessions' / h.session_id
+        directory = h.root / 'private/sessions-v2' / h.session_id
         cg.dispatch(h.event('PreCompact'))
         self.assertEqual(cg.commentary_summary(directory,h.state())['status'],'observed')
         return h, directory, directory / 'commentary-observation.json'

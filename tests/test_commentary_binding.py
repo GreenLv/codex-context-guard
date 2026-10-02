@@ -402,7 +402,7 @@ class CompoundQuestionBindingTests(unittest.TestCase):
         answer['payload']['thread_id'] = host.session_id
         host.rows.append(answer)
         host.write_rows()
-        self.directory = host.root / 'private/sessions' / host.session_id
+        self.directory = host.root / 'private/sessions-v2' / host.session_id
         self.state = host.state()
         self.item = self.state['requirements'][-1]
         fixture.prepare(self)
