@@ -809,8 +809,12 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("requirement R001", activation)
         self.assertIn("A001", activation)
         self.assertIn("checkpoint-status", activation)
-        self.assertIn("stage-checkpoint", activation)
-        self.assertIn("stage-disposition", activation)
+        # Discovery entry: the resident injection carries exactly one
+        # turn-bound command; the advanced commands are discovered through
+        # checkpoint-status output instead (CGN-04).
+        self.assertNotIn("stage-checkpoint", activation)
+        self.assertNotIn("stage-disposition", activation)
+        self.assertNotIn("register-proof", activation)
         self.assertNotIn("<!--", activation)
         attempt = state["completion_attempt"]
         self.assertEqual(
@@ -931,8 +935,9 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIn("CONTEXT-GUARD RECOVERY PACKET", packet)
         self.assertIn("R001", packet)
         self.assertIn("checkpoint-status", packet)
-        self.assertIn("stage-checkpoint", packet)
-        self.assertIn("stage-disposition", packet)
+        # Discovery entry: advanced commands live in checkpoint-status output.
+        self.assertNotIn("stage-checkpoint", packet)
+        self.assertNotIn("stage-disposition", packet)
         self.assertNotIn("<!--", packet)
         self.assertLessEqual(len(packet), cg.RECOVERY_CHAR_LIMIT)
 
@@ -4799,6 +4804,54 @@ class ContextGuardTests(unittest.TestCase):
             )
         self.assertFalse(result["continue"])
         self.assertIn("private validation failed", result["stopReason"])
+
+    def test_completion_context_is_single_discovery_entry(self) -> None:
+        """CGN-04: resident injection carries one turn-bound discovery
+        command; staging/disposition/proof syntax moves to checkpoint-status
+        output."""
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        state = self.state()
+        attempt = state["completion_attempt"]
+        text = cg.completion_command_context(
+            state, str(attempt["turn_id"]), "test-token"
+        )
+        self.assertIn("checkpoint-status", text)
+        for advanced in ("stage-checkpoint", "stage-disposition", "register-proof"):
+            self.assertNotIn(advanced, text)
+        self.assertLess(len(text), 1800)
+
+    def test_checkpoint_status_output_discovers_advanced_commands(self) -> None:
+        self.prompt(
+            "实现复杂系统。必须保存需求，必须执行测试，必须提供验收证据。"
+        )
+        self.record_tool()
+        common = [
+            "--data-dir",
+            str(self.root / "private"),
+            "--session-id",
+            "session-a",
+            "--turn-id",
+            self.current_turn,
+            "--token",
+            "test-token",
+        ]
+        status = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "checkpoint-status", *common],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(status.returncode, 0, status.stderr)
+        commands = json.loads(status.stdout)["advanced_commands"]
+        self.assertEqual(
+            set(commands),
+            {"status", "stage_checkpoint", "stage_disposition", "register_proof"},
+        )
+        for name, command in commands.items():
+            self.assertIn(name.replace("_", "-"), command)
+            self.assertIn(self.current_turn, command)
 
     def test_private_checkpoint_cli_roundtrip(self) -> None:
         self.prompt(

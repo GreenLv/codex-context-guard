@@ -16103,10 +16103,8 @@ def begin_completion_attempt(
     return turn_id, token
 
 
-def completion_command_context(
-    state: dict[str, Any], turn_id: str, token: str
-) -> str:
-    common = [
+def _completion_common_args(state: dict[str, Any], turn_id: str, token: str) -> list[str]:
+    return [
         "--data-dir",
         str(data_root().resolve()),
         "--session-id",
@@ -16115,18 +16113,39 @@ def completion_command_context(
         turn_id,
         f"--token={token}",
     ]
+
+
+def advanced_command_context(
+    state: dict[str, Any], turn_id: str, token: str
+) -> dict[str, str]:
+    """Turn-bound private control commands for the explicit advanced path.
+
+    Served on demand through checkpoint-status so the resident per-turn
+    injection only has to carry one discovery command (CGN-04).
+    """
+    common = _completion_common_args(state, turn_id, token)
     script = str(Path(__file__).resolve())
+    return {
+        "status": shell_join([sys.executable, script, "checkpoint-status", *common]),
+        "stage_checkpoint": shell_join(
+            [sys.executable, script, "stage-checkpoint", *common]
+        ),
+        "stage_disposition": shell_join(
+            [sys.executable, script, "stage-disposition", *common]
+        ),
+        "register_proof": shell_join(
+            [sys.executable, script, "register-proof", *common, "--manifest",
+             "/path/to/proof.json"]
+        ),
+    }
+
+
+def completion_command_context(
+    state: dict[str, Any], turn_id: str, token: str
+) -> str:
     status_command = shell_join(
-        [sys.executable, script, "checkpoint-status", *common]
-    )
-    stage_command = shell_join(
-        [sys.executable, script, "stage-checkpoint", *common]
-    )
-    disposition_command = shell_join(
-        [sys.executable, script, "stage-disposition", *common]
-    )
-    proof_command = shell_join(
-        [sys.executable, script, "register-proof", *common, "--manifest", "/path/to/proof.json"]
+        [sys.executable, str(Path(__file__).resolve()), "checkpoint-status",
+         *_completion_common_args(state, turn_id, token)]
     )
     scoped_ids, ancestor_ids = checkpoint_scope_item_ids(state)
     requirement_ids = [
@@ -16149,29 +16168,14 @@ def completion_command_context(
         "when the reply shows a verifiable whole completion, the guard binds the "
         "unique successful evidence itself and closes the current work unit; "
         "waiting or deferred boundaries are detected from structured facts and "
-        "end silently. Commands are only for the explicit advanced path (visual "
-        "facts, human evidence selection, or ambiguous evidence). Inspect the "
-        "private ledger with:\n"
-        f"{status_command}\n"
-        "Stage a turn-bound private checkpoint only when deliberately claiming "
-        "whole completion, with one `--requirement ID=E####[,E####]` flag per "
-        "pending requirement and one `--acceptance ID=E####[,E####]` flag per "
-        f"pending acceptance item:\n{stage_command}\n"
-        "A typed boundary can still be staged explicitly by appending "
-        "`--disposition user_wait`, `external_wait`, or `deferred` to this "
-        "command base (advisory; the structured facts remain authoritative):\n"
-        f"{disposition_command}\n"
-        "A different already-staged control can be replaced only with `--replace`. "
-        "Only successful evidence IDs printed by checkpoint-status are valid. "
-        "Register an immutable proof manifest before staging when an obligation "
-        "needs visual facts, human selection, or disambiguation:\n"
-        f"{proof_command}\n"
-        "Previously passed items in the current work-unit closure are carried "
-        "forward automatically; ancestor requirements remain constraints. "
+        "end silently. For the explicit advanced path only (visual facts, human "
+        "evidence selection, ambiguous evidence, or troubleshooting), run this "
+        "turn-bound read-only status command; its output lists the exact "
+        f"staging, disposition, and proof commands:\n{status_command}\n"
         f"Tracked requirements: {','.join(requirement_ids[:16]) or 'none'}; "
         f"acceptance: {','.join(acceptance_ids[:16]) or 'none'}; "
         f"ancestor constraints: {','.join(sorted(ancestor_ids)[:16]) or 'none'}. "
-        f"Omitted IDs: {max(0, len(requirement_ids)-16) + max(0, len(acceptance_ids)-16) + max(0, len(ancestor_ids)-16)}; use checkpoint-status or recovery-page for the complete scope."
+        f"Omitted IDs: {max(0, len(requirement_ids)-16) + max(0, len(acceptance_ids)-16) + max(0, len(ancestor_ids)-16)}; use checkpoint-status --full or recovery-page for the complete scope."
     )
 
 
@@ -16848,6 +16852,7 @@ def checkpoint_status_snapshot(
     state: dict[str, Any], turn_id: str, *, full: bool = False,
     item_id: str | None = None, after_revision: str | None = None,
     session_dir: Path | None = None,
+    advanced_commands: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return a bounded work-unit view; full/item modes are explicit audits."""
     revision = str(state.get("content_hash") or state_content_hash(state))
@@ -16959,6 +16964,8 @@ def checkpoint_status_snapshot(
     result["wait_condition_count"] = len(current_scope_projection(state)["waiting_conditions"])
     result["ancestor_constraint_count"] = len(ancestor_ids)
     result["ancestor_constraint_ids"] = sorted(ancestor_ids)[:12]
+    if advanced_commands is not None:
+        result["advanced_commands"] = advanced_commands
     while len(json.dumps(result, ensure_ascii=True).encode('utf-8')) > 3800:
         if result["recent_successful_evidence"]:
             result["recent_successful_evidence"].pop(0)
@@ -17034,6 +17041,7 @@ def checkpoint_status(
     return checkpoint_status_snapshot(
         state, turn_id, full=full, item_id=item_id,
         after_revision=after_revision, session_dir=session_dir,
+        advanced_commands=advanced_command_context(state, turn_id, token),
     )
 
 
@@ -19123,7 +19131,9 @@ def handle_session_start(
     if isinstance(pending.get("recovery"), dict):
         pending["recovery"]["state"] = "consumed"
     save_state(session_dir, state)
-    private_context = completion_command_context(state, turn_id, token)
+    # The completion command text depends only on the turn binding and the
+    # tracked item IDs, which the recovery-consumed marker does not touch;
+    # reuse the first generation instead of building it twice (CGN-04).
     combined = f"{packet}\n\n{private_context}"
     if len(combined) > RECOVERY_CHAR_LIMIT:
         packet_budget = max(0, RECOVERY_CHAR_LIMIT - len(private_context) - 80)
