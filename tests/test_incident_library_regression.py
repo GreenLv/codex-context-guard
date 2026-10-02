@@ -273,7 +273,7 @@ class ThreadReadCases(unittest.TestCase):
         fixture = CaseFixture("case-thread")
         fixture.prompt("读取这个线程的内容并总结。")
         fixture.after("mcp__codex_app__read_thread",
-                      {"threadId": "01a0e37e-a9d6-74b2-a9a4-31976c89b99c"},
+                      {"threadId": "aa11bb33-c0de-4d5e-8f90-1234567890ab"},
                       {"exit_code": 0, "output": "thread content"})
         evidence = fixture.state()["evidence"][-1]
         self.assertEqual(evidence["tool"], "mcp__codex_app__read_thread")

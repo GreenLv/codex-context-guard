@@ -40,6 +40,21 @@ plugin_manager = load("manage_plugin", ROOT / "scripts" / "manage_plugin.py")
 
 
 class PublicContractTests(unittest.TestCase):
+    def test_public_tree_uses_synthetic_task_identifiers(self) -> None:
+        """Cover timestamp-shaped task IDs in both URI and plain JSON fields."""
+        pattern = re.compile(
+            rb"\b01[0-9a-f]{6}-[0-9a-f]{4}-[0-9a-f]{4}-"
+            rb"[0-9a-f]{4}-[0-9a-f]{12}\b", re.I,
+        )
+        found = []
+        for path in audit.candidate_files(ROOT):
+            relative = path.relative_to(ROOT)
+            if any(part in audit.SKIP_DIRS for part in relative.parts):
+                continue
+            if pattern.search(path.read_bytes()):
+                found.append(relative.as_posix())
+        self.assertEqual(found, [], "public fixtures must use synthetic task IDs")
+
     def test_runtime_bytes_survive_autocrlf_checkout(self) -> None:
         """All packaged runtime suffixes retain one digest on Windows checkout."""
         with tempfile.TemporaryDirectory() as temporary:
