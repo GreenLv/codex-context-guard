@@ -278,6 +278,122 @@ class EvaluationContextTests(unittest.TestCase):
             cg.current_feedback_view(self.state, self.session_dir, large),
         )
 
+    # -- CGR-M1: keys, containers, and derived views are part of the budget.
+
+    def test_m1_long_key_empty_value_is_charged_and_refused(self):
+        """Coordinator probe CGR-M1-source: a 100KB source retained under an
+        empty result charged zero bytes. Now the key is accounted and the
+        entry is refused under a tiny budget; the direct result is equal."""
+        text = "a" * 100_000
+        refused = self.context(text_budget_bytes=1)
+        result = refused.action_sources_of(text, "not_a_known_action", None)
+        self.assertEqual(refused._action_sources, {})
+        self.assertEqual(refused._memo_bytes, 0)
+        admitted = self.context()
+        self.assertEqual(admitted.action_sources_of(text, "not_a_known_action", None), result)
+
+    def test_m1_negative_basis_long_key_is_charged_and_refused(self):
+        """Coordinator probe CGR-M1-basis: a negative basis result retained a
+        100KB clause inside its key for 64 charged bytes."""
+        clause = "b" * 100_000
+        evaluation = self.context(text_budget_bytes=64)
+        key = evaluation.basis_key(
+            "local_review", clause, include_satisfied=True,
+            include_unready=True, include_controlled=True,
+            allowed_item_ids=None,
+        )
+        evaluation.store_basis(key, None)
+        self.assertEqual(evaluation._bases, {})
+        self.assertEqual(evaluation._memo_bytes, 0)
+        self.assertIs(evaluation.cached_basis(key), cg._MEMO_MISS)
+
+    def test_m1_many_small_entries_stay_within_budget(self):
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        evaluation = self.context(text_budget_bytes=4_096)
+        for index in range(50):
+            evaluation.action_matches_of(pattern, f"修改 src/file{index}.py 并运行测试。")
+        self.assertLessEqual(evaluation._memo_bytes, 4_096)
+        self.assertGreater(len(evaluation._searches), 0)
+
+    def test_m1_derived_view_growth_is_reserved_up_front(self):
+        text = "修改 src/view.py 并运行测试，必须验证结果。" * 4
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        evaluation.parsed(text)
+        base_charge = evaluation._memo_bytes
+        self.assertEqual(
+            base_charge,
+            len(text.encode("utf-8")) * 3 + cg.EvaluationContext._ENTRY_OVERHEAD,
+        )
+        # Building both derived views must not grow the accounted footprint
+        # beyond the up-front reserve.
+        evaluation.parsed(text).instruction_view(preserve_newlines=True)
+        evaluation.parsed(text).instruction_view(preserve_newlines=False)
+        self.assertEqual(evaluation._memo_bytes, base_charge)
+
+    def test_m1_multilingual_strings_count_utf8_bytes(self):
+        text = "必须验证模块示例的结果。" * 20  # CJK: 3 bytes per char
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        evaluation.reply_clauses_of(text)
+        expected_text_bytes = len(text.encode("utf-8"))
+        self.assertGreater(evaluation._memo_bytes, expected_text_bytes)
+        self.assertLessEqual(evaluation._memo_bytes, 1_000_000)
+
+    def test_m1_phase_release_returns_charged_bytes(self):
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        text = "修改 src/phase.py 并运行测试。"
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        evaluation.parsed(text)
+        lexical_charge = evaluation._memo_bytes
+        evaluation.store_basis(
+            evaluation.basis_key("local_review", text, include_satisfied=False,
+                                 include_unready=False, include_controlled=False,
+                                 allowed_item_ids=None),
+            None,
+        )
+        evaluation.action_matches_of(pattern, text)
+        evaluation.action_sources_of(text, "local_edit", None)
+        self.assertGreater(evaluation._memo_bytes, lexical_charge)
+        mixed_charge = evaluation._memo_bytes
+        evaluation.new_phase("state_mutated")
+        # Phase-bound families (bases, action_sources) release exactly;
+        # content-keyed lexical families persist within the event.
+        self.assertLess(evaluation._memo_bytes, mixed_charge)
+        self.assertGreaterEqual(evaluation._memo_bytes, lexical_charge)
+
+    def test_m1_mixed_families_small_budget_match_unbudgeted(self):
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        texts = ["修改 src/mix.py 并运行完整测试。", "审查模块并核对回执。",
+                 "继续执行并报告结果。"]
+        small = self.context(text_budget_bytes=2_048)
+        large = self.context()
+        for text in texts * 3:
+            small.parsed(text)
+            large.parsed(text)
+            small.action_matches_of(pattern, text)
+            large.action_matches_of(pattern, text)
+            small.action_source_clauses_of(text)
+            large.action_source_clauses_of(text)
+            key = small.basis_key("local_review", text, include_satisfied=True,
+                                  include_unready=False, include_controlled=False,
+                                  allowed_item_ids=None)
+            small.store_basis(key, None)
+            large.store_basis(key, None)
+            self.assertEqual(small.action_sources_of(text, "local_edit", None),
+                             large.action_sources_of(text, "local_edit", None))
+        self.assertLessEqual(small._memo_bytes, 2_048)
+        # The unbudgeted context admitted everything; the small one refused
+        # at least one family, yet computed identical results throughout.
+        self.assertGreater(large._memo_bytes, small._memo_bytes)
+        self.assertEqual(
+            cg.current_feedback_view(self.state, self.session_dir, small),
+            cg.current_feedback_view(self.state, self.session_dir, large),
+        )
+
+    def test_m1_default_budget_equals_explicit_default(self):
+        default_ctx = self.context()
+        explicit = self.context(text_budget_bytes=cg.EvaluationContext._TEXT_BUDGET_BYTES)
+        self.assertEqual(default_ctx._memo_bytes, explicit._memo_bytes)
+
 
 if __name__ == "__main__":
     unittest.main()

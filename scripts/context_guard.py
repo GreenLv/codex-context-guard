@@ -10338,11 +10338,36 @@ class EvaluationContext:
     resolution) is never memoized: the TOCTOU check keeps its original
     freshness. Counters are opt-in (tests and benchmarks pass a dict); the
     production path keeps no performance data and persists no memo content.
+
+    Memory contract (one accounting rule, CGN-02/CGR-M1): every memo pays,
+    at admission, a conservative deterministic estimate of EVERYTHING its
+    entry retains — retained key strings, retained value strings and match
+    objects, fixed per-entry container overhead (``_ENTRY_OVERHEAD``), and
+    for parsed text a 2x reserve for the lazily built derived views. Keys
+    are part of the footprint: a long source retained under an empty or
+    negative value is charged for the key. The estimate never materializes
+    a serialized value just to measure it (``_bounded_size_estimate``).
+    The byte budget is authoritative; count limits remain a second-layer
+    bound. Refused entries compute directly, so verdicts and the full
+    scope are identical to unbudgeted evaluation. ``new_phase`` releases
+    the exact charged bytes of the phase-bound memo families.
+
+    Excluded storage, with bounds and lifetime (outside the text-budget
+    contract): the phase-bound single-slot state projections ``_scope``,
+    ``_root_records``, ``_prompt_records``, ``_disk_records`` and
+    ``_control_projection`` mirror data from the already-loaded persisted
+    state (size bounded by that state / the session's own journal), are
+    dropped at every phase boundary, and are never retained across
+    events; ``_consumed`` holds at most one id+digest pair per prompt.
     """
 
     _TEXT_BUDGET_BYTES = 8 * 1024 * 1024
     _SEARCH_MEMO_LIMIT = 50_000
     _DECISION_MEMO_LIMIT = 5_000
+    _ENTRY_OVERHEAD = 96
+    # Parsed text charges the source once plus a 2x reserve for the two
+    # lazily built position-preserving views derived from it.
+    _DERIVED_VIEW_RESERVE = 2
 
     def __init__(self, state: dict[str, Any], session_dir: Path | None,
                  *, counters: dict[str, int] | None = None,
@@ -10360,10 +10385,11 @@ class EvaluationContext:
         self._searches: dict[tuple[int, str], tuple[re.Pattern[str], str, list[re.Match[str]]]] = {}
         self._source_clauses: dict[str, list[str]] = {}
         self._reply_clause_memo: dict[str, list[str]] = {}
-        # Total deterministic estimate of every retained memo (source text,
-        # fragments, matches, clauses, and stored values). Count limits stay
-        # as a second-layer bound; the byte budget is authoritative (CGN-02).
+        # Total deterministic estimate of every retained memo entry: keys,
+        # values, containers, and lazy derived views. Count limits stay as
+        # a second-layer bound; the byte budget is authoritative (CGN-02).
         self._memo_bytes = 0
+        self._memo_costs: dict[str, dict[Any, int]] = {}
         # Phase-bound state projections (cleared by new_phase).
         self._scope: dict[str, Any] | None = None
         self._prompt_record_memo: dict[str, dict[str, Any] | None] = {}
@@ -10388,7 +10414,8 @@ class EvaluationContext:
 
         Lexical content keys stay valid because they are addressed by the
         unchanged source text itself; any state-derived view is recomputed
-        from the mutated state on next use.
+        from the mutated state on next use. Phase-bound memo families
+        release their exact charged bytes back to the budget.
         """
         self.phase += 1
         if len(self.phase_log) < 64:
@@ -10401,22 +10428,29 @@ class EvaluationContext:
         self._item_index = None
         self._control_projection = None
         self._control_projection_done = False
+        for family in ("bases", "action_sources"):
+            costs = self._memo_costs.pop(family, None)
+            if costs:
+                self._memo_bytes -= sum(costs.values())
         self._bases = {}
         self._action_sources = {}
         self._count("phase")
 
-    def _memo_admit(self, cost: int) -> bool:
-        """Charge a deterministic size estimate against the total budget.
+    def _memo_admit(self, family: str, key: Any, cost: int) -> bool:
+        """Charge an entry's full retained footprint against the budget.
 
-        Entries whose own estimate exceeds the whole budget are never
-        retained; the caller keeps computing directly, so decisions and the
-        full scope are unchanged when the budget is exhausted.
+        The estimate covers retained key strings, values, containers, and
+        lazy derived views (see the class contract). Entries whose own
+        estimate exceeds the whole budget are never retained; the caller
+        keeps computing directly, so decisions and the full scope are
+        unchanged when the budget is exhausted.
         """
         if cost < 0:
             cost = 0
         if self._memo_bytes + cost > self.text_budget_bytes:
             return False
         self._memo_bytes += cost
+        self._memo_costs.setdefault(family, {})[key] = cost
         return True
 
     # -- pure lexical layer -------------------------------------------------
@@ -10428,7 +10462,9 @@ class EvaluationContext:
         parsed = _ParsedText(text)
         self._count("fragments_computed")
         budget = len(text.encode("utf-8"))
-        if self._memo_admit(budget):
+        cost = (budget * (1 + self._DERIVED_VIEW_RESERVE)
+                + self._ENTRY_OVERHEAD)
+        if self._memo_admit("parsed", text, cost):
             self._parsed[text] = parsed
             self._parsed_bytes += budget
         return parsed
@@ -10451,10 +10487,14 @@ class EvaluationContext:
         self._count("action_matches_computed")
         matches = action_matches(pattern, text)
         if len(self._searches) < self._SEARCH_MEMO_LIMIT:
-            estimated = len(text.encode("utf-8")) + sum(
-                len(match.group(0).encode("utf-8")) + 64 for match in matches
+            # The retained key holds the source text; matches retain their
+            # matched spans. Keys are part of the footprint (CGR-M1).
+            estimated = (
+                len(text.encode("utf-8"))
+                + sum(len(match.group(0).encode("utf-8")) + 64 for match in matches)
+                + self._ENTRY_OVERHEAD
             )
-            if self._memo_admit(estimated):
+            if self._memo_admit("searches", key, estimated):
                 # Pin the pattern and text so an id can never be reused by the key.
                 self._searches[key] = (pattern, text, matches)
         return matches
@@ -10468,7 +10508,10 @@ class EvaluationContext:
             self._count("action_source_clauses_computed")
             clauses = _action_source_clauses(text)
             if len(self._source_clauses) < self._DECISION_MEMO_LIMIT and self._memo_admit(
-                sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+                "source_clauses", text,
+                len(text.encode("utf-8"))
+                + sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+                + self._ENTRY_OVERHEAD,
             ):
                 self._source_clauses[text] = clauses
         return clauses
@@ -10479,7 +10522,10 @@ class EvaluationContext:
             self._count("reply_clauses_computed")
             clauses = _reply_clauses(text)
             if len(self._reply_clause_memo) < self._DECISION_MEMO_LIMIT and self._memo_admit(
-                sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+                "reply_clauses", text,
+                len(text.encode("utf-8"))
+                + sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+                + self._ENTRY_OVERHEAD,
             ):
                 self._reply_clause_memo[text] = clauses
         return clauses
@@ -10584,10 +10630,14 @@ class EvaluationContext:
     def store_basis(self, key: tuple, value: dict[str, Any] | None) -> None:
         if self._basis_impure or len(self._bases) >= self._DECISION_MEMO_LIMIT:
             return
-        estimated = len(json.dumps(
-            value, ensure_ascii=True, sort_keys=True, default=str
-        ).encode("ascii")) if value is not None else 64
-        if self._memo_admit(estimated):
+        # Keys may carry long reply/source clauses; values are basis dicts.
+        # Bounded structural estimate — no serialized materialization.
+        estimated = (
+            _bounded_size_estimate(key)
+            + (_bounded_size_estimate(value) if value is not None else 8)
+            + self._ENTRY_OVERHEAD
+        )
+        if self._memo_admit("bases", key, estimated):
             self._bases[key] = value
 
     def basis_key(self, category: str, reply_clause: str, *, include_satisfied: bool,
@@ -10612,13 +10662,52 @@ class EvaluationContext:
             clauses, category=category, pattern=pattern,
             execution_kind=execution_kind, context=self)
         if len(self._action_sources) < self._DECISION_MEMO_LIMIT and self._memo_admit(
-            sum(len(source.encode("utf-8")) + 64 for source in sources)
+            "action_sources", key,
+            len(root_text.encode("utf-8"))
+            + len(category.encode("utf-8")) + len(str(execution_kind).encode("utf-8"))
+            + sum(len(source.encode("utf-8")) + 64 for source in sources)
+            + self._ENTRY_OVERHEAD,
         ):
             self._action_sources[key] = sources
         return sources
 
 
 _MEMO_MISS = object()
+
+
+def _bounded_size_estimate(value: Any, depth: int = 0) -> int:
+    """Conservative byte estimate for a memo key/value, without serializing.
+
+    Counts UTF-8 bytes of retained strings, fixed sizes for scalars, and
+    per-item container overhead; walks at most 6 levels and 64 items per
+    container, so measuring an entry is bounded no matter its shape.
+    """
+    if depth > 6:
+        return 8
+    if value is None or isinstance(value, bool):
+        return 8
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    if isinstance(value, (int, float)):
+        return 8
+    if isinstance(value, dict):
+        total = 0
+        for index, (item_key, item_value) in enumerate(value.items()):
+            if index >= 64:
+                total += 8
+                break
+            total += (_bounded_size_estimate(item_key, depth + 1)
+                      + _bounded_size_estimate(item_value, depth + 1) + 16)
+        return total
+    if isinstance(value, (list, tuple, set, frozenset)):
+        total = 0
+        for index, item in enumerate(value):
+            if index >= 64:
+                total += 8
+                break
+            total += _bounded_size_estimate(item, depth + 1) + 16
+        return total
+    return 64
 
 
 def _action_source_filter(
