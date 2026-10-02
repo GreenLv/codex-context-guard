@@ -9,11 +9,12 @@ It parses minimal JSON from stdin and decides:
     (canonical hook_event_name, normalized ProtocolToolCall) → print {} →
     exit 0: zero subprocess, zero heavy import, zero private-state I/O;
   * CANDIDATE mutations and the candidate-high-risk runner envelope
-    (STATE_AMBIGUOUS_CANDIDATE) delegate the ORIGINAL stdin bytes to
-    context_guard.py hook via subprocess — only those may read/lock
-    private state and consult the profile — writing the heavy core's
-    stdout to sys.stdout and its stderr to sys.stderr (never crossed) and
-    propagating its exit code;
+    (STATE_AMBIGUOUS_CANDIDATE) run the heavy context_guard.py core in
+    this same process (lazy import; one product Python process per event,
+    CGN-03) — only those may read/lock private state and consult the
+    profile — with the original stdin bytes forwarded untouched, the
+    heavy core's stdout JSON and stderr never crossed, and its exit code
+    propagated;
   * event aliases, unparseable bytes, and non-dict payloads delegate as
     before.
 
@@ -43,12 +44,14 @@ from cg_codex_adapter import codex_to_protocol_event  # noqa: E402
 from cg_protocol import ProtocolEventType, ProtocolToolCall  # noqa: E402
 
 
-def _delegate(raw_stdin: bytes) -> None:
-    """Delegate to the heavy context_guard.py core via subprocess.
+def _delegate_subprocess(raw_stdin: bytes) -> None:
+    """Legacy fallback: run the heavy core in a child process.
 
-    Forwards the ORIGINAL stdin bytes untouched, writes the heavy core's
-    stdout to sys.stdout and its stderr to sys.stderr (never crossed),
-    and exits with the heavy core's exit code."""
+    Used only when the in-process import or execution of the heavy core
+    fails in this environment. Semantics are identical to the 0.14 router:
+    original bytes forwarded untouched, stdout/stderr never crossed, exit
+    code propagated, runaway child bounded by a 120s timeout.
+    """
     heavy = os.path.join(_SCRIPT_DIR, "context_guard.py")
     import subprocess  # lazy: the SAFE fast path never delegates
     env = os.environ.copy()
@@ -65,6 +68,60 @@ def _delegate(raw_stdin: bytes) -> None:
     sys.stderr.buffer.write(result.stderr)
     sys.stderr.buffer.flush()
     sys.exit(result.returncode)
+
+
+class _PreReadStdin:
+    """Exposes already-consumed hook bytes as ``stdin.buffer``.
+
+    The router must hand the ORIGINAL stdin bytes to the heavy core even
+    though it already consumed them for its own classification decision;
+    ``command_hook`` tolerates non-file stdin objects (AttributeError
+    fallback) and only calls ``.buffer.read()``.
+    """
+
+    __slots__ = ("buffer",)
+
+    def __init__(self, raw: bytes) -> None:
+        import io  # lazy: the SAFE fast path never delegates
+
+        self.buffer = io.BytesIO(raw)
+
+
+def _delegate(raw_stdin: bytes) -> None:
+    """Run the heavy context_guard.py core in this process.
+
+    Saves the second interpreter start for every non-fast-path event while
+    preserving the wire contract: the ORIGINAL stdin bytes are forwarded
+    untouched, the heavy core's stdout JSON and stderr stay separated (they
+    are the same streams), and the heavy core's exit code becomes this
+    process's exit code. The heavy core is stdlib-only, so running it under
+    the router's ``-S`` interpreter is equivalent to its previous
+    non-``-S`` child. A hard host timeout governs the whole hook either
+    way; the child-only 120s bound does not apply in-process and is kept
+    only on the subprocess fallback path.
+    """
+    heavy = os.path.join(_SCRIPT_DIR, "context_guard.py")
+    import importlib.util  # lazy: the SAFE fast path never delegates
+
+    try:
+        spec = importlib.util.spec_from_file_location("context_guard", heavy)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except BaseException:  # noqa: BLE001 - environment failure keeps old path
+        _delegate_subprocess(raw_stdin)
+        return
+    original_stdin = sys.stdin
+    original_argv = sys.argv
+    sys.stdin = _PreReadStdin(raw_stdin)  # type: ignore[assignment]
+    sys.argv = [heavy, "hook"]
+    try:
+        code = module.main()
+    finally:
+        sys.stdin = original_stdin
+        sys.argv = original_argv
+    sys.stdout.flush()
+    sys.exit(code if isinstance(code, int) else 0)
 
 
 def main() -> int:

@@ -228,31 +228,23 @@ class _RouterHarness(unittest.TestCase):
 
 class RouterRouteTableTests(_RouterHarness):
     """Every classification row must route through cg_hook exactly as the
-    three-state contract demands: SAFE → {} with zero subprocess; CANDIDATE
-    and AMBIGUOUS → delegate to the heavy core (observed via a fake
-    subprocess sentinel, so no heavy run is needed to prove the route).
+    three-state contract demands: SAFE → {} with zero delegation; CANDIDATE
+    and AMBIGUOUS → delegate the original stdin bytes to the heavy core
+    (observed via a recorded _delegate sentinel, so no heavy run is needed
+    to prove the route).
 
     The routed state is derived through the SAME normalization the router
     uses (cg_codex_adapter coerces tool_name to str before classification),
     so unit-level AMBIGUOUS rows whose payloads normalize to usable strings
     route by their normalized class."""
 
-    SENTINEL_STDOUT = b"HEAVY-STDOUT"
-    SENTINEL_STDERR = b"HEAVY-STDERR"
-    SENTINEL_RC = 7
-
     def _delegated_route(self, raw: bytes):
-        fake = _FakeSubprocessModule(
-            subprocess.CompletedProcess(
-                args=[],
-                stdout=self.SENTINEL_STDOUT,
-                stderr=self.SENTINEL_STDERR,
-                returncode=self.SENTINEL_RC,
-            )
-        )
-        with mock.patch.dict(sys.modules, {"subprocess": fake}):
+        import cg_hook
+
+        recorded: list[bytes] = []
+        with mock.patch.object(cg_hook, "_delegate", side_effect=recorded.append):
             rc, out, err = self._run_router(raw)
-        return fake, rc, out, err
+        return recorded, rc, out, err
 
     def _routed_state(self, raw: bytes):
         """The three-state the router ACTUALLY acts on: adapter-normalized
@@ -274,38 +266,33 @@ class RouterRouteTableTests(_RouterHarness):
 
     def test_route_table_safe_rows_take_fast_path(self):
         """SAFE and generic-AMBIGUOUS rows both take the silent fast path:
-        no subprocess, no heavy import, no private-state I/O."""
+        no delegation, no heavy import, no private-state I/O."""
         for description, tool_name, tool_input, _expected in CLASSIFICATION_TABLE:
             with self.subTest(description):
                 raw = self._payload_bytes(tool_name, tool_input, session_id="rt-safe")
                 routed = self._routed_state(raw)
                 if routed not in {cg_actions.STATE_SAFE, cg_actions.STATE_AMBIGUOUS}:
                     continue
-                fake, rc, out, err = self._delegated_route(raw)
+                recorded, rc, out, err = self._delegated_route(raw)
                 self.assertEqual(rc, 0)
                 self.assertEqual(out.strip(), b"{}")
                 self.assertEqual(err, b"")
-                self.assertEqual(fake.calls, [])
+                self.assertEqual(recorded, [])
                 self.assertEqual(list(self.data_dir.rglob("*")), [])
 
     def test_route_table_candidate_and_ambiguous_rows_delegate(self):
-        """CANDIDATE and the runner envelope delegate to the heavy core."""
+        """CANDIDATE and the runner envelope delegate the ORIGINAL stdin
+        bytes to the heavy core."""
         for description, tool_name, tool_input, _expected in CLASSIFICATION_TABLE:
             with self.subTest(description):
                 raw = self._payload_bytes(tool_name, tool_input, session_id="rt-deleg")
                 routed = self._routed_state(raw)
                 if routed not in {cg_actions.STATE_CANDIDATE, cg_actions.STATE_AMBIGUOUS_CANDIDATE}:
                     continue
-                fake, rc, out, err = self._delegated_route(raw)
-                self.assertEqual(rc, self.SENTINEL_RC)
-                self.assertEqual(out, self.SENTINEL_STDOUT)
-                self.assertEqual(err, self.SENTINEL_STDERR)
-                self.assertEqual(len(fake.calls), 1)
-                args, kwargs = fake.calls[0]
-                self.assertEqual(os.path.basename(args[0][1]), "context_guard.py")
-                self.assertEqual(args[0][-1], "hook")
+                recorded, rc, out, err = self._delegated_route(raw)
+                self.assertEqual(len(recorded), 1, description)
                 # The ORIGINAL stdin bytes must reach the heavy core untouched.
-                self.assertEqual(kwargs.get("input"), raw)
+                self.assertEqual(recorded[0], raw)
 
     def test_alias_and_broken_payloads_delegate(self):
         """Without the canonical hook_event_name — and for unknown events,
@@ -323,10 +310,9 @@ class RouterRouteTableTests(_RouterHarness):
         ]
         for description, raw in cases:
             with self.subTest(description):
-                fake, rc, out, err = self._delegated_route(raw)
-                self.assertEqual(len(fake.calls), 1, description)
-                self.assertEqual(out, self.SENTINEL_STDOUT, description)
-                self.assertEqual(fake.calls[0][1].get("input"), raw)
+                recorded, rc, out, err = self._delegated_route(raw)
+                self.assertEqual(len(recorded), 1, description)
+                self.assertEqual(recorded[0], raw, description)
 
 
 class RouterFastPathTests(_RouterHarness):
@@ -353,8 +339,7 @@ class RouterFastPathTests(_RouterHarness):
         self.assertEqual(list(self.data_dir.rglob("*")), [])
 
     def test_candidate_pre_tool_use_delegates_to_heavy_core(self):
-        """A fresh candidate allows without creating private state.
-        Delegation bytes and exit propagation have separate wire coverage."""
+        """A fresh candidate allows without creating private state."""
         rc, out, err = self._run_router(
             self._payload_bytes("bash", {"command": "git tag v1.2.3"}, session_id="fp-tag")
         )
@@ -363,12 +348,36 @@ class RouterFastPathTests(_RouterHarness):
         self.assertEqual(decision, {})
         self.assertEqual(list(self.data_dir.rglob("*")), [])
 
-    def test_delegate_wire_contract(self):
-        """stdout/stderr must stay separated and the exit code must
-        propagate; the original stdin bytes must reach the heavy core
-        byte-for-byte."""
+    def test_delegate_runs_heavy_core_in_process(self):
+        """CGN-03: _delegate executes the heavy core in THIS process (one
+        product Python process per event), still printing the heavy core's
+        stdout JSON and propagating its exit code from the original bytes."""
+        import cg_hook
+
         raw = self._payload_bytes(
             "bash", {"command": "git tag v9.9.9"}, session_id="fp-wire"
+        )
+        stdout = _BytesStream()
+        stderr = _BytesStream()
+        with mock.patch.dict(
+            os.environ, {"CONTEXT_GUARD_DATA_DIR": str(self.data_dir)}
+        ), mock.patch.object(sys, "stdout", stdout), mock.patch.object(
+            sys, "stderr", stderr
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                cg_hook._delegate(raw)
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(json.loads(stdout.getvalue().decode("utf-8")), {})
+        self.assertEqual(stderr.getvalue(), b"")
+
+    def test_delegate_falls_back_to_subprocess_on_import_failure(self):
+        """If the heavy core cannot be imported in-process, the legacy
+        subprocess path keeps the wire contract (bytes, streams, exit)."""
+        import cg_hook
+        import importlib.util as _ilu
+
+        raw = self._payload_bytes(
+            "bash", {"command": "git tag v9.9.9"}, session_id="fp-fallback"
         )
         fake = _FakeSubprocessModule(
             subprocess.CompletedProcess(
@@ -376,11 +385,22 @@ class RouterFastPathTests(_RouterHarness):
                 returncode=7,
             )
         )
-        with mock.patch.dict(sys.modules, {"subprocess": fake}):
-            rc, out, err = self._run_router(raw)
-        self.assertEqual(rc, 7)
-        self.assertEqual(out, b"HEAVY-STDOUT")
-        self.assertEqual(err, b"HEAVY-STDERR")
+        stdout2 = _BytesStream()
+        stderr2 = _BytesStream()
+        with mock.patch.dict(
+            os.environ, {"CONTEXT_GUARD_DATA_DIR": str(self.data_dir)}
+        ), mock.patch.object(sys, "stdout", stdout2), mock.patch.object(
+            sys, "stderr", stderr2
+        ), mock.patch.object(
+            _ilu, "spec_from_file_location",
+            side_effect=OSError("simulated broken install"),
+        ), mock.patch.dict(sys.modules, {"subprocess": fake}):
+            with self.assertRaises(SystemExit) as ctx:
+                cg_hook._delegate(raw)
+        self.assertEqual(ctx.exception.code, 7)
+        self.assertEqual(stdout2.getvalue(), b"HEAVY-STDOUT")
+        self.assertEqual(stderr2.getvalue(), b"HEAVY-STDERR")
+        self.assertEqual(len(fake.calls), 1)
         args, kwargs = fake.calls[0]
         self.assertEqual(os.path.basename(args[0][1]), "context_guard.py")
         self.assertEqual(args[0][-1], "hook")
