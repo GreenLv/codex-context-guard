@@ -290,7 +290,8 @@ class EvaluationContextTests(unittest.TestCase):
         self.assertEqual(refused._action_sources, {})
         self.assertEqual(refused._memo_bytes, 0)
         admitted = self.context()
-        self.assertEqual(admitted.action_sources_of(text, "not_a_known_action", None), result)
+        self.assertEqual(list(admitted.action_sources_of(text, "not_a_known_action", None)),
+                         list(result))
 
     def test_m1_negative_basis_long_key_is_charged_and_refused(self):
         """Coordinator probe CGR-M1-basis: a negative basis result retained a
@@ -378,8 +379,8 @@ class EvaluationContextTests(unittest.TestCase):
                                   allowed_item_ids=None)
             small.store_basis(key, None)
             large.store_basis(key, None)
-            self.assertEqual(small.action_sources_of(text, "local_edit", None),
-                             large.action_sources_of(text, "local_edit", None))
+            self.assertEqual(list(small.action_sources_of(text, "local_edit", None)),
+                             list(large.action_sources_of(text, "local_edit", None)))
         self.assertLessEqual(small._memo_bytes, 2_048)
         # The unbudgeted context admitted everything; the small one refused
         # at least one family, yet computed identical results throughout.
@@ -393,6 +394,113 @@ class EvaluationContextTests(unittest.TestCase):
         default_ctx = self.context()
         explicit = self.context(text_budget_bytes=cg.EvaluationContext._TEXT_BUDGET_BYTES)
         self.assertEqual(default_ctx._memo_bytes, explicit._memo_bytes)
+
+    # -- CGR-R2: unknown shapes refuse admission instead of a fixed guess.
+
+    def test_r2_wide_dict_with_late_large_value_is_refused(self):
+        """Coordinator probe memo_wide: a 1MB value after entry 64 charged
+        1,778 bytes. The unvisited suffix is now unknown -> refused."""
+        payload = {f"k{i}": "x" for i in range(64)}
+        payload["late"] = "y" * 1_000_000
+        evaluation = self.context(text_budget_bytes=4_096)
+        key = evaluation.basis_key("local_review", "clause", include_satisfied=False,
+                                   include_unready=False, include_controlled=False,
+                                   allowed_item_ids=None)
+        evaluation.store_basis(key, payload)
+        self.assertEqual(evaluation._bases, {})
+        self.assertEqual(evaluation._memo_bytes, 0)
+        self.assertIs(evaluation.cached_basis(key), cg._MEMO_MISS)
+
+    def test_r2_deep_nesting_is_refused(self):
+        """Coordinator probe memo_deep: eight nested dicts around a 1MB
+        value charged 274 bytes. Beyond the depth limit is unknown."""
+        node = {"value": "z" * 1_000_000}
+        for _ in range(8):
+            node = {"child": node}
+        evaluation = self.context(text_budget_bytes=4_096)
+        key = evaluation.basis_key("local_review", "clause", include_satisfied=False,
+                                   include_unready=False, include_controlled=False,
+                                   allowed_item_ids=None)
+        evaluation.store_basis(key, node)
+        self.assertEqual(evaluation._bases, {})
+        self.assertEqual(evaluation._memo_bytes, 0)
+
+    def test_r2_cycles_and_unsupported_types_are_refused(self):
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        cycle = ["payload"]
+        cycle.append(cycle)
+        key = evaluation.basis_key("local_review", "c", include_satisfied=False,
+                                   include_unready=False, include_controlled=False,
+                                   allowed_item_ids=None)
+        evaluation.store_basis(key, {"loop": cycle})
+        self.assertEqual(evaluation._bases, {})
+        evaluation.store_basis(key, {"opaque": object()})
+        self.assertEqual(evaluation._bases, {})
+        self.assertIsNone(cg._bounded_size_estimate(cycle))
+        self.assertIsNone(cg._bounded_size_estimate({"o": object()}))
+
+    def test_r2_measured_prefixes_still_admit(self):
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        key = evaluation.basis_key("local_review", "clause", include_satisfied=False,
+                                   include_unready=False, include_controlled=False,
+                                   allowed_item_ids=None)
+        value = {f"k{i}": "v" * 10 for i in range(30)}
+        evaluation.store_basis(key, value)
+        self.assertIsNot(evaluation.cached_basis(key), cg._MEMO_MISS)
+        expected = cg._bounded_size_estimate(key) \
+            + cg._bounded_size_estimate(dict(value)) \
+            + cg.EvaluationContext._ENTRY_OVERHEAD
+        self.assertEqual(evaluation._memo_bytes, expected)
+
+    def test_r2_repeated_key_replacement_does_not_accumulate(self):
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        key = evaluation.basis_key("local_review", "clause", include_satisfied=False,
+                                   include_unready=False, include_controlled=False,
+                                   allowed_item_ids=None)
+        evaluation.store_basis(key, {"a": "x" * 100})
+        first = evaluation._memo_bytes
+        evaluation.store_basis(key, {"a": "y" * 300})
+        second = evaluation._memo_bytes
+        # The old charge was refunded before the new one was added.
+        self.assertEqual(
+            second - first,
+            cg._bounded_size_estimate({"a": "y" * 300})
+            - cg._bounded_size_estimate({"a": "x" * 100}),
+        )
+        evaluation.new_phase("state_mutated")
+        self.assertEqual(evaluation._memo_bytes, 0)
+
+    def test_r2_retained_memo_values_are_immutable_snapshots(self):
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        text = "修改 src/imm.py 并运行测试。"
+        evaluation = self.context()
+        clauses = evaluation.action_source_clauses_of(text)
+        sources = evaluation.action_sources_of(text, "local_edit", None)
+        matches = evaluation.action_matches_of(pattern, text)
+        for retained in (clauses, sources, matches):
+            self.assertIsInstance(retained, tuple)
+        basis_key = evaluation.basis_key("local_review", text, include_satisfied=False,
+                                         include_unready=False, include_controlled=False,
+                                         allowed_item_ids=None)
+        produced = {"rows": [1, 2, 3]}
+        evaluation.store_basis(basis_key, produced)
+        produced["rows"].append(4)  # producer mutation after admission
+        cached = evaluation.cached_basis(basis_key)
+        self.assertEqual(cached["rows"], [1, 2, 3])
+        cached["rows"].append(5)  # reader mutation stays isolated
+        self.assertEqual(evaluation.cached_basis(basis_key)["rows"], [1, 2, 3])
+
+    def test_r2_disk_projection_has_finite_cap(self):
+        evaluation = self.context()
+        records = evaluation.disk_prompt_records()
+        measured = cg._bounded_size_estimate(records)
+        if measured is not None and measured <= cg.EvaluationContext._PROJECTION_BUDGET_BYTES:
+            self.assertIs(evaluation.disk_prompt_records(), records)
+        else:
+            # Over cap or unmeasurable: not cached, recomputed per access,
+            # same content.
+            self.assertIsNone(evaluation._disk_records)
+            self.assertEqual(evaluation.disk_prompt_records(), records)
 
 
 if __name__ == "__main__":

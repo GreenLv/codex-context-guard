@@ -10365,6 +10365,11 @@ class EvaluationContext:
     _SEARCH_MEMO_LIMIT = 50_000
     _DECISION_MEMO_LIMIT = 5_000
     _ENTRY_OVERHEAD = 96
+    # Separate finite cap for the phase-local journal-derived projection
+    # (disk prompt records): an aggregate byte bound, not "bounded by the
+    # journal". Over cap or unmeasurable -> not cached; every access
+    # recomputes, which is slower but semantically identical.
+    _PROJECTION_BUDGET_BYTES = 32 * 1024 * 1024
     # Parsed text charges the source once plus a 2x reserve for the two
     # lazily built position-preserving views derived from it.
     _DERIVED_VIEW_RESERVE = 2
@@ -10436,21 +10441,27 @@ class EvaluationContext:
         self._action_sources = {}
         self._count("phase")
 
-    def _memo_admit(self, family: str, key: Any, cost: int) -> bool:
+    def _memo_admit(self, family: str, key: Any, cost: int | None) -> bool:
         """Charge an entry's full retained footprint against the budget.
 
         The estimate covers retained key strings, values, containers, and
-        lazy derived views (see the class contract). Entries whose own
-        estimate exceeds the whole budget are never retained; the caller
-        keeps computing directly, so decisions and the full scope are
-        unchanged when the budget is exhausted.
+        lazy derived views (see the class contract). ``cost is None`` means
+        the shape was unmeasurable (depth/width/cycle/unsupported/over
+        budget) and admission is refused — an unknown tail is never billed
+        as a fixed size. Re-arming an existing key refunds its previous
+        charge before adding the new one, so replacement cannot accumulate
+        phantom capacity. Refused entries compute directly, so decisions
+        and the full scope are unchanged when the budget is exhausted.
         """
-        if cost < 0:
-            cost = 0
-        if self._memo_bytes + cost > self.text_budget_bytes:
+        if cost is None or cost < 0:
             return False
-        self._memo_bytes += cost
-        self._memo_costs.setdefault(family, {})[key] = cost
+        costs = self._memo_costs.setdefault(family, {})
+        previous = costs.get(key, 0)
+        net = cost - previous
+        if net > 0 and self._memo_bytes + net > self.text_budget_bytes:
+            return False
+        self._memo_bytes += net
+        costs[key] = cost
         return True
 
     # -- pure lexical layer -------------------------------------------------
@@ -10495,8 +10506,11 @@ class EvaluationContext:
                 + self._ENTRY_OVERHEAD
             )
             if self._memo_admit("searches", key, estimated):
-                # Pin the pattern and text so an id can never be reused by the key.
-                self._searches[key] = (pattern, text, matches)
+                # Pin the pattern and text so an id can never be reused by the
+                # key; store an immutable snapshot so post-admission mutation
+                # cannot grow the entry outside the budget.
+                self._searches[key] = (pattern, text, tuple(matches))
+                return self._searches[key][2]
         return matches
 
     def action_search_of(self, pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
@@ -10513,7 +10527,8 @@ class EvaluationContext:
                 + sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
                 + self._ENTRY_OVERHEAD,
             ):
-                self._source_clauses[text] = clauses
+                self._source_clauses[text] = tuple(clauses)
+                return self._source_clauses[text]
         return clauses
 
     def reply_clauses_of(self, text: str) -> list[str]:
@@ -10527,7 +10542,8 @@ class EvaluationContext:
                 + sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
                 + self._ENTRY_OVERHEAD,
             ):
-                self._reply_clause_memo[text] = clauses
+                self._reply_clause_memo[text] = tuple(clauses)
+                return self._reply_clause_memo[text]
         return clauses
 
     # -- verified source records (one read per prompt per phase) ------------
@@ -10568,7 +10584,18 @@ class EvaluationContext:
     def disk_prompt_records(self) -> list[dict[str, Any]]:
         if self._disk_records is None:
             self._count("disk_prompt_records_read")
-            self._disk_records = prompt_records_from_disk(self.session_dir)
+            records = prompt_records_from_disk(self.session_dir)
+            # Finite aggregate cap on the retained journal projection. The
+            # state itself and the journal on disk are the event's excluded
+            # baseline memory; this cache is an extra copy and is bounded
+            # independently. Unmeasurable shapes are not cached either.
+            measured = _bounded_size_estimate(records)
+            if (measured is not None
+                    and measured <= self._PROJECTION_BUDGET_BYTES):
+                self._disk_records = records
+            else:
+                self._count("disk_projection_uncached")
+            return records
         return self._disk_records
 
     def verify_consumed_sources(self) -> bool:
@@ -10631,14 +10658,24 @@ class EvaluationContext:
         if self._basis_impure or len(self._bases) >= self._DECISION_MEMO_LIMIT:
             return
         # Keys may carry long reply/source clauses; values are basis dicts.
-        # Bounded structural estimate — no serialized materialization.
-        estimated = (
-            _bounded_size_estimate(key)
-            + (_bounded_size_estimate(value) if value is not None else 8)
-            + self._ENTRY_OVERHEAD
-        )
+        # A None estimate (depth/width/cycle/unsupported/over node budget)
+        # means unknown size and is refused, never billed as a fixed guess.
+        import copy
+
+        # Own a deep snapshot: later producer writes to the caller's object
+        # graph cannot grow the retained entry outside the budget, and the
+        # estimate is taken on the retained snapshot itself. Unmeasurable
+        # shapes (depth/width/cycle/unsupported/over node budget) are
+        # refused, never billed as a fixed guess. Readers still receive
+        # deep copies via cached_basis.
+        snapshot = copy.deepcopy(value) if value is not None else None
+        key_size = _bounded_size_estimate(key)
+        value_size = _bounded_size_estimate(snapshot)
+        if key_size is None or value_size is None:
+            return
+        estimated = key_size + value_size + self._ENTRY_OVERHEAD
         if self._memo_admit("bases", key, estimated):
-            self._bases[key] = value
+            self._bases[key] = snapshot
 
     def basis_key(self, category: str, reply_clause: str, *, include_satisfied: bool,
                   include_unready: bool, include_controlled: bool,
@@ -10668,46 +10705,81 @@ class EvaluationContext:
             + sum(len(source.encode("utf-8")) + 64 for source in sources)
             + self._ENTRY_OVERHEAD,
         ):
-            self._action_sources[key] = sources
+            self._action_sources[key] = tuple(sources)
+            return self._action_sources[key]
         return sources
 
 
 _MEMO_MISS = object()
 
+# Bound the estimator's own work cumulatively: past this many measured nodes
+# a single admission probe gives up with an unknown result.
+_MEASURE_NODE_BUDGET = 4096
+# A memo entry may retain at most this many items per container level before
+# the unvisited suffix counts as unknown instead of a fixed token size.
+_MEASURE_WIDTH_LIMIT = 64
+_MEASURE_DEPTH_LIMIT = 6
 
-def _bounded_size_estimate(value: Any, depth: int = 0) -> int:
+
+def _bounded_size_estimate(value: Any) -> int | None:
     """Conservative byte estimate for a memo key/value, without serializing.
 
-    Counts UTF-8 bytes of retained strings, fixed sizes for scalars, and
-    per-item container overhead; walks at most 6 levels and 64 items per
-    container, so measuring an entry is bounded no matter its shape.
+    Returns ``None`` — meaning UNKNOWN, so the caller must refuse admission —
+    when the shape exceeds the traversal limits (depth, per-container width,
+    cumulative node budget), contains a reference cycle, or has an
+    unsupported type. The unvisited suffix is never undercounted as a fixed
+    token size: an unknown tail makes the whole entry unmeasurable.
     """
-    if depth > 6:
-        return 8
-    if value is None or isinstance(value, bool):
-        return 8
-    if isinstance(value, str):
-        return len(value.encode("utf-8"))
-    if isinstance(value, (int, float)):
-        return 8
-    if isinstance(value, dict):
-        total = 0
-        for index, (item_key, item_value) in enumerate(value.items()):
-            if index >= 64:
-                total += 8
-                break
-            total += (_bounded_size_estimate(item_key, depth + 1)
-                      + _bounded_size_estimate(item_value, depth + 1) + 16)
-        return total
-    if isinstance(value, (list, tuple, set, frozenset)):
-        total = 0
-        for index, item in enumerate(value):
-            if index >= 64:
-                total += 8
-                break
-            total += _bounded_size_estimate(item, depth + 1) + 16
-        return total
-    return 64
+    budget = [_MEASURE_NODE_BUDGET]
+    seen: set[int] = set()
+
+    def walk(node: Any, depth: int) -> int | None:
+        if budget[0] <= 0:
+            return None
+        budget[0] -= 1
+        if depth > _MEASURE_DEPTH_LIMIT:
+            return None
+        if node is None or isinstance(node, bool):
+            return 8
+        if isinstance(node, str):
+            return len(node.encode("utf-8"))
+        if isinstance(node, (int, float)):
+            return 8
+        node_id = id(node)
+        if node_id in seen:
+            return None  # reference cycle: size is unknowable
+        if isinstance(node, dict):
+            seen.add(node_id)
+            try:
+                total = 0
+                for index, (item_key, item_value) in enumerate(node.items()):
+                    if index >= _MEASURE_WIDTH_LIMIT:
+                        return None  # unvisited suffix is unknown
+                    measured_key = walk(item_key, depth + 1)
+                    measured_value = walk(item_value, depth + 1)
+                    if measured_key is None or measured_value is None:
+                        return None
+                    total += measured_key + measured_value + 16
+                return total
+            finally:
+                seen.discard(node_id)
+        if isinstance(node, (list, tuple, set, frozenset)):
+            seen.add(node_id)
+            try:
+                total = 0
+                for index, item in enumerate(node):
+                    if index >= _MEASURE_WIDTH_LIMIT:
+                        return None
+                    measured = walk(item, depth + 1)
+                    if measured is None:
+                        return None
+                    total += measured + 16
+                return total
+            finally:
+                seen.discard(node_id)
+        return None  # unsupported type: unknown, never a fixed guess
+
+    return walk(value, 0)
 
 
 def _action_source_filter(
