@@ -4,14 +4,14 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.15.0 — Unreleased（source candidate）
+## 0.15.0 — 2026-10-02
 
 ### Highlights
 
 - 新会话通过内核锁保持状态的独占写入，清理也遵守同一把锁。缓慢或暂停的 writer 不再因锁超过时限而被夺走所有权。
 - 有状态 Hook 在路由进程内加载核心，省去第二次 Python 启动；普通工具继续走无需审批的快速路径。
 - 精简常驻指令和 Skill 指引，高级控制通过 `checkpoint-status --commands` 按需发现，需求与证据边界保持不变。
-- 升级边界：已有会话继续使用原运行时。本版为新会话隔离状态，不迁移、不清理 legacy 数据。
+- 升级边界：修改 HOME 的插件选择前先完成旧任务，或保留明确使用原运行时的独立 HOME。本版为新会话隔离状态，不迁移、不清理 legacy 数据。
 
 ### Changes
 
@@ -25,7 +25,8 @@
 
 - macOS 预声明 A/B 的 440 次样本全部通过语义断言。固定 100 事件生命周期的中位耗时从 19.03 秒降至 11.81 秒（37.97%）；Stop 与 RSS 均在既定预算内。
 - 常驻 Skill token 减少 40.26%，两条固定普通 Hook 提示减少 59–61%。一次匹配的真实宿主批次中，GPT-6 Astra/Sol/Luna 总 token 分别减少 5.90%/3.25%/3.10%。这些是有界观察，不是普遍成本保证。
-- macOS 源码套件通过 2,127 项测试，24 项明确跳过；全新安装生命周期及三个模型的 Stop、压缩和冷恢复验收通过。Windows 全新安装与原生 Stop/恢复通过；历史裁决为 36 项直接通过、16 项 Codex 侧类比和 1 项不完整排除。Windows 旧缓存恢复、升级后旧任务续跑及最终 CI/HOL 仍阻塞发布。证据边界见[验收记录](docs/LOCAL_ACCEPTANCE.md)；候选尚未发布。
+- 源码验证与必需历史检查通过；一项已批准的不完整案例只计排除，不计通过。详情与平台边界见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- macOS 和 Windows 均通过有界原生 Stop、压缩与恢复检查。Windows 另验证了独立 HOME 中的新旧任务并存。发布提交的 CI/HOL 与公开身份单独核验。
 
 ## 0.14.3 — 2026-09-29
 

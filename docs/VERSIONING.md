@@ -1,6 +1,6 @@
 # Versioning policy
 
-## 0.15.0 — Unreleased source candidate
+## 0.15.0 — 2026-10-02
 
 This minor version changes the session-storage and upgrade contract. New sessions
 use `sessions-v2` and stable kernel lifecycle locks outside deletable session

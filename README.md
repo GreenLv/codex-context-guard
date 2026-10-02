@@ -12,13 +12,11 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **Latest published: 0.14.3 — 2026-09-29.** Faster completion checks for long tasks, with rollback if source records change during evaluation. No state migration is needed. See the [release notes](docs/releases/v0.14.3.md) for the changes and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for the tested scope.
-
-> **0.15.0 source candidate (Unreleased):** lower Hook startup overhead and shorter instructions. New sessions use isolated state; existing tasks must continue under their original runtime. There is no state migration. See the candidate [release notes](docs/releases/v0.15.0.md) and [upgrade boundaries](docs/COMPATIBILITY.md) before testing this source.
+> **Latest published: 0.15.0 — 2026-10-02.** Lower Hook startup overhead, shorter instructions and exclusive state ownership. New sessions use isolated state; existing tasks need their original runtime. Read the [release notes](docs/releases/v0.15.0.md) and [upgrade boundaries](docs/SESSION_STORAGE.md) before changing an existing installation.
 
 ## Install
 
-Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The 0.14.3 acceptance batch targets Codex CLI `0.158.0`; earlier CLI versions are not retested for this release. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.
+Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The 0.15.0 acceptance batch targets Codex CLI `0.158.0`; earlier CLI versions are not retested for this release. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -38,7 +36,9 @@ Installing a plugin does not trust its Hooks automatically. Start a fresh Codex 
 
 ### Upgrade notes
 
-Before upgrading to 0.14.3, verify its published Release, then use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Tasks already running may keep their old Hook and versioned cache; do not overwrite a consumed cache. See [compatibility](docs/COMPATIBILITY.md) for optional controls and downgrade limits.
+Before upgrading to 0.15.0, verify its published Release. Here, HOME means Codex’s configuration and task-data directory, selected by `CODEX_HOME`. Finish old tasks before changing their HOME’s selected plugin, or keep an independent HOME explicitly on the original version while new work uses a fresh HOME. Keeping an old cache alone does not pin its Hooks: Codex may select the new version on the next turn. This release does not migrate old task state.
+
+Use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Do not overwrite consumed caches. See [session storage and upgrades](docs/SESSION_STORAGE.md) for the separate-HOME route and [compatibility](docs/COMPATIBILITY.md) for tested limits.
 
 If the required Python interpreter and managed cache are both unavailable, Context Guard stops with a reinstall hint. Version history is in the [changelog](CHANGELOG.md); current behavior and platform limits are in [compatibility](docs/COMPATIBILITY.md). The [0.12.4 baseline](docs/BEHAVIOR_BASELINE_0_12_4.md) is historical.
 
@@ -159,7 +159,7 @@ When an open requirement still lacks matching evidence and the reply claims the 
 
 The message is normal when requested work is still open. If it is unexpected, ask Codex what remains and run `context-guard status` or `context-guard diagnose`. The default feedback names only the current work unit's pending-item count, one reason, and one next step — never the full historical ID list — and a turn can be corrected at most once; after that, unresolved work stays pending and the turn ends safely. Waiting for the user, an external result, or an explicitly deferred step ends the turn silently without closing unfinished requirements. Ordinary endings need no commands: when a reply verifiably completes the unit, the guard binds the unique successful evidence itself.
 
-Existing tasks may keep the Hook version they started with. Start a fresh task after an upgrade; if an old Hook path is missing, see [Versioning](docs/VERSIONING.md) for recovery guidance.
+An old task is not guaranteed to keep its original Hook after an in-place upgrade. Follow [session storage and upgrades](docs/SESSION_STORAGE.md) before switching versions; if an old Hook path is missing, see [Versioning](docs/VERSIONING.md) for recovery guidance.
 
 ## User controls
 
@@ -183,6 +183,8 @@ Runtime data is stored under Codex-managed `PLUGIN_DATA`. Prompt bodies, task st
 In 0.15.0, ended v2 sessions with no resumed activity are eligible for cleanup after 30 days; legacy session trees are retained. Redacted exports are created only when requested and omit raw prompts, transcripts, credentials, authorization headers, URL query values, and plugin-private paths. See [Privacy](docs/PRIVACY.md).
 
 ## Update and uninstall
+
+Before updating a HOME with unfinished tasks, follow the [upgrade notes](#upgrade-notes).
 
 ```shell
 git pull --ff-only

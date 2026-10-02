@@ -4,14 +4,14 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.15.0 — Unreleased (source candidate)
+## 0.15.0 — 2026-10-02
 
 ### Highlights
 
 - New sessions keep exclusive ownership of their state through kernel locks, including during cleanup. Slow or suspended writers are no longer displaced by an elapsed-time lock rule.
 - Stateful Hooks avoid a second Python interpreter by loading the core in the router process. Ordinary tool calls retain their fast, approval-free path.
 - Shorter resident instructions and Skill guidance make advanced controls available on demand through `checkpoint-status --commands`, while preserving requirements and evidence boundaries.
-- Upgrade boundary: existing sessions stay with their original runtime. This version isolates new sessions and does not migrate or clean legacy state.
+- Upgrade boundary: finish old tasks before changing their HOME’s selected plugin, or keep a separate HOME explicitly on the original runtime. This version isolates new sessions and does not migrate or clean legacy state.
 
 ### Changes
 
@@ -25,7 +25,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 - All 440 predeclared macOS A/B samples passed their semantic assertions. The fixed 100-event lifecycle median fell from 19.03 to 11.81 seconds (37.97%); Stop and RSS stayed within the declared budgets.
 - Resident Skill tokens fell 40.26%; two fixed ordinary Hook prompts fell 59–61%. Actual GPT-6 Astra/Sol/Luna total usage fell 5.90%/3.25%/3.10% in one matched live-host batch. These are bounded observations, not general cost guarantees.
-- The macOS source suite passed 2,127 tests with 24 explicit skips. Fresh installed lifecycle checks and all three models' Stop, compaction and cold-resume profiles passed. Windows fresh installation and native Stop/recovery passed; history has 36 direct passes, 16 Codex-side analogues and one incomplete exclusion. Old Windows cache recovery, after-upgrade task continuation and final CI/HOL still block publication. See [acceptance](docs/LOCAL_ACCEPTANCE.md); this candidate is not published.
+- Source validation and required historical checks passed; one approved incomplete case is excluded, never counted as a pass. Details and platform limits are in the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- macOS and Windows passed bounded native Stop, compaction and recovery checks. Windows also verified explicit old/new task coexistence in separate HOMEs. Release-commit CI/HOL and public identities are checked separately.
 
 ## 0.14.3 — 2026-09-29
 

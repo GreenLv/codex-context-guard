@@ -143,7 +143,7 @@ One Stop event evaluates through a single private, explicitly passed
   nothing is truncated, dropped or fabricated. Nothing is written to product
   state, no module-level cache exists, and no memo crosses events.
 
-## Session ownership and bounded storage (0.15.0 source candidate)
+## Session ownership and bounded storage (0.15.0)
 
 New sessions use `sessions-v2`. Every stateful writer and cleanup operation
 acquires the same kernel lifecycle lock under `sessions-v2/.locks`, outside

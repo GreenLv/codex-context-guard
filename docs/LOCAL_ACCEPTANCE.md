@@ -1,8 +1,8 @@
 # Local Release Acceptance
 
-## 0.15.0 — source candidate
+## 0.15.0 — 2026-10-02
 
-Evidence below concerns runtime-tree SHA-256 `8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5`. Source tests, installed files, live Hooks and public availability remain separate facts. The comparison baseline is published 0.14.3 at `d24899d8202a58d7426208541c58d193464e93de`.
+Evidence below concerns runtime-tree SHA-256 `8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5`. Source tests, installed files, live Hooks and public availability remain separate facts. The comparison baseline is the 0.14.3 runtime at source commit `d24899d8202a58d7426208541c58d193464e93de`, with the same runtime bytes as published tag `v0.14.3` at `13a5cf766bc42e7267d735c5a665f27cd5f9c97a`.
 
 ### Source and history
 
@@ -49,7 +49,13 @@ On Windows 11/Python 3.12.10, the same runtime passed portable installation, str
 
 The first Windows full source run retained its two failures and six errors. The affected context, performance-driver, lock and coverage-control modules subsequently passed after test portability repairs or use of the locked dependency environment; this is not relabeled as a fresh green full-suite run. Final-source full CI/HOL remains required.
 
-Publication is blocked by the old isolated Windows HOME: restoring its original 0.14.3 live cache fails at the final atomic rename with WinError 5. The indexed 233-file archive is intact; identical restores to same-parent and same-version-name controls passed. Neither a product defect nor transient host state has been established. The old task passed before upgrade, but its after-upgrade continuation remains unverified. Further recovery is deferred until an authorized host restart is available. Fresh-HOME success does not close that gate. No tag or Release is claimed.
+A fresh Windows HOME completed a managed 0.14.3→0.15.0 upgrade: the original live cache and indexed archive each matched their own pre-upgrade bytes. The old process remained alive, but official RPC then selected the 0.15.0 UserPromptSubmit Hook for that old task. File preservation therefore does not prove automatic old-runtime pinning. Finish old tasks before changing the selected plugin in their HOME, or use separate HOMEs.
+
+The explicit dual-HOME route passed with the same source/runtime identities. The original old task was cold-resumed with 0.14.3 explicitly selected in its own HOME; a second HOME retained 0.15.0. The resumed old process stayed alive across the new-task turn and completed actual read-only PreToolUse/PostToolUse, Stop, a second compaction and recovery. All three original pending requirements remained. Old Stop durations were 2039/2077/2228 ms; the new task's observed Stop was 2048 ms. The new task used `sessions-v2` and the stable external protocol-2 lock, which was independently reacquired through `msvcrt`. Both owned Job Object trees were empty after cleanup. Each HOME used normal nine-Hook trust. Existing same-host authentication was reused with explicit authorization; no new interactive login or Windows restart occurred.
+
+Two collector failures are retained separately: an incorrect live-to-archive comparison, and a stale `sessions/.locks` lookup instead of `sessions-v2/.locks`. Their successful installation and actual Hook observations were reused; corrected readback and an explicit cold-resume supplement closed the affected observations. This is not evidence that the original installation-time process ran uninterrupted. The same-HOME automatic-old-Hook assertion remains a failed control establishing the boundary above.
+
+The original isolated Windows HOME still has an unresolved WinError 5 at its old-cache atomic rename. Its indexed 233-file archive is intact, and same-parent and same-version-name controls passed. That HOME was left untouched while the fresh-environment route was accepted; neither its root cause nor its repair is claimed. Exact release-commit full CI/HOL and public tag/Release readback remain separate from these runtime observations.
 
 ## 0.14.3 — 2026-09-29
 

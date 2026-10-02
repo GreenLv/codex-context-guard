@@ -5,15 +5,31 @@ Existing `sessions/<id>` trees and consumed versioned plugin caches remain with
 their original runtime. There is no migration command, automatic import or
 legacy cleanup in this version.
 
+Here, HOME means the Codex configuration and task-data directory selected by
+`CODEX_HOME`, not the operating system user directory.
+
 ## Continue existing work
 
 Keep the old task's original cache and session data. Continue it under the
 original loaded runtime, and check the actual Hook source path and identity.
 Keeping a directory on disk does not prove that the host loaded that version.
-A fresh task can use the new version independently. Cold-resuming an arbitrary
-old task through a newly selected runtime does not import its ledger.
+Codex CLI 0.158.0 on Windows was observed switching an existing task to the
+new Hook on its next turn after an in-place plugin upgrade, even while the
+original host process remained alive. Finish old tasks before changing that
+HOME's selected plugin, or keep a separate HOME explicitly configured for the
+original version while new work uses a fresh HOME. Do not copy Hook trust or
+session data into the new HOME; review its Hooks normally. A fresh task can use
+the new version independently. Cold-resuming an arbitrary old task through a
+newly selected runtime does not import its ledger.
 See [compatibility](COMPATIBILITY.md) for the supported boundary and
 [local acceptance](LOCAL_ACCEPTANCE.md) for observed host routes.
+
+For concurrent old and new work, install from the new source checkout with
+`python scripts/manage_plugin.py --codex-home <new-home> --apply`, replacing
+`<new-home>` with a fresh private directory. Start that Codex process with
+`CODEX_HOME` set to the same directory. Keep the old task in its original HOME
+with the old plugin selected. Each HOME has its own login and normal Hook trust
+setup; selecting a different HOME does not transfer tasks or their ledgers.
 
 The new runtime resolves existing v2 state first, then legacy state; only a
 new session creates a v2 directory. Its legacy access is strictly read-only:

@@ -12,13 +12,11 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **最新已发布：0.14.3 — 2026-09-29。** 长任务的完成检查更快；评估期间源记录变化时会回滚本次状态改动。无需迁移状态。变更见[发布说明](docs/releases/v0.14.3.md)，已验证范围见[验收记录](docs/LOCAL_ACCEPTANCE.md)。
-
-> **0.15.0 源码候选（Unreleased）：** 减少 Hook 启动开销并精简常驻指令。新会话使用独立状态；旧任务须继续使用原运行时，本版不提供状态迁移。测试候选前请阅读候选[发布说明](docs/releases/v0.15.0.md)及[升级边界](docs/COMPATIBILITY.md)。
+> **最新已发布：0.15.0 — 2026-10-02。** 减少 Hook 启动开销、精简指令，并保证状态的独占写入。新会话使用独立状态；旧任务需要原运行时。修改现有安装前，请阅读[发布说明](docs/releases/v0.15.0.md)和[升级边界](docs/SESSION_STORAGE.md)。
 
 ## 安装
 
-需要 Python 3.10 或更高版本、Codex CLI，以及能够加载插件和生命周期 Hook 的 Codex 界面。0.14.3 验收批次面向 Codex CLI `0.158.0`，本版不补测旧 CLI；已完成与待完成检查见[兼容性说明](docs/COMPATIBILITY.md)。
+需要 Python 3.10 或更高版本、Codex CLI，以及能够加载插件和生命周期 Hook 的 Codex 界面。0.15.0 验收批次面向 Codex CLI `0.158.0`，本版不补测旧 CLI；已完成与待完成检查见[兼容性说明](docs/COMPATIBILITY.md)。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -38,7 +36,9 @@ py -3 scripts\manage_plugin.py --apply
 
 ### 升级说明
 
-升级到 0.14.3 前，先核实其公开 Release，再使用受管安装器并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。已运行的任务可能继续使用旧 Hook 与版本化缓存；不要覆盖已消费的缓存。可选控制能力和降级限制见[兼容性说明](docs/COMPATIBILITY.md)。
+升级到 0.15.0 前，先核实其公开 Release。这里的 HOME 指 `CODEX_HOME` 指定的 Codex 配置与任务数据目录。修改 HOME 的插件选择前先完成旧任务；若要同时开展新旧任务，请让旧任务留在明确使用原版本的独立 HOME，新任务使用新的 HOME。保留旧缓存并不能固定 Hook 版本：Codex 可能在下一回合选择新版。本版不迁移旧任务状态。
+
+使用受管安装器并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。不要覆盖已消费的缓存。独立 HOME 的操作见[会话存储与升级](docs/SESSION_STORAGE.md)，已验证的边界见[兼容性说明](docs/COMPATIBILITY.md)。
 
 若所需 Python 解释器和受管缓存都不可用，Context Guard 会停止并提示重装。版本历史见[更新日志](CHANGELOG.zh-CN.md)，当前行为与平台边界见[兼容性说明](docs/COMPATIBILITY.md)；[0.12.4 行为基线](docs/BEHAVIOR_BASELINE_0_12_4.md)保留为历史记录。
 
@@ -159,7 +159,7 @@ flowchart TB
 
 确实还有工作未完成时，这条提示属于正常保护。如果提示与预期不符，可以直接问 Codex 还缺什么，并运行 `context-guard status` 或 `context-guard diagnose`。默认反馈只提到当前工作单元的未验项数量、一个原因和一个下一步，不会罗列全部历史 ID；每回合最多纠正一次，之后未完成的工作保持待办，回合安全结束。等待用户、外部结果或明确延期的回合会静默结束，不会关闭未完成要求。普通结束不需要任何命令：回复可验证地完成当前单元时，守卫会自行绑定唯一的成功证据。
 
-已有任务可能继续使用启动时加载的 Hook 版本。升级后请启动新任务；如果旧 Hook 路径缺失，请按[版本策略](docs/VERSIONING.md)中的说明恢复。
+原地升级后，旧任务不保证继续使用原 Hook。切换版本前请遵循[会话存储与升级](docs/SESSION_STORAGE.md)；如果旧 Hook 路径缺失，请按[版本策略](docs/VERSIONING.md)中的说明恢复。
 
 ## 用户控制
 
@@ -183,6 +183,8 @@ flowchart TB
 0.15.0 中，已结束且未恢复活动的 v2 会话在 30 天后可以清理；legacy 会话树继续保留。脱敏导出只在显式请求时创建，并省略原始提示、会话正文、凭据、认证头、URL 查询参数和插件私有路径。详见[隐私说明](docs/PRIVACY.md)。
 
 ## 更新与卸载
+
+更新仍有未完成任务的 HOME 前，请先按[升级说明](#升级说明)处理。
 
 ```shell
 git pull --ff-only

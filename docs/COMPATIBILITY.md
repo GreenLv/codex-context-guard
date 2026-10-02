@@ -1,11 +1,11 @@
 # Compatibility and Verification Status
 
-## 0.15.0 — Unreleased source candidate
+## 0.15.0 — 2026-10-02
 
 New sessions use `sessions-v2`; existing `sessions` trees stay with their
-original runtime and are read-only to the candidate. No migration or legacy
+original runtime and are read-only to the new runtime. No migration or legacy
 cleanup is supported. A recorded SessionEnd does not prevent later writes.
-Do not resume an old task through the candidate expecting automatic import.
+Do not resume an old task through the new runtime expecting automatic import.
 Keep its original cache and session data; confirm the actual loaded Hook
 path and source identity before continuing under the original runtime.
 Cache preservation alone is disk evidence, not a host continuation proof.
@@ -15,9 +15,13 @@ namespaces. Lifecycle locks live outside deletable v2 session subtrees.
 Fresh isolated installation and bounded live Stop/compaction/recovery passed
 on macOS and Windows for the current runtime. Windows kernel-lock tests passed
 through both direct Python and venv launchers. macOS observed the original
-runtime continuing after candidate activation. Restoring the old Windows
-acceptance HOME and its after-upgrade task continuation remain blocked by an
-unresolved target-path rename failure; the candidate is not ready to publish.
+runtime continuing after candidate activation. Windows passed explicit old
+runtime continuation in one HOME while new tasks used another HOME. An in-place
+upgrade was observed selecting the new Hook for an existing task on its next
+turn, even with the original process alive. Finish old tasks before changing
+their HOME’s plugin selection, or use the separate-HOME route. A rename failure
+in an older isolated HOME remains an unrepaired diagnostic; the fresh
+environment acceptance does not claim that original path was repaired.
 Model, source, installed and publication evidence remain separately bounded.
 See [session storage and upgrades](SESSION_STORAGE.md).
 
