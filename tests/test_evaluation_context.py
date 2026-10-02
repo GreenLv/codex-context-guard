@@ -230,6 +230,54 @@ class EvaluationContextTests(unittest.TestCase):
         self.assertEqual(counters.get("fragments_computed"), 2)
         self.assertEqual(len(evaluation._parsed), 0)
 
+    def test_t20_total_budget_covers_search_and_clause_memos(self):
+        """CGN-02 regression: old code retained 14KB under a 1-byte budget."""
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        text = "修改 src/component.py 并运行完整验证套件，必须提供回执。" * 200
+        evaluation = self.context(text_budget_bytes=1)
+        evaluation.action_matches_of(pattern, text)
+        evaluation.action_source_clauses_of(text)
+        evaluation.reply_clauses_of(text)
+        self.assertEqual(len(evaluation._searches), 0)
+        self.assertEqual(len(evaluation._source_clauses), 0)
+        self.assertEqual(len(evaluation._reply_clause_memo), 0)
+        self.assertEqual(evaluation._memo_bytes, 0)
+        # Results stay correct while uncached: recomputation matches direct
+        # computation, and the decision surface is unchanged.
+        self.assertEqual(
+            [(m.span(), m.group(0))
+             for m in evaluation.action_matches_of(pattern, text)],
+            [(m.span(), m.group(0))
+             for m in cg.action_matches(pattern, text)],
+        )
+
+    def test_t21_total_budget_admits_and_accounts_within_limit(self):
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        text = "修改 src/a.py 并运行测试。"
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        evaluation.action_matches_of(pattern, text)
+        evaluation.action_source_clauses_of(text)
+        self.assertEqual(len(evaluation._searches), 1)
+        self.assertEqual(len(evaluation._source_clauses), 1)
+        self.assertGreater(evaluation._memo_bytes, 0)
+        self.assertLessEqual(evaluation._memo_bytes, 1_000_000)
+
+    def test_t22_huge_single_input_is_never_retained(self):
+        pattern = dict(cg.ACTION_PATTERNS)["local_edit"]
+        huge = "必须 " * 400_000  # ~3.2MB text
+        evaluation = self.context(text_budget_bytes=1_000_000)
+        evaluation.action_matches_of(pattern, huge)
+        self.assertEqual(len(evaluation._searches), 0)
+        self.assertLessEqual(evaluation._memo_bytes, 1_000_000)
+
+    def test_t23_budget_exhaustion_keeps_decisions_identical(self):
+        small = self.context(text_budget_bytes=64)
+        large = self.context()
+        self.assertEqual(
+            cg.current_feedback_view(self.state, self.session_dir, small),
+            cg.current_feedback_view(self.state, self.session_dir, large),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

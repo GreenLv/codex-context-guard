@@ -10360,6 +10360,10 @@ class EvaluationContext:
         self._searches: dict[tuple[int, str], tuple[re.Pattern[str], str, list[re.Match[str]]]] = {}
         self._source_clauses: dict[str, list[str]] = {}
         self._reply_clause_memo: dict[str, list[str]] = {}
+        # Total deterministic estimate of every retained memo (source text,
+        # fragments, matches, clauses, and stored values). Count limits stay
+        # as a second-layer bound; the byte budget is authoritative (CGN-02).
+        self._memo_bytes = 0
         # Phase-bound state projections (cleared by new_phase).
         self._scope: dict[str, Any] | None = None
         self._prompt_record_memo: dict[str, dict[str, Any] | None] = {}
@@ -10401,6 +10405,20 @@ class EvaluationContext:
         self._action_sources = {}
         self._count("phase")
 
+    def _memo_admit(self, cost: int) -> bool:
+        """Charge a deterministic size estimate against the total budget.
+
+        Entries whose own estimate exceeds the whole budget are never
+        retained; the caller keeps computing directly, so decisions and the
+        full scope are unchanged when the budget is exhausted.
+        """
+        if cost < 0:
+            cost = 0
+        if self._memo_bytes + cost > self.text_budget_bytes:
+            return False
+        self._memo_bytes += cost
+        return True
+
     # -- pure lexical layer -------------------------------------------------
 
     def parsed(self, text: str) -> _ParsedText:
@@ -10410,7 +10428,7 @@ class EvaluationContext:
         parsed = _ParsedText(text)
         self._count("fragments_computed")
         budget = len(text.encode("utf-8"))
-        if self._parsed_bytes + budget <= self.text_budget_bytes:
+        if self._memo_admit(budget):
             self._parsed[text] = parsed
             self._parsed_bytes += budget
         return parsed
@@ -10433,8 +10451,12 @@ class EvaluationContext:
         self._count("action_matches_computed")
         matches = action_matches(pattern, text)
         if len(self._searches) < self._SEARCH_MEMO_LIMIT:
-            # Pin the pattern and text so an id can never be reused by the key.
-            self._searches[key] = (pattern, text, matches)
+            estimated = len(text.encode("utf-8")) + sum(
+                len(match.group(0).encode("utf-8")) + 64 for match in matches
+            )
+            if self._memo_admit(estimated):
+                # Pin the pattern and text so an id can never be reused by the key.
+                self._searches[key] = (pattern, text, matches)
         return matches
 
     def action_search_of(self, pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
@@ -10445,7 +10467,9 @@ class EvaluationContext:
         if clauses is None:
             self._count("action_source_clauses_computed")
             clauses = _action_source_clauses(text)
-            if len(self._source_clauses) < self._DECISION_MEMO_LIMIT:
+            if len(self._source_clauses) < self._DECISION_MEMO_LIMIT and self._memo_admit(
+                sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+            ):
                 self._source_clauses[text] = clauses
         return clauses
 
@@ -10454,7 +10478,9 @@ class EvaluationContext:
         if clauses is None:
             self._count("reply_clauses_computed")
             clauses = _reply_clauses(text)
-            if len(self._reply_clause_memo) < self._DECISION_MEMO_LIMIT:
+            if len(self._reply_clause_memo) < self._DECISION_MEMO_LIMIT and self._memo_admit(
+                sum(len(clause.encode("utf-8")) + 64 for clause in clauses)
+            ):
                 self._reply_clause_memo[text] = clauses
         return clauses
 
@@ -10558,7 +10584,11 @@ class EvaluationContext:
     def store_basis(self, key: tuple, value: dict[str, Any] | None) -> None:
         if self._basis_impure or len(self._bases) >= self._DECISION_MEMO_LIMIT:
             return
-        self._bases[key] = value
+        estimated = len(json.dumps(
+            value, ensure_ascii=True, sort_keys=True, default=str
+        ).encode("ascii")) if value is not None else 64
+        if self._memo_admit(estimated):
+            self._bases[key] = value
 
     def basis_key(self, category: str, reply_clause: str, *, include_satisfied: bool,
                   include_unready: bool, include_controlled: bool,
@@ -10581,7 +10611,9 @@ class EvaluationContext:
         sources = _action_source_filter(
             clauses, category=category, pattern=pattern,
             execution_kind=execution_kind, context=self)
-        if len(self._action_sources) < self._DECISION_MEMO_LIMIT:
+        if len(self._action_sources) < self._DECISION_MEMO_LIMIT and self._memo_admit(
+            sum(len(source.encode("utf-8")) + 64 for source in sources)
+        ):
             self._action_sources[key] = sources
         return sources
 
