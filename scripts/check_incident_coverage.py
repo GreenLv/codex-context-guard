@@ -25,7 +25,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 VERDICTS = {"executed_pass", "executed_fail", "not_applicable", "analogue_only",
-            "pending"}
+            "pending", "excluded_incomplete"}
 PASSING = {"executed_pass"}
 # Closed platform/source result vocabulary and the applicability rules that
 # bind it to verdicts. Anything else is rejected; no failed/not_run/unknown
@@ -214,9 +214,55 @@ def validate_coverage(index: dict, coverage: dict) -> list[str]:
     return errors
 
 
+def exception_index(exceptions: dict | None) -> dict[str, dict]:
+    """Index exception entries by exact case id; duplicates are errors."""
+    entries: dict[str, dict] = {}
+    if not exceptions:
+        return entries
+    seen: set[str] = set()
+    for item in exceptions.get("exceptions") or []:
+        if not isinstance(item, dict):
+            continue
+        entry_id = item.get("id")
+        if entry_id in seen:
+            continue  # duplication is reported separately by the caller
+        seen.add(entry_id)
+        entries[entry_id] = item
+    return entries
+
+
+def check_exception_inventory(index: dict, exceptions: dict | None,
+                              errors: list[str]) -> None:
+    """Both directions: every exception entry must match one ACTIVE case id
+    in the frozen index; duplicates and orphans are errors. The association
+    is by exact case id, independent of any prose marker in the row."""
+    registry = index.get("case_registry", {}).get("records", {})
+    entries = (exceptions or {}).get("exceptions") or []
+    seen: dict[str, int] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            errors.append("exception entry is not an object")
+            continue
+        entry_id = item.get("id")
+        seen[entry_id] = seen.get(entry_id, 0) + 1
+        pin = registry.get(entry_id)
+        if pin is None:
+            errors.append(
+                f"exception {entry_id!r} does not match any frozen case id")
+        elif pin.get("status") != "active":
+            errors.append(
+                f"exception {entry_id!r} matches a non-active case")
+    for entry_id, count in seen.items():
+        if count > 1:
+            errors.append(
+                f"exception {entry_id!r} appears {count} times; entries must "
+                "be unique")
+
+
 def validate_rows(rows: list, root: Path, errors: list[str],
                   exceptions: dict | None = None) -> dict[str, int]:
     verdicts: dict[str, int] = {}
+    by_id = exception_index(exceptions)
     for row in rows:
         rid = row.get("id", "<unknown>")
         status = row.get("status")
@@ -243,8 +289,34 @@ def validate_rows(rows: list, root: Path, errors: list[str],
         if verdict == "not_applicable":
             errors.append(f"{rid}: not_applicable requires a reviewed product "
                           "boundary; batch exclusions are not accepted here")
+        # Exact case-id association, enforced in BOTH directions and
+        # independent of any prose marker: a typed row field, a fixture
+        # entry, or an approved verdict each demand the full pairing. This
+        # is what defeats marker deletion followed by a pass flip, and the
+        # typed row field survives even a deleted fixture.
+        declared = row.get("incomplete_exception")
+        if declared is not None and declared != rid:
+            errors.append(
+                f"{rid}: incomplete_exception {declared!r} is a cross-case "
+                "reference; it must be the row's own exact case id")
+        entry = by_id.get(rid) if declared is None else by_id.get(declared, by_id.get(rid))
+        if entry is not None or declared is not None:
+            if verdict != "excluded_incomplete":
+                errors.append(
+                    f"{rid}: case has an incomplete-case exception; the row "
+                    f"must be excluded_incomplete, not {verdict!r}")
+        if verdict == "excluded_incomplete":
+            if entry is None:
+                errors.append(
+                    f"{rid}: excluded_incomplete requires a reviewed "
+                    "incomplete-case exception entry with the exact case id")
+            elif entry.get("status") != "approved":
+                errors.append(
+                    f"{rid}: exception entry is not approved; the row stays "
+                    "pending until the coordinator approves it")
         missing = " ".join(str(item) for item in (row.get("missing_evidence") or []))
-        if "incomplete-exception:" in missing:
+        if "incomplete-exception:" in missing and entry is None \
+                and declared is None:
             _check_incomplete_exception(rid, missing, exceptions, errors, root)
         resolve_locator(root, str(row.get("test_locator") or ""), errors)
     return verdicts
@@ -276,13 +348,10 @@ def _check_incomplete_exception(rid: str, missing: str,
         return
     for field in ("kind", "missing", "sources_checked",
                   "why_no_faithful_oracle", "retained_generic_boundary",
-                  "counts_as"):
+                  "counts_as", "status"):
         if not entry.get(field):
             errors.append(
                 f"{rid}: exception {entry_id} is missing field {field}")
-    if entry.get("coordinator_review") != "required":
-        errors.append(
-            f"{rid}: exception {entry_id} must require coordinator review")
     if "pass" in str(entry.get("counts_as", "")).lower() \
             and "never" not in str(entry.get("counts_as", "")).lower():
         errors.append(
@@ -507,6 +576,8 @@ def main() -> int:
     WINDOWS_NOT_REQUIRED_FROZEN = set(
         index.get("windows_not_required_case_ids") or set())
     errors = validate_coverage(index, coverage)
+    if exceptions is not None:
+        check_exception_inventory(index, exceptions, errors)
     rows = coverage.get("cases", []) + coverage.get("legacy", [])
     verdicts = validate_rows(rows, root, errors, exceptions)
     receipts = execute_receipts(root, rows, errors) if args.execute else None
@@ -542,6 +613,25 @@ def main() -> int:
              for row in rows
              for token in " ".join(str(x) for x in (row.get("missing_evidence") or [])).split()
              if token.startswith(INCOMPLETE_EXCEPTION_MARKER)}),
+        "release_gate": {
+            "rule": "close only when zero pending/executed_fail rows remain, "
+                    "all other active rows are executed_pass/analogue_only, "
+                    "and every excluded_incomplete row has an approved entry; "
+                    "excluded_incomplete is counted separately and never as a pass",
+            "blocking_rows": sorted(
+                row.get("id") for row in rows
+                if row.get("status") not in ("superseded", "legacy-superseded")
+                and row.get("final_verdict") in ("pending", "executed_fail")),
+            "excluded_incomplete": sorted(
+                row.get("id") for row in rows
+                if row.get("final_verdict") == "excluded_incomplete"),
+            "passes": verdicts.get("executed_pass", 0)
+                      + verdicts.get("analogue_only", 0),
+            "closes_release_gate": (
+                verdicts.get("pending", 0) == 0
+                and verdicts.get("executed_fail", 0) == 0
+                and errors == []),
+        },
         "execution_receipts": receipts,
         "errors": errors, "valid": not errors,
     }

@@ -24,7 +24,9 @@
         "note": "Bounded direct diagnosis plus rejection of an invalid private control; explicitly NOT a reproduction of the original historical rejection chain."
       },
       "counts_as": "pending (never a pass)",
-      "coordinator_review": "required"
+      "status": "approved",
+      "accepted_by": "coordinator independent review R2 (docs/NEXT_CANDIDATE_REVIEW_R2.md)",
+      "accepted_at": "2026-10-02"
     }
   ]
 }

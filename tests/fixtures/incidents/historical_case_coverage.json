@@ -531,7 +531,7 @@
       "negative": "historical denial strings never appear; the original rejection chain is not reproduced and is not claimed",
       "test_locator": "tests/test_incident_library_regression.py::WindowsPlatformSourceCases::test_cgi_2026_045_diagnose_bounded_and_controls_rejected",
       "deeper_authority": "tests/test_cg130_default_path.py::test_sequential_multi_remote_pushes_are_not_denied",
-      "final_verdict": "pending",
+      "final_verdict": "excluded_incomplete",
       "source_result": "pending",
       "macos_result": "passed",
       "windows_result": "passed",
@@ -548,7 +548,8 @@
         "runtime_tree_sha256": "802640bf72862ed1aa092691e25f5af67dcc961a609b891ca5bb84436416fbb7",
         "result_bundle_sha256": "92fd472687d328e42ac98ed530f853af18d40979ddc6d5f2ff8f0555eb55d19b"
       },
-      "windows_evidence_binding": "historical 0.14.3 runtime digest (802640bf...); requires revalidation on the new runtime before release"
+      "windows_evidence_binding": "historical 0.14.3 runtime digest (802640bf...); requires revalidation on the new runtime before release",
+      "incomplete_exception": "CGI-20260913-codex-archive-045"
     },
     {
       "id": "CGI-20260913-codex-compaction-continuation",

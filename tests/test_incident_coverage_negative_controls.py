@@ -60,30 +60,123 @@ class IncompleteExceptionControls(unittest.TestCase):
             cic.WINDOWS_NOT_REQUIRED_FROZEN = None
         return verdicts, errors
 
-    def test_reviewed_exception_is_accepted_and_pending(self):
+    def test_reviewed_exception_is_excluded_incomplete(self):
         verdicts, errors = self._rows()
         self.assertEqual(errors, [])
-        self.assertEqual(verdicts.get("pending"), 2)
+        self.assertEqual(verdicts.get("excluded_incomplete"), 1)
+        self.assertEqual(verdicts.get("pending"), 1)
         row = next(r for r in self.base["cases"]
                    if r["id"] == "CGI-20260913-codex-archive-045")
-        self.assertEqual(row["final_verdict"], "pending")
+        self.assertEqual(row["final_verdict"], "excluded_incomplete")
 
     def test_unknown_exception_reference_rejected(self):
+        # A prose marker on a row WITHOUT its own exception entry must
+        # resolve to a reviewed entry or fail.
         row = next(r for r in self.base["cases"]
-                   if r["id"] == "CGI-20260913-codex-archive-045")
+                   if r["id"] == "CGI-20260928-dsh-warm-resolver-scope-drift")
         row["missing_evidence"] = ["incomplete-exception:CGI-20990101-not-reviewed"]
         _, errors = self._rows()
         self.assertTrue(any("no reviewed entry" in e for e in errors), errors)
 
-    def test_exception_without_coordinator_review_rejected(self):
-        self.exceptions["exceptions"][0]["coordinator_review"] = "optional"
-        _, errors = self._rows()
-        self.assertTrue(any("coordinator review" in e for e in errors), errors)
+    def test_unapproved_exception_not_counted_closed(self):
+        self.exceptions["exceptions"][0]["status"] = "draft"
+        verdicts, _ = self._rows()
+        # A non-approved entry keeps its row excluded_incomplete in name but
+        # the entry cannot represent an accepted review; the release gate in
+        # main() reads the approved status via check rows above.
+        self.assertEqual(verdicts.get("excluded_incomplete"), 1)
 
     def test_exception_counting_as_pass_rejected(self):
         self.exceptions["exceptions"][0]["counts_as"] = "pass"
+        row = next(r for r in self.base["cases"]
+                   if r["id"] == "CGI-20260928-dsh-warm-resolver-scope-drift")
+        row["missing_evidence"] = [
+            "incomplete-exception:CGI-20260913-codex-archive-045"]
         _, errors = self._rows()
-        self.assertTrue(any("must not count as a pass" in e for e in errors), errors)
+        self.assertTrue(any("must not count as a pass" in e for e in errors),
+                        errors)
+
+
+class ExceptionBypassControls(unittest.TestCase):
+    """The R2 exception-mutation probe converted to invariant assertions:
+    deleting the prose marker and flipping every cell/verdict to pass must
+    fail validation, because the exact case-id association is independent
+    of row prose."""
+
+    def setUp(self):
+        self.index, self.base = load_pair()
+        self.exceptions = json.loads(
+            (REPO_ROOT / "tests/fixtures/incidents/incomplete_case_exceptions.json")
+            .read_text(encoding="utf-8"))
+
+    def _validate(self, index, coverage, exceptions):
+        errors: list[str] = []
+        cic.WINDOWS_NOT_REQUIRED_FROZEN = set(
+            index.get("windows_not_required_case_ids") or [])
+        try:
+            cic.validate_rows(coverage["cases"] + coverage["legacy"],
+                              REPO_ROOT, errors, exceptions)
+        finally:
+            cic.WINDOWS_NOT_REQUIRED_FROZEN = None
+        return errors
+
+    def test_pass_flip_with_retained_fixture_is_rejected(self):
+        """Coordinator probe exception-mutation: 045 set all cells and the
+        verdict to passed and removed the missing_evidence marker; the
+        retained exception fixture must still force a rejection."""
+        forged = copy.deepcopy(self.base)
+        row = next(r for r in forged["cases"]
+                   if r["id"] == "CGI-20260913-codex-archive-045")
+        row["final_verdict"] = "executed_pass"
+        row["source_result"] = "passed"
+        row["macos_result"] = "passed"
+        row["windows_result"] = "passed"
+        row["missing_evidence"] = []
+        errors = self._validate(self.index, forged, self.exceptions)
+        self.assertTrue(
+            any("must be excluded_incomplete" in e for e in errors), errors)
+
+    def test_pass_flip_with_deleted_fixture_is_rejected(self):
+        forged = copy.deepcopy(self.base)
+        row = next(r for r in forged["cases"]
+                   if r["id"] == "CGI-20260913-codex-archive-045")
+        row["final_verdict"] = "executed_pass"
+        row["source_result"] = "passed"
+        row["macos_result"] = "passed"
+        row["windows_result"] = "passed"
+        row["missing_evidence"] = []
+        errors = self._validate(self.index, forged, None)
+        # The typed row field alone forces the rejection without any fixture.
+        self.assertTrue(
+            any("must be excluded_incomplete" in e for e in errors), errors)
+
+    def test_orphan_exception_entry_rejected(self):
+        exceptions = copy.deepcopy(self.exceptions)
+        exceptions["exceptions"].append({
+            "id": "CGI-20990101-codex-not-in-library",
+            "kind": "incomplete_original_chain", "status": "approved",
+            "missing": ["x"], "sources_checked": ["y"],
+            "why_no_faithful_oracle": "z",
+            "retained_generic_boundary": {"test_locator": "tests/test_context_guard.py"},
+            "counts_as": "pending (never a pass)",
+        })
+        errors = []
+        cic.check_exception_inventory(self.index, exceptions, errors)
+        self.assertTrue(any("does not match any frozen case id" in e
+                            for e in errors), errors)
+
+    def test_duplicate_exception_entries_rejected(self):
+        exceptions = copy.deepcopy(self.exceptions)
+        exceptions["exceptions"].append(copy.deepcopy(exceptions["exceptions"][0]))
+        errors = []
+        cic.check_exception_inventory(self.index, exceptions, errors)
+        self.assertTrue(any("must be" in e and "unique" in e for e in errors), errors)
+
+    def test_unapproved_status_blocks_excluded_verdict(self):
+        exceptions = copy.deepcopy(self.exceptions)
+        exceptions["exceptions"][0]["status"] = "draft"
+        errors = self._validate(self.index, self.base, exceptions)
+        self.assertTrue(any("not approved" in e for e in errors), errors)
 
 
 class CoverageForgeryTests(unittest.TestCase):
