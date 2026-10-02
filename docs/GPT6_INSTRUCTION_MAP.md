@@ -20,7 +20,7 @@ description 缩短，并把可选流程外移到既有 references。删去或外
 | 旧 root 内容 | 承接 |
 | --- | --- |
 | "Do not invoke them merely because this Skill loaded"（高级命令防误触发） | 保留在 root（一行），细节在 advanced-completion.md（D） |
-| `checkpoint-status`/`register-proof`/`stage-checkpoint`/`stage-disposition` 命令名与用法 | advanced-completion.md 全文 + 注入命令改为 checkpoint-status 发现式入口，输出 `advanced_commands` 提供全部命令（R，CGN-04） |
+| `checkpoint-status`/`register-proof`/`stage-checkpoint`/`stage-disposition` 命令名与用法 | advanced-completion.md 全文 + 注入命令改为 checkpoint-status 发现式入口；默认 status 不携带命令清单，`--commands` 只读输出提供全部命令（R，CGN-04；R1 对齐） |
 | 独立回答审查的完整执行约束（最多一次新输入、失败不自动重试、coverage unknown 语义、不循环等待模型） | answer-review.md（D）；root 保留一行摘要"once, `--execute`；不可用则 coverage unknown 并继续" |
 | 审查事件"不 veto 普通工具 / Hooks 不调用模型" | 运行时不变量 N01/N02（R，test_cg130_default_path 等）+ authority-and-controls.md（D） |
 | "agent-triggered integration still needs native acceptance" 版本状态行 | 移到 docs（本文件与 LOCAL_ACCEPTANCE.md 的当前状态入口）；不作为常驻 Skill 内容（CGN-06） |
@@ -47,5 +47,6 @@ description 缩短，并把可选流程外移到既有 references。删去或外
 ## 高级路径可达性
 
 root 保留三处条件路由（advanced-completion / authority-and-controls /
-answer-review、successor-pack），且注入的 checkpoint-status 输出现在自带
-`advanced_commands`，不依赖读原始 state 文件即可发现全部私有命令。
+answer-review、successor-pack），且注入的 checkpoint-status 命令追加
+`--commands` 即可打印全部私有命令（默认 status 不携带），不依赖读原始
+state 文件。

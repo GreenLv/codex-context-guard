@@ -42,9 +42,9 @@ reply.
 For the explicit advanced path only — visual facts, human evidence selection,
 ambiguous evidence, or troubleshooting — read
 [advanced-completion.md](references/advanced-completion.md). The injected
-turn-bound status command discovers the exact staging and proof commands; do
-not invoke them merely because this Skill loaded. A visual tool's successful
-return alone proves no visual fact.
+turn-bound status command (append `--commands`) discovers the exact staging
+and proof commands; do not invoke them merely because this Skill loaded. A
+visual tool's successful return alone proves no visual fact.
 
 ## Authority stays with the user and the host
 
