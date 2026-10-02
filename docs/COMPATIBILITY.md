@@ -12,9 +12,14 @@ Cache preservation alone is disk evidence, not a host continuation proof.
 Ordinary tools retain their approval-free path; unverifiable adopted release
 state and completion cannot be certified. Read surfaces can inspect both
 namespaces. Lifecycle locks live outside deletable v2 session subtrees.
-Native old-task continuation, Windows kernel-lock behavior, candidate install,
-GPT-6 and publication remain separate pending gates until observed.
-See [the approved subdesign](LOCK_SUBDESIGN_NEXT.md).
+Fresh isolated installation and bounded live Stop/compaction/recovery passed
+on macOS and Windows for the current runtime. Windows kernel-lock tests passed
+through both direct Python and venv launchers. macOS observed the original
+runtime continuing after candidate activation. Restoring the old Windows
+acceptance HOME and its after-upgrade task continuation remain blocked by an
+unresolved target-path rename failure; the candidate is not ready to publish.
+Model, source, installed and publication evidence remain separately bounded.
+See [session storage and upgrades](SESSION_STORAGE.md).
 
 
 The `commentary_chain/v1` and `commentary_control_chain/v1` native-acceptance
@@ -63,7 +68,7 @@ Stop chains plus Archive-045 remain unresolved. The user allowed this release
 scope without adjudicating those cases; they are not verified fixes or passes.
 These scoped results do not establish whole-task closure or actual
 compaction-threshold calibration. Final publication identity remains separate. See
-[development status](DEVELOPMENT_0.14.2.md) and the
+[development status](https://github.com/GreenLv/codex-context-guard/blob/e25be98037b2e1a9b3953faf6f3a1d45699407f6/docs/DEVELOPMENT_0.14.2.md) and the
 [acceptance record](LOCAL_ACCEPTANCE.md).
 
 The 0.14.2 commentary and derived-sidecar readers compare `lstat` before/after

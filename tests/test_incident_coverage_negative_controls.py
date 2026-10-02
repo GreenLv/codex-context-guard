@@ -61,6 +61,8 @@ class IncompleteExceptionControls(unittest.TestCase):
         return verdicts, errors
 
     def test_reviewed_exception_is_excluded_incomplete(self):
+        # Keep the pending bucket synthetic as platform receipts converge.
+        pending_windows_case(self.base)
         verdicts, errors = self._rows()
         self.assertEqual(errors, [])
         self.assertEqual(verdicts.get("excluded_incomplete"), 1)

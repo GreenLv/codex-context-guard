@@ -1,4 +1,4 @@
-# EvaluationContext retained storage (source candidate)
+# EvaluationContext retained storage
 
 This inventory covers event-local retained storage. It is a deterministic
 conservative accounting contract, not an RSS guarantee. Refused caches evaluate

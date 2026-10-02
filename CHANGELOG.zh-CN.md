@@ -23,8 +23,9 @@
 
 ### Validation
 
-- 版本定稿前的开发源码检查和 2,126 项行为测试通过，24 项明确跳过。此前绑定旧 runtime 的 macOS 400 次测量中，固定 100 事件生命周期的中位耗时下降 36.97%；该结果不代签最终版本或原生宿主。
-- 精确版本的源码、安装、完整性能、macOS/Windows 原生、历史库、GPT-6 与 full CI/HOL 门槛待执行。[验收记录](docs/LOCAL_ACCEPTANCE.md)分别保留证据边界；尚未发布。
+- macOS 预声明 A/B 的 440 次样本全部通过语义断言。固定 100 事件生命周期的中位耗时从 19.03 秒降至 11.81 秒（37.97%）；Stop 与 RSS 均在既定预算内。
+- 常驻 Skill token 减少 40.26%，两条固定普通 Hook 提示减少 59–61%。一次匹配的真实宿主批次中，GPT-6 Astra/Sol/Luna 总 token 分别减少 5.90%/3.25%/3.10%。这些是有界观察，不是普遍成本保证。
+- macOS 源码套件通过 2,127 项测试，24 项明确跳过；全新安装生命周期及三个模型的 Stop、压缩和冷恢复验收通过。Windows 全新安装与原生 Stop/恢复通过；历史裁决为 36 项直接通过、16 项 Codex 侧类比和 1 项不完整排除。Windows 旧缓存恢复、升级后旧任务续跑及最终 CI/HOL 仍阻塞发布。证据边界见[验收记录](docs/LOCAL_ACCEPTANCE.md)；候选尚未发布。
 
 ## 0.14.3 — 2026-09-29
 
@@ -81,7 +82,7 @@
 - 当前运行时的 macOS 与 Windows 完整回答、部分回答和精确口令运行分别通过限定范围的原生重放；各原始采集器保留较窄的观察结论。完整回答中的合成主任务仍待办，部分回答控制有意不运行测试，精确口令控制中的未来观察仍待办。整体任务的产品闭包和实际压缩阈值校准尚未证实。
 - 源码提交 `514f41d67d8be3930aaa63450456a0a5c375e9d0` 的 [12 通道 Candidate CI](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152)和 [HOL 扫描](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966)通过。
 - 正式发布须有精确发布提交的绿色 CI/HOL，回执另行记录。
-- 原始 Windows 压缩续接链、Stop 反馈链和 Archive-045 继续未决。用户允许带着这三项未决发布，不据此声称已修复或通过。tag 与 GitHub Release 读回仍是独立事项；详见[开发状态](docs/DEVELOPMENT_0.14.2.md)和[本地验收](docs/LOCAL_ACCEPTANCE.md)。
+- 原始 Windows 压缩续接链、Stop 反馈链和 Archive-045 继续未决。用户允许带着这三项未决发布，不据此声称已修复或通过。tag 与 GitHub Release 读回仍是独立事项；详见[开发状态](https://github.com/GreenLv/codex-context-guard/blob/e25be98037b2e1a9b3953faf6f3a1d45699407f6/docs/DEVELOPMENT_0.14.2.md)和[本地验收](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 0.14.1 — 2026-09-22
 

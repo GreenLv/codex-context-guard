@@ -1139,15 +1139,13 @@
       "negative": "the DSH-native scenario remains a DSH-product fact, not claimed fixed here",
       "test_locator": "tests/test_incident_library_regression.py::DshSharedSemanticsCases::test_warm_scope_resolution_freshness",
       "deeper_authority": "case-level analogues only; DSH execution is out of scope for this repository",
-      "final_verdict": "pending",
+      "final_verdict": "analogue_only",
       "source_result": "passed",
       "macos_result": "passed",
-      "windows_result": "pending",
-      "missing_evidence": [
-        "canonical record includes a Windows failure for the same trigger; a native Windows run of the applicable freshness analogue is pending"
-      ],
-      "owner": "coordinator (platform) / development (source analogue)",
-      "windows_evidence_note": "not_required waiver withdrawn per review R1; the portable source analogue remains executed source evidence, not a Windows pass"
+      "windows_result": "passed",
+      "missing_evidence": [],
+      "owner": "coordinator",
+      "windows_evidence_note": "Native Windows Python 3.12.10 executed the current-runtime Codex shared-semantics node successfully; DSH host behavior is not certified."
     }
   ],
   "legacy": [
@@ -1345,7 +1343,9 @@
     }
   ],
   "windows_results_binding": {
-    "historical_runtime_digest": "802640bf72862ed1aa092691e25f5af67dcc961a609b891ca5bb84436416fbb7",
-    "note": "windows_result=passed cells are historical evidence from the 0.14.3 runtime; they cannot certify new lock/router bytes and affected cells stay pending until revalidated on the candidate runtime."
+    "runtime_digest": "8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5",
+    "source_commit": "0a4e273d3ad1aab2cd48b194c32d647f147066af",
+    "receipt_sha256": "9ee1546fa6861fc346c615ad232559dfc5a2ac3d35aae5251b07f65ec3f0ad9a",
+    "note": "Current-runtime mapped nodes executed on native Windows Python 3.12.10: 44 unique nodes, 62 case-node receipt occurrences, all passed. These are native source/subprocess and shared-semantics fixtures, not arbitrary host/model certification. Archive-045 remains excluded_incomplete; its generic regression does not reconstruct the missing original chain. Older 0.14.3 evidence remains historical."
   }
 }

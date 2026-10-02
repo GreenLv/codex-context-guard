@@ -23,8 +23,9 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 ### Validation
 
-- Development source checks and 2,126 behavior tests passed before version finalization, with 24 explicit skips. Earlier 400-attempt macOS measurements showed a 36.97% lower median for a fixed 100-event lifecycle on their recorded runtime; these are not final-version or native-host claims.
-- Exact-version source, installation, full performance, native macOS/Windows, historical, GPT-6 and full CI/HOL gates remain pending. See [acceptance](docs/LOCAL_ACCEPTANCE.md) for evidence boundaries. No publication is claimed.
+- All 440 predeclared macOS A/B samples passed their semantic assertions. The fixed 100-event lifecycle median fell from 19.03 to 11.81 seconds (37.97%); Stop and RSS stayed within the declared budgets.
+- Resident Skill tokens fell 40.26%; two fixed ordinary Hook prompts fell 59–61%. Actual GPT-6 Astra/Sol/Luna total usage fell 5.90%/3.25%/3.10% in one matched live-host batch. These are bounded observations, not general cost guarantees.
+- The macOS source suite passed 2,127 tests with 24 explicit skips. Fresh installed lifecycle checks and all three models' Stop, compaction and cold-resume profiles passed. Windows fresh installation and native Stop/recovery passed; history has 36 direct passes, 16 Codex-side analogues and one incomplete exclusion. Old Windows cache recovery, after-upgrade task continuation and final CI/HOL still block publication. See [acceptance](docs/LOCAL_ACCEPTANCE.md); this candidate is not published.
 
 ## 0.14.3 — 2026-09-29
 
@@ -81,7 +82,7 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - Current-runtime macOS and Windows complete-answer, partial-answer and exact-marker runs passed separate scoped native replays. Each original collector retains its narrower observation verdict. Complete runs left a synthetic main item pending; the partial controls intentionally did not run a suite, and future observation stayed pending in the exact-marker controls. Whole-task product closure and actual compaction-threshold calibration remain unestablished.
 - Source commit `514f41d67d8be3930aaa63450456a0a5c375e9d0` passed the [12-lane Candidate CI matrix](https://github.com/GreenLv/codex-context-guard/actions/runs/36089305152) and [HOL scan](https://github.com/GreenLv/codex-context-guard/actions/runs/36089304966).
 - Publication requires green CI/HOL for the exact release commit; their receipts are recorded separately.
-- The original Windows compaction-continuation and Stop-feedback chains plus Archive-045 remain unresolved. The user allowed release with these three cases open, without claiming a fix or pass. Tag and GitHub Release readback remain separate; see [development status](docs/DEVELOPMENT_0.14.2.md) and [local acceptance](docs/LOCAL_ACCEPTANCE.md).
+- The original Windows compaction-continuation and Stop-feedback chains plus Archive-045 remain unresolved. The user allowed release with these three cases open, without claiming a fix or pass. Tag and GitHub Release readback remain separate; see [development status](https://github.com/GreenLv/codex-context-guard/blob/e25be98037b2e1a9b3953faf6f3a1d45699407f6/docs/DEVELOPMENT_0.14.2.md) and [local acceptance](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.14.1 — 2026-09-22
 

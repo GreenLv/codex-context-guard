@@ -1,5 +1,56 @@
 # Local Release Acceptance
 
+## 0.15.0 — source candidate
+
+Evidence below concerns runtime-tree SHA-256 `8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5`. Source tests, installed files, live Hooks and public availability remain separate facts. The comparison baseline is published 0.14.3 at `d24899d8202a58d7426208541c58d193464e93de`.
+
+### Source and history
+
+The macOS behavior suite ran 2,127 tests with zero failures or errors and 24 explicit platform/capability skips. Repository validation, privacy audit, transition checks, self-test, Ruff and compileall passed. Windows-specific test repairs subsequently replaced assumptions about POSIX lock-file reads, unlinking, shell commands and launcher PIDs; these repairs do not change runtime bytes.
+
+Historical execution passed all 44 unique required test nodes (62 case-node receipt occurrences) on both platforms. The 53 active cases comprise 36 direct passes, 16 applicable Codex-side analogues and one approved incomplete exclusion; there are no pending or failed case rows. The approved incomplete Archive-045 case stays excluded and is never counted as a pass. Shared-semantics checks for DSH-origin cases certify only the mapped Codex behavior.
+
+### Matched process measurements
+
+The macOS A/B batch predeclared 20 attempts per side for all 11 registered cells: 440 samples completed with matching output and saved-state assertions. Failures and outliers were retained. The exact production Hook wrappers were used. The fixed lifecycle contains 100 matched PreToolUse/PostToolUse events, including observed results; it does not omit evidence to save time.
+
+| Full-process subject | 0.14.3 median | 0.15.0 median | 0.15.0 p95 / max |
+| --- | --- | --- | --- |
+| 100-event lifecycle | 19.0341 s | 11.8061 s | 12.2569 / 13.8943 s |
+| Minimal SAFE PreToolUse | 41.6 ms | 43.1 ms | 83.6 / 144.2 ms |
+| SessionEnd | 0.3109 s | 0.3155 s | 0.3692 / 0.3791 s |
+| Stop S1, production wrapper | 0.3823 s | 0.3965 s | 0.4092 / 0.4385 s |
+
+The lifecycle median fell 37.97%. Minimal SAFE and Stop were already optimized and did not become faster; they stayed within the declared no-regression allowances. An isolated PostToolUse maximum of 2.0421 s remains in the report. Instrumented memory-cell timing is not ordinary wall latency and its allocation peak is not RSS.
+
+A separate uninstrumented core/RSS batch made 120 predeclared attempts across S1/S2/S4 and both versions. Candidate medians were 0.4021/0.4657/0.5842 s; p95 values were 0.4214/0.5821/0.9464 s. S4 maximum was 1.0468 s. Maximum RSS was 88.8/91.7/97.6 MB. All hard limits, median-regression allowances, growth-ratio and RSS budgets passed. These are machine- and workload-specific measurements, not timing guarantees.
+
+### Instructions and observed model usage
+
+With tiktoken 0.13.0 and the fixed `o200k_base` tokenizer, the resident Skill fell from 1,560 to 932 tokens (40.26%) and from 8,017 to 4,582 UTF-8 bytes (42.85%). Two fixed ordinary Hook prompts fell from 771/752 to 302/306 tokens (60.8%/59.3%), while preserving all four requirements and two acceptance items. Activation context stayed at 141 tokens. These emitted-text counts are separate from complete model requests.
+
+Both versions ran the same bounded `stop_host/v1` scenario with Codex CLI 0.158.0 on macOS, low reasoning effort, and the three models actually exposed by that host. Each model/version pair made six observed model requests. Official cumulative usage includes cached input and is not a billing estimate. Compaction placeholders that leave cumulative usage unchanged are not counted as additional requests.
+
+| Actual host model | Median input-token reduction | Total-token reduction | Behavior profile |
+| --- | --- | --- | --- |
+| GPT-6 Astra | 12.15% | 5.90% | Passed on both versions |
+| GPT-6 Sol | 3.07% | 3.25% | Passed on both versions |
+| GPT-6 Luna | 3.02% | 3.10% | Passed on both versions |
+
+The host did not expose GPT-6.1 Sol, so these runs do not certify it. Each comparison is one fixed batch, not a statistical estimate of ordinary task cost or completion quality. The no-tool profile makes no reference reads, business edits, repeated tests or human confirmation requests; it does not measure those behaviors in general tasks.
+
+### Installed and live-host behavior
+
+Fresh isolated installation, strict second no-op, cache/source parity and portable lifecycle smoke passed on macOS. Normal trust handling loaded all nine exact product Hooks. GPT-6 Astra/Sol/Luna each passed positive Stop, a blocked false-completion control followed by correction, actual compaction, cold continuation and retention of pending work. Positive Stop durations were 425/2102/1953/1939 ms, 364/2463/1968/1896 ms and 362/2014/1899/1962 ms respectively. Cleanup established no running members in owned process groups, not absence of escaped descendants or all zombies.
+
+A separate macOS live continuation kept the original 0.14.3 Hook path loaded after candidate activation, retained its pending set, observed a real read-only tool through PreToolUse/PostToolUse, Stop and compaction, and created a new candidate task in `sessions-v2`. This proves the observed running-host route; automatic selection of an old runtime when cold-resuming an arbitrary task is not promised. Keep original caches and explicitly verify the loaded path when continuing old tasks. No state migration is provided.
+
+On Windows 11/Python 3.12.10, the same runtime passed portable installation, strict second no-op, source/cache parity and fresh-HOME installed smoke. GPT-6 Astra passed the normally trusted nine-Hook `stop_host/v1` profile: positive Stop durations were 1929/3790/3794/4018 ms; the negative control was blocked then completed. Actual compaction and cold recovery preserved pending work. Both owned Job Object trees were empty after cleanup, and all three retained lifecycle lock files could be locked again through `msvcrt` without changing their metadata. Direct Python and venv launcher routes each passed the nine process-lock regressions.
+
+The first Windows full source run retained its two failures and six errors. The affected context, performance-driver, lock and coverage-control modules subsequently passed after test portability repairs or use of the locked dependency environment; this is not relabeled as a fresh green full-suite run. Final-source full CI/HOL remains required.
+
+Publication is blocked by the old isolated Windows HOME: restoring its original 0.14.3 live cache fails at the final atomic rename with WinError 5. The indexed 233-file archive is intact; identical restores to same-parent and same-version-name controls passed. Neither a product defect nor transient host state has been established. The old task passed before upgrade, but its after-upgrade continuation remains unverified. Further recovery is deferred until an authorized host restart is available. Fresh-HOME success does not close that gate. No tag or Release is claimed.
+
 ## 0.14.3 — 2026-09-29
 
 This section separates source tests, synthetic process benchmarks, installed behavior and live-host observations. It reports anonymized results; raw sessions, machine paths and provenance mappings are retained outside the public repository. The implementation baseline is the public 0.14.2 commit `aea556d8ac651b1b94c200f88108c87cf8371893`.
@@ -472,7 +523,7 @@ The Windows commentary chain, historical-case adjudication, exact-main CI,
 public HOL refresh, tag and Release remain open. The macOS result above does
 not establish those gates or synthetic main-task product closure. The failed
 baselines remain outside the source checkout. See the
-[development status](DEVELOPMENT_0.14.2.md) for the open evidence boundaries.
+[development status](https://github.com/GreenLv/codex-context-guard/blob/e25be98037b2e1a9b3953faf6f3a1d45699407f6/docs/DEVELOPMENT_0.14.2.md) for the open evidence boundaries.
 
 ## 0.14.1 metadata patch (2026-09-22)
 
