@@ -309,13 +309,14 @@ class SessionLockProtocolTests(unittest.TestCase):
         original = cg.atomic_write_json
         seen: list[Path] = []
 
-        def failing_write(path: Path, value: object) -> None:
+        def failing_write(path: Path, value: object, **options: object) -> None:
             seen.append(path)
             if path.name == "state.json":
+                self.assertTrue(options.get("committed_state"))
                 raise OSError("simulated disk failure")
-            original(path, value)
+            original(path, value, **options)
 
-        with self.assertRaises(OSError):
+        with self.assertRaisesRegex(OSError, "simulated disk failure"):
             with cg.session_lock(self.session_dir):
                 cg.atomic_write_json = failing_write  # type: ignore[assignment]
                 try:
