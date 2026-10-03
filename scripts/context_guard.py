@@ -18990,6 +18990,72 @@ def private_control_command_tokens(command: str, *, windows: bool) -> list[str] 
     return tokens
 
 
+# Explicit diagnostic option contract shared by the checkpoint-status CLI
+# subcommand and the PostToolUse recognition path (CGI-20261003). The CLI
+# parser declares the same option set with allow_abbrev=False, so neither
+# surface relies on argparse's implicit prefix abbreviation.
+CHECKPOINT_STATUS_REQUIRED_OPTIONS = (
+    "--data-dir", "--session-id", "--turn-id", "--token",
+)
+CHECKPOINT_STATUS_VALUE_OPTIONS = CHECKPOINT_STATUS_REQUIRED_OPTIONS + (
+    "--item", "--after-revision",
+)
+CHECKPOINT_STATUS_FLAG_OPTIONS = ("--full", "--commands")
+# The CLI exposes --full/--item/--commands through one mutually exclusive
+# group; the shared contract keeps that exclusivity.
+CHECKPOINT_STATUS_MODE_OPTIONS = ("--full", "--item", "--commands")
+
+
+def parse_checkpoint_status_option_bindings(
+    tokens: list[str],
+) -> dict[str, list[str]] | None:
+    """Parse checkpoint-status option tokens under the explicit contract.
+
+    Accepts ``--name=value`` and ``--name value`` forms; every option binds
+    at most once, required options exactly once with a non-empty value, and
+    mode options stay mutually exclusive. Unknown options, abbreviations,
+    positional tokens, flags with values and missing values are rejected
+    with None.
+    """
+    option_names = CHECKPOINT_STATUS_VALUE_OPTIONS + CHECKPOINT_STATUS_FLAG_OPTIONS
+    bindings: dict[str, list[str]] = {name: [] for name in option_names}
+    position = 0
+    while position < len(tokens):
+        raw = tokens[position]
+        if not raw.startswith("--"):
+            return None
+        if "=" in raw:
+            option, value = raw.split("=", 1)
+            position += 1
+            if option not in bindings or option in CHECKPOINT_STATUS_FLAG_OPTIONS:
+                return None
+            bindings[option].append(value)
+        elif raw in CHECKPOINT_STATUS_FLAG_OPTIONS:
+            if len(bindings[raw]) >= 1:
+                return None
+            bindings[raw].append("")
+            position += 1
+        elif raw in bindings:
+            if position + 1 >= len(tokens):
+                return None
+            bindings[raw].append(tokens[position + 1])
+            position += 2
+        else:
+            return None
+    if any(len(bindings[name]) != 1 for name in CHECKPOINT_STATUS_REQUIRED_OPTIONS):
+        return None
+    if any(not bindings[name][0] for name in CHECKPOINT_STATUS_REQUIRED_OPTIONS):
+        return None
+    if any(len(bindings[name]) > 1 for name in option_names):
+        return None
+    if any(not bindings[name][0]
+           for name in ("--item", "--after-revision") if bindings[name]):
+        return None
+    if sum(1 for name in CHECKPOINT_STATUS_MODE_OPTIONS if bindings[name]) > 1:
+        return None
+    return bindings
+
+
 def is_exact_checkpoint_status_command(
     state: dict[str, Any], payload: dict[str, Any]
 ) -> bool:
@@ -19011,34 +19077,20 @@ def is_exact_checkpoint_status_command(
         or script.resolve() != Path(__file__).resolve()
     ):
         return False
-    values = {name: [] for name in ("--data-dir", "--session-id", "--turn-id", "--token")}
-    position = 3
-    while position < len(tokens):
-        raw_option = tokens[position]
-        if raw_option.startswith("--") and "=" in raw_option:
-            option, value = raw_option.split("=", 1)
-            position += 1
-        else:
-            if raw_option not in values or position + 1 >= len(tokens):
-                return False
-            option = raw_option
-            value = tokens[position + 1]
-            position += 2
-        if option not in values or not value:
-            return False
-        values[option].append(value)
-    if any(len(value) != 1 for value in values.values()):
+    bindings = parse_checkpoint_status_option_bindings(tokens[3:])
+    if bindings is None:
         return False
-    if Path(values["--data-dir"][0]).expanduser().resolve() != data_root().resolve():
+    if (Path(bindings["--data-dir"][0]).expanduser().resolve()
+            != data_root().resolve()):
         return False
-    session_id = values["--session-id"][0]
-    turn_id = values["--turn-id"][0]
+    session_id = bindings["--session-id"][0]
+    turn_id = bindings["--turn-id"][0]
     if (
         session_id != str(state["session"]["id"])
         or turn_id != str(payload.get("turn_id") or "")
     ):
         return False
-    completion_attempt_for(state, turn_id, values["--token"][0])
+    completion_attempt_for(state, turn_id, bindings["--token"][0])
     return True
 
 
@@ -21789,6 +21841,24 @@ def command_diagnose(args: argparse.Namespace) -> int:
 
 
 def command_checkpoint_status(args: argparse.Namespace) -> int:
+    # Re-run the shared explicit option contract over the exact argv tokens:
+    # argparse alone cannot express "each option at most once" or reject an
+    # empty separated value, and the Hook recognizes the same spelling.
+    try:
+        index = sys.argv.index("checkpoint-status")
+    except ValueError:
+        index = None
+    if index is not None and parse_checkpoint_status_option_bindings(
+        sys.argv[index + 1:]
+    ) is None:
+        console_write(
+            "[FAIL] checkpoint-status options violate the documented "
+            "contract: each option at most once, required bindings exactly "
+            "once with non-empty values, --full/--item/--commands mutually "
+            "exclusive, no abbreviations or positional arguments",
+            stream=sys.stderr,
+        )
+        return 2
     try:
         snapshot = checkpoint_status(
             args.data_dir.expanduser().resolve(),
@@ -22029,7 +22099,13 @@ def main() -> int:
             "Clear deterministic pending operation records; requirements and evidence stay immutable",
         ),
     ):
-        command = subparsers.add_parser(name, help=help_text)
+        # The checkpoint-status diagnostic contract (CGI-20261003) rejects
+        # implicit argparse prefix abbreviations; option spelling is explicit
+        # and shared with the PostToolUse recognition path.
+        command = subparsers.add_parser(
+            name, help=help_text,
+            allow_abbrev=(name != "checkpoint-status"),
+        )
         command.add_argument("--data-dir", type=Path, required=True)
         command.add_argument("--session-id", required=True)
         command.add_argument("--turn-id", required=True)
