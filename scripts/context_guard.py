@@ -1834,7 +1834,74 @@ def secure_file(path: Path) -> None:
         pass
 
 
-def atomic_write_text(path: Path, content: str) -> None:
+def _replace_windows_committed_state(source: Path, target: Path) -> None:
+    """Publish one same-directory inode even when the old reader is open.
+
+    User-mode FileRenameInfoEx, replace-existing + POSIX semantics. Unsupported
+    APIs/filesystems and permission failures propagate; never pre-delete,
+    copy, ignore read-only attributes, retry or use legacy replacement.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    if source.absolute().parent != target.absolute().parent:
+        raise OSError("committed publication requires one directory")
+    source_info = source.lstat()
+    if not stat.S_ISREG(source_info.st_mode) or source_info.st_nlink != 1:
+        raise OSError("committed publication source is not a single-link file")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    info = kernel.GetFileInformationByHandleEx
+    info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                     wintypes.DWORD]
+    info.restype = wintypes.BOOL
+    rename = kernel.SetFileInformationByHandle
+    rename.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                       wintypes.DWORD]
+    rename.restype = wintypes.BOOL
+
+    class AttributeTag(ctypes.Structure):
+        _fields_ = [("attributes", ctypes.c_uint32), ("tag", ctypes.c_uint32)]
+
+    class RenameInfo(ctypes.Structure):
+        _fields_ = [("flags", ctypes.c_uint32), ("root", wintypes.HANDLE),
+                    ("name_length", ctypes.c_uint32),
+                    ("name", ctypes.c_uint16 * 1)]
+
+    encoded_name = str(target.absolute()).encode("utf-16-le")
+    size = max(ctypes.sizeof(RenameInfo), RenameInfo.name.offset + len(encoded_name) + 2)
+    buffer = ctypes.create_string_buffer(size)
+    record = RenameInfo.from_buffer(buffer)
+    record.flags = 0x3  # FILE_RENAME_FLAG_REPLACE_IF_EXISTS | POSIX_SEMANTICS
+    record.root = None
+    record.name_length = len(encoded_name)
+    ctypes.memmove(ctypes.addressof(buffer) + RenameInfo.name.offset,
+                   encoded_name, len(encoded_name))
+    # DELETE | FILE_READ_ATTRIBUTES on the writer-owned temporary source;
+    # read/write/delete sharing, OPEN_EXISTING, OPEN_REPARSE_POINT.
+    handle = create(str(source), 0x10080, 0x7, None, 3, 0x00200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        attributes = AttributeTag()
+        if not info(handle, 9, ctypes.byref(attributes), ctypes.sizeof(attributes)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if attributes.attributes & (0x400 | 0x10):
+            raise OSError("committed publication source is a reparse object or directory")
+        if not rename(handle, 22, buffer, size):  # user-mode FileRenameInfoEx
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        close(handle)
+
+
+def atomic_write_text(path: Path, content: str, *, committed_state: bool = False) -> None:
     secure_directory(path.parent)
     handle = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=path.parent, delete=False, prefix=f".{path.name}."
@@ -1846,7 +1913,10 @@ def atomic_write_text(path: Path, content: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         secure_file(temp_path)
-        os.replace(temp_path, path)
+        if committed_state and os.name == "nt":
+            _replace_windows_committed_state(temp_path, path)
+        else:
+            os.replace(temp_path, path)
         secure_file(path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -1854,8 +1924,12 @@ def atomic_write_text(path: Path, content: str) -> None:
         raise
 
 
-def atomic_write_json(path: Path, value: Any) -> None:
-    atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+def atomic_write_json(path: Path, value: Any, *, committed_state: bool = False) -> None:
+    content = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    if committed_state:
+        atomic_write_text(path, content, committed_state=True)
+    else:
+        atomic_write_text(path, content)
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -8626,7 +8700,7 @@ def save_state(session_dir: Path, state: dict[str, Any]) -> None:
     release_latch = session_dir / "release-required"
     if effective_action_profile(state) == "release":
         atomic_write_json(release_latch, {"schema": "release-posture/v1"})
-    atomic_write_json(session_dir / "state.json", state)
+    atomic_write_json(session_dir / "state.json", state, committed_state=True)
     if state.get("integrity", {}).get("status") == "ok":
         atomic_write_json(session_dir / "action-profile.json", {
             "schema": "action-profile/v1", "profile": effective_action_profile(state),

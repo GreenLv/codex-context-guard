@@ -14,7 +14,7 @@
 
 ### Changes
 
-- Windows 诊断状态 reader 在只读句柄仍打开时允许原子替换；转移 descriptor 所有权前拒绝 reparse 对象，并保留修订与完整性校验。writer 的原子发布和内核锁规则不变。
+- Windows 诊断 reader 保持只读访问并拒绝 reparse 对象。已提交状态的 writer 使用同目录、POSIX 语义的原子重命名，避免打开的 reader 阻碍发布；fsync 和内核锁所有权仍为必需。不支持的 API、文件系统或权限拒绝均显式失败，不降级到旧替换方式。
 - “暂停一下”等礼貌后缀及随后说明重启工具的句子，不再把普通暂停变成绑定确认对象的等待。“请继续执行”、“你继续”和 "please continue" 等表达共用按子句锚定的续行契约。旧对象不可用不再否决当前续行；直接否定续行动作（“现在不要继续”）仍保持等待。
 - 暂停与续行分类在 `root_pause_clauses`、`general_root_pause_clause`、`has_root_resume_intent` 与 Stop 侧续行模式间共用一份契约。具名输入、精确标记、方案选择与外部依赖仍需各自证据；引文提及、疑问句、第三方续行与多重歧义等待不会释放任何条件。
 - checkpoint-status CLI 子解析器拒绝 argparse 隐式缩写；CLI 与 Hook 都拒绝重复绑定（不再最后者覆盖）、缺值/空值、未知选项、位置参数与互斥模式组合。运行时、脚本、data-root、会话、轮次与 token 绑定保持精确校验。

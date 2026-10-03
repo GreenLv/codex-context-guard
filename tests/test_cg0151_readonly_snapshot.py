@@ -292,9 +292,14 @@ class ReadOnlySnapshotTests(P0Harness):
             with cg.session_lock(self.session_dir):
                 state = self.state()
                 state["wait_condition_sequence"] = 90
-                with self.assertRaises(PermissionError) as failure:
-                    cg.save_state(self.session_dir, state)
-                self.assertIn(failure.exception.winerror, (5, 32))
+                negative = path.with_name(".r05-legacy-publication")
+                negative.write_text(json.dumps(state), encoding="utf-8")
+                try:
+                    with self.assertRaises(PermissionError) as failure:
+                        os.replace(negative, path)
+                    self.assertIn(failure.exception.winerror, (5, 32))
+                finally:
+                    negative.unlink(missing_ok=True)
         self.assertEqual(path.read_bytes(), before)
         # The real repaired descriptor holds the old inode while the writer
         # publishes a different whole revision under the production lock.
@@ -313,6 +318,33 @@ class ReadOnlySnapshotTests(P0Harness):
             cg.validate_state_integrity(json.loads(after))
         with self.assertRaises(OSError):
             os.fstat(descriptor)
+        self.assertEqual(self.query()["revision"], self.state()["content_hash"])
+
+    def test_r05_publication_during_open_snapshot_is_explicitly_stale(self):
+        self.ready()
+        real_fdopen = os.fdopen
+        publications = []
+
+        @contextmanager
+        def publish_while_open(descriptor, *args, **kwargs):
+            with real_fdopen(descriptor, *args, **kwargs) as reader:
+                old = reader.read()
+                reader.seek(0)
+                with cg.session_lock(self.session_dir):
+                    state = self.state()
+                    state["wait_condition_sequence"] = 101 + len(publications)
+                    cg.save_state(self.session_dir, state)
+                new = (self.session_dir / "state.json").read_bytes()
+                cg.validate_state_integrity(json.loads(old))
+                cg.validate_state_integrity(json.loads(new))
+                self.assertNotEqual(old, new)
+                publications.append((old, new))
+                yield reader
+
+        with mock.patch.object(cg.os, "fdopen", side_effect=publish_while_open):
+            with self.assertRaisesRegex(RuntimeError, "state_changed_during_read"):
+                self.query()
+        self.assertEqual(len(publications), cg.READ_ONLY_STATE_READ_ATTEMPTS)
         self.assertEqual(self.query()["revision"], self.state()["content_hash"])
 
     def test_r05_descriptor_conversion_failure_closes_reader(self):
@@ -892,6 +924,102 @@ class WindowsCommittedReaderAdapterTests(unittest.TestCase):
         for stage in ("open", "attributes", "reparse", "convert"):
             with self.subTest(stage=stage):
                 self.run_adapter(stage)
+
+
+class WindowsCommittedPublisherAdapterTests(unittest.TestCase):
+    def run_publisher(self, stage="success"):
+        import ctypes
+        import tempfile
+        import types
+        from ctypes import wintypes
+
+        create = mock.Mock(return_value=123)
+        close = mock.Mock(return_value=True)
+
+        def attributes(handle, kind, target, size):
+            self.assertEqual((handle, kind, size), (123, 9, 8))
+            target._obj.attributes = 0x400 if stage == "reparse" else 0
+            return stage != "attributes"
+
+        info = mock.Mock(side_effect=attributes)
+        calls = []
+
+        class RenameLayout(ctypes.Structure):
+            _fields_ = [("flags", ctypes.c_uint32), ("root", wintypes.HANDLE),
+                        ("length", ctypes.c_uint32), ("name", ctypes.c_uint16 * 1)]
+
+        def rename(handle, kind, buffer, size):
+            value = RenameLayout.from_buffer(buffer)
+            name = buffer.raw[RenameLayout.name.offset:
+                              RenameLayout.name.offset + value.length]
+            calls.append((handle, kind, value.flags, value.root, name, size))
+            return stage not in {"denied", "unsupported"}
+
+        update = mock.Mock(side_effect=rename)
+        kernel = types.SimpleNamespace(CreateFileW=create, CloseHandle=close,
+                                       GetFileInformationByHandleEx=info,
+                                       SetFileInformationByHandle=update)
+        if stage == "open":
+            create.return_value = ctypes.c_void_p(-1).value
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "owned-temp"
+            source.write_bytes(b"new committed bytes")
+            target = Path(tmp) / "状态-\U0001f680.json"
+            target.write_bytes(b"old committed bytes")
+            with mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True), \
+                    mock.patch.object(ctypes, "WinError", return_value=OSError("native failure"), create=True), \
+                    mock.patch.object(ctypes, "get_last_error", return_value=50, create=True), \
+                    mock.patch.object(cg.os, "replace") as legacy:
+                if stage == "success":
+                    cg._replace_windows_committed_state(source, target)
+                else:
+                    with self.assertRaises(OSError):
+                        cg._replace_windows_committed_state(source, target)
+                legacy.assert_not_called()
+            create.assert_called_once_with(str(source), 0x10080, 7, None,
+                                           3, 0x00200000, None)
+            if stage == "open":
+                close.assert_not_called()
+            else:
+                close.assert_called_once_with(123)
+            if stage in {"success", "denied", "unsupported"}:
+                expected = str(target.absolute()).encode("utf-16-le")
+                self.assertEqual(calls[0][:5], (123, 22, 3, None, expected))
+                self.assertGreaterEqual(calls[0][5], RenameLayout.name.offset + len(expected))
+                self.assertEqual(RenameLayout.name.offset,
+                                 20 if ctypes.sizeof(ctypes.c_void_p) == 8 else 12)
+                self.assertEqual(len(update.argtypes), 4)
+                self.assertEqual(update.restype, wintypes.BOOL)
+            else:
+                update.assert_not_called()
+            # These are ABI mocks only: neither mocked success nor refusal
+            # constitutes an observed native publication.
+            self.assertEqual(target.read_bytes(), b"old committed bytes")
+
+    def test_windows_publisher_abi_utf16_permissions_and_owned_handle(self):
+        self.run_publisher()
+
+    def test_windows_publisher_failure_matrix_has_no_legacy_fallback(self):
+        for stage in ("open", "attributes", "reparse", "denied", "unsupported"):
+            with self.subTest(stage=stage):
+                self.run_publisher(stage)
+
+    def test_denied_committed_publication_preserves_target_and_cleans_temp(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state.json"
+            target.write_bytes(b"old valid target")
+            with mock.patch.object(cg, "os", wraps=os) as platform, \
+                    mock.patch.object(cg, "_replace_windows_committed_state",
+                                      side_effect=PermissionError("publication denied")):
+                platform.name = "nt"
+                with self.assertRaisesRegex(PermissionError, "publication denied"):
+                    cg.atomic_write_text(target, "new bytes", committed_state=True)
+                platform.fsync.assert_called_once()
+                platform.replace.assert_not_called()
+            self.assertEqual(target.read_bytes(), b"old valid target")
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["state.json"])
 
 
 if __name__ == "__main__":

@@ -15,6 +15,14 @@ recovers only through a real later resume with a re-verified root source. All
 native two-platform evidence for these behaviors is pending; source results do
 not substitute for it.
 
+Windows concurrent diagnostic/state publication requires the Windows 10 RS1+
+user-mode FileRenameInfoEx API and a filesystem supporting replace-existing
+with POSIX semantics. Unsupported API/filesystem or permission denial fails
+closed without fallback, target pre-deletion or in-place writes. Python 3.10+
+and standard-library-only runtime requirements remain unchanged. This
+capability and changed bytes need their own native Windows and fresh installed
+acceptance; earlier candidate evidence cannot certify them.
+
 ## 0.15.0 — 2026-10-02
 
 New sessions use `sessions-v2`; existing `sessions` trees stay with their

@@ -7,7 +7,12 @@ kernel-lock-owned atomic state publication; closing that reader restored
 publication. The R05 fixture previously failed to propagate its worker error
 and therefore reported success despite a failed publication.
 
-The new candidate keeps the writer unchanged. Its Windows committed-state
+The new candidate preserves writer kernel-lock ownership and fsync. Windows
+committed-state publication alone uses user-mode FileRenameInfoEx with
+replace-existing and POSIX semantics, publishing one same-directory inode
+without deleting the old target first. Unsupported API/filesystem or denied
+publication fails explicitly; temporary files and owned handles are cleaned,
+and no legacy fallback or permission change runs. Its Windows committed-state
 reader requests read access and read/write/delete sharing, opens existing
 objects without reparse traversal, rejects reparse attributes, and transfers
 native-handle ownership exactly once to a binary noninheritable descriptor.
