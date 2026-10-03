@@ -243,10 +243,14 @@ class ReadOnlySnapshotTests(P0Harness):
                 revisions.add(result["revision"])
             thread.join(timeout=10)
             stop.set()
-            self.assertTrue(revisions)
+            self.assertFalse(thread.is_alive())
+            # Every racing query may legitimately report explicit stale: the
+            # whole-query verifier now spans the final projection too. Once
+            # publication is quiescent, a healthy snapshot must succeed.
+            final = self.query()
+            revisions.add(final["revision"])
             self.assertTrue(revisions <= set(published),
                             (revisions, published))
-            final = self.query()
             self.assertIn(final["revision"], published)
         finally:
             stop.set()
