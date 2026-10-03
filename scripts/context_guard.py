@@ -14356,12 +14356,20 @@ def input_wait_subject(text: str) -> str:
 
 
 def general_root_pause_clause(clause: str) -> bool:
-    """A bare task pause has no missing external or named user input."""
+    """A bare task pause has no missing external or named user input.
+
+    A polite softener ("暂停一下", "pause for a moment") softens the same
+    bare pause; it never names a missing object, so it must not turn the
+    pause into a subject-bound confirmation wait (CGI-20261002). A clause
+    that states what the user will do themselves ("我重启下测试工具") is a
+    follow-up sentence, not this clause, and stays outside this match.
+    """
     return bool(re.fullmatch(
         r"\s*(?:(?:请|现在|先)\s*)*暂停(?:\s*(?:当前|本|这个)\s*"
-        r"(?:任务|工作))?\s*|"
+        r"(?:任务|工作))?(?:\s*(?:一下下?|一会儿|一会|片刻|阵子|一下下儿))?\s*|"
         r"\s*(?:please\s+)?pause(?:\s+(?:the\s+)?(?:current\s+)?"
-        r"(?:task|work))?\s*|"
+        r"(?:task|work))?(?:\s+(?:for\s+)?(?:a\s+)?"
+        r"(?:moment|bit|second|sec|while))?\s*|"
         r"\s*等(?:待)?我确认(?:后再|之后再|才)继续\s*|"
         r"\s*wait\s+for\s+my\s+(?:explicit\s+)?next\s+message"
         r"(?:\s+before\s+(?:completing|continuing)\s+(?:the\s+)?task)?\s*",
@@ -14416,11 +14424,35 @@ def clause_is_negated_unmet(clause: str) -> bool:
     return bool(NEGATED_CLAUSE_RE.search(clause))
 
 
+# A negation that governs the resume/continuation action itself ("现在不要
+# 继续", "暂时别继续", "don't resume"). A clause describing another object's
+# unavailability ("旧测试通道不可用了") negates that object, not the current
+# speech act, and must not veto an explicit resume (CGI-20261002 W04).
+RESUME_DIRECTIVE_NEGATION_RE = re.compile(
+    r"(?:不要|不想|不打算|别|不得|不能|不能不|不可|不应|不该|先不|暂不|暂且不|"
+    r"无需|不必|勿|不准|禁止|"
+    r"\bdo\s+not\b|\bdon't\b|\bnot\s+to\b|\bno\s+need\s+to\b|"
+    r"\bcan(?:not|'t)\b|\bshould(?:n't| not)\b|\bwon't\b|\bmust\s+not\b)"
+    r"[^,，。;；!！？\n]{0,10}?"
+    r"(?:继续|恢复(?:刚才|之前|先前|上次|那个|该)?(?:的)?(?:任务|工作|话题|事项)?|"
+    r"\bcont(?:inue|inuing|inued)\b|\bresum\w+\b|\bproceed\b|"
+    r"\bgo\s+ahead\b|\bcarry\s+on\b)",
+    re.I,
+)
+
+
+def resume_directive_negated(clause: str) -> bool:
+    return bool(RESUME_DIRECTIVE_NEGATION_RE.search(clause))
+
+
 def has_root_resume_intent(text: str) -> bool:
     clauses = control_speech_clauses(text)
-    if any(clause_is_negated_unmet(c) for c in clauses):
+    # Only a negation of the resume action itself blocks the whole prompt;
+    # an ordinary unmet/changed object in another clause keeps its own
+    # object-level guard inside release_matches_condition.
+    if any(resume_directive_negated(c) for c in clauses):
         return False
-    return any(not clause_is_negated_unmet(c) and stop3().has_explicit_resume_intent(c) for c in clauses)
+    return any(stop3().has_explicit_resume_intent(c) for c in clauses)
 
 
 def affirmative_confirmation(text: str) -> bool:

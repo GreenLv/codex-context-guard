@@ -203,7 +203,14 @@ def migrate_work_units_to_schema10(
 RESUME_INTENT_RE = re.compile(
     r"^\s*(?:请)?(?:继续|恢复)(?:刚才|之前|先前|上次|上面|前面|旧|原|那个|该)?"
     r"(?:的)?(?:任务|工作|话题|事项)|"
+    # Polite and mid-sentence directives that address the assistant itself
+    # (CGI-20261002): the clause is anchored, so a passing mention of
+    # "继续" inside a description still cannot reopen a parked unit.
+    r"^\s*(?:请|请你|请先|现在|现在请)?\s*(?:你|您)?\s*(?:现在)?\s*继续"
+    r"(?:执行|处理|干活|工作|吧|好吗|就是了)?\s*[。.!！]?\s*$|"
     r"^\s*继续\b|^\s*恢复\s+\S+|^\s*continue\s*$|"
+    r"^\s*(?:please|kindly)\s+(?:go\s+ahead\s+and\s+)?"
+    r"(?:continue|resume|carry\s+on|proceed)\s*[。.!]?\s*$|"
     r"\b(?:continue|resume)\s+(?:the\s+)?(?:previous|prior|old|unfinished|"
     r"suspended)\s+(?:task|work|topic)\b",
     re.IGNORECASE,
@@ -214,8 +221,10 @@ def has_explicit_resume_intent(text: str) -> bool:
     """True only for an explicit user request to resume a previous task.
 
     Ordinary new prompts never match; the match is anchored to the start of
-    the authoritative prompt so a passing mention of "继续" cannot reopen a
-    parked unit.
+    the authoritative prompt (or of one root speech-act clause) so a passing
+    mention of "继续" cannot reopen a parked unit. Third-party continuation
+    ("让子代理继续", "等它继续") keeps no match because the directive prefix
+    is not an assistant address.
     """
     if not text or len(text) > 400:
         return False
