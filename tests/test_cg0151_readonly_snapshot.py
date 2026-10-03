@@ -236,7 +236,9 @@ class ReadOnlySnapshotTests(P0Harness):
                     # A bounded transient failure is allowed; an invented
                     # revision never is.
                     self.assertIn(str(exc), {
-                        "state_changed_during_read", "state_read_unstable"})
+                        "state_changed_during_read", "state_read_unstable",
+                        "state_replaced_during_query",
+                        "authority_sources_changed_during_query"})
                     continue
                 revisions.add(result["revision"])
             thread.join(timeout=10)
@@ -446,20 +448,182 @@ class ReadOnlySnapshotTests(P0Harness):
         turn = self.state()["completion_attempt"]["turn_id"]
         self.assertEqual(self.query(turn=turn)["mode"], "current_work_unit")
 
-    def test_f3_source_change_between_passes_is_explicit(self):
+    def test_f3_source_change_between_passes_is_explicit_real_event(self):
+        """Real production witness: a genuine UserPromptSubmit lands a new
+        committed root between the two validator passes (no mocked return
+        values); the query must fail as stale instead of serving advanced
+        commands bound to the retired turn (review R2 probe 4)."""
         self.ready()
         turn = self.state()["completion_attempt"]["turn_id"]
-        source = self.session_dir / self.state()["prompts"][-1]["file"]
-        original = source.read_bytes()
-        with mock.patch.object(
-            cg, "_read_only_prompt_dependencies_valid",
-            side_effect=[True, False],
-        ):
-            with self.assertRaisesRegex(
-                RuntimeError, "authority_sources_changed_during_query"
+        state_path = self.session_dir / "state.json"
+        original_state = state_path.read_bytes()
+        pass_results = []
+        original_validator = cg._read_only_prompt_dependencies_valid
+
+        def validator_with_real_new_root(session_dir, state):
+            outcome = original_validator(session_dir, state)
+            pass_results.append(outcome)
+            if len(pass_results) == 1:
+                self.prompt("请检查第二份示例文档。")
+            return outcome
+
+        try:
+            with mock.patch.object(
+                cg, "_read_only_prompt_dependencies_valid",
+                side_effect=validator_with_real_new_root,
             ):
-                self.query(turn=turn)
-        source.write_bytes(original)
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "authority_sources_changed_during_query|"
+                    "state_replaced_during_query",
+                ):
+                    self.query(turn=turn)
+            # File witnesses: the query saw two different committed
+            # worlds, and the turn really moved on disk.
+            self.assertEqual(pass_results, [True, False])
+            committed = json.loads(state_path.read_text())
+            self.assertNotEqual(committed["completion_attempt"]["turn_id"],
+                                turn)
+        finally:
+            state_path.write_bytes(original_state)
+
+    def test_f3_state_replacement_between_passes_is_explicit_real_file(self):
+        """A committed-state replacement (new inode, valid rehashed bytes)
+        between the passes invalidates the queried revision even when both
+        validator passes agree on their local world."""
+        self.ready()
+        turn = self.state()["completion_attempt"]["turn_id"]
+        state_path = self.session_dir / "state.json"
+        original_state = state_path.read_bytes()
+        original_validator = cg._read_only_prompt_dependencies_valid
+
+        def validator_with_real_state_replace(session_dir, state):
+            outcome = original_validator(session_dir, state)
+            if len([True]) == 1 and not getattr(
+                    validator_with_real_state_replace, "done", False):
+                validator_with_real_state_replace.done = True
+                payload = json.loads(original_state)
+                payload["wait_condition_sequence"] = 77
+                cg.atomic_write_json(state_path, payload)
+            return outcome
+
+        validator_with_real_state_replace.done = False
+        try:
+            with mock.patch.object(
+                cg, "_read_only_prompt_dependencies_valid",
+                side_effect=validator_with_real_state_replace,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "state_replaced_during_query"
+                ):
+                    self.query(turn=turn)
+            committed = json.loads(state_path.read_text())
+            self.assertEqual(committed["wait_condition_sequence"], 77)
+        finally:
+            state_path.write_bytes(original_state)
+
+    # -- R2 source-snapshot family matrix ---------------------------------
+    def _source_matrix_fixture(self, typed: bool):
+        if typed:
+            return self.typed_fixture()
+        self.ready()
+        return self.state()
+
+    def test_r2_source_snapshot_family_matrix(self):
+        cases = {
+            "rehashed-identity": lambda source, companion: (
+                lambda: self._mutate_rehashed(source, companion)),
+            "removed-record-hash": lambda source, companion: (
+                lambda: self._mutate_drop_record_hash(source)),
+            "newer-uncommitted-root": lambda source, companion: (
+                lambda: self._mutate_newer_root()),
+            "missing-source": lambda source, companion: (
+                lambda: source.unlink()),
+            "changed-text": lambda source, companion: (
+                lambda: self._mutate_changed_text(source)),
+            "missing-companion": lambda source, companion: (
+                lambda: companion.unlink()),
+        }
+        for typed in (False, True):
+            state = self._source_matrix_fixture(typed)
+            metadata = state["prompts"][-1]
+            source = self.session_dir / metadata["file"]
+            companion = (self.session_dir / "prompts" / "units"
+                         / (metadata["id"] + ".json"))
+            original_source = source.read_bytes()
+            has_companion = companion.exists()
+            original_companion = companion.read_bytes() if has_companion else None
+            for label, build in cases.items():
+                if label == "missing-companion" and not has_companion:
+                    continue
+                with self.subTest(root=("typed" if typed else "plain"),
+                                  case=label):
+                    build(source, companion)()
+                    with self.assertRaisesRegex(
+                        RuntimeError, "authority_source|state_"
+                    ):
+                        self.query()
+                    self.assertFalse(
+                        list(self.session_dir.glob("state.corrupt.*.json")))
+                    if label == "newer-uncommitted-root":
+                        (self.session_dir / "prompts" / "P9999.json").unlink()
+                    elif label == "missing-source":
+                        source.write_bytes(original_source)
+                    elif label == "missing-companion":
+                        companion.write_bytes(original_companion)
+                    else:
+                        source.write_bytes(original_source)
+
+    def _mutate_rehashed(self, source, companion):
+        record = json.loads(source.read_text())
+        record["authority"] = "untrusted_attachment"
+        record["origin"] = "delegated"
+        record["record_sha256"] = cg.prompt_record_hash(record)
+        source.write_text(json.dumps(record), encoding="utf-8")
+        if companion.exists():
+            binding = json.loads(companion.read_text())
+            binding["prompt_record_sha256"] = record["record_sha256"]
+            binding["record_sha256"] = cg.sha256_text(cg.canonical_json(
+                {key: value for key, value in binding.items()
+                 if key != "record_sha256"}))
+            companion.write_text(json.dumps(binding), encoding="utf-8")
+
+    def _mutate_drop_record_hash(self, source):
+        record = json.loads(source.read_text())
+        record.pop("record_sha256", None)
+        source.write_text(json.dumps(record), encoding="utf-8")
+
+    def _mutate_newer_root(self):
+        state = self.state()
+        seq = int(state["core_event_sequence"])
+        record = {
+            "id": "P9999", "created_at": cg.utc_now(),
+            "sha256": cg.sha256_text("请检查另一个示例。"),
+            "text": "请检查另一个示例。",
+            "unicode_repairs": 0, "origin": "human", "authority": "user",
+            "actor_id": None, "core_event_seq": seq + 1,
+        }
+        record["record_sha256"] = cg.prompt_record_hash(record)
+        cg.atomic_write_json(self.session_dir / "prompts" / "P9999.json",
+                             record)
+
+    def _mutate_changed_text(self, source):
+        record = json.loads(source.read_text())
+        record["text"] = "请检查另一个示例。"
+        source.write_text(json.dumps(record), encoding="utf-8")
+
+    def test_r2_healthy_modes_still_serve_after_matrix(self):
+        state = self._source_matrix_fixture(typed=False)
+        turn = state["completion_attempt"]["turn_id"]
+        default = self.query(turn=turn)
+        self.assertEqual(default["mode"], "current_work_unit")
+        self.assertIn("advanced_commands",
+                      json.dumps(self.query(turn=turn, commands=True)))
+        self.assertEqual(self.query(turn=turn, full=True)["mode"], "full")
+        self.assertEqual(self.query(turn=turn, item_id="R001")["item"]["id"],
+                         "R001")
+        unchanged = self.query(turn=turn, after_revision=default["revision"])
+        self.assertTrue(unchanged.get("unchanged"))
 
     def test_f3_newer_root_on_disk_fails_typed_query(self):
         self.typed_fixture()

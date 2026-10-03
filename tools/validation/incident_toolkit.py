@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -35,6 +36,22 @@ MAPPING_SCHEMA = "cg-incident-mapping/v1"
 VERDICT_SCHEMA = "cg-incident-verdict/v1"
 PREFLIGHT_SCHEMA = "cg-incident-toolkit-preflight/v1"
 SCENARIO_IDS = ("pause-resume-v1", "checkpoint-status-v1")
+# Required observation kinds per scenario; a capture missing one, carrying
+# duplicates, or carrying unknown kinds is incomplete and must never map
+# to a green verdict (CG-0151 review R2, incident-oracle family).
+REQUIRED_EVENT_KINDS = {
+    "pause-resume-v1": ("pause_boundary", "polite_resume",
+                        "resume_over_typed_wait", "negated_resume"),
+    "checkpoint-status-v1": ("legal_commands_query", "unknown_option_guard",
+                             "missing_value_guard"),
+}
+ALLOWED_EXTRA_EVENT_KINDS = {
+    "pause-resume-v1": ("activation",),
+    "checkpoint-status-v1": (),
+}
+EXIT_OK = 0
+EXIT_CHECKS_FAILED = 1
+EXIT_OUTPUT_NOT_CREATED = 2
 
 
 def utc_now() -> str:
@@ -186,10 +203,39 @@ def _bundle(scenario_id: str, events: list[dict]) -> dict:
 # Mapper: capture bundle -> oracle rows (deterministic, no model).
 # ---------------------------------------------------------------------------
 
+def _capture_events_by_kind(scenario_id: str, events: object) -> dict:
+    """Strict event index: required kinds exactly once, no duplicates,
+    no unknown kinds, no missing observation. A dictionary merge must
+    never silently overwrite a repeated event (CG-0151 review R2)."""
+    if scenario_id not in REQUIRED_EVENT_KINDS:
+        raise ValueError(f"unknown scenario {scenario_id!r}")
+    if not isinstance(events, list):
+        raise ValueError("capture events must be a list")
+    by_kind: dict[str, dict] = {}
+    allowed = set(REQUIRED_EVENT_KINDS[scenario_id]) | set(
+        ALLOWED_EXTRA_EVENT_KINDS[scenario_id])
+    for event in events:
+        if not isinstance(event, dict):
+            raise ValueError("malformed capture event")
+        kind = event.get("kind")
+        if not isinstance(kind, str) or kind not in allowed:
+            raise ValueError(f"unknown capture event kind {kind!r}")
+        if kind in by_kind:
+            raise ValueError(f"duplicate capture event kind {kind!r}")
+        by_kind[kind] = event
+    missing = [kind for kind in REQUIRED_EVENT_KINDS[scenario_id]
+               if kind not in by_kind]
+    if missing:
+        raise ValueError("incomplete capture; missing events: "
+                         + ",".join(missing))
+    return by_kind
+
+
 def map_capture(capture: dict) -> dict:
-    if capture.get("schema") != CAPTURE_SCHEMA:
+    if not isinstance(capture, dict) or capture.get("schema") != CAPTURE_SCHEMA:
         raise ValueError("capture bundle has an unsupported schema")
-    by_kind = {event["kind"]: event for event in capture["events"]}
+    by_kind = _capture_events_by_kind(capture.get("scenario_id"),
+                                      capture.get("events"))
     rows: list[dict] = []
     if capture["scenario_id"] == "pause-resume-v1":
         pause = by_kind["pause_boundary"]
@@ -234,8 +280,6 @@ def map_capture(capture: dict) -> dict:
             "observed": missing["cli_exit_code"] == 2
             and missing["posttool_blocked"],
         })
-    else:
-        raise ValueError(f"unknown scenario {capture['scenario_id']!r}")
     return {
         "schema": MAPPING_SCHEMA,
         "scenario_id": capture["scenario_id"],
@@ -251,20 +295,54 @@ def map_capture(capture: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def judge(mapping: dict, manifest: dict) -> dict:
-    scenario = next(item for item in manifest["scenarios"]
-                    if item["id"] == mapping["scenario_id"])
+    """Strict production oracle entry: schema/scenario identity, the full
+    expected ID set each exactly once, boolean observations. Empty, short,
+    duplicated, unknown, non-boolean or wrongly schemed mappings fail
+    loudly instead of producing a zero-failure verdict (CG-0151 review
+    R2, incident-oracle family)."""
+    if not isinstance(mapping, dict) or mapping.get("schema") != MAPPING_SCHEMA:
+        raise ValueError("mapping has an unsupported schema")
+    scenario = next((item for item in manifest["scenarios"]
+                     if item["id"] == mapping.get("scenario_id")), None)
+    if scenario is None:
+        raise ValueError("mapping targets an unknown scenario")
     desired = {row["id"]: row["desired"] for row in scenario["oracle_rows"]}
-    rows = []
-    for row in mapping["rows"]:
-        expected = desired.get(row["id"])
-        if expected is None:
-            raise ValueError(f"unmapped oracle row {row['id']!r}")
-        rows.append({"id": row["id"], "observed": row["observed"],
-                     "desired": expected, "passed": row["observed"] == expected})
+    if any(type(value) is not bool for value in desired.values()):
+        raise ValueError("manifest desired verdicts must be booleans")
+    capture_sha256 = mapping.get("capture_sha256")
+    if (not isinstance(capture_sha256, str)
+            or len(capture_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in capture_sha256)):
+        raise ValueError("mapping capture_sha256 must be a hex digest")
+    if mapping.get("platform_family") not in {"posix", "windows", "unknown"}:
+        raise ValueError("mapping platform_family is invalid")
+    rows_in = mapping.get("rows")
+    if not isinstance(rows_in, list):
+        raise ValueError("mapping rows must be a list")
+    observed: dict[str, bool] = {}
+    for row in rows_in:
+        if not isinstance(row, dict) or set(row) != {"id", "observed"}:
+            raise ValueError("malformed mapping row")
+        row_id = row["id"]
+        if not isinstance(row_id, str) or row_id not in desired:
+            raise ValueError(f"unmapped oracle row {row_id!r}")
+        if row_id in observed:
+            raise ValueError(f"duplicate oracle row {row_id!r}")
+        if type(row["observed"]) is not bool:
+            raise ValueError(f"oracle row {row_id!r} observed must be boolean")
+        observed[row_id] = row["observed"]
+    missing = sorted(set(desired) - set(observed))
+    if missing:
+        raise ValueError("incomplete mapping; missing oracle rows: "
+                         + ",".join(missing))
+    rows = [{"id": row_id, "observed": observed[row_id],
+             "desired": desired[row_id],
+             "passed": observed[row_id] == desired[row_id]}
+            for row_id in sorted(desired)]
     return {
         "schema": VERDICT_SCHEMA,
         "scenario_id": mapping["scenario_id"],
-        "capture_sha256": mapping["capture_sha256"],
+        "capture_sha256": capture_sha256,
         "platform_family": mapping["platform_family"],
         "rows": rows,
         "passed_count": sum(row["passed"] for row in rows),
@@ -276,7 +354,53 @@ def judge(mapping: dict, manifest: dict) -> dict:
 # Preflight: toolchain readiness, zero model, no acceptance evidence.
 # ---------------------------------------------------------------------------
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _exclusive_write(path: Path, text: str) -> None:
+    """Create the output exclusively; an existing file is never opened,
+    truncated or replaced (repository result-preservation contract)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def _writable(directory: Path) -> bool:
+    """Probe writability with a unique exclusive temp file; only the file
+    this probe created is ever removed."""
+    try:
+        descriptor, name = tempfile.mkstemp(dir=str(directory),
+                                            prefix=".cg-toolkit-probe-",
+                                            suffix=".tmp")
+    except OSError:
+        return False
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("")
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+def _refuse_existing_output(output: Path) -> bool:
+    if output.exists():
+        print(f"[FAIL] {output.name} already exists in this directory and "
+              "was preserved; choose a new output path.",
+              file=sys.stderr)
+        return True
+    return False
+
+
 def preflight(output: Path) -> int:
+    if _refuse_existing_output(output):
+        return EXIT_OUTPUT_NOT_CREATED
     manifest = load_manifest()
     receipt = {
         "schema": PREFLIGHT_SCHEMA,
@@ -296,53 +420,64 @@ def preflight(output: Path) -> int:
 
     ok = check("manifest_identity", True,
                f"{len(manifest['scenarios'])} scenarios pinned")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    ok = check("output_storage_writable", ok and _writable(output),
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        writable = _writable(output.parent)
+    except OSError:
+        writable = False
+    ok = check("output_storage_writable", writable,
                str(output.parent))
-    with tempfile.TemporaryDirectory() as tmp:
-        product_root = Path(tmp) / "product"
-        product_root.symlink_to(Path(__file__).resolve().parents[2],
-                                target_is_directory=True)
-        positive_capture = capture_pause_resume(product_root)
-        positive = map_capture(positive_capture)
-        verdict = judge(positive, manifest)
-        ok = check("pause_resume_positive_fixture",
-                   verdict["failed_count"] == 0,
-                   f"{verdict['passed_count']}/{len(verdict['rows'])} rows") and ok
-        # Negative fixture: an inverted capture must fail the oracle.
-        negative_capture = json.loads(json.dumps(positive_capture))
-        negative_capture["events"] = [event for event in negative_capture["events"]
-                                      if event["kind"] != "polite_resume"]
-        negative_capture["events"].append({"event": "UserPromptSubmit",
-                                           "kind": "polite_resume",
-                                           "unit_status": "awaiting_user",
-                                           "waiting": 1,
-                                           "released_with_provenance": False})
-        negative_verdict = judge(map_capture(negative_capture), manifest)
-        ok = check("pause_resume_negative_fixture_detected",
-                   negative_verdict["failed_count"] > 0,
-                   f"{negative_verdict['failed_count']} inverted row(s) caught") and ok
-        status_positive = map_capture(capture_checkpoint_status(product_root))
-        status_verdict = judge(status_positive, manifest)
-        ok = check("checkpoint_status_positive_fixture",
-                   status_verdict["failed_count"] == 0,
-                   f"{status_verdict['passed_count']}/{len(status_verdict['rows'])} rows") and ok
-        # Platform adapter: the PowerShell spelling parses on this host too.
-        from scripts.context_guard import (  # noqa: PLC0415
-            private_control_command_tokens,
-        )
-        argv = [sys.executable, "context_guard.py", "checkpoint-status",
-                "--data-dir", "/tmp/x", "--session-id", "p0",
-                "--turn-id", "t1", "--token", "p0token", "--commands"]
-        tokens = private_control_command_tokens(spell_command(argv, windows=True),
-                                                windows=True)
-        ok = check("powershell_spelling_adapter",
-                   tokens is not None and tokens[2] == "checkpoint-status",
-                   "leading call operator parsed") and ok
+    # The real checkout root is used directly: no symlink capability is
+    # required, so the same zero-model path runs for principals (such as
+    # unprivileged Windows accounts) that cannot create symlinks.
+    positive_capture = capture_pause_resume(REPO_ROOT)
+    positive = map_capture(positive_capture)
+    verdict = judge(positive, manifest)
+    ok = check("pause_resume_positive_fixture",
+               verdict["failed_count"] == 0,
+               f"{verdict['passed_count']}/{len(verdict['rows'])} rows") and ok
+    # Negative fixture: an inverted capture must fail the oracle.
+    negative_capture = json.loads(json.dumps(positive_capture))
+    negative_capture["events"] = [event for event in negative_capture["events"]
+                                  if event["kind"] != "polite_resume"]
+    negative_capture["events"].append({"event": "UserPromptSubmit",
+                                       "kind": "polite_resume",
+                                       "unit_status": "awaiting_user",
+                                       "waiting": 1,
+                                       "released_with_provenance": False})
+    negative_verdict = judge(map_capture(negative_capture), manifest)
+    ok = check("pause_resume_negative_fixture_detected",
+               negative_verdict["failed_count"] > 0,
+               f"{negative_verdict['failed_count']} inverted row(s) caught") and ok
+    status_positive = map_capture(capture_checkpoint_status(REPO_ROOT))
+    status_verdict = judge(status_positive, manifest)
+    ok = check("checkpoint_status_positive_fixture",
+               status_verdict["failed_count"] == 0,
+               f"{status_verdict['passed_count']}/{len(status_verdict['rows'])} rows") and ok
+    # Platform adapter: the PowerShell spelling parses on this host too.
+    from scripts.context_guard import (  # noqa: PLC0415
+        private_control_command_tokens,
+    )
+    argv = [sys.executable, "context_guard.py", "checkpoint-status",
+            "--data-dir", "/tmp/x", "--session-id", "p0",
+            "--turn-id", "t1", "--token", "p0token", "--commands"]
+    tokens = private_control_command_tokens(spell_command(argv, windows=True),
+                                            windows=True)
+    ok = check("powershell_spelling_adapter",
+               tokens is not None and tokens[2] == "checkpoint-status",
+               "leading call operator parsed") and ok
     receipt["preflight_passed"] = ok
-    output.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
-                      encoding="utf-8")
-    return 0 if ok else 1
+    try:
+        _exclusive_write(output,
+                         json.dumps(receipt, ensure_ascii=False, indent=2)
+                         + "\n")
+    except OSError:
+        # Creation race or unwritable directory: nothing was overwritten;
+        # report the failure without a receipt file.
+        print(f"[FAIL] could not create {output.name}; existing files in "
+              "this directory were preserved.", file=sys.stderr)
+        return EXIT_OUTPUT_NOT_CREATED
+    return EXIT_OK if ok else EXIT_CHECKS_FAILED
 
 
 def _writable(output: Path) -> bool:
@@ -384,10 +519,17 @@ def main() -> int:
     if args.capture_output is None:
         print(json.dumps(capture, ensure_ascii=False, indent=2))
         return 0
-    args.capture_output.parent.mkdir(parents=True, exist_ok=True)
-    args.capture_output.write_text(
-        json.dumps(capture, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8")
+    if _refuse_existing_output(args.capture_output):
+        return EXIT_OUTPUT_NOT_CREATED
+    try:
+        _exclusive_write(args.capture_output,
+                         json.dumps(capture, ensure_ascii=False, indent=2)
+                         + "\n")
+    except OSError:
+        print(f"[FAIL] could not create {args.capture_output.name}; "
+              "existing files in this directory were preserved.",
+              file=sys.stderr)
+        return EXIT_OUTPUT_NOT_CREATED
     return 0
 
 

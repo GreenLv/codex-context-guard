@@ -17423,39 +17423,69 @@ READ_ONLY_AUTHORITY_QUERY_PASSES = 2
 def _read_only_prompt_dependencies_valid(
     session_dir: Path, state: dict[str, Any]
 ) -> bool:
-    """Verify every human root source and its unit companion, write-free.
+    """Verify the complete applicable source set against the anchored state.
 
-    The self-contained state hash cannot prove its external authority still
-    exists or is unchanged. This mirrors the load-path verification for all
-    human-origin roots (not only typed controls): the immutable record must
-    exist with its exact bytes and, when a root carries a required unit
-    binding, the companion must match it. Plain reads only; a missing,
-    changed or unreadable source fails closed.
+    The self-contained state hash cannot prove its external authority. This
+    read-only family check covers plain and typed roots alike:
+
+    - the on-disk human root set is exactly the state's anchored set (no
+      untracked source, no missing source), each record matching the
+      state-anchored full record hash, core_event_seq and turn_id — a
+      self-consistent rehashed replacement of an external record or
+      companion therefore fails, because the anchor pins identity;
+    - no human root exists beyond the state watermark (a newer committed
+      root makes the queried state stale for plain business roots too,
+      not only for typed controls);
+    - every root that requires a unit companion carries one matching its
+      anchored record hash and sequence.
+
+    Plain bounded reads only; any missing, replaced, extra, newer or
+    malformed dependency fails closed. Legacy formats that never carried
+    ``record_sha256`` stay compatible (both sides None).
     """
+    meta = {str(item.get("id")): item for item in state.get("prompts", [])
+            if isinstance(item, dict)}
     known_units = {str(unit.get("id")) for unit in state.get("work_units", [])
                    if isinstance(unit, dict)}
-    for metadata in state.get("prompts", []):
-        if not isinstance(metadata, dict):
-            return False
-        if metadata.get("origin", "human") != "human":
+    try:
+        records = prompt_records_from_disk(session_dir)
+    except (OSError, StateIntegrityError, TypeError, ValueError):
+        return False
+    watermark = int(state.get("core_event_sequence") or 0)
+    seen_ids: set[str] = set()
+    for record in records:
+        if record.get("origin", "human") != "human":
             continue
-        record = read_prompt_record(session_dir, metadata)
-        if record is None:
+        record_id = str(record.get("id"))
+        seen_ids.add(record_id)
+        item = meta.get(record_id)
+        if item is None or item.get("record_sha256") != record.get("record_sha256"):
+            # Untracked source or a replaced/rehashed external record: the
+            # state-anchored identity no longer holds.
+            return False
+        if item.get("core_event_seq") != record.get("core_event_seq") or (
+                item.get("turn_id") != record.get("turn_id")):
+            return False
+        seq = record.get("core_event_seq")
+        if type(seq) is int and seq > watermark:
             return False
         if not record.get("unit_binding_required"):
             continue
         binding = read_json(
-            session_dir / "prompts" / "units" / f"{record['id']}.json")
+            session_dir / "prompts" / "units" / f"{record_id}.json")
         keys = {"schema", "prompt_id", "prompt_record_sha256",
                 "core_event_seq", "work_unit_id", "record_sha256"}
         if (not isinstance(binding, dict) or set(binding) != keys
-                or binding["schema"] != "prompt-unit/v1"
-                or binding["prompt_id"] != record["id"]
-                or binding["prompt_record_sha256"] != record["record_sha256"]
-                or binding["core_event_seq"] != record.get("core_event_seq")
-                or binding["work_unit_id"] not in known_units
-                or binding["record_sha256"] != sha256_text(canonical_json(
+                or binding.get("schema") != "prompt-unit/v1"
+                or binding.get("prompt_id") != record_id
+                or binding.get("prompt_record_sha256") != record.get("record_sha256")
+                or binding.get("core_event_seq") != seq
+                or binding.get("work_unit_id") not in known_units
+                or binding.get("record_sha256") != sha256_text(canonical_json(
                     {key: binding[key] for key in keys - {"record_sha256"}}))):
+            return False
+    for metadata_id, item in meta.items():
+        if item.get("origin", "human") == "human" and metadata_id not in seen_ids:
             return False
     return True
 
@@ -17561,6 +17591,15 @@ def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
     raise RuntimeError(last_reason)
 
 
+def _state_file_identity(session_dir: Path) -> tuple:
+    """Cheap identity probe of the committed state file (inode, size, mtime)."""
+    try:
+        info = (session_dir / "state.json").lstat()
+    except OSError:
+        return ("missing",)
+    return (info.st_ino, info.st_size, info.st_mtime_ns)
+
+
 def checkpoint_status(
     root: Path, session_id: str, turn_id: str, token: str, *,
     full: bool = False, item_id: str | None = None,
@@ -17590,11 +17629,17 @@ def checkpoint_status(
         # The committed snapshot proves only its own internal consistency;
         # the still-authoritative external sources and typed bindings must
         # verify too before any diagnostic (including the advanced command
-        # inventory) is served (CG-0151 review F3).
+        # inventory) is served (CG-0151 review F3/R2).
+        committed_identity = _state_file_identity(session_dir)
         authority_valid, authority_reason = read_only_authority_sources_valid(
             session_dir, state)
         if not authority_valid:
             raise RuntimeError(authority_reason)
+        if _state_file_identity(session_dir) != committed_identity:
+            # The committed state (and with it the queried turn binding)
+            # moved during the query; the loaded revision is stale and no
+            # private command set may be served from it.
+            raise RuntimeError("state_replaced_during_query")
     completion_attempt_for(state, turn_id, token)
     if commands:
         # Read-only discovery output: the exact turn-bound advanced command
