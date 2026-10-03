@@ -834,8 +834,6 @@ class ReadOnlySnapshotTests(P0Harness):
         self.assertEqual(result["mode"], "current_work_unit")
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class WindowsCommittedReaderAdapterTests(unittest.TestCase):
@@ -894,3 +892,7 @@ class WindowsCommittedReaderAdapterTests(unittest.TestCase):
         for stage in ("open", "attributes", "reparse", "convert"):
             with self.subTest(stage=stage):
                 self.run_adapter(stage)
+
+
+if __name__ == "__main__":
+    unittest.main()
