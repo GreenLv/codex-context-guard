@@ -283,12 +283,12 @@ class PauseResumeFamilyTests(P0Harness):
     # -- W15: repeated cycles, mixed validity, switch/cancel -------------
     def test_w15_repeat_pause_resume_cycles_without_duplicate_todos(self):
         self.park_with_pause("暂停")
-        cycles = ("先暂停", "请暂停当前任务", "暂停一下")
-        for cycle in range(3):
+        cycles = ("暂停", "先暂停", "暂停一下")
+        for cycle in cycles:
             self.prompt("请继续执行")
             self.assert_released_unique_wait()
             self.assertEqual(len(self.state()["work_units"]), 1)
-            self.prompt(cycles[cycle])
+            self.prompt(cycle)
             self.assertEqual(len(self.waiting()), 1)
         state = self.state()
         self.assertEqual(len(state["work_units"]), 1)
@@ -302,12 +302,105 @@ class PauseResumeFamilyTests(P0Harness):
         self.assertEqual(self.state()["work_units"][-1]["status"],
                          "awaiting_user")
 
-        # The same pause bytes raise no duplicate todo (idempotent source-
-        # clause identity), and the resume does not duplicate requirements.
+    # -- F1: same-event replay is idempotent; a new root event re-raises --
+    def test_f1_new_root_event_with_identical_pause_bytes_rewaits(self):
+        self.park_with_pause("暂停")
         self.prompt("请继续执行")
         self.assert_released_unique_wait()
-        self.prompt("先暂停")
-        self.assertEqual(self.waiting(), [])
+        released = self.state()["wait_conditions"][0]
+        self.assertEqual(released["status"], "released")
+        self.assertIsNotNone(released["released_by_source"])
+        self.prompt("暂停")
+        state = self.state()
+        waiting = self.waiting()
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["raised_by_source"],
+                         state["prompts"][-1]["id"])
+        self.assertNotEqual(waiting[0]["condition_id"], released["condition_id"])
+        self.assertEqual(waiting[0]["source_clause_sha256"],
+                         released["source_clause_sha256"])
+        # The released history keeps its provenance.
+        self.assertEqual(state["wait_conditions"][0]["status"], "released")
+        self.dispatch("Stop", last_assistant_message="再次暂停。")
+        self.assertEqual(self.state()["work_units"][-1]["status"],
+                         "awaiting_user")
+        # Ordinary business tools do not auto-continue a re-raised pause;
+        # they stay approval-free (no block), the ledger keeps waiting.
+        decision, _ = self.decision("git status")
+        self.assertNotEqual(decision, "block")
+        self.assertEqual(len(self.waiting()), 1)
+        self.prompt("请继续执行")
+        state = self.state()
+        self.assertEqual([row for row in state["wait_conditions"]
+                          if row["status"] == "waiting"], [])
+        self.assertEqual(state["work_units"][-1]["status"], "active")
+
+    def test_f1b_same_source_event_replay_stays_idempotent(self):
+        self.activate_session()
+        self.prompt("请检查并修复示例文档。")
+        self.prompt("暂停")
+        state = self.state()
+        source_id = state["wait_conditions"][0]["raised_by_source"]
+        unit_id = str(state["work_state"]["active_work_unit_id"])
+        clause = state["wait_conditions"][0]["source_clause_sha256"]
+        # Replaying the same source event adds no duplicate record.
+        record = cg.add_wait_condition(
+            state, unit_id, kind="one_shot", condition_type="confirmation",
+            raised_by_kind="root_user", raised_by_source=source_id,
+            source_clause_sha256=clause, subject_sha256=None,
+        )
+        self.assertIsNone(record)
+        self.assertEqual(len(state["wait_conditions"]), 1)
+        # A different source event with the same clause bytes re-raises.
+        record = cg.add_wait_condition(
+            state, unit_id, kind="one_shot", condition_type="confirmation",
+            raised_by_kind="root_user", raised_by_source="P9999",
+            source_clause_sha256=clause, subject_sha256=None,
+        )
+        self.assertIsNotNone(record)
+        self.assertEqual(len(state["wait_conditions"]), 2)
+
+    def test_f1c_external_and_named_waits_survive_resume_and_repeat(self):
+        self.activate_session()
+        self.prompt("请检查并修复示例文档。等 CI 流水线完成后再说。")
+        self.prompt("暂停")
+        self.assertEqual(len(self.waiting()), 2)
+        self.prompt("请继续执行")
+        state = self.state()
+        by_type = {row["condition_type"]: row for row in state["wait_conditions"]}
+        self.assertEqual(by_type["confirmation"]["status"], "released")
+        self.assertEqual(by_type["external_dependency"]["status"], "waiting")
+        self.prompt("暂停")
+        state = self.state()
+        waiting = self.waiting()
+        self.assertEqual(sorted(row["condition_type"] for row in waiting),
+                         ["confirmation", "external_dependency"])
+        # The re-raised confirmation binds to the newest source event and
+        # the external dependency keeps its original one.
+        confirmations = [row for row in state["wait_conditions"]
+                         if row["condition_type"] == "confirmation"]
+        self.assertEqual(len(confirmations), 2)
+        self.assertEqual(confirmations[-1]["raised_by_source"],
+                         state["prompts"][-1]["id"])
+        externals = [row for row in state["wait_conditions"]
+                     if row["condition_type"] == "external_dependency"]
+        self.assertEqual(len(externals), 1)
+
+    def test_f1d_named_confirmation_is_not_released_by_bare_resume(self):
+        self.park_with_pause("等我确认方案 B 后再继续。")
+        state = self.state()
+        self.assertEqual(state["wait_conditions"][0]["condition_type"],
+                         "confirmation")
+        self.assertIsNotNone(state["wait_conditions"][0]["subject_sha256"])
+        self.prompt("请继续执行")
+        self.assertEqual(len(self.waiting()), 1)
+        self.assertEqual(self.state()["work_units"][-1]["status"],
+                         "awaiting_user")
+        self.prompt("方案 B 确认好了，请继续执行")
+        state = self.state()
+        self.assertEqual([row for row in state["wait_conditions"]
+                          if row["status"] == "waiting"], [])
+        self.assertEqual(state["work_units"][-1]["status"], "active")
 
     def test_w15b_long_text_valid_directive_with_invalid_description(self):
         self.park_with_pause("暂停")

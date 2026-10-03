@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import threading
 import unittest
 from pathlib import Path
@@ -76,9 +77,19 @@ class ReadOnlySnapshotTests(P0Harness):
         self.assertEqual(lock_path.read_bytes(), lock_before)
 
     # -- R02: read-only directory still serves the query ------------------
+    # POSIX mode-bit denial probe. On Windows, directory write denial is an
+    # ACL/restricted-token fact that mode bits cannot express; that surface
+    # stays a required native-Windows restricted-child gate and is never
+    # substituted by a skip here.
+    @unittest.skipUnless(hasattr(os, "geteuid"),
+                         "POSIX mode-bit write denial requires os.geteuid; "
+                         "native Windows ACL/restricted-child probe remains "
+                         "a separate required gate")
     def test_r02_write_denied_tree_still_readable(self):
         if os.geteuid() == 0:
             self.skipTest("permission denial requires a non-root runner")
+        if sys.platform == "win32":
+            self.skipTest("POSIX mode-bit denial does not model Windows ACLs")
         self.ready()
         self.dispatch("Stop", last_assistant_message="诊断中。")
         before = tree_inventory(self.root / "private")
@@ -188,7 +199,13 @@ class ReadOnlySnapshotTests(P0Harness):
         record = next(item for item in
                       (self.session_dir / "prompts").iterdir()
                       if item.is_file())
-        state_path.symlink_to(record)
+        try:
+            state_path.symlink_to(record)
+        except (OSError, NotImplementedError):
+            # Unprivileged Windows cannot create this symlink; the
+            # replaced-identity rejection then stays covered by the
+            # platform-capable lanes and the native gates.
+            self.skipTest("symlink creation unavailable for this principal")
         with self.assertRaisesRegex(RuntimeError,
                                     "state_file_not_a_regular_file"):
             self.query()
@@ -241,7 +258,11 @@ class ReadOnlySnapshotTests(P0Harness):
         decoy = self.root / "private" / "sessions-v2" / ".locks" / "decoy.lock"
         decoy.write_bytes(b"decoy")
         lock_path.unlink()
-        lock_path.symlink_to(decoy)
+        try:
+            lock_path.symlink_to(decoy)
+        except (OSError, NotImplementedError):
+            decoy.unlink()
+            self.skipTest("symlink creation unavailable for this principal")
         try:
             turn = self.state()["completion_attempt"]["turn_id"]
             result = self.query(turn=turn)
@@ -337,6 +358,129 @@ class ReadOnlySnapshotTests(P0Harness):
         self.assertNotIn("register-proof", serialized)
         commands = self.query(turn=turn, commands=True)
         self.assertIn("advanced_commands", json.dumps(commands))
+
+    # -- F3: read-only queries verify their still-authoritative sources ---
+    def typed_fixture(self):
+        target = self.root / "example.py"
+        target.write_text("before\n", encoding="utf-8")
+        self.activate()
+        self.prompt(f"请修改 {target}，并运行 {target} 的测试。")
+        self.prompt("持续执行直到当前任务完成。")
+        state = self.state()
+        self.assertTrue([row for row in state.get("root_controls", [])
+                         if "kind" in row])
+        self.turn = state["completion_attempt"]["turn_id"]
+        self.session_dir = self.root / "private" / "sessions-v2" / "p0"
+        return state
+
+    def test_f3_typed_control_source_mutations_fail_explicitly(self):
+        state = self.typed_fixture()
+        directory = self.session_dir
+        metadata = state["prompts"][-1]
+        source = directory / metadata["file"]
+        companion = directory / "prompts" / "units" / (metadata["id"] + ".json")
+        original = source.read_bytes()
+        original_companion = companion.read_bytes()
+        before = set(tree_inventory(self.root / "private"))
+        mutations = {
+            "missing-control-source": (lambda: source.unlink(),
+                                       str(source.relative_to(self.root / "private"))),
+            "changed-control-source": (
+                lambda: source.write_text(
+                    json.dumps({**json.loads(original),
+                                "text": "另一个合成指令。"}), encoding="utf-8"),
+                str(source.relative_to(self.root / "private"))),
+            "missing-unit-companion": (lambda: companion.unlink(),
+                                       str(companion.relative_to(self.root / "private"))),
+        }
+        try:
+            for label, (mutate, mutated_path) in mutations.items():
+                with self.subTest(case=label):
+                    mutate()
+                    with self.assertRaisesRegex(
+                        RuntimeError, "authority_source"
+                    ):
+                        self.query()
+                    after = set(tree_inventory(self.root / "private"))
+                    # The query itself must add or remove nothing; the
+                    # mutated path is the deliberate fixture edit, so its
+                    # own existence is normalized out on both sides.
+                    self.assertEqual(after | {mutated_path},
+                                     before | {mutated_path}, label)
+                    self.assertFalse(
+                        list(self.session_dir.glob("state.corrupt.*.json")))
+        finally:
+            source.write_bytes(original)
+            companion.write_bytes(original_companion)
+
+    def test_f3_typed_control_healthy_state_still_serves(self):
+        self.typed_fixture()
+        turn = self.state()["completion_attempt"]["turn_id"]
+        result = self.query(turn=turn)
+        self.assertEqual(result["mode"], "current_work_unit")
+        commands = self.query(turn=turn, commands=True)
+        self.assertIn("advanced_commands", commands)
+
+    def test_f3_ordinary_root_source_mutations_fail_explicitly(self):
+        self.ready()
+        self.dispatch("Stop", last_assistant_message="诊断中。")
+        state = self.state()
+        directory = self.session_dir
+        source = directory / state["prompts"][-1]["file"]
+        original = source.read_bytes()
+        for label, mutate in {
+            "missing": source.unlink,
+            "changed": lambda: source.write_text(
+                json.dumps({**json.loads(original),
+                            "text": "请检查另一个示例。"}), encoding="utf-8"),
+        }.items():
+            with self.subTest(case=label):
+                mutate()
+                with self.assertRaisesRegex(
+                    RuntimeError, "authority_source"
+                ):
+                    self.query()
+                self.assertFalse(
+                    list(self.session_dir.glob("state.corrupt.*.json")))
+        source.write_bytes(original)
+        turn = self.state()["completion_attempt"]["turn_id"]
+        self.assertEqual(self.query(turn=turn)["mode"], "current_work_unit")
+
+    def test_f3_source_change_between_passes_is_explicit(self):
+        self.ready()
+        turn = self.state()["completion_attempt"]["turn_id"]
+        source = self.session_dir / self.state()["prompts"][-1]["file"]
+        original = source.read_bytes()
+        with mock.patch.object(
+            cg, "_read_only_prompt_dependencies_valid",
+            side_effect=[True, False],
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "authority_sources_changed_during_query"
+            ):
+                self.query(turn=turn)
+        source.write_bytes(original)
+
+    def test_f3_newer_root_on_disk_fails_typed_query(self):
+        self.typed_fixture()
+        state = self.state()
+        seq = int(state["core_event_seq"] if "core_event_seq" in state
+                  else state["core_event_sequence"])
+        record = {
+            "id": "P9999", "created_at": cg.utc_now(),
+            "sha256": cg.sha256_text("较新的合成根指令"), "text": "较新的合成根指令",
+            "unicode_repairs": 0, "origin": "human", "authority": "user",
+            "actor_id": None, "core_event_seq": seq + 1,
+        }
+        record["record_sha256"] = cg.prompt_record_hash(record)
+        cg.atomic_write_json(self.session_dir / "prompts" / "P9999.json",
+                             record)
+        turn = state["completion_attempt"]["turn_id"]
+        with self.assertRaisesRegex(RuntimeError, "authority_source"):
+            self.query(turn=turn)
+        (self.session_dir / "prompts" / "P9999.json").unlink()
+        result = self.query(turn=turn)
+        self.assertEqual(result["mode"], "current_work_unit")
 
 
 if __name__ == "__main__":

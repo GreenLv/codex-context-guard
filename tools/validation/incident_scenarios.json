@@ -1,0 +1,40 @@
+{
+  "schema": "cg-incident-scenarios/v1",
+  "description": "Synthetic sanitized input manifest for the CG-0151 incident-native toolkit. Scenario inputs are synthetic; desired oracle rows are the toolchain-independent verdicts a native run must reproduce. No real prompt, session id, token or host path appears here.",
+  "frozen_at": "2026-10-03",
+  "incidents": {
+    "pause-resume-v1": "CGI-20261002-codex-pause-resume-wait-stall",
+    "checkpoint-status-v1": "CGI-20261003-codex-checkpoint-status-posttool-rejection"
+  },
+  "scenarios": [
+    {
+      "id": "pause-resume-v1",
+      "incident": "CGI-20261002-codex-pause-resume-wait-stall",
+      "boundary": "zero-model synthetic capture now; coordinator executes the real host scenario later with the same oracle rows",
+      "platform_adapter": {
+        "posix": "root-user prompts through the normal Hook trust path; shell command spelling via shell_join",
+        "windows": "same semantic scenario through the PowerShell launcher; command spelling uses the single leading call operator"
+      },
+      "oracle_rows": [
+        {"id": "pause_parks_unit_with_unique_wait", "desired": true},
+        {"id": "polite_resume_releases_with_provenance", "desired": true},
+        {"id": "typed_wait_survives_bare_resume", "desired": true},
+        {"id": "negated_resume_keeps_waiting", "desired": true}
+      ]
+    },
+    {
+      "id": "checkpoint-status-v1",
+      "incident": "CGI-20261003-codex-checkpoint-status-posttool-rejection",
+      "boundary": "zero-model synthetic capture now; the native run replaces the synthetic CLI child with the model-restricted tool under normal Hook trust",
+      "platform_adapter": {
+        "posix": "checkpoint-status --commands through a real CLI subprocess, shell_join spelling",
+        "windows": "same tokens with the PowerShell leading call operator spelling"
+      },
+      "oracle_rows": [
+        {"id": "legal_query_not_blocked", "desired": true},
+        {"id": "unknown_option_blocked", "desired": true},
+        {"id": "missing_value_blocked_on_both_surfaces", "desired": true}
+      ]
+    }
+  ]
+}

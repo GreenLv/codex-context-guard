@@ -14158,15 +14158,18 @@ def add_wait_condition(
     source_clause_sha256: str | None = None,
     subject_sha256: str | None = None,
 ) -> dict[str, Any] | None:
-    """Idempotent source-clause identity, including already released records."""
-    source = next((p for p in state.get("prompts", []) if p.get("id") == raised_by_source), {})
+    """Idempotent per source event; a later root event re-raises the wait.
+
+    Replaying the same source event (same raised_by_source) never mints a
+    duplicate. A new root-user event with identical bytes is a new pause:
+    the earlier record stays released with its provenance and a fresh
+    waiting record binds to the new source (CG-0151 review F1)."""
     for existing in state.get("wait_conditions", []):
-        old_source = next((p for p in state.get("prompts", []) if p.get("id") == existing.get("raised_by_source")), {})
         if (existing.get("owner_work_unit_id") == unit_id
                 and existing.get("condition_type") == condition_type
                 and existing.get("raised_by_kind") == raised_by_kind
                 and existing.get("source_clause_sha256") == source_clause_sha256
-                and old_source.get("sha256") == source.get("sha256")):
+                and existing.get("raised_by_source") == raised_by_source):
             return None
     sequence = int(state.get("wait_condition_sequence") or 0) + 1
     state["wait_condition_sequence"] = sequence
@@ -17411,6 +17414,78 @@ def existing_session_dir(root: Path, session_id: str) -> Path:
 READ_ONLY_STATE_READ_ATTEMPTS = 3
 READ_ONLY_STATE_RETRY_SLEEP_SECONDS = 0.05
 READ_ONLY_STATE_MAX_BYTES = 64 * 1024 * 1024
+# Whole-query authority validation passes (CG-0151 review F3): the first
+# pass reads, the second re-reads the same dependency set; a disagreement
+# means a source changed during the query.
+READ_ONLY_AUTHORITY_QUERY_PASSES = 2
+
+
+def _read_only_prompt_dependencies_valid(
+    session_dir: Path, state: dict[str, Any]
+) -> bool:
+    """Verify every human root source and its unit companion, write-free.
+
+    The self-contained state hash cannot prove its external authority still
+    exists or is unchanged. This mirrors the load-path verification for all
+    human-origin roots (not only typed controls): the immutable record must
+    exist with its exact bytes and, when a root carries a required unit
+    binding, the companion must match it. Plain reads only; a missing,
+    changed or unreadable source fails closed.
+    """
+    known_units = {str(unit.get("id")) for unit in state.get("work_units", [])
+                   if isinstance(unit, dict)}
+    for metadata in state.get("prompts", []):
+        if not isinstance(metadata, dict):
+            return False
+        if metadata.get("origin", "human") != "human":
+            continue
+        record = read_prompt_record(session_dir, metadata)
+        if record is None:
+            return False
+        if not record.get("unit_binding_required"):
+            continue
+        binding = read_json(
+            session_dir / "prompts" / "units" / f"{record['id']}.json")
+        keys = {"schema", "prompt_id", "prompt_record_sha256",
+                "core_event_seq", "work_unit_id", "record_sha256"}
+        if (not isinstance(binding, dict) or set(binding) != keys
+                or binding["schema"] != "prompt-unit/v1"
+                or binding["prompt_id"] != record["id"]
+                or binding["prompt_record_sha256"] != record["record_sha256"]
+                or binding["core_event_seq"] != record.get("core_event_seq")
+                or binding["work_unit_id"] not in known_units
+                or binding["record_sha256"] != sha256_text(canonical_json(
+                    {key: binding[key] for key in keys - {"record_sha256"}}))):
+            return False
+    return True
+
+
+def read_only_authority_sources_valid(
+    session_dir: Path, state: dict[str, Any]
+) -> tuple[bool, str]:
+    """Bounded two-pass validation of the query's external authority set.
+
+    Combines the per-root source/companion verification with the load
+    path's typed root-control decomposition (spans, ordering, newer-root
+    detection). Both passes must agree: a disagreement is an explicit
+    source-changed-during-query failure, never a served snapshot.
+    """
+    results = []
+    for _ in range(READ_ONLY_AUTHORITY_QUERY_PASSES):
+        try:
+            roots_valid = _read_only_prompt_dependencies_valid(session_dir,
+                                                               state)
+            controls_valid = _root_control_decomposition_valid(state,
+                                                               session_dir)
+        except (OSError, StateIntegrityError, TypeError, ValueError):
+            return False, "authority_source_dependencies_unavailable"
+        results.append((roots_valid, controls_valid))
+    if len(set(results)) != 1:
+        return False, "authority_sources_changed_during_query"
+    if all(pass_valid and controls_valid
+           for pass_valid, controls_valid in results):
+        return True, "none"
+    return False, "authority_source_dependencies_unavailable"
 
 
 def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
@@ -17511,6 +17586,15 @@ def checkpoint_status(
         if state.get("session", {}).get("id") != session_id:
             raise RuntimeError("session_identity_mismatch")
     require_usable_state(state)
+    if namespace == "v2":
+        # The committed snapshot proves only its own internal consistency;
+        # the still-authoritative external sources and typed bindings must
+        # verify too before any diagnostic (including the advanced command
+        # inventory) is served (CG-0151 review F3).
+        authority_valid, authority_reason = read_only_authority_sources_valid(
+            session_dir, state)
+        if not authority_valid:
+            raise RuntimeError(authority_reason)
     completion_attempt_for(state, turn_id, token)
     if commands:
         # Read-only discovery output: the exact turn-bound advanced command
@@ -19096,7 +19180,11 @@ def parse_checkpoint_status_option_bindings(
     at most once, required options exactly once with a non-empty value, and
     mode options stay mutually exclusive. Unknown options, abbreviations,
     positional tokens, flags with values and missing values are rejected
-    with None.
+    with None. A separated value must not be option-like: the next token
+    beginning with ``-`` means the value is missing (the same judgement the
+    CLI's argparse applies), so ``--item --commands`` never consumes a
+    following flag as a string value (CG-0151 review F2). Exotic values
+    that begin with ``-`` must use the ``--name=value`` spelling.
     """
     option_names = CHECKPOINT_STATUS_VALUE_OPTIONS + CHECKPOINT_STATUS_FLAG_OPTIONS
     bindings: dict[str, list[str]] = {name: [] for name in option_names}
@@ -19119,7 +19207,10 @@ def parse_checkpoint_status_option_bindings(
         elif raw in bindings:
             if position + 1 >= len(tokens):
                 return None
-            bindings[raw].append(tokens[position + 1])
+            value = tokens[position + 1]
+            if value.startswith("-"):
+                return None
+            bindings[raw].append(value)
             position += 2
         else:
             return None

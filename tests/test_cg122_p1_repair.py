@@ -107,8 +107,11 @@ class WaitIdentityTests(P0Harness):
         self.assertEqual(len(self.state()['wait_conditions']), 2)
         self.prompt('模型已换好，继续。')
         self.prompt(prompt)
-        self.assertEqual(len(self.state()['wait_conditions']), 2)
-        self.assertEqual([c['status'] for c in self.state()['wait_conditions']], ['released', 'waiting'])
+        # CG-0151 F1: the re-sent root prompt is a NEW source event; its two
+        # typed waits re-raise while the released record keeps provenance.
+        self.assertEqual(len(self.state()['wait_conditions']), 4)
+        self.assertEqual([c['status'] for c in self.state()['wait_conditions']],
+                         ['released', 'waiting', 'waiting', 'waiting'])
 
     def test_invalid_or_wrong_authority_source_fails_closed(self):
         self.park()

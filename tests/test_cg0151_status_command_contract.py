@@ -189,7 +189,17 @@ class StatusCommandContractTests(P0Harness):
             "flag-with-value": ["--commands=1"],
             "empty-value": ["--token="],
             "extra-positional": ["--full", "junk"],
+            # F2 family: a separated value must not consume a following
+            # option-like token; the CLI exits 2 and the Hook must agree.
+            "missing-value-known-flag": ["--item", "--commands"],
+            "missing-value-known-flag-revision": [
+                "--after-revision", "--full"],
+            "missing-value-unknown-flag": ["--item", "--unknown-later"],
+            "missing-value-mandatory": ["--token", "--full"],
+            "missing-value-trailing-dashdash": ["--item", "--"],
+            "dash-value-separated": ["--item", "-R001"],
         }
+        equals_only = {"missing-value-known-flag", "missing-value-known-flag-revision"}
         for label, extra in cases.items():
             with self.subTest(case=label):
                 options = list(extra)
@@ -218,9 +228,7 @@ class StatusCommandContractTests(P0Harness):
                         argv, capture_output=True, text=True, check=False)
                     self.assertEqual(completed.returncode, 2)
                     command = cg.shell_join(argv)
-                elif label in {"unknown-option", "abbreviation",
-                               "mode-conflict", "flag-with-value",
-                               "empty-value"}:
+                else:
                     argv = [sys.executable, script, "checkpoint-status",
                             *base, *options]
                     completed = subprocess.run(
@@ -240,6 +248,17 @@ class StatusCommandContractTests(P0Harness):
                 self.assertEqual(output.get("decision"), "block", label)
                 self.assertIn("Malformed private control command",
                               output.get("reason", ""))
+                if label in equals_only:
+                    # The equals spelling of the same exotic value is the
+                    # documented form and stays accepted.
+                    flag = options[0]
+                    equalized = status_command(
+                        self, self.turn, [f"{flag}=--commands"])
+                    self.assertTrue(cg.is_exact_checkpoint_status_command(
+                        self.state(),
+                        {"tool_name": "shell",
+                         "tool_input": {"command": equalized},
+                         "turn_id": self.turn}))
 
     # -- C06: wrong bindings and runtimes stay rejected ------------------
     def test_c06_wrong_binding_or_runtime_rejected_without_promotion(self):
