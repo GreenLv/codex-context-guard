@@ -521,7 +521,22 @@ def hook_control_token(stage, inventory, plan, copied):
     return candidates[0]
 
 
-def make_fixture(plan, stage, item, root, *, inventory):
+def principal_observation(stage, inventory, plan):
+    item = command_observation(stage, inventory, plan)
+    argv = ordinary_command_argv(item['command'], windows=True, shell_identity=plan.get('shell'))
+    expected = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
+    base.require(argv == expected and item['exitCode'] == 0, 'principal tool command differs')
+    record = json.loads(item['aggregatedOutput'])
+    base.require(isinstance(record, dict) and set(record) == {'schema', 'sid', 'pid', 'platform'}
+                 and record['schema'] == 'incident-child-principal/v1'
+                 and record['platform'] == 'Windows' and type(record['pid']) is int
+                 and record['pid'] > 0 and isinstance(record['sid'], str)
+                 and re.fullmatch(r'S-1-(?:[0-9]+-)*[0-9]+', record['sid']),
+                 'invalid observed child principal')
+    return record['sid']
+
+
+def make_fixture(plan, stage, item, root, *, inventory, principal=None):
     argv = status_argv(item, stage, plan)
     binding = cg.parse_checkpoint_status_option_bindings(argv[3:])
     command_observation(stage, inventory, plan)
@@ -543,7 +558,9 @@ def make_fixture(plan, stage, item, root, *, inventory):
     # Rewrite only the cloned data-root argument; preserve exact session/turn/token.
     argv = [*argv[:3], '--data-dir', str(root), '--session-id', stage['thread'],
             '--turn-id', stage['turn'], '--token', token, '--commands']
-    restriction = child.restrict(root)
+    if plan['platform'] == 'Windows':
+        base.require(isinstance(principal, str), 'observed Windows child principal required')
+    restriction = child.restrict(root, sid=principal)
     request = {'schema': 'incident-readonly-request/v1', 'fixture': str(root),
                'lock': str(lock), 'argv': argv, 'restriction': restriction,
                'inventory': child.inventory(root), 'turn': stage['turn'],
@@ -658,8 +675,8 @@ def map_capture(capture, *, mapper_identity=None):
     stages = capture.get('stages', {})
     manifest = base.read_json(MANIFEST)
     for name, stage in stages.items():
-        base.require(name in manifest['prompts'] or name == 'readonly', 'unknown stage')
-        if name != 'readonly':
+        base.require(name in manifest['prompts'] or name in ('readonly', 'principal'), 'unknown stage')
+        if name not in ('readonly', 'principal'):
             expected = hashlib.sha256(manifest['prompts'][name].encode()).hexdigest()
             base.require(stage['prompt_sha256'] == expected, 'scenario prompt differs')
         state = state_for(stage)
@@ -703,6 +720,13 @@ def map_capture(capture, *, mapper_identity=None):
                      and argv[2] == '--request', 'readonly tool argv differs')
         base.require(item['exitCode'] == 0, 'readonly child tool failed')
         record = json.loads(item['aggregatedOutput'])
+        if plan['platform'] == 'Windows':
+            base.require('principal' in stages and stages['principal']['thread'] == stages['readonly']['thread']
+                         and stages['principal']['turn'] != stages['readonly']['turn'],
+                         'principal observation scope differs')
+            sid = principal_observation(stages['principal'], inventory, plan)
+            base.require(capture['readonly_request']['restriction']['sid'] == sid,
+                         'restriction differs from observed tool principal')
         gates['restricted_child_readonly'] = child.judge(record, capture['readonly_request'])
     stop = capture.get('stop_result')
     if stop and stop.get('status') == 'passed':
@@ -759,7 +783,7 @@ def validate_result(result):
     return result
 
 
-def collect(plan, output):
+def collect(plan, output, *, supplemental=False):
     output.mkdir(mode=0o700)
     capture = {'schema': 'incident-host-capture/v1', 'origin': 'native',
                'plan': plan, 'plan_sha256': plan_identity(plan), 'stages': {}, 'cleanups': []}
@@ -779,9 +803,10 @@ def collect(plan, output):
             stage['snapshot'] = str(dest)
             capture['stages'][name] = stage
             return stage
-        thread = client.start()
-        for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
-            turn(name, thread)
+        if not supplemental:
+            thread = client.start()
+            for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
+                turn(name, thread)
         instructions = ('This is a bounded diagnostic test. Use exactly one ordinary shell tool per turn. '
                         'Use the exact latest Context Guard checkpoint-status binding from its recovery packet. '
                         'Run the specified query as a standalone command, no helper or shell chain. '
@@ -789,8 +814,17 @@ def collect(plan, output):
         status_thread = client.start(instructions)
         s = turn('status', status_thread)
         item = command_observation(s, client.inventory, plan)
+        probe_thread = client.start('Execute exactly the requested standalone ordinary shell command. '
+                                    'Do not escalate permissions. Keep output private. '
+                                    'Final answer: 只读探针结束，验收仍等待。')
+        principal = None
+        if plan['platform'] == 'Windows':
+            identity_argv = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
+            observed = turn('principal', probe_thread, 'Run this exact ordinary tool command once: & '
+                            + cg.shell_join(identity_argv))
+            principal = principal_observation(observed, client.inventory, plan)
         fixture.mkdir(mode=0o700)
-        request = make_fixture(plan, s, item, fixture, inventory=client.inventory)
+        request = make_fixture(plan, s, item, fixture, inventory=client.inventory, principal=principal)
         request_path = Path(plan['cwd']) / ('incident-request-' + output.name + '.json')
         write_new(request_path, request)
         capture['readonly_request'] = request
@@ -799,10 +833,7 @@ def collect(plan, output):
         tool_argv = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'),
                      '--request', str(request_path)]
         capture['readonly_tool_argv'] = tool_argv
-        # New thread avoids no-helper developer instruction conflict.
-        probe_thread = client.start('Execute exactly the requested standalone ordinary shell command. '
-                                    'Do not escalate permissions. Keep output private. '
-                                    'Final answer: 只读探针结束，验收仍等待。')
+        # The same probe thread supplies the Windows principal and actual witness.
         spelling = cg.shell_join(tool_argv)
         if plan['platform'] == 'Windows':
             spelling = '& ' + spelling

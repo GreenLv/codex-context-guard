@@ -522,15 +522,44 @@ class IncidentHostTests(P0Harness):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 h.command_observation(bad, self.inventory, self.plan)
 
-    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
-                     'native POSIX denial requires a non-root POSIX child; Windows tested separately')
+    def test_observed_windows_principal_is_bound_to_exact_ordinary_tool(self):
+        self.ready()
+        stage = self.stage('status', query_options=['--commands'])
+        plan = {**self.plan, 'platform': 'Windows'}
+        argv = [plan['python'], str(h.ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
+        sid = 'S-1-5-21-123'
+        for row in stage['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                row['params']['item']['command'] = cg.shell_join(argv)
+                if row['method'] == 'item/completed':
+                    row['params']['item']['aggregatedOutput'] = json.dumps(
+                        {'schema': 'incident-child-principal/v1', 'sid': sid, 'pid': 12, 'platform': 'Windows'})
+        self.assertEqual(h.principal_observation(stage, self.inventory, plan), sid)
+        for key, value in [('sid', 'invalid'), ('pid', True), ('platform', 'Darwin'), ('schema', 'other')]:
+            bad = copy.deepcopy(stage)
+            completed = next(r['params']['item'] for r in bad['rows'] if r['method'] == 'item/completed')
+            record = json.loads(completed['aggregatedOutput'])
+            record[key] = value
+            completed['aggregatedOutput'] = json.dumps(record)
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                h.principal_observation(bad, self.inventory, plan)
+        bad = copy.deepcopy(stage)
+        for row in bad['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                row['params']['item']['command'] += ' --request other'
+        with self.assertRaises(ValueError):
+            h.principal_observation(bad, self.inventory, plan)
+
+    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0,
+                     'POSIX root cannot prove write denial')
     def test_actual_readonly_child_with_real_query_and_denied_lock(self):
         self.ready()
         stage = self.stage('status', query_options=['--commands'])
         item = h.command_observation(stage, self.inventory, self.plan)
         root = self.root / 'readonly'
         root.mkdir()
-        request = h.make_fixture(self.plan, stage, item, root, inventory=self.inventory)
+        request = h.make_fixture(self.plan, stage, item, root, inventory=self.inventory,
+                                 principal=child.current_sid() if os.name == 'nt' else None)
         try:
             record = child.witness(request)
             self.assertEqual(child.judge(record, request), 'passed')
@@ -759,9 +788,12 @@ class IncidentHostTests(P0Harness):
     def test_windows_acl_adapter_and_principal_drift(self):
         sid = 'S-1-5-21-123'
         argv = child.acl_argv(Path('X:/owned-fixture'), sid)
-        self.assertIn('*' + sid + ':(OI)(CI)(W,D)', argv[0])
+        self.assertIn('*' + sid + ':(WD,AD,WEA,WA,DE)', argv[0])
+        self.assertNotIn('/inheritance:r', argv[0])
+        self.assertNotIn('/grant:r', argv[0])
         self.assertNotIn('/C', argv[0])
-        self.assertEqual(child.acl_argv(Path('X:/owned-fixture'), sid, restore=True)[0][2], '/remove:d')
+        self.assertNotIn('/T', argv[0])
+        self.assertNotIn(':(W,D)', ' '.join(argv[0]))
         with self.assertRaises(ValueError):
             child.acl_argv(Path('/tmp/a'), 'user;command')
         request = {'inventory': {}, 'restriction': {'sid': sid}, 'turn': 'u', 'state_revision': 'rev'}

@@ -6,12 +6,16 @@ output and token-bearing argv remain private. Mode bits are not Windows ACLs.
 from __future__ import annotations
 
 import argparse
+import base64
+import ctypes
 import errno
 import hashlib
 import json
 import os
 import platform
+import re
 import stat
+import struct
 import subprocess
 from pathlib import Path
 
@@ -45,16 +49,159 @@ def inventory(root):
     return result
 
 
-def acl_argv(root, sid, *, restore=False):
-    # Explicit deny scoped to a new fixture. No administrator or token change.
-    if not sid.startswith('S-1-') or not all(c in 'S-0123456789' for c in sid):
+def acl_argv(root, sid):
+    # Specific write/delete bits exclude SYNCHRONIZE and READ_CONTROL.
+    if not isinstance(sid, str) or not re.fullmatch(r'S-1-(?:[0-9]+-)*[0-9]+', sid):
         raise ValueError('invalid SID')
-    if restore:
-        return [['icacls', str(root), '/remove:d', '*' + sid, '/T'],
-                ['icacls', str(root), '/grant:r', '*' + sid + ':(OI)(CI)F', '/T']]
-    return [['icacls', str(root), '/inheritance:r',
-             '/grant:r', '*' + sid + ':(OI)(CI)RX',
-             '/deny', '*' + sid + ':(OI)(CI)(W,D)', '/T']]
+    bits = '(WD,AD,WEA,WA,DE,DC)' if root.is_dir() else '(WD,AD,WEA,WA,DE)'
+    return [['icacls', str(root), '/deny', '*' + sid + ':' + bits]]
+
+
+def fixture_paths(root):
+    root = Path(root)
+    paths = [root, *sorted(root.rglob('*'))]
+    for path in paths:
+        info = path.lstat()
+        if (not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+                or getattr(info, 'st_file_attributes', 0) & 0x400):
+            raise ValueError('linked or special fixture')
+    inventory(root)
+    return paths
+
+
+def windows_descriptor(path, descriptor=None):
+    """Read/restore a self-relative DACL with its exact inheritance control."""
+    from ctypes import wintypes
+    info = Path(path).lstat()
+    if (not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+            or getattr(info, 'st_file_attributes', 0) & 0x400):
+        raise ValueError('linked or special DACL target')
+    api = ctypes.WinDLL('advapi32', use_last_error=True)
+    read = api.GetFileSecurityW
+    read.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                     wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    read.restype = wintypes.BOOL
+    if descriptor is None:
+        size = wintypes.DWORD()
+        read(str(path), 4, None, 0, ctypes.byref(size))
+        if ctypes.get_last_error() != 122 or not 0 < size.value <= 65536:
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_string_buffer(size.value)
+        if not read(str(path), 4, buffer, size.value, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return base64.b64encode(buffer.raw[:size.value]).decode('ascii')
+    raw = base64.b64decode(descriptor, validate=True)
+    if not 0 < len(raw) <= 65536:
+        raise ValueError('invalid saved DACL')
+    buffer = ctypes.create_string_buffer(raw)
+    strategy, flags = restoration_strategy(descriptor)
+    if strategy == 'raw-explicit':
+        write = api.SetFileSecurityW
+        write.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+        write.restype = wintypes.BOOL
+        if not write(str(path), flags, buffer):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return
+    # The saved descriptor already uses automatic inheritance. Reapply that
+    # model with its original protection setting, never convert a non-AI ACL.
+    acl = ctypes.c_void_p()
+    present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+    get_dacl = api.GetSecurityDescriptorDacl
+    get_dacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+                        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    get_dacl.restype = wintypes.BOOL
+    if not get_dacl(buffer, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    if not present.value or not acl.value:
+        raise ValueError('missing saved DACL')
+    write = api.SetNamedSecurityInfoW
+    write.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+                      ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    write.restype = wintypes.DWORD
+    error = write(str(path), 1, flags, None, None, acl, None)
+    if error:
+        raise ctypes.WinError(error)
+
+
+def restoration_strategy(descriptor):
+    """Choose the saved inheritance model before any fixture mutation."""
+    control = descriptor_contract(descriptor)['dacl_control']
+    if control not in (4, 0x404, 0x1004, 0x1404):
+        raise ValueError('unsupported original DACL control model')
+    if control & 0x400:
+        return 'auto-inherited', 4 | (0x80000000 if control & 0x1000 else 0x20000000)
+    return 'raw-explicit', 4
+
+
+def descriptor_contract(descriptor):
+    """Ordered complete ACE bytes and DACL controls, independent of SD layout."""
+    raw = base64.b64decode(descriptor, validate=True)
+    if not 20 <= len(raw) <= 65536:
+        raise ValueError('invalid descriptor bounds')
+    revision, _, control, _, _, _, offset = struct.unpack_from('<BBHIIII', raw)
+    if revision != 1 or not control & 0x8000 or not control & 4 or not 20 <= offset <= len(raw) - 8:
+        raise ValueError('invalid self-relative DACL')
+    acl_revision, _, size, count, _ = struct.unpack_from('<BBHHH', raw, offset)
+    if acl_revision not in (2, 4) or size < 8 or offset + size > len(raw):
+        raise ValueError('invalid DACL bounds')
+    pos = offset + 8
+    aces = []
+    for _ in range(count):
+        if pos + 4 > offset + size:
+            raise ValueError('invalid ACE header')
+        length = struct.unpack_from('<H', raw, pos + 2)[0]
+        if length < 4 or length % 4 or pos + length > offset + size:
+            raise ValueError('invalid ACE bounds')
+        aces.append(raw[pos:pos + length].hex())
+        pos += length
+    # Ignore unused ACL allocation/padding and unrelated SD offsets, never an
+    # ACE byte, mask, principal, condition, order or inheritance-control bit.
+    return {'descriptor_revision': revision, 'dacl_revision': acl_revision,
+            'dacl_control': control & ~0x8000, 'aces': aces}
+
+
+
+def check_fixture_identity(root, record):
+    paths = fixture_paths(root)
+    observed = {str(p): [p.lstat().st_dev, p.lstat().st_ino] for p in paths}
+    if observed != {k: list(v) for k, v in record['objects'].items()}:
+        raise ValueError('fixture object identity changed')
+
+
+def windows_restrict(root, *, sid=None):
+    root = Path(root).absolute()
+    paths = fixture_paths(root)
+    collector_sid = current_sid()
+    sid = collector_sid if sid is None else sid
+    acl_argv(root, sid)  # Validate the principal before any mutation.
+    record = {'family': 'windows-acl', 'policy': 'specific-write-deny/v2',
+              'root': str(root), 'sid': sid, 'collector_sid': collector_sid, 'commands': [],
+              'original_dacls': {str(p): windows_descriptor(p) for p in paths},
+              'original_inventory': inventory(root),
+              'objects': {str(p): (p.lstat().st_dev, p.lstat().st_ino) for p in paths}}
+    record['original_restore_strategies'] = {name: restoration_strategy(descriptor)
+                                             for name, descriptor in record['original_dacls'].items()}
+    # All unsupported controls/NULL shapes reject before any ACL command.
+    try:
+        for path in sorted(paths, key=lambda p: (-len(p.parts), str(p))):
+            check_fixture_identity(root, record)
+            for argv in acl_argv(path, sid):
+                result = subprocess.run(argv, capture_output=True, timeout=30, check=False)
+                record['commands'].append({'argv': argv, 'exit_code': result.returncode,
+                                           'output': (result.stdout + result.stderr).decode(errors='replace')})
+                if result.returncode:
+                    raise OSError('fixture DACL application failed')
+        if inventory(root) != record['original_inventory']:
+            raise ValueError('fixture bytes or stat changed during restriction')
+        return record
+    except (Exception, KeyboardInterrupt) as exc:
+        record['application_error'] = type(exc).__name__
+        try:
+            restore(root, record)
+            record['restoration'] = 'verified'
+        except Exception as restoration:
+            record['restoration_error'] = type(restoration).__name__
+        raise RestrictionError(record) from exc
 
 
 def current_sid():
@@ -64,23 +211,10 @@ def current_sid():
     return next(csv.reader([raw.strip()]))[1]
 
 
-def restrict(root):
+def restrict(root, *, sid=None):
     """Return restoration metadata; failures are retained, never a pass."""
     if os.name == 'nt':
-        sid = current_sid()
-        record = {'family': 'windows-acl', 'sid': sid, 'commands': []}
-        for argv in acl_argv(root, sid):
-            p = subprocess.run(argv, capture_output=True, timeout=30, check=False)
-            record['commands'].append({'argv': argv, 'exit_code': p.returncode,
-                                       'output': (p.stdout + p.stderr).decode(errors='replace')})
-            if p.returncode:
-                # Remove only our fixture deny, even after partial application.
-                try:
-                    restore(root, record)
-                except Exception as exc:
-                    record['restoration_error'] = type(exc).__name__
-                raise RestrictionError(record)
-        return record
+        return windows_restrict(root, sid=sid)
     record = {'family': 'posix-mode', 'modes': {}}
     for path in [*sorted(root.rglob('*'), reverse=True), root]:
         if path.is_symlink():
@@ -92,8 +226,34 @@ def restrict(root):
 
 def restore(root, record):
     if record['family'] == 'windows-acl':
-        for argv in acl_argv(root, record['sid'], restore=True):
-            subprocess.run(argv, capture_output=True, timeout=30, check=True)
+        root = Path(root).absolute()
+        paths = fixture_paths(root)
+        if (record.get('policy') != 'specific-write-deny/v2'
+                or record.get('root') != str(root) or record.get('collector_sid') != current_sid()
+                or set(record.get('original_dacls', {})) != {str(p) for p in paths}):
+            raise ValueError('restoration scope or principal differs')
+        check_fixture_identity(root, record)
+        # Restore traversal first, then descendants, preserving original DACLs.
+        failures = []
+        for path in sorted(paths, key=lambda p: (len(p.parts), str(p))):
+            try:
+                check_fixture_identity(root, record)
+                windows_descriptor(path, record['original_dacls'][str(path)])
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+        if failures:
+            raise OSError('DACL restoration incomplete: ' + ','.join(failures))
+        readback = {str(path): windows_descriptor(path) for path in paths}
+        differences = {name: {'before': descriptor_contract(record['original_dacls'][name]),
+                              'after': descriptor_contract(observed)}
+                       for name, observed in readback.items()
+                       if descriptor_contract(observed) != descriptor_contract(record['original_dacls'][name])}
+        if differences:
+            record['restoration_readback'] = readback
+            record['restoration_differences'] = differences
+            raise ValueError('restored DACL or inheritance controls differ')
+        if inventory(root) != record['original_inventory']:
+            raise ValueError('fixture bytes or stat differ after restoration')
     else:
         for name, mode in record['modes'].items():
             Path(name).chmod(mode)
@@ -174,8 +334,16 @@ def judge(record, request):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--request', type=Path, required=True)
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument('--request', type=Path)
+    group.add_argument('--identity', action='store_true')
     a = p.parse_args()
+    if a.identity:
+        if os.name != 'nt':
+            raise ValueError('Windows tool principal required')
+        print(json.dumps({'schema': 'incident-child-principal/v1', 'sid': current_sid(),
+                          'pid': os.getpid(), 'platform': platform.system()}))
+        return 0
     request = json.loads(a.request.read_text())
     value = witness(request)
     print(json.dumps(value, ensure_ascii=True))

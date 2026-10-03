@@ -115,3 +115,61 @@ Run `tests.test_incident_host_acceptance` for the zero-model capture/mapping,
 real diagnostic CLI, POSIX denial, Windows ACL adapter, drift, redaction,
 approval, cleanup and exclusive-storage matrix. Native Windows ACL operation
 and real model/Hook execution require separate coordinator-owned runs.
+
+
+## Windows fixture ACL policy and missing-observation supplement
+
+The tools-only `specific-write-deny/v2` policy preserves the collector-owned
+fixture's original allowed DACL. It applies a non-inheriting deny per regular
+object: WD/AD/WEA/WA/DE, plus directory-only DC. It never denies generic W,
+SYNCHRONIZE or READ_CONTROL, removes inheritance, or grants broad replacement
+permissions. Objects are enumerated and checked for identity and reparse drift
+before mutation. Original DACLs and protection/inheritance controls are saved;
+The original inheritance model chooses restoration before mutation: non-AI
+uses owner-authorized per-object SetFileSecurity; AI uses SetNamedSecurityInfo
+with its saved protection flag. No failure-driven fallback converts models.
+Unsupported control/request/default shapes reject before ACL mutation. Readback compares every ordered ACE byte, DACL revision
+and presence/default/auto-inheritance/protection control, plus byte/stat identity.
+Unrelated self-relative offsets and unused allocation padding are not permissions;
+actual ACE additions or control changes always fail. Native tests save before/after
+raw descriptors and contracts before teardown and retain failed fixtures. Partial failures retain each applied command and attempt
+complete restoration; an unverified restoration stays a failure.
+
+Windows collector and normal sandbox tool users can differ. Before restricting
+the copied session, a real ordinary tool executes the pinned child helper with
+`--identity` in the probe thread. Its official command scope, paired Hooks,
+standalone argv, success and bounded output bind the SID. The later read-only
+witness must execute in that same thread and report the same SID as the
+restriction. The collector retains only its own restoration identity. Parent
+or standalone-command probes do not certify a model-tool principal. Principal
+drift, unavailable inherited read access, missing observations or write success
+remain visible failures; normal sandbox and approval policy are unchanged.
+
+`tools/validation/incident_host_supplement.py` defines the explicit
+`incident-host-supplement/v1` contract for the retained six-stage partial batch.
+It accepts exactly the five already-passed gates and five pending gates. Prepare
+pins the original plan, result and complete catalog hashes, and binds a new
+clean source/toolkit plan with identical runtime, installed plugin, HOME,
+workspace, shell, CLI, interpreter, model, effort and scenario bytes. New output
+is exclusive. Source and toolkit identities remain separate from the immutable
+original execution subject.
+
+Use `prepare --base-dir ORIGINAL --plan NEW_PLAN --output CONTRACT` with the
+three mandatory `--base-catalog-sha256`, `--base-result-sha256` and
+`--base-plan-sha256` inputs. Then invoke `run --contract CONTRACT --output
+NEW_OUTPUT --preflight` with the actual arguments. Only the subsequent run
+without `--preflight` executes models. It skips the five pause/typed scenes,
+runs a fresh status anchor for current control binding, two negative diagnostics,
+the Windows principal/read-only probe, and the existing Stop/compaction profile.
+Fresh status and Hook observations are supporting anchors; they never overwrite
+original passed gates. There is no resumed use of an ended turn's control token.
+
+`map --contract CONTRACT --capture-dir NEW_CAPTURE --output NEW_RESULT` verifies
+both complete catalogs and uses the production oracles before composition.
+`incident-host-composed/v1` identifies each gate as original or supplement and
+retains both execution identities. Changed original passes, extra or duplicate
+stages/JSON fields, mixed origins, foreign snapshots, subject drift and missing
+new observations are rejected. Restoration failure leaves cleanup pending.
+Synthetic captures stay `native_acceptance: not_run`; only actual native
+observations can close the missing native gates. Zero-model ACL mechanism tests
+and composition fixtures establish input readiness, not model acceptance.
