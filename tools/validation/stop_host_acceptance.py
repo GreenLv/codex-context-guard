@@ -72,7 +72,9 @@ def preflight(plan_path, output):
     require(p.get('schema') == 'stop-host-plan/v1', 'wrong plan schema')
     for k in ('repo', 'codex', 'home', 'cwd', 'plugin_root', 'data_root'):
         v = Path(p[k])
-        require(v.is_absolute() and v.exists() and not v.is_symlink(), k + ' unavailable')
+        require(v.is_absolute() and not v.is_symlink()
+                and (v.exists() or (k == 'data_root' and p.get('fresh_data_root') is True)),
+                k + ' unavailable')
     repo, plugin = Path(p['repo']).resolve(), Path(p['plugin_root']).resolve()
     require(repo == ROOT, 'wrong collector repository')
     home = Path(p['home']).resolve()
@@ -83,7 +85,10 @@ def preflight(plan_path, output):
             and not output.exists(), 'fresh output outside repository required')
     require(sha(Path(p['codex'])) == p['cli_sha256'], 'CLI bytes changed')
     version = subprocess.check_output([p['codex'], '--version'], text=True).strip()
-    require(version == 'codex-cli 0.158.0', 'requires tested CLI 0.158.0')
+    expected = p.get('cli_version', 'codex-cli 0.158.0')
+    require(expected in {'codex-cli 0.158.0', 'codex-cli 0.160.0'},
+            'unsupported planned CLI version')
+    require(version == expected, 'CLI version differs from plan')
     require(prepared_source_identity(repo) == p['source'], 'source identity changed')
     require(runtime(repo) == runtime(plugin) == p['runtime_sha256'], 'runtime mismatch')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -177,13 +182,14 @@ class Client:
     def start(self, instructions=INSTRUCTIONS):
         return self.rpc('thread/start', {'cwd': self.plan['cwd'],
                         'sandbox': 'workspace-write', 'approvalPolicy': 'on-request',
-                        'developerInstructions': instructions})['thread']['id']
+                        'developerInstructions': instructions,
+                        **({'model': self.plan['model']} if self.plan.get('model') else {})})['thread']['id']
 
     def turn(self, thread, prompt):
         begin = len(self.rows)
         turn = self.rpc('turn/start', {'threadId': thread,
                         'input': [{'type': 'text', 'text': prompt}],
-                        'effort': 'low'})['turn']['id']
+                        'effort': self.plan.get('effort', 'low')})['turn']['id']
         end = time.monotonic() + 120
         while time.monotonic() < end:
             x = self.receive(end)

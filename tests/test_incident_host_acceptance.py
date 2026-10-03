@@ -1,0 +1,472 @@
+"""Zero-model production mapper, real CLI/permission child and storage matrix.
+
+RPC rows are explicitly synthetic; none of these tests certifies native Hooks.
+"""
+from __future__ import annotations
+
+import copy
+import json
+import os
+import platform
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from tests.test_cg122_p0_counterexamples import P0Harness, cg
+from tools.validation import incident_host_acceptance as h
+from tools.validation import incident_readonly_child as child
+from tools.validation import stop_host_acceptance as base
+
+
+class IncidentHostTests(P0Harness):
+    def ready(self):
+        self.activate()
+        self.plan = {'source': {'head': 'a' * 40, 'prepared_source_sha256': 'e' * 64,
+                                'dirty_paths': [], 'renamed_away': []},
+                     'runtime_sha256': 'b' * 64, 'cli_sha256': 'c' * 64,
+                     'cli_version': 'codex-cli 0.160.0', 'toolkit': h.toolkit(),
+                     'platform': platform.system(), 'python': str(Path(sys.executable).resolve()),
+                     'plugin_root': str(h.ROOT), 'data_root': str(self.root / 'private'),
+                     'cwd': str(self.root)}
+        self.inventory = {event: {'key': event, 'eventName': event,
+                                 'sourcePath': str(h.ROOT / 'hooks/hooks.json'),
+                                 'source': 'plugin', 'handlerType': 'command',
+                                 'displayOrder': i, 'async': False,
+                                 'trustStatus': 'trusted', 'enabled': True, 'currentHash': 'd' * 64}
+                          for i, event in enumerate(sorted(base.EVENTS))}
+        self.capture = {'schema': 'incident-host-capture/v1', 'origin': 'synthetic',
+                        'plan': self.plan, 'plan_sha256': h.plan_identity(self.plan),
+                        'inventory': self.inventory, 'stages': {}, 'cleanups': []}
+        self.manifest = base.read_json(h.MANIFEST)
+        return self.capture
+
+    def hook(self, name, turn, statuses=('completed',)):
+        rows = []
+        for status in statuses:
+            inv = self.inventory[name]
+            run = {**inv, 'id': name, 'executionMode': 'sync', 'status': 'running', 'durationMs': None, 'entries': []}
+            for method in ('hook/started', 'hook/completed'):
+                current = dict(run)
+                if method == 'hook/completed':
+                    current.update(status=status, durationMs=4)
+                rows.append({'method': method, 'params': {'threadId': 'p0', 'turnId': turn, 'run': current}})
+        return rows
+
+    def stage(self, name, *, query_options=None):
+        prompt = self.manifest['prompts'][name]
+        self.prompt(prompt)
+        state = self.state()
+        turn = state['completion_attempt']['turn_id']
+        rows = self.hook('userPromptSubmit', turn)
+        if query_options is not None:
+            argv = [self.plan['python'], str(h.ROOT / 'scripts/context_guard.py'),
+                    'checkpoint-status', '--data-dir', self.plan['data_root'],
+                    '--session-id', 'p0', '--turn-id', turn, '--token', 'p0token', *query_options]
+            pre = self.dispatch('PreToolUse', turn_id=turn, tool_name='shell',
+                                tool_input={'command': cg.shell_join(argv)})
+            self.assertEqual(pre, {}, 'frozen source Pre diagnostic branch must stay silent')
+            p = subprocess.run(argv, capture_output=True, text=True, check=False,
+                               env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+            item = {'type': 'commandExecution', 'id': 'command-' + name,
+                    'command': cg.shell_join(argv), 'cwd': self.plan['cwd'], 'source': 'agent',
+                    'status': 'inProgress'}
+            rows += self.hook('preToolUse', turn)
+            rows.append({'method': 'item/started', 'params': {'threadId': 'p0', 'turnId': turn, 'item': item}})
+            done = dict(item, status='completed' if p.returncode == 0 else 'failed',
+                        exitCode=p.returncode, aggregatedOutput=p.stdout + p.stderr)
+            rows.append({'method': 'item/completed', 'params': {'threadId': 'p0', 'turnId': turn, 'item': done}})
+            post = self.dispatch('PostToolUse', turn_id=turn, tool_name='shell',
+                                 tool_input={'command': item['command']},
+                                 tool_response={'exit_code': p.returncode})
+            rows += self.hook('postToolUse', turn,
+                              ('blocked',) if post.get('decision') == 'block' else ('completed',))
+        answer = {'pending': '等待后续安排。', 'pause': '已暂停，改动已保留。',
+                  'resume': '继续保留待办。', 'typed': '等待指定标记。',
+                  'typed_resume': '等待指定标记。'}.get(name, '诊断结束，验收仍等待。')
+        self.dispatch('Stop', last_assistant_message=answer)
+        rows += self.hook('stop', turn)
+        dest = self.root / ('snapshot-' + name)
+        h.copy_session(self.plan, 'p0', dest)
+        stage = {'thread': 'p0', 'turn': turn, 'rows': rows, 'snapshot': str(dest),
+                 'prompt_sha256': __import__('hashlib').sha256(prompt.encode()).hexdigest()}
+        self.capture['stages'][name] = stage
+        return stage
+
+    def test_pause_provenance_and_old_pending_positive_negative(self):
+        capture = self.ready()
+        for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
+            self.stage(name)
+        result = h.map_capture(capture)
+        self.assertEqual([result['gates'][n] for n in ('pause_same_unit', 'resume_provenance_pending',
+                                                       'typed_wait_retained')], ['passed'] * 3)
+        self.assertEqual(result['status'], 'pending')
+        self.assertEqual(result['native_acceptance'], 'not_run')
+        states = [h.state_for(capture['stages'][n]) for n in ('pending', 'pause', 'resume', 'typed_resume')]
+        for field in ('condition_id', 'raised_by_source', 'source_clause_sha256', 'released_by_source'):
+            bad = copy.deepcopy(states)
+            bad[2]['wait_conditions'][0][field] = 'wrong'
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.pause_oracle(*bad)
+        bad = copy.deepcopy(states)
+        bad[2]['requirements'] = []
+        with self.assertRaises(ValueError):
+            h.pause_oracle(*bad)
+
+    def test_status_real_cli_negative_controls_and_raw_field_matrix(self):
+        capture = self.ready()
+        self.stage('status', query_options=['--commands'])
+        self.stage('unknown', query_options=['--unknown-status-option'])
+        self.stage('missing', query_options=['--item', '--commands'])
+        result = h.map_capture(capture)
+        self.assertEqual(result['gates']['status_cli_posttool'], 'passed')
+        self.assertEqual(result['gates']['status_negative_controls'], 'passed')
+        stage = capture['stages']['status']
+        for value in (None, True, '0', 1):
+            bad = copy.deepcopy(stage)
+            item = next(r['params']['item'] for r in bad['rows'] if r['method'] == 'item/completed')
+            item['exitCode'] = value
+            with self.subTest(value=value):
+                if type(value) is not int:
+                    with self.assertRaises(ValueError):
+                        h.command_observation(bad, self.inventory, self.plan)
+                else:
+                    changed = copy.deepcopy(capture)
+                    changed['stages']['status'] = bad
+                    with self.assertRaises(ValueError):
+                        h.map_capture(changed)
+        for name in ('postToolUse', 'preToolUse'):
+            bad = copy.deepcopy(stage)
+            bad['rows'] = [r for r in bad['rows'] if r.get('params', {}).get('run', {}).get('eventName') != name]
+            with self.assertRaises(ValueError):
+                h.command_observation(bad, self.inventory, self.plan)
+        bad = copy.deepcopy(stage)
+        bad['rows'] += [next(r for r in stage['rows'] if r['method'] == 'item/completed')]
+        with self.assertRaises(ValueError):
+            h.command_observation(bad, self.inventory, self.plan)
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'native POSIX denial requires a non-root POSIX child; Windows tested separately')
+    def test_actual_readonly_child_with_real_query_and_denied_lock(self):
+        self.ready()
+        stage = self.stage('status', query_options=['--commands'])
+        item = h.command_observation(stage, self.inventory, self.plan)
+        root = self.root / 'readonly'
+        root.mkdir()
+        request = h.make_fixture(self.plan, stage, item, root)
+        try:
+            record = child.witness(request)
+            self.assertEqual(child.judge(record, request), 'passed')
+            self.assertEqual(record['before'], record['after'])
+            for key, value in [('pid', True), ('cli_exit_code', None), ('write_attempts', []),
+                               ('request_sha256', 'bad')]:
+                bad = copy.deepcopy(record)
+                bad[key] = value
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    child.judge(bad, request)
+            bad = copy.deepcopy(record)
+            bad['write_attempts'][0]['errno'] = 0
+            self.assertEqual(child.judge(bad, request), 'failed')
+        finally:
+            child.restore(root, request['restriction'])
+
+    def test_malformed_native_rejection_branches_and_not_observed(self):
+        self.ready()
+        stage = self.stage('unknown', query_options=['--unknown-status-option'])
+        result = h.rejection_observation(stage, self.inventory, self.plan, 'unknown')
+        self.assertEqual(result['branch'], 'cli2_post_blocked')
+        for value in (None, True, '2', 0):
+            bad = copy.deepcopy(stage)
+            next(r['params']['item'] for r in bad['rows'] if r['method'] == 'item/completed')['exitCode'] = value
+            if value is None:
+                self.assertEqual(h.rejection_observation(bad, self.inventory, self.plan, 'unknown')['status'], 'pending')
+            else:
+                with self.assertRaises(ValueError):
+                    h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        bad = copy.deepcopy(stage)
+        next(r['params']['run'] for r in bad['rows'] if r['method'] == 'hook/completed'
+             and r['params']['run']['eventName'] == 'postToolUse')['status'] = 'completed'
+        with self.assertRaises(ValueError):
+            h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        refused = copy.deepcopy(stage)
+        refused['rows'] = [r for r in refused['rows']
+                           if r.get('params', {}).get('run', {}).get('eventName') != 'postToolUse']
+        next(r['params']['run'] for r in refused['rows'] if r['method'] == 'hook/completed'
+             and r['params']['run']['eventName'] == 'preToolUse')['status'] = 'blocked'
+        terminal = next(r['params']['item'] for r in refused['rows'] if r['method'] == 'item/completed')
+        terminal.update(status='failed', exitCode=None)
+        self.assertEqual(h.rejection_observation(refused, self.inventory, self.plan, 'unknown'),
+                         {'status': 'pending', 'branch': 'pre_blocked',
+                          'cli': 'not_observed', 'posttool': 'not_observed'})
+        missing = copy.deepcopy(refused)
+        missing['rows'] = [r for r in missing['rows'] if r['method'] not in ('item/started', 'item/completed')]
+        self.assertEqual(h.rejection_observation(missing, self.inventory, self.plan, 'unknown')['status'], 'pending')
+
+    def test_inventory_foreign_source_boolean_and_prompt_relabel_rejected(self):
+        capture = self.ready()
+        self.stage('status', query_options=['--commands'])
+        for field, value in (('sourcePath', str(self.root / 'foreign-hooks.json')),
+                             ('displayOrder', True), ('enabled', 1), ('currentHash', None)):
+            bad = copy.deepcopy(capture)
+            bad['inventory']['stop'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.map_capture(bad)
+        bad = copy.deepcopy(capture)
+        bad['stages']['status']['prompt_sha256'] = 'wrong'
+        with self.assertRaises(ValueError):
+            h.map_capture(bad)
+        bad = copy.deepcopy(capture['stages']['status'])
+        next(r['params']['run'] for r in bad['rows'] if r['method'] == 'hook/started')['displayOrder'] = True
+        with self.assertRaises(ValueError):
+            h.command_observation(bad, self.inventory, self.plan)
+
+    def test_pending_capture_export_redaction_and_exclusive_storage(self):
+        capture = self.ready()
+        private = self.root / 'capture'
+        private.mkdir()
+        h.write_new(private / 'capture.json', capture)
+        h.write_new(private / 'artifacts.json', {'capture.json': base.sha(private / 'capture.json')})
+        output = private / 'result.json'
+        result = h.map_bundle(private, output)
+        self.assertEqual(result['status'], 'pending')
+        raw = output.read_text()
+        for forbidden in ('p0token', str(self.root), 'snapshot-', 'query_stdout', 'prompts'):
+            self.assertNotIn(forbidden, raw)
+        with self.assertRaises(ValueError):
+            h.map_bundle(private, output)
+        self.assertEqual(output.read_text(), raw)
+        with self.assertRaises(FileExistsError):
+            h.write_new(output, {})
+        self.assertEqual(output.read_text(), raw)
+        (private / 'capture.json').write_text('{}')
+        with self.assertRaises(ValueError):
+            h.map_bundle(private, private / 'retry-result.json')
+        self.assertTrue(output.is_file())
+
+    def stop_fixture(self):
+        from tests import test_stop_host_acceptance as stop_tests
+        fixture = stop_tests.HostOracleTests()
+        root = self.root / 'stop'
+        for name in ('first', 'cold'):
+            (root / name).mkdir(parents=True)
+        inventory = self.inventory
+        def event_rows(turn, statuses=('completed',)):
+            rows = self.hook('stop', turn, statuses)
+            for r in rows:
+                r['params']['threadId'] = 't'
+            rows.append({'method': 'turn/completed', 'params': {
+                'threadId': 't', 'turn': {'id': turn, 'status': 'completed'}}})
+            return rows
+        first = [{'direction': 'response', 'message': {'result': {'data': [{'hooks': list(inventory.values())}]}}}]
+        first += [{'direction': 'response', 'message': row} for u in ('one', 'two', 'three')
+                  for row in event_rows(u)]
+        first.append({'direction': 'request', 'message': {'method': 'thread/compact/start'}})
+        compact = fixture.compact_rows()
+        for row in compact:
+            if row['method'] in ('hook/started', 'hook/completed'):
+                row['params']['run'].update(inventory['preCompact'])
+        first += [{'direction': 'response', 'message': row} for row in compact]
+        first.append({'direction': 'response', 'message': {'method': 'turn/completed', 'params': {
+            'threadId': 't', 'turn': {'id': 'u', 'status': 'completed'}}}})
+        cold = [{'direction': 'response', 'message': {'method': 'hook/completed', 'params': {
+            'threadId': 't', 'run': {'eventName': 'sessionStart', 'status': 'completed'}}}}]
+        cold += [{'direction': 'response', 'message': row} for row in event_rows('four')]
+        cold += [{'direction': 'response', 'message': row} for row in event_rows('five', ('blocked', 'completed'))]
+        for name, rows in (('first', first), ('cold', cold)):
+            (root / name / 'rpc.jsonl').write_text('\n'.join(json.dumps(r) for r in rows) + '\n')
+        before = self.state()
+        self.dispatch('PreCompact')
+        self.dispatch('SessionStart', source='resume')
+        self.prompt('继续保留待办。')
+        after = self.state()
+        self.prompt(base.WAIT)
+        self.dispatch('Stop', last_assistant_message='当前任务已完成。')
+        negative = self.state()
+        for name, state in (('before-compact', before), ('after-resume', after), ('negative-state', negative)):
+            h.write_new(root / (name + '.json'), state)
+        cleanup = {'owned_process_exited': True, 'owned_tree_no_running_members': True,
+                   'process_group_cleanup_error': None}
+        receipt = {'schema': 'stop-host-acceptance/v1', 'status': 'passed', 'source': self.plan['source'],
+                   'runtime_sha256': self.plan['runtime_sha256'], 'cli_sha256': self.plan['cli_sha256'],
+                   'cleanups': [cleanup, cleanup]}
+        h.write_new(root / 'result.json', receipt)
+        self.capture.update(stop_result=receipt, stop_directory=str(root), cleanups=[cleanup] * 3)
+        return root
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'full synthetic fixture uses POSIX denial; not native acceptance')
+    def test_full_synthetic_capture_mapping_export_and_inverted_controls(self):
+        capture = self.ready()
+        for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
+            self.stage(name)
+        status = self.stage('status', query_options=['--commands'])
+        item = h.command_observation(status, self.inventory, self.plan)
+        fixture = self.root / 'readonly-full'
+        fixture.mkdir()
+        request = h.make_fixture(self.plan, status, item, fixture)
+        try:
+            record = child.witness(request)
+            self.stage('unknown', query_options=['--unknown-status-option'])
+            self.stage('missing', query_options=['--item', '--commands'])
+            stage = copy.deepcopy(capture['stages']['status'])
+            argv = [self.plan['python'], str(h.ROOT / 'tools/validation/incident_readonly_child.py'),
+                    '--request', str(self.root / 'request.json')]
+            for row in stage['rows']:
+                if row['method'] in ('item/started', 'item/completed'):
+                    row['params']['item']['command'] = cg.shell_join(argv)
+                    if row['method'] == 'item/completed':
+                        row['params']['item']['aggregatedOutput'] = json.dumps(record)
+            capture['stages']['readonly'] = stage
+            capture['readonly_request'] = request
+            capture['readonly_tool_argv'] = argv
+            stop = self.stop_fixture()
+            result = h.map_capture(capture)
+            self.assertEqual(result['status'], 'passed')
+            h.validate_result(result)
+            bad_scope = copy.deepcopy(result)
+            bad_scope['native_acceptance'] = 'passed'
+            with self.assertRaises(ValueError):
+                h.validate_result(bad_scope)
+            self.assertEqual(set(result['gates'].values()), {'passed'})
+            self.assertEqual(result['native_acceptance'], 'not_run')
+            self.assertNotIn('p0token', json.dumps(result))
+            h.write_new(self.root / 'capture.json', capture)
+            catalog = {p.relative_to(self.root).as_posix(): base.sha(p)
+                       for p in self.root.rglob('*') if p.is_file()}
+            h.write_new(self.root / 'artifacts.json', catalog)
+            exported = h.map_bundle(self.root, self.root / 'result.json')
+            self.assertEqual(exported['status'], 'passed')
+            self.assertEqual(exported['native_acceptance'], 'not_run')
+            original_export = (self.root / 'result.json').read_bytes()
+            with self.assertRaises(ValueError):
+                h.map_bundle(self.root, self.root / 'result.json')
+            self.assertEqual((self.root / 'result.json').read_bytes(), original_export)
+            bad = copy.deepcopy(capture)
+            bad['cleanups'][0]['owned_tree_no_running_members'] = False
+            with self.assertRaises(ValueError):
+                h.map_capture(bad)
+            (stop / 'after-resume.json').write_text(json.dumps({'mode': {'active': True}, 'requirements': []}))
+            with self.assertRaises((ValueError, h.cg.StateIntegrityError)):
+                h.map_capture(capture)
+        finally:
+            child.restore(fixture, request['restriction'])
+
+    def test_official_approval_is_pending_no_response(self):
+        client = object.__new__(h.Client)
+        with mock.patch.object(base.Client, 'receive', side_effect=ValueError('unexpected server request')):
+            with self.assertRaises(h.ObservationPending):
+                client.receive(0)
+
+    def test_collect_retains_failed_capture_and_cleanup(self):
+        self.ready()
+        output = self.root / 'failed-output'
+        cleanup = {'owned_process_exited': True, 'owned_tree_no_running_members': True,
+                   'process_group_cleanup_error': None}
+        fake = mock.Mock(inventory=self.inventory)
+        fake.start.side_effect = h.ObservationPending('official request retained')
+        fake.close.return_value = cleanup
+        with mock.patch.object(h, 'Client', return_value=fake):
+            capture = h.collect(self.plan, output)
+        self.assertEqual(capture['pending_class'], 'ObservationPending')
+        self.assertEqual(capture['cleanups'], [cleanup])
+        self.assertTrue((output / 'capture.json').is_file())
+        self.assertTrue((output / 'failure.json').is_file())
+        self.assertEqual(h.map_capture(capture)['status'], 'pending')
+        with self.assertRaises(FileExistsError):
+            h.collect(self.plan, output)
+
+    def test_windows_acl_adapter_and_principal_drift(self):
+        sid = 'S-1-5-21-123'
+        argv = child.acl_argv(Path('X:/owned-fixture'), sid)
+        self.assertIn('*' + sid + ':(OI)(CI)(W,D)', argv[0])
+        self.assertNotIn('/C', argv[0])
+        self.assertEqual(child.acl_argv(Path('X:/owned-fixture'), sid, restore=True)[0][2], '/remove:d')
+        with self.assertRaises(ValueError):
+            child.acl_argv(Path('/tmp/a'), 'user;command')
+        request = {'inventory': {}, 'restriction': {'sid': sid}, 'turn': 'u', 'state_revision': 'rev'}
+        request['request_sha256'] = h.plan_identity(request)
+        record = {'schema': child.SCHEMA, 'request_sha256': request['request_sha256'], 'platform': 'Windows',
+                  'pid': 4, 'ppid': 3, 'sid': sid, 'cli_exit_code': 0,
+                  'write_attempts': [{'errno': 13}, {'errno': 13}],
+                  'before': {}, 'after': {}, 'query_stdout': '{"advanced_commands":{},"turn_id":"u","revision":"rev"}'}
+        self.assertEqual(child.judge(record, request), 'passed')
+        record['sid'] = 'S-1-5-21-999'
+        with self.assertRaises(ValueError):
+            child.judge(record, request)
+
+
+class PlanPinTests(unittest.TestCase):
+    def test_cli_version_explicit_0160_and_old_default_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cli = root / 'codex'
+            cli.write_text('cli')
+            home = root / 'home'
+            plugin = home / 'plugin'
+            data = home / 'data'
+            for p in (plugin, data):
+                p.mkdir(parents=True)
+            plan = {'schema': 'stop-host-plan/v1', 'repo': str(base.ROOT), 'codex': str(cli),
+                    'home': str(home), 'cwd': str(root), 'plugin_root': str(plugin),
+                    'data_root': str(data), 'cli_sha256': base.sha(cli), 'source': {},
+                    'runtime_sha256': 'digest', 'cli_version': 'codex-cli 0.160.0'}
+            path = root / 'plan.json'
+            h.write_new(path, plan)
+            with mock.patch.object(base.subprocess, 'check_output', return_value='codex-cli 0.160.0\n'), \
+                    mock.patch.object(base, 'prepared_source_identity', return_value={}), \
+                    mock.patch.object(base, 'runtime', return_value='digest'):
+                self.assertEqual(base.preflight(path, root / 'output'), plan)
+                del plan['cli_version']
+                path.write_text(json.dumps(plan))
+                with self.assertRaisesRegex(ValueError, 'version differs'):
+                    base.preflight(path, root / 'output')
+
+    def test_actual_preflight_argv_zero_models_and_retained_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / 'home'
+            plugin = home / 'plugin'
+            data = home / 'data'
+            cwd = root / 'workspace'
+            for p in (plugin, data, cwd):
+                p.mkdir(parents=True)
+            cli = root / 'fake-cli'
+            cli.write_text('synthetic CLI bytes')
+            cli.chmod(0o700)
+            plan = {'schema': 'incident-host-plan/v1', 'repo': str(h.ROOT), 'codex': str(cli),
+                    'output': str(root / 'output'),
+                    'python': str(Path(sys.executable).resolve()), 'home': str(home), 'cwd': str(cwd),
+                    'plugin_root': str(plugin), 'data_root': str(data), 'source': {'dirty_paths': [], 'renamed_away': []},
+                    'runtime_sha256': 'digest', 'cli_version': 'codex-cli 0.160.0', 'cli_sha256': base.sha(cli),
+                    'python_sha256': base.sha(Path(sys.executable).resolve()),
+                    'python_version': subprocess.check_output([sys.executable, '--version'], text=True).strip(),
+                    'platform': platform.system(), 'model': 'gpt-6.1-sol', 'effort': 'medium', 'toolkit': h.toolkit(),
+                    'manifest_sha256': base.sha(h.MANIFEST)}
+            path = root / 'plan.json'
+            h.write_new(path, plan)
+            real_check_output = subprocess.check_output
+            def version_probe(argv, **kwargs):
+                return 'codex-cli 0.160.0\n' if argv[0] == str(cli) else real_check_output(argv, **kwargs)
+            with mock.patch.object(base, 'prepared_source_identity', return_value=plan['source']), \
+                    mock.patch.object(base, 'runtime', return_value='digest'), \
+                    mock.patch.object(base.subprocess, 'check_output', side_effect=version_probe):
+                self.assertEqual(h.preflight(path, root / 'output'), plan)
+                self.assertEqual(h.preflight(path, root / 'output'), plan)
+                self.assertTrue((root / 'output.preflight-plan.json').is_file())
+                (root / 'output').mkdir()
+                with self.assertRaises(ValueError):
+                    h.preflight(path, root / 'output')
+            cli.write_text('drift')
+            with self.assertRaises(ValueError):
+                h.preflight(path, root / 'different-output')
+
+    def test_base_compaction_receipt_missing_raw_journal_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                h.verify_stop_capture(Path(tmp), {}, {'status': 'passed'})
+
+
+if __name__ == '__main__':
+    unittest.main()

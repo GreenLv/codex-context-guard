@@ -15,6 +15,7 @@ import stat
 import sys
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -24,7 +25,7 @@ from tests.test_cg122_p0_counterexamples import P0Harness, cg
 def tree_inventory(root: Path) -> dict[str, list]:
     result: dict[str, list] = {}
     for path in sorted(root.rglob("*")):
-        rel = str(path.relative_to(root))
+        rel = path.relative_to(root).as_posix()
         info = path.lstat()
         result[rel] = [
             stat.S_ISLNK(info.st_mode),
@@ -313,26 +314,29 @@ class ReadOnlySnapshotTests(P0Harness):
         original = state_path.read_bytes()
         payload = json.loads(original)
         turn = payload["completion_attempt"]["turn_id"]
-        real_open = os.open
+        real_fdopen = os.fdopen
         replacements = {"count": 0}
 
-        def replace_then_open(path: object, flags: int, *rest: object,
-                              **keywords: object) -> int:
-            descriptor = real_open(path, flags, *rest, **keywords)
-            if (os.fsdecode(path) == str(state_path)
-                    and replacements["count"] < 8):
+        @contextmanager
+        def read_then_replace(descriptor: int, *args: object,
+                              **keywords: object):
+            # Windows denies atomic replacement while this fd is open. Perform
+            # the real replacement after close and before the reader's final
+            # path identity check; both platforms must retry that same race.
+            with real_fdopen(descriptor, *args, **keywords) as handle:
+                yield handle
+            if replacements["count"] < cg.READ_ONLY_STATE_READ_ATTEMPTS:
                 replacements["count"] += 1
                 payload["wait_condition_sequence"] = 100 + replacements["count"]
                 cg.atomic_write_json(state_path, payload)
-            return descriptor
 
         try:
-            with mock.patch.object(cg.os, "open", side_effect=replace_then_open):
+            with mock.patch.object(cg.os, "fdopen", side_effect=read_then_replace):
                 with self.assertRaisesRegex(
                     RuntimeError, "state_changed_during_read"
                 ):
                     self.query(turn=turn)
-            self.assertLessEqual(replacements["count"], 8)
+            self.assertEqual(replacements["count"], cg.READ_ONLY_STATE_READ_ATTEMPTS)
         finally:
             state_path.write_bytes(original)
 
@@ -367,10 +371,13 @@ class ReadOnlySnapshotTests(P0Harness):
 
     # -- F3: read-only queries verify their still-authoritative sources ---
     def typed_fixture(self):
-        target = self.root / "example.py"
+        target = self.project / "example.py"
         target.write_text("before\n", encoding="utf-8")
         self.activate()
-        self.prompt(f"请修改 {target}，并运行 {target} 的测试。")
+        # Source-validation fixture needs a typed control, not absolute-path
+        # decomposition. Use one concrete test action relative to the actual
+        # dispatch cwd on both platforms; the source/companion oracle is unchanged.
+        self.prompt("请运行 example.py 的测试。")
         self.prompt("持续执行直到当前任务完成。")
         state = self.state()
         self.assertTrue([row for row in state.get("root_controls", [])
@@ -390,14 +397,14 @@ class ReadOnlySnapshotTests(P0Harness):
         before = set(tree_inventory(self.root / "private"))
         mutations = {
             "missing-control-source": (lambda: source.unlink(),
-                                       str(source.relative_to(self.root / "private"))),
+                                       source.relative_to(self.root / "private").as_posix()),
             "changed-control-source": (
                 lambda: source.write_text(
                     json.dumps({**json.loads(original),
                                 "text": "另一个合成指令。"}), encoding="utf-8"),
-                str(source.relative_to(self.root / "private"))),
+                source.relative_to(self.root / "private").as_posix()),
             "missing-unit-companion": (lambda: companion.unlink(),
-                                       str(companion.relative_to(self.root / "private"))),
+                                       companion.relative_to(self.root / "private").as_posix()),
         }
         try:
             for label, (mutate, mutated_path) in mutations.items():
@@ -648,13 +655,17 @@ class ReadOnlySnapshotTests(P0Harness):
                         try:
                             h.activate()
                             if typed:
-                                target = h.root / "example.py"
+                                target = h.project / "example.py"
                                 target.write_text("before\n", encoding="utf-8")
-                                h.prompt(f"请修改 {target}，并运行 {target} 的测试。")
+                                h.prompt("请运行 example.py 的测试。")
                                 h.prompt("持续执行直到当前任务完成。")
                             else:
                                 h.prompt("请检查示例文档。")
                             before = h.state()
+                            if typed:
+                                self.assertTrue([row for row in before["root_controls"]
+                                                 if "kind" in row],
+                                                "typed matrix row must have a real control")
                             turn = before["completion_attempt"]["turn_id"]
                             kw = dict(options)
                             if mode == "after_revision":

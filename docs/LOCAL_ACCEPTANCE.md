@@ -17,6 +17,12 @@ probe only proves the former write-lock dependency. Native macOS and Windows
 incident scenarios, real Hook trust, exact-commit CI/HOL and publication are
 pending and remain required gates for this version.
 
+The repository-owned [two-incident host supplement](INCIDENT_HOST_ACCEPTANCE.md)
+pins CLI 0.160.0 and provides concrete plan generation, private capture/replay,
+and POSIX/Windows child adapters. Its zero-model mapper tests do not establish
+real model/Hook execution or native Windows ACL operation. The copied-session
+read-only witness and the direct live-HOME diagnostic are distinct gates.
+
 ## 0.15.0 — 2026-10-02
 
 Evidence below concerns runtime-tree SHA-256 `8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5`. Source tests, installed files, live Hooks and public availability remain separate facts. The comparison baseline is the 0.14.3 runtime at source commit `d24899d8202a58d7426208541c58d193464e93de`, with the same runtime bytes as published tag `v0.14.3` at `13a5cf766bc42e7267d735c5a665f27cd5f9c97a`.
