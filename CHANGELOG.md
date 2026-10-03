@@ -9,8 +9,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 ### Highlights
 
 - An explicit polite or mid-sentence resume releases a source-verified ordinary pause while preserving unfinished work.
-- The documented `checkpoint-status` diagnostic options (`--commands`, `--full`, `--item VALUE`, `--after-revision VALUE`) are recognized by PostToolUse under the same explicit contract the CLI enforces. A legal status query is no longer reported as a malformed private control command, and a failing diagnostic tool result stays a silent Hook event that never becomes business evidence.
-- The `checkpoint-status` read path no longer takes the private write lock. The diagnostic snapshot loads one committed state revision with zero write side effects, so it works in read-restricted environments where opening the lock file with write intent was denied.
+- The documented `checkpoint-status` diagnostic options (`--commands`, `--full`, `--item VALUE`, `--after-revision VALUE`) are recognized by PostToolUse under the same explicit contract the CLI enforces. A legal status query is no longer reported as a malformed private control command, and a nonzero exit from a legal diagnostic command stays a silent Hook event that never becomes business evidence.
+- The `checkpoint-status` read path no longer takes the private write lock. The diagnostic snapshot loads one committed state revision with zero write side effects, so it works where reads are allowed but opening the lock file for writing is denied.
 
 ### Changes
 

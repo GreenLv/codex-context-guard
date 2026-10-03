@@ -9,8 +9,8 @@
 ### Highlights
 
 - 明确的礼貌或句中续行指令可解除来源已核验的普通暂停，并保留未完成工作。
-- CLI 已支持的 `checkpoint-status` 诊断选项（`--commands`、`--full`、`--item VALUE`、`--after-revision VALUE`）现在也由 PostToolUse 按同一显式契约识别。合法状态查询不再被判为畸形私有控制命令；失败的诊断工具结果仍是静默 Hook 事件，永远不会成为业务证据。
-- `checkpoint-status` 读路径不再获取私有写锁。诊断快照以零写入方式加载一个已提交的状态修订，在曾经因写意图打开锁文件被拒的只读受限环境中恢复可用。
+- CLI 已支持的 `checkpoint-status` 诊断选项（`--commands`、`--full`、`--item VALUE`、`--after-revision VALUE`）现在也由 PostToolUse 按同一显式契约识别。合法状态查询不再被判为畸形私有控制命令；合法诊断命令的非零退出仍是静默 Hook 事件，永远不会成为业务证据。
+- `checkpoint-status` 读路径不再获取私有写锁。诊断快照以零写入方式加载一个已提交的状态修订，在允许读取、但以写意图打开锁文件被拒的环境中恢复可用。
 
 ### Changes
 
