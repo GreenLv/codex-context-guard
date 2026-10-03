@@ -13,6 +13,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -255,8 +256,83 @@ def rejection_observation(stage, inventory, plan, kind):
     return {'status': 'passed', 'branch': 'cli2_post_blocked', 'cli': 'observed', 'posttool': 'blocked'}
 
 
+def literal_shell_body(body, *, windows):
+    """Reject expansion/operators while retaining quoted literal path bytes."""
+    # CLI command display redacts this value; it is not an executable token.
+    # Mask only the exact standalone token-option sentinel for syntax checking;
+    # return/validate the original observed argv without reconstructing secrets.
+    body = re.sub(r'(?<!\S)--token=\[REDACTED_SECRET\](?=\s|$)',
+                  '--token=REDACTED_SECRET', body)
+    quote = None
+    escaped = False
+    for char in body:
+        if char in '\r\n':
+            return False
+        if escaped:
+            escaped = False
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            continue
+        if not windows and char == '\\':
+            escaped = True
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+            elif char in '$`':
+                return False
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in '$`<>;&|()*?[]{}#':
+            return False
+    return quote is None and not escaped
+
+
+def ordinary_command_argv(command, *, windows):
+    """Parse a direct invocation or one exact host shell wrapper, never execute it.
+
+    POSIX startup wrappers and the existing Windows host-terminal PowerShell
+    fixture are supported. cmd, extra shell options and nested wrappers are not.
+    Expansion/redirection syntax stays unsupported even inside a wrapper.
+    """
+    if not isinstance(command, str) or cg.shell_control_operator_present(command):
+        # A direct Windows call operator is handled by the existing parser.
+        if windows and isinstance(command, str) and command.lstrip().startswith('& '):
+            return cg.private_control_command_tokens(command, windows=True)
+        return None
+    try:
+        outer = shlex.split(command, posix=not windows)
+    except ValueError:
+        return None
+    if windows:
+        outer = [t[1:-1] if len(t) >= 2 and t[0] == t[-1]
+                 and t[0] in {"'", '"'} else t for t in outer]
+    if not outer:
+        return None
+    shell = outer[0].replace('\\', '/').rsplit('/', 1)[-1].lower()
+    shell_names = {'zsh', 'bash', 'sh', 'pwsh', 'pwsh.exe', 'powershell',
+                   'powershell.exe', 'cmd', 'cmd.exe'}
+    if shell not in shell_names:
+        return cg.private_control_command_tokens(command, windows=windows)
+    if len(outer) != 3:
+        return None
+    if windows:
+        valid = outer[0].lower() in {'pwsh.exe', 'powershell.exe'} and outer[1] == '-Command'
+    else:
+        valid = outer[0] in {'/bin/zsh', '/bin/bash', '/bin/sh'} and outer[1] in {'-c', '-lc'}
+    if not valid or not literal_shell_body(outer[2], windows=windows):
+        return None
+    argv = cg.private_control_command_tokens(outer[2], windows=windows)
+    if not argv or argv[0].replace('\\', '/').rsplit('/', 1)[-1].lower() in shell_names:
+        return None
+    return argv
+
+
 def status_argv(item, stage, plan, *, legal=True):
-    argv = cg.private_control_command_tokens(item['command'], windows=plan['platform'] == 'Windows')
+    argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows')
     base.require(argv and len(argv) > 3 and argv[2] == 'checkpoint-status', 'direct status command required')
     base.require(Path(argv[0]).resolve() == Path(plan['python']).resolve()
                  and Path(argv[1]).resolve() == Path(plan['plugin_root']) / 'scripts/context_guard.py',
@@ -460,7 +536,7 @@ def map_capture(capture, *, mapper_identity=None):
             gates['status_negative_controls'] = 'passed'
     if 'readonly' in stages and capture.get('readonly_request'):
         item = command_observation(stages['readonly'], inventory, plan)
-        argv = cg.private_control_command_tokens(item['command'], windows=plan['platform'] == 'Windows')
+        argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows')
         base.require(argv == capture['readonly_tool_argv'] and len(argv) == 4
                      and Path(argv[0]).resolve() == Path(plan['python']).resolve()
                      and Path(argv[1]).resolve() == ROOT / 'tools/validation/incident_readonly_child.py'

@@ -171,6 +171,96 @@ class IncidentHostTests(P0Harness):
                     self.assertEqual(h.rejection_observation(
                         stage, self.inventory, self.plan, name)['branch'], 'cli2_post_blocked')
 
+    def wrap_command(self, stage, prefix='/bin/zsh -lc'):
+        stage = copy.deepcopy(stage)
+        for row in stage['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                item = row['params']['item']
+                item['command'] = prefix + ' ' + __import__('shlex').quote(item['command'])
+        return stage
+
+    def test_cli0160_single_shell_wrapper_status_and_negative_controls(self):
+        self.ready()
+        for name, options in (('status', ['--commands']),
+                              ('unknown', ['--unknown-status-option']),
+                              ('missing', ['--item', '--commands'])):
+            stage = self.command_sources(self.stage(name, query_options=options),
+                                         'unifiedExecStartup', 'unifiedExecStartup')
+            stage = self.wrap_command(stage)
+            with self.subTest(name=name):
+                if name == 'status':
+                    item = h.command_observation(stage, self.inventory, self.plan)
+                    argv = h.status_argv(item, stage, self.plan)
+                    self.assertEqual(argv[2], 'checkpoint-status')
+                else:
+                    self.assertEqual(h.rejection_observation(
+                        stage, self.inventory, self.plan, name)['branch'], 'cli2_post_blocked')
+
+    def test_cli0160_redacted_display_sentinel_is_not_a_reconstructed_secret(self):
+        self.ready()
+        stage = self.stage('status', query_options=['--commands'])
+        for row in stage['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                item = row['params']['item']
+                item['command'] = item['command'].replace('--token p0token',
+                                                         '--token=[REDACTED_SECRET]')
+        stage = self.wrap_command(stage)
+        item = h.command_observation(stage, self.inventory, self.plan)
+        self.assertIn('--token=[REDACTED_SECRET]', h.status_argv(item, stage, self.plan))
+        for wrong in ('[OTHER]', '[REDACTED_SECRET]*', '[REDACTED_SECRET]$(echo extra)'):
+            command = item['command'].replace('[REDACTED_SECRET]', wrong)
+            self.assertIsNone(h.ordinary_command_argv(command, windows=False))
+        self.assertIsNone(h.ordinary_command_argv(
+            '/bin/zsh -lc ' + __import__('shlex').quote(
+                '/literal/python /literal/script --data-dir=[REDACTED_SECRET]'), windows=False))
+
+    def test_cli0160_wrapper_parser_exact_platform_forms(self):
+        command = '"/literal path/python" "/literal path/script.py" --request "a [b]"'
+        expected = ['/literal path/python', '/literal path/script.py', '--request', 'a [b]']
+        for shell in ('/bin/zsh -lc', '/bin/bash -lc', '/bin/sh -c'):
+            with self.subTest(shell=shell):
+                self.assertEqual(h.ordinary_command_argv(
+                    shell + ' ' + __import__('shlex').quote(command), windows=False), expected)
+        # Existing host-terminal fixture defines exactly pwsh.exe -Command.
+        for shell in ('pwsh.exe', 'powershell.exe'):
+            self.assertEqual(h.ordinary_command_argv(
+                shell + " -Command '" + command + "'", windows=True), expected)
+        self.assertIsNone(h.ordinary_command_argv(
+            'cmd.exe /c "' + command + '"', windows=True))
+
+    def test_cli0160_wrapper_rejects_injection_nesting_extra_args_and_binding_drift(self):
+        self.ready()
+        original = self.stage('status', query_options=['--commands'])
+        command = next(row['params']['item']['command'] for row in original['rows']
+                       if row['method'] == 'item/completed')
+        quote = __import__('shlex').quote
+        hostile = [command + tail for tail in ('; echo extra', ' && echo extra',
+                   ' | cat', ' > output', '\ntrue', ' $(echo extra)', ' `echo extra`')]
+        hostile += [quote('/bin/zsh') + ' -lc ' + quote(command),
+                    command.replace('--commands', '--data-dir /other --commands')]
+        for body in hostile:
+            bad = self.wrap_command(original)
+            for row in bad['rows']:
+                if row['method'] in ('item/started', 'item/completed'):
+                    row['params']['item']['command'] = '/bin/zsh -lc ' + quote(body)
+            with self.subTest(body=body), self.assertRaises(ValueError):
+                h.status_argv(h.command_observation(bad, self.inventory, self.plan), bad, self.plan)
+        for outer in ('/bin/zsh -lc ' + quote(command) + ' extra',
+                      '/bin/zsh -ilc ' + quote(command),
+                      '/other/zsh -lc ' + quote(command),
+                      '/bin/zsh -lc ' + quote(command) + '; true'):
+            self.assertIsNone(h.ordinary_command_argv(outer, windows=False))
+        for old, new in ((self.plan['python'], '/other/python'),
+                         (str(h.ROOT / 'scripts/context_guard.py'), '/other/script.py'),
+                         ('--session-id p0', '--session-id other'),
+                         ('--turn-id ', '--turn-id other-')):
+            bad = self.wrap_command(original)
+            for row in bad['rows']:
+                if row['method'] in ('item/started', 'item/completed'):
+                    row['params']['item']['command'] = '/bin/zsh -lc ' + quote(command.replace(old, new))
+            with self.subTest(binding=old), self.assertRaises(ValueError):
+                h.status_argv(h.command_observation(bad, self.inventory, self.plan), bad, self.plan)
+
     def test_cli0160_source_pair_matrix_rejects_manual_followup_and_mismatch(self):
         self.ready()
         original = self.stage('status', query_options=['--commands'])
@@ -387,6 +477,10 @@ class IncidentHostTests(P0Harness):
             result = h.map_capture(capture)
             self.assertEqual(result['status'], 'passed')
             h.validate_result(result)
+            wrapped = copy.deepcopy(capture)
+            for name, original_stage in wrapped['stages'].items():
+                wrapped['stages'][name] = self.wrap_command(original_stage)
+            self.assertEqual(h.map_capture(wrapped)['status'], 'passed')
             bad_scope = copy.deepcopy(result)
             bad_scope['native_acceptance'] = 'passed'
             with self.assertRaises(ValueError):
