@@ -1,3 +1,30 @@
+## 0.15.1 Windows diagnostic sharing repair — source candidate
+
+The prior `32be98ee` runtime remains an immutable candidate with its own
+receipts. A native Windows mechanism probe on Python 3.14.6 and 3.12.10
+confirmed that the ordinary diagnostic reader handle prevented normal
+kernel-lock-owned atomic state publication; closing that reader restored
+publication. The R05 fixture previously failed to propagate its worker error
+and therefore reported success despite a failed publication.
+
+The new candidate keeps the writer unchanged. Its Windows committed-state
+reader requests read access and read/write/delete sharing, opens existing
+objects without reparse traversal, rejects reparse attributes, and transfers
+native-handle ownership exactly once to a binary noninheritable descriptor.
+Existing regular/single-link, fd/path identity, size/hash/schema, final
+projection and two-pass authority checks remain in force. Conversion failures
+close the owned handle; no permission changes, diagnostic write lock or
+fallback to the old reader are introduced. R05 now propagates worker errors
+and requires all 24 publications.
+
+Portable ABI/ownership/error tests and local source results do not prove the
+Windows sharing behavior. The real Windows old-handle negative control and
+new-reader locked-publication positive control remain required for the exact
+new runtime. Prior installed/native evidence cannot certify these changed
+bytes; fresh isolated installation, native gates and exact CI/HOL remain
+pending until separately recorded. No model or authentication operation is
+part of the source repair.
+
 # Local Release Acceptance
 
 ## 0.15.1 candidate status (unreleased)

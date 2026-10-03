@@ -17532,6 +17532,63 @@ class _ReadOnlyCommittedState(dict):
         self.committed_identity = identity
 
 
+def _open_windows_committed_state(path: Path) -> int:
+    """Read access only; allow an atomic publisher to replace this inode.
+
+    Ownership stays here until open_osfhandle succeeds, then belongs to the
+    CRT descriptor. Reparse objects are opened themselves and rejected before
+    conversion; no following, write access, permission change or fallback.
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    info = kernel.GetFileInformationByHandleEx
+    info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                     wintypes.DWORD]
+    info.restype = wintypes.BOOL
+
+    class AttributeTag(ctypes.Structure):
+        _fields_ = [("attributes", ctypes.c_uint32), ("tag", ctypes.c_uint32)]
+
+    # GENERIC_READ; FILE_SHARE_READ|WRITE|DELETE; OPEN_EXISTING;
+    # FILE_FLAG_OPEN_REPARSE_POINT. Null security attributes are noninheritable.
+    handle = create(str(path), 0x80000000, 0x7, None, 3, 0x00200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    transferred = False
+    try:
+        attributes = AttributeTag()
+        if not info(handle, 9, ctypes.byref(attributes), ctypes.sizeof(attributes)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if attributes.attributes & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+            raise OSError("committed state is a reparse object")
+        descriptor = msvcrt.open_osfhandle(
+            handle, os.O_RDONLY | os.O_BINARY)
+        if descriptor < 0:
+            raise OSError("committed state descriptor conversion failed")
+        transferred = True
+        return descriptor
+    finally:
+        if not transferred:
+            close(handle)
+
+
+def _open_committed_state(path: Path) -> int:
+    if os.name == "nt":
+        return _open_windows_committed_state(path)
+    return os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+
+
 def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
     """Load one committed v2 state revision with zero write side effects.
 
@@ -17558,13 +17615,17 @@ def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
             raise RuntimeError("state_file_unreadable") from None
         if not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1:
             raise RuntimeError("state_file_not_a_regular_file")
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
-            descriptor = os.open(str(state_path), flags)
+            descriptor = _open_committed_state(state_path)
         except OSError:
             raise RuntimeError("state_file_unreadable") from None
         try:
-            with os.fdopen(descriptor, "rb") as handle:
+            try:
+                opened = os.fdopen(descriptor, "rb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with opened as handle:
                 before = os.fstat(handle.fileno())
                 raw = handle.read(READ_ONLY_STATE_MAX_BYTES + 1)
                 after = os.fstat(handle.fileno())

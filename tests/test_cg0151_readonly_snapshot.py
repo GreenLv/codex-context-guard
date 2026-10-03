@@ -216,15 +216,20 @@ class ReadOnlySnapshotTests(P0Harness):
         self.ready()
         published: list[str] = [self.state()["content_hash"]]
         stop = threading.Event()
+        writer_errors: list[BaseException] = []
 
         def writer():
-            index = 0
-            while not stop.is_set() and index < 24:
-                state = self.state()
-                state["wait_condition_sequence"] = index + 1
-                self.save_state(state)
-                published.append(self.state()["content_hash"])
-                index += 1
+            try:
+                index = 0
+                while not stop.is_set() and index < 24:
+                    with cg.session_lock(self.session_dir):
+                        state = self.state()
+                        state["wait_condition_sequence"] = index + 1
+                        self.save_state(state)
+                        published.append(self.state()["content_hash"])
+                    index += 1
+            except BaseException as exc:
+                writer_errors.append(exc)
 
         thread = threading.Thread(target=writer)
         thread.start()
@@ -244,7 +249,11 @@ class ReadOnlySnapshotTests(P0Harness):
                 revisions.add(result["revision"])
             thread.join(timeout=10)
             stop.set()
-            self.assertFalse(thread.is_alive())
+            self.assertFalse(thread.is_alive(), "writer did not finish")
+            if writer_errors:
+                raise writer_errors[0]
+            self.assertEqual(len(published), 25,
+                             "writer must publish all 24 requested revisions")
             # Every racing query may legitimately report explicit stale: the
             # whole-query verifier now spans the final projection too. Once
             # publication is quiescent, a healthy snapshot must succeed.
@@ -256,6 +265,73 @@ class ReadOnlySnapshotTests(P0Harness):
         finally:
             stop.set()
             thread.join(timeout=10)
+
+    def test_r05_worker_exception_fails_publication_witness(self):
+        original = type(self).save_state
+
+        def deny_worker_write(instance, *args, **kwargs):
+            if threading.current_thread() is not threading.main_thread():
+                raise PermissionError("injected_writer_publication_denial")
+            return original(instance, *args, **kwargs)
+
+        result = unittest.TestResult()
+        with mock.patch.object(type(self), "save_state", deny_worker_write):
+            type(self)("test_r05_writer_publication_yields_whole_revisions").run(result)
+        self.assertFalse(result.wasSuccessful())
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("injected_writer_publication_denial", result.errors[0][1])
+
+    @unittest.skipUnless(sys.platform == "win32",
+                         "real Windows sharing witness; native gate remains required")
+    def test_r05_windows_reader_allows_locked_atomic_publication(self):
+        self.ready()
+        path = self.session_dir / "state.json"
+        before = path.read_bytes()
+        # Real negative control: the old CRT reader blocks the same writer.
+        with os.fdopen(os.open(str(path), os.O_RDONLY | os.O_BINARY), "rb"):
+            with cg.session_lock(self.session_dir):
+                state = self.state()
+                state["wait_condition_sequence"] = 90
+                with self.assertRaises(PermissionError) as failure:
+                    cg.save_state(self.session_dir, state)
+                self.assertIn(failure.exception.winerror, (5, 32))
+        self.assertEqual(path.read_bytes(), before)
+        # The real repaired descriptor holds the old inode while the writer
+        # publishes a different whole revision under the production lock.
+        with os.fdopen(cg._open_committed_state(path), "rb") as reader:
+            descriptor = reader.fileno()
+            self.assertFalse(os.get_inheritable(descriptor))
+            with self.assertRaises(OSError):
+                os.write(descriptor, b"unexpected write")
+            with cg.session_lock(self.session_dir):
+                state = self.state()
+                state["wait_condition_sequence"] = 91
+                cg.save_state(self.session_dir, state)
+            self.assertEqual(reader.read(), before)
+            after = path.read_bytes()
+            self.assertNotEqual(after, before)
+            cg.validate_state_integrity(json.loads(after))
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+        self.assertEqual(self.query()["revision"], self.state()["content_hash"])
+
+    def test_r05_descriptor_conversion_failure_closes_reader(self):
+        self.ready()
+        real_open = cg._open_committed_state
+        descriptors = []
+
+        def capture(path):
+            descriptor = real_open(path)
+            descriptors.append(descriptor)
+            return descriptor
+
+        with mock.patch.object(cg, "_open_committed_state", capture), \
+                mock.patch.object(cg.os, "fdopen", side_effect=OSError("fdopen failure")):
+            with self.assertRaisesRegex(RuntimeError, "state_file_unreadable"):
+                self.query()
+        self.assertEqual(len(descriptors), 1)
+        with self.assertRaises(OSError):
+            os.fstat(descriptors[0])
 
     # -- R06: replaced lock path and cleanup races stay read-only --------
     def test_r06_replaced_lock_path_neither_read_nor_repaired(self):
@@ -760,3 +836,61 @@ class ReadOnlySnapshotTests(P0Harness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WindowsCommittedReaderAdapterTests(unittest.TestCase):
+    def run_adapter(self, stage="success"):
+        import ctypes
+        import types
+
+        create = mock.Mock(return_value=123)
+        close = mock.Mock(return_value=True)
+
+        def attributes(handle, kind, target, size):
+            self.assertEqual((handle, kind, size), (123, 9, 8))
+            if stage == "attributes":
+                return False
+            target._obj.attributes = 0x400 if stage == "reparse" else 0
+            return True
+
+        info = mock.Mock(side_effect=attributes)
+        kernel = types.SimpleNamespace(CreateFileW=create, CloseHandle=close,
+                                       GetFileInformationByHandleEx=info)
+        convert = mock.Mock(return_value=42)
+        if stage == "open":
+            create.return_value = ctypes.c_void_p(-1).value
+        if stage == "convert":
+            convert.side_effect = OSError("conversion failed")
+        fake_crt = types.SimpleNamespace(open_osfhandle=convert)
+        with mock.patch.dict(sys.modules, {"msvcrt": fake_crt}), \
+                mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True), \
+                mock.patch.object(ctypes, "WinError", return_value=OSError("native failure"), create=True), \
+                mock.patch.object(ctypes, "get_last_error", return_value=5, create=True), \
+                mock.patch.object(cg.os, "O_BINARY", 0x8000, create=True):
+            if stage == "success":
+                self.assertEqual(cg._open_windows_committed_state(Path("state.json")), 42)
+            else:
+                with self.assertRaises(OSError):
+                    cg._open_windows_committed_state(Path("state.json"))
+        create.assert_called_once_with("state.json", 0x80000000, 7, None,
+                                       3, 0x00200000, None)
+        self.assertEqual(create.restype, ctypes.wintypes.HANDLE)
+        self.assertEqual(len(create.argtypes), 7)
+        if stage == "success":
+            convert.assert_called_once_with(123, 0x8000 | os.O_RDONLY)
+            close.assert_not_called()  # fd owns the native handle now
+        elif stage == "open":
+            close.assert_not_called()  # no valid handle was acquired
+            convert.assert_not_called()
+        else:
+            close.assert_called_once_with(123)
+            if stage in {"attributes", "reparse"}:
+                convert.assert_not_called()
+
+    def test_windows_read_only_flags_and_descriptor_ownership(self):
+        self.run_adapter()
+
+    def test_windows_failures_close_only_owned_handles_without_fallback(self):
+        for stage in ("open", "attributes", "reparse", "convert"):
+            with self.subTest(stage=stage):
+                self.run_adapter(stage)
