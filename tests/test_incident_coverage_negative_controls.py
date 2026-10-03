@@ -61,15 +61,20 @@ class IncompleteExceptionControls(unittest.TestCase):
         return verdicts, errors
 
     def test_reviewed_exception_is_excluded_incomplete(self):
-        # Keep the pending bucket synthetic as platform receipts converge.
+        # The pending bucket may carry real pending native-gate rows
+        # (CG-0151); the synthetic mutation must stay reflected and
+        # cleanly validated inside it.
         pending_windows_case(self.base)
         verdicts, errors = self._rows()
         self.assertEqual(errors, [])
         self.assertEqual(verdicts.get("excluded_incomplete"), 1)
-        self.assertEqual(verdicts.get("pending"), 1)
+        self.assertGreaterEqual(verdicts.get("pending"), 1)
         row = next(r for r in self.base["cases"]
                    if r["id"] == "CGI-20260913-codex-archive-045")
         self.assertEqual(row["final_verdict"], "excluded_incomplete")
+        synthetic = next(r for r in self.base["cases"]
+                         if r["id"] == "CGI-20260913-codex-archive-043")
+        self.assertEqual(synthetic["final_verdict"], "pending")
 
     def test_unknown_exception_reference_rejected(self):
         # A prose marker on a row WITHOUT its own exception entry must
