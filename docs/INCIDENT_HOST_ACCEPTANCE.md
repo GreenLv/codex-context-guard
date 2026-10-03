@@ -179,3 +179,100 @@ new observations are rejected. Restoration failure leaves cleanup pending.
 Synthetic captures stay `native_acceptance: not_run`; only actual native
 observations can close the missing native gates. Zero-model ACL mechanism tests
 and composition fixtures establish input readiness, not model acceptance.
+
+## Prepared v2 observation contracts
+
+The tools-only source candidate recognizes an explicit `incident-host-plan/v2`
+with `gate_profile: incident_host/v2` and both `observation_contracts` entries:
+`negative: powershell-host-rejection/v1` and
+`readonly_fixture: read-baseline-specific-write-deny/v3`. It does not infer
+adoption from Windows, a shell, or an old failed capture. The v1 exit-2 contract
+and all original failed results remain unchanged.
+
+The prepared host branch accepts observed host exit 1 only for one exact pinned
+PowerShell `-Command` wrapper, bound malformed argv and scope, silent Pre and
+paired blocked Post feedback. The complete usage/error envelope must match a
+prederived `negative_parser_reference` from harmless sentinel parsing under the
+pinned Python and runtime bytes. Replay independently derives that reference;
+only CRLF and usage wrapping whitespace vary. Noise, another parser/kind,
+launch failures, extra commands and arbitrary nonzero exits fail. The result
+reports `host_exit` and `source_exit: not_observed`; it never infers Python exit 2.
+In v2 the normalized malformed argv also has exactly one token bound to the
+copied current completion attempt. Only exact `[REDACTED_SECRET]` may use the
+unique same-thread/turn paired trusted UserPromptSubmit discovery command; its
+token hash must still match copied authority. Missing, duplicate, stale, foreign
+or model-prose discovery cannot supply replacement authority. Unredacted values
+are checked directly against the copied attempt. Old v1 retains its prior token
+input domain and old failures. Existing direct/POSIX exit-2 observations keep
+their original contract.
+
+The v2 plan generator requires all three explicit options:
+`--profile incident_host/v2`,
+`--negative-observation powershell-host-rejection/v1` and
+`--fixture-policy read-baseline-specific-write-deny/v3`.
+Use its emitted `run --preflight` command with the actual output before a native
+run. Preflight checks inputs and parser-reference bytes; it does not establish
+host readiness, trusted execution or native acceptance.
+
+Fixture v3 is one collector-owned transaction. Before any grant it durably saves
+all original descriptors, controls, object identities, inventory and the original
+restoration model. It rejects protected-tree overlap, reparse points, linked files,
+unsupported ACEs and ownership drift. Read grants add only bounded non-inheriting
+read/traverse rights to the actual pinned probe SID; other principals, deny ACEs
+and DACL controls must remain exact. It then applies the existing exact create
+and lock-write denial. Deny readback uses the verified object type: files require
+`0x10116` (`WD,AD,WEA,WA,DE`); directories require `0x10156` with `DC` added.
+It compares ordered ACEs without aggregating same-SID deny masks. Only one exact
+explicit deny insertion in the canonical deny block, or an exact mask update of
+one existing explicit deny, is permitted. Other ACEs keep their byte identity and
+relative order; same-SID explicit grants lose only the exact requested deny bits,
+as specified by icacls. Duplicate, split, reordered or generic-right deny ACEs,
+other-principal changes and control drift fail. Every exit attempts restoration to the pre-grant original,
+including partial grant, deny, readback and interruption failures. An unverified
+restoration remains a failure, with the original snapshot and receipts retained.
+
+The ordinary principal helper and three additional baseline turns run in the same
+normally trusted native probe thread as the final witness. The child observes
+its SID before fixture resolve/stat/list/read, retaining controlled errors instead
+of losing the actor on a read failure. The original baseline may pass or fail;
+after the grant and after the deny, all reads must pass for the same observed SID.
+Exact prompt, argv, cwd, thread, distinct turn, source helper bytes, paired Hooks,
+phase and copied-request subjects are replayed. A standalone command/exec actor
+cannot substitute for this native actor. The final witness must still observe
+query exit 0, both denied writes, unchanged bytes and verified original restoration.
+
+All new v2 request/phase digests use one shared sorted, compact UTF-8 JSON encoder
+with literal Unicode and no Unicode or line-ending normalization. Only the outer
+`request_sha256` is omitted from its hash. Unicode paths, nested values and local
+command receipts therefore share one input domain. The v2-to-v1 internal oracle
+adapter rebinds a private copy using the old encoder. It does not reinterpret old
+captures: v1 retains its historical ASCII-escaped child validation, whose existing
+literal-Unicode collector digest mismatch is outside this repair. Old v1 failed
+subjects remain failed and are never replayed under v2 implicitly.
+
+The v2 collector runs status, principal, three baselines, two malformed controls
+and the final readonly witness. It runs no new pause, typed-wait, Stop, compaction
+or cold scene. Its `required_gates` are Hook trust, status/PostTool, negative
+controls, readonly and owned cleanup. `scenario_status` reports only that set;
+the ten-gate `status` remains pending when omitted scenes are pending. A v2 standalone CLI exit 0 means only the required scenario set passed; its
+printed aggregate and native result remain pending for omitted gates. Supplement
+CLI exit 0 still requires the strict composed ten-gate pass. Partial
+observations never become a full pass. Synthetic results always report
+`native_acceptance: not_run`.
+
+`incident-host-supplement/v2` joins three explicitly pinned subjects: the original
+v1 partial batch's five passes; independently verified Stop/compaction components
+from the retained failed v1 whole; and the newly observed v2 negative/readonly/
+cleanup gates. Prepare additionally requires `--retained-dir` and its complete
+catalog, capture, plan and, when present, result SHA-256 pins. Replay checks both
+catalogs and the original Stop journals. It refuses duplicate scenes, changed
+execution inputs, foreign origins, changed pins and relabeling of the old failed
+whole. The composed result identifies each gate's subject and keeps the retained
+whole marked failed. Only all ten constituent gates passing yields a composed
+pass; this bounded mixed-subject result does not establish exact-source release
+acceptance.
+
+This is a tools-only source candidate. Zero-model tests use synthetic observations
+and mocked Windows ACL operations; they establish parser, codec, transaction and
+composition behavior only. Actual Windows grant/read/deny/query/write/restore,
+model execution, host readiness and required full candidate gates remain separate.

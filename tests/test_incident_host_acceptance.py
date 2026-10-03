@@ -971,6 +971,414 @@ class IncidentHostTests(P0Harness):
             child.judge(record, request)
 
 
+    def v2_host(self, kind='unknown'):
+        self.ready()
+        shell = self.root / 'bound-shell' / 'pwsh.exe'
+        shell.parent.mkdir(exist_ok=True)
+        shell.write_bytes(b'synthetic shell identity; never executed')
+        self.plan.update(schema='incident-host-plan/v2', gate_profile=h.PROFILE_V2,
+                         observation_contracts=dict(h.OBSERVATION_CONTRACTS), platform='Windows',
+                         python_sha256=base.sha(Path(self.plan['python'])),
+                         runtime_sha256=base.runtime(h.ROOT),
+                         shell={'name': 'powershell', 'path': str(shell), 'sha256': base.sha(shell)})
+        self.plan['negative_parser_reference'] = h.derive_parser_reference(self.plan)
+        stage = self.stage(kind, query_options=['--unknown-status-option'] if kind == 'unknown'
+                           else ['--item', '--commands'])
+        for row in stage['rows']:
+            item = row.get('params', {}).get('item')
+            if item and item.get('type') == 'commandExecution':
+                body = item['command'].replace("'", "''")
+                item['command'] = '"' + str(shell) + '" -Command ' + "'" + body + "'"
+                if row['method'] == 'item/completed':
+                    item['exitCode'] = 1
+            if row.get('method') == 'hook/completed' and row['params']['run']['eventName'] == 'postToolUse':
+                row['params']['run']['entries'] = [{'kind': 'feedback', 'text': 'Synthetic malformed refusal.'}]
+        return stage
+
+    def test_v2_explicit_host1_parser_signature_and_v1_failure(self):
+        for kind in ('unknown', 'missing'):
+            with self.subTest(kind=kind):
+                stage = self.v2_host(kind)
+                value = h.rejection_observation(stage, self.inventory, self.plan, kind)
+                self.assertEqual(value['branch'], 'powershell_host1_parser_post_blocked')
+                self.assertEqual(value['host_exit'], {'observed': True, 'value': 1})
+                self.assertEqual(value['source_exit'], 'not_observed')
+                self.assertEqual(value['parser_kind'], kind)
+                old = {k: v for k, v in self.plan.items() if k not in
+                       ('schema', 'gate_profile', 'observation_contracts', 'negative_parser_reference')}
+                with self.assertRaises(ValueError):
+                    h.rejection_observation(stage, self.inventory, old, kind)
+
+    def test_v2_parser_reference_requires_full_source_envelope(self):
+        stage = self.v2_host()
+        terminal = next(r['params']['item'] for r in stage['rows'] if r['method'] == 'item/completed')
+        output = terminal['aggregatedOutput']
+        for changed in (output + 'noise\n', 'noise\n' + output, output + output,
+                        output.replace('unrecognized arguments', 'wrong parser error'),
+                        output.replace('--unknown-status-option', '--different-option'),
+                        output.replace('usage:', 'Traceback usage:'),
+                        output.replace('context_guard.py', 'another.py'),
+                        'PowerShell launch failed\n' + output,
+                        output[:output.index('context_guard.py: error:')],
+                        'usage: context_guard.py fake-usage\n' + output.splitlines()[-1] + '\n'):
+            bad = copy.deepcopy(stage)
+            next(r['params']['item'] for r in bad['rows'] if r['method'] == 'item/completed')['aggregatedOutput'] = changed
+            with self.subTest(output=changed[:30]), self.assertRaises(ValueError):
+                h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        wrapped = copy.deepcopy(stage)
+        next(r['params']['item'] for r in wrapped['rows'] if r['method'] == 'item/completed')['aggregatedOutput'] = output.replace('\n', '\r\n')
+        self.assertEqual(h.rejection_observation(wrapped, self.inventory, self.plan, 'unknown')['status'], 'passed')
+        changed = copy.deepcopy(self.plan)
+        changed['negative_parser_reference']['cases']['unknown']['usage_tokens'].append('forged')
+        with self.assertRaises(ValueError):
+            h.rejection_observation(stage, self.inventory, changed, 'unknown')
+
+    def test_v2_host_exit_wrapper_hook_and_reference_negative_family(self):
+        stage = self.v2_host()
+        for field, value in [('exitCode', True), ('exitCode', '1'), ('exitCode', 0), ('exitCode', 7),
+                             ('source', 'userShell'), ('cwd', str(self.root / 'foreign'))]:
+            bad = copy.deepcopy(stage)
+            for row in bad['rows']:
+                if row.get('params', {}).get('item', {}).get('type') == 'commandExecution':
+                    row['params']['item'][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        for event, field, value in [('postToolUse', 'entries', []), ('postToolUse', 'status', 'completed'),
+                                    ('preToolUse', 'entries', [{'kind': 'feedback', 'text': 'noise'}])]:
+            bad = copy.deepcopy(stage)
+            for row in bad['rows']:
+                if row.get('method') == 'hook/completed' and row['params']['run']['eventName'] == event:
+                    row['params']['run'][field] = value
+            with self.subTest(event=event, field=field), self.assertRaises(ValueError):
+                h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        bad = copy.deepcopy(stage)
+        for row in bad['rows']:
+            if row.get('params', {}).get('item', {}).get('type') == 'commandExecution':
+                row['params']['item']['command'] = row['params']['item']['command'].replace('-Command', '-NoProfile -Command')
+        with self.assertRaises(ValueError):
+            h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        bad = copy.deepcopy(stage)
+        bad['rows'].insert(-1, copy.deepcopy(next(r for r in stage['rows'] if r['method'] == 'item/started')))
+        with self.assertRaises(ValueError):
+            h.rejection_observation(bad, self.inventory, self.plan, 'unknown')
+        changed = copy.deepcopy(self.plan)
+        changed['python_sha256'] = '0' * 64
+        with self.assertRaises(ValueError):
+            h.rejection_observation(stage, self.inventory, changed, 'unknown')
+
+    def test_v2_adoption_schema_and_missing_fixture_stays_pending(self):
+        self.v2_host()
+        for field, value in [('schema', 'incident-host-plan/v3'), ('gate_profile', h.PROFILE),
+                             ('platform', 'Darwin'), ('observation_contracts', {}),
+                             ('negative_parser_reference', {}), ('cli_version', 'codex-cli 0.159.0')]:
+            plan = dict(self.plan, **{field: value})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.profile_for_plan(plan)
+        plan_file = self.root / 'prepared-plan.json'
+        h.write_new(plan_file, dict(self.plan, output=str(self.root / 'declared-output')))
+        with self.assertRaises(ValueError):
+            h.preflight(plan_file, self.root / 'native-not-run')
+        self.assertFalse((self.root / 'native-not-run').exists())
+        capture = dict(self.capture, schema='incident-host-capture/v2', stages={},
+                       plan_sha256=h.plan_identity(self.plan))
+        result = h.map_capture(capture)
+        h.validate_result(result)
+        self.assertEqual(result['schema'], 'incident-host-acceptance/v2')
+        self.assertEqual(result['gates']['restricted_child_readonly'], 'pending')
+        self.assertEqual(result['native_acceptance'], 'not_run')
+        capture['readonly_request'] = {'schema': 'incident-readonly-request/v1'}
+        self.assertEqual(h.map_capture(capture)['gates']['restricted_child_readonly'], 'pending')
+
+    @staticmethod
+    def negative_token(stage, token, *, equals=True):
+        changed = copy.deepcopy(stage)
+        for row in changed['rows']:
+            item = row.get('params', {}).get('item')
+            if item and item.get('type') == 'commandExecution':
+                outer = h.windows_display_tokens(item['command'])
+                spelling = '--token=' + token if equals else "--token '" + token + "'"
+                body = outer[2].replace('--token p0token', spelling)
+                item['command'] = '"' + outer[0] + '" -Command ' + "'" + body.replace("'", "''") + "'"
+        return changed
+
+    def test_v2_negative_token_unredacted_and_exact_redacted_positive(self):
+        for kind in ('unknown', 'missing'):
+            stage = self.v2_host(kind)
+            with self.subTest(kind=kind, spelling='unredacted'):
+                self.assertEqual(h.rejection_observation(stage, self.inventory, self.plan, kind)['status'], 'passed')
+            for equals in (True, False):
+                redacted = self.negative_token(stage, '[REDACTED_SECRET]', equals=equals)
+                with self.subTest(kind=kind, equals=equals):
+                    self.assertEqual(h.rejection_observation(redacted, self.inventory, self.plan, kind)['status'], 'passed')
+                    item = next(r['params']['item'] for r in redacted['rows'] if r['method'] == 'item/completed')
+                    with self.assertRaises(ValueError):
+                        h.status_argv(item, redacted, self.plan, legal=False)
+
+    def test_v2_negative_foreign_stale_marker_missing_and_duplicate_token_reject(self):
+        for kind in ('unknown', 'missing'):
+            stage = self.v2_host(kind)
+            for token in ('foreign-token', 'stale-prior-turn-token', '[OTHER]', 'REDACTED_SECRET',
+                          '[REDACTED_SECRET]-suffix', ' [REDACTED_SECRET]', '[REDACTED_SECRET] '):
+                bad = self.negative_token(stage, token, equals=False)
+                with self.subTest(kind=kind, token=token), self.assertRaises((ValueError, RuntimeError)):
+                    h.rejection_observation(bad, self.inventory, self.plan, kind)
+            for addition in ('--token p0token --token p0token', ''):
+                bad = copy.deepcopy(stage)
+                for row in bad['rows']:
+                    item = row.get('params', {}).get('item')
+                    if item and item.get('type') == 'commandExecution':
+                        item['command'] = item['command'].replace('--token p0token', addition)
+                with self.subTest(kind=kind, token_shape=addition), self.assertRaises(ValueError):
+                    h.rejection_observation(bad, self.inventory, self.plan, kind)
+            old = {k: v for k, v in self.plan.items() if k not in
+                   ('schema', 'gate_profile', 'observation_contracts', 'negative_parser_reference')}
+            # v1's existing direct-exit2 branch retains its prior input domain.
+            bad = self.negative_token(stage, 'foreign-token')
+            for row in bad['rows']:
+                if row['method'] == 'item/completed':
+                    row['params']['item']['exitCode'] = 2
+            self.assertEqual(h.rejection_observation(bad, self.inventory, old, kind)['status'], 'passed')
+
+    def test_v2_redacted_negative_requires_unique_current_paired_trusted_context(self):
+        for kind in ('unknown', 'missing'):
+            stage = self.negative_token(self.v2_host(kind), '[REDACTED_SECRET]')
+            selected = next(r['params']['run'] for r in stage['rows']
+                            if r.get('method') == 'hook/completed' and r['params']['run']['eventName'] == 'userPromptSubmit')
+            context = selected['entries'][0]['text']
+            variants = [('missing', []), ('duplicate', selected['entries'] * 2),
+                        ('model_prose', [{'kind': 'message', 'text': context}]),
+                        ('foreign_context_token', [{'kind': 'context', 'text': context.replace('p0token', 'foreign-token')}]),
+                        ('stale_context_turn', [{'kind': 'context', 'text': context.replace('--turn-id ', '--turn-id prior-')}]),
+                        ('redacted_context', [{'kind': 'context', 'text': context.replace('p0token', '[REDACTED_SECRET]')}])]
+            for name, entries in variants:
+                bad = copy.deepcopy(stage)
+                next(r['params']['run'] for r in bad['rows'] if r.get('method') == 'hook/completed'
+                     and r['params']['run']['eventName'] == 'userPromptSubmit')['entries'] = entries
+                with self.subTest(kind=kind, name=name), self.assertRaises((ValueError, RuntimeError)):
+                    h.rejection_observation(bad, self.inventory, self.plan, kind)
+            for field, value in [('threadId', 'foreign-thread'), ('turnId', 'prior-turn')]:
+                bad = copy.deepcopy(stage)
+                for row in bad['rows']:
+                    if row.get('method') in ('hook/started', 'hook/completed') and row['params']['run']['eventName'] == 'userPromptSubmit':
+                        row['params'][field] = value
+                with self.subTest(kind=kind, field=field), self.assertRaises(ValueError):
+                    h.rejection_observation(bad, self.inventory, self.plan, kind)
+            bad = copy.deepcopy(stage)
+            bad['rows'] = [r for r in bad['rows'] if not (r.get('method') == 'hook/started'
+                           and r['params']['run']['eventName'] == 'userPromptSubmit')]
+            with self.subTest(kind=kind, name='unpaired'), self.assertRaises(ValueError):
+                h.rejection_observation(bad, self.inventory, self.plan, kind)
+            inventory = copy.deepcopy(self.inventory)
+            inventory['userPromptSubmit']['trustStatus'] = 'untrusted'
+            with self.subTest(kind=kind, name='untrusted'), self.assertRaises(ValueError):
+                h.rejection_observation(stage, inventory, self.plan, kind)
+            copied = copy.deepcopy(h.state_for(stage))
+            copied['completion_attempt']['turn_id'] = 'prior-turn'
+            with mock.patch.object(h, 'state_for', return_value=copied), self.assertRaises(RuntimeError):
+                h.rejection_observation(stage, self.inventory, self.plan, kind)
+
+    def test_v2_preflight_selects_manifest_and_retains_shared_input_checks(self):
+        self.v2_host()
+        self.plan.update(manifest_sha256=base.sha(h.MANIFEST_V2), model='synthetic-never-dispatched',
+                         effort='medium', python_version=subprocess.check_output([self.plan['python'], '--version'], text=True).strip(),
+                         output=str(self.root / 'native-output'))
+        plan_file = self.root / 'v2-preflight.json'
+        h.write_new(plan_file, self.plan)
+        with mock.patch.object(h.platform, 'system', return_value='Windows'), \
+             mock.patch.object(h, '_shared_preflight', return_value=self.plan) as shared:
+            self.assertEqual(h.preflight(plan_file, Path(self.plan['output'])), self.plan)
+            shared.assert_called_once()
+            self.assertEqual(shared.call_args.args[0]['schema'], 'stop-host-plan/v1')
+            bad = dict(self.plan, manifest_sha256=base.sha(h.MANIFEST))
+            wrong = self.root / 'v2-wrong-manifest.json'
+            h.write_new(wrong, bad)
+            with self.assertRaises(ValueError):
+                h.preflight(wrong, Path(self.plan['output']))
+        self.assertFalse(Path(self.plan['output']).exists())
+
+    def test_v2_same_thread_baseline_and_readonly_mapping_family(self):
+        from tests.test_incident_fixture_v3 import FixtureV3Tests
+        fixture = FixtureV3Tests('test_snapshot_precedes_exact_read_grant_and_whole_restore')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.v2_host()
+        self.plan.update(repo=str(h.ROOT), output=str(fixture.output), cwd=str(fixture.cwd))
+        self.capture.update(schema='incident-host-capture/v2', plan_sha256=h.plan_identity(self.plan), stages={})
+        def stage(name, argv, record):
+            prompt = h.helper_prompt(self.plan, argv, name)
+            self.manifest['prompts'][name] = prompt
+            value = self.stage(name, query_options=['--commands'])
+            for row in value['rows']:
+                item = row.get('params', {}).get('item')
+                if item and item.get('type') == 'commandExecution':
+                    item['command'] = '& ' + cg.shell_join(argv)
+                    if row['method'] == 'item/completed':
+                        item.update(exitCode=0, status='completed', aggregatedOutput=json.dumps(record))
+            return value
+        stage('principal', [self.plan['python'], h.execution_helper_path(self.plan), '--identity'],
+              {'schema': 'incident-child-principal/v1', 'platform': 'Windows', 'pid': 42, 'sid': fixture.sid})
+        actual_run = subprocess.run
+        def run(argv, **kwargs):
+            return fixture.apply(argv, **kwargs) if argv[0] == 'icacls' else actual_run(argv, **kwargs)
+        with fixture.patches(run):
+            transaction = fixture.prepare()
+            self.capture['baseline_requests'], self.capture['baseline_tool_argv'] = {}, {}
+            for name in ('baseline_original', 'baseline_granted', 'baseline_denied'):
+                if name == 'baseline_granted':
+                    fixture.grant(transaction)
+                elif name == 'baseline_denied':
+                    req = fixture.request(transaction, 'baseline_granted')
+                    child.apply_read_transaction(fixture.root, transaction, 'deny',
+                                                 baseline_record=fixture.observed(req), baseline_request=req)
+                req = h.phase_request(fixture.request(transaction, name), name)
+                argv = [self.plan['python'], h.execution_helper_path(self.plan), '--request',
+                        str(fixture.cwd / ('incident-request-' + fixture.output.name + '-' + name + '.json')), '--baseline']
+                self.capture['baseline_requests'][name] = req
+                self.capture['baseline_tool_argv'][name] = argv
+                stage(name, argv, fixture.observed(req, readable=name != 'baseline_original'))
+            req = h.phase_request(fixture.request(transaction, 'readonly'), 'readonly')
+            argv = [self.plan['python'], h.execution_helper_path(self.plan), '--request',
+                    str(fixture.cwd / ('incident-request-' + fixture.output.name + '.json'))]
+            value = {'schema': 'incident-readonly-child/v2', 'request_sha256': req['request_sha256'],
+                     'platform': 'Windows', 'pid': 42, 'ppid': 43, 'euid': None, 'sid': fixture.sid,
+                     'baseline': fixture.observed(req), 'write_attempts': [{'errno': 13}, {'errno': 1}],
+                     'before': req['inventory'], 'after': req['inventory'], 'cli_exit_code': 0,
+                     'query_stdout': json.dumps({'advanced_commands': {}, 'turn_id': req['turn'],
+                                                  'revision': req['state_revision']}), 'query_stderr': ''}
+            stage('readonly', argv, value)
+            child.restore(fixture.root, transaction)
+            receipt = child.restored_transaction_observation(fixture.root, transaction)
+        h.write_new(fixture.output / 'fixture-restoration.json', receipt)
+        self.capture.update(readonly_request=req, readonly_tool_argv=argv, fixture_restoration=receipt)
+        result = h.map_capture(self.capture)
+        self.assertEqual(result['gates']['restricted_child_readonly'], 'passed')
+        self.assertEqual(result['status'], 'pending')
+        self.assertEqual(result['native_acceptance'], 'not_run')
+        for field, change in [('thread', 'foreign'), ('turn', self.capture['stages']['principal']['turn']),
+                              ('prompt_sha256', '0' * 64)]:
+            bad = copy.deepcopy(self.capture)
+            bad['stages']['baseline_denied'][field] = change
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.map_capture(bad)
+        for field, change in [('phase', 'baseline_granted'), ('fixture', 'foreign')]:
+            bad = copy.deepcopy(self.capture)
+            bad['baseline_requests']['baseline_denied'][field] = change
+            bad['baseline_requests']['baseline_denied']['request_sha256'] = child.request_identity_v2(
+                bad['baseline_requests']['baseline_denied'])
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.map_capture(bad)
+        bad = copy.deepcopy(self.capture)
+        bad['baseline_requests']['baseline_original']['restriction']['deny_complete'] = True
+        with self.assertRaises(ValueError):
+            h.map_capture(bad)
+        bad = copy.deepcopy(self.capture)
+        bad['fixture_restoration']['status'] = 'unverified'
+        with self.assertRaises(ValueError):
+            h.map_capture(bad)
+        bad = copy.deepcopy(self.capture)
+        bad['readonly_tool_argv'][3] += 'foreign'
+        with self.assertRaises(ValueError):
+            h.map_capture(bad)
+
+    def test_v2_cli_affected_success_does_not_claim_ten_gate_acceptance(self):
+        import contextlib
+        import io
+        self.v2_host()
+        self.capture.update(schema='incident-host-capture/v2', stages={}, plan_sha256=h.plan_identity(self.plan))
+        result = h.map_capture(self.capture)
+        for gate in result['required_gates']:
+            result['gates'][gate] = 'passed'
+        result['scenario_status'] = 'passed'
+        self.assertEqual(result['status'], 'pending')
+        h.validate_result(result)
+        for scenario, code in [('passed', 0), ('pending', 1), ('failed', 1)]:
+            selected = dict(result, scenario_status=scenario)
+            output = io.StringIO()
+            with mock.patch.object(h, 'map_bundle', return_value=selected), \
+                 mock.patch.object(sys, 'argv', ['acceptance', 'map', '--capture-dir', str(self.root),
+                                               '--output', str(self.root / 'not-written.json')]), \
+                 contextlib.redirect_stdout(output):
+                self.assertEqual(h.main(), code)
+            self.assertIn('incident_host_acceptance=pending', output.getvalue())
+            self.assertIn('affected_scenario=' + scenario, output.getvalue())
+            self.assertIn('native_acceptance=not_run', output.getvalue())
+        self.assertFalse((self.root / 'not-written.json').exists())
+
+    def test_v2_collector_phase_route_cleanup_and_failure_restore(self):
+        self.v2_host()
+        for fail_at in (None, 'baseline_granted', 'baseline_denied'):
+            with self.subTest(fail_at=fail_at):
+                output = self.root / ('collector-' + str(fail_at))
+                cwd = self.root / ('workspace-' + str(fail_at))
+                cwd.mkdir()
+                plan = dict(self.plan, repo=str(h.ROOT), output=str(output), cwd=str(cwd),
+                            home=str(self.root / 'isolated-home'))
+                log = []
+                class Client:
+                    inventory = {}
+                    def __init__(self, *_):
+                        self.sequence = self.turn = 0
+                    def start(self, *_):
+                        self.sequence += 1
+                        return 'thread-' + str(self.sequence)
+                    def observed_turn(self, thread, prompt):
+                        self.turn += 1
+                        log.append(('turn', thread, prompt))
+                        return {'thread': thread, 'turn': str(self.turn), 'rows': []}
+                    def close(self):
+                        log.append(('close',))
+                        return {'owned_process_exited': True, 'owned_tree_no_running_members': True}
+                restriction = {'policy': child.READ_BASELINE_POLICY, 'sid': 'S-1-5-21-200',
+                               'collector_sid': 'S-1-5-21-100', 'grant_complete': False, 'deny_complete': False,
+                               'original_snapshot_sha256': 'a' * 64}
+                request = {'schema': 'incident-readonly-request/v2', 'restriction': restriction}
+                def apply(root, transaction, phase, **kwargs):
+                    log.append(('apply', phase, kwargs['baseline_request']['phase']))
+                    self.assertEqual(kwargs['baseline_record']['phase'], kwargs['baseline_request']['phase'])
+                    transaction[phase + '_complete'] = True
+                def observed(stage, inventory, plan, current, argv, name):
+                    log.append(('baseline', name, stage['thread']))
+                    self.assertEqual(argv[-1], '--baseline')
+                    child.v2_request(current)
+                    if name == fail_at:
+                        raise ValueError('synthetic baseline failure')
+                    return {'phase': name}
+                with mock.patch.object(h, 'Client', Client), \
+                     mock.patch.object(h, 'copy_session'), \
+                     mock.patch.object(h, 'command_observation', return_value={}), \
+                     mock.patch.object(h, 'principal_observation', return_value=restriction['sid']), \
+                     mock.patch.object(h, 'make_fixture', return_value=request), \
+                     mock.patch.object(h, 'baseline_observation', side_effect=observed), \
+                     mock.patch.object(child, 'apply_read_transaction', side_effect=apply), \
+                     mock.patch.object(child, 'restore', side_effect=lambda *_: log.append(('restore',))), \
+                     mock.patch.object(child, 'restored_transaction_observation', return_value={
+                         'status': 'verified', 'original_snapshot_sha256': 'a' * 64}), \
+                     mock.patch.object(h, 'prepared_source_identity', return_value=plan['source']), \
+                     mock.patch.object(h.base, 'runtime', return_value=plan['runtime_sha256']), \
+                     mock.patch.object(h.base, 'collect') as stop:
+                    capture = h.collect(plan, output, supplemental=True)
+                stop.assert_not_called()
+                self.assertEqual([e[0] for e in log].count('close'), 1)
+                self.assertEqual([e[0] for e in log].count('restore'), 1)
+                self.assertLess(log.index(('close',)), log.index(('restore',)))
+                self.assertEqual({e[2] for e in log if e[0] == 'baseline'}, {'thread-2'})
+                self.assertNotIn('pending', capture['stages'])
+                if fail_at is None:
+                    self.assertEqual([e for e in log if e[0] == 'apply'],
+                                     [('apply', 'grant', 'baseline_original'), ('apply', 'deny', 'baseline_granted')])
+                    self.assertEqual(set(capture['stages']), {'status', 'principal', 'baseline_original',
+                        'baseline_granted', 'baseline_denied', 'unknown', 'missing', 'readonly'})
+                    self.assertNotIn('failure_class', capture)
+                    self.assertTrue(capture['readonly_request']['restriction']['grant_complete'])
+                    self.assertTrue(capture['readonly_request']['restriction']['deny_complete'])
+                else:
+                    self.assertEqual(capture['failure_class'], 'ValueError')
+                    self.assertNotIn('readonly', capture['stages'])
+                    self.assertTrue((output / 'failure.json').is_file())
+                self.assertEqual(capture['fixture_restoration']['status'], 'verified')
+                # Collector routing uses synthetic dependencies only, never native acceptance.
+
+
 class PlanPinTests(unittest.TestCase):
     def test_cli_version_explicit_0160_and_old_default_drift(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests import test_incident_host_acceptance as owning
 from tools.validation import incident_host_acceptance as h
@@ -193,6 +194,102 @@ class SupplementTests(unittest.TestCase):
             (root / 'artifacts.json').write_text(json.dumps(catalog))
             with self.assertRaises(ValueError):
                 s.bundle(root)
+
+
+class SupplementV2Tests(unittest.TestCase):
+    def setUp(self):
+        SupplementTests.setUp(self)
+        self.new.update(schema='incident-host-plan/v2', gate_profile=h.PROFILE_V2,
+                        observation_contracts=dict(h.OBSERVATION_CONTRACTS),
+                        manifest_sha256=h.base.sha(h.MANIFEST_V2),
+                        negative_parser_reference={'schema': 'incident-parser-reference/v1',
+                            'python_sha256': 'a' * 64, 'script_sha256': 'b' * 64,
+                            'runtime_sha256': self.plan['runtime_sha256'], 'cases': {'unknown': {}, 'missing': {}}})
+        self.capture.update(plan=self.new, plan_sha256=h.plan_identity(self.new))
+        self.current.update(schema='incident-host-acceptance/v2', gate_profile=h.PROFILE_V2,
+                            execution_identity={'source': h.public_source(self.new['source']),
+                                                'plan_sha256': h.plan_identity(self.new)},
+                            required_gates=['hook_trust', 'status_cli_posttool', 'status_negative_controls',
+                                            'restricted_child_readonly', 'cleanup'], scenario_status='passed')
+        self.current['gates'].update(positive_negative_stop='pending', compaction_cold_resume='pending')
+        self.envelope.update(schema=s.SCHEMA_V2, new_plan=self.new, new_plan_sha256=h.plan_identity(self.new),
+                             retained_hashes={'capture.json': 'f' * 64}, retained_components={
+                                 'whole_status': 'failed', 'gates': {'positive_negative_stop': 'passed',
+                                     'compaction_cold_resume': 'passed'}, 'execution_identity': {'source': 'old-subject'}})
+
+    compose = SupplementTests.compose
+    def test_v2_three_subject_composition_and_pending_affected_result(self):
+        result = self.compose()
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(self.current['status'], 'pending')
+        self.assertEqual(result['retained_whole_status'], 'failed')
+        self.assertEqual(result['native_acceptance'], 'not_run')
+        self.assertEqual({k for k, v in result['gate_subjects'].items() if v == 'original'}, s.RETAINED)
+        self.assertEqual({k for k, v in result['gate_subjects'].items() if v == 'retained_component'},
+                         {'positive_negative_stop', 'compaction_cold_resume'})
+        for gate in ('status_negative_controls', 'restricted_child_readonly', 'cleanup'):
+            bad = copy.deepcopy(self.current)
+            bad['gates'][gate] = 'pending'
+            bad['scenario_status'] = 'pending'
+            self.assertEqual(self.compose(current=bad)['status'], 'pending')
+
+    def test_v2_adoption_duplicate_retained_scope_and_failure_reject(self):
+        for key, value in [('runtime_sha256', 'different'), ('shell', {}), ('manifest_sha256', '0' * 64),
+                           ('observation_contracts', {})]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                s.contract_v2(self.original, self.prior, dict(self.new, **{key: value}))
+        for stage in ('pause', 'stop', 'foreign'):
+            bad = copy.deepcopy(self.capture)
+            bad['stages'][stage] = {}
+            with self.subTest(stage=stage), self.assertRaises(ValueError):
+                self.compose(bad)
+        for gate in ('pause_same_unit', 'positive_negative_stop', 'compaction_cold_resume'):
+            bad = copy.deepcopy(self.current)
+            bad['gates'][gate] = 'passed'
+            with self.subTest(gate=gate), self.assertRaises(ValueError):
+                self.compose(current=bad)
+        bad = copy.deepcopy(self.current)
+        bad['status'] = bad['scenario_status'] = 'failed'
+        self.assertEqual(self.compose(current=bad)['status'], 'failed')
+        envelope = copy.deepcopy(self.envelope)
+        envelope['retained_components']['whole_status'] = 'passed'
+        with self.assertRaises(ValueError):
+            s.compose(envelope, self.original, self.prior, self.capture, self.current)
+
+    def test_v2_prepare_and_replay_pin_both_bundles_and_independent_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            new_plan = root / 'plan.json'
+            new_plan.write_text(json.dumps(self.new))
+            original = dict(self.original, plan_sha256=h.plan_identity(self.plan))
+            retained = dict(original, stop_result={'schema': 'stop-host-acceptance/v1', 'status': 'passed',
+                            'source': self.plan['source'], 'runtime_sha256': self.plan['runtime_sha256']},
+                            stop_directory=str(root / 'retained/stop'))
+            old_hashes = {k: 'a' * 64 for k in ('artifacts.json', 'capture.json', 'plan.json', 'result.json')}
+            retained_hashes = {k: 'b' * 64 for k in old_hashes}
+            def bundles(directory, **kwargs):
+                return (retained, None, retained_hashes) if directory.name == 'retained' else (original, self.prior, old_hashes)
+            expected = {k: old_hashes[k] for k in ('artifacts.json', 'result.json', 'plan.json')}
+            with mock.patch.object(s, 'bundle', side_effect=bundles), \
+                 mock.patch.object(h, 'map_capture', return_value={'status': 'failed'}), \
+                 mock.patch.object(h, 'verify_stop_capture') as verify:
+                output = root / 'contract.json'
+                s.prepare(root / 'original', new_plan, output, expected,
+                          retained_dir=root / 'retained', retained_expected=retained_hashes)
+                envelope, _, _ = s.inputs(output)
+                self.assertEqual(envelope['retained_components']['whole_status'], 'failed')
+                self.assertEqual(verify.call_count, 2)
+                for field in ('base_hashes', 'retained_hashes', 'new_plan_sha256', 'retained_components', 'supplement_entry_sha256'):
+                    bad = copy.deepcopy(envelope)
+                    bad[field] = {}
+                    with self.subTest(field=field), self.assertRaises((ValueError, TypeError)):
+                        s.inputs_v2(bad)
+                with self.assertRaises(ValueError):
+                    s.prepare(root / 'original', new_plan, root / 'bad.json', expected,
+                              retained_dir=root / 'retained', retained_expected={})
+                with mock.patch.object(h, 'map_capture', return_value={'status': 'passed'}):
+                    with self.assertRaises(ValueError):
+                        s.retained_components(retained, self.new)
 
 
 if __name__ == '__main__':

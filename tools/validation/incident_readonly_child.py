@@ -168,6 +168,316 @@ def check_fixture_identity(root, record):
         raise ValueError('fixture object identity changed')
 
 
+READ_BASELINE_POLICY = 'read-baseline-specific-write-deny/v3'
+
+
+def durable_snapshot(path, record):
+    raw = json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2) + '\n'
+    with Path(path).open('x', encoding='utf-8') as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def read_grant_argv(path, sid):
+    acl_argv(path, sid)  # Reuse strict SID validation, never the collector as substitute.
+    bits = '(RD,REA,RA,RC,S,X)' if Path(path).is_dir() else '(RD,REA,RA,RC,S)'
+    return ['icacls', str(path), '/grant', '*' + sid + ':' + bits]
+
+
+def ace_sid(raw):
+    if len(raw) < 16 or raw[0] not in (0, 1):
+        raise ValueError('unsupported v3 ACE shape')
+    value = raw[8:]
+    if value[0] != 1 or len(value) != 8 + 4 * value[1]:
+        raise ValueError('invalid v3 ACE SID')
+    authority = int.from_bytes(value[2:8], 'big')
+    subs = struct.unpack('<' + 'I' * value[1], value[8:])
+    return 'S-1-' + str(authority) + ''.join('-' + str(v) for v in subs)
+
+
+def check_read_grant(before, after, sid, directory):
+    old, new = descriptor_contract(before), descriptor_contract(after)
+    mask = 0x1200a9 if directory else 0x120089
+    def split(contract):
+        actor, others = [], []
+        for value in contract['aces']:
+            raw = bytes.fromhex(value)
+            (actor if ace_sid(raw) == sid and raw[0] == 0 else others).append(value)
+        return actor, others
+    old_actor, old_others = split(old)
+    new_actor, new_others = split(new)
+    if (old_others != new_others or old['dacl_revision'] != new['dacl_revision']
+            or old['dacl_control'] != new['dacl_control']):
+        raise ValueError('grant changed another principal or deny ACE')
+    old_masks = {bytes.fromhex(v)[1]: struct.unpack_from('<I', bytes.fromhex(v), 4)[0]
+                 for v in old_actor}
+    new_masks = {bytes.fromhex(v)[1]: struct.unpack_from('<I', bytes.fromhex(v), 4)[0]
+                 for v in new_actor}
+    if len(old_masks) != len(old_actor) or len(new_masks) != len(new_actor):
+        raise ValueError('ambiguous actor ACEs')
+    if any(flags not in new_masks or new_masks[flags] & value != value
+           or new_masks[flags] & ~(value | mask) for flags, value in old_masks.items()):
+        raise ValueError('grant removed rights or added non-read rights')
+    if any(flags not in old_masks and (flags != 0 or value != mask)
+           for flags, value in new_masks.items()):
+        raise ValueError('grant added unbounded actor rights')
+    if new_masks.get(0, 0) & mask != mask:
+        raise ValueError('grant lacks exact non-inheriting read baseline')
+
+
+def check_write_deny(before, after, sid, *, directory):
+    """Exact ordered /deny change, selected by the verified object's type.
+
+    icacls inserts an explicit deny in the canonical explicit-deny block and
+    removes only those bits from this actor's explicit grants. Existing ACEs
+    retain byte identity/order apart from those exact mask changes. No OR
+    aggregation accepts duplicate, split or reordered actor deny ACEs.
+    """
+    if type(directory) is not bool:
+        raise ValueError('verified object type required')
+    old, new = descriptor_contract(before), descriptor_contract(after)
+    mask = 0x10156 if directory else 0x10116  # Directories additionally deny DC.
+    if any(old[k] != new[k] for k in ('descriptor_revision', 'dacl_revision', 'dacl_control')):
+        raise ValueError('deny changed DACL controls')
+    def rank(raw):
+        ace_sid(raw)  # Only supported ordinary allow/deny shapes.
+        return (2 if raw[1] & 0x10 else 0) + (1 if raw[0] == 0 else 0)
+    for contract in (old, new):
+        ranks = [rank(bytes.fromhex(value)) for value in contract['aces']]
+        if ranks != sorted(ranks):
+            raise ValueError('noncanonical deny ACE order')
+    expected, seen_flags, merged, actor_sid = [], set(), False, None
+    for value in old['aces']:
+        raw = bytearray.fromhex(value)
+        actor = ace_sid(raw) == sid
+        if actor:
+            actor_sid = bytes(raw[8:])
+        if actor and raw[0] == 1:
+            if raw[1] in seen_flags:
+                raise ValueError('ambiguous original actor deny ACEs')
+            seen_flags.add(raw[1])
+            if raw[1] == 0:
+                struct.pack_into('<I', raw, 4, struct.unpack_from('<I', raw, 4)[0] | mask)
+                merged = True
+        elif actor and raw[0] == 0 and not raw[1] & 0x10:
+            remaining = struct.unpack_from('<I', raw, 4)[0] & ~mask
+            if not remaining:
+                continue  # Exact zero-right explicit grant is removed by /deny.
+            struct.pack_into('<I', raw, 4, remaining)
+        expected.append(raw.hex())
+    if merged:
+        if new['aces'] != expected:
+            raise ValueError('deny changed an ordered ACE or exact write mask')
+    else:
+        if actor_sid is None:
+            raise ValueError('pinned actor grant unavailable before deny')
+        added = (struct.pack('<BBHI', 1, 0, 8 + len(actor_sid), mask) + actor_sid).hex()
+        if new['aces'].count(added) != 1:
+            raise ValueError('deny missing exact unique write ACE')
+        position = new['aces'].index(added)
+        if (any(rank(bytes.fromhex(v)) != 0 for v in new['aces'][:position])
+                or new['aces'][:position] + new['aces'][position + 1:] != expected):
+            raise ValueError('deny changed ordered permissions beyond one exact ACE')
+
+
+def prepare_read_transaction(root, *, sid, ownership):
+    root = Path(root).absolute()
+    required = {'cwd', 'output', 'repo', 'home', 'plugin_root', 'data_root',
+                'created_exclusively', 'root_identity'}
+    if set(ownership) != required or ownership['created_exclusively'] is not True:
+        raise ValueError('exclusive fixture ownership unavailable')
+    expected = Path(ownership['cwd']).absolute() / ('incident-readonly-' + Path(ownership['output']).name)
+    if root != expected or [root.lstat().st_dev, root.lstat().st_ino] != ownership['root_identity']:
+        raise ValueError('fixture creation scope differs')
+    output = Path(ownership['output']).resolve(strict=True)
+    for key in ('repo', 'home', 'plugin_root', 'data_root', 'output'):
+        forbidden = Path(ownership[key]).resolve()
+        resolved = root.resolve(strict=True)
+        if resolved == forbidden or forbidden in resolved.parents or resolved in forbidden.parents:
+            raise ValueError('fixture overlaps protected tree')
+    paths = fixture_paths(root)
+    if any(p.is_file() and p.lstat().st_nlink != 1 for p in paths):
+        raise ValueError('linked fixture file')
+    acl_argv(root, sid)
+    record = {'family': 'windows-acl', 'policy': READ_BASELINE_POLICY, 'root': str(root),
+              'sid': sid, 'collector_sid': current_sid(), 'commands': [], 'ownership': ownership,
+              'grant_complete': False, 'deny_complete': False,
+              'original_dacls': {str(p): windows_descriptor(p) for p in paths},
+              'original_inventory': inventory(root),
+              'objects': {str(p): (p.lstat().st_dev, p.lstat().st_ino) for p in paths}}
+    record['original_restore_strategies'] = {n: restoration_strategy(d)
+                                             for n, d in record['original_dacls'].items()}
+    for descriptor in record['original_dacls'].values():
+        for ace in descriptor_contract(descriptor)['aces']:
+            ace_sid(bytes.fromhex(ace))  # Fail before any ACL mutation on unsupported ACEs.
+    snapshot = output / 'fixture-original-transaction.json'
+    record['original_snapshot_sha256'] = durable_snapshot(snapshot, record)
+    record['original_snapshot_path'] = str(snapshot)
+    return record
+
+
+def verify_original_snapshot(record):
+    path = Path(record['original_snapshot_path'])
+    if path.absolute() != Path(record['ownership']['output']).resolve(strict=True) / 'fixture-original-transaction.json':
+        raise ValueError('original snapshot scope changed')
+    if not path.is_file() or path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != record['original_snapshot_sha256']:
+        raise ValueError('original snapshot changed')
+    saved = json.loads(path.read_text())
+    fields = ('policy', 'root', 'sid', 'collector_sid', 'ownership', 'original_dacls',
+              'original_inventory', 'objects', 'original_restore_strategies')
+    if any(saved[k] != json.loads(json.dumps(record[k])) for k in fields):
+        raise ValueError('original restore authority changed')
+
+
+def apply_read_transaction(root, record, phase, *, baseline_record, baseline_request):
+    if record.get('policy') != READ_BASELINE_POLICY or phase not in ('grant', 'deny'):
+        raise ValueError('unknown fixture transaction phase')
+    expected_phase = 'baseline_original' if phase == 'grant' else 'baseline_granted'
+    if (baseline_request.get('phase') != expected_phase
+            or baseline_request['restriction']['original_snapshot_sha256'] != record['original_snapshot_sha256']
+            or baseline_request['restriction']['sid'] != record['sid']
+            or (phase == 'grant' and record.get('grant_complete'))
+            or (phase == 'deny' and (not record.get('grant_complete') or record.get('deny_complete')))):
+        raise ValueError('fixture phase transition differs')
+    judge = judge_baseline(baseline_record, baseline_request, require_read=phase == 'deny')
+    if judge != ('observed' if phase == 'grant' else 'passed'):
+        raise ValueError('required actor baseline failed')
+    root = Path(root).absolute()
+    verify_original_snapshot(record)
+    if record['root'] != str(root) or record['collector_sid'] != current_sid():
+        raise ValueError('fixture transaction scope differs')
+    paths = fixture_paths(root)
+    try:
+        for path in sorted(paths, key=lambda p: (-len(p.parts), str(p))):
+            check_fixture_identity(root, record)
+            if any(p.is_file() and p.lstat().st_nlink != 1 for p in paths):
+                raise ValueError('fixture hardlink identity drift')
+            info = path.lstat()
+            if (not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+                    or getattr(info, 'st_file_attributes', 0) & 0x400):
+                raise ValueError('transaction object type unavailable')
+            directory = stat.S_ISDIR(info.st_mode)
+            argv = read_grant_argv(path, record['sid']) if phase == 'grant' else acl_argv(path, record['sid'])[0]
+            before = windows_descriptor(path) if phase == 'deny' else None
+            result = subprocess.run(argv, capture_output=True, timeout=30, check=False)
+            record['commands'].append({'phase': phase, 'argv': argv, 'exit_code': result.returncode,
+                                      'output': (result.stdout + result.stderr).decode(errors='replace')})
+            if result.returncode:
+                raise OSError('fixture transaction ACL application failed')
+            if phase == 'grant':
+                check_read_grant(record['original_dacls'][str(path)], windows_descriptor(path),
+                                 record['sid'], path.is_dir())
+            else:
+                check_fixture_identity(root, record)
+                check_write_deny(before, windows_descriptor(path), record['sid'], directory=directory)
+        if inventory(root) != record['original_inventory']:
+            raise ValueError('fixture changed during transaction')
+        record[phase + '_complete'] = True
+        durable_snapshot(Path(record['ownership']['output']) / ('fixture-' + phase + '-receipt.json'), record)
+        return record
+    except (Exception, KeyboardInterrupt) as exc:
+        record['application_error'] = type(exc).__name__
+        try:
+            restore(root, record)
+            record['restoration'] = 'verified'
+        except Exception as restoration:
+            record['restoration_error'] = type(restoration).__name__
+        raise RestrictionError(record) from exc
+
+
+def request_identity_v2(request):
+    """v2 only: sorted compact UTF-8 JSON, literal Unicode; CRLF is data.
+
+    Excludes only the outer request_sha256. No Unicode/line normalization.
+    v1 retains its historical ASCII-escaped validation and replay domain.
+    """
+    value = {k: v for k, v in request.items() if k != 'request_sha256'}
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+                     allow_nan=False).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def restored_transaction_observation(root, record):
+    """Independent successful readback; leave the existing restoration core intact."""
+    verify_original_snapshot(record)
+    check_fixture_identity(root, record)
+    sid = current_sid()
+    if sid != record['collector_sid']:
+        raise ValueError('restoration collector changed')
+    readback = {str(path): descriptor_contract(windows_descriptor(path)) for path in fixture_paths(root)}
+    originals = {name: descriptor_contract(value) for name, value in record['original_dacls'].items()}
+    observed = inventory(root)
+    if readback != originals or observed != record['original_inventory']:
+        raise ValueError('original transaction readback changed')
+    return {'status': 'verified', 'original_snapshot_sha256': record['original_snapshot_sha256'],
+            'collector_sid': sid, 'descriptor_contracts': readback, 'inventory': observed}
+
+
+def v2_request(request):
+    if (request.get('schema') != 'incident-readonly-request/v2'
+            or request.get('restriction', {}).get('policy') != READ_BASELINE_POLICY):
+        raise ValueError('unknown v2 readonly request')
+    expected = request_identity_v2(request)
+    if request.get('request_sha256') != expected:
+        raise ValueError('v2 readonly request digest changed')
+    return request
+
+
+def baseline(request):
+    v2_request(request)
+    # Actor is observed before resolve/stat/list/read can fail.
+    sid = current_sid()
+    root = Path(request['fixture'])
+    checks, observed = {}, None
+    def read_files():
+        nonlocal observed
+        observed = inventory(root)
+        return sum(v['kind'] == 'file' for v in observed.values())
+    for name, fn in (('resolve', lambda: root.resolve(strict=True)), ('stat', root.stat),
+                     ('list', lambda: list(root.iterdir())), ('read_files', read_files)):
+        try:
+            value = fn()
+            checks[name] = {'ok': True}
+            if name == 'read_files':
+                checks[name]['count'] = value
+        except (OSError, ValueError) as exc:
+            checks[name] = {'ok': False, 'exception': type(exc).__name__,
+                            'errno': getattr(exc, 'errno', None), 'winerror': getattr(exc, 'winerror', None)}
+    return {'schema': 'incident-read-baseline/v1', 'request_sha256': request['request_sha256'],
+            'sid': sid, 'pid': os.getpid(), 'platform': platform.system(),
+            'checks': checks, 'inventory': observed}
+
+
+def judge_baseline(record, request, *, require_read=True):
+    v2_request(request)
+    if (set(record) != {'schema', 'request_sha256', 'sid', 'pid', 'platform', 'checks', 'inventory'}
+            or record['schema'] != 'incident-read-baseline/v1'
+            or record['request_sha256'] != request['request_sha256']
+            or record['sid'] != request['restriction']['sid'] or record['platform'] != 'Windows'
+            or type(record['pid']) is not int or record['pid'] <= 0
+            or set(record['checks']) != {'resolve', 'stat', 'list', 'read_files'}):
+        raise ValueError('baseline actor/scope/shape differs')
+    for name, value in record['checks'].items():
+        if type(value.get('ok')) is not bool:
+            raise ValueError('baseline observation unavailable')
+        expected = ({'ok', 'count'} if name == 'read_files' else {'ok'}) if value['ok'] else {'ok', 'exception', 'errno', 'winerror'}
+        if set(value) != expected:
+            raise ValueError('incomplete baseline observation')
+        if value['ok'] and name == 'read_files' and (type(value['count']) is not int or value['count'] < 0):
+            raise ValueError('invalid baseline file count')
+        if not value['ok'] and (not isinstance(value['exception'], str) or not value['exception']
+                               or any(value[k] is not None and type(value[k]) is not int for k in ('errno', 'winerror'))):
+            raise ValueError('invalid baseline read failure')
+    if not require_read:
+        return 'observed'  # A failed original baseline is retained, never called a read pass.
+    expected_count = sum(v['kind'] == 'file' for v in request['inventory'].values())
+    return 'passed' if (all(v['ok'] for v in record['checks'].values())
+                        and record['checks']['read_files']['count'] == expected_count
+                        and record['inventory'] == request['inventory']) else 'failed'
+
+
 def windows_restrict(root, *, sid=None):
     root = Path(root).absolute()
     paths = fixture_paths(root)
@@ -228,10 +538,12 @@ def restore(root, record):
     if record['family'] == 'windows-acl':
         root = Path(root).absolute()
         paths = fixture_paths(root)
-        if (record.get('policy') != 'specific-write-deny/v2'
+        if (record.get('policy') not in ('specific-write-deny/v2', READ_BASELINE_POLICY)
                 or record.get('root') != str(root) or record.get('collector_sid') != current_sid()
                 or set(record.get('original_dacls', {})) != {str(p) for p in paths}):
             raise ValueError('restoration scope or principal differs')
+        if record.get('policy') == READ_BASELINE_POLICY:
+            verify_original_snapshot(record)
         check_fixture_identity(root, record)
         # Restore traversal first, then descendants, preserving original DACLs.
         failures = []
@@ -260,6 +572,28 @@ def restore(root, record):
 
 
 def witness(request):
+    if request.get('schema') == 'incident-readonly-request/v2':
+        v2_request(request)
+        observed = baseline(request)
+        if judge_baseline(observed, request) != 'passed':
+            return {'schema': 'incident-readonly-child/v2', 'request_sha256': request['request_sha256'],
+                    'sid': observed['sid'], 'pid': observed['pid'], 'ppid': os.getppid(),
+                    'platform': observed['platform'], 'baseline': observed, 'write_attempts': [],
+                    'before': observed['inventory'], 'after': observed['inventory'],
+                    'cli_exit_code': None, 'query_stdout': '', 'query_stderr': ''}
+        legacy = dict(request, schema='incident-readonly-request/v1')
+        try:
+            value = witness(legacy)
+        except (OSError, ValueError) as exc:
+            return {'schema': 'incident-readonly-child/v2', 'request_sha256': request['request_sha256'],
+                    'sid': observed['sid'], 'pid': observed['pid'], 'ppid': os.getppid(),
+                    'platform': observed['platform'], 'baseline': observed, 'write_attempts': [],
+                    'before': observed['inventory'], 'after': None, 'cli_exit_code': None,
+                    'query_stdout': '', 'query_stderr': '',
+                    'operation_failure': {'type': type(exc).__name__, 'errno': getattr(exc, 'errno', None),
+                                          'winerror': getattr(exc, 'winerror', None)}}
+        value.update(schema='incident-readonly-child/v2', baseline=observed)
+        return value
     if request.get('schema') != 'incident-readonly-request/v1':
         raise ValueError('wrong request schema')
     root = Path(request['fixture']).resolve(strict=True)
@@ -293,6 +627,23 @@ def witness(request):
 
 
 def judge(record, request):
+    if request.get('schema') == 'incident-readonly-request/v2':
+        v2_request(request)
+        if (record.get('schema') != 'incident-readonly-child/v2'
+                or record.get('request_sha256') != request['request_sha256']):
+            raise ValueError('wrong v2 child schema')
+        if record.get('operation_failure') or judge_baseline(record.get('baseline', {}), request) != 'passed':
+            return 'failed'
+        if not all(request['restriction'].get(k) is True for k in ('grant_complete', 'deny_complete')):
+            raise ValueError('incomplete readonly transaction')
+        legacy_record = {k: v for k, v in record.items() if k != 'baseline'}
+        legacy_record['schema'] = SCHEMA
+        legacy_request = dict(request, schema='incident-readonly-request/v1')
+        legacy_request['request_sha256'] = hashlib.sha256(json.dumps(
+            {k: v for k, v in legacy_request.items() if k != 'request_sha256'},
+            ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        legacy_record['request_sha256'] = legacy_request['request_sha256']
+        return judge(legacy_record, legacy_request)
     if record.get('schema') != SCHEMA:
         raise ValueError('wrong child schema')
     expected = hashlib.sha256(json.dumps({k: v for k, v in request.items() if k != 'request_sha256'},
@@ -337,7 +688,10 @@ def main():
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument('--request', type=Path)
     group.add_argument('--identity', action='store_true')
+    p.add_argument('--baseline', action='store_true')
     a = p.parse_args()
+    if a.baseline and not a.request:
+        p.error('--baseline requires --request')
     if a.identity:
         if os.name != 'nt':
             raise ValueError('Windows tool principal required')
@@ -345,6 +699,10 @@ def main():
                           'pid': os.getpid(), 'platform': platform.system()}))
         return 0
     request = json.loads(a.request.read_text())
+    if a.baseline:
+        value = baseline(request)
+        print(json.dumps(value, ensure_ascii=True))
+        return 0
     value = witness(request)
     print(json.dumps(value, ensure_ascii=True))
     return 0 if judge(value, request) == 'passed' else 1
