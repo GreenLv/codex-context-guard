@@ -344,7 +344,7 @@ wheels = [
 
 [[package]]
 name = "codex-context-guard"
-version = "0.15.0"
+version = "0.15.1"
 source = { virtual = "." }
 
 [package.dev-dependencies]

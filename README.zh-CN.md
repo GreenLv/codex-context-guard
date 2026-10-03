@@ -14,6 +14,8 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > **最新已发布：0.15.0 — 2026-10-02。** 减少 Hook 启动开销、精简指令，并保证状态的独占写入。新会话使用独立状态；旧任务需要原运行时。修改现有安装前，请阅读[发布说明](docs/releases/v0.15.0.md)和[升级边界](docs/SESSION_STORAGE.md)。
 
+> **未发布的 0.15.1 源码候选：** 明确续行重新可以解除普通暂停；CLI 规定的 `checkpoint-status` 诊断选项在 CLI 与 PostToolUse 中一致识别；状态查询读路径不再获取私有写锁。草稿[发布说明](docs/releases/v0.15.1.md)；原生验收与发布待完成。
+
 ## 安装
 
 需要 Python 3.10 或更高版本、Codex CLI，以及能够加载插件和生命周期 Hook 的 Codex 界面。0.15.0 验收批次面向 Codex CLI `0.158.0`，本版不补测旧 CLI；已完成与待完成检查见[兼容性说明](docs/COMPATIBILITY.md)。

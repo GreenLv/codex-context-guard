@@ -4,6 +4,26 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 0.15.1 — 未发布
+
+### Highlights
+
+- 明确续行重新可以解除普通暂停。“暂停一下”等礼貌后缀或随后说明重启工具的句子，不再把普通暂停变成绑定确认对象的具名等待；“请继续执行”“你继续”"please continue" 等礼貌/句中续行与裸续行共用同一按子句锚定的契约。说明旧对象不可用不再否决当前续行；只有直接否定续行动作本身（“现在不要继续”）才保持等待。
+- `checkpoint-status` 已在 CLI 规定的诊断选项（`--commands`、`--full`、`--item VALUE`、`--after-revision VALUE`）在 PostToolUse 中按同一显式契约识别。合法状态查询不再被判为畸形私有控制命令；失败的诊断工具结果仍是静默 Hook 事件，永远不会成为业务证据。
+- `checkpoint-status` 读路径不再获取私有写锁。诊断快照以零写入方式加载一个已提交的状态修订，在曾经因写意图打开锁文件被拒的只读受限环境中恢复可用。
+
+### Changes
+
+- 暂停与续行分类在 `root_pause_clauses`、`general_root_pause_clause`、`has_root_resume_intent` 与 Stop 侧续行模式间共用一份契约。具名输入、精确标记、方案选择与外部依赖仍需各自证据；引文提及、疑问句、第三方续行与多重歧义等待不会释放任何条件。
+- checkpoint-status CLI 子解析器拒绝 argparse 隐式缩写；CLI 与 Hook 都拒绝重复绑定（不再最后者覆盖）、缺值/空值、未知选项、位置参数与互斥模式组合。运行时、脚本、data-root、会话、轮次与 token 绑定保持精确校验。
+- 0.15.0 写入 v2 的错误分类暂停账目，只有在原始根来源、来源子句和 subject 绑定重新核验通过后才可在后续真实续行中释放；来源不可核验保持等待，新运行时不写 legacy 会话。
+- 损坏、截断、被符号链接替换、哈希不匹配或旧 schema 的状态在诊断路径以有界原因显式失败，不做重建、备份或迁移；并发原子替换在显式的次数、字节与时间预算内重试，超限报告 `state_changed_during_read`。
+
+### Validation
+
+- 仅源码级验证；本条为未发布候选。两个字节不变的原事故复现在 macOS 上分别 6/6 与 8/8 通过，包括私有锁写拒绝探针。W/C/R 家族回归、完整行为套件、仓库/隐私/身份审计、lint、编译与隔离安装检查待冻结后按精确候选提交记录于[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
+- 本版本的原生 macOS/Windows 事故场景、真实 Hook 信任、精确提交 CI/HOL 与发布尚未执行，仍为必需门槛。
+
 ## 0.15.0 — 2026-10-02
 
 ### Highlights

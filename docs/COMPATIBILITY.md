@@ -1,5 +1,20 @@
 # Compatibility and Verification Status
 
+## 0.15.1 — Unreleased
+
+The 0.15.1 source candidate keeps the 0.15.0 storage and upgrade boundaries:
+new sessions use `sessions-v2`, legacy `sessions` stay read-only, no migration
+runs, and consumed caches are never refreshed. Two observable contract changes
+apply to this candidate and require fresh runtime evidence: the documented
+`checkpoint-status` diagnostic options are accepted by both the CLI and
+PostToolUse under one explicit contract (prefix abbreviations are no longer
+accepted by the CLI subparser), and the status read path performs no write on
+the private tree, so a read-restricted environment no longer fails the query.
+Existing 0.15.0 tasks keep their bytes; a misclassified pause ledger entry
+recovers only through a real later resume with a re-verified root source. All
+native two-platform evidence for these behaviors is pending; source results do
+not substitute for it.
+
 ## 0.15.0 — 2026-10-02
 
 New sessions use `sessions-v2`; existing `sessions` trees stay with their

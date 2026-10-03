@@ -1,5 +1,25 @@
 # Versioning policy
 
+## 0.15.1 — Unreleased
+
+This compatible patch repairs the two reproduced 0.15.0 incidents
+(CG-0151-HOOK-REPAIR): ordinary-pause resume recognition and the
+checkpoint-status diagnostic contract. Schema 13, Stop 5.0.0, the nine Hook
+events, `sessions-v2`/legacy routing and the writer kernel lifecycle lock are
+unchanged; no state migration runs. Observable runtime changes: pause/resume
+classification shares one clause-anchored contract (polite softeners stay
+ordinary pauses; polite, direct-address and mid-sentence resumes match;
+only a negation of the resume action itself blocks), and the checkpoint-status
+CLI subcommand and the PostToolUse recognition path enforce one explicit
+option contract (documented options accepted; abbreviations, duplicates,
+missing values and mode conflicts rejected on both surfaces). The
+checkpoint-status read path consumes a write-free committed snapshot with
+bounded retries instead of the repairing session-lock loader, and an older
+state schema fails the diagnostic explicitly instead of migrating in memory.
+Unpublished candidate revisions may share this version number; full commits
+and the runtime-tree digest identify revisions, and changed bytes install in a
+fresh isolated HOME.
+
 ## 0.15.0 — 2026-10-02
 
 This minor version changes the session-storage and upgrade contract. New sessions

@@ -4,6 +4,26 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.15.1 — Unreleased
+
+### Highlights
+
+- An explicit resume now releases an ordinary pause again. Polite softeners such as “暂停一下” or a follow-up sentence about restarting a tool no longer turn a bare pause into a subject-bound confirmation wait, and polite or mid-sentence resume wording (“请继续执行”, “你继续”, "please continue") is recognized on the same clause-anchored contract as the bare form. A statement that an old object is unavailable no longer vetoes the current resume; only a negation of the resume action itself (“现在不要继续”) keeps the task waiting.
+- The documented `checkpoint-status` diagnostic options (`--commands`, `--full`, `--item VALUE`, `--after-revision VALUE`) are recognized by PostToolUse under the same explicit contract the CLI enforces. A legal status query is no longer reported as a malformed private control command, and a failing diagnostic tool result stays a silent Hook event that never becomes business evidence.
+- The `checkpoint-status` read path no longer takes the private write lock. The diagnostic snapshot loads one committed state revision with zero write side effects, so it works in read-restricted environments where opening the lock file with write intent was denied.
+
+### Changes
+
+- Pause and resume classification shares one contract across `root_pause_clauses`, `general_root_pause_clause`, `has_root_resume_intent` and the Stop-side resume patterns. Named inputs, exact markers, choice waits and external dependencies still require their own evidence; quoted mentions, questions, third-party continuation and ambiguous multiple waits do not release anything.
+- The checkpoint-status CLI subparser rejects implicit argparse abbreviations, and both the CLI and the Hook reject duplicate bindings instead of last-wins, missing or empty values, unknown options, positional arguments and mutually exclusive mode combinations. Runtime, script, data-root, session, turn and token bindings keep their exact validation.
+- A misclassified 0.15.0 v2 pause ledger entry can be released later only after its original root source, source clause and subject binding re-verify; unverifiable sources stay waiting and the new runtime never writes legacy sessions.
+- Damaged, truncated, symlink-replaced, hash-mismatched or older-schema state fails the diagnostic with a bounded reason and no rebuild, backup or migration; concurrent atomic replacement is retried within an explicit attempt, byte and time budget and otherwise reports `state_changed_during_read`.
+
+### Validation
+
+- Source-level validation only; this entry is an unreleased candidate. The two unchanged canonical incident reproducers pass 6/6 and 8/8 desired oracles on macOS, including the private-lock write-denial probe. New W/C/R family regressions and the full behavior suite, repository/privacy/identity audits, lint, compile and isolated-install checks are recorded for the exact candidate commit in the [acceptance record](docs/LOCAL_ACCEPTANCE.md) once frozen.
+- Native macOS and Windows incident scenarios, real Hook trust, exact-commit CI/HOL and publication are not yet executed for this version; they remain required gates.
+
 ## 0.15.0 — 2026-10-02
 
 ### Highlights

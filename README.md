@@ -14,6 +14,8 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcr
 
 > **Latest published: 0.15.0 — 2026-10-02.** Lower Hook startup overhead, shorter instructions and exclusive state ownership. New sessions use isolated state; existing tasks need their original runtime. Read the [release notes](docs/releases/v0.15.0.md) and [upgrade boundaries](docs/SESSION_STORAGE.md) before changing an existing installation.
 
+> **Unreleased 0.15.1 source candidate:** explicit resumes release ordinary pauses again, documented `checkpoint-status` diagnostic options are accepted consistently by the CLI and PostToolUse, and the status read path no longer takes the private write lock. Draft [release notes](docs/releases/v0.15.1.md); native acceptance and publication are pending.
+
 ## Install
 
 Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The 0.15.0 acceptance batch targets Codex CLI `0.158.0`; earlier CLI versions are not retested for this release. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.

@@ -1,5 +1,22 @@
 # Local Release Acceptance
 
+## 0.15.1 candidate status (unreleased)
+
+The 0.15.1 source candidate repairs CGI-20261002-codex-pause-resume-wait-stall
+and CGI-20261003-codex-checkpoint-status-posttool-rejection. macOS source
+evidence recorded for the candidate commits on branch `codex/0.15.1-hook-repair`:
+the two unchanged canonical incident reproducers pass 6/6 and 8/8 desired
+oracles, including the synthetic private-lock write-denial probe; the new
+W01–W15, C01–C08 and R01–R10 family regressions run green with the
+pause/resume, command-contract, lock-protocol and namespace modules; the full
+behavior suite, repository/privacy/identity audits, Ruff, compileall and the
+isolated-install/no-op/parity/smoke checks bind the exact candidate commit and
+runtime-tree digest recorded in the development handoff. The original
+historical diagnostic PermissionError syscall remains unknown; the synthetic
+probe only proves the former write-lock dependency. Native macOS and Windows
+incident scenarios, real Hook trust, exact-commit CI/HOL and publication are
+pending and remain required gates for this version.
+
 ## 0.15.0 — 2026-10-02
 
 Evidence below concerns runtime-tree SHA-256 `8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5`. Source tests, installed files, live Hooks and public availability remain separate facts. The comparison baseline is the 0.14.3 runtime at source commit `d24899d8202a58d7426208541c58d193464e93de`, with the same runtime bytes as published tag `v0.14.3` at `13a5cf766bc42e7267d735c5a665f27cd5f9c97a`.

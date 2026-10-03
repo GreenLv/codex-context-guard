@@ -9,7 +9,6 @@ every row's verdict comes from dispatch, persisted state and Stop output.
 """
 from __future__ import annotations
 
-import json
 from unittest import mock
 
 from tests.test_cg122_p0_counterexamples import SCHEMA10_PARKED_FIXTURE, P0Harness, cg

@@ -48,7 +48,7 @@ except ModuleNotFoundError as exc:
     governed_test_action = _instruction_module.governed_test_action
     instruction_text = _instruction_module.instruction_text
 
-PRODUCT_VERSION = "0.15.0"
+PRODUCT_VERSION = "0.15.1"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
