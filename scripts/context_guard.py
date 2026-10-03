@@ -17406,6 +17406,86 @@ def existing_session_dir(root: Path, session_id: str) -> Path:
     return root / V2_NAMESPACE / session_id
 
 
+# Bounded read-only snapshot budget (CGI-20261003): retries cover a
+# concurrent atomic replacement, never an unbounded wait.
+READ_ONLY_STATE_READ_ATTEMPTS = 3
+READ_ONLY_STATE_RETRY_SLEEP_SECONDS = 0.05
+READ_ONLY_STATE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
+    """Load one committed v2 state revision with zero write side effects.
+
+    The diagnostic snapshot must not create or write the lifecycle lock,
+    chmod or create directories, migrate, rebuild, back up or repair
+    anything (CGI-20261003). Writers publish ``state.json`` atomically, so
+    one stable ``O_NOFOLLOW`` read of a regular single-link inode yields
+    exactly one committed revision, and the canonical content hash proves
+    its internal consistency. Bounded retries cover concurrent replacement;
+    continuous change or an unreadable/inconsistent file is an explicit
+    failure reason, never an empty state or a repaired one.
+    """
+    _reject_linked_session_path(session_dir)
+    state_path = session_dir / "state.json"
+    last_reason = "state_read_unstable"
+    for attempt in range(READ_ONLY_STATE_READ_ATTEMPTS):
+        if attempt:
+            time.sleep(READ_ONLY_STATE_RETRY_SLEEP_SECONDS)
+        try:
+            before_path = state_path.lstat()
+        except FileNotFoundError:
+            raise RuntimeError("state_file_missing") from None
+        except OSError:
+            raise RuntimeError("state_file_unreadable") from None
+        if not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1:
+            raise RuntimeError("state_file_not_a_regular_file")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(str(state_path), flags)
+        except OSError:
+            raise RuntimeError("state_file_unreadable") from None
+        try:
+            with os.fdopen(descriptor, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                raw = handle.read(READ_ONLY_STATE_MAX_BYTES + 1)
+                after = os.fstat(handle.fileno())
+            after_path = state_path.lstat()
+        except RuntimeError:
+            raise
+        except OSError:
+            raise RuntimeError("state_file_unreadable") from None
+        # One committed revision: the fd reads a single inode completely
+        # (same size at both fstats), and the currently published path must
+        # still be that inode. A concurrent atomic replacement is a bounded
+        # retry, never a merged view of two revisions.
+        if (before.st_ino != after.st_ino
+                or before.st_size != after.st_size
+                or after.st_size != len(raw)
+                or len(raw) > READ_ONLY_STATE_MAX_BYTES
+                or after_path.st_ino != before.st_ino
+                or not stat.S_ISREG(after_path.st_mode)):
+            last_reason = "state_changed_during_read"
+            continue
+        try:
+            loaded = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError("state_file_not_valid_json") from None
+        if not isinstance(loaded, dict):
+            raise RuntimeError("state_root_not_an_object")
+        if loaded.get("schema_version") != SCHEMA_VERSION:
+            # The read-only diagnostic never migrates or repairs; an older
+            # schema stays owned by the runtime that wrote it.
+            raise RuntimeError("unsupported_state_schema_for_readonly_snapshot")
+        try:
+            validate_state_integrity(loaded)
+        except StateIntegrityError as exc:
+            raise RuntimeError(
+                f"state_integrity_failed: {bounded(str(exc), 200)}"
+            ) from None
+        return loaded
+    raise RuntimeError(last_reason)
+
+
 def checkpoint_status(
     root: Path, session_id: str, turn_id: str, token: str, *,
     full: bool = False, item_id: str | None = None,
@@ -17427,8 +17507,9 @@ def checkpoint_status(
         if state.get("session", {}).get("id") != session_id:
             raise StateIntegrityError("legacy session identity mismatch")
     else:
-        with session_lock(session_dir):
-            state = load_state(session_dir, {"session_id": session_id})
+        state = read_only_committed_state(session_dir)
+        if state.get("session", {}).get("id") != session_id:
+            raise RuntimeError("session_identity_mismatch")
     require_usable_state(state)
     completion_attempt_for(state, turn_id, token)
     if commands:

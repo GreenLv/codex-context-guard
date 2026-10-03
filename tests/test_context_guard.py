@@ -3218,13 +3218,20 @@ class ContextGuardTests(unittest.TestCase):
         self.assertIsNone(migrated["completion_attempt"])
         self.assertEqual(migrated["requirements"][0]["status"], "pending")
         self.assertFalse(list(session_dir.glob("state.corrupt.*.json")))
-        with self.assertRaisesRegex(RuntimeError, "completion attempt"):
+        # The read-only diagnostic snapshot never migrates an older schema
+        # in place (CGI-20261003): the explicit failure reason must not be
+        # a silent repair or a seemingly completed result.
+        with self.assertRaisesRegex(
+            RuntimeError, "unsupported_state_schema_for_readonly_snapshot"
+        ):
             cg.checkpoint_status(
                 self.root / "private",
                 "session-a",
                 "legacy-turn",
                 "legacy-token",
             )
+        on_disk = json.loads((session_dir / "state.json").read_text())
+        self.assertEqual(on_disk["schema_version"], 4)
 
         self.prompt("继续迁移后的任务，并建立新的 turn-bound control。")
         current = self.state()
