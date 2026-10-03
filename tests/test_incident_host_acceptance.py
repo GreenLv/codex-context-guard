@@ -147,6 +147,68 @@ class IncidentHostTests(P0Harness):
         with self.assertRaises(ValueError):
             h.command_observation(bad, self.inventory, self.plan)
 
+    def command_sources(self, stage, started, completed):
+        stage = copy.deepcopy(stage)
+        for row in stage['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                row['params']['item']['source'] = (started if row['method'] == 'item/started'
+                                                  else completed)
+        return stage
+
+    def test_cli0160_initial_command_sources_share_all_query_oracles(self):
+        self.ready()
+        stages = {name: self.stage(name, query_options=options) for name, options in (
+            ('status', ['--commands']), ('unknown', ['--unknown-status-option']),
+            ('missing', ['--item', '--commands']))}
+        for source in ('agent', 'unifiedExecStartup'):
+            with self.subTest(source=source):
+                stage = self.command_sources(stages['status'], source, source)
+                item = h.command_observation(stage, self.inventory, self.plan)
+                h.status_argv(item, stage, self.plan)
+                self.assertEqual(item['source'], source)
+                for name in ('unknown', 'missing'):
+                    stage = self.command_sources(stages[name], source, source)
+                    self.assertEqual(h.rejection_observation(
+                        stage, self.inventory, self.plan, name)['branch'], 'cli2_post_blocked')
+
+    def test_cli0160_source_pair_matrix_rejects_manual_followup_and_mismatch(self):
+        self.ready()
+        original = self.stage('status', query_options=['--commands'])
+        sources = ('agent', 'unifiedExecStartup', 'userShell', 'unifiedExecInteraction',
+                   'unknown', '', None, True, [], {})
+        for started in sources:
+            for completed in sources:
+                if started == completed and started in ('agent', 'unifiedExecStartup'):
+                    continue
+                with self.subTest(started=started, completed=completed):
+                    with self.assertRaises(ValueError):
+                        h.command_observation(self.command_sources(original, started, completed),
+                                              self.inventory, self.plan)
+        for method in ('item/started', 'item/completed'):
+            missing = copy.deepcopy(original)
+            next(row['params']['item'] for row in missing['rows']
+                 if row['method'] == method).pop('source')
+            with self.subTest(missing_source=method), self.assertRaises(ValueError):
+                h.command_observation(missing, self.inventory, self.plan)
+
+    def test_cli0160_startup_preserves_command_identity_and_scope_checks(self):
+        self.ready()
+        original = self.command_sources(self.stage('status', query_options=['--commands']),
+                                        'unifiedExecStartup', 'unifiedExecStartup')
+        for field, value in (('id', 'other-command'), ('command', 'other-command'),
+                             ('cwd', str(self.root / 'other'))):
+            bad = copy.deepcopy(original)
+            next(row['params']['item'] for row in bad['rows']
+                 if row['method'] == 'item/started')[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.command_observation(bad, self.inventory, self.plan)
+        for field in ('threadId', 'turnId'):
+            bad = copy.deepcopy(original)
+            next(row['params'] for row in bad['rows']
+                 if row['method'] == 'item/started')[field] = 'other-scope'
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                h.command_observation(bad, self.inventory, self.plan)
+
     @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
                      'native POSIX denial requires a non-root POSIX child; Windows tested separately')
     def test_actual_readonly_child_with_real_query_and_denied_lock(self):

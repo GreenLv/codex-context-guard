@@ -194,7 +194,11 @@ def command_pair(stage, plan, *, require_exit=True):
                  and a['command'] == b['command'] and a['cwd'] == b['cwd'],
                  'command pair identity mismatch')
     base.require(Path(b['cwd']).resolve() == Path(plan['cwd']).resolve(), 'tool cwd drift')
-    base.require(b.get('source', 'agent') == 'agent' and b.get('status') in ('completed', 'failed'),
+    # CLI 0.160 distinguishes initial unified exec from follow-up interaction.
+    # Both notifications must bind the same explicit model-initiated source.
+    base.require(a.get('source') in ('agent', 'unifiedExecStartup')
+                 and a.get('source') == b.get('source')
+                 and b.get('status') in ('completed', 'failed'),
                  'ordinary model command required')
     if require_exit:
         base.require(type(b.get('exitCode')) is int and isinstance(b.get('aggregatedOutput'), str),
