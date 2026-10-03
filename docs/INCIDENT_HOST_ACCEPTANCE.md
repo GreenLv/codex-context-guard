@@ -66,7 +66,13 @@ CLI 0.160 initial commands may use `agent` or `unifiedExecStartup`; the started
 and completed sources must match. Manual user-shell and follow-up interaction
 sources are rejected. The mapper accepts one exact standard shell wrapper,
 checks the inner command's original bindings, and rejects nesting, additional
-shell options, compound commands and expansion syntax. Windows native PowerShell
+shell options, compound commands and expansion syntax. For the principal and
+read-only helper only, local absolute Windows Python/helper/request paths may
+vary in slash direction or repeated separators. Arity and flags remain exact;
+dot segments, case changes, 8.3 aliases, device/UNC names, alternate streams and
+other path aliases are rejected. Helper identity binds the captured execution
+repository and its pinned helper bytes, independently of the replay mapper
+checkout; the Windows request path binds the captured workspace/output. POSIX helper argv stays byte-exact. Windows native PowerShell
 wrappers must match the planned absolute executable path and hash. Bare names
 remain supported only for existing synthetic fixtures. This does not substitute for native
 Windows acceptance or permit `readOnly` sandbox drift.

@@ -521,11 +521,85 @@ def hook_control_token(stage, inventory, plan, copied):
     return candidates[0]
 
 
+def same_helper_path(observed, expected, *, windows):
+    """Only separator spelling varies for local absolute Windows helper paths.
+
+    No filesystem resolution, dot segments, device/UNC names, 8.3 aliases,
+    case folding, environment expansion or alternate streams. Exact POSIX
+    paths remain available to the existing synthetic Windows fixtures.
+    """
+    if not isinstance(observed, str) or not isinstance(expected, str):
+        return False
+    if not windows:
+        return observed == expected
+    def spelling(value):
+        if not re.match(r'^[A-Za-z]:[\\/]', value):
+            return None
+        parts = re.split(r'[\\/]+', value[2:].lstrip('\\/'))
+        if (not parts or any(not part or part in ('.', '..') or part.endswith((' ', '.'))
+                             or any(c in part for c in ':*?<>|"~')
+                             or any(ord(c) < 32 for c in part) for part in parts)):
+            return None
+        return value[:2], tuple(parts)
+    left, right = spelling(observed), spelling(expected)
+    if left is not None and right is not None:
+        return left == right
+    return observed == expected and observed.startswith('/')
+
+
+def helper_argv_matches(argv, expected, *, windows):
+    """Match one principal/read-only invocation; non-path tokens stay exact."""
+    if (not isinstance(argv, list) or not isinstance(expected, list)
+            or len(argv) != len(expected) or len(expected) not in (3, 4)
+            or not all(isinstance(v, str) for v in argv + expected)
+            or expected[2] != ('--identity' if len(expected) == 3 else '--request')):
+        return False
+    paths = (0, 1) if len(expected) == 3 else (0, 1, 3)
+    return all(same_helper_path(a, b, windows=windows) if i in paths else a == b
+               for i, (a, b) in enumerate(zip(argv, expected)))
+
+
+def execution_helper_path(plan):
+    """Bind the executed helper to its captured repository, never mapper ROOT."""
+    if 'repo' not in plan:
+        # Historical synthetic fixtures have no versioned execution plan.
+        base.require('schema' not in plan, 'execution repository unavailable')
+        return str(ROOT / 'tools/validation/incident_readonly_child.py')
+    repo = Path(plan['repo'])
+    helper = repo / 'tools/validation/incident_readonly_child.py'
+    base.require(repo.is_absolute() and not repo.is_symlink() and helper.is_file()
+                 and not helper.is_symlink() and helper.resolve().is_relative_to(repo.resolve())
+                 and not any(getattr(p.lstat(), 'st_file_attributes', 0) & 0x400
+                             for p in (repo, repo / 'tools', repo / 'tools/validation', helper))
+                 and base.sha(helper) == plan.get('toolkit', {}).get('incident_readonly_child.py'),
+                 'execution helper bytes or path drift')
+    return str(helper)
+
+
+def readonly_helper_argv(item, expected, plan):
+    windows = plan['platform'] == 'Windows'
+    argv = ordinary_command_argv(item['command'], windows=windows,
+                                 shell_identity=plan.get('shell'))
+    matches = helper_argv_matches(argv, expected, windows=windows) and len(expected) == 4
+    if matches and windows:
+        matches = (same_helper_path(expected[0], plan['python'], windows=True)
+                   and same_helper_path(expected[1], execution_helper_path(plan), windows=True))
+    elif matches:
+        matches = (Path(argv[0]).resolve() == Path(plan['python']).resolve()
+                   and Path(argv[1]).resolve() == ROOT / 'tools/validation/incident_readonly_child.py')
+    if matches and windows and plan.get('schema') == 'incident-host-plan/v1':
+        request_path = Path(plan['cwd']) / ('incident-request-' + Path(plan['output']).name + '.json')
+        matches = same_helper_path(expected[3], str(request_path), windows=True)
+    base.require(matches, 'readonly tool argv differs')
+    return argv
+
+
 def principal_observation(stage, inventory, plan):
     item = command_observation(stage, inventory, plan)
     argv = ordinary_command_argv(item['command'], windows=True, shell_identity=plan.get('shell'))
-    expected = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
-    base.require(argv == expected and item['exitCode'] == 0, 'principal tool command differs')
+    expected = [plan['python'], execution_helper_path(plan), '--identity']
+    base.require(helper_argv_matches(argv, expected, windows=True)
+                 and item['exitCode'] == 0, 'principal tool command differs')
     record = json.loads(item['aggregatedOutput'])
     base.require(isinstance(record, dict) and set(record) == {'schema', 'sid', 'pid', 'platform'}
                  and record['schema'] == 'incident-child-principal/v1'
@@ -712,12 +786,7 @@ def map_capture(capture, *, mapper_identity=None):
             gates['status_negative_controls'] = 'passed'
     if 'readonly' in stages and capture.get('readonly_request'):
         item = command_observation(stages['readonly'], inventory, plan)
-        argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows',
-                                 shell_identity=plan.get('shell'))
-        base.require(argv == capture['readonly_tool_argv'] and len(argv) == 4
-                     and Path(argv[0]).resolve() == Path(plan['python']).resolve()
-                     and Path(argv[1]).resolve() == ROOT / 'tools/validation/incident_readonly_child.py'
-                     and argv[2] == '--request', 'readonly tool argv differs')
+        readonly_helper_argv(item, capture['readonly_tool_argv'], plan)
         base.require(item['exitCode'] == 0, 'readonly child tool failed')
         record = json.loads(item['aggregatedOutput'])
         if plan['platform'] == 'Windows':

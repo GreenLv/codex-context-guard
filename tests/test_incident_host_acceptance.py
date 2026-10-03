@@ -31,6 +31,11 @@ class IncidentHostTests(P0Harness):
                      'platform': platform.system(), 'python': str(Path(sys.executable).resolve()),
                      'plugin_root': str(h.ROOT), 'data_root': str(self.root / 'private'),
                      'cwd': str(self.root)}
+        if self.plan['platform'] == 'Windows':
+            shell = self.root / 'fixture-shell' / 'pwsh.exe'
+            shell.parent.mkdir(exist_ok=True)
+            shell.write_bytes(b'synthetic pinned shell; never executed')
+            self.plan['shell'] = {'name': 'powershell', 'path': str(shell), 'sha256': base.sha(shell)}
         self.inventory = {event: {'key': event, 'eventName': event,
                                  'sourcePath': str(h.ROOT / 'hooks/hooks.json'),
                                  'source': 'plugin', 'handlerType': 'command',
@@ -68,12 +73,12 @@ class IncidentHostTests(P0Harness):
                     'checkpoint-status', '--data-dir', self.plan['data_root'],
                     '--session-id', 'p0', '--turn-id', turn, '--token', 'p0token', *query_options]
             pre = self.dispatch('PreToolUse', turn_id=turn, tool_name='shell',
-                                tool_input={'command': cg.shell_join(argv)})
+                                tool_input={'command': cg.shell_join(argv, windows=self.plan['platform'] == 'Windows')})
             self.assertEqual(pre, {}, 'frozen source Pre diagnostic branch must stay silent')
             p = subprocess.run(argv, capture_output=True, text=True, check=False,
                                env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
             item = {'type': 'commandExecution', 'id': 'command-' + name,
-                    'command': cg.shell_join(argv), 'cwd': self.plan['cwd'], 'source': 'agent',
+                    'command': cg.shell_join(argv, windows=self.plan['platform'] == 'Windows'), 'cwd': self.plan['cwd'], 'source': 'agent',
                     'status': 'inProgress'}
             rows += self.hook('preToolUse', turn)
             rows.append({'method': 'item/started', 'params': {'threadId': 'p0', 'turnId': turn, 'item': item}})
@@ -178,11 +183,16 @@ class IncidentHostTests(P0Harness):
         for row in stage['rows']:
             if row['method'] in ('item/started', 'item/completed'):
                 item = row['params']['item']
-                item['command'] = prefix + ' ' + __import__('shlex').quote(item['command'])
+                if self.plan['platform'] == 'Windows' and prefix == '/bin/zsh -lc':
+                    item['command'] = subprocess.list2cmdline([self.plan['shell']['path'], '-Command', '& ' + item['command']])
+                else:
+                    item['command'] = prefix + ' ' + __import__('shlex').quote(item['command'])
         return stage
 
     def test_cli0160_single_shell_wrapper_status_and_negative_controls(self):
         self.ready()
+        self.plan['platform'] = 'Darwin'  # Explicit synthetic POSIX parser input.
+        self.plan.pop('shell', None)
         for name, options in (('status', ['--commands']),
                               ('unknown', ['--unknown-status-option']),
                               ('missing', ['--item', '--commands'])):
@@ -200,6 +210,8 @@ class IncidentHostTests(P0Harness):
 
     def test_cli0160_redacted_display_sentinel_is_not_a_reconstructed_secret(self):
         self.ready()
+        self.plan['platform'] = 'Darwin'  # Explicit synthetic POSIX parser input.
+        self.plan.pop('shell', None)
         stage = self.stage('status', query_options=['--commands'])
         for row in stage['rows']:
             if row['method'] in ('item/started', 'item/completed'):
@@ -211,7 +223,7 @@ class IncidentHostTests(P0Harness):
         self.assertIn('--token=[REDACTED_SECRET]', h.status_argv(item, stage, self.plan))
         for wrong in ('[OTHER]', '[REDACTED_SECRET]*', '[REDACTED_SECRET]$(echo extra)'):
             command = item['command'].replace('[REDACTED_SECRET]', wrong)
-            self.assertIsNone(h.ordinary_command_argv(command, windows=False))
+            self.assertIsNone(h.ordinary_command_argv(command, windows=self.plan['platform'] == 'Windows'))
         self.assertIsNone(h.ordinary_command_argv(
             '/bin/zsh -lc ' + __import__('shlex').quote(
                 '/literal/python /literal/script --data-dir=[REDACTED_SECRET]'), windows=False))
@@ -453,6 +465,8 @@ class IncidentHostTests(P0Harness):
 
     def test_cli0160_wrapper_rejects_injection_nesting_extra_args_and_binding_drift(self):
         self.ready()
+        self.plan['platform'] = 'Darwin'  # Explicit synthetic POSIX parser input.
+        self.plan.pop('shell', None)
         original = self.stage('status', query_options=['--commands'])
         command = next(row['params']['item']['command'] for row in original['rows']
                        if row['method'] == 'item/completed')
@@ -465,7 +479,9 @@ class IncidentHostTests(P0Harness):
             bad = self.wrap_command(original)
             for row in bad['rows']:
                 if row['method'] in ('item/started', 'item/completed'):
-                    row['params']['item']['command'] = '/bin/zsh -lc ' + quote(body)
+                    row['params']['item']['command'] = (subprocess.list2cmdline([self.plan['shell']['path'], '-Command', '& ' + body])
+                                                      if self.plan['platform'] == 'Windows'
+                                                      else '/bin/zsh -lc ' + quote(body))
             with self.subTest(body=body), self.assertRaises(ValueError):
                 h.status_argv(h.command_observation(bad, self.inventory, self.plan), bad, self.plan)
         for outer in ('/bin/zsh -lc ' + quote(command) + ' extra',
@@ -480,7 +496,10 @@ class IncidentHostTests(P0Harness):
             bad = self.wrap_command(original)
             for row in bad['rows']:
                 if row['method'] in ('item/started', 'item/completed'):
-                    row['params']['item']['command'] = '/bin/zsh -lc ' + quote(command.replace(old, new))
+                    body = command.replace(old, new)
+                    row['params']['item']['command'] = (subprocess.list2cmdline([self.plan['shell']['path'], '-Command', '& ' + body])
+                                                      if self.plan['platform'] == 'Windows'
+                                                      else '/bin/zsh -lc ' + quote(body))
             with self.subTest(binding=old), self.assertRaises(ValueError):
                 h.status_argv(h.command_observation(bad, self.inventory, self.plan), bad, self.plan)
 
@@ -529,15 +548,18 @@ class IncidentHostTests(P0Harness):
         argv = [plan['python'], str(h.ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
         sid = 'S-1-5-21-123'
         for row in stage['rows']:
-            if row['method'] in ('item/started', 'item/completed'):
+            if row.get('method') in ('item/started', 'item/completed'):
                 row['params']['item']['command'] = cg.shell_join(argv)
-                if row['method'] == 'item/completed':
+                if row.get('method') == 'item/completed':
                     row['params']['item']['aggregatedOutput'] = json.dumps(
                         {'schema': 'incident-child-principal/v1', 'sid': sid, 'pid': 12, 'platform': 'Windows'})
+        response = {'id': 7, 'result': {'fixture': 'legal RPC response'}}
+        stage['rows'].insert(3, response)
         self.assertEqual(h.principal_observation(stage, self.inventory, plan), sid)
+        self.assertEqual(stage['rows'][3], response)
         for key, value in [('sid', 'invalid'), ('pid', True), ('platform', 'Darwin'), ('schema', 'other')]:
             bad = copy.deepcopy(stage)
-            completed = next(r['params']['item'] for r in bad['rows'] if r['method'] == 'item/completed')
+            completed = next(r['params']['item'] for r in bad['rows'] if r.get('method') == 'item/completed')
             record = json.loads(completed['aggregatedOutput'])
             record[key] = value
             completed['aggregatedOutput'] = json.dumps(record)
@@ -545,10 +567,151 @@ class IncidentHostTests(P0Harness):
                 h.principal_observation(bad, self.inventory, plan)
         bad = copy.deepcopy(stage)
         for row in bad['rows']:
-            if row['method'] in ('item/started', 'item/completed'):
+            if row.get('method') in ('item/started', 'item/completed'):
                 row['params']['item']['command'] += ' --request other'
         with self.assertRaises(ValueError):
             h.principal_observation(bad, self.inventory, plan)
+
+
+    def test_windows_status_wrapper_fixture_pins_shell_and_rejects_drift(self):
+        self.ready()
+        stage = self.stage('status', query_options=['--commands'])
+        shell = {'name': 'powershell', 'path': r'C:\Fixture Shell\pwsh.exe', 'sha256': 'a' * 64}
+        plan = {**self.plan, 'platform': 'Windows', 'shell': shell}
+        # A standalone synthetic Windows body with exact bound argv.
+        argv = [plan['python'], str(h.ROOT / 'scripts/context_guard.py'), 'checkpoint-status',
+                '--data-dir', plan['data_root'], '--session-id', stage['thread'],
+                '--turn-id', stage['turn'], '--token', 'p0token', '--commands']
+        body = '& ' + subprocess.list2cmdline(argv)
+        item = {'command': subprocess.list2cmdline([shell['path'], '-Command', body])}
+        self.assertEqual(h.status_argv(item, stage, plan), argv)
+        for path, flag in ((r'C:\Foreign\pwsh.exe', '-Command'),
+                           (shell['path'], '-NoProfile')):
+            bad = {'command': subprocess.list2cmdline([path, flag, body])}
+            with self.subTest(path=path, flag=flag), self.assertRaises(ValueError):
+                h.status_argv(bad, stage, plan)
+        self.assertIsNone(h.ordinary_command_argv(item['command'], windows=True,
+                                                  shell_identity={**shell, 'sha256': 'invalid'}))
+
+    def test_windows_helper_separator_family_and_strict_negative_controls(self):
+        expected = [r'C:\Tools\Python\python.exe',
+                    r'C:\Owned Source\tools\validation\incident_readonly_child.py', '--identity']
+        request = expected[:2] + ['--request', r'C:\Owned Work\request.json']
+        shell = {'name': 'powershell', 'path': r'C:\Tools\pwsh.exe', 'sha256': 'a' * 64}
+        for wanted in (expected, request):
+            for changed in (wanted, [v.replace('\\', '\\\\') for v in wanted],
+                            [v.replace('\\', '/') for v in wanted]):
+                body = '& ' + subprocess.list2cmdline(changed)
+                commands = [body, '"' + shell['path'] + '" -Command ' + json.dumps(body),
+                            '"' + shell['path'] + '" -Command ' + "'" + body + "'"]
+                # CRT wrapper escaping, not JSON escaping.
+                commands[1] = subprocess.list2cmdline([shell['path'], '-Command', body])
+                for command in commands:
+                    with self.subTest(command=command):
+                        actual = h.ordinary_command_argv(command, windows=True, shell_identity=shell)
+                        self.assertTrue(h.helper_argv_matches(actual, wanted, windows=True))
+            for index in (0, 1, *([3] if len(wanted) == 4 else [])):
+                for value in (wanted[index] + '.other', wanted[index].replace('C:', 'D:'),
+                              wanted[index].replace('C:\\', 'C:\\.\\'),
+                              wanted[index].replace('C:\\', 'C:\\other\\..\\'),
+                              wanted[index] + ':stream', wanted[index] + ' ',
+                              wanted[index] + '.', wanted[index].replace('Tools', 'TOOLS'),
+                              '\\\\?\\' + wanted[index], r'\\server\share\file',
+                              r'C:\TOOLS~1\file', r'%ROOT%\file', r'C:relative\file'):
+                    if value == wanted[index]:
+                        continue
+                    bad = list(wanted)
+                    bad[index] = value
+                    with self.subTest(index=index, value=value):
+                        self.assertFalse(h.helper_argv_matches(bad, wanted, windows=True))
+            for bad in (wanted + ['--extra'], wanted[:-1], wanted[:2] + ['--Identity'],
+                        wanted[:2] + ['--request', r'C:\other.json']):
+                self.assertFalse(h.helper_argv_matches(bad, wanted, windows=True))
+            for command in ('& ' + subprocess.list2cmdline(wanted) + '; echo extra',
+                            'pwsh.exe -NoProfile -Command ' + "'& " + subprocess.list2cmdline(wanted) + "'",
+                            '"' + shell['path'] + '" -Command ' + "'pwsh.exe -Command inner'"):
+                self.assertFalse(h.helper_argv_matches(h.ordinary_command_argv(
+                    command, windows=True, shell_identity=shell), wanted, windows=True))
+        self.assertFalse(h.helper_argv_matches([v.replace('\\', '\\\\') for v in expected],
+                                               expected, windows=False))
+
+    def test_windows_both_helper_entrypoints_keep_hook_source_and_scope_binding(self):
+        self.ready()
+        stage = self.stage('status', query_options=['--commands'])
+        plan = {**self.plan, 'platform': 'Windows', 'python': r'C:\Tools\python.exe'}
+        from pathlib import PureWindowsPath
+        source = PureWindowsPath(r'C:\Owned Source')
+        expected = [plan['python'], str(source / 'tools/validation/incident_readonly_child.py'), '--identity']
+        changed = [v.replace('\\', '\\\\') for v in expected]
+        def command(value, target=stage):
+            for row in target['rows']:
+                if row['method'] in ('item/started', 'item/completed'):
+                    row['params']['item']['command'] = '& ' + subprocess.list2cmdline(value)
+                    row['params']['item']['source'] = 'unifiedExecStartup'
+                    if row['method'] == 'item/completed':
+                        row['params']['item']['aggregatedOutput'] = json.dumps(
+                            {'schema': 'incident-child-principal/v1', 'sid': 'S-1-5-21-123',
+                             'pid': 12, 'platform': 'Windows'})
+        command(changed)
+        with mock.patch.object(h, 'ROOT', source):
+            self.assertEqual(h.principal_observation(stage, self.inventory, plan), 'S-1-5-21-123')
+            requested = expected[:2] + ['--request', r'C:\Work\request.json']
+            item = {'command': '& ' + subprocess.list2cmdline([v.replace('\\', '\\\\') for v in requested])}
+            self.assertEqual(len(h.readonly_helper_argv(item, requested, plan)), 4)
+            for index in (0, 1, 3):
+                bad = list(requested)
+                bad[index] += '.foreign'
+                with self.subTest(index=index), self.assertRaises(ValueError):
+                    h.readonly_helper_argv({'command': subprocess.list2cmdline(bad)}, requested, plan)
+            for mutate in ('source', 'scope', 'extra-command', 'hook-origin'):
+                bad = copy.deepcopy(stage)
+                if mutate == 'source':
+                    next(x['params']['item'] for x in bad['rows'] if x['method'] == 'item/started')['source'] = 'userShell'
+                elif mutate == 'scope':
+                    next(x['params'] for x in bad['rows'] if x['method'] == 'item/started')['threadId'] = 'foreign'
+                elif mutate == 'extra-command':
+                    bad['rows'].append(copy.deepcopy(next(x for x in bad['rows'] if x['method'] == 'item/completed')))
+                else:
+                    next(x['params']['run'] for x in bad['rows'] if x['method'] == 'hook/completed')['source'] = 'config'
+                with self.subTest(mutate=mutate), self.assertRaises(ValueError):
+                    h.principal_observation(bad, self.inventory, plan)
+
+    def test_helper_execution_repository_and_pinned_bytes_are_not_mapper_identity(self):
+        self.ready()
+        executed = self.root / 'executed'
+        helper = executed / 'tools/validation/incident_readonly_child.py'
+        helper.parent.mkdir(parents=True)
+        helper.write_bytes((h.ROOT / 'tools/validation/incident_readonly_child.py').read_bytes())
+        plan = {**self.plan, 'repo': str(executed), 'schema': 'incident-host-plan/v1',
+                'platform': 'Windows', 'output': str(self.root / 'capture')}
+        stage = self.stage('status', query_options=['--commands'])
+        principal_argv = [plan['python'], str(helper), '--identity']
+        for row in stage['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                row['params']['item']['command'] = subprocess.list2cmdline(principal_argv)
+                if row['method'] == 'item/completed':
+                    row['params']['item']['aggregatedOutput'] = json.dumps(
+                        {'schema': 'incident-child-principal/v1', 'sid': 'S-1-5-21-123',
+                         'pid': 12, 'platform': 'Windows'})
+        request = principal_argv[:2] + ['--request', str(self.root / 'incident-request-capture.json')]
+        with mock.patch.object(h, 'ROOT', self.root / 'different-mapper'):
+            self.assertEqual(h.execution_helper_path(plan), str(helper))
+            self.assertEqual(h.principal_observation(stage, self.inventory, plan), 'S-1-5-21-123')
+            self.assertEqual(h.readonly_helper_argv({'command': subprocess.list2cmdline(request)},
+                                                  request, plan), request)
+            wrong = request[:3] + [str(self.root / 'foreign-request.json')]
+            with self.assertRaises(ValueError):
+                h.readonly_helper_argv({'command': subprocess.list2cmdline(wrong)}, wrong, plan)
+            for bad in ({**plan, 'repo': str(self.root / 'foreign')},
+                        {**plan, 'toolkit': {**plan['toolkit'], 'incident_readonly_child.py': '0' * 64}},
+                        {**plan, 'repo': 'relative'}):
+                with self.subTest(plan=bad), self.assertRaises(ValueError):
+                    h.execution_helper_path(bad)
+        helper.write_bytes(b'foreign helper')
+        with self.assertRaises(ValueError):
+            h.execution_helper_path(plan)
+        with self.assertRaises(ValueError):
+            h.execution_helper_path({k: v for k, v in plan.items() if k != 'repo'})
 
     @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0,
                      'POSIX root cannot prove write denial')
@@ -855,6 +1018,10 @@ class PlanPinTests(unittest.TestCase):
                     'python_version': subprocess.check_output([sys.executable, '--version'], text=True).strip(),
                     'platform': platform.system(), 'model': 'gpt-6.1-sol', 'effort': 'medium', 'toolkit': h.toolkit(),
                     'manifest_sha256': base.sha(h.MANIFEST)}
+            if plan['platform'] == 'Windows':
+                shell = root / 'pwsh.exe'
+                shell.write_bytes(b'synthetic pinned shell; never executed')
+                plan['shell'] = {'name': 'powershell', 'path': str(shell), 'sha256': base.sha(shell)}
             path = root / 'plan.json'
             h.write_new(path, plan)
             real_check_output = subprocess.check_output
@@ -866,6 +1033,13 @@ class PlanPinTests(unittest.TestCase):
                 self.assertEqual(h.preflight(path, root / 'output'), plan)
                 self.assertEqual(h.preflight(path, root / 'output'), plan)
                 self.assertTrue((root / 'output.preflight-plan.json').is_file())
+                if plan['platform'] == 'Windows':
+                    for shell_value in (None, {**plan['shell'], 'sha256': '0' * 64}):
+                        bad = {**plan, 'shell': shell_value}
+                        path.write_text(json.dumps(bad))
+                        with self.assertRaises(ValueError):
+                            h.preflight(path, root / 'output')
+                    path.write_text(json.dumps(plan))
                 (root / 'output').mkdir()
                 with self.assertRaises(ValueError):
                     h.preflight(path, root / 'output')
