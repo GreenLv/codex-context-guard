@@ -625,6 +625,102 @@ class ReadOnlySnapshotTests(P0Harness):
         unchanged = self.query(turn=turn, after_revision=default["revision"])
         self.assertTrue(unchanged.get("unchanged"))
 
+    def test_r3_query_lifecycle_matrix(self):
+        """Real resume/new-root writers across all modes and both root kinds.
+
+        The loader must return its own identity, and no projection may escape
+        the final state/binding/source check. Only the arranged Hook writes;
+        compare the private inventory after it with the query's final tree.
+        """
+        modes = {"current": {}, "full": {"full": True},
+                 "item": {"item_id": "R001"}, "after_revision": {},
+                 "commands": {"commands": True}}
+        for typed in (False, True):
+            for timing in ("healthy", "after_load", "during_projection"):
+                for mode, options in modes.items():
+                    with self.subTest(typed=typed, timing=timing, mode=mode):
+                        h = P0Harness()
+                        h.setUp()
+                        try:
+                            h.activate()
+                            if typed:
+                                target = h.root / "example.py"
+                                target.write_text("before\n", encoding="utf-8")
+                                h.prompt(f"请修改 {target}，并运行 {target} 的测试。")
+                                h.prompt("持续执行直到当前任务完成。")
+                            else:
+                                h.prompt("请检查示例文档。")
+                            before = h.state()
+                            turn = before["completion_attempt"]["turn_id"]
+                            kw = dict(options)
+                            if mode == "after_revision":
+                                kw["after_revision"] = before["content_hash"]
+                            helper = ("read_only_committed_state" if timing == "after_load"
+                                      else "advanced_command_context" if mode == "commands"
+                                      else "checkpoint_status_snapshot")
+                            original = getattr(cg, helper)
+                            private = h.root / "private"
+                            inventory = tree_inventory(private)
+                            def writer(*args, **kwargs):
+                                nonlocal inventory
+                                if timing == "after_load":
+                                    loaded = original(*args, **kwargs)
+                                    h.dispatch("SessionStart", source="resume",
+                                               turn_id="synthetic-new-turn")
+                                    inventory = tree_inventory(private)
+                                    return loaded
+                                h.prompt("请检查第二份示例文档。")
+                                inventory = tree_inventory(private)
+                                return original(*args, **kwargs)
+                            def query():
+                                return cg.checkpoint_status(private, "p0", turn,
+                                                            "p0token", **kw)
+                            if timing == "healthy":
+                                self.assertEqual(query()["revision"], before["content_hash"])
+                            else:
+                                with mock.patch.object(cg, helper, side_effect=writer):
+                                    with self.assertRaisesRegex(
+                                        RuntimeError, "state_replaced|authority_source"):
+                                        query()
+                                current = h.state()
+                                self.assertNotEqual(current["content_hash"], before["content_hash"])
+                                self.assertNotEqual(current["completion_attempt"],
+                                                    before["completion_attempt"])
+                            self.assertEqual(tree_inventory(private), inventory)
+                        finally:
+                            h.doCleanups()
+
+    def test_r3_final_projection_rechecks_authority_matrix(self):
+        # State stays byte-identical; only an applicable dependency changes
+        # inside the real projection. A state probe alone cannot catch this.
+        modes = ({}, {"full": True}, {"item_id": "R001"},
+                 {"after_revision": "same"}, {"commands": True})
+        for typed in (False, True):
+            state = self._source_matrix_fixture(typed)
+            source = self.session_dir / state["prompts"][-1]["file"]
+            original_bytes = source.read_bytes()
+            for options in modes:
+                with self.subTest(typed=typed, options=options):
+                    kw = dict(options)
+                    if "after_revision" in kw:
+                        kw["after_revision"] = state["content_hash"]
+                    helper = ("advanced_command_context" if kw.get("commands")
+                              else "checkpoint_status_snapshot")
+                    original = getattr(cg, helper)
+                    def mutate(*args, **kwargs):
+                        result = original(*args, **kwargs)
+                        record = json.loads(original_bytes)
+                        record["text"] = "请检查另一个示例。"
+                        source.write_text(json.dumps(record), encoding="utf-8")
+                        return result
+                    try:
+                        with mock.patch.object(cg, helper, side_effect=mutate):
+                            with self.assertRaisesRegex(RuntimeError, "authority_source"):
+                                self.query(**kw)
+                        self.assertEqual(self.state()["content_hash"], state["content_hash"])
+                    finally:
+                        source.write_bytes(original_bytes)
+
     def test_f3_newer_root_on_disk_fails_typed_query(self):
         self.typed_fixture()
         state = self.state()

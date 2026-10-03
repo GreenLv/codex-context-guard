@@ -231,11 +231,39 @@ def _capture_events_by_kind(scenario_id: str, events: object) -> dict:
     return by_kind
 
 
+# Validate original observations before Python equality/truthiness can erase
+# their types. Fields listed here are exactly those consumed by each oracle.
+_CAPTURE_FIELDS = {
+    "pause_boundary": {"unit_status": "status", "waiting": "integer"},
+    "polite_resume": {"unit_status": "status", "waiting": "integer",
+                      "released_with_provenance": "boolean"},
+    "resume_over_typed_wait": {"waiting": "integer", "typed_waiting": "boolean"},
+    "negated_resume": {"waiting": "integer"},
+    "legal_commands_query": {"cli_exit_code": "integer", "posttool_blocked": "boolean"},
+    "unknown_option_guard": {"cli_exit_code": "integer", "posttool_blocked": "boolean"},
+    "missing_value_guard": {"cli_exit_code": "integer", "posttool_blocked": "boolean"},
+}
+
+
+def _validate_capture_observations(by_kind: dict, scenario_id: str) -> None:
+    for kind in REQUIRED_EVENT_KINDS[scenario_id]:
+        for field, domain in _CAPTURE_FIELDS[kind].items():
+            value = by_kind[kind].get(field)
+            valid = (type(value) is bool if domain == "boolean" else
+                     type(value) is int and value >= 0 if domain == "integer" else
+                     type(value) is str and value in {
+                         "active", "awaiting_user", "awaiting_external",
+                         "completed", "historical_unresolved", "superseded", "deferred"})
+            if not valid:
+                raise ValueError(f"invalid capture observation {kind}.{field}")
+
+
 def map_capture(capture: dict) -> dict:
     if not isinstance(capture, dict) or capture.get("schema") != CAPTURE_SCHEMA:
         raise ValueError("capture bundle has an unsupported schema")
     by_kind = _capture_events_by_kind(capture.get("scenario_id"),
                                       capture.get("events"))
+    _validate_capture_observations(by_kind, capture["scenario_id"])
     rows: list[dict] = []
     if capture["scenario_id"] == "pause-resume-v1":
         pause = by_kind["pause_boundary"]

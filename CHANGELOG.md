@@ -18,6 +18,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - The checkpoint-status CLI subparser rejects implicit argparse abbreviations, and both the CLI and the Hook reject duplicate bindings instead of last-wins, missing or empty values, unknown options, positional arguments and mutually exclusive mode combinations. Runtime, script, data-root, session, turn and token bindings keep their exact validation.
 - A misclassified 0.15.0 v2 pause ledger entry can be released later only after its original root source, source clause and subject binding re-verify; unverifiable sources stay waiting and the new runtime never writes legacy sessions.
 - Damaged, truncated, symlink-replaced, hash-mismatched or older-schema state fails the diagnostic with a bounded reason and no rebuild, backup or migration; concurrent atomic replacement is retried within an explicit attempt, byte and time budget and otherwise reports `state_changed_during_read`.
+- Every status mode binds the state file actually loaded and rechecks its turn, private binding and applicable sources after projection. A resume or new root during the query yields a controlled stale result instead of retired commands or an incorrect unchanged response.
+- Incident capture mapping validates required observations before boolean projection; missing, null or wrongly typed values cannot produce a passing verdict.
 
 ### Validation
 

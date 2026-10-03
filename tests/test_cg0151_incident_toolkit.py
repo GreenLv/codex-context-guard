@@ -7,6 +7,7 @@ acceptance stays a coordinator-owned gate.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -202,6 +203,61 @@ class IncidentToolkitTests(unittest.TestCase):
                 with self.subTest(scenario=scenario_id, case="extra-kind-ok"):
                     allowed = dict(capture, events=capture["events"])
                     toolkit.map_capture(allowed)  # activation kind is legal
+
+    def test_r3_mapper_original_value_type_matrix(self):
+        manifest = toolkit.load_manifest()
+        for capture in (toolkit.capture_pause_resume(ROOT),
+                        toolkit.capture_checkpoint_status(ROOT)):
+            self.assertEqual(toolkit.judge(toolkit.map_capture(capture),
+                                          manifest)["failed_count"], 0)
+            fields = {
+                "pause_boundary": ("unit_status", "waiting"),
+                "polite_resume": ("unit_status", "waiting", "released_with_provenance"),
+                "resume_over_typed_wait": ("waiting", "typed_waiting"),
+                "negated_resume": ("waiting",),
+                "legal_commands_query": ("cli_exit_code", "posttool_blocked"),
+                "unknown_option_guard": ("cli_exit_code", "posttool_blocked"),
+                "missing_value_guard": ("cli_exit_code", "posttool_blocked"),
+            }
+            for kind in toolkit.REQUIRED_EVENT_KINDS[capture["scenario_id"]]:
+                for field in fields[kind]:
+                    domain = ("integer" if field in {"waiting", "cli_exit_code"}
+                              else "status" if field == "unit_status" else "boolean")
+                    invalid = ([None, True, False, -1, 0.0, "0", [], {}]
+                               if domain == "integer" else
+                               [None, 0, 1, "false", [], {}] if domain == "boolean" else
+                               [None, 0, True, "unknown", [], {}])
+                    for value in invalid + ["missing"]:
+                        with self.subTest(kind=kind, field=field, value=value):
+                            mutated = copy.deepcopy(capture)
+                            event = next(e for e in mutated["events"] if e["kind"] == kind)
+                            if value == "missing":
+                                event.pop(field)
+                            else:
+                                event[field] = value
+                            with self.assertRaisesRegex(ValueError, "invalid capture observation"):
+                                toolkit.map_capture(mutated)
+
+    def test_r3_mapper_valid_behavior_inversions(self):
+        manifest = toolkit.load_manifest()
+        captures = (toolkit.capture_pause_resume(ROOT),
+                    toolkit.capture_checkpoint_status(ROOT))
+        inversions = {"pause_boundary": ("unit_status", "active"),
+                      "polite_resume": ("released_with_provenance", False),
+                      "resume_over_typed_wait": ("typed_waiting", False),
+                      "negated_resume": ("waiting", 0),
+                      "legal_commands_query": ("cli_exit_code", 1),
+                      "unknown_option_guard": ("posttool_blocked", False),
+                      "missing_value_guard": ("posttool_blocked", False)}
+        for capture in captures:
+            for kind in toolkit.REQUIRED_EVENT_KINDS[capture["scenario_id"]]:
+                with self.subTest(kind=kind):
+                    mutated = copy.deepcopy(capture)
+                    event = next(e for e in mutated["events"] if e["kind"] == kind)
+                    field, value = inversions[kind]
+                    event[field] = value
+                    verdict = toolkit.judge(toolkit.map_capture(mutated), manifest)
+                    self.assertEqual(verdict["failed_count"], 1)
 
     # -- R2 result-storage family matrix ----------------------------------
     def test_r2_preflight_preserves_existing_output(self):

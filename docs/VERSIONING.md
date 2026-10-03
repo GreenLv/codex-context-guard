@@ -16,6 +16,10 @@ missing values and mode conflicts rejected on both surfaces). The
 checkpoint-status read path consumes a write-free committed snapshot with
 bounded retries instead of the repairing session-lock loader, and an older
 state schema fails the diagnostic explicitly instead of migrating in memory.
+All status modes bind the fd-loaded state identity and revalidate the same
+revision, turn, private binding and applicable sources after projection; query-time
+changes fail explicitly. Incident capture mapping rejects missing or wrongly typed
+observations before boolean evaluation. These checks add no persisted fields.
 Unpublished candidate revisions may share this version number; full commits
 and the runtime-tree digest identify revisions, and changed bytes install in a
 fresh isolated HOME.

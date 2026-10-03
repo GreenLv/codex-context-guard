@@ -17518,6 +17518,20 @@ def read_only_authority_sources_valid(
     return False, "authority_source_dependencies_unavailable"
 
 
+def _committed_stat_identity(info: os.stat_result) -> tuple:
+    # mtime is comparable across path/handle providers on supported platforms;
+    # ctime is deliberately excluded (Windows providers use different domains).
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+class _ReadOnlyCommittedState(dict):
+    """Ephemeral identity of the exact fd-loaded revision; never serialized."""
+
+    def __init__(self, state: dict[str, Any], identity: tuple):
+        super().__init__(state)
+        self.committed_identity = identity
+
+
 def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
     """Load one committed v2 state revision with zero write side effects.
 
@@ -17563,11 +17577,13 @@ def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
         # (same size at both fstats), and the currently published path must
         # still be that inode. A concurrent atomic replacement is a bounded
         # retry, never a merged view of two revisions.
-        if (before.st_ino != after.st_ino
+        if (_committed_stat_identity(before_path) != _committed_stat_identity(before)
+                or _committed_stat_identity(before) != _committed_stat_identity(after)
                 or before.st_size != after.st_size
                 or after.st_size != len(raw)
                 or len(raw) > READ_ONLY_STATE_MAX_BYTES
-                or after_path.st_ino != before.st_ino
+                or _committed_stat_identity(after_path) != _committed_stat_identity(after)
+                or after_path.st_nlink != 1
                 or not stat.S_ISREG(after_path.st_mode)):
             last_reason = "state_changed_during_read"
             continue
@@ -17587,7 +17603,7 @@ def read_only_committed_state(session_dir: Path) -> dict[str, Any]:
             raise RuntimeError(
                 f"state_integrity_failed: {bounded(str(exc), 200)}"
             ) from None
-        return loaded
+        return _ReadOnlyCommittedState(loaded, _committed_stat_identity(after))
     raise RuntimeError(last_reason)
 
 
@@ -17597,7 +17613,9 @@ def _state_file_identity(session_dir: Path) -> tuple:
         info = (session_dir / "state.json").lstat()
     except OSError:
         return ("missing",)
-    return (info.st_ino, info.st_size, info.st_mtime_ns)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        return ("invalid",)
+    return _committed_stat_identity(info)
 
 
 def checkpoint_status(
@@ -17630,7 +17648,9 @@ def checkpoint_status(
         # the still-authoritative external sources and typed bindings must
         # verify too before any diagnostic (including the advanced command
         # inventory) is served (CG-0151 review F3/R2).
-        committed_identity = _state_file_identity(session_dir)
+        # Bind to the file actually loaded, not a later path probe that can
+        # already refer to a replacement published by SessionStart/resume.
+        committed_identity = state.committed_identity
         authority_valid, authority_reason = read_only_authority_sources_valid(
             session_dir, state)
         if not authority_valid:
@@ -17645,15 +17665,31 @@ def checkpoint_status(
         # Read-only discovery output: the exact turn-bound advanced command
         # set, nothing else. The compact default snapshot stays under its
         # public size contract and never carries the command inventory.
-        return {
+        result = {
             "turn_id": turn_id,
             "revision": str(state.get("content_hash") or state_content_hash(state)),
             "advanced_commands": advanced_command_context(state, turn_id, token),
         }
-    return checkpoint_status_snapshot(
-        state, turn_id, full=full, item_id=item_id,
-        after_revision=after_revision, session_dir=session_dir,
-    )
+    else:
+        result = checkpoint_status_snapshot(
+            state, turn_id, full=full, item_id=item_id,
+            after_revision=after_revision, session_dir=session_dir,
+        )
+    if namespace == "v2":
+        # This is the query's final validation point, after every projection.
+        # A state identity pins its revision, turn and private binding together.
+        # Recheck the complete applicable external source set against that same
+        # anchor; bracket it with state probes so a writer during validation
+        # also fails closed. No lock, repair, migration or sidecar write occurs.
+        if _state_file_identity(session_dir) != committed_identity:
+            raise RuntimeError("state_replaced_during_query")
+        authority_valid, authority_reason = read_only_authority_sources_valid(
+            session_dir, state)
+        if not authority_valid:
+            raise RuntimeError(authority_reason)
+        if _state_file_identity(session_dir) != committed_identity:
+            raise RuntimeError("state_replaced_during_query")
+    return result
 
 
 def clear_pending_request(
