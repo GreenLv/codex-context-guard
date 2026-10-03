@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "d31504dd3c4f2679311480699994b6170afd0d5a",
+  "library_commit": "1f880e5905afe02e8276266a2fcb0f2adf8e332b",
   "denominator": {
     "case_registry": {
-      "records": 56,
-      "active": 45
+      "records": 58,
+      "active": 47
     },
     "legacy_source": {
       "records": 16,
@@ -18,7 +18,7 @@
     "analogue_only",
     "pending"
   ],
-  "description": "Per-case mapping of the anonymized historical incident corpus (bound to the frozen source snapshot) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit.",
+  "description": "Per-case mapping of the anonymized historical incident corpus (bound to the frozen library snapshot; refreshed for CG-0151-HOOK-REPAIR (CGI-20261002/CGI-20261003 added, source results re-executed on the 0.15.1 candidate)) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit.",
   "cases": [
     {
       "id": "CGI-20260913-codex-archive-009",
@@ -1146,6 +1146,58 @@
       "missing_evidence": [],
       "owner": "coordinator",
       "windows_evidence_note": "Native Windows Python 3.12.10 executed the current-runtime Codex shared-semantics node successfully; DSH host behavior is not certified."
+    },
+    {
+      "id": "CGI-20261002-codex-pause-resume-wait-stall",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "普通暂停与明确续行用语漏识别，恢复后等待账本滞留",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "root-pause-resume-wait-lifecycle",
+      "current_contract": "0.15.1 candidate: a source-verified unique ordinary pause is released by the same task's explicit resume; polite softeners and user-action follow-up sentences keep the pause ordinary, polite/direct-address/mid-sentence resumes match the same clause-anchored contract, and only a negation of the resume action itself keeps waiting. Named inputs, exact markers, choice waits and external dependencies still need their own evidence; legacy sessions stay read-only",
+      "trigger": "canonical sanitized reproducer codex-pause-resume-wait-stall-v1 (6 scenarios) plus the W01-W15 dispatch/state/cold-read/Stop matrix",
+      "positive": "polite-pause, polite-resume, replacement-with-negated-old-object, replacement-without-negation scenarios release the unique ordinary wait with recorded provenance and restore the unit to active; Stop stays silent",
+      "negative": "negated-resume guard keeps waiting; quotes, questions, third-party continuation, ambiguous double waits, typed waits and external dependencies do not release; changed or missing source stays fail-closed; 0.15.0 misclassified v2 recovers only with re-verified source",
+      "test_locator": "tests/test_cg0151_pause_resume_family.py::PauseResumeFamilyTests::test_w02_polite_pause_suffix_does_not_create_named_object and ::test_w04_negated_old_object_does_not_block_current_resume and ::test_w12_changed_or_missing_source_stays_fail_closed",
+      "deeper_authority": "tests/test_cg122_p0_counterexamples.py P0Harness dispatch chain; canonical reproducer replay.py 6/6 in the incident library (unchanged driver/fixture bytes)",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "native macOS incident scenario: root-user pause -> Stop -> polite/mid-sentence resume -> cold read/recovery under normal Hook trust",
+        "native Windows incident scenario with the PowerShell launcher",
+        "exact-commit full CI and HOL for the frozen candidate",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-codex-checkpoint-status-posttool-rejection",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "合法诊断选项被 PostToolUse 误拒绝，只读查询依赖私有写锁",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "checkpoint-status-option-parsing-and-readonly-lock",
+      "current_contract": "0.15.1 candidate: the documented checkpoint-status options (--commands, --full, --item VALUE, --after-revision VALUE) are recognized by PostToolUse under the explicit contract the CLI enforces; abbreviations, duplicates, missing/empty values, unknown options and mode conflicts are rejected on both surfaces; the status read path loads one committed revision with zero write side effects and never takes the private write lock",
+      "trigger": "canonical sanitized reproducer codex-checkpoint-status-posttool-rejection-v1 (7 CLI/Hook scenarios plus the private-lock write-denial probe) plus the C01-C08 and R01-R10 matrices",
+      "positive": "real CLI subprocess success with documented options is recognized and the PostToolUse event stays silent; a failing diagnostic result grants no business evidence; the read-only snapshot serves queries with a byte-stable private tree",
+      "negative": "unknown/abbreviated options, duplicate bindings, missing values, mode conflicts, shell chains, wrong session/turn/data-root/token or a different runtime/script stay rejected; damaged or replaced state fails explicitly without rebuild, backup or migration",
+      "test_locator": "tests/test_cg0151_status_command_contract.py::StatusCommandContractTests::test_c08_real_cli_success_then_post_chain_cold_read and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r01_all_modes_read_without_tree_changes and ::test_r08_continuous_change_returns_explicit_failure",
+      "deeper_authority": "tests/test_session_lock_protocol.py writer kernel-lock contract; canonical reproducer replay.py 8/8 in the incident library (unchanged driver/fixture bytes)",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "native macOS incident scenario: real model-restricted tool executing the prompted status --commands with normal trust",
+        "native Windows incident scenario: Windows path quoting and PowerShell call-operator form",
+        "exact-commit full CI and HOL for the frozen candidate",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
     }
   ],
   "legacy": [
@@ -1346,6 +1398,6 @@
     "runtime_digest": "8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5",
     "source_commit": "0a4e273d3ad1aab2cd48b194c32d647f147066af",
     "receipt_sha256": "9ee1546fa6861fc346c615ad232559dfc5a2ac3d35aae5251b07f65ec3f0ad9a",
-    "note": "Current-runtime mapped nodes executed on native Windows Python 3.12.10: 44 unique nodes, 62 case-node receipt occurrences, all passed. These are native source/subprocess and shared-semantics fixtures, not arbitrary host/model certification. Archive-045 remains excluded_incomplete; its generic regression does not reconstruct the missing original chain. Older 0.14.3 evidence remains historical."
+    "note": "Historical receipts above bind the 0.15.0 runtime (source commit 0a4e273d3ad1aab2cd48b194c32d647f147066af, runtime digest 8ce3bb436bad353598f634dfc96734253d978b5eadb604b214045136850ba2f5): 44 unique nodes, 62 case-node receipt occurrences, all passed on native Windows Python 3.12.10. The 0.15.1 candidate changes runtime bytes (new digest in the development handoff), so native Windows re-execution for the current candidate is pending; the two new case rows carry their own pending platform evidence and the unaffected historical receipts remain previous-runtime facts."
   }
 }

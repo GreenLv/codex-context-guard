@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "d31504dd3c4f2679311480699994b6170afd0d5a",
-  "frozen_at": "2026-10-02",
+  "library_commit": "1f880e5905afe02e8276266a2fcb0f2adf8e332b",
+  "frozen_at": "2026-10-03",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
-    "raw_record_count": 56,
-    "active_case_count": 45,
+    "raw_record_count": 58,
+    "active_case_count": 47,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -520,6 +520,24 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "0aef24c2ff1171d94886d5bef66538611f1d3dcb3a8f3da18e9166d67d0dd5db",
+        "status": "active"
+      },
+      "CGI-20261002-codex-pause-resume-wait-stall": {
+        "title": "普通暂停与明确续行用语漏识别，恢复后等待账本滞留",
+        "family": "root-pause-resume-wait-lifecycle",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "2e608098a01e0937dd285ce0ac4e6ec2e27c536620852e91619b406f5213879e",
+        "status": "active"
+      },
+      "CGI-20261003-codex-checkpoint-status-posttool-rejection": {
+        "title": "合法诊断选项被 PostToolUse 误拒绝，只读查询依赖私有写锁",
+        "family": "checkpoint-status-option-parsing-and-readonly-lock",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "450790c2fb6414a29f8319a4d265556860b93ef4e6f309839ad5a5b5c5ec1237",
         "status": "active"
       }
     }
