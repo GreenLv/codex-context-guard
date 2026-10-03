@@ -16551,10 +16551,12 @@ def begin_completion_attempt(
     return turn_id, token
 
 
-def _completion_common_args(state: dict[str, Any], turn_id: str, token: str) -> list[str]:
+def _completion_common_args(
+    state: dict[str, Any], turn_id: str, token: str, *, root: Path | None = None,
+) -> list[str]:
     return [
         "--data-dir",
-        str(data_root().resolve()),
+        str((root if root is not None else data_root()).resolve()),
         "--session-id",
         str(state["session"]["id"]),
         "--turn-id",
@@ -16564,14 +16566,14 @@ def _completion_common_args(state: dict[str, Any], turn_id: str, token: str) -> 
 
 
 def advanced_command_context(
-    state: dict[str, Any], turn_id: str, token: str
+    state: dict[str, Any], turn_id: str, token: str, *, root: Path | None = None,
 ) -> dict[str, str]:
     """Turn-bound private control commands for the explicit advanced path.
 
     Served on demand through checkpoint-status so the resident per-turn
     injection only has to carry one discovery command (CGN-04).
     """
-    common = _completion_common_args(state, turn_id, token)
+    common = _completion_common_args(state, turn_id, token, root=root)
     script = str(Path(__file__).resolve())
     return {
         "status": shell_join([sys.executable, script, "checkpoint-status", *common]),
@@ -17803,7 +17805,7 @@ def checkpoint_status(
         result = {
             "turn_id": turn_id,
             "revision": str(state.get("content_hash") or state_content_hash(state)),
-            "advanced_commands": advanced_command_context(state, turn_id, token),
+            "advanced_commands": advanced_command_context(state, turn_id, token, root=root),
         }
     else:
         result = checkpoint_status_snapshot(

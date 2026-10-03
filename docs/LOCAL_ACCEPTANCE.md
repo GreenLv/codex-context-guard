@@ -30,6 +30,16 @@ bytes; fresh isolated installation, native gates and exact CI/HOL remain
 pending until separately recorded. No model or authentication operation is
 part of the source repair.
 
+## 0.15.1 explicit query-root repair — source candidate
+
+An ordinary CLI query could read the requested data root but return four private
+commands targeting the ambient default root. The command encoder now receives
+the query root explicitly; Hook discovery keeps its existing environment default.
+Focused controls cover missing or wrong Hook environments, distinct and spaced
+roots, all four bindings, a real returned status query, and zero writes. Changed
+runtime bytes require a fresh isolated HOME; earlier caches and source/native
+receipts remain unchanged and do not certify the new runtime.
+
 # Local Release Acceptance
 
 ## 0.15.1 candidate status (unreleased)

@@ -18,6 +18,7 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - Polite softeners such as “暂停一下” and follow-up tool-restart sentences no longer create a subject-bound confirmation wait. Resume wording such as “请继续执行”, “你继续”, and "please continue" follows the same clause-anchored contract. An unavailable old object does not veto the current resume; a negation of the resume action itself (“现在不要继续”) keeps the task waiting.
 - Pause and resume classification shares one contract across `root_pause_clauses`, `general_root_pause_clause`, `has_root_resume_intent` and the Stop-side resume patterns. Named inputs, exact markers, choice waits and external dependencies still require their own evidence; quoted mentions, questions, third-party continuation and ambiguous multiple waits do not release anything.
 - The checkpoint-status CLI subparser rejects implicit argparse abbreviations, and both the CLI and the Hook reject duplicate bindings instead of last-wins, missing or empty values, unknown options, positional arguments and mutually exclusive mode combinations. Runtime, script, data-root, session, turn and token bindings keep their exact validation.
+- `checkpoint-status --commands` binds all four returned private commands to the explicitly queried data directory, even when the ordinary CLI has no Hook data environment or points elsewhere. The returned status command can query that same directory without writes.
 - A misclassified 0.15.0 v2 pause ledger entry can be released later only after its original root source, source clause and subject binding re-verify; unverifiable sources stay waiting and the new runtime never writes legacy sessions.
 - Damaged, truncated, symlink-replaced, hash-mismatched or older-schema state fails the diagnostic with a bounded reason and no rebuild, backup or migration; concurrent atomic replacement is retried within an explicit attempt, byte and time budget and otherwise reports `state_changed_during_read`.
 - Every status mode binds the state file actually loaded and rechecks its turn, private binding and applicable sources after projection. A resume or new root during the query yields a controlled stale result instead of retired commands or an incorrect unchanged response.
@@ -26,7 +27,7 @@ Versions are listed from newest to oldest. Public availability is determined by 
 ### Validation
 
 - Source-level validation only; this entry is an unreleased candidate. The two unchanged canonical incident reproducers pass 6/6 and 8/8 desired oracles on macOS, including the private-lock write-denial probe. New W/C/R family regressions and the full behavior suite, repository/privacy/identity audits, lint, compile and isolated-install checks are recorded for the exact candidate commit in the [acceptance record](docs/LOCAL_ACCEPTANCE.md) once frozen.
-- Native macOS and Windows incident scenarios, real Hook trust, exact-commit CI/HOL and publication are not yet executed for this version; they remain required gates.
+- Complete native macOS and Windows incident acceptance, real Hook trust, exact-commit CI/HOL and publication have not passed for this version; they remain required gates.
 
 ## 0.15.0 — 2026-10-02
 

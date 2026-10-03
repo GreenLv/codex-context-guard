@@ -8,6 +8,7 @@ recognition never depends on a forged exit code.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -173,6 +174,64 @@ class StatusCommandContractTests(P0Harness):
             self.assertIsNotNone(tokens)
             self.assertEqual(tokens[0], sys.executable)
             self.assertEqual(tokens[2], "checkpoint-status")
+
+    def test_c09_explicit_query_root_binds_all_commands_without_hook_environment(self):
+        self.ready()
+        source = self.root / 'private'
+        spaced = self.root / 'other data root with spaces'
+        __import__('shutil').copytree(source, spaced)
+        def inventory(root):
+            return {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns,
+                    __import__('hashlib').sha256(p.read_bytes()).hexdigest() if p.is_file() else None)
+                    for p in root.rglob('*')}
+        for root in (source, spaced):
+            before = inventory(root)
+            for key in (None, 'CONTEXT_GUARD_DATA_DIR', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA'):
+                ambient = str(self.root / 'wrong ambient root')
+                env = dict(os.environ)
+                for name in ('CONTEXT_GUARD_DATA_DIR', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA'):
+                    env.pop(name, None)
+                if key is not None:
+                    env[key] = ambient
+                argv = [sys.executable, str(Path(cg.__file__).resolve()), 'checkpoint-status',
+                        '--data-dir', str(root), '--session-id', 'p0', '--turn-id', self.turn,
+                        '--token', 'p0token', '--commands']
+                query = subprocess.run(argv, capture_output=True, text=True, env=env, check=False)
+                self.assertEqual(query.returncode, 0)
+                output = json.loads(query.stdout)
+                self.assertEqual(set(output['advanced_commands']),
+                                 {'status', 'stage_checkpoint', 'stage_disposition', 'register_proof'})
+                for name, command in output['advanced_commands'].items():
+                    tokens = cg.private_control_command_tokens(command, windows=os.name == 'nt')
+                    self.assertEqual(tokens[tokens.index('--data-dir') + 1], str(root.resolve()))
+                    self.assertEqual(tokens[tokens.index('--session-id') + 1], 'p0')
+                    self.assertEqual(tokens[tokens.index('--turn-id') + 1], self.turn)
+                    self.assertIn('--token=p0token', tokens)
+                    if name == 'status':
+                        returned = subprocess.run(tokens + ['--commands'], capture_output=True,
+                                                  text=True, env=env, check=False)
+                        self.assertEqual(returned.returncode, 0)
+                        self.assertEqual(json.loads(returned.stdout)['revision'], output['revision'])
+                self.assertEqual(inventory(root), before)
+                self.assertFalse(Path(ambient).exists())
+
+    def test_c10_encoder_explicit_space_root_and_hook_default_are_separate(self):
+        self.ready()
+        root = self.root / 'private'
+        other = self.root / 'other data root with spaces'
+        with mock.patch.object(cg, 'data_root', return_value=other):
+            default = cg.advanced_command_context(self.state(), self.turn, 'p0token')
+            explicit = cg.advanced_command_context(self.state(), self.turn, 'p0token', root=root)
+            spaced = cg.advanced_command_context(self.state(), self.turn, 'p0token', root=other)
+        for commands, expected in ((default, other), (explicit, root), (spaced, other)):
+            for command in commands.values():
+                argv = cg.private_control_command_tokens(command, windows=os.name == 'nt')
+                self.assertEqual(argv[argv.index('--data-dir') + 1], str(expected.resolve()))
+        with mock.patch.object(cg, 'data_root', side_effect=AssertionError('ambient root used')):
+            self.assertEqual(cg.checkpoint_status(root, 'p0', self.turn, 'p0token', commands=True)
+                             ['advanced_commands'], explicit)
+        with self.assertRaises(RuntimeError):
+            cg.checkpoint_status(other, 'p0', self.turn, 'p0token', commands=True)
 
     # -- C05: unknown, abbreviated, duplicate, missing/empty values ------
     def test_c05_contract_violations_rejected_everywhere(self):

@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "1bb2bef81f5a548f05e821580b93ffa4112dd739",
+  "library_commit": "6fb2e9ceab75cec0997c13a26398ed5d18e68088",
   "frozen_at": "2026-10-03",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
-    "raw_record_count": 59,
-    "active_case_count": 48,
+    "raw_record_count": 60,
+    "active_case_count": 49,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -529,6 +529,15 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "2e608098a01e0937dd285ce0ac4e6ec2e27c536620852e91619b406f5213879e",
+        "status": "active"
+      },
+      "CGI-20261003-codex-advanced-command-explicit-root-drift": {
+        "title": "显式状态查询返回的高级命令指向默认数据目录",
+        "family": "checkpoint-status-command-inventory-explicit-root",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "111ad4ca13372ac178e3afc7fa0b589e921ceb52bc8c220624c85039802988c3",
         "status": "active"
       },
       "CGI-20261003-codex-checkpoint-status-posttool-rejection": {

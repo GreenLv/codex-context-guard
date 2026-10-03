@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 import platform
 import re
@@ -68,6 +69,8 @@ def preflight(plan_path, output):
     base.require(isinstance(plan.get('model'), str) and plan['model'].strip(), 'explicit model required')
     base.require(plan.get('effort') == 'medium', 'explicit medium effort required')
     base.require(plan.get('platform') == platform.system(), 'platform differs from plan')
+    if plan['platform'] == 'Windows':
+        verify_shell_file(plan.get('shell'))
     python = Path(plan['python'])
     base.require(python.is_absolute() and python.is_file() and not python.is_symlink(),
                  'regular Python required')
@@ -129,6 +132,14 @@ class Client(base.Client):
             raise
 
     def start(self, instructions=base.INSTRUCTIONS):
+        if self.plan['platform'] == 'Windows':
+            expected = verify_shell_file(self.plan.get('shell'))
+            observed = self.rpc('environment/info', {'environmentId': 'local'}).get('shell')
+            base.require(isinstance(observed, dict) and observed.get('name') == expected['name']
+                         and isinstance(observed.get('path'), str)
+                         and ntpath.normcase(ntpath.normpath(observed['path'])) ==
+                         ntpath.normcase(ntpath.normpath(expected['path'])),
+                         'official Windows default shell differs from plan')
         result = self.rpc('thread/start', {'cwd': self.plan['cwd'],
                           'sandbox': 'workspace-write', 'approvalPolicy': 'on-request',
                           'model': self.plan['model'], 'developerInstructions': instructions})
@@ -263,6 +274,8 @@ def literal_shell_body(body, *, windows):
     # return/validate the original observed argv without reconstructing secrets.
     body = re.sub(r'(?<!\S)--token=\[REDACTED_SECRET\](?=\s|$)',
                   '--token=REDACTED_SECRET', body)
+    if windows and body.lstrip().startswith('& '):
+        body = body.lstrip()[2:].lstrip()
     quote = None
     escaped = False
     for char in body:
@@ -291,36 +304,106 @@ def literal_shell_body(body, *, windows):
     return quote is None and not escaped
 
 
-def ordinary_command_argv(command, *, windows):
+def windows_display_tokens(command):
+    """Decode three native argv entries, plus the existing PS literal fixture."""
+    literal = re.fullmatch(r"\s*(\"[^\"]+\"|'[^']+'|\S+)\s+-Command\s+'(.*)'\s*", command)
+    if literal:
+        shell, body = literal.groups()
+        if "'" in body.replace("''", ''):
+            return None
+        return [shell.strip('\"\''), '-Command', body.replace("''", "'")]
+    tokens = []
+    index = 0
+    while index < len(command):
+        while index < len(command) and command[index] in ' \t':
+            index += 1
+        if index == len(command):
+            break
+        token, quoted = [], False
+        while index < len(command) and (quoted or command[index] not in ' \t'):
+            count = 0
+            while index < len(command) and command[index] == '\\':
+                count += 1
+                index += 1
+            if index < len(command) and command[index] == '"':
+                token.extend('\\' * (count // 2))
+                if count % 2:
+                    token.append('"')
+                else:
+                    quoted = not quoted
+                index += 1
+            else:
+                token.extend('\\' * count)
+                if index < len(command) and (quoted or command[index] not in ' \t'):
+                    token.append(command[index])
+                    index += 1
+        if quoted:
+            return None
+        tokens.append(''.join(token))
+        if len(tokens) > 3:
+            return None
+    return tokens
+
+
+def verify_shell_file(identity):
+    base.require(isinstance(identity, dict) and set(identity) == {'name', 'path', 'sha256'}
+                 and identity['name'] == 'powershell'
+                 and isinstance(identity['path'], str)
+                 and isinstance(identity['sha256'], str)
+                 and re.fullmatch(r'[0-9a-f]{64}', identity['sha256']),
+                 'bound Windows shell identity unavailable')
+    shell = Path(identity['path'])
+    base.require(shell.is_absolute() and not shell.is_symlink() and shell.is_file()
+                 and shell.name.lower() in {'pwsh.exe', 'powershell.exe'}
+                 and base.sha(shell) == identity['sha256'], 'bound Windows shell file differs')
+    return identity
+
+
+def ordinary_command_argv(command, *, windows, shell_identity=None):
     """Parse a direct invocation or one exact host shell wrapper, never execute it.
 
     POSIX startup wrappers and the existing Windows host-terminal PowerShell
     fixture are supported. cmd, extra shell options and nested wrappers are not.
     Expansion/redirection syntax stays unsupported even inside a wrapper.
     """
-    if not isinstance(command, str) or cg.shell_control_operator_present(command):
-        # A direct Windows call operator is handled by the existing parser.
-        if windows and isinstance(command, str) and command.lstrip().startswith('& '):
-            return cg.private_control_command_tokens(command, windows=True)
+    if not isinstance(command, str) or len(command) > 65536:
+        return None
+    original = command
+    shell_names = {'zsh', 'bash', 'sh', 'pwsh', 'pwsh.exe', 'powershell',
+                   'powershell.exe', 'cmd', 'cmd.exe'}
+    if windows:
+        direct = cg.private_control_command_tokens(command, windows=True)
+        if direct and ntpath.basename(direct[0]).lower() not in shell_names:
+            return direct
+    if windows and command.lstrip().startswith('& '):
+        command = command.lstrip()[2:].lstrip()
+    if cg.shell_control_operator_present(command):
         return None
     try:
-        outer = shlex.split(command, posix=not windows)
+        outer = windows_display_tokens(command) if windows else shlex.split(command)
     except ValueError:
         return None
-    if windows:
-        outer = [t[1:-1] if len(t) >= 2 and t[0] == t[-1]
-                 and t[0] in {"'", '"'} else t for t in outer]
     if not outer:
         return None
     shell = outer[0].replace('\\', '/').rsplit('/', 1)[-1].lower()
-    shell_names = {'zsh', 'bash', 'sh', 'pwsh', 'pwsh.exe', 'powershell',
-                   'powershell.exe', 'cmd', 'cmd.exe'}
     if shell not in shell_names:
-        return cg.private_control_command_tokens(command, windows=windows)
+        return cg.private_control_command_tokens(original, windows=windows)
     if len(outer) != 3:
         return None
     if windows:
-        valid = outer[0].lower() in {'pwsh.exe', 'powershell.exe'} and outer[1] == '-Command'
+        if shell_identity is None:
+            # Bare spellings exist only in old synthetic host fixtures.
+            valid = outer[0].lower() in {'pwsh.exe', 'powershell.exe'}
+        else:
+            valid = (isinstance(shell_identity, dict)
+                     and shell_identity.get('name') == 'powershell'
+                     and isinstance(shell_identity.get('path'), str)
+                     and isinstance(shell_identity.get('sha256'), str)
+                     and re.fullmatch(r'[0-9a-f]{64}', shell_identity['sha256'])
+                     and ntpath.isabs(shell_identity['path'])
+                     and ntpath.normcase(ntpath.normpath(outer[0])) ==
+                     ntpath.normcase(ntpath.normpath(shell_identity['path'])))
+        valid = valid and outer[1] == '-Command'
     else:
         valid = outer[0] in {'/bin/zsh', '/bin/bash', '/bin/sh'} and outer[1] in {'-c', '-lc'}
     if not valid or not literal_shell_body(outer[2], windows=windows):
@@ -332,7 +415,8 @@ def ordinary_command_argv(command, *, windows):
 
 
 def status_argv(item, stage, plan, *, legal=True):
-    argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows')
+    argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows',
+                                 shell_identity=plan.get('shell'))
     base.require(argv and len(argv) > 3 and argv[2] == 'checkpoint-status', 'direct status command required')
     base.require(Path(argv[0]).resolve() == Path(plan['python']).resolve()
                  and Path(argv[1]).resolve() == Path(plan['plugin_root']) / 'scripts/context_guard.py',
@@ -361,14 +445,96 @@ def status_argv(item, stage, plan, *, legal=True):
     return argv
 
 
-def make_fixture(plan, stage, item, root):
+def status_output(item, stage, plan):
+    """Bind the observed successful query output, not a later Stop revision."""
+    terminal, _, _ = command_pair(stage, plan)
+    base.require(terminal == item, 'status item differs from captured command')
+    status_argv(item, stage, plan)
+    base.require(item['exitCode'] == 0, 'legal status CLI failed')
+    def unique_object(pairs):
+        value = {}
+        for key, entry in pairs:
+            base.require(key not in value, 'duplicate status output field')
+            value[key] = entry
+        return value
+    output = json.loads(item['aggregatedOutput'], object_pairs_hook=unique_object)
+    base.require(isinstance(output, dict)
+                 and isinstance(output.get('advanced_commands'), dict)
+                 and set(output['advanced_commands']) ==
+                 {'status', 'stage_checkpoint', 'stage_disposition', 'register_proof'}
+                 and all(isinstance(v, str) for v in output['advanced_commands'].values())
+                 and output.get('turn_id') == stage['turn']
+                 and isinstance(output.get('revision'), str)
+                 and re.fullmatch(r'[0-9a-f]{64}', output['revision']),
+                 'commands output absent or unbound')
+    snapshot = state_for(stage)
+    base.require(snapshot['session']['id'] == stage['thread'], 'query snapshot session differs')
+    names = {'status': 'checkpoint-status', 'stage_checkpoint': 'stage-checkpoint',
+             'stage_disposition': 'stage-disposition', 'register_proof': 'register-proof'}
+    for name, subcommand in names.items():
+        argv = cg.private_control_command_tokens(output['advanced_commands'][name],
+                                                 windows=plan['platform'] == 'Windows')
+        base.require(argv and len(argv) > 3 and argv[2] == subcommand
+                     and Path(argv[0]).resolve() == Path(plan['python']).resolve()
+                     and Path(argv[1]).resolve() == Path(plan['plugin_root']) / 'scripts/context_guard.py',
+                     'private inventory executable or command differs')
+        options = argv[3:]
+        if name == 'register_proof':
+            base.require(options[-2:] == ['--manifest', '/path/to/proof.json'],
+                         'private manifest placeholder differs')
+            options = options[:-2]
+        binding = cg.parse_checkpoint_status_option_bindings(options)
+        base.require(binding and not any(binding[k] for k in
+                     ('--full', '--commands', '--item', '--after-revision'))
+                     and binding['--session-id'] == [stage['thread']]
+                     and binding['--turn-id'] == [stage['turn']]
+                     and Path(binding['--data-dir'][0]).resolve() == Path(plan['data_root']).resolve()
+                     and binding['--token'][0] != '[REDACTED_SECRET]',
+                     'private inventory binding differs')
+        cg.completion_attempt_for(snapshot, stage['turn'], binding['--token'][0])
+    return output
+
+
+def hook_control_token(stage, inventory, plan, copied):
+    """Take only the unique bound discovery command from the trusted Hook."""
+    hooks = base.paired_hooks(stage['rows'], stage['thread'], stage['turn'], inventory)
+    prompts = [run for run in hooks if run['eventName'] == 'userPromptSubmit']
+    base.require(len(prompts) == 1 and prompts[0]['status'] == 'completed',
+                 'private prompt Hook unavailable')
+    entries = prompts[0].get('entries')
+    base.require(isinstance(entries, list), 'private Hook context unavailable')
+    candidates = []
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get('kind') != 'context' or not isinstance(entry.get('text'), str):
+            continue
+        for line in entry['text'].splitlines():
+            if 'checkpoint-status' not in line:
+                continue
+            try:
+                argv = status_argv({'command': line + ' --commands'}, stage, plan)
+            except ValueError:
+                continue
+            candidates.append(cg.parse_checkpoint_status_option_bindings(argv[3:])['--token'][0])
+    base.require(len(candidates) == 1 and candidates[0] != '[REDACTED_SECRET]',
+                 'unique private Hook command unavailable')
+    cg.completion_attempt_for(copied, stage['turn'], candidates[0])
+    return candidates[0]
+
+
+def make_fixture(plan, stage, item, root, *, inventory):
     argv = status_argv(item, stage, plan)
     binding = cg.parse_checkpoint_status_option_bindings(argv[3:])
+    command_observation(stage, inventory, plan)
+    status_output(item, stage, plan)
     target = root / 'sessions-v2' / stage['thread']
     target.parent.mkdir(parents=True)
     copied = copy_session(plan, stage['thread'], target)
     base.require(copied['content_hash'] == state_for(stage)['content_hash'], 'query snapshot changed')
-    cg.completion_attempt_for(copied, stage['turn'], binding['--token'][0])
+    token = binding['--token'][0]
+    if token == '[REDACTED_SECRET]':
+        # Only the trusted prompt Hook is an exact bound authority source.
+        token = hook_control_token(stage, inventory, plan, copied)
+    cg.completion_attempt_for(copied, stage['turn'], token)
     lock = root / 'sessions-v2' / '.locks' / (stage['thread'] + '.lock')
     lock.parent.mkdir()
     live_lock = Path(plan['data_root']) / 'sessions-v2' / '.locks' / lock.name
@@ -376,7 +542,7 @@ def make_fixture(plan, stage, item, root):
     shutil.copy2(live_lock, lock)
     # Rewrite only the cloned data-root argument; preserve exact session/turn/token.
     argv = [*argv[:3], '--data-dir', str(root), '--session-id', stage['thread'],
-            '--turn-id', stage['turn'], '--token', binding['--token'][0], '--commands']
+            '--turn-id', stage['turn'], '--token', token, '--commands']
     restriction = child.restrict(root)
     request = {'schema': 'incident-readonly-request/v1', 'fixture': str(root),
                'lock': str(lock), 'argv': argv, 'restriction': restriction,
@@ -515,14 +681,7 @@ def map_capture(capture, *, mapper_identity=None):
     if 'status' in stages:
         s = stages['status']
         item = command_observation(s, inventory, plan)
-        status_argv(item, s, plan)
-        base.require(item['exitCode'] == 0, 'legal status CLI failed')
-        output = json.loads(item['aggregatedOutput'])
-        base.require(isinstance(output.get('advanced_commands'), dict)
-                     and set(output['advanced_commands']) == {'status', 'stage_checkpoint', 'stage_disposition', 'register_proof'}
-                     and output.get('turn_id') == s['turn']
-                     and isinstance(output.get('revision'), str) and len(output['revision']) == 64,
-                     'commands output absent or unbound')
+        status_output(item, s, plan)
         gates['status_cli_posttool'] = 'passed'
     if all(n in stages for n in ('status', 'unknown', 'missing')):
         base.require(len({stages[n]['thread'] for n in ('status', 'unknown', 'missing')}) == 1
@@ -536,7 +695,8 @@ def map_capture(capture, *, mapper_identity=None):
             gates['status_negative_controls'] = 'passed'
     if 'readonly' in stages and capture.get('readonly_request'):
         item = command_observation(stages['readonly'], inventory, plan)
-        argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows')
+        argv = ordinary_command_argv(item['command'], windows=plan['platform'] == 'Windows',
+                                 shell_identity=plan.get('shell'))
         base.require(argv == capture['readonly_tool_argv'] and len(argv) == 4
                      and Path(argv[0]).resolve() == Path(plan['python']).resolve()
                      and Path(argv[1]).resolve() == ROOT / 'tools/validation/incident_readonly_child.py'
@@ -630,7 +790,7 @@ def collect(plan, output):
         s = turn('status', status_thread)
         item = command_observation(s, client.inventory, plan)
         fixture.mkdir(mode=0o700)
-        request = make_fixture(plan, s, item, fixture)
+        request = make_fixture(plan, s, item, fixture, inventory=client.inventory)
         request_path = Path(plan['cwd']) / ('incident-request-' + output.name + '.json')
         write_new(request_path, request)
         capture['readonly_request'] = request
@@ -720,6 +880,7 @@ def main():
     make = sub.add_parser('plan')
     for name in ('codex', 'python', 'home', 'cwd', 'plugin-root', 'data-root', 'output'):
         make.add_argument('--' + name, type=Path, required=True)
+    make.add_argument('--shell', type=Path)
     make.add_argument('--model', required=True)
     make.add_argument('--plan-file', type=Path, required=True)
     args = parser.parse_args()
@@ -731,6 +892,14 @@ def main():
                     'model': args.model, 'effort': 'medium', 'fresh_data_root': True, 'output': str(args.output.resolve()), 'toolkit': toolkit(), 'manifest_sha256': base.sha(MANIFEST)}
             for key in ('codex', 'python', 'home', 'cwd', 'plugin_root', 'data_root'):
                 plan[key] = str(getattr(args, key).resolve(strict=key != 'data_root'))
+            if plan['platform'] == 'Windows':
+                base.require(args.shell is not None and args.shell.is_absolute()
+                             and not args.shell.is_symlink(), 'explicit Windows default shell required')
+                plan['shell'] = {'name': 'powershell', 'path': str(args.shell),
+                                 'sha256': base.sha(args.shell)}
+                verify_shell_file(plan['shell'])
+            else:
+                base.require(args.shell is None, 'Windows shell input on non-Windows plan')
             plan['cli_sha256'] = base.sha(Path(plan['codex']))
             plan['python_sha256'] = base.sha(Path(plan['python']))
             plan['python_version'] = subprocess.check_output([plan['python'], '--version'], text=True).strip()

@@ -57,10 +57,12 @@ class IncidentHostTests(P0Harness):
 
     def stage(self, name, *, query_options=None):
         prompt = self.manifest['prompts'][name]
-        self.prompt(prompt)
+        prompt_result = self.prompt(prompt)
         state = self.state()
         turn = state['completion_attempt']['turn_id']
         rows = self.hook('userPromptSubmit', turn)
+        rows[-1]['params']['run']['entries'] = [{'kind': 'context', 'text':
+            prompt_result['hookSpecificOutput']['additionalContext']}]
         if query_options is not None:
             argv = [self.plan['python'], str(h.ROOT / 'scripts/context_guard.py'),
                     'checkpoint-status', '--data-dir', self.plan['data_root'],
@@ -214,6 +216,159 @@ class IncidentHostTests(P0Harness):
             '/bin/zsh -lc ' + __import__('shlex').quote(
                 '/literal/python /literal/script --data-dir=[REDACTED_SECRET]'), windows=False))
 
+    def redacted_stage(self):
+        stage = self.stage('status', query_options=['--commands'])
+        for row in stage['rows']:
+            if row['method'] in ('item/started', 'item/completed'):
+                item = row['params']['item']
+                item['command'] = item['command'].replace('--token p0token',
+                                                         '--token=[REDACTED_SECRET]')
+        return self.wrap_command(stage)
+
+    @unittest.skipIf(os.name == 'nt' or (hasattr(os, 'geteuid') and os.geteuid() == 0),
+                     'real restricted fixture uses non-root POSIX child; native Windows separate')
+    def test_cli0160_redacted_fixture_real_child_and_mapper_chain(self):
+        self.ready()
+        stage = self.redacted_stage()
+        self.capture['stages']['status'] = stage
+        item = h.command_observation(stage, self.inventory, self.plan)
+        fixture = self.root / 'redacted-fixture'
+        fixture.mkdir()
+        request = h.make_fixture(self.plan, stage, item, fixture, inventory=self.inventory)
+        try:
+            record = child.witness(request)
+            self.assertEqual(child.judge(record, request), 'passed')
+            self.assertEqual(record['before'], record['after'])
+            self.assertNotIn('[REDACTED_SECRET]', request['argv'])
+            readonly = copy.deepcopy(stage)
+            argv = [self.plan['python'], str(h.ROOT / 'tools/validation/incident_readonly_child.py'),
+                    '--request', str(self.root / 'private-request.json')]
+            for row in readonly['rows']:
+                if row.get('method') in ('item/started', 'item/completed'):
+                    row['params']['item']['command'] = cg.shell_join(argv)
+                    if row['method'] == 'item/completed':
+                        row['params']['item']['aggregatedOutput'] = json.dumps(record)
+            self.capture.update(readonly_request=request, readonly_tool_argv=argv)
+            self.capture['stages']['readonly'] = self.wrap_command(readonly)
+            result = h.map_capture(self.capture)
+            self.assertEqual(result['gates']['status_cli_posttool'], 'passed')
+            self.assertEqual(result['gates']['restricted_child_readonly'], 'passed')
+            self.assertEqual(result['native_acceptance'], 'not_run')
+        finally:
+            child.restore(fixture, request['restriction'])
+        __import__('shutil').rmtree(fixture)
+        self.assertFalse(fixture.exists())
+
+    def test_cli0160_fixture_output_authority_negative_matrix(self):
+        self.ready()
+        original = self.redacted_stage()
+        item = h.command_observation(original, self.inventory, self.plan)
+        output = json.loads(item['aggregatedOutput'])
+        variants = []
+        for field, value in (('turn_id', 'wrong-turn'), ('revision', 'bad'),
+                             ('revision', 'z' * 64), ('advanced_commands', {})):
+            changed = copy.deepcopy(output)
+            changed[field] = value
+            variants.append(changed)
+        changed = copy.deepcopy(output)
+        changed['advanced_commands']['status'] = None
+        variants.append(changed)
+        raw_variants = [json.dumps(v) for v in variants]
+        raw_variants.append(json.dumps(output).replace('"turn_id":', '"turn_id":"duplicate", "turn_id":', 1))
+        for index, raw in enumerate(raw_variants):
+            bad = copy.deepcopy(original)
+            terminal = next(row['params']['item'] for row in bad['rows']
+                            if row.get('method') == 'item/completed'
+                            and row['params']['item'].get('type') == 'commandExecution')
+            terminal['aggregatedOutput'] = raw
+            root = self.root / ('negative-fixture-' + str(index))
+            root.mkdir()
+            with self.subTest(index=index), self.assertRaises((ValueError, RuntimeError)):
+                h.make_fixture(self.plan, bad, terminal, root, inventory=self.inventory)
+
+    def test_cli0160_all_four_inventory_commands_require_exact_authority(self):
+        self.ready()
+        original = self.redacted_stage()
+        terminal = h.command_observation(original, self.inventory, self.plan)
+        output = json.loads(terminal['aggregatedOutput'])
+        for name, command in output['advanced_commands'].items():
+            tokens = cg.private_control_command_tokens(command, windows=os.name == 'nt')
+            changes = [(0, '/other/python'), (1, '/other/script'), (2, 'status-other')]
+            for flag, value in (('--data-dir', '/other/data'), ('--session-id', 'other-session'),
+                                ('--turn-id', 'other-turn')):
+                changes.append((tokens.index(flag) + 1, value))
+            token_index = next(i for i, token in enumerate(tokens) if token.startswith('--token='))
+            changes.extend([(token_index, '--token=wrong-token'),
+                            (token_index, '--token=[REDACTED_SECRET]')])
+            if name == 'register_proof':
+                changes.append((len(tokens) - 1, '/other/manifest.json'))
+            for index, value in changes:
+                changed = list(tokens)
+                changed[index] = value
+                bad_output = copy.deepcopy(output)
+                bad_output['advanced_commands'][name] = cg.shell_join(changed)
+                bad = copy.deepcopy(original)
+                item = next(row['params']['item'] for row in bad['rows']
+                            if row.get('method') == 'item/completed'
+                            and row['params']['item'].get('type') == 'commandExecution')
+                item['aggregatedOutput'] = json.dumps(bad_output)
+                with self.subTest(command=name, index=index), self.assertRaises((ValueError, RuntimeError)):
+                    h.status_output(item, bad, self.plan)
+            for suffix in (' --commands', ' --data-dir /other', '; echo extra'):
+                bad_output = copy.deepcopy(output)
+                bad_output['advanced_commands'][name] = command + suffix
+                bad = copy.deepcopy(original)
+                item = next(row['params']['item'] for row in bad['rows']
+                            if row.get('method') == 'item/completed'
+                            and row['params']['item'].get('type') == 'commandExecution')
+                item['aggregatedOutput'] = json.dumps(bad_output)
+                with self.subTest(command=name, suffix=suffix), self.assertRaises(ValueError):
+                    h.status_output(item, bad, self.plan)
+
+    def test_cli0160_fixture_hook_authority_negative_matrix(self):
+        self.ready()
+        original = self.redacted_stage()
+        prompt = next(row['params']['run'] for row in original['rows']
+                      if row.get('method') == 'hook/completed'
+                      and row['params']['run']['eventName'] == 'userPromptSubmit')
+        text = prompt['entries'][0]['text']
+        variants = [[], [{'kind': 'context', 'text': ''}],
+                    [{'kind': 'message', 'text': text}],
+                    [{'kind': 'context', 'text': text}, {'kind': 'context', 'text': text}]]
+        for old, new in ((sys.executable, '/other/python'),
+                         (str(h.ROOT / 'scripts/context_guard.py'), '/other/script'),
+                         ('--session-id p0', '--session-id other'),
+                         ('--turn-id ', '--turn-id other-'),
+                         (self.plan['data_root'], '/other/data'),
+                         ('p0token', 'wrong-token'), ('p0token', '[REDACTED_SECRET]')):
+            changed = text.replace(old, new)
+            self.assertNotEqual(changed, text, 'negative control must change an input')
+            variants.append([{'kind': 'context', 'text': changed}])
+        for index, entries in enumerate(variants):
+            bad = copy.deepcopy(original)
+            next(row['params']['run'] for row in bad['rows']
+                 if row.get('method') == 'hook/completed'
+                 and row['params']['run']['eventName'] == 'userPromptSubmit')['entries'] = entries
+            item = h.command_observation(bad, self.inventory, self.plan)
+            root = self.root / ('hook-negative-fixture-' + str(index))
+            root.mkdir()
+            with self.subTest(index=index), self.assertRaises((ValueError, RuntimeError)):
+                h.make_fixture(self.plan, bad, item, root, inventory=self.inventory)
+
+    def test_cli0160_unredacted_fixture_token_must_match_copied_authority(self):
+        self.ready()
+        original = self.stage('status', query_options=['--commands'])
+        for marker in ('wrong-token', '[OTHER]'):
+            bad = copy.deepcopy(original)
+            for row in bad['rows']:
+                if row.get('method') in ('item/started', 'item/completed'):
+                    row['params']['item']['command'] = row['params']['item']['command'].replace('p0token', marker)
+            terminal = h.command_observation(bad, self.inventory, self.plan)
+            root = self.root / ('wrong-fixture-' + str(len(marker)))
+            root.mkdir()
+            with self.subTest(marker=marker), self.assertRaises(RuntimeError):
+                h.make_fixture(self.plan, bad, terminal, root, inventory=self.inventory)
+
     def test_cli0160_wrapper_parser_exact_platform_forms(self):
         command = '"/literal path/python" "/literal path/script.py" --request "a [b]"'
         expected = ['/literal path/python', '/literal path/script.py', '--request', 'a [b]']
@@ -227,6 +382,74 @@ class IncidentHostTests(P0Harness):
                 shell + " -Command '" + command + "'", windows=True), expected)
         self.assertIsNone(h.ordinary_command_argv(
             'cmd.exe /c "' + command + '"', windows=True))
+
+    def test_cli0160_windows_absolute_shell_is_bound_and_preserves_call_operator(self):
+        shell = r'C:\Example Space\native\powershell\pwsh.exe'
+        identity = {'name': 'powershell', 'path': shell, 'sha256': 'a' * 64}
+        body = r'& "C:\Python Space\python.exe" "C:\Plugin Space\context_guard.py" checkpoint-status --token=[REDACTED_SECRET]'
+        expected = [r'C:\Python Space\python.exe', r'C:\Plugin Space\context_guard.py',
+                    'checkpoint-status', '--token=[REDACTED_SECRET]']
+        for command in (subprocess.list2cmdline([shell, '-Command', body]),
+                        '"' + shell + '" -Command ' + "'" + body + "'",
+                        '& "' + shell + '" -Command ' + "'" + body + "'"):
+            with self.subTest(command=command):
+                self.assertEqual(h.ordinary_command_argv(command, windows=True,
+                                                        shell_identity=identity), expected)
+                self.assertIsNone(h.ordinary_command_argv(command, windows=True))
+                wrong = {**identity, 'path': r'C:\Other\pwsh.exe'}
+                self.assertIsNone(h.ordinary_command_argv(command, windows=True,
+                                                         shell_identity=wrong))
+                self.assertIsNone(h.ordinary_command_argv(command, windows=True,
+                                                         shell_identity={**identity, 'sha256': None}))
+        for flags in ('-NoProfile -Command', '-EncodedCommand', '-Command extra'):
+            self.assertIsNone(h.ordinary_command_argv(
+                '"' + shell + '" ' + flags + ' ' + "'" + body + "'", windows=True,
+                shell_identity=identity))
+        for suffix in ('; echo extra', ' | more', ' > output', ' $(extra)'):
+            self.assertIsNone(h.ordinary_command_argv(
+                subprocess.list2cmdline([shell, '-Command', body + suffix]), windows=True,
+                shell_identity=identity))
+        self.assertEqual(h.ordinary_command_argv(body, windows=True), expected)
+        # Bare aliases remain synthetic compatibility; a native plan pins a path.
+        self.assertEqual(h.ordinary_command_argv("pwsh.exe -Command '" + body + "'",
+                                                windows=True), expected)
+        self.assertIsNone(h.ordinary_command_argv("pwsh.exe -Command '" + body + "'",
+                                                 windows=True, shell_identity=identity))
+
+    def test_cli0160_windows_shell_file_hash_and_official_readback_fail_closed(self):
+        self.ready()
+        shell = self.root / 'pwsh.exe'
+        shell.write_bytes(b'example shell bytes')
+        identity = {'name': 'powershell', 'path': str(shell), 'sha256': base.sha(shell)}
+        self.assertEqual(h.verify_shell_file(identity), identity)
+        for changed in ({**identity, 'sha256': '0' * 64}, {**identity, 'path': str(self.root)},
+                        {**identity, 'name': 'unknown'}, {**identity, 'path': 'pwsh.exe'}):
+            with self.subTest(identity=changed), self.assertRaises(ValueError):
+                h.verify_shell_file(changed)
+        client = object.__new__(h.Client)
+        client.plan = {**self.plan, 'platform': 'Windows', 'shell': identity, 'model': 'example'}
+        for observed in ({'name': 'powershell', 'path': str(self.root / 'other.exe')},
+                         {'name': 'unknown', 'path': str(shell)}, None):
+            client.rpc = mock.Mock(return_value={'shell': observed})
+            with self.subTest(observed=observed), self.assertRaises(ValueError):
+                client.start()
+            client.rpc.assert_called_once_with('environment/info', {'environmentId': 'local'})
+        for sandbox, passes in (('workspaceWrite', True), ('readOnly', False)):
+            client.rpc = mock.Mock(side_effect=[{'shell': {'name': 'powershell', 'path': str(shell)}},
+                {'model': 'example', 'approvalPolicy': 'on-request', 'sandbox': {'type': sandbox},
+                 'thread': {'id': 'example-thread'}}])
+            if passes:
+                self.assertEqual(client.start(), 'example-thread')
+            else:
+                with self.assertRaises(ValueError):
+                    client.start()
+            self.assertEqual(client.rpc.call_args_list[0], mock.call(
+                'environment/info', {'environmentId': 'local'}))
+        client.plan['shell'] = {**identity, 'sha256': '0' * 64}
+        client.rpc = mock.Mock()
+        with self.assertRaises(ValueError):
+            client.start()
+        client.rpc.assert_not_called()
 
     def test_cli0160_wrapper_rejects_injection_nesting_extra_args_and_binding_drift(self):
         self.ready()
@@ -307,7 +530,7 @@ class IncidentHostTests(P0Harness):
         item = h.command_observation(stage, self.inventory, self.plan)
         root = self.root / 'readonly'
         root.mkdir()
-        request = h.make_fixture(self.plan, stage, item, root)
+        request = h.make_fixture(self.plan, stage, item, root, inventory=self.inventory)
         try:
             record = child.witness(request)
             self.assertEqual(child.judge(record, request), 'passed')
@@ -457,7 +680,7 @@ class IncidentHostTests(P0Harness):
         item = h.command_observation(status, self.inventory, self.plan)
         fixture = self.root / 'readonly-full'
         fixture.mkdir()
-        request = h.make_fixture(self.plan, status, item, fixture)
+        request = h.make_fixture(self.plan, status, item, fixture, inventory=self.inventory)
         try:
             record = child.witness(request)
             self.stage('unknown', query_options=['--unknown-status-option'])

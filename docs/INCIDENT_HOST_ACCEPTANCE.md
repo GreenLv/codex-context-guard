@@ -17,7 +17,11 @@ is retained privately as a pending condition, not a product defect.
 Use the `plan` action with existing absolute paths for `--codex`, `--python`,
 `--home`, `--cwd`, `--plugin-root`, and `--data-root`; supply `--model`, a new
 `--plan-file`, and a new `--output` outside source and installed HOME. On Windows,
-select the actual `.exe`, not a launcher. The generator resolves paths, pins
+select the actual `.exe`, not a launcher. Supply `--shell` with the absolute
+PowerShell path returned by the official local `environment/info` readback.
+The plan pins its file hash; preflight verifies the file and the runner checks
+the same official default shell before creating model turns. Extra shell
+options or another executable path are rejected. The generator resolves paths, pins
 CLI 0.160.0 version and bytes, Python version and bytes, clean source identity,
 installed/source runtime equality, toolkit files, scenario manifest, model,
 platform, and result location. An absent data root inside the isolated HOME
@@ -57,6 +61,28 @@ calls and proves neither authentication, Hook trust nor native behavior.
   followed by correction, actual compaction, and cold continuation in another
   owned app-server. Mapping replays the original RPC journals and state receipts
   instead of accepting the base receipt's status alone.
+
+CLI 0.160 initial commands may use `agent` or `unifiedExecStartup`; the started
+and completed sources must match. Manual user-shell and follow-up interaction
+sources are rejected. The mapper accepts one exact standard shell wrapper,
+checks the inner command's original bindings, and rejects nesting, additional
+shell options, compound commands and expansion syntax. Windows native PowerShell
+wrappers must match the planned absolute executable path and hash. Bare names
+remain supported only for existing synthetic fixtures. This does not substitute for native
+Windows acceptance or permit `readOnly` sandbox drift.
+
+A fixed CLI token-redaction marker is display evidence, not a private control
+token. Only that marker permits fixture token lookup in the unique discovery
+command from the same paired trusted UserPromptSubmit Hook context. Executable,
+script, data-root, session and turn must match; the token must verify against the
+copied committed attempt's hash. There is no fallback to model prose, a new
+token, a hash recovery or another turn. Unredacted displayed tokens still verify
+directly. Successful CLI output must retain its observed turn/revision binding;
+the query revision is distinct from the later post-Stop snapshot used by the
+copied-session child. The four returned private commands must each match their executable, script,
+subcommand, data-root, session, turn and committed token hash; the manifest
+placeholder is the sole exception for the register-proof command. Missing,
+duplicate or unbound observations fail visibly.
 
 The nine-Hook inventory must be normally trusted and enabled. This inventory
 check does not claim that all nine event types executed in these bounded scenes.

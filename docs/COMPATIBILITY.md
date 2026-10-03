@@ -17,6 +17,12 @@ recovers only through a real later resume with a re-verified root source. All
 native two-platform evidence for these behaviors is pending; source results do
 not substitute for it.
 
+The command inventory returned by `checkpoint-status --commands` uses its explicit
+data root, independently of a missing or different Hook environment. The shared
+Hook encoder keeps its default environment binding. This runtime repair needs
+fresh isolated installation and affected native evidence; earlier candidate
+receipts retain their own bytes and subjects.
+
 Windows concurrent diagnostic/state publication requires the Windows 10 RS1+
 user-mode FileRenameInfoEx API and a filesystem supporting replace-existing
 with POSIX semantics. Unsupported API/filesystem or permission denial fails

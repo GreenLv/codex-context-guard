@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "1bb2bef81f5a548f05e821580b93ffa4112dd739",
+  "library_commit": "6fb2e9ceab75cec0997c13a26398ed5d18e68088",
   "denominator": {
     "case_registry": {
-      "records": 59,
-      "active": 48
+      "records": 60,
+      "active": 49
     },
     "legacy_source": {
       "records": 16,
@@ -1170,6 +1170,31 @@
         "native Windows incident scenario with the PowerShell launcher",
         "exact-commit full CI and HOL for the frozen candidate",
         "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-codex-advanced-command-explicit-root-drift",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "显式状态查询返回的高级命令指向默认数据目录",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "checkpoint-status-command-inventory-explicit-root",
+      "current_contract": "0.15.1 candidate: command discovery preserves the explicitly queried data root, interpreter, script, session, turn and private binding across all four returned commands; Hook discovery retains its ambient root contract",
+      "trigger": "real CLI queries with no Hook environment or wrong CONTEXT_GUARD_DATA_DIR/PLUGIN_DATA/CLAUDE_PLUGIN_DATA, distinct and spaced roots; four-command consumer mutation matrix",
+      "positive": "all four commands bind the explicit root and current private attempt; the returned status command executes successfully with unchanged private bytes and metadata",
+      "negative": "wrong root, executable, script, subcommand, session, turn, token hash, sentinel inventory token, duplicate fields and extra/compound command shapes fail; no default-root directory is created",
+      "test_locator": "tests/test_cg0151_status_command_contract.py::StatusCommandContractTests::test_c09_explicit_query_root_binds_all_commands_without_hook_environment and ::test_c10_encoder_explicit_space_root_and_hook_default_are_separate and tests/test_incident_host_acceptance.py::IncidentHostTests::test_cli0160_all_four_inventory_commands_require_exact_authority",
+      "deeper_authority": "scripts/context_guard.py checkpoint_status, advanced_command_context and shared command encoder; tools/validation/incident_host_acceptance.py status_output",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "fresh exact-runtime native macOS and Windows incident/command-inventory acceptance; source execution does not certify model or installed behavior",
+        "exact-commit full CI/HOL and integration/publication remain separate",
+        "next owner: coordinator"
       ],
       "owner": "coordinator"
     },

@@ -19,7 +19,7 @@ state schema fails the diagnostic explicitly instead of migrating in memory.
 All status modes bind the fd-loaded state identity and revalidate the same
 revision, turn, private binding and applicable sources after projection; query-time
 changes fail explicitly. Incident capture mapping rejects missing or wrongly typed
-observations before boolean evaluation. These checks add no persisted fields. Windows committed-state diagnostics request delete sharing with read-only access
+observations before boolean evaluation. The advanced command inventory uses the explicitly queried data root for all four commands; Hook-generated discovery retains its ambient root contract. These checks add no persisted fields. Windows committed-state diagnostics request delete sharing with read-only access
 and reject reparse objects before transferring native-handle ownership to the
 CRT descriptor. Committed-state publication alone uses user-mode
 FileRenameInfoEx with replace-existing and POSIX semantics on Windows; fsync,
