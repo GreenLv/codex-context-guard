@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "1f880e5905afe02e8276266a2fcb0f2adf8e332b",
+  "library_commit": "1bb2bef81f5a548f05e821580b93ffa4112dd739",
   "denominator": {
     "case_registry": {
-      "records": 58,
-      "active": 47
+      "records": 59,
+      "active": 48
     },
     "legacy_source": {
       "records": 16,
@@ -1198,6 +1198,30 @@
         "next owner: coordinator (final acceptance, integration, release)"
       ],
       "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-dsh-desktop-market-bundle-conflict",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "Guard 0.8.3 把官方插件市场硬编码为 Web 专属 bundle 并拒绝 Desktop profile",
+      "runtime": "dsh",
+      "platform": "macos",
+      "family": "desktop-profile-admission",
+      "current_contract": "Narrow Codex provider-source binding analogue only: a registered marketplace is accepted when its sanitized source is bound; a copied manifest at an unrelated source is not identity authority. Codex has no DSH Desktop bundle/profile admission implementation.",
+      "trigger": "Existing Codex safe-installer source-binding positive and negative fixtures; no DSH bundle/profile execution",
+      "positive": "A sanitized bound Codex marketplace validates without writes",
+      "negative": "A same-name/same-manifest unrelated checkout cannot bind the provider source",
+      "test_locator": "tests/test_manage_plugin.py::SafePluginInstallTests::test_ensure_marketplace_non_apply_validates_staging_without_writing and ::test_ensure_marketplace_rejects_unrelated_same_identity_checkout",
+      "deeper_authority": "Canonical DSH native_verified status and host evidence belong to the historical library; this source analogue neither reproduces nor recertifies Desktop-market coexistence.",
+      "final_verdict": "analogue_only",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "not_run",
+      "owner": "coordinator",
+      "missing_evidence": [
+        "DSH Desktop bundle/profile admission is outside this standalone Codex product. Existing Codex provider-binding source tests supply only the named narrow analogue, not DSH native acceptance."
+      ],
+      "windows_evidence_note": "No new Windows source analogue execution claimed; DSH native evidence remains library-owned."
     }
   ],
   "legacy": [

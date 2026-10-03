@@ -9,7 +9,9 @@ apply to this candidate and require fresh runtime evidence: the documented
 `checkpoint-status` diagnostic options are accepted by both the CLI and
 PostToolUse under one explicit contract (prefix abbreviations are no longer
 accepted by the CLI subparser), and the status read path performs no write on
-the private tree, so a read-restricted environment no longer fails the query.
+the private tree. A query can therefore succeed when state and applicable
+authority sources remain readable but opening the private lifecycle lock
+with write intent is denied.
 Existing 0.15.0 tasks keep their bytes; a misclassified pause ledger entry
 recovers only through a real later resume with a re-verified root source. All
 native two-platform evidence for these behaviors is pending; source results do

@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "1f880e5905afe02e8276266a2fcb0f2adf8e332b",
+  "library_commit": "1bb2bef81f5a548f05e821580b93ffa4112dd739",
   "frozen_at": "2026-10-03",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
-    "raw_record_count": 58,
-    "active_case_count": 47,
+    "raw_record_count": 59,
+    "active_case_count": 48,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -538,6 +538,15 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "450790c2fb6414a29f8319a4d265556860b93ef4e6f309839ad5a5b5c5ec1237",
+        "status": "active"
+      },
+      "CGI-20261003-dsh-desktop-market-bundle-conflict": {
+        "title": "Guard 0.8.3 把官方插件市场硬编码为 Web 专属 bundle 并拒绝 Desktop profile",
+        "family": "desktop-profile-admission",
+        "runtime": "dsh",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "97bc03b64cfc8bd583be805ccbd873c5df32cc53434a5f310b1c88f27abd7043",
         "status": "active"
       }
     }
