@@ -210,7 +210,10 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
         if fault:
             fault(double, output)
         with double.patches():
-            result = legacy.matrix_cell({'kind': kind, 'control': control, 'actor_shape': actor_shape},
+            cell = {'kind': kind, 'control': control, 'actor_shape': actor_shape}
+            if profile == legacy.MATRIX_V2_PROFILE:
+                cell = legacy.matrix_v2_cell(cell)
+            result = legacy.matrix_cell(cell,
                                        double.actor, double.collector, base / 'source', output, cwd,
                                        profile=profile)
         return double, result, output
@@ -221,6 +224,188 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
         self.assertEqual(child.inventory(double.root), record['original_inventory'])
         for path, expected in record['original_dacls'].items():
             self.assertEqual(child.descriptor_contract(double.descriptor(path)), child.descriptor_contract(expected))
+
+    def test_versioned_mapping_keeps_all32_legacy_identities_and_control_bits(self):
+        cells = legacy.matrix_profile_cells(legacy.MATRIX_V2_PROFILE)
+        self.assertEqual(len(cells), 32)
+        self.assertEqual([c['legacy_cell'] for c in cells], legacy.matrix_cells())
+        self.assertEqual([c['legacy_index'] for c in cells], list(range(1, 33)))
+        self.assertEqual(cells[0]['control'], 0x1404)
+        for c in cells:
+            self.assertEqual(c['control'], c['legacy_cell']['control'])
+            self.assertEqual(c['inheritance_semantics'], 'inherited_source_retained_as_explicit'
+                             if c['control'] & 0x1000 else 'true_inherited_aces')
+        self.assertEqual(legacy.matrix_profile_cells('full32'), legacy.matrix_cells())
+        with self.assertRaises(ValueError):
+            legacy.matrix_v2_cell({'kind': 'file', 'control': 0x1804, 'actor_shape': 'missing'})
+
+    def test_explicit_conversion_only_clears_I_preserves_full_ordered_ACE_bytes(self):
+        for control in (0x1004, 0x1404):
+            for flags in (0x10, 0x13, 0x1f):
+                deny = legacy.matrix_ace(InheritanceAPIDouble.actor, 0x10116, 1)
+                explicit = legacy.matrix_ace(InheritanceAPIDouble.collector)
+                tail = [legacy.matrix_ace(p, flags=flags) for p in InheritanceAPIDouble.principals]
+                before = legacy.matrix_descriptor(control, [deny, explicit, *tail])
+                result = legacy.matrix_retain_explicit(before, tail)
+                old, new = child.descriptor_contract(before), child.descriptor_contract(result)
+                self.assertEqual(new['dacl_control'], control)
+                self.assertEqual(len(new['aces']), len(old['aces']))
+                self.assertEqual(new['aces'][:2], old['aces'][:2])
+                for a, b in zip(old['aces'][2:], new['aces'][2:]):
+                    raw = bytearray.fromhex(a)
+                    raw[1] &= ~0x10
+                    self.assertEqual(b, raw.hex())
+
+    def test_explicit_conversion_rejects_unknown_denies_flags_masks_and_bad_order(self):
+        allow = legacy.matrix_ace(InheritanceAPIDouble.collector)
+        inherited = legacy.matrix_ace(InheritanceAPIDouble.actor, flags=0x10)
+        for aces, tail, control in (
+            ([allow, inherited], [inherited], 0x404),
+            ([allow, inherited], [], 0x1404),
+            ([allow, inherited], [allow], 0x1404),
+            ([inherited, allow], [inherited], 0x1404),
+            ([allow, legacy.matrix_ace(InheritanceAPIDouble.actor, ace_type=1, flags=0x10)],
+             [legacy.matrix_ace(InheritanceAPIDouble.actor, ace_type=1, flags=0x10)], 0x1404),
+            ([allow, legacy.matrix_ace(InheritanceAPIDouble.actor, flags=0x90)],
+             [legacy.matrix_ace(InheritanceAPIDouble.actor, flags=0x90)], 0x1404),
+            ([allow, legacy.matrix_ace(InheritanceAPIDouble.actor, mask=0x80000000, flags=0x10)],
+             [legacy.matrix_ace(InheritanceAPIDouble.actor, mask=0x80000000, flags=0x10)], 0x1404),
+            ([allow, legacy.matrix_ace(InheritanceAPIDouble.actor, ace_type=5, flags=0x10)],
+             [legacy.matrix_ace(InheritanceAPIDouble.actor, ace_type=5, flags=0x10)], 0x1404),
+            ([allow, legacy.matrix_ace(InheritanceAPIDouble.actor, ace_type=1), inherited],
+             [inherited], 0x1404),
+        ):
+            with self.subTest(aces=aces, control=control), self.assertRaises(ValueError):
+                legacy.matrix_retain_explicit(legacy.matrix_descriptor(control, aces), tail)
+
+    def test_new_schema_cannot_relabel_old_or_partial_cell_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory)
+            for report in (
+                {'cell_profile': legacy.MATRIX_V2_PROFILE, 'schema': 'incident-acl-mechanism-matrix/v1'},
+                {'cell_profile': 'full32', 'schema': legacy.MATRIX_V2_SCHEMA},
+                {'cell_profile': legacy.MATRIX_V2_PROFILE, 'schema': legacy.MATRIX_V2_SCHEMA,
+                 'construction_contract': legacy.MATRIX_V2_CONTRACT, 'cells': legacy.matrix_cells()},
+            ):
+                with mock.patch.object(legacy, 'matrix_cell') as run, self.assertRaises(ValueError):
+                    legacy.matrix_run_cells(report, 'actor', 'collector', p, p, p)
+                run.assert_not_called()
+            self.assertEqual(list(p.iterdir()), [])
+
+    def test_v2_plans_preserve_control_and_correct_actor_shapes(self):
+        for cell in legacy.matrix_profile_cells(legacy.MATRIX_V2_PROFILE):
+            plan = legacy.matrix_probe_plan(cell, InheritanceAPIDouble.actor, InheritanceAPIDouble.collector)
+            final = plan['construction']['final_contract']
+            self.assertEqual(final['dacl_control'], cell['control'])
+            self.assertEqual(any(bytes.fromhex(a)[1] & 0x10 for a in final['aces']),
+                             not bool(cell['control'] & 0x1000))
+            self.assertFalse(any(p['name'] == 'protect_control_only' for p in plan['phases']))
+            if cell['actor_shape'] == 'deny':
+                self.assertEqual(bytes.fromhex(final['aces'][0])[0], 1)
+
+    def test_v2_conversion_tail_loss_remains_failed_and_restores_S0_before_S1(self):
+        def fault(double, output):
+            def corrupt(path, planned, count):
+                contract = child.descriptor_contract(planned)
+                if path.name == 'target' and contract['dacl_control'] == 0x1404 and len(contract['aces']) == 7:
+                    double.bad_readback = True
+            double.fail_write = corrupt
+        double, result, _ = self.run_cell('file', 0x1404, 'missing', fault=fault,
+                                          profile=legacy.MATRIX_V2_PROFILE)
+        self.assertEqual(result['status'], 'failed')
+        self.assertNotIn('s1_record', result)
+        self.assertEqual(result['restorations'][-1]['status'], 'verified')
+        self.assert_s0(double, result)
+
+    def test_v2_conversion_receipt_failure_permits_only_S0_restoration(self):
+        original = child.durable_snapshot
+        def persist(path, value):
+            if Path(path).name == 'target-explicit-construction-intent.json':
+                raise OSError('synthetic intent persistence failure')
+            return original(path, value)
+        with mock.patch.object(child, 'durable_snapshot', side_effect=persist):
+            double, result, _ = self.run_cell('file', 0x1404, 'missing', profile=legacy.MATRIX_V2_PROFILE)
+        self.assertEqual(result['status'], 'failed')
+        self.assertNotIn('s1_record', result)
+        self.assert_s0(double, result)
+
+    def test_v2_all32_keep_strict_business_family_and_exact_S0_S1_restoration(self):
+        for cell in legacy.matrix_cells():
+            with self.subTest(cell=cell):
+                double, result, output = self.run_cell(**cell, profile=legacy.MATRIX_V2_PROFILE,
+                                                        double_class=FirstConversionAPIDouble)
+                self.assertEqual(result['status'], 'passed', result.get('failure'))
+                self.assert_s0(double, result)
+                self.assertFalse(any(w['native_result']['api'] == 'SetSecurityInfo' for w in double.writes))
+                preflight = legacy.matrix_probe_plan(legacy.matrix_v2_cell(cell), double.actor, double.collector)
+                self.assertEqual(child.descriptor_contract(result['target_plan']), preflight['construction']['final_contract'])
+                if cell['kind'] == 'directory':
+                    descendants = next(p for p in preflight['phases'] if p['name'] in
+                                       ('ready_descendants', 'protected_explicit_descendants'))['expected']
+                    for name, contract in descendants.items():
+                        self.assertEqual(child.descriptor_contract(result['s1_record']['original_dacls'][str(double.root / name)]), contract)
+                self.assertEqual([r['status'] for r in result['restorations']], ['verified'] * 3)
+                s1 = result['s1_record']['original_dacls']
+                target = str(double.root / 'target')
+                for observation in result['family_observations']:
+                    if observation['phase'] in ('grant', 'deny', 'deny_v2'):
+                        for path, value in s1.items():
+                            if path != target:
+                                self.assertEqual(child.descriptor_contract(observation['observation']['raw_dacls'][path]),
+                                                 child.descriptor_contract(value))
+                if cell['kind'] == 'directory' and cell['control'] & 0x1000:
+                    plan = result['v2_family_construction']
+                    self.assertEqual([s['path'] for s in plan['descendant_steps']],
+                                     ['target/nested/leaf', 'target/nested'])
+                    self.assertTrue((output / 'v2-whole-family-construction-intent.json').exists())
+                    self.assertEqual(plan['final_family'], s1)
+                    for path in ('target/nested', 'target/nested/leaf'):
+                        contract = child.descriptor_contract(s1[str(double.root / path)])
+                        self.assertEqual(contract['dacl_control'], 0x1404)
+                        self.assertFalse(any(bytes.fromhex(a)[1] & 0x10 for a in contract['aces']))
+
+    def test_v2_missing_descendant_protection_does_not_weaken_business_oracle(self):
+        def omit(root, target, result, output):
+            return result['declared_setup_expected']
+        with mock.patch.object(legacy, 'matrix_v2_ready_descendants', side_effect=omit):
+            double, result, _ = self.run_cell('directory', 0x1404, 'inherited',
+                                              profile=legacy.MATRIX_V2_PROFILE)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('s1_record', result)
+        self.assertEqual(result['step'], 'deny')
+        self.assertTrue(result['s1_record']['operations'][-1]['unexpected_objects'])
+        self.assert_s0(double, result)
+
+    def test_v2_descendant_ACE_mask_flags_loss_and_midway_failure_restore_entire_S0(self):
+        for damage in ('drop', 'mask', 'flags', 'api_failure'):
+            with self.subTest(damage=damage):
+                def fault(double, output):
+                    original = double.write
+                    def write(path, planned, **kwargs):
+                        contract = child.descriptor_contract(planned)
+                        if (str(path).endswith('target/nested') and contract['dacl_control'] == 0x1404
+                                and len(contract['aces']) > 3):
+                            if damage == 'api_failure':
+                                raise OSError('synthetic second descendant setup failure')
+                            aces = list(contract['aces'])
+                            if damage == 'drop':
+                                aces.pop()
+                            else:
+                                raw = bytearray.fromhex(aces[-1])
+                                if damage == 'mask':
+                                    raw[4] ^= 2
+                                else:
+                                    raw[1] ^= 1
+                                aces[-1] = raw.hex()
+                            planned = legacy.matrix_descriptor(0x1404, aces)
+                        return original(path, planned, **kwargs)
+                    double.write = write
+                double, result, _ = self.run_cell('directory', 0x1404, 'inherited', fault=fault,
+                                                  profile=legacy.MATRIX_V2_PROFILE)
+                self.assertEqual(result['status'], 'failed')
+                self.assertNotIn('s1_record', result)
+                self.assertEqual(result['restorations'][-1]['status'], 'verified')
+                self.assert_s0(double, result)
 
     def test_legacy_native_equivalent_first_parent_is_three_not_six(self):
         for kind in ('file', 'directory'):

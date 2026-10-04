@@ -806,17 +806,19 @@ def matrix_preflight(args):
     collector = getattr(args, 'collector_sid', None)
     if expected_runner is not None and expected_runner != runner_sha:
         raise ValueError('mechanism runner identity changed')
-    if profile == 'protected8':
+    if profile in ('protected8', MATRIX_V2_PROFILE):
         if expected_runner is None or collector is None:
             raise ValueError('protected probes require fixed runner and collector pins')
         child.sid_bytes(collector)
         if collector == args.actor_sid:
             raise ValueError('collector cannot stand in for ordinary actor')
-    probe_plan = [matrix_probe_plan(c, args.actor_sid, collector) for c in cells] if profile == 'protected8' else None
+    probe_plan = [matrix_probe_plan(c, args.actor_sid, collector) for c in cells] if profile in ('protected8', MATRIX_V2_PROFILE) else None
     inputs = {'source_commit': head, 'helper_sha256': helper_sha, 'runner_sha256': runner_sha,
               'cell_profile': profile, 'cells': cells, 'actor_sid': args.actor_sid,
               'collector_sid': collector, 'output': str(output), 'fixture_parent': str(parent)}
-    return {'schema': 'incident-acl-mechanism-matrix/v1', 'source_commit': head,
+    return {'schema': MATRIX_V2_SCHEMA if profile == MATRIX_V2_PROFILE else 'incident-acl-mechanism-matrix/v1',
+            'construction_contract': MATRIX_V2_CONTRACT if profile == MATRIX_V2_PROFILE else 'legacy-inherited-tail/v1',
+            'source_commit': head,
             'inputs': inputs, 'inputs_sha256': hashlib.sha256(json.dumps(inputs, sort_keys=True,
                 separators=(',', ':')).encode()).hexdigest(),
             'cell_profile': profile, 'collector_sid_pin': collector,
@@ -988,6 +990,7 @@ def matrix_setup_operation(root, path, planned, result, output):
     primary = None
     try:
         probe = (path != root
+                 and result.get('cell_profile') != MATRIX_V2_PROFILE
                  and result.get('setup_phase', 'target') == 'target'
                  and child.descriptor_contract(planned)['dacl_control'] == 0x1404)
         if probe:
@@ -1061,7 +1064,65 @@ def matrix_probes():
             for shape in ('missing', 'inherited')]
 
 
+MATRIX_V2_PROFILE = 'explicit-retained32'
+MATRIX_V2_SCHEMA = 'incident-acl-mechanism-matrix/v2'
+MATRIX_V2_CONTRACT = 'protected-explicit-retention/v2'
+
+
+def matrix_v2_cell(legacy_cell):
+    if (type(legacy_cell) is not dict or set(legacy_cell) != {'kind', 'control', 'actor_shape'}
+            or type(legacy_cell.get('control')) is not int or legacy_cell not in matrix_cells()):
+        raise ValueError('unknown legacy matrix cell')
+    protected = bool(legacy_cell['control'] & 0x1000)
+    return {**legacy_cell, 'legacy_cell': dict(legacy_cell),
+            'legacy_index': matrix_cells().index(legacy_cell) + 1,
+            'construction_contract': MATRIX_V2_CONTRACT,
+            'target_descendants': ('protected_1404_explicit_retention'
+                                   if protected and legacy_cell['kind'] == 'directory'
+                                   else 'true_inheritance_unchanged'),
+            'inheritance_semantics': ('inherited_source_retained_as_explicit' if protected
+                                      else 'true_inherited_aces')}
+
+
+def matrix_retain_explicit(descriptor, inherited_source):
+    """Controlled fixture construction only. Never normalize an observed ACL.
+
+    Retain count and order; clear only I on the exact declared ordinary allow
+    tail. Reject unknown, inherited deny, generic and noncanonical inputs.
+    """
+    contract = child.descriptor_contract(descriptor)
+    if (contract['descriptor_revision'] != 1 or contract['dacl_revision'] != 2
+            or contract['dacl_control'] not in (0x1004, 0x1404) or not inherited_source):
+        raise ValueError('protected declared inheritance source required')
+    aces = contract['aces']
+    tail = [a for a in aces if bytes.fromhex(a)[1] & 0x10]
+    if tail != inherited_source or aces[-len(tail):] != tail:
+        raise ValueError('declared inherited tail differs or is noncanonical')
+    ranks, retained = [], []
+    for value in aces:
+        raw = bytearray.fromhex(value)
+        sid = child.ace_sid(raw)  # rejects object, conditional, malformed SID and ACE
+        mask = struct.unpack_from('<I', raw, 4)[0]
+        if raw[1] & ~0x1f or mask & ~0x1f01ff:
+            raise ValueError('unsupported controlled ACE flags or mask')
+        ranks.append((2 if raw[1] & 0x10 else 0) + (1 if raw[0] == 0 else 0))
+        if raw[1] & 0x10:
+            if raw[0] != 0 or sid.startswith('S-1-3-'):
+                raise ValueError('inherited deny or creator substitution cannot become explicit')
+            raw[1] &= ~0x10
+        retained.append(raw.hex())
+    if ranks != sorted(ranks):
+        raise ValueError('noncanonical controlled ACL order')
+    # Removing I must not move an explicit deny behind an allow. No sorting.
+    output_ranks = [0 if bytes.fromhex(a)[0] == 1 else 1 for a in retained]
+    if output_ranks != sorted(output_ranks):
+        raise ValueError('conversion changes canonical deny precedence')
+    return matrix_descriptor(contract['dacl_control'], retained)
+
+
 def matrix_profile_cells(profile):
+    if profile == MATRIX_V2_PROFILE:
+        return [matrix_v2_cell(c) for c in matrix_cells()]
     if profile == 'full32':
         return matrix_cells()
     if profile == 'protected8':
@@ -1195,7 +1256,8 @@ def matrix_setup_transition(root, path, planned, expected, result, output, phase
     matrix_assert_setup_state(root, expected, result)
     before = {'raw_dacls': expected, 'inventory': result['s0_record']['original_inventory']}
     staged = (child.descriptor_contract(planned)['dacl_control'] == 0x1004
-              or (phase == 'target' and child.descriptor_contract(planned)['dacl_control'] == 0x1404))
+              or (phase == 'target' and result.get('cell_profile') != MATRIX_V2_PROFILE
+                  and child.descriptor_contract(planned)['dacl_control'] == 0x1404))
     intermediate = None
     if staged:
         contract = child.descriptor_contract(planned)
@@ -1224,6 +1286,8 @@ def matrix_setup_transition(root, path, planned, expected, result, output, phase
 
 
 def matrix_probe_plan(cell, actor_sid, collector_sid):
+    if cell.get('construction_contract') == MATRIX_V2_CONTRACT:
+        return matrix_v2_probe_plan(cell, actor_sid, collector_sid)
     directory = cell['kind'] == 'directory'
     parent = [matrix_ace(sid, flags=3) for sid in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
     if cell['actor_shape'] == 'inherited':
@@ -1285,6 +1349,118 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
             'failure_policy': 'persist before restoration; one declared attempt per stage; fail-stop without fallback'}
 
 
+def matrix_v2_probe_plan(cell, actor_sid, collector_sid):
+    if cell not in matrix_profile_cells(MATRIX_V2_PROFILE):
+        raise ValueError('unknown versioned construction cell')
+    legacy_cell = cell['legacy_cell']
+    plan = matrix_probe_plan(legacy_cell, actor_sid, collector_sid)
+    plan.update(cell)
+    directory = cell['kind'] == 'directory'
+    parent = [matrix_ace(s, flags=3) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
+    if cell['actor_shape'] == 'inherited':
+        parent.append(matrix_ace(actor_sid, flags=3))
+    explicit = [matrix_ace(s) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')]
+    if cell['actor_shape'] == 'explicit':
+        explicit.append(matrix_ace(actor_sid))
+    elif cell['actor_shape'] == 'deny':
+        explicit.insert(0, matrix_ace(actor_sid, 0x10156 if directory else 0x10116, 1))
+    inherited = matrix_inherited_aces(matrix_descriptor(0x1404, parent), directory)
+    final = matrix_descriptor(cell['control'], explicit + inherited)
+    protected = bool(cell['control'] & 0x1000)
+    if protected:
+        final = matrix_retain_explicit(final, inherited)
+    target_steps = []
+    if cell['control'] == 0x1004:
+        target_steps.append({'name': 'protect_explicit_intermediate', 'path': 'target',
+                             'api': 'SetNamedSecurityInfoW', 'security_information': 0x80000004,
+                             'expected': child.descriptor_contract(matrix_descriptor(0x1404,
+                                 child.descriptor_contract(final)['aces']))})
+    strategy, flags = child.restoration_strategy(final)
+    target_steps.append({'name': 'target_explicit_retention' if protected else 'target_true_inheritance',
+                         'path': 'target', 'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                         'security_information': flags, 'expected': child.descriptor_contract(final)})
+    grant = child.planned_acl_change(final, actor_sid, 'grant', directory)
+    deny = child.planned_acl_change(grant, actor_sid, 'deny', directory)
+    phases = plan['phases']
+    phases[3:5] = target_steps
+    for phase in phases:
+        if phase['name'] == 'grant':
+            phase['expected'] = child.descriptor_contract(grant)
+        elif phase['name'] == 'deny':
+            phase['expected'] = child.descriptor_contract(deny)
+        elif phase['name'] == 'deny_v2':
+            phase['expected'] = child.descriptor_contract(child.planned_acl_change(
+                final, actor_sid, 'deny', directory, 'specific-write-deny/v2'))
+    for phase in phases:
+        if phase['name'] == 'ready_descendants':
+            inherited_final = matrix_inherited_aces(final, True)
+            seed_aces = child.descriptor_contract(matrix_seed_descriptor(collector_sid))['aces']
+            descendants = {}
+            for name, is_directory in ([('target/nested', True), ('target/nested/leaf', False)] if directory else []):
+                tail = inherited_final if is_directory else matrix_inherited_aces(
+                    matrix_descriptor(0x404, seed_aces + inherited_final), False)
+                source = matrix_descriptor(0x1404 if protected else 0x404, seed_aces + tail)
+                planned = matrix_retain_explicit(source, tail) if protected else source
+                descendants[name] = child.descriptor_contract(planned)
+            phase.update(name='protected_explicit_descendants' if protected and directory else 'ready_descendants',
+                         order='deepest_first' if protected else 'parent_first',
+                         security_information=0x80000004 if protected else 0x20000004,
+                         true_I_coverage=not protected, expected=descendants)
+    plan['protected_AI_feasibility'] = 'native_unknown_explicit_retention'
+    plan['construction'] = {'cleared_bit': 'ACE_INHERITED_ACE (0x10) only',
+                            'control': cell['control'], 'true_I_coverage': not protected,
+                            'source_contract': child.descriptor_contract(matrix_descriptor(cell['control'], explicit + inherited)),
+                            'final_contract': child.descriptor_contract(final)}
+    return plan
+
+
+def matrix_v2_family_plan(root, target, target_plan, expected):
+    """Precompute from declared controlled sources, never unexpected readback."""
+    control = child.descriptor_contract(target_plan)['dacl_control']
+    materialized = (matrix_descriptor(0x1404, child.descriptor_contract(target_plan)['aces'])
+                    if control == 0x1004 else target_plan)
+    after_target = matrix_setup_expected(root, target, materialized, {'raw_dacls': expected})
+    after_target[str(target)] = target_plan
+    simulated = dict(after_target)
+    steps = []
+    if target.is_dir() and control & 0x1000:
+        paths = sorted((p for p in child.fixture_paths(root) if target in p.parents),
+                       key=lambda p: (-len(p.parts), str(p)))
+        for path in paths:
+            current = child.descriptor_contract(simulated[str(path)])
+            if current['dacl_control'] != 0x404:
+                raise ValueError('controlled descendant must have declared unprotected AI source')
+            inherited = [a for a in current['aces'] if bytes.fromhex(a)[1] & 0x10]
+            source = matrix_descriptor(0x1404, current['aces'])
+            planned = matrix_retain_explicit(source, inherited)
+            after = matrix_setup_expected(root, path, planned, {'raw_dacls': simulated})
+            steps.append({'path': path.relative_to(root).as_posix(), 'source': source,
+                          'planned': planned, 'before_family': dict(simulated), 'after_family': after})
+            simulated = after
+    return {'contract': MATRIX_V2_CONTRACT, 'target_planned': target_plan,
+            'after_target_family': after_target, 'descendant_order': 'deepest_first',
+            'descendant_steps': steps, 'final_family': simulated,
+            'descendant_true_I_coverage': not bool(control & 0x1000)}
+
+
+def matrix_v2_ready_descendants(root, target, result, output):
+    plan = result['v2_family_construction']
+    expected = plan['after_target_family']
+    matrix_assert_setup_state(root, expected, result)
+    owned = {p.relative_to(root).as_posix(): p for p in child.fixture_paths(root)}
+    for step in plan['descendant_steps']:
+        path = owned.get(step['path'])
+        if path is None or target not in path.parents or expected != step['before_family']:
+            raise ValueError('declared owned descendant or construction sequence differs')
+        expected = matrix_setup_transition(root, path, step['planned'], expected, result, output,
+                                           'protected_explicit_descendant')
+        if expected != step['after_family']:
+            raise ValueError('precomputed descendant family differs')
+    if expected != plan['final_family']:
+        raise ValueError('complete protected descendant construction differs')
+    return expected
+
+
 def matrix_ready_descendants(root, target, result, output, inventory):
     # Raw final cannot propagate. Close the declared owned inheritance graph
     # before S1, instead of capturing an unrestorable intermediate descendant.
@@ -1306,6 +1482,9 @@ def matrix_ready_descendants(root, target, result, output, inventory):
 
 
 def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='full32'):
+    if (cell not in matrix_profile_cells(profile) or (profile == MATRIX_V2_PROFILE
+            and matrix_v2_cell(cell.get('legacy_cell')) != cell)):
+        raise ValueError('cell differs from fixed construction contract')
     root = cwd / ('incident-readonly-' + output.name)
     root.mkdir()
     result = {**cell, 'fixture': str(root), 'status': 'failed', 'step': 'topology',
@@ -1393,10 +1572,27 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
         elif cell['actor_shape'] == 'deny':
             aces.insert(0, matrix_ace(actor_sid, 0x10156 if target.is_dir() else 0x10116, 1))
         target_plan = matrix_descriptor(cell['control'], aces + inherited)
+        if profile == MATRIX_V2_PROFILE and cell['control'] & 0x1000:
+            retained = matrix_retain_explicit(target_plan, inherited)
+            conversion = {'contract': MATRIX_V2_CONTRACT, 'path': 'target',
+                          'source': target_plan, 'planned': retained,
+                          'semantics': 'inherited_source_retained_as_explicit',
+                          's0_snapshot_sha256': s0['original_snapshot_sha256']}
+            persist('target-explicit-construction-intent.json', conversion)
+            result['explicit_construction'] = conversion
+            target_plan = retained
+        if profile == MATRIX_V2_PROFILE and cell['control'] & 0x1000:
+            construction = matrix_v2_family_plan(root, target, target_plan, expected)
+            construction['s0_snapshot_sha256'] = s0['original_snapshot_sha256']
+            persist('v2-whole-family-construction-intent.json', construction)
+            result['v2_family_construction'] = construction
         result['target_plan'] = target_plan
         expected = matrix_setup_transition(root, target, target_plan, expected, result, output, 'target')
         if target.is_dir():
-            expected = matrix_ready_descendants(root, target, result, output, s0['original_inventory'])
+            if profile == MATRIX_V2_PROFILE and cell['control'] & 0x1000:
+                expected = matrix_v2_ready_descendants(root, target, result, output)
+            else:
+                expected = matrix_ready_descendants(root, target, result, output, s0['original_inventory'])
         if matrix_guards(root, cwd) != guards:
             raise ValueError('external guard changed during setup')
         ownership = {k: str(v) for k, v in {'cwd': cwd, 'output': output, 'repo': repo,
@@ -1491,8 +1687,13 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
 
 def matrix_run_cells(report, actor_sid, collector_sid, repo, output, cwd):
     profile = report.get('cell_profile', 'full32')
+    if profile == MATRIX_V2_PROFILE and (report.get('schema') != MATRIX_V2_SCHEMA
+            or report.get('construction_contract') != MATRIX_V2_CONTRACT):
+        raise ValueError('new construction requires its versioned report contract')
+    if profile != MATRIX_V2_PROFILE and report.get('schema') == MATRIX_V2_SCHEMA:
+        raise ValueError('legacy cells cannot claim new schema coverage')
     cells = matrix_profile_cells(profile)
-    if 'cells' in report and report['cells'] != cells:
+    if (profile == MATRIX_V2_PROFILE and report.get('cells') != cells) or ('cells' in report and report['cells'] != cells):
         raise ValueError('selected cells differ from fixed profile')
     for number, cell in enumerate(cells, 1):
         cell_output = output / ('cell-' + str(number).zfill(2))
@@ -1519,7 +1720,7 @@ def mechanism_matrix_main(argv):
     parser.add_argument('--output', required=True)
     parser.add_argument('--fixture-parent', required=True)
     parser.add_argument('--preflight', action='store_true')
-    parser.add_argument('--cell-profile', choices=('full32', 'protected8'), default='full32')
+    parser.add_argument('--cell-profile', choices=('full32', 'protected8', MATRIX_V2_PROFILE), default='full32')
     parser.add_argument('--expected-runner-sha256')
     parser.add_argument('--collector-sid')
     args = parser.parse_args(argv)
