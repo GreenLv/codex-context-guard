@@ -17,6 +17,420 @@ from tools.validation import incident_host_acceptance as host
 from tools.validation import incident_readonly_child as child
 
 
+class InheritanceAPIDouble:
+    """Independent bounded disk model; no actual Windows API or SID identities."""
+    principals = ('S-1-5-18', 'S-1-5-32-544', 'S-1-5-19')
+    collector = 'S-1-5-21-101-202-303-1001'
+    actor = 'S-1-5-21-101-202-303-1004'
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.values, self.writes = {}, []
+        self.before_write = None
+        self.bad_readback = False
+        self.fail_write = None
+
+    @staticmethod
+    def ace(sid, flags=3):
+        revision, authority, *parts = map(int, sid.split('-')[1:])
+        raw = bytes([revision, len(parts)]) + authority.to_bytes(6, 'big')
+        raw += b''.join(struct.pack('<I', p) for p in parts)
+        return struct.pack('<BBHI', 0, flags, 8 + len(raw), 0x1f01ff) + raw
+
+    @staticmethod
+    def sd(control, aces):
+        body = b''.join(aces)
+        return base64.b64encode(struct.pack('<BBHIIII', 1, 0, control | 0x8000, 0, 0, 0, 20)
+                                + struct.pack('<BBHHH', 2, 0, len(body) + 8, len(aces), 0) + body).decode()
+
+    def inheritance(self, path):
+        aces = child.descriptor_contract(self.descriptor(path.parent))['aces']
+        result = []
+        for value in aces:
+            ace = bytearray.fromhex(value)
+            if ace[1] & (2 if path.is_dir() else 1):
+                ace[1] = 19 if path.is_dir() else 16
+                result.append(bytes(ace))
+        return result
+
+    def cascade(self, ancestor):
+        for path in sorted(child.fixture_paths(self.root), key=lambda p: (len(p.parts), str(p))):
+            if ancestor not in path.parents:
+                continue
+            current = child.descriptor_contract(self.descriptor(path))
+            if current['dacl_control'] & 0x1000:
+                continue
+            explicit = [bytes.fromhex(a) for a in current['aces'] if not bytes.fromhex(a)[1] & 16]
+            self.values[str(path)] = self.sd(0x404, explicit + self.inheritance(path))
+
+    def write(self, path, planned, *, raw=False):
+        path = Path(path)
+        if path != self.root and self.root not in path.parents:
+            raise AssertionError('double write escaped owned family')
+        if self.before_write is not None:
+            self.before_write(path, planned)
+        if self.fail_write is not None:
+            self.fail_write(path, planned, len(self.writes))
+        contract = child.descriptor_contract(planned)
+        named = not raw and bool(contract['dacl_control'] & 0x400)
+        aces = [bytes.fromhex(a) for a in contract['aces']]
+        if named:
+            explicit = [a for a in aces if not a[1] & 16]
+            aces = explicit if contract['dacl_control'] & 0x1000 else explicit + self.inheritance(path)
+            actual = self.sd(contract['dacl_control'], aces)
+        else:
+            actual = planned
+        if self.bad_readback:
+            actual = self.sd(contract['dacl_control'], [self.ace(self.principals[2], 0)])
+            self.bad_readback = False
+        self.values[str(path)] = actual
+        if named and path.is_dir():
+            self.cascade(path)
+        result = {'api': 'SetNamedSecurityInfoW' if named else 'SetFileSecurityW',
+                  'security_information': 4 | (0x80000000 if contract['dacl_control'] & 0x1000
+                                              else 0x20000000) if named else 4,
+                  'return_value': 0 if named else 1, 'winerror': 0}
+        self.writes.append({'path': str(path), 'planned': planned, 'actual': actual, 'native_result': result})
+        return result
+
+    def descriptor(self, path, planned=None):
+        path = Path(path)
+        if planned is not None:
+            return self.write(path, planned)
+        key = str(path)
+        if key not in self.values:
+            self.values[key] = (self.sd(4, [self.ace(p) for p in self.principals])
+                                if path == self.root or self.root not in path.parents
+                                else self.sd(0x404, self.inheritance(path)))
+        return self.values[key]
+
+    def patches(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(mock.patch.object(child, 'current_sid', return_value=self.collector))
+        stack.enter_context(mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor))
+        double = self
+        class Setter:
+            def __call__(self, path, flags, buffer):
+                if flags != 4:
+                    raise AssertionError('raw API security information changed')
+                double.write(path, base64.b64encode(buffer.raw[:-1]).decode(), raw=True)
+                return 1
+        class API:
+            SetFileSecurityW = Setter()
+        stack.enter_context(mock.patch.object(legacy.ctypes, 'WinDLL', return_value=API(), create=True))
+        return stack
+
+
+class MatrixInheritanceFamilyTests(unittest.TestCase):
+    def run_cell(self, kind='directory', control=0x1004, actor_shape='missing', *, fault=None,
+                 profile='full32'):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name)
+        cwd, output = base / 'workspace', base / 'output'
+        cwd.mkdir()
+        output.mkdir()
+        double = InheritanceAPIDouble(cwd / 'incident-readonly-output')
+        if fault:
+            fault(double, output)
+        with double.patches():
+            result = legacy.matrix_cell({'kind': kind, 'control': control, 'actor_shape': actor_shape},
+                                       double.actor, double.collector, base / 'source', output, cwd,
+                                       profile=profile)
+        return double, result, output
+
+    def assert_s0(self, double, result):
+        record = result['s0_record']
+        self.assertEqual(set(record['original_dacls']), {str(p) for p in child.fixture_paths(double.root)})
+        self.assertEqual(child.inventory(double.root), record['original_inventory'])
+        for path, expected in record['original_dacls'].items():
+            self.assertEqual(child.descriptor_contract(double.descriptor(path)), child.descriptor_contract(expected))
+
+    def test_protected_non_ai_all_actor_forms_and_owned_descendants(self):
+        for kind in ('file', 'directory'):
+            for actor in ('missing', 'explicit', 'inherited', 'deny'):
+                with self.subTest(kind=kind, actor=actor):
+                    double, result, _ = self.run_cell(kind, actor_shape=actor)
+                    self.assertEqual(result['status'], 'passed', result.get('failure'))
+                    self.assert_s0(double, result)
+                    self.assertEqual([r['phase'] for r in result['restorations']], ['v3', 'v2', 'setup_s0'])
+                    for restoration in result['restorations']:
+                        self.assertEqual(restoration['outside_guard_actual'], result['outside_guards'])
+                        for call in restoration['api']:
+                            self.assertEqual(set(call['family_actual']['raw_dacls']),
+                                             set(result['s0_record']['original_dacls']))
+                    intermediate = result['setup'][1]['steps'][0]
+                    self.assertTrue(all(not bytes.fromhex(a)[1] & 16 for a in
+                                        child.descriptor_contract(intermediate['planned'])['aces']))
+                    self.assertEqual(child.descriptor_contract(result['target_plan'])['dacl_control'], 0x1004)
+
+    def test_protected_ai_full_matrix_remains_strict_and_unknown(self):
+        double, result, _ = self.run_cell(control=0x1404)
+        self.assertEqual(result['status'], 'failed')
+        entry = result['setup'][1]
+        self.assertEqual(len(child.descriptor_contract(entry['planned'])['aces']), 7)
+        self.assertEqual(len(child.descriptor_contract(entry['actual'])['aces']), 4)
+        self.assertNotIn('s1_record', result)
+        self.assert_s0(double, result)
+
+    def test_independent_legacy_A_seven_to_four_counterexample(self):
+        for kind in ('file', 'directory'):
+            with self.subTest(kind=kind):
+                double, result, _ = self.run_cell(kind)
+                target = double.root / 'target'
+                planned = result['target_plan']
+                contract = child.descriptor_contract(planned)
+                old_intermediate = double.sd(0x1404, [bytes.fromhex(a) for a in contract['aces']])
+                with double.patches():
+                    double.descriptor(target, old_intermediate)
+                    self.assertNotEqual(child.descriptor_contract(double.descriptor(target)),
+                                        child.descriptor_contract(old_intermediate))
+
+    def test_independent_B_setup_error_has_durable_full_preimage_before_first_write(self):
+        for kind in ('file', 'directory'):
+            def fault(double, output):
+                def before(path, planned):
+                    saved = json.loads((output / 'setup-original/fixture-original-transaction.json').read_text())
+                    self.assertTrue((double.root / 'target').exists())
+                    self.assertEqual(set(saved['objects']), {str(p) for p in child.fixture_paths(double.root)})
+                    if not double.writes:
+                        for key, original in saved['original_dacls'].items():
+                            self.assertEqual(child.descriptor_contract(double.descriptor(key)),
+                                             child.descriptor_contract(original))
+                    if path == double.root / 'target':
+                        double.before_write = None
+                        raise OSError('independent B target setup failure')
+                double.before_write = before
+            with self.subTest(kind=kind):
+                double, result, _ = self.run_cell(kind, fault=fault)
+                self.assertEqual(result['status'], 'failed')
+                self.assertNotIn('restoration_error', result)
+                self.assert_s0(double, result)
+
+    def test_API_success_bad_readback_and_interrupt_keep_failure_and_rollback(self):
+        for failure in ('bad_readback', 'interrupt'):
+            def fault(double, _output):
+                def before(path, planned):
+                    if path == double.root / 'target':
+                        double.before_write = None
+                        if failure == 'interrupt':
+                            raise KeyboardInterrupt('bounded synthetic interrupt')
+                        double.bad_readback = True
+                double.before_write = before
+            with self.subTest(failure=failure):
+                double, result, _ = self.run_cell(fault=fault)
+                self.assertEqual(result['status'], 'failed')
+                self.assertIn('failed_observation', result)
+                self.assert_s0(double, result)
+
+    def test_storage_failure_boundaries_never_become_pass(self):
+        for boundary in ('s0', 's1', 'protect_observed', 'restore_observed', 'restore_terminal', 'final'):
+            original = child.durable_snapshot
+            injected = []
+            def durable(path, record):
+                path = Path(path)
+                selected = {
+                    's0': path.name == 'fixture-original-transaction.json' and path.parent.name == 'setup-original',
+                    's1': path.name == 'fixture-original-transaction.json' and path.parent.name == 'output',
+                    'protect_observed': path.name == 'setup-2-protect-observed.json',
+                    'restore_observed': path.name == 'v3-restore-1.json',
+                    'restore_terminal': path.name == 'v3-terminal.json',
+                    'final': path.name == 'matrix-cell.json',
+                }[boundary]
+                if selected and not injected:
+                    injected.append(str(path))
+                    raise OSError('synthetic receipt/fsync failure: ' + boundary)
+                return original(path, record)
+            with self.subTest(boundary=boundary), mock.patch.object(child, 'durable_snapshot', side_effect=durable):
+                double, result, _ = self.run_cell()
+                self.assertTrue(injected)
+                self.assertEqual(result['status'], 'failed')
+                if boundary == 's0':
+                    self.assertEqual(double.writes, [])
+                    self.assertTrue(result['s0_not_formed'])
+                else:
+                    self.assert_s0(double, result)
+                if boundary == 'restore_terminal':
+                    self.assertEqual(result['restorations'][0]['status'], 'failed')
+                    self.assertIn('receipt_failure', result['restorations'][0])
+
+    def test_ready_S1_drift_rejected_before_business_write_and_S0_restored(self):
+        original = child.prepare_read_transaction
+        def prepare(root, **kwargs):
+            record = original(root, **kwargs)
+            target = Path(root) / 'target'
+            changed = InheritanceAPIDouble.sd(0x1004, [InheritanceAPIDouble.ace('S-1-5-19', 0)])
+            child.windows_descriptor(target, changed)
+            return record
+        with mock.patch.object(child, 'prepare_read_transaction', side_effect=prepare):
+            double, result, _ = self.run_cell()
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('rejected_s1_record', result)
+        self.assertNotIn('s1_record', result)
+        self.assert_s0(double, result)
+
+    def test_grant_and_deny_failures_restore_S1_before_S0(self):
+        for phase in ('grant', 'deny'):
+            original = child.write_windows_dacl
+            called = []
+            def writer(path, planned):
+                denial = any(bytes.fromhex(a)[0] == 1 for a in child.descriptor_contract(planned)['aces'])
+                if ('deny' if denial else 'grant') == phase and not called:
+                    called.append(str(path))
+                    original(path, planned)
+                    raise OSError('successful mutation followed by synthetic ' + phase + ' failure')
+                return original(path, planned)
+            with self.subTest(phase=phase), mock.patch.object(child, 'write_windows_dacl', side_effect=writer):
+                double, result, _ = self.run_cell()
+                self.assertEqual(result['status'], 'failed')
+                self.assertTrue(called)
+                self.assertEqual([r['phase'] for r in result['restorations']], ['failure_s1', 'setup_s0'])
+                self.assertTrue(all(r['status'] == 'verified' for r in result['restorations']))
+                self.assert_s0(double, result)
+
+    def test_restore_API_or_readback_failure_retained_without_retry(self):
+        for stage in ('v3', 'v2', 'setup_s0'):
+            for mode in ('api', 'readback'):
+                original = legacy.matrix_restore
+                injected = []
+                def restore(root, record, output, label):
+                    if label != stage:
+                        return original(root, record, output, label)
+                    injected.append(label)
+                    real = child.windows_descriptor
+                    fired = []
+                    def descriptor(path, planned=None):
+                        if planned is not None and not fired:
+                            fired.append(str(path))
+                            if mode == 'api':
+                                raise child.DACLWriteError({'api': 'SetFileSecurityW', 'security_information': 4,
+                                                            'return_value': 0, 'winerror': 5})
+                            real(path, planned)
+                            changed = InheritanceAPIDouble.sd(4, [InheritanceAPIDouble.ace('S-1-5-19', 0)])
+                            real(path, changed)
+                            strategy, flags = child.restoration_strategy(planned)
+                            return {'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                                    'security_information': flags, 'return_value': 1 if strategy == 'raw-explicit' else 0,
+                                    'winerror': 0}
+                        return real(path, planned) if planned is not None else real(path)
+                    with mock.patch.object(child, 'windows_descriptor', side_effect=descriptor):
+                        return original(root, record, output, label)
+                with self.subTest(stage=stage, mode=mode), mock.patch.object(legacy, 'matrix_restore', side_effect=restore):
+                    double, result, _ = self.run_cell()
+                    self.assertEqual(result['status'], 'failed')
+                    self.assertEqual(injected, [stage])
+                    self.assertIn('restoration_error', result)
+                    self.assertEqual(next(r for r in result['restorations'] if r['phase'] == stage)['status'], 'failed')
+                    if stage != 'setup_s0':
+                        self.assert_s0(double, result)
+
+    def test_legacy_deny_failure_and_final_receipt_keep_first_failure_record(self):
+        original_write = child.write_windows_dacl
+        original_save = child.durable_snapshot
+        denials = []
+        def writer(path, planned):
+            if any(bytes.fromhex(a)[0] == 1 for a in child.descriptor_contract(planned)['aces']):
+                denials.append(str(path))
+                if len(denials) == 2:
+                    original_write(path, planned)
+                    raise OSError('synthetic legacy deny failure after mutation')
+            return original_write(path, planned)
+        def durable(path, record):
+            if Path(path).name == 'matrix-cell.json':
+                raise OSError('synthetic terminal receipt failure')
+            return original_save(path, record)
+        with mock.patch.object(child, 'write_windows_dacl', side_effect=writer), \
+             mock.patch.object(child, 'durable_snapshot', side_effect=durable):
+            double, result, _ = self.run_cell()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['failure']['step'], 'deny_v2')
+        self.assertEqual(result['receipt_failure']['step'], 'receipt')
+        self.assertEqual(result['failed_record']['policy'], 'specific-write-deny/v2')
+        self.assertEqual(result['failed_record']['operations'][-1]['status'], 'failed')
+        self.assertEqual([r['phase'] for r in result['restorations']], ['v3', 'failure_s1', 'setup_s0'])
+        self.assert_s0(double, result)
+
+    def test_fixed_probes_preserve_strict_production_protected_AI_limit(self):
+        for control in (0x1004, 0x1404):
+            double, result, _ = self.run_cell(control=control, profile='protected8')
+            self.assertEqual(child.descriptor_contract(result['setup'][1]['actual']),
+                             child.descriptor_contract(result['target_plan']))
+            if control == 0x1004:
+                self.assertEqual(result['status'], 'passed')
+            else:
+                # The fixture-only raw final succeeds in this model. The unchanged
+                # production Named grant/restore still strips its inherited tail.
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['failure']['step'], 'grant')
+                self.assertIn('restoration_error', result)
+            self.assert_s0(double, result)
+
+    def test_legacy_mixed_B_preimages_cannot_restore_inherited_family(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name) / 'root'
+        root.mkdir()
+        double = InheritanceAPIDouble(root)
+        s0_root = double.descriptor(root)
+        with double.patches():
+            changed_parent = double.sd(0x1404, [double.ace(p) for p in
+                                               (double.collector, *double.principals[:2])])
+            double.descriptor(root, changed_parent)
+            target = root / 'target'
+            target.write_bytes(b'legacy mixed-stage target')
+            mixed_target = double.descriptor(target)
+            double.descriptor(root, s0_root)
+            double.descriptor(target, mixed_target)
+            self.assertNotEqual(child.descriptor_contract(double.descriptor(target)),
+                                child.descriptor_contract(mixed_target))
+
+    def test_fixed_eight_probe_preflight_pins_and_phase_oracles_are_zero_API(self):
+        from types import SimpleNamespace
+        cells = legacy.matrix_probes()
+        self.assertEqual(len(cells), 8)
+        self.assertEqual({(c['kind'], c['control'], c['actor_shape']) for c in cells},
+                         {(k, c, a) for k in ('file', 'directory') for c in (0x1004, 0x1404)
+                          for a in ('missing', 'inherited')})
+        self.assertEqual(len(legacy.matrix_cells()), 32)
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(actor_sid=InheritanceAPIDouble.actor, collector_sid=InheritanceAPIDouble.collector,
+                                   expected_source_commit='a' * 40, cell_profile='protected8',
+                                   expected_helper_sha256=hashlib.sha256(Path(child.__file__).read_bytes()).hexdigest(),
+                                   expected_runner_sha256=hashlib.sha256(Path(legacy.__file__).read_bytes()).hexdigest(),
+                                   output=str(Path(directory) / 'result'), fixture_parent=directory)
+            with mock.patch.object(legacy.subprocess, 'check_output', side_effect=['a' * 40, b'']), \
+                 mock.patch.object(child, 'windows_descriptor') as api, \
+                 mock.patch.object(child, 'current_sid') as token:
+                report = legacy.matrix_preflight(args)
+                api.assert_not_called()
+                token.assert_not_called()
+            self.assertFalse(Path(args.output).exists())
+            self.assertEqual(len(report['probe_plan']), 8)
+            self.assertEqual(report['cells'], cells)
+            self.assertEqual(report['inputs_sha256'], hashlib.sha256(json.dumps(
+                report['inputs'], sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+            for plan in report['probe_plan']:
+                phases = {p['name']: p for p in plan['phases']}
+                self.assertEqual(phases['protect_intermediate']['expected']['dacl_control'], 0x1404)
+                self.assertEqual(len(phases['protect_intermediate']['expected']['aces']), 4)
+                self.assertTrue(all(not bytes.fromhex(a)[1] & 16 for a in
+                                    phases['protect_intermediate']['expected']['aces']))
+                self.assertEqual(phases['raw_final']['security_information'], 4)
+                self.assertEqual(phases['raw_final']['expected']['dacl_control'], plan['control'])
+                self.assertEqual(len(phases['raw_final']['expected']['aces']),
+                                 8 if plan['actor_shape'] == 'inherited' else 7)
+                self.assertEqual(plan['protected_AI_feasibility'], 'unknown')
+            for name, value in (('expected_runner_sha256', 'b' * 64), ('collector_sid', args.actor_sid),
+                                ('collector_sid', None)):
+                bad = copy.copy(args)
+                setattr(bad, name, value)
+                with self.subTest(name=name, value=value), \
+                     mock.patch.object(legacy.subprocess, 'check_output', side_effect=['a' * 40, b'']), \
+                     self.assertRaises(ValueError):
+                    legacy.matrix_preflight(bad)
+
+
 class FixtureV3Tests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
