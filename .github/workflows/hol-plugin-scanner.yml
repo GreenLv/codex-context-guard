@@ -21,8 +21,10 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: HOL Plugin Scanner
+        id: scanner
         uses: hashgraph-online/ai-plugin-scanner-action@edec9ae765c5bbd01bca060359acc3d2e90bea09 # v1.2.724
         with:
           plugin_dir: "."
@@ -33,6 +35,33 @@ jobs:
           fail_on_severity: high
           format: sarif
           upload_sarif: true
+          output: ai-plugin-scanner.sarif
           registry_payload_output: hol-registry-payload.json
           submission_enabled: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_registry }}
           submission_token: ${{ github.event_name == 'workflow_dispatch' && inputs.refresh_registry && secrets.AWESOME_CODEX_PLUGINS_TOKEN || '' }}
+      - name: Bind retained reports to checkout identity
+        id: evidence
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SCANNER_OUTCOME: ${{ steps.scanner.outcome }}
+        run: |
+          set -euo pipefail
+          python -B tools/validation/hol_evidence.py \
+            --expected-source-sha "$SOURCE_SHA" \
+            --expected-repository "$SOURCE_REPOSITORY" \
+            --expected-scanner-version "3.12.1" \
+            --scanner-outcome "$SCANNER_OUTCOME" >> "$GITHUB_OUTPUT"
+      - name: Retain original HOL reports and repository evidence
+        if: ${{ always() && steps.evidence.outputs.companion_path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hol-scan-evidence-${{ github.sha }}
+          path: |
+            ${{ steps.evidence.outputs.companion_path }}
+            ${{ steps.evidence.outputs.sarif_path }}
+            ${{ steps.evidence.outputs.payload_path }}
+          if-no-files-found: error
+          retention-days: 30
