@@ -63,7 +63,7 @@ class InheritanceAPIDouble:
             explicit = [bytes.fromhex(a) for a in current['aces'] if not bytes.fromhex(a)[1] & 16]
             self.values[str(path)] = self.sd(0x404, explicit + self.inheritance(path))
 
-    def write(self, path, planned, *, raw=False, security_information=None):
+    def write(self, path, planned, *, raw=False, security_information=None, conditional_handle=False):
         path = Path(path)
         if path != self.root and self.root not in path.parents:
             raise AssertionError('double write escaped owned family')
@@ -76,10 +76,12 @@ class InheritanceAPIDouble:
         flags = (child.restoration_strategy(planned)[1] if named else 4)
         if security_information is not None:
             flags = security_information
+        if conditional_handle and (not named or flags != 0x80000004):
+            raise ValueError('conditional handle model requires protected DACL selection')
         if named and flags == 4 and child.descriptor_contract(self.descriptor(path))['dacl_control'] != 0x1404:
             raise ValueError('protected-current model preflight refuses lost protection')
         aces = [bytes.fromhex(a) for a in contract['aces']]
-        if named and flags not in (4, 0x80000000):
+        if named and flags != 4 and not conditional_handle:
             explicit = [a for a in aces if not a[1] & 16]
             aces = explicit if contract['dacl_control'] & 0x1000 else explicit + self.inheritance(path)
             actual = self.sd(contract['dacl_control'], aces)
@@ -92,7 +94,7 @@ class InheritanceAPIDouble:
         self.values[str(path)] = actual
         if named and path.is_dir():
             self.cascade(path)
-        result = {'api': 'SetSecurityInfo' if flags == 0x80000000 else ('SetNamedSecurityInfoW' if named else 'SetFileSecurityW'),
+        result = {'api': 'SetSecurityInfo' if conditional_handle else ('SetNamedSecurityInfoW' if named else 'SetFileSecurityW'),
                   'security_information': flags,
                   'return_value': 0 if named else 1, 'winerror': 0}
         self.writes.append({'path': str(path), 'planned': planned, 'actual': actual, 'native_result': result})
@@ -120,7 +122,7 @@ class InheritanceAPIDouble:
         observe('preflight', event)
         # Conditional capability model only; Windows native support remains unknown.
         try:
-            event['native_result'] = self.write(path, planned, security_information=0x80000000)
+            event['native_result'] = self.write(path, planned, security_information=0x80000004, conditional_handle=True)
             event['actual'] = self.descriptor(path)
             observe('observed', event)
             return event['native_result']
@@ -171,9 +173,10 @@ class FirstConversionAPIDouble(InheritanceAPIDouble):
                                           for p in self.principals])
         return self.values[key]
 
-    def write(self, path, planned, *, raw=False, security_information=None):
+    def write(self, path, planned, *, raw=False, security_information=None, conditional_handle=False):
         self.prewrite = {str(p): self.descriptor(p) for p in child.fixture_paths(self.root)}
-        return super().write(path, planned, raw=raw, security_information=security_information)
+        return super().write(path, planned, raw=raw, security_information=security_information,
+                             conditional_handle=conditional_handle)
 
     def cascade(self, ancestor):
         for path in sorted(child.fixture_paths(self.root), key=lambda p: (len(p.parts), str(p))):
@@ -290,7 +293,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                 double, result, _ = self.run_cell(control=control, profile=profile)
                 target = next(e for e in result['setup'] if e['phase'] == 'target')
                 self.assertEqual(target['native_result']['api'], 'SetSecurityInfo' if control == 0x1404 else 'SetFileSecurityW')
-                self.assertEqual(target['native_result']['security_information'], 0x80000000 if control == 0x1404 else 4)
+                self.assertEqual(target['native_result']['security_information'], 0x80000004 if control == 0x1404 else 4)
                 self.assertEqual(len(target['steps']), 2 if control == 0x1404 else 1)
                 intermediate = child.descriptor_contract(target['steps'][0]['actual'])
                 final = child.descriptor_contract(target['actual'])
@@ -313,7 +316,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                                 and any(bytes.fromhex(a)[1] & 16 for a in contract['aces'])):
                             double.fail_write = None
                             if mode == 'api':
-                                raise child.DACLWriteError({'api': 'SetSecurityInfo', 'security_information': 0x80000000,
+                                raise child.DACLWriteError({'api': 'SetSecurityInfo', 'security_information': 0x80000004,
                                                             'return_value': 5, 'winerror': 5})
                             double.bad_readback = True
                     double.fail_write = write
@@ -339,7 +342,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                     contract = child.descriptor_contract(planned)
                     if contract['dacl_control'] == 0x1404 and any(bytes.fromhex(a)[1] & 16 for a in contract['aces']):
                         double.fail_write = None
-                        raise child.DACLWriteError({'api': 'SetSecurityInfo', 'security_information': 0x80000000,
+                        raise child.DACLWriteError({'api': 'SetSecurityInfo', 'security_information': 0x80000004,
                                                     'return_value': 5, 'winerror': 5})
                 double.fail_write = write
             with self.subTest(suffix=suffix), mock.patch.object(child, 'durable_snapshot', side_effect=durable):
@@ -426,9 +429,14 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                     target_writes = [w for w in double.writes if w['path'] == str(double.root / 'target')]
                     self.assertFalse(any(w['native_result']['api'] == 'SetFileSecurityW' and
                         child.descriptor_contract(w['planned'])['dacl_control'] == 0x1404 for w in target_writes))
-                    self.assertFalse(any(w['native_result']['security_information'] == 0x80000004 and
-                        any(bytes.fromhex(a)[1] & 16 for a in child.descriptor_contract(w['planned'])['aces'])
-                        for w in target_writes))
+                    protected = [w for w in target_writes
+                                 if w['native_result']['security_information'] == 0x80000004
+                                 and any(bytes.fromhex(a)[1] & 16 for a in
+                                         child.descriptor_contract(w['planned'])['aces'])]
+                    self.assertEqual(len(protected), 1)
+                    self.assertEqual(protected[0]['native_result']['api'], 'SetSecurityInfo')
+                    self.assertEqual(child.descriptor_contract(protected[0]['actual']),
+                                     child.descriptor_contract(protected[0]['planned']))
 
     def test_raw14_AI_loss_and_full_protected_tail_loss_stay_negative(self):
         for kind in ('file', 'directory'):
@@ -448,7 +456,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                     self.assertNotEqual(actual, expected)
 
     def test_control_only_semantic_drift_fails_before_S1_and_restores_S0_once(self):
-        for drift in ('AI', 'ACE_flags', 'order', 'outside'):
+        for drift in ('AI', 'P_no_effect', 'tail_loss', 'ACE_flags', 'order', 'outside'):
             original = InheritanceAPIDouble.protect
             def protect(double, path, before, expected_identity, observe):
                 result = original(double, path, before, expected_identity, observe)
@@ -457,9 +465,13 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                 control = contract['dacl_control']
                 if drift == 'AI':
                     control &= ~0x400
+                elif drift == 'P_no_effect':
+                    control &= ~0x1000
                 elif drift == 'ACE_flags':
                     for a in aces:
                         a[1] &= ~16
+                elif drift == 'tail_loss':
+                    aces = [a for a in aces if not a[1] & 16]
                 elif drift == 'order':
                     aces.reverse()
                 else:
@@ -736,8 +748,8 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                     intermediate, final = phases['materialize_AI'], phases['protect_control_only']
                     self.assertEqual(intermediate['expected']['dacl_control'], 0x404)
                     self.assertEqual(intermediate['security_information'], 0x20000004)
-                    self.assertEqual(final['security_information'], 0x80000000)
-                    self.assertEqual(final['pDacl'], 'NULL')
+                    self.assertEqual(final['security_information'], 0x80000004)
+                    self.assertEqual(final['pDacl'], 'complete verified handle preimage ACL')
                     self.assertEqual(intermediate['expected']['aces'], final['expected']['aces'])
                 else:
                     intermediate, final = phases['protect_intermediate'], phases['raw_final']

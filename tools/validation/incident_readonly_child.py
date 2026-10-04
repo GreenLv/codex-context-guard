@@ -250,15 +250,32 @@ def windows_handle_descriptor(handle):
     return value
 
 
-def set_protected_handle(api, handle, flags=0x80000000, owner=None, group=None, dacl=None, sacl=None):
+def set_protected_handle(api, handle, before, flags=0x80000004, owner=None, group=None, sacl=None):
+    """Set protection with the complete validated preimage DACL, never NULL."""
     from ctypes import wintypes
-    if type(flags) is not int or flags != 0x80000000 or any(v is not None for v in (owner, group, dacl, sacl)):
-        raise ValueError('unsafe pure-protection handle arguments')
+    if type(flags) is not int or flags != 0x80000004 or any(v is not None for v in (owner, group, sacl)):
+        raise ValueError('unsafe protected DACL handle arguments')
+    if descriptor_contract(before)['dacl_control'] != 0x404:
+        raise ValueError('protected DACL handle requires complete 0404 preimage')
+    raw = base64.b64decode(before, validate=True)
+    buffer = ctypes.create_string_buffer(raw)
+    acl = ctypes.c_void_p()
+    present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+    extract = api.GetSecurityDescriptorDacl
+    extract.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+                       ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    extract.restype = wintypes.BOOL
+    if not extract(buffer, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted)):
+        raise HandleOperationError('dacl_extract', ctypes.get_last_error())
+    # The parser validated this self-relative ACL; bind the returned pointer to it.
+    offset = struct.unpack_from('<I', raw, 16)[0]
+    if not present.value or not acl.value or acl.value != ctypes.addressof(buffer) + offset:
+        raise ValueError('missing or unbound preimage DACL')
     write = api.SetSecurityInfo
     write.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_uint32,
                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     write.restype = ctypes.c_uint32
-    error = int(write(handle, 1, flags, None, None, None, None))
+    error = int(write(handle, 1, flags, None, None, acl, None))
     return {'api': 'SetSecurityInfo', 'security_information': flags,
             'return_value': error, 'winerror': error}
 
@@ -273,8 +290,9 @@ def protect_windows_dacl(path, before, expected_identity, observe):
             or not 0 <= expected_identity['volume_serial'] < 2**64
             or not re.fullmatch('[0-9a-f]{32}', expected_identity['file_id'])
             or expected_identity['kind'] not in ('file', 'directory') or expected_identity['reparse_tag'] != 0):
-        raise ValueError('pure-protection frozen identity or 0404 input unavailable')
-    lifecycle = {'selected_api': 'SetSecurityInfo', 'security_information': 0x80000000,
+        raise ValueError('protected DACL frozen identity or 0404 input unavailable')
+    lifecycle = {'selected_api': 'SetSecurityInfo', 'security_information': 0x80000004,
+                 'pDacl': 'complete verified handle preimage ACL',
                  'desired_access': 0x60080, 'share': 3, 'creation': 3,
                  'open_flags': 0x02200000 if expected_identity['kind'] == 'directory' else 0x00200000,
                  'expected_identity': expected_identity, 'before': before,
@@ -300,7 +318,7 @@ def protect_windows_dacl(path, before, expected_identity, observe):
         observe('preflight', lifecycle)
         stage = 'setter'
         security = ctypes.WinDLL('advapi32', use_last_error=True)
-        lifecycle['native_result'] = set_protected_handle(security, handle)
+        lifecycle['native_result'] = set_protected_handle(security, handle, lifecycle['handle_before'])
         if lifecycle['native_result']['return_value'] != 0:
             primary = DACLWriteError(lifecycle['native_result'])
             lifecycle['status'] = 'failed'
@@ -328,7 +346,7 @@ def protect_windows_dacl(path, before, expected_identity, observe):
                 or lifecycle['path_identity_after'] != expected_identity
                 or descriptor_contract(lifecycle['actual']) != wanted
                 or descriptor_contract(lifecycle['path_actual']) != wanted):
-            raise ValueError('pure-protection actual identity/control/ordered ACEs differ')
+            raise ValueError('protected DACL actual identity/control/ordered ACEs differ')
         lifecycle['status'] = 'verified'
     except BaseException as exc:
         if primary is None:

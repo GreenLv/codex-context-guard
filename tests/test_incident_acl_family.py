@@ -454,7 +454,11 @@ class NativeWriterBindingTests(unittest.TestCase):
 
     def handle_double(self, path, fault=None):
         from types import SimpleNamespace
-        before = self.descriptor_value('other', control=0x8404)
+        seed = base64.b64decode(self.descriptor_value('other', control=0x8404))
+        inherited = bytearray(seed[28:])
+        inherited[1] |= 16
+        before = base64.b64encode(seed[:20] + struct.pack('<BBHHH', 2, 0,
+            8 + len(seed[28:]) + len(inherited), 2, 0) + seed[28:] + inherited).decode()
         identity = {'volume_serial': 0x100000001, 'file_id': '0102030405060708090a0b0c0d0e0f10',
                     'kind': 'directory' if path.is_dir() else 'file', 'reparse_tag': 0}
         model = SimpleNamespace(value=before, identity=identity, handles={}, reads={}, error=0, events=[])
@@ -508,17 +512,41 @@ class NativeWriterBindingTests(unittest.TestCase):
             self.assertEqual(size, len(raw))
             ctypes.memmove(buffer, raw, len(raw))
             return 1
+        def extract(buffer, present, acl, defaulted):
+            from ctypes import wintypes
+            if fault == 'extract_error':
+                model.error = 13
+                return 0
+            ctypes.cast(present, ctypes.POINTER(wintypes.BOOL))[0] = fault != 'absent_dacl'
+            ctypes.cast(defaulted, ctypes.POINTER(wintypes.BOOL))[0] = 0
+            offset = struct.unpack_from('<I', buffer.raw, 16)[0]
+            pointer = ctypes.addressof(buffer) + offset
+            if fault == 'null_dacl':
+                pointer = 0
+            elif fault == 'foreign_dacl':
+                pointer += 1
+            ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0] = pointer
+            return 1
         def setter(handle, kind, flags, owner, group, dacl, sacl):
             self.assertEqual(model.handles[handle], 0x60080)
-            self.assertEqual((kind, flags, owner, group, dacl, sacl), (1, 0x80000000, None, None, None, None))
+            self.assertEqual((kind, flags, owner, group, sacl), (1, 0x80000004, None, None, None))
+            self.assertTrue(dacl.value)
+            raw_before = base64.b64decode(before)
+            offset = struct.unpack_from('<I', raw_before, 16)[0]
+            self.assertEqual(ctypes.string_at(dacl, len(raw_before) - offset), raw_before[offset:])
             model.events.append('setter')
             if fault in ('DWORD5', 'DWORD5_close'):
                 model.error = 0  # DWORD result is independent of stale last_error.
                 return 5
+            if fault == 'success_no_effect':
+                return 0
             raw = bytearray(base64.b64decode(model.value))
             struct.pack_into('<H', raw, 2, 0x9004 if fault == 'AI_loss' else 0x9404)
             if fault == 'ACE_flags':
                 raw[29] ^= 16
+            if fault == 'tail_loss':
+                raw = raw[:28 + struct.unpack_from('<H', raw, 30)[0]]
+                struct.pack_into('<HH', raw, 22, len(raw) - 20, 1)
             model.value = base64.b64encode(raw).decode()
             return 0
         def close(handle):
@@ -529,6 +557,7 @@ class NativeWriterBindingTests(unittest.TestCase):
         model.api = SimpleNamespace(CreateFileW=mock.Mock(side_effect=create),
             GetFileInformationByHandleEx=mock.Mock(side_effect=info),
             GetKernelObjectSecurity=mock.Mock(side_effect=descriptor),
+            GetSecurityDescriptorDacl=mock.Mock(side_effect=extract),
             SetSecurityInfo=mock.Mock(side_effect=setter), CloseHandle=mock.Mock(side_effect=close),
             SetNamedSecurityInfoW=mock.Mock(return_value=5), SetFileSecurityW=mock.Mock())
         return model, before
@@ -555,7 +584,7 @@ class NativeWriterBindingTests(unittest.TestCase):
             with self.subTest(kind='directory' if path.is_dir() else 'file'):
                 model, before = self.handle_double(path)
                 result, events = self.invoke_handle(path, model, before)
-                self.assertEqual(result, {'api': 'SetSecurityInfo', 'security_information': 0x80000000,
+                self.assertEqual(result, {'api': 'SetSecurityInfo', 'security_information': 0x80000004,
                                           'return_value': 0, 'winerror': 0})
                 model.api.SetSecurityInfo.assert_called_once()
                 model.api.SetNamedSecurityInfoW.assert_not_called()
@@ -567,16 +596,20 @@ class NativeWriterBindingTests(unittest.TestCase):
                 closed = [c.args[0] for c in model.api.CloseHandle.call_args_list]
                 self.assertEqual(set(closed), set(model.handles))
                 self.assertEqual(len(closed), len(set(closed)))
-                for flags in (4, 0x80000004, 0x20000004, True):
+                for flags in (4, 0x80000000, 0x20000004, True):
                     with self.subTest(flags=flags), self.assertRaises(ValueError):
-                        child.set_protected_handle(model.api, next(iter(model.handles)), flags)
+                        child.set_protected_handle(model.api, next(iter(model.handles)), before, flags)
                 with self.assertRaises(ValueError):
-                    child.set_protected_handle(model.api, next(iter(model.handles)), dacl=ctypes.c_void_p(100))
+                    child.set_protected_handle(model.api, next(iter(model.handles)), before, owner=ctypes.c_void_p(100))
+                for invalid in ('not-base64', self.descriptor_value('other', control=0x9404)):
+                    with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                        child.set_protected_handle(model.api, next(iter(model.handles)), invalid)
                 self.assertEqual(model.api.SetSecurityInfo.call_count, 1)
 
     def test_handle_open_identity_preimage_and_persistence_fail_before_setter(self):
         for fault in ('open', 'unsupported_id', 'high_id', 'volume', 'type', 'reparse', 'preimage',
-                      'intent', 'opened', 'preflight', 'interrupt'):
+                      'intent', 'opened', 'preflight', 'interrupt',
+                      'extract_error', 'absent_dacl', 'null_dacl', 'foreign_dacl'):
             with self.subTest(fault=fault):
                 path = self.root / 'nested/lock'
                 model, before = self.handle_double(path, fault)
@@ -589,7 +622,7 @@ class NativeWriterBindingTests(unittest.TestCase):
                     self.assertTrue(model.api.CloseHandle.called)
 
     def test_handle_DWORD5_actual_drift_close_and_observed_errors_remain_failure(self):
-        for fault in ('DWORD5', 'DWORD5_close', 'AI_loss', 'ACE_flags', 'readback', 'close', 'observed', 'closed'):
+        for fault in ('DWORD5', 'DWORD5_close', 'AI_loss', 'ACE_flags', 'tail_loss', 'success_no_effect', 'readback', 'close', 'observed', 'closed'):
             with self.subTest(fault=fault):
                 path = self.root / 'nested/lock'
                 model, before = self.handle_double(path, fault)
@@ -926,8 +959,8 @@ def matrix_setup_operation(root, path, planned, result, output):
             strategy, flags = child.restoration_strategy(value)
             observed = {'phase': label, 'planned': value, 'before': child.windows_descriptor(path),
                         'selected_api': 'SetSecurityInfo' if label == 'control_only' else ('SetNamedSecurityInfoW' if strategy != 'raw-explicit' else 'SetFileSecurityW'),
-                        'security_information': 0x80000000 if label == 'control_only' else flags,
-                        'pDacl': 'NULL' if label == 'control_only' else 'complete planned ACL',
+                        'security_information': 0x80000004 if label == 'control_only' else flags,
+                        'pDacl': 'complete verified handle preimage ACL' if label == 'control_only' else 'complete planned ACL',
                         'native_result': None, 'actual': None}
             entry.setdefault('steps', []).append(observed)
             child.durable_snapshot(output / ('setup-' + number + '-' + label + '-intent.json'), observed)
@@ -980,7 +1013,7 @@ def matrix_setup_operation(root, path, planned, result, output):
                 raise
             primary.setup_observation_failure = entry['observation_failure']
     if probe:
-        if entry['native_result'] != {'api': 'SetSecurityInfo', 'security_information': 0x80000000,
+        if entry['native_result'] != {'api': 'SetSecurityInfo', 'security_information': 0x80000004,
                                       'return_value': 0, 'winerror': 0}:
             raise ValueError('control-only native protection result differs')
     else:
@@ -1231,8 +1264,8 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
                  'security_information': 0x20000004 if cell['control'] == 0x1404 else 0x80000004, 'expected': child.descriptor_contract(intermediate)},
                 {'name': 'protect_control_only' if cell['control'] == 0x1404 else 'raw_final',
                  'path': 'target', 'api': 'SetSecurityInfo' if cell['control'] == 0x1404 else 'SetFileSecurityW',
-                 'security_information': 0x80000000 if cell['control'] == 0x1404 else 4,
-                 'pDacl': 'NULL' if cell['control'] == 0x1404 else 'complete planned ACL',
+                 'security_information': 0x80000004 if cell['control'] == 0x1404 else 4,
+                 'pDacl': 'complete verified handle preimage ACL' if cell['control'] == 0x1404 else 'complete planned ACL',
                  'handle_access': 0x60080 if cell['control'] == 0x1404 else None,
                  'identity': 'S0-frozen volume64 and FileId128' if cell['control'] == 0x1404 else None, 'expected': child.descriptor_contract(final)},
                 {'name': 'ready_descendants', 'paths': ['target/nested', 'target/nested/leaf'] if directory else [],
