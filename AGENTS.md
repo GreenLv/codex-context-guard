@@ -208,7 +208,7 @@ git diff --check
   identity before pushing.
 - Treat release-tag creation/push, package publish/yank, and GitHub Release
   create/update/delete as A-tier publication mutations. Route them through the
-  `repository-release` publication readiness and user/host permission checks.
+  publication-readiness workflow and user/host permission checks.
   Exact `action-ticket/v1` enforcement is required only by an explicitly
   selected or adopted ticketed contract; never silently downgrade an active
   contract or bypass a denial.

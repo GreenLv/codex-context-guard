@@ -31,17 +31,61 @@ from tools.validation.acceptance_identity import prepared_source_identity  # noq
 
 PROFILE = 'incident_host/v1'
 PROFILE_V2 = 'incident_host/v2'
+PROFILE_FULL = 'incident_host/v2-full'
 OBSERVATION_CONTRACTS = {'negative': 'powershell-host-rejection/v1',
                          'readonly_fixture': 'read-baseline-specific-write-deny/v3'}
 MANIFEST = Path(__file__).with_name('incident-host-scenarios.json')
 MANIFEST_V2 = Path(__file__).with_name('incident-host-scenarios-v2.json')
+MANIFEST_FULL = Path(__file__).with_name('incident-host-scenarios-v2-full.json')
 TOOLKIT = ('incident_host_acceptance.py', 'incident_readonly_child.py',
            'stop_host_acceptance.py', 'acceptance_identity.py', 'incident-host-scenarios.json',
-           'incident-host-scenarios-v2.json')
+           'incident-host-scenarios-v2.json', 'incident-host-scenarios-v2-full.json')
 GATES = ('hook_trust', 'pause_same_unit', 'resume_provenance_pending',
          'typed_wait_retained', 'status_cli_posttool', 'status_negative_controls',
          'restricted_child_readonly', 'positive_negative_stop',
          'compaction_cold_resume', 'cleanup')
+
+
+def is_v2(profile):
+    return profile in (PROFILE_V2, PROFILE_FULL)
+
+
+def profile_version(profile):
+    return {PROFILE: 'v1', PROFILE_V2: 'v2', PROFILE_FULL: 'v2-full'}[profile]
+
+
+def full_scope(value):
+    base.require(isinstance(value, dict) and value.get('gate_scope') == 'full'
+                 and value.get('required_gates') == list(GATES),
+                 'full scope or required gate set differs')
+
+
+def read_subject(path, *, strict=False):
+    """New full subjects reject duplicate fields; consumed readers stay unchanged."""
+    base.require(not path.is_symlink() and path.is_file(), 'regular input required')
+    base.require(path.stat().st_size <= 16 * 1024 * 1024, 'input too large')
+    raw = path.read_text(encoding='utf-8')
+    value = json.loads(raw)
+    def pairs(items):
+        result = {}
+        for key, item in items:
+            base.require(key not in result, 'duplicate full subject field')
+            result[key] = item
+        return result
+    # Inspect every pair too, so a duplicate cannot hide an earlier full marker.
+    full = strict
+    def inspect(items):
+        nonlocal full
+        for key, item in items:
+            if ((key == 'gate_scope' and item == 'full') or
+                (key == 'gate_profile' and item == PROFILE_FULL) or
+                (key == 'schema' and isinstance(item, str) and item.endswith('/v2-full'))):
+                full = True
+        return dict(items)
+    json.loads(raw, object_pairs_hook=inspect)
+    if full:
+        value = json.loads(raw, object_pairs_hook=pairs)
+    return value
 
 
 class ObservationPending(RuntimeError):
@@ -65,12 +109,19 @@ def plan_identity(plan):
 
 
 def profile_for_plan(plan):
+    base.require(isinstance(plan, dict), 'plan object required')
+    full = plan.get('schema') == 'incident-host-plan/v2-full'
+    if full:
+        full_scope(plan)
+    else:
+        base.require(not any(k in plan for k in ('gate_scope', 'required_gates')),
+                     'legacy profile cannot adopt full scope')
     if plan.get('schema') in (None, 'incident-host-plan/v1'):
         base.require(not any(k in plan for k in ('observation_contracts', 'negative_parser_reference'))
                      and plan.get('gate_profile', PROFILE) == PROFILE, 'v1 cannot adopt v2 observations')
         return PROFILE
-    base.require(plan.get('schema') == 'incident-host-plan/v2'
-                 and plan.get('gate_profile') == PROFILE_V2
+    base.require(plan.get('schema') == ('incident-host-plan/v2-full' if full else 'incident-host-plan/v2')
+                 and plan.get('gate_profile') == (PROFILE_FULL if full else PROFILE_V2)
                  and plan.get('observation_contracts') == OBSERVATION_CONTRACTS
                  and plan.get('platform') == 'Windows'
                  and plan.get('cli_version') == 'codex-cli 0.160.0', 'unknown observation adoption')
@@ -80,7 +131,7 @@ def profile_for_plan(plan):
                  and reference['schema'] == 'incident-parser-reference/v1'
                  and isinstance(reference['cases'], dict)
                  and set(reference['cases']) == {'unknown', 'missing'}, 'parser reference unavailable')
-    return PROFILE_V2
+    return PROFILE_FULL if full else PROFILE_V2
 
 
 def parser_envelope(text, kind):
@@ -131,7 +182,7 @@ def host_parser_signature(plan, output, kind):
 
 
 def manifest_for_plan(plan):
-    return MANIFEST_V2 if profile_for_plan(plan) == PROFILE_V2 else MANIFEST
+    return {PROFILE: MANIFEST, PROFILE_V2: MANIFEST_V2, PROFILE_FULL: MANIFEST_FULL}[profile_for_plan(plan)]
 
 
 def helper_prompt(plan, argv, stage):
@@ -169,9 +220,9 @@ def phase_request(request, phase):
 
 
 def preflight(plan_path, output):
-    plan = base.read_json(plan_path)
+    plan = read_subject(plan_path)
     profile = profile_for_plan(plan)
-    if profile == PROFILE_V2:
+    if is_v2(profile):
         base.require(plan['negative_parser_reference'] == derive_parser_reference(plan),
                      'parser reference differs from pinned source')
     base.require(output.resolve() == Path(plan['output']).resolve(), 'output differs from plan')
@@ -209,7 +260,7 @@ def _shared_preflight(shared, output, plan, temporary):
                  'dedicated scenario workspace required')
     base.require(not (cwd / ('incident-readonly-' + output.name)).exists()
                  and not (cwd / ('incident-request-' + output.name + '.json')).exists()
-                 and (profile_for_plan(plan) != PROFILE_V2 or all(not (cwd /
+                 and (not is_v2(profile_for_plan(plan)) or all(not (cwd /
                       ('incident-request-' + output.name + '-' + name + '.json')).exists()
                       for name in ('baseline_original', 'baseline_granted', 'baseline_denied'))), 'fixture output collision')
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -339,7 +390,7 @@ def rejection_observation(stage, inventory, plan, kind):
     profile = profile_for_plan(plan)
     rows, thread, turn = stage['rows'], stage['thread'], stage['turn']
     def finish(value, exit_code=None):
-        if profile == PROFILE_V2:
+        if is_v2(profile):
             value.update(source_exit='not_observed', host_exit=
                          {'observed': exit_code is not None, 'value': exit_code})
         return value
@@ -381,7 +432,7 @@ def rejection_observation(stage, inventory, plan, kind):
         return finish({'status': 'pending', 'branch': 'execution_incomplete',
                        'cli': 'not_observed' if item.get('exitCode') is None else 'observed',
                        'posttool': 'not_observed' if not post else 'observed'}, item.get('exitCode'))
-    if profile == PROFILE_V2 and type(item['exitCode']) is int and item['exitCode'] == 1:
+    if is_v2(profile) and type(item['exitCode']) is int and item['exitCode'] == 1:
         verify_shell_file(plan.get('shell'))
         outer = windows_display_tokens(item['command'])
         base.require(outer and len(outer) == 3 and outer[1] == '-Command'
@@ -582,7 +633,7 @@ def status_argv(item, stage, plan, *, legal=True, inventory=None):
                      and binding['--turn-id'] == [stage['turn']]
                      and Path(binding['--data-dir'][0]).resolve() == Path(plan['data_root']).resolve(),
                      'negative binding drift')
-        if profile_for_plan(plan) == PROFILE_V2:
+        if is_v2(profile_for_plan(plan)):
             copied = state_for(stage)
             base.require(copied['session']['id'] == stage['thread'], 'negative copied session differs')
             token = binding['--token'][0]  # The shared parser requires exactly one nonempty token.
@@ -748,7 +799,7 @@ def readonly_helper_argv(item, expected, plan):
     elif matches:
         matches = (Path(argv[0]).resolve() == Path(plan['python']).resolve()
                    and Path(argv[1]).resolve() == ROOT / 'tools/validation/incident_readonly_child.py')
-    if matches and windows and plan.get('schema') in ('incident-host-plan/v1', 'incident-host-plan/v2'):
+    if matches and windows and plan.get('schema') in ('incident-host-plan/v1', 'incident-host-plan/v2', 'incident-host-plan/v2-full'):
         request_path = Path(plan['cwd']) / ('incident-request-' + Path(plan['output']).name + '.json')
         matches = same_helper_path(expected[3], str(request_path), windows=True)
     base.require(matches, 'readonly tool argv differs')
@@ -795,7 +846,7 @@ def make_fixture(plan, stage, item, root, *, inventory, principal=None, ownershi
             '--turn-id', stage['turn'], '--token', token, '--commands']
     if plan['platform'] == 'Windows':
         base.require(isinstance(principal, str), 'observed Windows child principal required')
-    v2 = profile_for_plan(plan) == PROFILE_V2
+    v2 = is_v2(profile_for_plan(plan))
     restriction = (child.prepare_read_transaction(root, sid=principal, ownership=ownership)
                    if v2 else child.restrict(root, sid=principal))
     request = {'schema': 'incident-readonly-request/v2' if v2 else 'incident-readonly-request/v1', 'fixture': str(root),
@@ -840,6 +891,9 @@ def pause_oracle(before, paused, resumed, typed, typed_before=None):
 
 
 def verify_stop_capture(directory, plan, receipt):
+    if profile_for_plan(plan) == PROFILE_FULL:
+        base.require(read_subject(directory / 'plan.json') == dict(plan, schema='stop-host-plan/v1'),
+                     'full Stop execution plan differs')
     def responses(name):
         rows = [json.loads(line) for line in (directory / name / 'rpc.jsonl').read_text().splitlines()]
         return rows, [r['message'] for r in rows if r['direction'] == 'response']
@@ -893,10 +947,16 @@ def public_source(identity):
 
 def map_capture(capture, *, mapper_identity=None):
     profile = profile_for_plan(capture['plan'])
-    version = 'v2' if profile == PROFILE_V2 else 'v1'
+    version = profile_version(profile)
     base.require(capture.get('schema') == 'incident-host-capture/' + version, 'wrong capture')
     base.require(capture.get('origin') in ('native', 'synthetic'), 'unknown execution origin')
     plan = capture['plan']
+    if profile == PROFILE_FULL:
+        full_scope(capture)
+        base.require(plan.get('manifest_sha256') == base.sha(MANIFEST_FULL), 'full manifest adoption differs')
+    else:
+        base.require(not any(k in capture for k in ('gate_scope', 'required_gates')),
+                     'legacy capture cannot adopt full scope')
     base.require(capture['plan_sha256'] == plan_identity(plan), 'plan binding changed')
     gates = {name: 'pending' for name in GATES}
     observations = {}
@@ -915,7 +975,7 @@ def map_capture(capture, *, mapper_identity=None):
     manifest = base.read_json(manifest_for_plan(plan))
     for name, stage in stages.items():
         base.require(name in manifest['prompts'] or name in ('readonly', 'principal')
-                     or (profile == PROFILE_V2 and name in manifest['helper_prompt_templates']), 'unknown stage')
+                     or (is_v2(profile) and name in manifest['helper_prompt_templates']), 'unknown stage')
         if name in manifest['prompts']:
             expected = hashlib.sha256(manifest['prompts'][name].encode()).hexdigest()
             base.require(stage['prompt_sha256'] == expected, 'scenario prompt differs')
@@ -950,7 +1010,7 @@ def map_capture(capture, *, mapper_identity=None):
                         for name in ('unknown', 'missing')}
         if all(v['status'] == 'passed' for v in observations.values()):
             gates['status_negative_controls'] = 'passed'
-    if profile == PROFILE_V2 and 'readonly' in stages:
+    if is_v2(profile) and 'readonly' in stages:
         names = ('baseline_original', 'baseline_granted', 'baseline_denied')
         base.require(all(n in stages for n in (*names, 'principal')),
                      'native baseline stages unavailable')
@@ -1035,7 +1095,7 @@ def map_capture(capture, *, mapper_identity=None):
     status = 'passed' if all(v == 'passed' for v in gates.values()) else 'pending'
     if any(v == 'failed' for v in gates.values()) or capture.get('failure_class'):
         status = 'failed'
-    if capture.get('pending_class') and not (profile == PROFILE_V2 and capture.get('failure_class')):
+    if capture.get('pending_class') and not (is_v2(profile) and capture.get('failure_class')):
         status = 'pending'
     result = {'schema': 'incident-host-acceptance/' + version, 'gate_profile': profile,
             'status': status, 'evidence_scope': capture['origin'], 'gates': gates,
@@ -1052,21 +1112,25 @@ def map_capture(capture, *, mapper_identity=None):
                             'Hook statuses are official observations, not OS exit codes.',
                             'Configured model identity is not per-turn execution telemetry.']}
 
-    if profile == PROFILE_V2:
-        required = ['hook_trust', 'status_cli_posttool', 'status_negative_controls', 'restricted_child_readonly', 'cleanup']
+    if is_v2(profile):
+        required = (list(GATES) if profile == PROFILE_FULL else
+                    ['hook_trust', 'status_cli_posttool', 'status_negative_controls', 'restricted_child_readonly', 'cleanup'])
         result['required_gates'] = required
         result['scenario_status'] = ('failed' if status == 'failed' else 'pending'
                                      if capture.get('pending_class') or any(gates[k] != 'passed' for k in required)
                                      else 'passed')
+    if profile == PROFILE_FULL:
+        result['gate_scope'] = 'full'
+        result['execution_identity'].update(gate_scope='full', required_gates=list(GATES))
     return result
 
 
 def validate_result(result):
     profile = result.get('gate_profile')
-    base.require(profile in (PROFILE, PROFILE_V2)
+    base.require(profile in (PROFILE, PROFILE_V2, PROFILE_FULL)
                  and result.get('schema') == 'incident-host-acceptance/' +
-                 ('v2' if profile == PROFILE_V2 else 'v1'), 'wrong result profile')
-    if profile == PROFILE_V2:
+                 profile_version(profile), 'wrong result profile')
+    if is_v2(profile):
         observations = result.get('rejection_observations', {})
         base.require(isinstance(observations, dict) and set(observations) <= {'unknown', 'missing'},
                      'invalid rejection export kinds')
@@ -1092,29 +1156,45 @@ def validate_result(result):
     base.require(isinstance(gates, dict) and set(gates) == set(GATES)
                  and all(v in ('passed', 'failed', 'pending') for v in gates.values()), 'invalid result gates')
     base.require(result['status'] != 'passed' or set(gates.values()) == {'passed'}, 'partial green result')
-    if profile == PROFILE_V2:
-        required = ['hook_trust', 'status_cli_posttool', 'status_negative_controls', 'restricted_child_readonly', 'cleanup']
+    if is_v2(profile):
+        required = (list(GATES) if profile == PROFILE_FULL else
+                    ['hook_trust', 'status_cli_posttool', 'status_negative_controls', 'restricted_child_readonly', 'cleanup'])
         base.require(result.get('required_gates') == required and result.get('scenario_status') in ('passed', 'pending', 'failed')
                      and (result['scenario_status'] != 'passed' or all(gates[k] == 'passed' for k in required)),
                      'invalid affected scenario result')
     else:
         base.require(not any(k in result for k in ('required_gates', 'scenario_status')), 'v1 scenario override rejected')
+    if profile == PROFILE_FULL:
+        full_scope(result)
+        full_scope(result.get('execution_identity', {}))
+        base.require(result['scenario_status'] == result['status'], 'full scenario status differs')
+        identity = result['execution_identity']
+        base.require(isinstance(identity.get('plan_sha256'), str)
+                     and re.fullmatch(r'[0-9a-f]{64}', identity['plan_sha256'])
+                     and identity.get('platform') == 'Windows'
+                     and identity.get('cli_version') == 'codex-cli 0.160.0', 'full execution identity differs')
+    else:
+        base.require('gate_scope' not in result and not any(k in result.get('execution_identity', {})
+                     for k in ('gate_scope', 'required_gates')), 'legacy result cannot adopt full scope')
     native = result.get('native_acceptance')
     base.require(native == ('not_run' if result['evidence_scope'] == 'synthetic' else result['status']),
                  'native result scope mismatch')
     allowed = {'schema', 'gate_profile', 'status', 'evidence_scope', 'gates',
                'execution_identity', 'mapping_identity', 'native_acceptance', 'limitations',
-               'capture_catalog_sha256', 'failure_class', 'rejection_observations', 'required_gates', 'scenario_status'}
+               'capture_catalog_sha256', 'failure_class', 'rejection_observations', 'required_gates', 'scenario_status', 'gate_scope'}
     base.require(set(result) <= allowed and isinstance(result.get('execution_identity'), dict)
                  and isinstance(result.get('mapping_identity'), dict), 'non-allowlisted export')
     return result
 
 
 def collect(plan, output, *, supplemental=False):
-    output.mkdir(mode=0o700)
     profile = profile_for_plan(plan)
-    capture = {'schema': 'incident-host-capture/v2' if profile == PROFILE_V2 else 'incident-host-capture/v1', 'origin': 'native',
+    base.require(not (profile == PROFILE_FULL and supplemental), 'full profile cannot supplement')
+    output.mkdir(mode=0o700)
+    capture = {'schema': 'incident-host-capture/' + profile_version(profile), 'origin': 'native',
                'plan': plan, 'plan_sha256': plan_identity(plan), 'stages': {}, 'cleanups': []}
+    if profile == PROFILE_FULL:
+        capture.update(gate_scope='full', required_gates=list(GATES))
     write_new(output / 'plan.json', plan)
     client = None
     request = None
@@ -1125,13 +1205,14 @@ def collect(plan, output, *, supplemental=False):
         capture['inventory'] = client.inventory
         manifest = base.read_json(manifest_for_plan(plan))
         def turn(name, thread, prompt=None):
+            base.require(name not in capture['stages'], 'duplicate collected stage')
             stage = client.observed_turn(thread, prompt or manifest['prompts'][name])
             dest = output / ('snapshot-' + name)
             copy_session(plan, thread, dest)
             stage['snapshot'] = str(dest)
             capture['stages'][name] = stage
             return stage
-        if not supplemental and profile == PROFILE:
+        if not supplemental and profile in (PROFILE, PROFILE_FULL):
             thread = client.start()
             for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
                 turn(name, thread)
@@ -1156,9 +1237,9 @@ def collect(plan, output, *, supplemental=False):
         ownership.update(created_exclusively=True,
                          root_identity=[fixture.lstat().st_dev, fixture.lstat().st_ino])
         request = make_fixture(plan, s, item, fixture, inventory=client.inventory, principal=principal,
-                               ownership=ownership if profile == PROFILE_V2 else None)
+                               ownership=ownership if is_v2(profile) else None)
         transaction = request['restriction']
-        if profile == PROFILE_V2:
+        if is_v2(profile):
             capture['baseline_requests'], capture['baseline_tool_argv'] = {}, {}
             baseline_record, current = None, None
             for name in ('baseline_original', 'baseline_granted', 'baseline_denied'):
@@ -1188,10 +1269,10 @@ def collect(plan, output, *, supplemental=False):
         if plan['platform'] == 'Windows':
             spelling = '& ' + spelling
         turn('readonly', probe_thread, helper_prompt(plan, tool_argv, 'readonly')
-             if profile == PROFILE_V2 else 'Run this exact ordinary tool command once: ' + spelling)
+             if is_v2(profile) else 'Run this exact ordinary tool command once: ' + spelling)
         capture['cleanups'].append(client.close())
         client = None
-        if profile == PROFILE:
+        if profile in (PROFILE, PROFILE_FULL):
             shared = dict(plan, schema='stop-host-plan/v1')
             capture['stop_directory'] = str(output / 'stop')
             capture['stop_result'] = base.collect(shared, output / 'stop')
@@ -1199,7 +1280,7 @@ def collect(plan, output, *, supplemental=False):
         base.require(prepared_source_identity(ROOT) == plan['source'], 'source changed during run')
         base.require(base.runtime(Path(plan['plugin_root'])) == plan['runtime_sha256'], 'runtime changed during run')
     except (Exception, KeyboardInterrupt) as exc:
-        capture['failure_class' if profile == PROFILE_V2 and not isinstance(exc, ObservationPending)
+        capture['failure_class' if is_v2(profile) and not isinstance(exc, ObservationPending)
                 else 'pending_class'] = type(exc).__name__
         # Exception text can contain raw prompts/private commands; private only.
         write_new(output / 'failure.json', {'type': type(exc).__name__, 'detail': str(exc),
@@ -1216,7 +1297,7 @@ def collect(plan, output, *, supplemental=False):
                 if not restriction.get('restoration_error') and restriction.get('restoration') != 'verified':
                     child.restore(fixture, restriction)
                 base.require(not restriction.get('restoration_error'), 'fixture restoration failed')
-                if profile == PROFILE_V2:
+                if is_v2(profile):
                     capture['fixture_restoration'] = child.restored_transaction_observation(fixture, restriction)
                     write_new(output / 'fixture-restoration.json', capture['fixture_restoration'])
             except Exception as exc:
@@ -1229,8 +1310,10 @@ def map_bundle(directory, output):
     base.require(not output.exists() and output.resolve() != ROOT and ROOT not in output.resolve().parents
                  and directory.resolve() != ROOT
                  and ROOT not in directory.resolve().parents, 'private capture outside source required')
-    capture = base.read_json(directory / 'capture.json')
-    catalog = base.read_json(directory / 'artifacts.json')
+    capture = read_subject(directory / 'capture.json')
+    catalog = read_subject(directory / 'artifacts.json', strict=profile_for_plan(capture.get('plan', {})) == PROFILE_FULL)
+    if profile_for_plan(capture.get('plan', {})) == PROFILE_FULL:
+        base.require(read_subject(directory / 'plan.json') == capture['plan'], 'full plan readback differs')
     actual = {p.relative_to(directory).as_posix() for p in directory.rglob('*') if p.is_file()}
     base.require(set(catalog) == actual - {'artifacts.json', 'result.json'}, 'incomplete artifact catalog')
     for name, digest in catalog.items():
@@ -1273,6 +1356,7 @@ def main():
     make.add_argument('--shell', type=Path)
     make.add_argument('--model', required=True)
     make.add_argument('--profile', choices=(PROFILE, PROFILE_V2), default=PROFILE)
+    make.add_argument('--gate-scope', choices=('full',))
     make.add_argument('--negative-observation')
     make.add_argument('--fixture-policy')
     make.add_argument('--plan-file', type=Path, required=True)
@@ -1280,17 +1364,21 @@ def main():
     try:
         if args.action == 'plan':
             v2 = args.profile == PROFILE_V2
+            full = args.gate_scope == 'full'
+            base.require(not full or v2, 'full scope requires explicit v2 adoption')
             base.require((v2 and args.negative_observation == OBSERVATION_CONTRACTS['negative']
                           and args.fixture_policy == OBSERVATION_CONTRACTS['readonly_fixture'])
                          or (not v2 and args.negative_observation is None and args.fixture_policy is None),
                          'observation contract adoption must be explicit and complete')
-            plan = {'schema': 'incident-host-plan/v2' if v2 else 'incident-host-plan/v1', 'repo': str(ROOT),
+            plan = {'schema': 'incident-host-plan/' + ('v2-full' if full else 'v2' if v2 else 'v1'), 'repo': str(ROOT),
                     'source': prepared_source_identity(ROOT), 'runtime_sha256': base.runtime(ROOT),
                     'cli_version': 'codex-cli 0.160.0', 'platform': platform.system(),
-                    'model': args.model, 'effort': 'medium', 'fresh_data_root': True, 'output': str(args.output.resolve()), 'toolkit': toolkit(), 'manifest_sha256': base.sha(MANIFEST_V2 if v2 else MANIFEST)}
+                    'model': args.model, 'effort': 'medium', 'fresh_data_root': True, 'output': str(args.output.resolve()), 'toolkit': toolkit(), 'manifest_sha256': base.sha(MANIFEST_FULL if full else MANIFEST_V2 if v2 else MANIFEST)}
             if v2:
                 base.require(platform.system() == 'Windows', 'v2 observation requires Windows')
-                plan.update(gate_profile=PROFILE_V2, observation_contracts=dict(OBSERVATION_CONTRACTS))
+                plan.update(gate_profile=PROFILE_FULL if full else PROFILE_V2, observation_contracts=dict(OBSERVATION_CONTRACTS))
+                if full:
+                    plan.update(gate_scope='full', required_gates=list(GATES))
             for key in ('codex', 'python', 'home', 'cwd', 'plugin_root', 'data_root'):
                 plan[key] = str(getattr(args, key).resolve(strict=key != 'data_root'))
             if plan['platform'] == 'Windows':
@@ -1326,6 +1414,8 @@ def main():
                        for p in args.output.rglob('*') if p.is_file()}
             write_new(args.output / 'artifacts.json', catalog)
             result = map_bundle(args.output, args.output / 'result.json')
+        if result['gate_profile'] == PROFILE_FULL:
+            validate_result(result)
         print('incident_host_acceptance=' + result['status'] + '; evidence_scope='
               + result['evidence_scope'] + '; native_acceptance=' + result['native_acceptance']
               + ('; affected_scenario=' + result['scenario_status'] if result['gate_profile'] == PROFILE_V2 else ''))

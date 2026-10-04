@@ -8,26 +8,23 @@
 
 ### Highlights
 
-- 明确的礼貌或句中续行指令可解除来源已核验的普通暂停，并保留未完成工作。
-- CLI 已支持的 `checkpoint-status` 诊断选项（`--commands`、`--full`、`--item VALUE`、`--after-revision VALUE`）现在也由 PostToolUse 按同一显式契约识别。合法状态查询不再被判为畸形私有控制命令；合法诊断命令的非零退出仍是静默 Hook 事件，永远不会成为业务证据。
-- `checkpoint-status` 读路径不再获取私有写锁。诊断快照以零写入方式加载一个已提交的状态修订，在允许读取、但以写意图打开锁文件被拒的环境中恢复可用。
+- 明确续行可解除普通暂停，并保留未完成工作。后续用户消息即使重复同样的暂停文字，也会重新进入等待；同一事件的重放不会额外改变等待状态。
+- `sessions-v2` 状态查询在不写入私有状态的前提下，完整核验全部适用来源。投影前后的核验防止查询期间的续行或状态替换产生已退休的命令或错误的“未变化”结果。
+- CLI 与 PostToolUse 按同一契约识别已文档化的诊断选项。合法查询不再被误判为畸形私有控制命令；诊断命令的非零退出永远不计为业务证据。
+- Windows 在具备所需原子重命名能力的系统上，支持打开诊断 reader 时发布状态。不支持的 API、文件系统或权限均保持失败关闭，不降级。
 
 ### Changes
 
-- Windows 诊断 reader 保持只读访问并拒绝 reparse 对象。已提交状态的 writer 使用同目录、POSIX 语义的原子重命名，避免打开的 reader 阻碍发布；fsync 和内核锁所有权仍为必需。不支持的 API、文件系统或权限拒绝均显式失败，不降级到旧替换方式。
-- “暂停一下”等礼貌后缀及随后说明重启工具的句子，不再把普通暂停变成绑定确认对象的等待。“请继续执行”、“你继续”和 "please continue" 等表达共用按子句锚定的续行契约。旧对象不可用不再否决当前续行；直接否定续行动作（“现在不要继续”）仍保持等待。
-- 暂停与续行分类在 `root_pause_clauses`、`general_root_pause_clause`、`has_root_resume_intent` 与 Stop 侧续行模式间共用一份契约。具名输入、精确标记、方案选择与外部依赖仍需各自证据；引文提及、疑问句、第三方续行与多重歧义等待不会释放任何条件。
-- checkpoint-status CLI 子解析器拒绝 argparse 隐式缩写；CLI 与 Hook 都拒绝重复绑定（不再最后者覆盖）、缺值/空值、未知选项、位置参数与互斥模式组合。运行时、脚本、data-root、会话、轮次与 token 绑定保持精确校验。
-- `checkpoint-status --commands` 返回的四条私有命令均绑定显式查询的数据目录；普通 CLI 未继承 Hook 数据环境或环境指向其他目录时，也不会生成错误目录的命令。返回的状态命令可对同一目录执行零写入查询。
-- 0.15.0 写入 v2 的错误分类暂停账目，只有在原始根来源、来源子句和 subject 绑定重新核验通过后才可在后续真实续行中释放；来源不可核验保持等待，新运行时不写 legacy 会话。
-- 损坏、截断、被符号链接替换、哈希不匹配或旧 schema 的状态在诊断路径以有界原因显式失败，不做重建、备份或迁移；并发原子替换在显式的次数、字节与时间预算内重试，超限报告 `state_changed_during_read`。
-- 所有状态模式绑定实际加载的状态文件，并在投影结束后重检轮次、私有绑定与适用来源。查询中发生恢复或新根写入时受控报告陈旧状态，不返回已退休的命令或错误的 unchanged 响应。
-- 事故捕获映射先验证必需观察值再做布尔投影；缺失、null 或错类型输入不能产生通过裁定。
+- 礼貌暂停和续行表述共用按子句判断的契约。例如，先说“暂停一下”、随后说“请继续执行”可解除普通暂停；“现在不要继续”仍保持等待。具名输入、精确标记、方案选择和外部依赖仍需各自的证据。
+- `sessions-v2` 状态查询在投影前后核验全部适用来源，并执行有界的重复检查。已打开的文件描述符与当前路径必须仍指向同一已提交状态，修订、内容和当前轮次绑定也须一致。获取稳定快照时仅有界重试；加载后检测到变动则受控失败，不返回旧结果。
+- `checkpoint-status` 的 `--commands`、`--full`、`--item VALUE` 和 `--after-revision VALUE` 共用选项契约；缩写、重复绑定、缺值、未知选项和互斥模式组合均拒绝。`--commands` 返回的四条命令都使用显式查询的数据目录，不依赖 Hook 环境。
+- Windows 并发发布需要 Windows 10 RS1+ 的 FileRenameInfoEx，以及支持 replace-existing POSIX 语义的文件系统。内核锁所有权与 fsync 仍为必需；不预先删除目标、不原地改写、不降级到旧路径。
+- Schema 13、Stop 协议 5.0.0、九个 Hook 和默认普通工具不承载执行审批的路径不变，不迁移状态。修改 HOME 的插件选择前先完成旧任务，或在独立 HOME 中保留原运行时；不得覆盖已消费缓存。0.15.0 错误分类的暂停，仅在真实后续续行中重新核验原始来源通过后恢复。
 
 ### Validation
 
-- 仅源码级验证；本条为未发布候选。两个字节不变的原事故复现在 macOS 上分别 6/6 与 8/8 通过，包括私有锁写拒绝探针。W/C/R 家族回归、完整行为套件、仓库/隐私/身份审计、lint、编译与隔离安装检查待冻结后按精确候选提交记录于[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
-- 本版本完整的原生 macOS/Windows 事故验收、真实 Hook 信任、精确提交 CI/HOL 与发布尚未完成，仍为必需门槛。
+- 本条为未发布源码候选。原始运行时通过了原生 macOS 十项事故验收，九个 Hook 均经正常信任。源码套件和历史覆盖保留各自的原始提交；后续仅涉及工具的聚焦检查不构成新的完整套件或原生运行。
+- 原生 Windows 验收及严格结果组合、最终候选源码与历史检查、精确提交 CI/HOL 和发布仍待完成。[本地验收记录](docs/LOCAL_ACCEPTANCE.md) 分别记录计数、原始 subject 和失败的 Windows 环境就绪步骤。
 
 ## 0.15.0 — 2026-10-02
 
@@ -283,7 +280,7 @@ macOS 源码验证通过：1,076 项 current-behavior 测试，0 失败、0 错�
 - Schema 10 新增工作单元生命周期（`active`、`completed`、`awaiting_user`、`awaiting_external`、`deferred`、`historical_unresolved`）。旧的 active 父链被隔离为 `historical_unresolved`，而不是被悄悄标记为通过或失败。Schema 9 是完整迁移源；schema 7 和 8 仍为只读输入。
 - Stop protocol 3.0.0 在回复可验证地完成当前单元时自动绑定唯一的成功证据；证据不唯一时绝不自动挑选，等待方按结构化事实和固定优先级判定。私有 staging 保留高级的 `stage-checkpoint`/`register-proof` 路径，用于视觉事实、人工证据选择和证据歧义。
 - 九个 Hook 定义不再携带 `statusMessage`，私有 staging 和 proof 回执改为静默的空对象 wire。按照官方 Codex matcher 合同（对工具名及别名的正则匹配），`PreToolUse` 的 matcher 从 `"*"` 收缩到被门禁的表面——shell/统一执行的 Bash 别名、`apply_patch` 及其 `Edit`/`Write` 别名、所有 `mcp__` 名字，以及裸的变更方法名——所需模式由分类器常量推导并用契约测试钉住。`PostToolUse` 为广泛收集证据保持全匹配 wire。无状态路由器对每个非候选调用仍然静默返回。
-- 运行时拆分为无状态 PreToolUse 路由器（`cg_hook.py`）、纯分类器（`cg_actions.py`）、与 Codex Hook adapter 分离的 model/agent-agnostic 协议层（`cg_protocol.py`）、Stop 3.0 语义（`cg_stop3.py`）和惰性加载的发布适配器（`cg_release_adapter.py`）。诊断分类器版本为 3.2.1。Context Guard 不假定模型或 Agent 自带可靠的长上下文保护；从恢复到授权的闭环由本地提供，并且它不替代 Codex 权限系统、`repository-release`、人工审查或平台 readback。
+- 运行时拆分为无状态 PreToolUse 路由器（`cg_hook.py`）、纯分类器（`cg_actions.py`）、与 Codex Hook adapter 分离的 model/agent-agnostic 协议层（`cg_protocol.py`）、Stop 3.0 语义（`cg_stop3.py`）和惰性加载的发布适配器（`cg_release_adapter.py`）。诊断分类器版本为 3.2.1。Context Guard 不假定模型或 Agent 自带可靠的长上下文保护；从恢复到授权的闭环由本地提供，并且它不替代 Codex 权限系统、发布就绪检查、人工审查或平台 readback。
 - Schema 9 在真实 resume 路径上是完整迁移源：schema-9 状态文件现在在 `SessionStart(resume)` 时原位迁移，而不是被隔离重建；旧 active 父链保持隔离为 `historical_unresolved`；显式恢复策略按表驱动确定——唯一等待候选且 `last_active_seq` 可解析时自动重开，缺失/并列序号或 deferred/historical 候选一律 fail-closed 进入一次性选择列表，点名单元（`WU0002`）精确重开。
 - 单语句授权接受裸 Git 命令形态与跨子句目标："git tag v9.9.9" 和 "tag v1.2.3 on this repo" 与动词形态一样绑定精确 tag；多个被点名的版本仍是两个候选（问一次）；否定与删除措辞绝不构成创建授权。删除语义按子句判定且与位置无关："删除本仓库的 tag v9.9.9"、"delete the tag v1.2.3" 和 "git tag --delete v9.9.9" 都不会留下创建授权。混合子句把每个版本归给自己的意图，因此删除 `v1.0.0` 再创建 `v2.0.0` 只绑定 `v2.0.0`，相邻的 `release v3.0.0` 也不会变成第二个 tag 目标。同一句话同时点名本地 Git 动作和 GitHub Release 或注册表动作时，运行时保存来自同一 prompt 的并列授权，使每个目标保留各自精确的仓库与身份字段。
 
@@ -297,7 +294,7 @@ macOS 源码验证通过：1,076 项 current-behavior 测试，0 失败、0 错�
 
 ### 重点
 
-- **发布授权重新兼容当前的就绪凭据。** Context Guard 现在接受 `repository-release` 生成的 `release-readiness/v3`，继续显式兼容 `v2`，未知版本仍一律拒绝。
+- **发布授权重新兼容当前的就绪凭据。** Context Guard 现在接受符合版本协议的发布就绪检查器生成的 `release-readiness/v3`，继续显式兼容 `v2`，未知版本仍一律拒绝。
 - **升级时可以干净迁出旧版受管 marketplace 临时目录。** 安装器只在仓库身份确实属于 Context Guard 时识别旧的固定目录 `codex-context-guard.marketplace`，然后把注册迁移到当前按提交寻址的脱敏 staging 副本。
 - **以后升级就绪凭据版本时，不会再悄悄卡住发布授权。** 生产端与票据消费端的白名单现在共享机器可读的兼容合同；版本变化必须重新完成跨仓库验证。
 

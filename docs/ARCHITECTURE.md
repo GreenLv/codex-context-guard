@@ -302,7 +302,7 @@ suggest a profile but never enable one implicitly.
 | --- | --- | --- | --- |
 | `standard` (default) | Skill selected normally or `context-guard on` | recovery, task-state continuity, current-work-unit completion truthfulness, and answer-delivery tracking; ordinary tool calls allow silently with no state writes, locks, recovery or Git subprocesses | no execution approvals and no repeated authorization asks; no release readiness, candidate closure, or ticket requirements |
 | `strict` | the user explicitly asks for strict evidence protection | `standard` plus enforced proofs for the current work unit | never implies the release profile or any Git gating |
-| `release` | the user explicitly adopts a repository-release execution contract or makes an explicit `context-guard release` declaration | `standard` plus candidate-closure, publication-readiness, and one-shot `action-ticket/v1` facts through the versioned release adapter | never treats a tag, Release, or package publish as authorized by itself |
+| `release` | the user explicitly adopts a release execution contract or makes an explicit `context-guard release` declaration | `standard` plus candidate-closure, publication-readiness, and one-shot `action-ticket/v1` facts through the versioned release adapter | never treats a tag, Release, or package publish as authorized by itself |
 | `observe` | maintainer or canary configuration | computes the identical would-be decision and records bounded diagnostics | never blocks; not for real high-risk publication |
 | `off` / inactive | `context-guard off`, or no activation | prompt journaling only | no action or completion gating; corrupt private state cannot deny ordinary tools |
 
@@ -356,8 +356,8 @@ Completion Guard:
 Alignment covers the failure families and their deterministic constraints,
 not shared code. Context Guard does not guarantee arbitrary semantic
 correctness: it enforces only the deterministic obligations it can express,
-and it does not replace Codex's permission system, the `repository-release`
-publication contract, human review, or platform readbacks.
+and it does not replace Codex's permission system, an explicitly adopted release execution
+contract, human review, or platform readbacks.
 
 ## Source authority in an adopted 0.8.3 contract
 

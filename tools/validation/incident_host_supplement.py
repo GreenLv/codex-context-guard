@@ -70,6 +70,7 @@ def bundle(directory, *, map_whole=True):
 
 
 def contract(base_capture, base_result, new_plan):
+    h.base.require(h.profile_for_plan(new_plan) == h.PROFILE, 'legacy supplement refuses full/v2 scope')
     h.validate_result(base_result)
     old = base_capture['plan']
     h.base.require(base_result['evidence_scope'] == base_capture['origin'], 'scope drift')
@@ -175,6 +176,8 @@ def inputs_v2(envelope):
 
 
 def compose_v2(envelope, original, prior, capture, current):
+    h.base.require(h.profile_for_plan(capture['plan']) != h.PROFILE_FULL
+                   and current.get('gate_profile') != h.PROFILE_FULL, 'supplement refuses full capture/result')
     plan = envelope['new_plan']
     contract_v2(original, prior, plan)
     h.validate_result(current)
@@ -217,6 +220,7 @@ def compose_v2(envelope, original, prior, capture, current):
 
 def prepare(base_dir, plan_file, output, expected, *, retained_dir=None, retained_expected=None):
     plan = read(plan_file)
+    h.base.require(h.profile_for_plan(plan) != h.PROFILE_FULL, 'supplement refuses full scope')
     if h.profile_for_plan(plan) == h.PROFILE_V2:
         return prepare_v2(base_dir, plan_file, output, expected, retained_dir, retained_expected)
     h.base.require(retained_dir is None and retained_expected is None, 'v1 retained override rejected')
@@ -254,6 +258,8 @@ def inputs(path):
 
 
 def compose(envelope, original, prior, capture, current):
+    h.base.require(h.profile_for_plan(capture['plan']) != h.PROFILE_FULL
+                   and current.get('gate_profile') != h.PROFILE_FULL, 'supplement refuses full capture/result')
     if envelope.get('schema') == SCHEMA_V2:
         return compose_v2(envelope, original, prior, capture, current)
     plan = envelope['new_plan']

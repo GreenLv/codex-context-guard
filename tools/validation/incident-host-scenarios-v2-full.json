@@ -1,0 +1,32 @@
+{
+  "schema": "incident-host-scenarios/v2-full",
+  "profile": "incident_host/v2-full",
+  "prompts": {
+    "pending": "$context-guard\n请修复示例文档 fixture.txt，并运行测试验证。此轮不要执行工作，只回复“等待后续安排”。",
+    "pause": "暂停一下。仅回复“已暂停，改动已保留”。",
+    "resume": "请继续执行。此轮不要执行此前待办，只回复“继续保留待办”。",
+    "typed": "等我发来标记 ALPHA-73 再继续分析。仅回复“等待指定标记”。",
+    "typed_resume": "请继续执行。仅回复“等待指定标记”。",
+    "status": "$context-guard\n请核对诊断结果。使用最新恢复包的精确 checkpoint-status 命令，加 --commands。此轮只执行这一个普通 shell 工具，不执行其他工作。",
+    "unknown": "使用本轮最新恢复包的精确 checkpoint-status 绑定，加 --unknown-status-option。此轮只执行这一个普通 shell 工具。失败后停止，不修复或重试。",
+    "missing": "使用本轮最新恢复包的精确 checkpoint-status 绑定，加 --item --commands。此轮只执行这一个普通 shell 工具。失败后停止，不修复或重试。"
+  },
+  "boundaries": [
+    "Explicit model execution; never run during zero-model toolkit validation.",
+    "Normally trusted nine-Hook inventory, workspace-write and on-request approvals.",
+    "No approval response, login, trust copying, or sandbox bypass.",
+    "Restricted child queries a copied committed session; live Hook state is untouched.",
+    "Base stop_host/v1 supplies positive/negative Stop, compaction and cold continuation.",
+    "Explicit powershell-host-rejection/v1 and owned-fixture read-baseline-specific-write-deny/v3 adoption.",
+    "Three same-probe-thread baseline turns preserve original failures and require reads after grant and deny.",
+    "Full ten-gate run includes existing pause/typed, Stop/compaction/cold scenes under one exact plan subject."
+  ],
+  "helper_prompt_templates": {
+    "principal": "Run this exact ordinary tool command once: & {argv}",
+    "baseline_original": "Run this exact ordinary tool command once: & {argv}",
+    "baseline_granted": "Run this exact ordinary tool command once: & {argv}",
+    "baseline_denied": "Run this exact ordinary tool command once: & {argv}",
+    "readonly": "Run this exact ordinary tool command once: & {argv}"
+  },
+  "gate_scope": "full"
+}

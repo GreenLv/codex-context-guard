@@ -14,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcr
 
 > **Latest published: 0.15.0 — 2026-10-02.** Lower Hook startup overhead, shorter instructions and exclusive state ownership. New sessions use isolated state; existing tasks need their original runtime. Read the [release notes](docs/releases/v0.15.0.md) and [upgrade boundaries](docs/SESSION_STORAGE.md) before changing an existing installation.
 
-> **Unreleased 0.15.1 source candidate:** explicit resumes release ordinary pauses again, documented `checkpoint-status` diagnostic options are accepted consistently by the CLI and PostToolUse, and the status read path no longer takes the private write lock. Draft [release notes](docs/releases/v0.15.1.md); native acceptance and publication are pending.
+> **Unreleased 0.15.1 source candidate:** explicit resumes release ordinary pauses while preserving unfinished work; a later user event repeating the same pause waits again. Diagnostic options share one contract, and status queries fully verify applicable sources without private writes. See the draft [release notes](docs/releases/v0.15.1.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) for completed checks and remaining Windows, final-candidate and publication gates.
 
 ## Install
 
@@ -35,6 +35,21 @@ py -3 scripts\manage_plugin.py --apply
 The installer adds this repository as a marketplace, installs `context-guard@codex-context-guard`, and verifies the installed copy. It also keeps versioned copies needed by tasks that started before an upgrade.
 
 Installing a plugin does not trust its Hooks automatically. Start a fresh Codex task, open `/hooks`, review and trust all nine definitions, then start another fresh task so it loads the current version.
+
+### Ask an agent to install
+
+Copy this prompt into a Codex task:
+
+```text
+Install Context Guard from https://github.com/GreenLv/codex-context-guard
+at its latest published stable release. Use this README's safe installer
+and the normal Codex client. Detect my platform and verify Python 3.10+.
+Follow the upgrade notes; preserve unrelated settings and existing versioned caches.
+Verify the release source, installed version, source/cache parity and
+fresh-task Hook loading. If Codex asks for Hook trust, guide me through
+its normal confirmation once, then continue verification. Never edit trust
+hashes or bypass trust. Tell me if a new task or client restart is needed.
+```
 
 ### Upgrade notes
 
@@ -230,11 +245,13 @@ The Hook runtime uses only the Python standard library. CI covers Ubuntu, macOS,
 
 ## Explicit non-goals
 
-Context Guard is not a semantic proof system, security sandbox, transcript backup, cloud sync service, second Plan/Goal controller, agent scheduler, or replacement for tests and human review. It does not guarantee that arbitrary content is correct; it enforces only the deterministic checks it can express. It does not replace Codex's permission system, the `repository-release` publication contract, human review, or platform readbacks.
+- Context Guard checks only results it can verify deterministically. It cannot establish that arbitrary text or images are correct, and it does not replace tests or human review.
+- It provides no security sandbox, transcript backup, cloud sync or agent scheduling. Codex continues to own Plan, Goal and execution.
+- It grants no permissions. Publication still needs release-readiness checks, user and host authorization, and public readback.
 
-Version 0.13 keeps the model- and agent-agnostic baseline: it does not assume the model or agent host brings reliable long-context protection or recovery. The recovery → work unit → evidence → completion loop is provided locally by Context Guard itself, with protocol semantics separated from the Codex Hook adapter; whether an action is authorized is decided by you, the executing agent, and host permissions — not by a Context Guard prompt.
+Its recovery and completion contract does not depend on a model or agent host providing its own context protection. The [architecture](docs/ARCHITECTURE.md) explains the protocol and Codex adapter.
 
-Project instructions and plan references are adopted only after the user who started the root task runs `context-guard adopt <project-relative-json>`. Installing a Skill, loading a template, or mentioning a plan in prose does not activate this behavior. Adoption does not modify Codex Plan state or grant authority. Covered action checks follow the protection levels described above.
+Only the user who started the root task can adopt project workflow and plan references with `context-guard adopt <project-relative-json>`. Adoption leaves Codex Plan unchanged and grants no authority. Installing a Skill or mentioning a plan does not adopt it. Release controls require explicit selection, as described above.
 
 ## Contributing and security
 

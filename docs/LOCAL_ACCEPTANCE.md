@@ -1,69 +1,100 @@
-## 0.15.1 Windows diagnostic sharing repair — source candidate
-
-The prior `32be98ee` runtime remains an immutable candidate with its own
-receipts. A native Windows mechanism probe on Python 3.14.6 and 3.12.10
-confirmed that the ordinary diagnostic reader handle prevented normal
-kernel-lock-owned atomic state publication; closing that reader restored
-publication. The R05 fixture previously failed to propagate its worker error
-and therefore reported success despite a failed publication.
-
-The new candidate preserves writer kernel-lock ownership and fsync. Windows
-committed-state publication alone uses user-mode FileRenameInfoEx with
-replace-existing and POSIX semantics, publishing one same-directory inode
-without deleting the old target first. Unsupported API/filesystem or denied
-publication fails explicitly; temporary files and owned handles are cleaned,
-and no legacy fallback or permission change runs. Its Windows committed-state
-reader requests read access and read/write/delete sharing, opens existing
-objects without reparse traversal, rejects reparse attributes, and transfers
-native-handle ownership exactly once to a binary noninheritable descriptor.
-Existing regular/single-link, fd/path identity, size/hash/schema, final
-projection and two-pass authority checks remain in force. Conversion failures
-close the owned handle; no permission changes, diagnostic write lock or
-fallback to the old reader are introduced. R05 now propagates worker errors
-and requires all 24 publications.
-
-Portable ABI/ownership/error tests and local source results do not prove the
-Windows sharing behavior. The real Windows old-handle negative control and
-new-reader locked-publication positive control remain required for the exact
-new runtime. Prior installed/native evidence cannot certify these changed
-bytes; fresh isolated installation, native gates and exact CI/HOL remain
-pending until separately recorded. No model or authentication operation is
-part of the source repair.
-
-## 0.15.1 explicit query-root repair — source candidate
-
-An ordinary CLI query could read the requested data root but return four private
-commands targeting the ambient default root. The command encoder now receives
-the query root explicitly; Hook discovery keeps its existing environment default.
-Focused controls cover missing or wrong Hook environments, distinct and spaced
-roots, all four bindings, a real returned status query, and zero writes. Changed
-runtime bytes require a fresh isolated HOME; earlier caches and source/native
-receipts remain unchanged and do not certify the new runtime.
-
 # Local Release Acceptance
 
-## 0.15.1 candidate status (unreleased)
+## 0.15.1 — Unreleased source candidate
 
-The 0.15.1 source candidate repairs CGI-20261002-codex-pause-resume-wait-stall
-and CGI-20261003-codex-checkpoint-status-posttool-rejection. macOS source
-evidence recorded for the candidate commits on branch `codex/0.15.1-hook-repair`:
-the two unchanged canonical incident reproducers pass 6/6 and 8/8 desired
-oracles, including the synthetic private-lock write-denial probe; the new
-W01–W15, C01–C08 and R01–R10 family regressions run green with the
-pause/resume, command-contract, lock-protocol and namespace modules; the full
-behavior suite, repository/privacy/identity audits, Ruff, compileall and the
-isolated-install/no-op/parity/smoke checks bind the exact candidate commit and
-runtime-tree digest recorded in the development handoff. The original
-historical diagnostic PermissionError syscall remains unknown; the synthetic
-probe only proves the former write-lock dependency. Native macOS and Windows
-incident scenarios, real Hook trust, exact-commit CI/HOL and publication are
-pending and remain required gates for this version.
+The current tools-only source revision is
+`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe`. Its runtime-tree SHA-256 remains
+`b0cf80c458b41b8e84c12c14a690707e026191cb5fdb7f0d984e7084b0ca63b0`, identical
+to the runtime accepted at `fc7665058759d8a074df779be94cb75e67923aba`.
+Latest published remains 0.15.0; none of the candidate results below
+establishes publication or final acceptance of a later source revision.
+
+### Original source, history and native macOS results
+
+At `fc7665058759d8a074df779be94cb75e67923aba`, the complete source suite ran
+96 modules and 2,234 tests with zero failures, zero errors and 25 explicit
+platform/capability skips. The two unchanged original incident reproducers
+passed 6/6 and 8/8 desired oracles. That historical batch covered 76 raw
+records, 57 active cases, 67 unique test nodes and 90 executions. These are
+original-subject counts, not the final inventory or full-suite result for the
+current tools revision.
+
+The same source/runtime passed all ten `incident_host/v1` gates on native
+macOS with Codex CLI 0.160.0, Python 3.12.2 and all nine Hooks normally
+trusted. Later tools-only revisions may reuse that runtime fact only when
+all relevant inputs are unchanged. They have not rerun native acceptance on
+`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe`. The 0.15.0 CLI 0.158.0 batch
+below retains its own version and subject.
+
+### Windows results and remaining host gates
+
+| Subject | Observed result | Limit |
+| --- | --- | --- |
+| Original `fc7665058759d8a074df779be94cb75e67923aba` | Five gates passed; five pending | Partial `incident_host/v1`, not a complete Windows pass |
+| `e2812df4c4ac43ec9a01b57dd17e982ea14a764e` | Whole result failed; Stop and compaction components independently passed | Component reuse retains this original subject; the failed whole remains failed |
+| Current v3 owned-fixture route | Native observations pending | Actual same-thread principal, read baselines before/after grant and deny, read-only query, write denial and exact restoration must be observed |
+| Official setup/readiness step | Failed: `success=false`, readiness `updateRequired` | Environment gate; no new model, command-execution or product acceptance result |
+
+The current route separates an explicitly declared host process exit from a
+source-command exit; an unobserved source exit stays unobserved. Original
+passes, retained Stop/compaction components and fresh negative/read-only/cleanup
+observations require strict composition. Preparation and portable controls
+do not establish actual Windows ACL behavior or a passing composed result.
+
+### Current tools-only checks
+
+The reviewed prepared bytes carried into
+`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe` passed 33 affected tests without
+skips. Independent review controls passed 16/16 ordered-ACE cases, 4/4
+completion-token binding cases and 10/10 canonical-encoding cases. The
+commit retained the reviewed bytes; these focused results are neither a new
+complete source suite nor native Windows acceptance. The runtime digest
+above did not change.
+
+Five new incident drafts have not yet entered the canonical library. Their final counts
+and mappings, the final candidate source/history checks, complete native
+Windows acceptance and strict composition, exact-commit full CI/HOL and
+bilingual reader freeze remain pending. Tags and a public Release require
+separate acceptance and readback.
+
+### Retained repair evidence and operating boundaries
+
+The earlier `32be98ee` runtime remains an immutable candidate with its own
+receipts. Native Windows mechanism probes on Python 3.14.6 and 3.12.10 found
+that its open diagnostic reader prevented kernel-lock-owned atomic state
+publication; closing the reader restored publication. The earlier R05
+fixture failed to propagate a worker error and reported success despite a
+failed publication. That false positive is retained, not counted as a pass.
+The repaired fixture propagates worker errors and requires all 24
+publications; portable controls do not certify native sharing behavior.
+
+The candidate reader retains read-only access and read/write/delete sharing,
+rejects reparse objects, and transfers native-handle ownership once. Windows
+publication uses same-directory FileRenameInfoEx with replace-existing POSIX
+semantics, retaining fsync and kernel ownership. Unsupported or denied
+publication fails closed without target pre-deletion, in-place replacement,
+permission changes or legacy fallback. Changed runtime bytes require a fresh
+isolated HOME; consumed caches and prior receipts keep their original bytes.
+
+An earlier explicit-query-root repair binds all four returned private
+commands to the queried data directory, including missing or different Hook
+environments and roots containing spaces. For `sessions-v2`, status queries
+validate the complete applicable source set before and after projection, with
+bounded repeated checks, and recheck loaded-file/path identity, content,
+revision and current turn bindings without private writes. This contract does
+not extend to legacy inspection. Stable-snapshot loading uses bounded retries
+and reports `state_changed_during_read` if they are exhausted. After loading,
+state identity changes fail immediately as `state_replaced_during_query`, and
+disagreement between repeated source checks fails as
+`authority_sources_changed_during_query`; neither restarts the loader. The
+original historical diagnostic PermissionError syscall remains unknown;
+the synthetic write-denial reproducer proves only the former write-lock
+dependency.
 
 The repository-owned [two-incident host supplement](INCIDENT_HOST_ACCEPTANCE.md)
-pins CLI 0.160.0 and provides concrete plan generation, private capture/replay,
-and POSIX/Windows child adapters. Its zero-model mapper tests do not establish
-real model/Hook execution or native Windows ACL operation. The copied-session
-read-only witness and the direct live-HOME diagnostic are distinct gates.
+provides the maintainer capture/replay workflow for CLI 0.160.0. Zero-model
+mapping tests do not prove real model/Hook execution. The copied-session
+read-only witness and direct live-HOME diagnostic remain distinct gates.
 
 ## 0.15.0 — 2026-10-02
 

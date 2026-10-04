@@ -2,34 +2,53 @@
 
 ## 0.15.1 — Unreleased
 
-The 0.15.1 source candidate keeps the 0.15.0 storage and upgrade boundaries:
-new sessions use `sessions-v2`, legacy `sessions` stay read-only, no migration
-runs, and consumed caches are never refreshed. Two observable contract changes
-apply to this candidate and require fresh runtime evidence: the documented
-`checkpoint-status` diagnostic options are accepted by both the CLI and
-PostToolUse under one explicit contract (prefix abbreviations are no longer
-accepted by the CLI subparser), and the status read path performs no write on
-the private tree. A query can therefore succeed when state and applicable
-authority sources remain readable but opening the private lifecycle lock
-with write intent is denied.
-Existing 0.15.0 tasks keep their bytes; a misclassified pause ledger entry
-recovers only through a real later resume with a re-verified root source. All
-native two-platform evidence for these behaviors is pending; source results do
-not substitute for it.
+The candidate keeps the 0.15.0 storage and upgrade boundaries: new sessions
+use `sessions-v2`, legacy `sessions` stay read-only, no migration runs, and
+consumed caches are never refreshed. Finish old tasks before changing their
+HOME’s selected plugin, or keep a separate HOME on the original runtime.
+Schema 13, Stop protocol 5.0.0, all nine Hooks and the default business-tool
+path without execution approval are unchanged.
 
-The command inventory returned by `checkpoint-status --commands` uses its explicit
-data root, independently of a missing or different Hook environment. The shared
-Hook encoder keeps its default environment binding. This runtime repair needs
-fresh isolated installation and affected native evidence; earlier candidate
-receipts retain their own bytes and subjects.
+An explicit resume releases a source-verified ordinary pause. A later user
+event repeating the same pause text creates a new wait; replay of the same
+event remains idempotent. A misclassified 0.15.0 pause recovers only during a
+real later resume with its original source re-verified. Named inputs, exact
+markers, choices and external dependencies retain their own conditions.
+
+The CLI and PostToolUse share the documented `checkpoint-status` option
+contract and reject abbreviations, duplicate bindings, missing values and
+incompatible modes. The command inventory returned by `--commands` uses the
+explicitly queried data root, independently of a missing or different Hook
+environment. For `sessions-v2`, status queries validate the complete applicable
+source set before and after projection, with bounded repeated checks, and
+recheck the loaded file and current path. Obtaining a stable snapshot uses
+bounded retries; exhausting them reports `state_changed_during_read`. Once
+loaded, a changed state identity fails immediately with
+`state_replaced_during_query`; disagreement between repeated source checks
+reports `authority_sources_changed_during_query`. These query failures do not
+restart the snapshot loader or return stale results. This source-set and
+loaded-file identity contract applies to `sessions-v2`, not legacy inspection.
+Status queries do not write private state or acquire the private lifecycle
+write lock.
 
 Windows concurrent diagnostic/state publication requires the Windows 10 RS1+
 user-mode FileRenameInfoEx API and a filesystem supporting replace-existing
 with POSIX semantics. Unsupported API/filesystem or permission denial fails
 closed without fallback, target pre-deletion or in-place writes. Python 3.10+
-and standard-library-only runtime requirements remain unchanged. This
-capability and changed bytes need their own native Windows and fresh installed
-acceptance; earlier candidate evidence cannot certify them.
+and standard-library-only runtime requirements remain unchanged.
+
+The original `fc7665058759d8a074df779be94cb75e67923aba` runtime passed the
+ten-gate native macOS incident profile with normally trusted Hooks on CLI
+0.160.0/Python 3.12.2. The later tools-only source revision
+`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe` retains that runtime digest; reuse
+covers unchanged runtime inputs, not a native rerun on the later commit.
+Native Windows acceptance and strict result composition remain pending. A
+failed official setup step with readiness `updateRequired` is an environment
+gate, not product validation. Final candidate source/history checks and
+exact-commit CI/HOL are also pending. See the [acceptance record](LOCAL_ACCEPTANCE.md)
+for original subjects and counts. The historical 0.15.0 CLI 0.158.0 evidence
+below is unchanged. Changed candidate runtime bytes need a fresh isolated
+installation; no consumed cache is repaired from new bytes.
 
 ## 0.15.0 — 2026-10-02
 

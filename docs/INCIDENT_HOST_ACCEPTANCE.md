@@ -276,3 +276,41 @@ This is a tools-only source candidate. Zero-model tests use synthetic observatio
 and mocked Windows ACL operations; they establish parser, codec, transaction and
 composition behavior only. Actual Windows grant/read/deny/query/write/restore,
 model execution, host readiness and required full candidate gates remain separate.
+
+
+## Explicit full Windows v2 run
+
+An absent `--gate-scope` preserves the existing five-gate `incident_host/v2`
+behavior above. To run all ten gates from one clean source and fresh isolated
+HOME, add `--gate-scope full` to the same explicit v2 plan command:
+
+```text
+--profile incident_host/v2 --gate-scope full
+--negative-observation powershell-host-rejection/v1
+--fixture-policy read-baseline-specific-write-deny/v3
+```
+
+Use all required absolute path/model arguments described above and execute the
+emitted preflight array before its run array. The resulting plan, capture and
+result use distinct `incident-host-plan/v2-full`, `incident-host-capture/v2-full`
+and `incident-host-acceptance/v2-full` schemas, `gate_profile: incident_host/v2-full`,
+`gate_scope: full`, and the complete ordered ten-gate `required_gates`. Their
+manifest and plan hashes bind this adoption; missing, unknown or mismatched
+scope/schema/profile/gate sets fail visibly. The old v1/v2 manifests and captures
+keep their original meaning. Duplicate full-subject JSON fields are rejected.
+
+The full collector executes the existing pause/resume and typed-wait scenes,
+status/negative controls, same-thread principal and three fixture-v3 baselines,
+readonly witness, then the existing positive/negative Stop, compaction and cold
+continuation scenes. The Stop plan must match the full execution plan, including
+source, runtime, installed plugin, HOME, workspace, CLI, Python, shell, model and
+effort. Three owned-process cleanup receipts are required. Both `status` and
+`scenario_status` require all ten gates; full CLI exit 0 cannot use the affected
+five-gate shortcut. Synthetic captures always export `native_acceptance: not_run`.
+The legacy supplement explicitly refuses full plans, captures and results; it
+cannot drop full scenes or compose this run with older subjects.
+
+A full exact-source release gate requires a fresh normally trusted HOME and an
+actual complete host run after source and packaged bytes converge. A tools-only
+prepared result, zero-model preflight or synthetic matrix does not certify that
+run. The coordinator owns normal trust, native execution and independent readback.

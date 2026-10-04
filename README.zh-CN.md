@@ -14,7 +14,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 > **最新已发布：0.15.0 — 2026-10-02。** 减少 Hook 启动开销、精简指令，并保证状态的独占写入。新会话使用独立状态；旧任务需要原运行时。修改现有安装前，请阅读[发布说明](docs/releases/v0.15.0.md)和[升级边界](docs/SESSION_STORAGE.md)。
 
-> **未发布的 0.15.1 源码候选：** 明确续行重新可以解除普通暂停；CLI 规定的 `checkpoint-status` 诊断选项在 CLI 与 PostToolUse 中一致识别；状态查询读路径不再获取私有写锁。草稿[发布说明](docs/releases/v0.15.1.md)；原生验收与发布待完成。
+> **未发布的 0.15.1 源码候选：** 明确续行可解除普通暂停并保留未完成工作；后续用户事件即使重复相同的暂停文字，也会重新等待。诊断选项共用契约，状态查询完整核验适用来源且不写私有状态。已完成检查及仍待完成的 Windows、最终候选与发布门槛，见草稿[发布说明](docs/releases/v0.15.1.md)和[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 安装
 
@@ -35,6 +35,18 @@ py -3 scripts\manage_plugin.py --apply
 安装器会把本仓库添加为 marketplace，安装 `context-guard@codex-context-guard`，并检查安装结果。它也会保留升级前任务仍需要的版本化副本。
 
 安装插件不会自动信任 Hook。请启动新的 Codex 任务，打开 `/hooks`，检查并信任全部九个定义，然后再启动一个新任务，让它加载当前版本。
+
+### 让 Agent 帮你安装
+
+可将以下提示词复制到 Codex 任务：
+
+```text
+请从 https://github.com/GreenLv/codex-context-guard 安装最新已发布稳定版。
+使用本 README 的安全安装器和正常 Codex 客户端；识别我的平台，核实 Python 3.10+。
+遵循升级说明，保留无关配置和既有版本缓存。核对发布源码、已安装版本、源码与缓存一致性，
+以及新任务实际加载的 Hook。若 Codex 要求信任 Hook，请一次引导我完成正常确认，
+随后继续验证；不要手编辑信任哈希或跳过信任。若需要新任务或重启客户端，请明确告知。
+```
 
 ### 升级说明
 
@@ -230,11 +242,13 @@ Hook 运行时只使用 Python 标准库。CI 覆盖 Ubuntu、macOS、Windows �
 
 ## 明确不做
 
-Context Guard 不是语义证明系统、安全沙箱、会话备份、云同步服务、第二套 Plan/Goal 控制器、Agent 调度器，也不能替代测试和人工审查。它不保证任意内容的语义正确性，只执行自己能表达确定性检查的部分；它不替代 Codex 权限系统、`repository-release` 发布合同、人工审查或平台 readback。
+- Context Guard 只核对能够确定性验证的结果，不能证明任意文字或图片的内容正确，也不能替代测试和人工审查。
+- 它不提供安全沙箱、会话备份、云同步或 Agent 调度。Plan、Goal 和执行仍由 Codex 管理。
+- 它不授予权限。发布仍需就绪检查、用户与宿主授权，以及公开读回。
 
-0.13 保持 model/agent-agnostic 基线：它不假定模型或 Agent 自带可靠的长上下文保护与恢复。从恢复、工作单元、证据到完成的闭环由 Context Guard 本地提供，协议语义与 Codex Hook adapter 保持分离；一个动作是否获得授权，由你、执行 Agent 和宿主权限判断，而不是由 Context Guard 提示判断。
+恢复和完成契约不依赖模型或 Agent 宿主自带上下文保护能力。协议与 Codex 适配层的说明见[架构文档](docs/ARCHITECTURE.md)。
 
-只有发起根任务的用户执行 `context-guard adopt <project-relative-json>` 后，项目说明和计划引用才会被采用。安装 Skill、加载模板或在普通文字中提到计划都不会启用这项行为。采用项目说明不会修改 Codex Plan 状态，也不会授予权限。已覆盖动作的检查遵循上文的保护级别。
+只有发起根任务的用户才能通过 `context-guard adopt <project-relative-json>` 采用项目流程和计划引用。采用不会修改 Codex Plan，也不会增加权限。安装 Skill 或在文字中提到计划不构成采用；发布控制仍需按上文显式选择。
 
 ## 贡献与安全
 
