@@ -806,18 +806,22 @@ def matrix_preflight(args):
     collector = getattr(args, 'collector_sid', None)
     if expected_runner is not None and expected_runner != runner_sha:
         raise ValueError('mechanism runner identity changed')
-    if profile in ('protected8', MATRIX_V2_PROFILE):
+    if profile in ('protected8', MATRIX_V2_PROFILE, MATRIX_V3_PROFILE):
         if expected_runner is None or collector is None:
             raise ValueError('protected probes require fixed runner and collector pins')
         child.sid_bytes(collector)
         if collector == args.actor_sid:
             raise ValueError('collector cannot stand in for ordinary actor')
-    probe_plan = [matrix_probe_plan(c, args.actor_sid, collector) for c in cells] if profile in ('protected8', MATRIX_V2_PROFILE) else None
+    if profile == MATRIX_V3_PROFILE:
+        matrix_v3_roles(args.actor_sid, collector)
+    probe_plan = [matrix_probe_plan(c, args.actor_sid, collector) for c in cells] if profile in ('protected8', MATRIX_V2_PROFILE, MATRIX_V3_PROFILE) else None
     inputs = {'source_commit': head, 'helper_sha256': helper_sha, 'runner_sha256': runner_sha,
               'cell_profile': profile, 'cells': cells, 'actor_sid': args.actor_sid,
               'collector_sid': collector, 'output': str(output), 'fixture_parent': str(parent)}
-    return {'schema': MATRIX_V2_SCHEMA if profile == MATRIX_V2_PROFILE else 'incident-acl-mechanism-matrix/v1',
-            'construction_contract': MATRIX_V2_CONTRACT if profile == MATRIX_V2_PROFILE else 'legacy-inherited-tail/v1',
+    return {'schema': (MATRIX_V3_SCHEMA if profile == MATRIX_V3_PROFILE else
+                       MATRIX_V2_SCHEMA if profile == MATRIX_V2_PROFILE else 'incident-acl-mechanism-matrix/v1'),
+            'construction_contract': (MATRIX_V3_CONTRACT if profile == MATRIX_V3_PROFILE else
+                                      MATRIX_V2_CONTRACT if profile == MATRIX_V2_PROFILE else 'legacy-inherited-tail/v1'),
             'source_commit': head,
             'inputs': inputs, 'inputs_sha256': hashlib.sha256(json.dumps(inputs, sort_keys=True,
                 separators=(',', ':')).encode()).hexdigest(),
@@ -944,6 +948,123 @@ def matrix_setup_write(path, descriptor, *, record_step=None, protected_ai_probe
     return observed
 
 
+def matrix_v3_setup_write(path, planned, entry, output, number, *, record_step):
+    """Fixture-only transparent Named setter witness; no extra native call.
+
+    Capture from the getter's live bounded buffer; never dereference an
+    unbound pointer. Persist raw ACL privately and hashes before one setter.
+    Raw SetFileSecurity writes, business transactions and restore are outside
+    this construction-only witness. Product helper bytes stay unchanged.
+    """
+    from ctypes import wintypes
+    if child.descriptor_contract(planned)['dacl_control'] == 4:
+        return matrix_setup_write(path, planned, record_step=record_step)
+    expected_sd = planned
+    if child.descriptor_contract(planned)['dacl_control'] == 0x1004:
+        expected_sd = matrix_descriptor(0x1404, child.descriptor_contract(planned)['aces'])
+    expected_raw = base64.b64decode(expected_sd, validate=True)
+    expected_offset = struct.unpack_from('<I', expected_raw, 16)[0]
+    expected_size = struct.unpack_from('<H', expected_raw, expected_offset + 2)[0]
+    expected_acl = expected_raw[expected_offset:expected_offset + expected_size]
+    _, expected_flags = child.restoration_strategy(expected_sd)
+    captured = {'extractions': 0, 'setters': 0}
+    original_loader, original_named = ctypes.WinDLL, child.named_security_write
+
+    class Extraction:
+        def __init__(self, function, api):
+            object.__setattr__(self, 'function', function)
+            object.__setattr__(self, 'api', api)
+
+        def __getattr__(self, name):
+            return getattr(self.function, name)
+
+        def __setattr__(self, name, value):
+            setattr(self.function, name, value)
+
+        def __call__(self, buffer, present, acl, defaulted):
+            if captured['extractions'] or not isinstance(buffer, ctypes.Array) or buffer.raw[:-1] != expected_raw:
+                raise ValueError('unexpected extraction count or descriptor buffer')
+            captured['extractions'] += 1
+            result = self.function(buffer, present, acl, defaulted)
+            if result:
+                pointer = ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0]
+                is_present = ctypes.cast(present, ctypes.POINTER(wintypes.BOOL))[0]
+                if not is_present or pointer != ctypes.addressof(buffer) + expected_offset:
+                    raise ValueError('fixture PACL not bound to the planned live buffer')
+                if buffer.raw[:-1] != expected_raw:
+                    raise ValueError('descriptor changed during extraction')
+                captured.update(buffer=buffer, pointer=pointer, api=self.api)
+            return result
+
+    class API:
+        def __init__(self, underlying):
+            self.underlying = underlying
+            self.extraction = Extraction(underlying.GetSecurityDescriptorDacl, self)
+
+        def __getattr__(self, name):
+            return self.extraction if name == 'GetSecurityDescriptorDacl' else getattr(self.underlying, name)
+
+    def load(name, *args, **kwargs):
+        if name != 'advapi32':
+            raise ValueError('unexpected construction DLL')
+        return API(original_loader(name, *args, **kwargs))
+
+    def named(api, selected_path, flags, acl):
+        pointer = acl.value if isinstance(acl, ctypes.c_void_p) else acl
+        if (captured['setters'] or captured.get('api') is not api or str(selected_path) != str(path)
+                or pointer != captured.get('pointer') or flags != expected_flags):
+            raise ValueError('fixture setter pointer identity flags or call count differs')
+        actual_raw = captured['buffer'].raw[:-1]
+        actual_acl = actual_raw[expected_offset:expected_offset + expected_size]
+        if actual_raw != expected_raw or actual_acl != expected_acl:
+            raise ValueError('fixture PACL bytes changed before setter')
+        prefix = 'setup-' + number + '-named-boundary'
+        raw_path = output / (prefix + '-acl.bin')
+        fd = os.open(raw_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(actual_acl)
+            stream.flush()
+            os.fsync(stream.fileno())
+        aces = child.descriptor_contract(expected_sd)['aces']
+        witness = {'schema': 'fixture-named-setter-boundary/v1', 'construction_contract': MATRIX_V3_CONTRACT,
+                   'selected_api': 'SetNamedSecurityInfoW', 'security_information': flags,
+                   'borrowed_pointer_bound_to_live_planned_buffer': True,
+                   'actual_acl_sha256': hashlib.sha256(actual_acl).hexdigest(),
+                   'expected_acl_sha256': hashlib.sha256(expected_acl).hexdigest(),
+                   'acl_size': expected_size, 'ace_count': len(aces),
+                   'ordered_ACE_sha256': [hashlib.sha256(bytes.fromhex(a)).hexdigest() for a in aces],
+                   'private_raw_acl': raw_path.name, 'setters_invoked': 0,
+                   'native_result': None}
+        entry['setter_boundary'] = witness
+        child.durable_snapshot(output / (prefix + '-intent.json'), witness)
+        captured['setters'] += 1
+        witness['setters_invoked'] = 1
+        primary = None
+        try:
+            witness['native_result'] = original_named(api, selected_path, flags, acl)
+            return witness['native_result']
+        except BaseException as exc:
+            primary = exc
+            witness['native_result'] = getattr(exc, 'native_result', None)
+            witness['failure'] = child.acl_failure(exc, 'fixture_boundary', 'write')
+            raise
+        finally:
+            try:
+                child.durable_snapshot(output / (prefix + '-observed.json'), witness)
+            except BaseException as exc:
+                if primary is None:
+                    raise
+                primary.boundary_observation_failure = child.acl_failure(exc, 'fixture_boundary', 'observed')
+
+    with mock.patch.object(ctypes, 'WinDLL', side_effect=load), mock.patch.object(child, 'named_security_write', side_effect=named):
+        result = matrix_setup_write(path, planned, record_step=record_step)
+    requires_named = bool(child.descriptor_contract(planned)['dacl_control'] & 0x400 or
+                          child.descriptor_contract(planned)['dacl_control'] == 0x1004)
+    if requires_named and (captured['extractions'] != 1 or captured['setters'] != 1):
+        raise ValueError('construction Named boundary witness missing')
+    return result
+
+
 def matrix_observe(root):
     return {'raw_dacls': {str(p): child.windows_descriptor(p) for p in child.fixture_paths(root)},
             'inventory': child.inventory(root)}
@@ -990,12 +1111,14 @@ def matrix_setup_operation(root, path, planned, result, output):
     primary = None
     try:
         probe = (path != root
-                 and result.get('cell_profile') != MATRIX_V2_PROFILE
+                 and result.get('cell_profile') not in (MATRIX_V2_PROFILE, MATRIX_V3_PROFILE)
                  and result.get('setup_phase', 'target') == 'target'
                  and child.descriptor_contract(planned)['dacl_control'] == 0x1404)
         if probe:
             entry['native_result'] = matrix_setup_write(path, planned, record_step=step, protected_ai_probe=True,
                 expected_identity=result['s0_record']['native_target_identity'], observe_handle=observe_handle)
+        elif result.get('cell_profile') == MATRIX_V3_PROFILE:
+            entry['native_result'] = matrix_v3_setup_write(path, planned, entry, output, number, record_step=step)
         else:
             entry['native_result'] = matrix_setup_write(path, planned, record_step=step)
     except BaseException as exc:
@@ -1067,6 +1190,11 @@ def matrix_probes():
 MATRIX_V2_PROFILE = 'explicit-retained32'
 MATRIX_V2_SCHEMA = 'incident-acl-mechanism-matrix/v2'
 MATRIX_V2_CONTRACT = 'protected-explicit-retention/v2'
+MATRIX_V3_PROFILE = 'distinct-source32'
+MATRIX_V3_SCHEMA = 'incident-acl-mechanism-matrix/v3'
+MATRIX_V3_CONTRACT = 'distinct-read-source-retention/v3'
+MATRIX_V3_READ_SOURCES = ('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545')
+MATRIX_V3_READ_MASK = 0x1200a9
 
 
 def matrix_v2_cell(legacy_cell):
@@ -1082,6 +1210,71 @@ def matrix_v2_cell(legacy_cell):
                                    else 'true_inheritance_unchanged'),
             'inheritance_semantics': ('inherited_source_retained_as_explicit' if protected
                                       else 'true_inherited_aces')}
+
+
+def matrix_v3_roles(actor_sid, collector_sid):
+    if type(actor_sid) is not str or type(collector_sid) is not str:
+        raise ValueError('fixed ordinary actor and collector required')
+    for sid in (actor_sid, collector_sid):
+        child.sid_bytes(sid)
+    roles = (*MATRIX_V3_READ_SOURCES, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')
+    if len(set((actor_sid, collector_sid, *roles))) != len(roles) + 2:
+        raise ValueError('actor collector or fixed roles collide')
+
+
+def matrix_v3_cell(legacy_cell):
+    prior = matrix_v2_cell(legacy_cell)
+    return {**prior, 'construction_contract': MATRIX_V3_CONTRACT,
+            'previous_v2_cell': prior,
+            'read_source_roles': ['Everyone', 'Authenticated Users', 'Builtin Users'],
+            'read_source_mask': MATRIX_V3_READ_MASK,
+            'coverage_relation': 'distinct sources; not permission-equivalent to v1 or v2'}
+
+
+def matrix_v3_parent_aces(shape, actor_sid, collector_sid):
+    if shape not in ('missing', 'explicit', 'inherited', 'deny'):
+        raise ValueError('unknown actor source shape')
+    aces = [matrix_ace(sid) for sid in (collector_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')]
+    aces += [matrix_ace(sid, MATRIX_V3_READ_MASK, flags=3) for sid in MATRIX_V3_READ_SOURCES]
+    if shape == 'inherited':
+        aces.append(matrix_ace(actor_sid, flags=3))
+    return aces
+
+
+def matrix_v3_check_acl(descriptor, actor_sid, collector_sid):
+    matrix_v3_roles(actor_sid, collector_sid)
+    contract = child.descriptor_contract(descriptor)
+    if (contract['descriptor_revision'] != 1 or contract['dacl_revision'] != 2
+            or contract['dacl_control'] not in (4, 0x404, 0x1004, 0x1404)):
+        raise ValueError('unknown distinct-source descriptor')
+    aces = contract['aces']
+    if not aces or len(aces) != len(set(aces)):
+        raise ValueError('duplicate or empty distinct-source ACL')
+    ranks = []
+    for a in aces:
+        raw = bytes.fromhex(a)
+        sid, mask = child.ace_sid(raw), struct.unpack_from('<I', raw, 4)[0]
+        if raw[1] not in (0, 3, 0x10, 0x13):
+            raise ValueError('unknown distinct-source ACE flags')
+        ranks.append((2 if raw[1] & 0x10 else 0) + (1 if raw[0] == 0 else 0))
+        if sid == actor_sid:
+            masks = ((0x10116, 0x10156) if raw[0] == 1 else
+                     (0x1f01ff, 0x120089, 0x1200a9, 0x1f01ff & ~0x10116, 0x1f01ff & ~0x10156))
+            if mask not in masks:
+                raise ValueError('unknown actor permissions')
+        elif raw[0] != 0:
+            raise ValueError('only declared actor may have a deny')
+        elif sid in MATRIX_V3_READ_SOURCES:
+            if mask != MATRIX_V3_READ_MASK:
+                raise ValueError('read source permissions differ')
+        elif sid in (collector_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4'):
+            if mask != 0x1f01ff:
+                raise ValueError('administrative source permissions differ')
+        else:
+            raise ValueError('unknown distinct-source principal')
+    if ranks != sorted(ranks):
+        raise ValueError('noncanonical distinct-source ACL')
+    return contract
 
 
 def matrix_retain_explicit(descriptor, inherited_source):
@@ -1121,6 +1314,8 @@ def matrix_retain_explicit(descriptor, inherited_source):
 
 
 def matrix_profile_cells(profile):
+    if profile == MATRIX_V3_PROFILE:
+        return [matrix_v3_cell(c) for c in matrix_cells()]
     if profile == MATRIX_V2_PROFILE:
         return [matrix_v2_cell(c) for c in matrix_cells()]
     if profile == 'full32':
@@ -1256,7 +1451,7 @@ def matrix_setup_transition(root, path, planned, expected, result, output, phase
     matrix_assert_setup_state(root, expected, result)
     before = {'raw_dacls': expected, 'inventory': result['s0_record']['original_inventory']}
     staged = (child.descriptor_contract(planned)['dacl_control'] == 0x1004
-              or (phase == 'target' and result.get('cell_profile') != MATRIX_V2_PROFILE
+              or (phase == 'target' and result.get('cell_profile') not in (MATRIX_V2_PROFILE, MATRIX_V3_PROFILE)
                   and child.descriptor_contract(planned)['dacl_control'] == 0x1404))
     intermediate = None
     if staged:
@@ -1286,6 +1481,8 @@ def matrix_setup_transition(root, path, planned, expected, result, output, phase
 
 
 def matrix_probe_plan(cell, actor_sid, collector_sid):
+    if cell.get('construction_contract') == MATRIX_V3_CONTRACT:
+        return matrix_v3_probe_plan(cell, actor_sid, collector_sid)
     if cell.get('construction_contract') == MATRIX_V2_CONTRACT:
         return matrix_v2_probe_plan(cell, actor_sid, collector_sid)
     directory = cell['kind'] == 'directory'
@@ -1352,13 +1549,35 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
 def matrix_v2_probe_plan(cell, actor_sid, collector_sid):
     if cell not in matrix_profile_cells(MATRIX_V2_PROFILE):
         raise ValueError('unknown versioned construction cell')
+    parent = [matrix_ace(s, flags=3) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
+    if cell['actor_shape'] == 'inherited':
+        parent.append(matrix_ace(actor_sid, flags=3))
+    return matrix_retention_probe_plan(cell, actor_sid, collector_sid, parent)
+
+
+def matrix_v3_probe_plan(cell, actor_sid, collector_sid):
+    matrix_v3_roles(actor_sid, collector_sid)
+    if cell not in matrix_profile_cells(MATRIX_V3_PROFILE):
+        raise ValueError('unknown distinct-source cell')
+    parent = matrix_v3_parent_aces(cell['actor_shape'], actor_sid, collector_sid)
+    plan = matrix_retention_probe_plan(cell, actor_sid, collector_sid, parent)
+    plan['protected_AI_feasibility'] = 'native_unknown_distinct_sources'
+    plan['setter_boundary'] = 'named construction only; bounded verified borrowed PACL capture; no extra API or retry'
+    matrix_v3_check_acl(matrix_descriptor(0x1404, parent), actor_sid, collector_sid)
+    for phase in plan['phases']:
+        expected = phase.get('expected')
+        if isinstance(expected, dict):
+            contracts = [expected] if 'aces' in expected else list(expected.values())
+            for contract in contracts:
+                matrix_v3_check_acl(matrix_descriptor(contract['dacl_control'], contract['aces']), actor_sid, collector_sid)
+    return plan
+
+
+def matrix_retention_probe_plan(cell, actor_sid, collector_sid, parent):
     legacy_cell = cell['legacy_cell']
     plan = matrix_probe_plan(legacy_cell, actor_sid, collector_sid)
     plan.update(cell)
     directory = cell['kind'] == 'directory'
-    parent = [matrix_ace(s, flags=3) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
-    if cell['actor_shape'] == 'inherited':
-        parent.append(matrix_ace(actor_sid, flags=3))
     explicit = [matrix_ace(s) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')]
     if cell['actor_shape'] == 'explicit':
         explicit.append(matrix_ace(actor_sid))
@@ -1382,6 +1601,13 @@ def matrix_v2_probe_plan(cell, actor_sid, collector_sid):
     grant = child.planned_acl_change(final, actor_sid, 'grant', directory)
     deny = child.planned_acl_change(grant, actor_sid, 'deny', directory)
     phases = plan['phases']
+    parent_sd = matrix_descriptor(0x1404, parent)
+    phases[1]['expected'] = child.descriptor_contract(parent_sd)
+    seed_aces = child.descriptor_contract(matrix_seed_descriptor(collector_sid))['aces']
+    phases[2]['file_expected'] = child.descriptor_contract(matrix_descriptor(0x404,
+        seed_aces + matrix_inherited_aces(parent_sd, False)))
+    phases[2]['directory_expected'] = child.descriptor_contract(matrix_descriptor(0x404,
+        seed_aces + matrix_inherited_aces(parent_sd, True)))
     phases[3:5] = target_steps
     for phase in phases:
         if phase['name'] == 'grant':
@@ -1444,7 +1670,8 @@ def matrix_v2_family_plan(root, target, target_plan, expected):
 
 
 def matrix_v2_ready_descendants(root, target, result, output):
-    plan = result['v2_family_construction']
+    plan = result['v3_family_construction' if result.get('cell_profile') == MATRIX_V3_PROFILE
+                  else 'v2_family_construction']
     expected = plan['after_target_family']
     matrix_assert_setup_state(root, expected, result)
     owned = {p.relative_to(root).as_posix(): p for p in child.fixture_paths(root)}
@@ -1482,6 +1709,9 @@ def matrix_ready_descendants(root, target, result, output, inventory):
 
 
 def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='full32'):
+    if profile == MATRIX_V3_PROFILE:
+        matrix_v3_roles(actor_sid, collector_sid)
+        matrix_v3_probe_plan(cell, actor_sid, collector_sid)  # close complete inputs before any fixture or write
     if (cell not in matrix_profile_cells(profile) or (profile == MATRIX_V2_PROFILE
             and matrix_v2_cell(cell.get('legacy_cell')) != cell)):
         raise ValueError('cell differs from fixed construction contract')
@@ -1554,6 +1784,8 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
         parent_aces = [matrix_ace(s, flags=3) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
         if cell['actor_shape'] == 'inherited':
             parent_aces.append(matrix_ace(actor_sid, flags=3))
+        if profile == MATRIX_V3_PROFILE:
+            parent_aces = matrix_v3_parent_aces(cell['actor_shape'], actor_sid, collector_sid)
         parent_plan = matrix_descriptor(0x1404, parent_aces)
         expected = matrix_setup_transition(root, root, parent_plan, expected, result, output, 'parent_setup')
         seed_aces = child.descriptor_contract(seed)['aces']
@@ -1572,24 +1804,28 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
         elif cell['actor_shape'] == 'deny':
             aces.insert(0, matrix_ace(actor_sid, 0x10156 if target.is_dir() else 0x10116, 1))
         target_plan = matrix_descriptor(cell['control'], aces + inherited)
-        if profile == MATRIX_V2_PROFILE and cell['control'] & 0x1000:
+        if profile in (MATRIX_V2_PROFILE, MATRIX_V3_PROFILE) and cell['control'] & 0x1000:
             retained = matrix_retain_explicit(target_plan, inherited)
-            conversion = {'contract': MATRIX_V2_CONTRACT, 'path': 'target',
+            conversion = {'contract': cell['construction_contract'], 'path': 'target',
                           'source': target_plan, 'planned': retained,
                           'semantics': 'inherited_source_retained_as_explicit',
                           's0_snapshot_sha256': s0['original_snapshot_sha256']}
             persist('target-explicit-construction-intent.json', conversion)
             result['explicit_construction'] = conversion
             target_plan = retained
-        if profile == MATRIX_V2_PROFILE and cell['control'] & 0x1000:
+        if profile in (MATRIX_V2_PROFILE, MATRIX_V3_PROFILE) and cell['control'] & 0x1000:
             construction = matrix_v2_family_plan(root, target, target_plan, expected)
+            construction['contract'] = cell['construction_contract']
             construction['s0_snapshot_sha256'] = s0['original_snapshot_sha256']
+            if profile == MATRIX_V3_PROFILE:
+                for value in construction['final_family'].values():
+                    matrix_v3_check_acl(value, actor_sid, collector_sid)
             persist('v2-whole-family-construction-intent.json', construction)
-            result['v2_family_construction'] = construction
+            result['v3_family_construction' if profile == MATRIX_V3_PROFILE else 'v2_family_construction'] = construction
         result['target_plan'] = target_plan
         expected = matrix_setup_transition(root, target, target_plan, expected, result, output, 'target')
         if target.is_dir():
-            if profile == MATRIX_V2_PROFILE and cell['control'] & 0x1000:
+            if profile in (MATRIX_V2_PROFILE, MATRIX_V3_PROFILE) and cell['control'] & 0x1000:
                 expected = matrix_v2_ready_descendants(root, target, result, output)
             else:
                 expected = matrix_ready_descendants(root, target, result, output, s0['original_inventory'])
@@ -1687,13 +1923,19 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
 
 def matrix_run_cells(report, actor_sid, collector_sid, repo, output, cwd):
     profile = report.get('cell_profile', 'full32')
+    if profile == MATRIX_V3_PROFILE:
+        matrix_v3_roles(actor_sid, collector_sid)
+        if report.get('schema') != MATRIX_V3_SCHEMA or report.get('construction_contract') != MATRIX_V3_CONTRACT:
+            raise ValueError('distinct-source cells require their versioned report')
+    elif report.get('schema') == MATRIX_V3_SCHEMA:
+        raise ValueError('older cells cannot claim distinct-source coverage')
     if profile == MATRIX_V2_PROFILE and (report.get('schema') != MATRIX_V2_SCHEMA
             or report.get('construction_contract') != MATRIX_V2_CONTRACT):
         raise ValueError('new construction requires its versioned report contract')
     if profile != MATRIX_V2_PROFILE and report.get('schema') == MATRIX_V2_SCHEMA:
         raise ValueError('legacy cells cannot claim new schema coverage')
     cells = matrix_profile_cells(profile)
-    if (profile == MATRIX_V2_PROFILE and report.get('cells') != cells) or ('cells' in report and report['cells'] != cells):
+    if (profile in (MATRIX_V2_PROFILE, MATRIX_V3_PROFILE) and report.get('cells') != cells) or ('cells' in report and report['cells'] != cells):
         raise ValueError('selected cells differ from fixed profile')
     for number, cell in enumerate(cells, 1):
         cell_output = output / ('cell-' + str(number).zfill(2))
@@ -1720,7 +1962,7 @@ def mechanism_matrix_main(argv):
     parser.add_argument('--output', required=True)
     parser.add_argument('--fixture-parent', required=True)
     parser.add_argument('--preflight', action='store_true')
-    parser.add_argument('--cell-profile', choices=('full32', 'protected8', MATRIX_V2_PROFILE), default='full32')
+    parser.add_argument('--cell-profile', choices=('full32', 'protected8', MATRIX_V2_PROFILE, MATRIX_V3_PROFILE), default='full32')
     parser.add_argument('--expected-runner-sha256')
     parser.add_argument('--collector-sid')
     args = parser.parse_args(argv)

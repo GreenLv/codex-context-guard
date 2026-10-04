@@ -155,6 +155,87 @@ class InheritanceAPIDouble:
         return stack
 
 
+class MatrixSDKBoundaryDouble(InheritanceAPIDouble):
+    """Actual frozen Python helper/fixture route over a synthetic SDK backend.
+
+    No Windows APIs, tokens or native behavior. Duplicate collapse is an
+    observation-shaped adversarial rule, not an OS algorithm claim.
+    """
+    collapse_duplicates = False
+
+    def __init__(self, root):
+        super().__init__(root)
+        self.named_calls = []
+        self.extraction_fault = None
+        self.after_named_fault = None
+
+    def patches(self):
+        import ctypes
+        from contextlib import ExitStack
+        from ctypes import wintypes
+        from types import SimpleNamespace
+        stack = ExitStack()
+        stack.enter_context(mock.patch.object(child, 'current_sid', return_value=self.collector))
+        stack.enter_context(mock.patch.object(child, 'windows_object_identity', side_effect=self.object_identity))
+        stack.enter_context(mock.patch.object(child, 'protect_windows_dacl', side_effect=self.protect))
+
+        def read(path, flags, buffer, size, needed):
+            raw = base64.b64decode(self.descriptor(Path(path)))
+            ctypes.cast(needed, ctypes.POINTER(wintypes.DWORD))[0] = len(raw)
+            if buffer is None:
+                return 0
+            ctypes.memmove(buffer, raw, len(raw))
+            return 1
+
+        def extract(buffer, present, acl, defaulted):
+            ctypes.cast(present, ctypes.POINTER(wintypes.BOOL))[0] = 1
+            ctypes.cast(defaulted, ctypes.POINTER(wintypes.BOOL))[0] = 0
+            offset = struct.unpack_from('<I', buffer.raw, 16)[0]
+            ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(buffer) + offset
+            if self.extraction_fault is not None:
+                self.extraction_fault(buffer, present, acl)
+            return 1
+
+        def named(path, kind, flags, owner, group, acl, sacl):
+            self.named_calls.append({'path': str(path), 'flags': flags})
+            self_check = (kind == 1 and owner is None and group is None and sacl is None)
+            if not self_check:
+                raise AssertionError('SDK double named ABI changed')
+            header = ctypes.string_at(acl.value, 8)
+            size = struct.unpack_from('<H', header, 2)[0]
+            raw_acl = ctypes.string_at(acl.value, size)
+            control = 0x1404 if flags == 0x80000004 else (0x404 if flags == 0x20000004 else
+                      child.descriptor_contract(self.descriptor(Path(path)))['dacl_control'])
+            planned = base64.b64encode(struct.pack('<BBHIIII', 1, 0, control | 0x8000, 0, 0, 0, 20) + raw_acl).decode()
+            original = child.descriptor_contract(planned)
+            self.named_calls[-1]['input_count'] = len(original['aces'])
+            self.named_calls[-1]['input_unique_count'] = len(set(original['aces']))
+            if self.collapse_duplicates:
+                planned = legacy.matrix_descriptor(control, list(dict.fromkeys(original['aces'])))
+            result = self.write(Path(path), planned, security_information=flags)
+            if self.after_named_fault is not None:
+                self.after_named_fault(Path(path), original)
+            return result['return_value']
+
+        def raw(path, flags, buffer):
+            if flags != 4:
+                raise AssertionError('SDK double raw flags changed')
+            self.write(Path(path), base64.b64encode(buffer.raw[:-1]).decode(), raw=True)
+            return 1
+
+        api = SimpleNamespace(GetFileSecurityW=mock.Mock(side_effect=read),
+                              GetSecurityDescriptorDacl=mock.Mock(side_effect=extract),
+                              SetNamedSecurityInfoW=mock.Mock(side_effect=named),
+                              SetFileSecurityW=mock.Mock(side_effect=raw))
+        stack.enter_context(mock.patch.object(legacy.ctypes, 'WinDLL', return_value=api, create=True))
+        stack.enter_context(mock.patch.object(legacy.ctypes, 'get_last_error', return_value=122, create=True))
+        return stack
+
+
+class DuplicateCollapsingSDKDouble(MatrixSDKBoundaryDouble):
+    collapse_duplicates = True
+
+
 class FirstConversionAPIDouble(InheritanceAPIDouble):
     """Root's non-identifying 3-to-3 legacy conversion counterexample only.
 
@@ -213,6 +294,8 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
             cell = {'kind': kind, 'control': control, 'actor_shape': actor_shape}
             if profile == legacy.MATRIX_V2_PROFILE:
                 cell = legacy.matrix_v2_cell(cell)
+            elif profile == legacy.MATRIX_V3_PROFILE:
+                cell = legacy.matrix_v3_cell(cell)
             result = legacy.matrix_cell(cell,
                                        double.actor, double.collector, base / 'source', output, cwd,
                                        profile=profile)
@@ -405,6 +488,170 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'failed')
                 self.assertNotIn('s1_record', result)
                 self.assertEqual(result['restorations'][-1]['status'], 'verified')
+                self.assert_s0(double, result)
+
+    def test_v3_mapping_is_separate_and_preserves_every_v1_v2_cell(self):
+        cells = legacy.matrix_profile_cells(legacy.MATRIX_V3_PROFILE)
+        self.assertEqual(len(cells), 32)
+        self.assertEqual([c['legacy_cell'] for c in cells], legacy.matrix_cells())
+        self.assertEqual([c['previous_v2_cell'] for c in cells], legacy.matrix_profile_cells(legacy.MATRIX_V2_PROFILE))
+        for c in cells:
+            self.assertEqual(c['construction_contract'], legacy.MATRIX_V3_CONTRACT)
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory)
+            for profile, schema, contract in ((legacy.MATRIX_V3_PROFILE, legacy.MATRIX_V2_SCHEMA, legacy.MATRIX_V2_CONTRACT),
+                                               (legacy.MATRIX_V2_PROFILE, legacy.MATRIX_V3_SCHEMA, legacy.MATRIX_V3_CONTRACT)):
+                with self.assertRaises(ValueError), mock.patch.object(legacy, 'matrix_cell') as run:
+                    legacy.matrix_run_cells({'cell_profile': profile, 'schema': schema,
+                                             'construction_contract': contract},
+                                            MatrixSDKBoundaryDouble.actor, MatrixSDKBoundaryDouble.collector, p, p, p)
+                run.assert_not_called()
+
+    def test_v3_role_collisions_unknown_permissions_flags_types_fail_before_fixture(self):
+        roles = (*legacy.MATRIX_V3_READ_SOURCES, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')
+        for role in roles:
+            for actor, collector in ((role, MatrixSDKBoundaryDouble.collector), (MatrixSDKBoundaryDouble.actor, role)):
+                with self.assertRaises(ValueError):
+                    legacy.matrix_v3_roles(actor, collector)
+        with self.assertRaises(ValueError):
+            legacy.matrix_v3_roles(MatrixSDKBoundaryDouble.actor, MatrixSDKBoundaryDouble.actor)
+        for actor, collector in ((None, MatrixSDKBoundaryDouble.collector), (MatrixSDKBoundaryDouble.actor, 7)):
+            with self.assertRaises(ValueError):
+                legacy.matrix_v3_roles(actor, collector)
+        for raw in (legacy.matrix_ace('S-1-1-0', 0x1f01ff, flags=3),
+                    legacy.matrix_ace('S-1-1-0', legacy.MATRIX_V3_READ_MASK, flags=0x17),
+                    legacy.matrix_ace('S-1-1-0', legacy.MATRIX_V3_READ_MASK, ace_type=5, flags=3),
+                    legacy.matrix_ace('S-1-5-19', legacy.MATRIX_V3_READ_MASK, flags=3)):
+            with self.subTest(raw=raw), tempfile.TemporaryDirectory() as directory:
+                p = Path(directory)
+                cell = legacy.matrix_v3_cell({'kind': 'file', 'control': 0x1404, 'actor_shape': 'missing'})
+                with mock.patch.object(legacy, 'matrix_v3_parent_aces', return_value=[raw]), self.assertRaises(ValueError):
+                    legacy.matrix_cell(cell, MatrixSDKBoundaryDouble.actor, MatrixSDKBoundaryDouble.collector,
+                                       p / 'source', p / 'output', p, profile=legacy.MATRIX_V3_PROFILE)
+                self.assertEqual(list(p.iterdir()), [])
+
+    def test_v3_all32_unique_targets_and_leaves_over_duplicate_collapsing_SDK(self):
+        for cell in legacy.matrix_cells():
+            with self.subTest(cell=cell):
+                double, result, output = self.run_cell(**cell, profile=legacy.MATRIX_V3_PROFILE,
+                                                        double_class=DuplicateCollapsingSDKDouble)
+                self.assertEqual(result['status'], 'passed', result.get('failure'))
+                self.assert_s0(double, result)
+                self.assertEqual([r['status'] for r in result['restorations']], ['verified'] * 3)
+                for call in double.named_calls:
+                    self.assertEqual(call['input_count'], call['input_unique_count'])
+                plan = legacy.matrix_v3_probe_plan(legacy.matrix_v3_cell(cell), double.actor, double.collector)
+                self.assertEqual(child.descriptor_contract(result['target_plan']), plan['construction']['final_contract'])
+                s1 = result['s1_record']['original_dacls']
+                for path, value in s1.items():
+                    contract = child.descriptor_contract(value)
+                    self.assertEqual(len(contract['aces']), len(set(contract['aces'])))
+                target = str(double.root / 'target')
+                for observation in result['family_observations']:
+                    if observation['phase'] in ('grant', 'deny', 'deny_v2'):
+                        for path, value in s1.items():
+                            if path != target:
+                                self.assertEqual(child.descriptor_contract(observation['observation']['raw_dacls'][path]),
+                                                 child.descriptor_contract(value))
+                for step in result['setup']:
+                    control = child.descriptor_contract(step['planned'])['dacl_control']
+                    if control & 0x400 or control == 0x1004:
+                        boundary = step['setter_boundary']
+                        self.assertEqual(boundary['setters_invoked'], 1)
+                        self.assertTrue(boundary['borrowed_pointer_bound_to_live_planned_buffer'])
+                        raw_path = output / boundary['private_raw_acl']
+                        self.assertEqual(hashlib.sha256(raw_path.read_bytes()).hexdigest(), boundary['expected_acl_sha256'])
+                        if os.name != 'nt':
+                            self.assertEqual(raw_path.stat().st_mode & 0o777, 0o600)
+                if cell['kind'] == 'directory' and cell['control'] & 0x1000:
+                    construction = result['v3_family_construction']
+                    self.assertEqual(construction['contract'], legacy.MATRIX_V3_CONTRACT)
+                    self.assertEqual(construction['final_family'], s1)
+                    self.assertEqual([s['path'] for s in construction['descendant_steps']],
+                                     ['target/nested/leaf', 'target/nested'])
+                    for name in ('target/nested', 'target/nested/leaf'):
+                        contract = child.descriptor_contract(s1[str(double.root / name)])
+                        self.assertEqual(contract['dacl_control'], 0x1404)
+                        self.assertFalse(any(bytes.fromhex(a)[1] & 0x10 for a in contract['aces']))
+
+    def test_duplicate_collapsing_SDK_keeps_old_v2_7_to4_failed(self):
+        double, result, _ = self.run_cell('file', 0x1404, 'missing', profile=legacy.MATRIX_V2_PROFILE,
+                                          double_class=DuplicateCollapsingSDKDouble)
+        self.assertEqual(result['status'], 'failed')
+        self.assertNotIn('s1_record', result)
+        self.assertEqual(len(child.descriptor_contract(result['target_plan'])['aces']), 7)
+        last = next(x for x in reversed(result['setup']) if x['phase'] == 'target')
+        self.assertEqual(len(child.descriptor_contract(last['actual'])['aces']), 4)
+        self.assertEqual(last['native_result']['return_value'], 0)
+        self.assert_s0(double, result)
+
+    def test_v3_setter_boundary_wrong_pointer_or_changed_buffer_blocks_before_setter(self):
+        import ctypes
+        for fault_kind in ('pointer', 'buffer'):
+            def fault(double, output):
+                def corrupt(buffer, present, acl):
+                    if fault_kind == 'pointer':
+                        ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0] += 4
+                    else:
+                        buffer[24] = bytes([buffer.raw[24] ^ 1])
+                double.extraction_fault = corrupt
+            with self.subTest(fault=fault_kind):
+                double, result, _ = self.run_cell('file', 0x1404, 'missing', profile=legacy.MATRIX_V3_PROFILE,
+                                                  double_class=MatrixSDKBoundaryDouble, fault=fault)
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(double.named_calls, [])
+                self.assertNotIn('s1_record', result)
+                self.assert_s0(double, result)
+
+    def test_v3_boundary_intent_failure_stops_setter_and_observed_failure_restores_S0(self):
+        original = child.durable_snapshot
+        for suffix, expected_calls in (('-named-boundary-intent.json', 0), ('-named-boundary-observed.json', 1)):
+            def persist(path, value):
+                if Path(path).name.endswith(suffix):
+                    raise OSError('synthetic boundary persistence failure')
+                return original(path, value)
+            with self.subTest(suffix=suffix), mock.patch.object(child, 'durable_snapshot', side_effect=persist):
+                double, result, _ = self.run_cell('file', 0x1404, 'missing', profile=legacy.MATRIX_V3_PROFILE,
+                                                  double_class=MatrixSDKBoundaryDouble)
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(len(double.named_calls), expected_calls)
+                self.assertNotIn('s1_record', result)
+                self.assert_s0(double, result)
+
+    def test_v3_omitted_descendant_protection_remains_business_failure(self):
+        with mock.patch.object(legacy, 'matrix_v2_ready_descendants',
+                               side_effect=lambda root, target, result, output: result['declared_setup_expected']):
+            double, result, _ = self.run_cell('directory', 0x1404, 'inherited', profile=legacy.MATRIX_V3_PROFILE,
+                                              double_class=MatrixSDKBoundaryDouble)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('s1_record', result)
+        self.assertEqual(result['step'], 'deny')
+        self.assertTrue(result['s1_record']['operations'][-1]['unexpected_objects'])
+        self.assert_s0(double, result)
+
+    def test_v3_Named_after_effect_loss_mask_flags_and_midway_failure_restore_S0(self):
+        for damage in ('drop', 'mask', 'flags', 'midway'):
+            def fault(double, output):
+                def corrupt(path, contract):
+                    match = (path == double.root / 'target/nested' if damage == 'midway' else path == double.root / 'target')
+                    if match and contract['dacl_control'] == 0x1404 and any(child.ace_sid(bytes.fromhex(a)) in
+                                                                            legacy.MATRIX_V3_READ_SOURCES for a in contract['aces']):
+                        if damage == 'midway':
+                            raise OSError('synthetic second descendant failure')
+                        aces = list(child.descriptor_contract(double.descriptor(path))['aces'])
+                        if damage == 'drop':
+                            aces.pop()
+                        else:
+                            raw = bytearray.fromhex(aces[-1])
+                            raw[4 if damage == 'mask' else 1] ^= 1
+                            aces[-1] = raw.hex()
+                        double.values[str(path)] = legacy.matrix_descriptor(0x1404, aces)
+                double.after_named_fault = corrupt
+            with self.subTest(damage=damage):
+                double, result, _ = self.run_cell('directory', 0x1404, 'inherited', profile=legacy.MATRIX_V3_PROFILE,
+                                                  double_class=MatrixSDKBoundaryDouble, fault=fault)
+                self.assertEqual(result['status'], 'failed')
+                self.assertNotIn('s1_record', result)
                 self.assert_s0(double, result)
 
     def test_legacy_native_equivalent_first_parent_is_three_not_six(self):
