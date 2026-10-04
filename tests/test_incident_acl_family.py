@@ -591,7 +591,8 @@ def matrix_observe(root):
 
 
 def matrix_setup_operation(root, path, planned, result, output):
-    entry = {'path': path.relative_to(root).as_posix(), 'before': child.windows_descriptor(path), 'planned': planned,
+    entry = {'path': path.relative_to(root).as_posix(), 'phase': result.get('setup_phase', 'direct'),
+             'before': child.windows_descriptor(path), 'planned': planned,
              'native_result': None, 'actual': None}
     result['setup'].append(entry)
     number = str(len(result['setup']))
@@ -603,8 +604,14 @@ def matrix_setup_operation(root, path, planned, result, output):
             child.durable_snapshot(output / ('setup-' + number + '-protect-intent.json'), observed)
             return observed
         child.durable_snapshot(output / ('setup-' + number + '-protect-observed.json'), value)
+        transition = result.get('current_setup_transition')
+        if transition is not None:
+            observed = matrix_assert_setup_state(root, transition['intermediate'], result)
+            result['family_observations'].append({'phase': transition['phase'] + '_protect', 'observation': observed})
+            child.durable_snapshot(output / ('setup-' + number + '-protect-family.json'), observed)
     try:
-        probe = (result.get('cell_profile') == 'protected8' and path != root
+        probe = (path != root
+                 and result.get('setup_phase', 'target') == 'target'
                  and child.descriptor_contract(planned)['dacl_control'] == 0x1404)
         if probe:
             entry['native_result'] = matrix_setup_write(path, planned, record_step=step, protected_ai_probe=True)
@@ -750,6 +757,10 @@ def matrix_setup_expected(root, target, planned, before, *, raw_final=False):
     for path in sorted(child.fixture_paths(root), key=lambda p: (len(p.parts), str(p))):
         if target not in path.parents:
             continue
+        if any(ancestor != target and target in ancestor.parents
+               and child.descriptor_contract(expected[str(ancestor)])['dacl_control'] & 0x1000
+               for ancestor in path.parents if str(ancestor) in expected):
+            continue
         current = child.descriptor_contract(expected[str(path)])
         if current['dacl_control'] & 0x1000:
             continue
@@ -770,6 +781,48 @@ def matrix_check_family(root, expected, inventory):
     return observed
 
 
+def matrix_seed_descriptor(collector_sid):
+    # A deliberate owned-fixture assignment, never classification of old ACEs.
+    return matrix_descriptor(0x1404, [matrix_ace(sid) for sid in
+                                    (collector_sid, 'S-1-5-18', 'S-1-5-32-544')])
+
+
+def matrix_assert_setup_state(root, expected, result):
+    original = result['s0_record']
+    child.check_fixture_identity(root, original)
+    observed = matrix_check_family(root, expected, original['original_inventory'])
+    if matrix_guards(root, root.parent) != result['outside_guards']:
+        raise ValueError('external guard changed during declared setup transition')
+    return observed
+
+
+def matrix_setup_transition(root, path, planned, expected, result, output, phase):
+    matrix_assert_setup_state(root, expected, result)
+    before = {'raw_dacls': expected, 'inventory': result['s0_record']['original_inventory']}
+    staged = (child.descriptor_contract(planned)['dacl_control'] == 0x1004
+              or (phase == 'target' and child.descriptor_contract(planned)['dacl_control'] == 0x1404))
+    intermediate = None
+    if staged:
+        explicit = [a for a in child.descriptor_contract(planned)['aces'] if not bytes.fromhex(a)[1] & 0x10]
+        intermediate = matrix_setup_expected(root, path, matrix_descriptor(0x1404, explicit), before)
+        after = dict(intermediate)
+        after[str(path)] = planned
+    else:
+        after = matrix_setup_expected(root, path, planned, before)
+    transition = {'phase': phase, 'path': path.relative_to(root).as_posix(),
+                  'before': dict(expected), 'intermediate': intermediate, 'after': after}
+    result.setdefault('setup_transitions', []).append(transition)
+    result['current_setup_transition'] = transition
+    result['setup_phase'] = phase
+    child.durable_snapshot(output / ('transition-' + str(len(result['setup_transitions'])) + '-intent.json'), transition)
+    matrix_setup_operation(root, path, planned, result, output)
+    observed = matrix_assert_setup_state(root, after, result)
+    result['family_observations'].append({'phase': phase, 'observation': observed})
+    child.durable_snapshot(output / ('transition-' + str(len(result['setup_transitions'])) + '-observed.json'), observed)
+    result['declared_setup_expected'] = after
+    return after
+
+
 def matrix_probe_plan(cell, actor_sid, collector_sid):
     directory = cell['kind'] == 'directory'
     parent = [matrix_ace(sid, flags=3) for sid in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
@@ -782,14 +835,29 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
     final = matrix_descriptor(cell['control'], explicit + tail)
     grant = child.planned_acl_change(final, actor_sid, 'grant', directory)
     deny = child.planned_acl_change(grant, actor_sid, 'deny', directory)
+    seed = matrix_seed_descriptor(collector_sid)
+    seed_aces = child.descriptor_contract(seed)['aces']
+    seed_paths = (['target/nested/leaf', 'branch/leaf', 'target/nested', 'branch', 'sibling', 'target']
+                  if directory else ['branch/leaf', 'branch', 'sibling', 'target'])
+    ai_paths = (['branch', 'sibling', 'target', 'branch/leaf', 'target/nested', 'target/nested/leaf']
+                if directory else ['branch', 'sibling', 'target', 'branch/leaf'])
     return {**cell, 'ordinary_actor_execution': 'not_run',
             'protected_AI_feasibility': 'unknown',
             'scope': {'owned_root': 'cwd/incident-readonly-output-name', 'target': 'target',
                       'outside_ancestor_and_siblings': 'read-only guards',
                       'full_family_S0_and_S1': 'durable before their first mutation'},
             'phases': [
+                {'name': 'controlled_seed', 'paths_bottom_up': seed_paths, 'api': 'SetNamedSecurityInfoW',
+                 'security_information': 0x80000004, 'expected': child.descriptor_contract(seed),
+                 'before': 'complete immutable S0; each preceding declared whole family must match'},
                 {'name': 'parent_setup', 'path': '.', 'api': 'SetNamedSecurityInfoW',
                  'security_information': 0x80000004, 'expected': child.descriptor_contract(parent_sd)},
+                {'name': 'controlled_AI', 'paths_top_down': ai_paths, 'api': 'SetNamedSecurityInfoW',
+                 'security_information': 0x20000004,
+                 'file_expected': child.descriptor_contract(matrix_descriptor(0x404,
+                    seed_aces + matrix_inherited_aces(parent_sd, False))),
+                 'directory_expected': child.descriptor_contract(matrix_descriptor(0x404,
+                    seed_aces + matrix_inherited_aces(parent_sd, True)))},
                 {'name': 'protect_intermediate', 'path': 'target', 'api': 'SetNamedSecurityInfoW',
                  'security_information': 0x80000004, 'expected': child.descriptor_contract(intermediate)},
                 {'name': 'raw_final', 'path': 'target', 'api': 'SetFileSecurityW',
@@ -797,7 +865,7 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
                 {'name': 'ready_descendants', 'paths': ['target/nested', 'target/nested/leaf'] if directory else [],
                  'api': 'SetNamedSecurityInfoW', 'security_information': 0x20000004,
                  'expected': {name: child.descriptor_contract(matrix_descriptor(0x404,
-                    matrix_inherited_aces(final, is_directory))) for name, is_directory in
+                    seed_aces + matrix_inherited_aces(final, is_directory))) for name, is_directory in
                     ([('target/nested', True), ('target/nested/leaf', False)] if directory else [])}},
                 {'name': 'grant', 'path': 'target', 'expected': child.descriptor_contract(grant)},
                 {'name': 'deny', 'path': 'target', 'expected': child.descriptor_contract(deny)},
@@ -814,21 +882,21 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
 def matrix_ready_descendants(root, target, result, output, inventory):
     # Raw final cannot propagate. Close the declared owned inheritance graph
     # before S1, instead of capturing an unrestorable intermediate descendant.
+    expected = result.get('declared_setup_expected')
+    if expected is None or inventory != result['s0_record']['original_inventory']:
+        raise ValueError('declared preceding setup family required')
+    matrix_assert_setup_state(root, expected, result)
     for path in sorted(child.fixture_paths(root), key=lambda p: (len(p.parts), str(p))):
         if target not in path.parents:
             continue
-        before = matrix_observe(root)
-        current = child.descriptor_contract(before['raw_dacls'][str(path)])
+        current = child.descriptor_contract(expected[str(path)])
         if current['dacl_control'] & 0x1000:
             raise ValueError('fresh owned descendant unexpectedly protected')
         explicit = [a for a in current['aces'] if not bytes.fromhex(a)[1] & 0x10]
         planned = matrix_descriptor(0x404, explicit + matrix_inherited_aces(
-            before['raw_dacls'][str(path.parent)], path.is_dir()))
-        expected = matrix_setup_expected(root, path, planned, before)
-        matrix_setup_operation(root, path, planned, result, output)
-        observed = matrix_check_family(root, expected, inventory)
-        result['family_observations'].append({'phase': 'ready_descendant', 'observation': observed})
-        child.durable_snapshot(output / ('ready-descendant-' + str(len(result['family_observations'])) + '.json'), observed)
+            expected[str(path.parent)], path.is_dir()))
+        expected = matrix_setup_transition(root, path, planned, expected, result, output, 'ready_descendant')
+    return expected
 
 
 def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='full32'):
@@ -891,14 +959,23 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
         result['initial_root'] = s0['original_dacls'][str(root)]
         observe('s0', matrix_observe(root))
         result['step'] = 'setup'
+        expected = dict(s0['original_dacls'])
+        seed = matrix_seed_descriptor(collector_sid)
+        descendants = [p for p in child.fixture_paths(root) if p != root]
+        # Every original byte remains in S0. These explicit declared assignments
+        # avoid guessing how unmarked/default legacy ACEs will be converted.
+        for path in sorted(descendants, key=lambda p: (-len(p.parts), str(p))):
+            expected = matrix_setup_transition(root, path, seed, expected, result, output, 'controlled_seed')
         parent_aces = [matrix_ace(s, flags=3) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
         if cell['actor_shape'] == 'inherited':
             parent_aces.append(matrix_ace(actor_sid, flags=3))
         parent_plan = matrix_descriptor(0x1404, parent_aces)
-        before = matrix_observe(root)
-        parent_expected = matrix_setup_expected(root, root, parent_plan, before)
-        matrix_setup_operation(root, root, parent_plan, result, output)
-        observe('parent_setup', matrix_check_family(root, parent_expected, s0['original_inventory']))
+        expected = matrix_setup_transition(root, root, parent_plan, expected, result, output, 'parent_setup')
+        seed_aces = child.descriptor_contract(seed)['aces']
+        for path in sorted(descendants, key=lambda p: (len(p.parts), str(p))):
+            planned = matrix_descriptor(0x404, seed_aces + matrix_inherited_aces(
+                expected[str(path.parent)], path.is_dir()))
+            expected = matrix_setup_transition(root, path, planned, expected, result, output, 'controlled_AI')
         inherited = matrix_inherited_aces(parent_plan, target.is_dir())
         actual_inherited = [a for a in child.descriptor_contract(child.windows_descriptor(target))['aces']
                             if bytes.fromhex(a)[1] & 0x10]
@@ -911,23 +988,15 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd, *, profile='f
             aces.insert(0, matrix_ace(actor_sid, 0x10156 if target.is_dir() else 0x10116, 1))
         target_plan = matrix_descriptor(cell['control'], aces + inherited)
         result['target_plan'] = target_plan
-        before = matrix_observe(root)
-        if cell['control'] == 0x1004 or (profile == 'protected8' and cell['control'] == 0x1404):
-            intermediate = matrix_descriptor(0x1404, aces)
-            staged = matrix_setup_expected(root, target, intermediate, before)
-            expected = dict(staged)
-            expected[str(target)] = target_plan  # raw-final does not propagate
-        else:
-            expected = matrix_setup_expected(root, target, target_plan, before)
-        matrix_setup_operation(root, target, target_plan, result, output)
-        observe('target_setup', matrix_check_family(root, expected, s0['original_inventory']))
+        expected = matrix_setup_transition(root, target, target_plan, expected, result, output, 'target')
         if target.is_dir():
-            matrix_ready_descendants(root, target, result, output, s0['original_inventory'])
+            expected = matrix_ready_descendants(root, target, result, output, s0['original_inventory'])
         if matrix_guards(root, cwd) != guards:
             raise ValueError('external guard changed during setup')
         ownership = {k: str(v) for k, v in {'cwd': cwd, 'output': output, 'repo': repo,
                      'home': repo, 'plugin_root': repo, 'data_root': repo}.items()}
         ownership.update(created_exclusively=True, root_identity=[root.stat().st_dev, root.stat().st_ino])
+        matrix_assert_setup_state(root, expected, result)
         ready = matrix_stable_observation(root)
         result['step'] = 'snapshot_s1'
         candidate_s1 = child.prepare_read_transaction(root, sid=actor_sid, ownership=ownership)
@@ -1127,11 +1196,20 @@ class MatrixSourceContractsTests(unittest.TestCase):
                 output.mkdir()
                 cwd.mkdir()
                 double = InheritanceAPIDouble(cwd / 'incident-readonly-cell-01')
+                injected = []
+                phase = None
+                real_setup = matrix_setup_operation
+                def setup(root, path, planned, result, output):
+                    nonlocal phase
+                    phase = result['setup_phase']
+                    return real_setup(root, path, planned, result, output)
                 def failure(path, planned, count):
-                    if path == double.root / 'target' and count == 1:
+                    if phase == 'target' and path == double.root / 'target' and not injected:
+                        injected.append('target')
                         raise child.DACLWriteError({'api': 'SetFileSecurityW', 'security_information': 4,
                                                     'return_value': 0, 'winerror': 5})
-                    if restore_failed and path == double.root and count == 1:
+                    if restore_failed and injected == ['target'] and path == double.root:
+                        injected.append('restore')
                         # Failed restoration remains failed even when its unchanged
                         # readback happens to match. Other family objects still restore.
                         double.fail_write = None
@@ -1139,13 +1217,13 @@ class MatrixSourceContractsTests(unittest.TestCase):
                                                     'return_value': 0, 'winerror': 5})
                 double.fail_write = failure
                 report = {'results': []}
-                with double.patches():
+                with double.patches(), mock.patch(__name__ + '.matrix_setup_operation', side_effect=setup):
                     matrix_run_cells(report, double.actor, double.collector, base / 'source', output, cwd)
                 self.assertEqual(report['attempted_cells'], 1)
                 self.assertEqual(len(report['remaining_cells']), 31)
                 result = report['results'][0]
                 self.assertEqual(result['status'], 'failed')
-                self.assertEqual(result['setup'][1]['native_result']['winerror'], 5)
+                self.assertEqual(next(e for e in result['setup'] if e['phase'] == 'target')['native_result']['winerror'], 5)
                 self.assertEqual('restoration_error' in result, restore_failed)
                 if not restore_failed:
                     for name, saved in result['s0_record']['original_dacls'].items():
