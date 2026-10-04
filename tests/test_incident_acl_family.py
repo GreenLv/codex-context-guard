@@ -521,17 +521,36 @@ def matrix_descriptor(control, aces):
                             + struct.pack('<BBHHH', 2, 0, 8 + len(body), len(aces), 0) + body).decode()
 
 
-def matrix_setup_write(path, descriptor):
+def matrix_setup_write(path, descriptor, *, record_step=None):
     """Fixture setup only; exact disk controls are checked after the real call."""
     control = child.descriptor_contract(descriptor)['dacl_control']
     if control & 0x400:
         return child.windows_descriptor(path, descriptor)
+    if control == 0x1004:
+        if record_step is None:
+            raise ValueError('protected non-AI setup requires durable step observations')
+        protected = matrix_descriptor(0x1404, child.descriptor_contract(descriptor)['aces'])
+        intent = record_step('protect', protected)
+        try:
+            intent['native_result'] = child.windows_descriptor(path, protected)
+        except BaseException as exc:
+            intent['native_result'] = getattr(exc, 'native_result', None)
+            intent['failure'] = child.acl_failure(exc, 'setup_protect', 'write')
+            raise
+        finally:
+            try:
+                intent['actual'] = child.windows_descriptor(path)
+            except Exception as exc:
+                intent['readback_error'] = child.acl_failure(exc, 'setup_protect', 'readback')
+            record_step('protect_observed', intent)
+        if child.descriptor_contract(intent['actual']) != child.descriptor_contract(protected):
+            raise ValueError('protected setup DACL differs before raw non-AI write')
     from ctypes import wintypes
     api = ctypes.WinDLL('advapi32', use_last_error=True)
     setter = api.SetFileSecurityW
     setter.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
     setter.restype = wintypes.BOOL
-    flags = 4 | (0x80000000 if control & 0x1000 else 0x20000000)
+    flags = 4  # Keep raw DACL flags distinct from the SD's 0x8004/0x9004 control.
     buffer = ctypes.create_string_buffer(base64.b64decode(descriptor))
     result = int(setter(str(path), flags, buffer))
     observed = {'api': 'SetFileSecurityW', 'security_information': flags,
@@ -552,8 +571,15 @@ def matrix_setup_operation(root, path, planned, result, output):
     result['setup'].append(entry)
     number = str(len(result['setup']))
     child.durable_snapshot(output / ('setup-' + number + '-intent.json'), entry)
+    def step(label, value):
+        if label == 'protect':
+            observed = {'phase': label, 'planned': value, 'native_result': None, 'actual': None}
+            entry.setdefault('steps', []).append(observed)
+            child.durable_snapshot(output / ('setup-' + number + '-protect-intent.json'), observed)
+            return observed
+        child.durable_snapshot(output / ('setup-' + number + '-protect-observed.json'), value)
     try:
-        entry['native_result'] = matrix_setup_write(path, planned)
+        entry['native_result'] = matrix_setup_write(path, planned, record_step=step)
     except BaseException as exc:
         entry['native_result'] = getattr(exc, 'native_result', None)
         entry['failure'] = child.acl_failure(exc, 'setup', 'write')
@@ -782,6 +808,44 @@ def mechanism_matrix_main(argv):
 
 
 class MatrixSourceContractsTests(unittest.TestCase):
+    def test_non_ai_setup_raw_flags_four_and_protected_step_receipts(self):
+        from types import SimpleNamespace
+        for control in (4, 0x1004):
+            with self.subTest(control=control), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                target = root / 'file'
+                target.write_bytes(b'owned source setup control')
+                before = ACLFamilyTests.descriptor_value('other')
+                planned = matrix_descriptor(control, child.descriptor_contract(before)['aces'])
+                descriptor = before
+                def native_raw(path, flags, buffer):
+                    nonlocal descriptor
+                    descriptor = planned
+                    return 1
+                raw = mock.Mock(side_effect=native_raw)
+                api = SimpleNamespace(SetFileSecurityW=raw)
+                def observe(path, value=None):
+                    nonlocal descriptor
+                    if value is None:
+                        return descriptor
+                    descriptor = value
+                    return {'api': 'SetNamedSecurityInfoW', 'security_information': 0x80000004,
+                            'return_value': 0, 'winerror': 0}
+                result = {'setup': []}
+                with mock.patch.object(ctypes, 'WinDLL', return_value=api, create=True), \
+                     mock.patch.object(child, 'windows_descriptor', side_effect=observe):
+                    matrix_setup_operation(root, target, planned, result, root)
+                raw.assert_called_once()
+                self.assertEqual(raw.call_args.args[1], 4)
+                self.assertEqual(child.descriptor_contract(descriptor), child.descriptor_contract(planned))
+                if control == 0x1004:
+                    step = result['setup'][0]['steps'][0]
+                    self.assertEqual(step['native_result']['security_information'], 0x80000004)
+                    self.assertEqual(child.descriptor_contract(step['actual'])['dacl_control'], 0x1404)
+                    self.assertTrue((root / 'setup-1-protect-observed.json').is_file())
+                else:
+                    self.assertNotIn('steps', result['setup'][0])
+
     def test_setup_api_failure_restores_owned_scene_then_stops_batch(self):
         for restore_failed in (False, True):
             with self.subTest(restore_failed=restore_failed), tempfile.TemporaryDirectory() as directory:
@@ -808,7 +872,7 @@ class MatrixSourceContractsTests(unittest.TestCase):
                     if restore_failed and len(restored) == 1:
                         raise child.DACLWriteError({**result, 'return_value': 0, 'winerror': 5})
                     return result
-                def setup(path, planned):
+                def setup(path, planned, *, record_step=None):
                     setup_calls.append(str(path))
                     descriptors[str(path)] = planned
                     if len(setup_calls) == 2:
