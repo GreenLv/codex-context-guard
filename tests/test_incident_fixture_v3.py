@@ -74,63 +74,27 @@ class FixtureV3Tests(unittest.TestCase):
         aces.insert(position, ace)
         return cls.with_aces(value, aces)
 
-    def apply(self, argv, **kwargs):
-        self.events.append(('command', argv))
+    def apply(self, path, planned):
+        # Synthetic API double, not a CLI process or native acceptance.
         self.assertTrue((self.output / 'fixture-original-transaction.json').is_file())
         self.assertNotEqual(self.sid, self.collector)
-        self.assertEqual(argv[:1], ['icacls'])
-        directory = Path(argv[1]).is_dir()
-        bits = argv[-1].split(':', 1)[1].strip('()').split(',')
-        self.assertEqual(argv[-1].split(':', 1)[0], '*' + self.sid)
-        rights = {'RD': 1, 'WD': 2, 'AD': 4, 'REA': 8, 'WEA': 16, 'X': 32,
-                  'DC': 64, 'RA': 128, 'WA': 256, 'DE': 65536, 'RC': 131072, 'S': 1048576}
-        mask = 0
-        for bit in bits:
-            mask |= rights[bit]
-        aces = child.descriptor_contract(self.descriptors[argv[1]])['aces']
-        if argv[2] == '/grant':
-            self.assertEqual(bits, ['RD', 'REA', 'RA', 'RC', 'S'] + (['X'] if directory else []))
-            matching = [i for i, value in enumerate(aces) if bytes.fromhex(value)[:2] == b'\x00\x00'
-                        and child.ace_sid(bytes.fromhex(value)) == self.sid]
-            if matching:
-                self.assertEqual(len(matching), 1)
-                raw = bytearray.fromhex(aces[matching[0]])
-                struct.pack_into('<I', raw, 4, struct.unpack_from('<I', raw, 4)[0] | mask)
-                aces[matching[0]] = raw.hex()
-                self.descriptors[argv[1]] = self.with_aces(self.descriptors[argv[1]], aces)
-            else:
-                self.descriptors[argv[1]] = self.add_actor(self.descriptors[argv[1]], self.sid, mask)
-        else:
-            self.assertEqual(argv[2], '/deny')
-            self.assertEqual(bits, ['WD', 'AD', 'WEA', 'WA', 'DE'] + (['DC'] if directory else []))
-            # Independent fixture semantics from the actual requested rights:
-            # remove same rights from actor explicit grants; merge one exact
-            # explicit deny, or insert it before existing explicit grants.
-            result, merged = [], False
-            for value in aces:
-                raw = bytearray.fromhex(value)
-                if child.ace_sid(raw) == self.sid and not raw[1] & 0x10:
-                    old_mask = struct.unpack_from('<I', raw, 4)[0]
-                    if raw[0] == 0:
-                        remaining = old_mask & ~mask
-                        if not remaining:
-                            continue
-                        struct.pack_into('<I', raw, 4, remaining)
-                    elif raw[1] == 0:
-                        self.assertFalse(merged)
-                        struct.pack_into('<I', raw, 4, old_mask | mask)
-                        merged = True
-                result.append(raw.hex())
-            if not merged:
-                result.insert(0, self.actor_ace(self.sid, mask, ace_type=1))
-            self.descriptors[argv[1]] = self.with_aces(self.descriptors[argv[1]], result)
-        return mock.Mock(returncode=0, stdout=b'ok', stderr=b'')
+        phase = 'deny' if any(bytes.fromhex(a)[:2] == b'\x01\x00'
+                              and child.ace_sid(bytes.fromhex(a)) == self.sid
+                              for a in child.descriptor_contract(planned)['aces']) else 'grant'
+        self.events.append(('api', phase, str(path), planned))
+        self.descriptors[str(path)] = planned
+        strategy, flags = child.restoration_strategy(planned)
+        return {'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                'security_information': flags, 'return_value': 1 if strategy == 'raw-explicit' else 0,
+                'winerror': 0}
 
-    def patches(self, runner=None):
+    def patches(self, runner=None, *, writer=None):
         stack = __import__('contextlib').ExitStack()
         stack.enter_context(mock.patch.object(child, 'current_sid', return_value=self.collector))
         stack.enter_context(mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor))
-        stack.enter_context(mock.patch.object(child.subprocess, 'run', side_effect=runner or self.apply))
+        stack.enter_context(mock.patch.object(child, 'write_windows_dacl', side_effect=writer or self.apply))
+        if runner is not None:
+            stack.enter_context(mock.patch.object(child.subprocess, 'run', side_effect=runner))
         return stack
 
     def prepare(self):
@@ -168,69 +132,74 @@ class FixtureV3Tests(unittest.TestCase):
             req = self.request(record, 'baseline_granted')
             child.apply_read_transaction(self.root, record, 'deny', baseline_record=self.observed(req), baseline_request=req)
             self.assertTrue(record['grant_complete'] and record['deny_complete'])
-            commands = [v[1] for v in self.events if v[0] == 'command']
-            grants = [v for v in commands if v[2] == '/grant']
-            self.assertEqual(len(grants), len(self.original))
-            self.assertTrue(all(v[-1] == '*' + self.sid + (':(RD,REA,RA,RC,S,X)' if Path(v[1]).is_dir()
-                                                         else ':(RD,REA,RA,RC,S)') for v in grants))
-            denies = [v for v in commands if v[2] == '/deny']
-            self.assertEqual(len(denies), len(self.original))
-            self.assertEqual({Path(v[1]).is_dir() for v in denies}, {False, True})
-            for argv in denies:
-                wanted = 0x10156 if Path(argv[1]).is_dir() else 0x10116
-                actors = [bytes.fromhex(a) for a in child.descriptor_contract(self.descriptors[argv[1]])['aces']
-                          if child.ace_sid(bytes.fromhex(a)) == self.sid and bytes.fromhex(a)[:2] == b'\x01\x00']
-                self.assertEqual(len(actors), 1)
-                self.assertEqual(struct.unpack_from('<I', actors[0], 4)[0], wanted)
-            self.assertTrue(all('/T' not in v and '/grant:r' not in v for v in commands))
+            self.assertEqual(record['commands'], [])
+            operations = record['operations']
+            self.assertEqual(len(operations), len(self.original) * 2)
+            self.assertTrue(all(o['status'] == 'verified' for o in operations))
+            self.assertEqual({o['phase'] for o in operations}, {'grant', 'deny'})
+            self.assertTrue(all('argv' not in o and 'exit_code' not in o for o in operations))
+            for operation in operations:
+                directory = (self.root / operation['path']).is_dir()
+                if operation['phase'] == 'deny':
+                    wanted = 0x10156 if directory else 0x10116
+                    actors = [bytes.fromhex(a) for a in child.descriptor_contract(operation['actual'])['aces']
+                              if child.ace_sid(bytes.fromhex(a)) == self.sid
+                              and bytes.fromhex(a)[:2] == b'\x01\x00']
+                    self.assertEqual(len(actors), 1)
+                    self.assertEqual(struct.unpack_from('<I', actors[0], 4)[0], wanted)
+            self.assertTrue(list(self.output.glob('fixture-*-op-*-observed.json')))
             child.restore(self.root, record)
             self.assertEqual(self.descriptors, self.original)
 
     def test_partial_grant_deny_and_bad_readback_restore_every_original(self):
-        for failure in ('grant_nonzero', 'grant_readback', 'deny_nonzero', 'deny_readback', 'deny_duplicate', 'deny_split', 'interrupt'):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as extra:
-                # Each case retains exclusive snapshots and failure receipts.
-                self.output = Path(extra)
-                self.ownership['output'] = str(self.output)
-                original_name = self.root.name
-                wanted = self.cwd / ('incident-readonly-' + self.output.name)
-                self.root.rename(wanted)
-                self.root = wanted
-                self.ownership['root_identity'] = [wanted.stat().st_dev, wanted.stat().st_ino]
-                self.original = {str(p): legacy.ACLFamilyTests.descriptor_value(str(p)) for p in child.fixture_paths(wanted)}
-                self.descriptors = dict(self.original)
-                calls = []
-                def apply(argv, **kwargs):
-                    calls.append(argv)
-                    result = self.apply(argv, **kwargs)
-                    if failure == 'grant_readback' and argv[2] == '/grant':
-                        self.descriptors[argv[1]] = self.add_actor(self.descriptors[argv[1]], 'S-1-5-21-999', 1)
-                    if failure == 'deny_readback' and argv[2] == '/deny':
-                        self.descriptors[argv[1]] = self.add_actor(self.descriptors[argv[1]], self.sid, 1, ace_type=1)
-                    if failure == 'deny_duplicate' and argv[2] == '/deny':
-                        self.descriptors[argv[1]] = self.add_actor(self.descriptors[argv[1]], self.sid, 2, ace_type=1)
-                    if failure == 'deny_split' and argv[2] == '/deny':
-                        aces = child.descriptor_contract(self.descriptors[argv[1]])['aces']
-                        raw = bytes.fromhex(aces[0])
-                        mask = struct.unpack_from('<I', raw, 4)[0]
-                        aces[:1] = [self.actor_ace(self.sid, 2, 1), self.actor_ace(self.sid, mask & ~2, 1)]
-                        self.descriptors[argv[1]] = self.with_aces(self.descriptors[argv[1]], aces)
-                    if ((failure == 'grant_nonzero' and len(calls) == 2)
-                            or (failure == 'deny_nonzero' and argv[2] == '/deny')):
-                        return mock.Mock(returncode=5, stdout=b'', stderr=b'partial')
-                    if failure == 'interrupt' and len(calls) == 2:
-                        raise KeyboardInterrupt()
-                    return result
-                with self.patches(apply):
-                    record = self.prepare()
-                    with self.assertRaises(child.RestrictionError) as caught:
-                        self.grant(record)
-                        req = self.request(record, 'baseline_granted')
-                        child.apply_read_transaction(self.root, record, 'deny', baseline_record=self.observed(req), baseline_request=req)
-                    self.assertEqual(caught.exception.record['restoration'], 'verified')
-                    self.assertEqual(self.descriptors, self.original)
-                self.root.rename(self.cwd / original_name)
-                self.root = self.cwd / original_name
+        for failure in ('grant_api', 'grant_readback', 'deny_api', 'deny_readback',
+                        'deny_duplicate', 'deny_split', 'interrupt'):
+            with self.subTest(failure=failure):
+                fixture = FixtureV3Tests('test_snapshot_precedes_exact_read_grant_and_whole_restore')
+                fixture.setUp()
+                try:
+                    calls = []
+                    def apply(path, planned):
+                        result = fixture.apply(path, planned)
+                        phase = fixture.events[-1][1]
+                        calls.append(phase)
+                        inject = (failure.startswith('deny') and phase == 'deny') or (
+                            failure.startswith('grant') and phase == 'grant' and len(calls) == 2)
+                        if inject and failure.endswith('api'):
+                            raise child.DACLWriteError({'api': result['api'],
+                                'security_information': result['security_information'],
+                                'return_value': 0, 'winerror': 5})
+                        if inject and failure.endswith('readback'):
+                            fixture.descriptors[str(path)] = fixture.add_actor(
+                                planned, 'S-1-5-21-999', 1)
+                        if inject and failure in ('deny_duplicate', 'deny_split'):
+                            aces = child.descriptor_contract(planned)['aces']
+                            if failure == 'deny_duplicate':
+                                aces.insert(0, fixture.actor_ace(fixture.sid, 2, 1))
+                            else:
+                                mask = struct.unpack_from('<I', bytes.fromhex(aces[0]), 4)[0]
+                                aces[:1] = [fixture.actor_ace(fixture.sid, 2, 1),
+                                            fixture.actor_ace(fixture.sid, mask & ~2, 1)]
+                            fixture.descriptors[str(path)] = fixture.with_aces(planned, aces)
+                        if failure == 'interrupt' and len(calls) == 2:
+                            raise KeyboardInterrupt()
+                        return result
+                    with fixture.patches(writer=apply):
+                        record = fixture.prepare()
+                        with self.assertRaises(child.RestrictionError) as caught:
+                            fixture.grant(record)
+                            req = fixture.request(record, 'baseline_granted')
+                            child.apply_read_transaction(fixture.root, record, 'deny',
+                                baseline_record=fixture.observed(req), baseline_request=req)
+                        self.assertEqual(caught.exception.record['restoration'], 'verified')
+                        self.assertEqual(fixture.descriptors, fixture.original)
+                        failed = record['operations'][-1]
+                        self.assertEqual(failed['status'], 'failed')
+                        self.assertIsNotNone(failed['actual'])
+                        self.assertIn('reason', record['application_failure'])
+                        self.assertTrue(list(fixture.output.glob('fixture-*-op-*-failure.json')))
+                finally:
+                    fixture.doCleanups()
 
     def deny_case(self, directory, *, existing=False):
         seed = next(iter(self.original.values()))
@@ -449,7 +418,7 @@ class FixtureV3Tests(unittest.TestCase):
             req = self.request(record, 'baseline_granted')
             child.apply_read_transaction(self.root, record, 'deny', baseline_record=self.observed(req), baseline_request=req)
         req = self.request(record, 'readonly')
-        req['restriction']['commands'][0]['output'] = '本地化回执\r\n\ufffd'
+        req['restriction']['operations'][0]['private_note'] = '本地化回执\r\n\ufffd'
         req['nested'] = {'中文': ['😀']}
         req['request_sha256'] = child.request_identity_v2(req)
         value = {'schema': 'incident-readonly-child/v2', 'request_sha256': req['request_sha256'],
@@ -577,9 +546,12 @@ class DurableSnapshotTests(unittest.TestCase):
                     child.verify_original_snapshot(record)
                     child.restore(fixture.root, record)
                     self.assertEqual(fixture.descriptors, fixture.original)
-                self.assertEqual(receipts, ['fixture-original-transaction.json',
-                                           'fixture-grant-receipt.json', 'fixture-deny-receipt.json'])
-                self.assertEqual(synced.call_count, 3)
+                self.assertEqual([n for n in receipts if '-op-' not in n],
+                                 ['fixture-original-transaction.json',
+                                  'fixture-grant-receipt.json', 'fixture-deny-receipt.json'])
+                self.assertEqual(sum('-op-' in n for n in receipts),
+                                 len(fixture.original) * 2 * 3)
+                self.assertEqual(synced.call_count, len(receipts))
 
     def test_snapshot_newline_tampering_is_rejected_without_repair_or_rehash(self):
         fixture = FixtureV3Tests()
@@ -605,6 +577,185 @@ class DurableSnapshotTests(unittest.TestCase):
                 self.assertEqual(record['original_snapshot_sha256'], digest)
         path.write_bytes(original)
         child.verify_original_snapshot(record)
+
+
+class ExactACLPlansTests(unittest.TestCase):
+    """Portable source contracts; these do not execute a Windows API."""
+    sid = 'S-1-5-21-200'
+
+    def case(self, directory, control, shape):
+        before = legacy.ACLFamilyTests.descriptor_value('other', control=0x8000 | control)
+        aces = child.descriptor_contract(before)['aces']
+        if shape == 'explicit':
+            aces.append(FixtureV3Tests.actor_ace(self.sid, 0x1f01ff))
+        elif shape == 'inherited':
+            aces.append(FixtureV3Tests.actor_ace(self.sid, 0x1f01ff, flags=0x10))
+        elif shape == 'deny':
+            aces.insert(0, FixtureV3Tests.actor_ace(self.sid, 0x10156 if directory else 0x10116, 1))
+        return child.descriptor_with_aces(before, aces)
+
+    def test_file_directory_four_controls_four_actor_shapes_32_source_cells(self):
+        cells = 0
+        for directory in (False, True):
+            for control in (4, 0x404, 0x1004, 0x1404):
+                for shape in ('missing', 'explicit', 'inherited', 'deny'):
+                    with self.subTest(directory=directory, control=control, shape=shape):
+                        before = self.case(directory, control, shape)
+                        granted = child.planned_acl_change(before, self.sid, 'grant', directory)
+                        denied = child.planned_acl_change(granted, self.sid, 'deny', directory)
+                        child.check_read_grant(before, granted, self.sid, directory)
+                        child.check_write_deny(granted, denied, self.sid, directory=directory)
+                        for value in (granted, denied):
+                            old, new = child.descriptor_contract(before), child.descriptor_contract(value)
+                            self.assertEqual(new['dacl_control'], control)
+                            self.assertEqual([a for a in old['aces'] if child.ace_sid(bytes.fromhex(a)) != self.sid],
+                                             [a for a in new['aces'] if child.ace_sid(bytes.fromhex(a)) != self.sid])
+                        inherited = [a for a in child.descriptor_contract(before)['aces'] if bytes.fromhex(a)[1] & 0x10]
+                        self.assertEqual(inherited, [a for a in child.descriptor_contract(denied)['aces'] if bytes.fromhex(a)[1] & 0x10])
+                        fixture = FixtureV3Tests()
+                        fixture.setUp()
+                        try:
+                            fixture.original = {str(p): self.case(p.is_dir(), control, shape)
+                                                for p in child.fixture_paths(fixture.root)}
+                            fixture.descriptors = dict(fixture.original)
+                            target = fixture.root if directory else fixture.root / 'nested/lock'
+                            with fixture.patches():
+                                record = fixture.prepare()
+                                fixture.grant(record)
+                                self.assertEqual(child.descriptor_contract(fixture.descriptors[str(target)]),
+                                                 child.descriptor_contract(granted))
+                                request = fixture.request(record, 'baseline_granted')
+                                child.apply_read_transaction(fixture.root, record, 'deny',
+                                    baseline_record=fixture.observed(request), baseline_request=request)
+                                self.assertEqual(child.descriptor_contract(fixture.descriptors[str(target)]),
+                                                 child.descriptor_contract(denied))
+                                child.restore(fixture.root, record)
+                                self.assertEqual(fixture.descriptors, fixture.original)
+                                self.assertEqual(child.inventory(fixture.root), record['original_inventory'])
+                                self.assertEqual(record['commands'], [])
+                        finally:
+                            fixture.doCleanups()
+                        cells += 1
+        self.assertEqual(cells, 32)
+
+    def test_old_icacls_control_and_parent_ace_counterexamples_remain_rejected(self):
+        for directory in (False, True):
+            before = self.case(directory, 4, 'missing')
+            granted = child.planned_acl_change(before, self.sid, 'grant', directory)
+            denied = child.planned_acl_change(granted, self.sid, 'deny', directory)
+            for phase, original, exact in (('grant', before, granted), ('deny', granted, denied)):
+                aces = child.descriptor_contract(exact)['aces']
+                aces.append(FixtureV3Tests.actor_ace('S-1-5-21-999', 0x1301bf, flags=0x10))
+                raw = bytearray(base64.b64decode(child.descriptor_with_aces(exact, aces)))
+                struct.pack_into('<H', raw, 2, 0x8404)
+                inherited = base64.b64encode(raw).decode()
+                with self.subTest(directory=directory, phase=phase), self.assertRaises(ValueError):
+                    if phase == 'grant':
+                        child.check_read_grant(original, inherited, self.sid, directory)
+                    else:
+                        child.check_write_deny(original, inherited, self.sid, directory=directory)
+
+    def test_ambiguous_duplicate_split_order_type_sid_and_descriptor_family(self):
+        before = self.case(False, 4, 'explicit')
+        aces = child.descriptor_contract(before)['aces']
+        bads = [child.descriptor_with_aces(before, aces + aces[-1:]),
+                child.descriptor_with_aces(before, [FixtureV3Tests.actor_ace(self.sid, 2, 1),
+                                                   FixtureV3Tests.actor_ace(self.sid, 4, 1)] + aces),
+                child.descriptor_with_aces(before, aces + [FixtureV3Tests.actor_ace(self.sid, 2, 1)]),
+                'bad', base64.b64encode(b'bad').decode()]
+        for value in bads:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                child.planned_acl_change(value, self.sid, 'grant', False)
+        for directory in (0, None, 'file'):
+            with self.assertRaises(ValueError):
+                child.planned_acl_change(before, self.sid, 'deny', directory)
+        for sid in ('', 'S-1-5', 'S-1-05-21-200', 'S-1-5-4294967296'):
+            with self.assertRaises(ValueError):
+                child.planned_acl_change(before, sid, 'grant', False)
+        for phase, policy in (('grant', 'specific-write-deny/v2'), ('other', child.READ_BASELINE_POLICY), ('deny', 'old')):
+            with self.assertRaises(ValueError):
+                child.planned_acl_change(before, self.sid, phase, False, policy)
+
+    def test_read_write_and_persistence_failures_retain_phase_and_restore(self):
+        for fault in ('readback', 'intent', 'observed', 'verified', 'phase_receipt', 'native_result', 'side_effect'):
+            with self.subTest(fault=fault):
+                fixture = FixtureV3Tests()
+                fixture.setUp()
+                try:
+                    original_save = child.operation_snapshot
+                    durable = child.durable_snapshot
+                    original_read = fixture.descriptor
+                    wrote = False
+                    reads_failed = 0
+                    def write(path, planned):
+                        nonlocal wrote
+                        result = fixture.apply(path, planned)
+                        wrote = True
+                        if fault == 'native_result':
+                            return None
+                        if fault == 'side_effect':
+                            other = fixture.root
+                            fixture.descriptors[str(other)] = fixture.add_actor(
+                                fixture.descriptors[str(other)], 'S-1-5-21-999', 1)
+                        return result
+                    def read(path, value=None):
+                        nonlocal reads_failed
+                        if value is None and fault == 'readback' and wrote and not reads_failed:
+                            reads_failed += 1
+                            raise OSError('injected readback unavailable')
+                        return original_read(path, value)
+                    def save(record, operation, suffix):
+                        if suffix == fault:
+                            raise OSError('injected persistence unavailable')
+                        return original_save(record, operation, suffix)
+                    def persist(path, record):
+                        if fault == 'phase_receipt' and Path(path).name == 'fixture-grant-receipt.json':
+                            raise OSError('injected phase receipt unavailable')
+                        return durable(path, record)
+                    with fixture.patches(writer=write), \
+                         mock.patch.object(child, 'windows_descriptor', side_effect=read), \
+                         mock.patch.object(child, 'operation_snapshot', side_effect=save), \
+                         mock.patch.object(child, 'durable_snapshot', side_effect=persist):
+                        record = fixture.prepare()
+                        with self.assertRaises(child.RestrictionError):
+                            fixture.grant(record)
+                        self.assertEqual(record['restoration'], 'verified')
+                        self.assertEqual(fixture.descriptors, fixture.original)
+                        self.assertEqual(record['application_failure']['phase'], 'grant')
+                        self.assertFalse(record['grant_complete'])
+                        if fault in ('verified', 'phase_receipt'):
+                            self.assertEqual(record['application_failure']['step'], 'receipt')
+                        self.assertNotIn('argv', record['operations'][-1])
+                        self.assertEqual(record['commands'], [])
+                        if fault == 'intent':
+                            self.assertFalse(wrote)
+                        else:
+                            self.assertIsNotNone(record['operations'][-1]['actual'])
+                finally:
+                    fixture.doCleanups()
+
+    def test_changed_object_or_new_hardlink_rejects_unsafe_restore(self):
+        for fault in ('replace', 'hardlink'):
+            fixture = FixtureV3Tests()
+            fixture.setUp()
+            try:
+                def write(path, planned):
+                    result = fixture.apply(path, planned)
+                    if fault == 'replace':
+                        replacement = fixture.base / 'replacement'
+                        replacement.write_bytes(path.read_bytes())
+                        replacement.replace(path)
+                    else:
+                        os.link(path, fixture.base / 'outside-hardlink')
+                    return result
+                with fixture.patches(writer=write):
+                    record = fixture.prepare()
+                    with self.assertRaises(child.RestrictionError):
+                        fixture.grant(record)
+                    self.assertIn('restoration_error', record)
+                    self.assertFalse(record['grant_complete'])
+            finally:
+                fixture.doCleanups()
 
 
 if __name__ == '__main__':

@@ -73,26 +73,36 @@ class ACLFamilyTests(unittest.TestCase):
             return self.descriptors[str(path)]
         self.descriptors[str(path)] = value
 
-    def apply(self, argv, **kwargs):
-        self.descriptors[argv[1]] = 'restricted'
-        return mock.Mock(returncode=0, stdout=b'ok', stderr=b'')
+    def apply(self, path, planned):
+        self.descriptors[str(path)] = planned
+        strategy, flags = child.restoration_strategy(planned)
+        return {'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                'security_information': flags, 'return_value': 1 if strategy == 'raw-explicit' else 0,
+                'winerror': 0}
 
     def restricted(self, runner=None):
         with mock.patch.object(child, 'current_sid', return_value=self.sid), \
              mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor), \
-             mock.patch.object(child.subprocess, 'run', side_effect=runner or self.apply):
-            return child.windows_restrict(self.root)
+             mock.patch.object(child, 'write_windows_dacl', side_effect=runner or self.apply):
+            record = child.windows_restrict(self.root)
+        self.addCleanup(shutil.rmtree, record['operation_output'])
+        return record
 
     def test_exact_bits_bottom_up_and_original_dacl_restore(self):
         record = self.restricted()
-        argv = [c['argv'] for c in record['commands']]
-        self.assertEqual(argv[-1][1], str(self.root))
-        self.assertEqual(argv[0][1], str(self.root / 'nested' / 'lock'))
-        self.assertTrue(all('/T' not in a and '/C' not in a and '/inheritance:r' not in a
-                            and '/grant:r' not in a for a in argv))
-        self.assertTrue(all(a[-1] == '*' + self.sid +
-                            (' :(WD,AD,WEA,WA,DE,DC)' if Path(a[1]).is_dir()
-                             else ' :(WD,AD,WEA,WA,DE)').replace(' ', '') for a in argv))
+        self.assertEqual(record['commands'], [])
+        operations = record['operations']
+        self.assertEqual(operations[-1]['path'], '.')
+        self.assertEqual(operations[0]['path'], 'nested/lock')
+        self.assertTrue(all(o['status'] == 'verified' for o in operations))
+        for operation in operations:
+            actual = child.descriptor_contract(operation['actual'])
+            self.assertEqual(actual, child.descriptor_contract(operation['planned']))
+            actor = [bytes.fromhex(a) for a in actual['aces']
+                     if child.ace_sid(bytes.fromhex(a)) == self.sid]
+            self.assertEqual(len(actor), 1)
+            self.assertEqual(struct.unpack_from('<I', actor[0], 4)[0],
+                             0x10156 if (self.root / operation['path']).is_dir() else 0x10116)
         restored = []
         def put(path, value=None):
             if value is not None:
@@ -108,11 +118,14 @@ class ACLFamilyTests(unittest.TestCase):
         target = 'S-1-5-21-999'
         with mock.patch.object(child, 'current_sid', return_value=self.sid), \
              mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor), \
-             mock.patch.object(child.subprocess, 'run', side_effect=self.apply):
+             mock.patch.object(child, 'write_windows_dacl', side_effect=self.apply):
             record = child.windows_restrict(self.root, sid=target)
             self.assertEqual(record['sid'], target)
             self.assertEqual(record['collector_sid'], self.sid)
-            self.assertTrue(all('*' + target + ':' in c['argv'][-1] for c in record['commands']))
+            self.addCleanup(shutil.rmtree, record['operation_output'])
+            self.assertTrue(all(any(child.ace_sid(bytes.fromhex(a)) == target
+                                    for a in child.descriptor_contract(o['actual'])['aces'])
+                                for o in record['operations']))
             child.restore(self.root, record)
         self.assertEqual(self.descriptors, self.original)
 
@@ -152,15 +165,18 @@ class ACLFamilyTests(unittest.TestCase):
 
     def test_partial_failure_restores_every_saved_object(self):
         count = 0
-        def fail(argv, **kwargs):
+        def fail(path, planned):
             nonlocal count
             count += 1
-            self.apply(argv)
-            return mock.Mock(returncode=5 if count == 2 else 0, stdout=b'partial', stderr=b'denied')
+            result = self.apply(path, planned)
+            if count == 2:
+                raise child.DACLWriteError({**result, 'return_value': 0, 'winerror': 5})
+            return result
         with self.assertRaises(child.RestrictionError) as raised:
             self.restricted(fail)
         record = raised.exception.record
-        self.assertEqual(record['commands'][-1]['exit_code'], 5)
+        self.addCleanup(shutil.rmtree, record['operation_output'])
+        self.assertEqual(record['operations'][-1]['native_result']['winerror'], 5)
         self.assertEqual(record['restoration'], 'verified')
         self.assertEqual(self.descriptors, self.original)
 
@@ -171,11 +187,12 @@ class ACLFamilyTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 child.windows_restrict(self.root)
             runner.assert_not_called()
-        def fail(argv, **kwargs):
-            return mock.Mock(returncode=5, stdout=b'', stderr=b'fail')
+        def fail(path, planned):
+            raise OSError('injected write failure')
         with mock.patch.object(child, 'restore', side_effect=OSError('restore')):
             with self.assertRaises(child.RestrictionError) as raised:
                 self.restricted(fail)
+        self.addCleanup(shutil.rmtree, raised.exception.record['operation_output'])
         self.assertEqual(raised.exception.record['restoration_error'], 'OSError')
 
     def test_restore_rejects_root_principal_path_and_dacl_drift(self):
@@ -343,22 +360,18 @@ class WindowsACLMechanismTests(unittest.TestCase):
             before = child.inventory(root)
             paths = child.fixture_paths(root)
             dacls = {str(p): child.windows_descriptor(p) for p in paths}
-            real_run = child.subprocess.run
+            real_write = child.write_windows_dacl
             count = 0
             first_mutation = {}
-            def fail_second(argv, **kwargs):
+            def fail_second(path, planned):
                 nonlocal count
-                if str(argv[0]).lower() != 'icacls':
-                    return real_run(argv, **kwargs)
                 count += 1
                 if count == 2:
                     self.assertTrue(first_mutation.get('dacl_changed'))
-                    return subprocess.CompletedProcess(argv, 5, b'forced second ACL failure', b'')
-                result = real_run(argv, **kwargs)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                path = Path(argv[1])
+                    raise OSError('injected before second native write')
+                result = real_write(path, planned)
                 applied = child.windows_descriptor(path)
-                first_mutation.update(argv=argv, exit_code=result.returncode,
+                first_mutation.update(path=str(path), native_result=result,
                                       before=dacls[str(path)], after=applied,
                                       dacl_changed=child.descriptor_contract(applied) !=
                                       child.descriptor_contract(dacls[str(path)]))
@@ -366,12 +379,14 @@ class WindowsACLMechanismTests(unittest.TestCase):
                 self.assertTrue(first_mutation['dacl_changed'])
                 return result
             self.snapshot(root, 'before')
-            with mock.patch.object(child.subprocess, 'run', side_effect=fail_second):
+            with mock.patch.object(child, 'write_windows_dacl', side_effect=fail_second):
                 with self.assertRaises(child.RestrictionError) as raised:
                     child.restrict(root)
             self.snapshot(root, 'after', raised.exception.record)
             self.assertEqual(count, 2)
-            self.assertEqual([c['exit_code'] for c in raised.exception.record['commands']], [0, 5])
+            self.assertEqual(raised.exception.record['commands'], [])
+            self.assertIsNone(raised.exception.record['operations'][-1]['native_result'])
+            self.addCleanup(shutil.rmtree, raised.exception.record['operation_output'])
             self.assertTrue(first_mutation['dacl_changed'])
             self.assertEqual(raised.exception.record['restoration'], 'verified')
             self.assertEqual({str(p): child.descriptor_contract(child.windows_descriptor(p)) for p in paths},
@@ -379,5 +394,382 @@ class WindowsACLMechanismTests(unittest.TestCase):
             self.assertEqual(child.inventory(root), before)
 
 
+class NativeWriterBindingTests(unittest.TestCase):
+    """ctypes call doubles check routing/status only, never native acceptance."""
+    setUp = ACLFamilyTests.setUp
+    descriptor_value = staticmethod(ACLFamilyTests.descriptor_value)
+    descriptor = ACLFamilyTests.descriptor
+    apply = ACLFamilyTests.apply
+    restricted = ACLFamilyTests.restricted
+
+    def test_exact_four_control_flags_and_true_api_failure_metadata(self):
+        from ctypes import wintypes
+        from types import SimpleNamespace
+        target = self.root / 'nested/lock'
+        for control in (4, 0x404, 0x1004, 0x1404):
+            for failed in (False, True):
+                with self.subTest(control=control, failed=failed):
+                    def get_dacl(buffer, present, acl, defaulted):
+                        ctypes.cast(present, ctypes.POINTER(wintypes.BOOL))[0] = 1
+                        ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0] = 100
+                        return 1
+                    api = SimpleNamespace(GetFileSecurityW=mock.Mock(),
+                                          GetSecurityDescriptorDacl=mock.Mock(side_effect=get_dacl),
+                                          SetFileSecurityW=mock.Mock(return_value=0 if failed else 1),
+                                          SetNamedSecurityInfoW=mock.Mock(return_value=5 if failed else 0))
+                    before = self.descriptor_value('other', control=control | 0x8000)
+                    planned = child.planned_acl_change(before, self.sid, 'grant', False)
+                    with mock.patch.object(ctypes, 'WinDLL', return_value=api, create=True), \
+                         mock.patch.object(ctypes, 'get_last_error', return_value=5, create=True):
+                        if failed:
+                            with self.assertRaises(child.DACLWriteError) as caught:
+                                child.write_windows_dacl(target, planned)
+                            result = caught.exception.native_result
+                            self.assertEqual(result['winerror'], 5)
+                            with self.assertRaises(ValueError):
+                                child.check_native_result(result, planned)
+                        else:
+                            result = child.write_windows_dacl(target, planned)
+                            child.check_native_result(result, planned)
+                        strategy, flags = child.restoration_strategy(planned)
+                        self.assertEqual(result['security_information'], flags)
+                        selected = api.SetFileSecurityW if strategy == 'raw-explicit' else api.SetNamedSecurityInfoW
+                        other = api.SetNamedSecurityInfoW if strategy == 'raw-explicit' else api.SetFileSecurityW
+                        selected.assert_called_once()
+                        other.assert_not_called()
+                        args = selected.call_args.args
+                        self.assertEqual(args[0], str(target))
+                        self.assertEqual(args[1 if strategy == 'raw-explicit' else 2], flags)
+                        if strategy != 'raw-explicit':
+                            self.assertEqual((args[1], args[3], args[4], args[6]), (1, None, None, None))
+
+    def test_legacy_new_snapshot_cannot_be_rebound_but_old_record_still_restores(self):
+        record = self.restricted()
+        drifted = copy.deepcopy(record)
+        name = next(iter(drifted['original_dacls']))
+        drifted['original_dacls'][name] = self.descriptor_value('replacement')
+        with mock.patch.object(child, 'current_sid', return_value=self.sid), \
+             mock.patch.object(child, 'windows_descriptor') as api:
+            with self.assertRaises(ValueError):
+                child.restore(self.root, drifted)
+            api.assert_not_called()
+        old = {k: v for k, v in record.items() if k not in (
+            'operations', 'operation_output', 'operation_output_identity',
+            'original_snapshot_sha256', 'original_snapshot_path')}
+        with mock.patch.object(child, 'current_sid', return_value=self.sid), \
+             mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor):
+            child.restore(self.root, old)
+        self.assertEqual(self.descriptors, self.original)
+
+
+def matrix_cells():
+    return [{'kind': kind, 'control': control, 'actor_shape': shape}
+            for kind in ('file', 'directory') for control in (4, 0x404, 0x1004, 0x1404)
+            for shape in ('missing', 'explicit', 'inherited', 'deny')]
+
+
+def matrix_preflight(args):
+    """No Windows APIs, token acquisition, models or credential operations."""
+    repo = Path(child.__file__).resolve().parents[2]
+    child.sid_bytes(args.actor_sid)
+    if args.actor_sid in ('S-1-5-18', 'S-1-5-32-544', 'S-1-3-4'):
+        raise ValueError('ordinary actor SID required')
+    if not __import__('re').fullmatch('[0-9a-f]{40}', args.expected_source_commit):
+        raise ValueError('full source commit required')
+    if not __import__('re').fullmatch('[0-9a-f]{64}', args.expected_helper_sha256):
+        raise ValueError('full helper digest required')
+    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+    helper_sha = hashlib.sha256(Path(child.__file__).read_bytes()).hexdigest()
+    if head != args.expected_source_commit or helper_sha != args.expected_helper_sha256:
+        raise ValueError('mechanism source identity changed')
+    if subprocess.check_output(['git', 'status', '--porcelain=v1', '--untracked-files=no'], cwd=repo):
+        raise ValueError('mechanism source has tracked changes')
+    output = Path(args.output).absolute()
+    parent = Path(args.fixture_parent).resolve(strict=True)
+    if output.exists() or output.is_symlink() or not output.parent.is_dir():
+        raise ValueError('exclusive output unavailable')
+    for path in (output.parent.resolve(strict=True), parent):
+        if path == repo or repo in path.parents or path in repo.parents:
+            raise ValueError('mechanism storage overlaps source')
+        if not path.is_dir() or not os.access(path, os.W_OK):
+            raise ValueError('mechanism storage unavailable')
+    return {'schema': 'incident-acl-mechanism-matrix/v1', 'source_commit': head,
+            'helper_sha256': helper_sha, 'runner_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'platform': sys.platform, 'cells': matrix_cells(), 'output': str(output),
+            'fixture_parent': str(parent), 'actor_sid': args.actor_sid,
+            'ordinary_actor_execution': 'not_run', 'models': 'not_run',
+            'scope': 'target-only DACL APIs, collector readback and exact fixture restoration'}
+
+
+def matrix_ace(sid, mask=0x1f01ff, ace_type=0, flags=0):
+    raw = child.sid_bytes(sid)
+    return (struct.pack('<BBHI', ace_type, flags, 8 + len(raw), mask) + raw).hex()
+
+
+def matrix_descriptor(control, aces):
+    body = b''.join(bytes.fromhex(a) for a in aces)
+    return base64.b64encode(struct.pack('<BBHIIII', 1, 0, control | 0x8000, 0, 0, 0, 20)
+                            + struct.pack('<BBHHH', 2, 0, 8 + len(body), len(aces), 0) + body).decode()
+
+
+def matrix_setup_write(path, descriptor):
+    """Fixture setup only; exact disk controls are checked after the real call."""
+    control = child.descriptor_contract(descriptor)['dacl_control']
+    if control & 0x400:
+        return child.windows_descriptor(path, descriptor)
+    from ctypes import wintypes
+    api = ctypes.WinDLL('advapi32', use_last_error=True)
+    setter = api.SetFileSecurityW
+    setter.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+    setter.restype = wintypes.BOOL
+    flags = 4 | (0x80000000 if control & 0x1000 else 0x20000000)
+    buffer = ctypes.create_string_buffer(base64.b64decode(descriptor))
+    result = int(setter(str(path), flags, buffer))
+    observed = {'api': 'SetFileSecurityW', 'security_information': flags,
+                'return_value': result, 'winerror': 0 if result else ctypes.get_last_error()}
+    if not result:
+        raise child.DACLWriteError(observed)
+    return observed
+
+
+def matrix_observe(root):
+    return {'raw_dacls': {str(p): child.windows_descriptor(p) for p in child.fixture_paths(root)},
+            'inventory': child.inventory(root)}
+
+
+def matrix_setup_operation(root, path, planned, result, output):
+    entry = {'path': path.relative_to(root).as_posix(), 'planned': planned,
+             'native_result': None, 'actual': None}
+    result['setup'].append(entry)
+    number = str(len(result['setup']))
+    child.durable_snapshot(output / ('setup-' + number + '-intent.json'), entry)
+    try:
+        entry['native_result'] = matrix_setup_write(path, planned)
+    except BaseException as exc:
+        entry['native_result'] = getattr(exc, 'native_result', None)
+        entry['failure'] = child.acl_failure(exc, 'setup', 'write')
+        raise
+    finally:
+        try:
+            entry['actual'] = child.windows_descriptor(path)
+        except Exception as exc:
+            entry['readback_error'] = child.acl_failure(exc, 'setup', 'readback')
+        child.durable_snapshot(output / ('setup-' + number + '-observed.json'), entry)
+    if child.descriptor_contract(entry['actual']) != child.descriptor_contract(planned):
+        raise ValueError('native original fixture differs from requested control or ACE shape')
+
+
+def matrix_restore(root, record, output, label):
+    # Forward every call to the actual API. This spy retains real restoration
+    # return values and per-object readbacks, rather than synthesizing success.
+    real = child.windows_descriptor
+    events = []
+    def observed(path, descriptor=None):
+        if descriptor is None:
+            return real(path)
+        event = {'path': path.relative_to(root).as_posix(), 'planned': descriptor,
+                 'native_result': None, 'actual': None}
+        try:
+            event['native_result'] = real(path, descriptor)
+        except BaseException as exc:
+            event['native_result'] = getattr(exc, 'native_result', None)
+            event['failure'] = child.acl_failure(exc, 'restore', 'write')
+            raise
+        finally:
+            try:
+                event['actual'] = real(path)
+            except Exception as exc:
+                event['readback_error'] = child.acl_failure(exc, 'restore', 'readback')
+            events.append(event)
+            child.durable_snapshot(output / (label + '-restore-' + str(len(events)) + '.json'), event)
+        return event['native_result']
+    with mock.patch.object(child, 'windows_descriptor', side_effect=observed):
+        child.restore(root, record)
+    return events
+
+
+def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd):
+    root = cwd / ('incident-readonly-' + output.name)
+    root.mkdir()
+    result = {**cell, 'fixture': str(root), 'status': 'failed', 'step': 'setup',
+              'ordinary_actor_execution': 'not_run', 'setup': []}
+    original_root = child.windows_descriptor(root)
+    result['initial_root'] = original_root
+    active = None
+    try:
+        parent_aces = [matrix_ace(s, flags=3) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544')]
+        if cell['actor_shape'] == 'inherited':
+            parent_aces.append(matrix_ace(actor_sid, flags=3))
+        parent_plan = matrix_descriptor(0x1404, parent_aces)
+        matrix_setup_operation(root, root, parent_plan, result, output)
+        target = root / 'target'
+        if cell['kind'] == 'directory':
+            target.mkdir()
+        else:
+            target.write_bytes(b'owned mechanism fixture\n')
+        inherited = child.descriptor_contract(child.windows_descriptor(target))['aces']
+        inherited = [a for a in inherited if bytes.fromhex(a)[1] & 0x10]
+        if cell['actor_shape'] == 'inherited' and not any(child.ace_sid(bytes.fromhex(a)) == actor_sid for a in inherited):
+            raise ValueError('native inherited actor fixture unavailable')
+        aces = [matrix_ace(s) for s in (collector_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')]
+        if cell['actor_shape'] == 'explicit':
+            aces.append(matrix_ace(actor_sid))
+        elif cell['actor_shape'] == 'deny':
+            aces.insert(0, matrix_ace(actor_sid, 0x10156 if target.is_dir() else 0x10116, 1))
+        target_plan = matrix_descriptor(cell['control'], aces + inherited)
+        matrix_setup_operation(root, target, target_plan, result, output)
+        ownership = {k: str(v) for k, v in {'cwd': cwd, 'output': output, 'repo': repo,
+                     'home': repo, 'plugin_root': repo, 'data_root': repo}.items()}
+        # There is no Codex HOME or installation in this mechanism-only fixture.
+        # The unused protected-tree fields all bind to the source checkout.
+        ownership.update(created_exclusively=True, root_identity=[root.stat().st_dev, root.stat().st_ino])
+        active = child.prepare_read_transaction(root, sid=actor_sid, ownership=ownership)
+        result['original'] = matrix_observe(root)
+        expected = dict(active['original_dacls'])
+        for phase in ('grant', 'deny'):
+            result['step'] = phase
+            before = expected[str(target)]
+            planned = child.planned_acl_change(before, actor_sid, phase, target.is_dir())
+            child.apply_acl_change(root, active, target, before, planned, phase, expected)
+            result[phase] = matrix_observe(root)
+        result['step'] = 'restore_v3'
+        result['v3_restore_api'] = matrix_restore(root, active, output, 'v3')
+        result['v3_restored'] = matrix_observe(root)
+        result['v3_record'] = active
+        # v2 has no read baseline. Test its shared target mutation separately,
+        # without inventing an actor request or marking the full family granted.
+        legacy_output = output / 'legacy'
+        legacy_output.mkdir()
+        active = {k: copy.deepcopy(v) for k, v in active.items() if k in (
+            'family', 'root', 'sid', 'collector_sid', 'original_dacls', 'original_inventory',
+            'objects', 'original_restore_strategies')}
+        active.update(policy='specific-write-deny/v2', commands=[], operations=[],
+                      operation_output=str(legacy_output),
+                      operation_output_identity=[legacy_output.stat().st_dev, legacy_output.stat().st_ino])
+        snapshot = legacy_output / 'fixture-original-transaction.json'
+        active['original_snapshot_sha256'] = child.durable_snapshot(snapshot, active)
+        active['original_snapshot_path'] = str(snapshot)
+        expected = dict(active['original_dacls'])
+        result['step'] = 'deny_v2'
+        before = expected[str(target)]
+        planned = child.planned_acl_change(before, actor_sid, 'deny', target.is_dir(), active['policy'])
+        child.apply_acl_change(root, active, target, before, planned, 'deny', expected)
+        result['v2_deny'] = matrix_observe(root)
+        result['step'] = 'restore_v2'
+        result['v2_restore_api'] = matrix_restore(root, active, legacy_output, 'v2')
+        result['v2_restored'] = matrix_observe(root)
+        result['v2_record'] = active
+        result.update(status='passed', step='verified')
+    except BaseException as exc:
+        result['failure'] = child.acl_failure(exc, 'matrix', result['step'])
+        if active is not None:
+            result['failed_record'] = active
+            # Save the failure and actual state before any restoration attempt.
+            try:
+                result['failed_observation'] = matrix_observe(root)
+            except Exception as observation:
+                result['observation_error'] = type(observation).__name__
+            child.durable_snapshot(output / 'matrix-before-restoration-failure.json', result)
+            try:
+                result['failure_restore_api'] = matrix_restore(root, active, output, 'failure')
+                result['failure_restored'] = matrix_observe(root)
+            except Exception as restoration:
+                result['restoration_error'] = type(restoration).__name__
+        else:
+            # Setup failed before product transaction authority existed.
+            # Retain the new fixture; never label this cell a mutation pass.
+            try:
+                result['failed_observation'] = matrix_observe(root)
+            except Exception as observation:
+                result['observation_error'] = type(observation).__name__
+        if isinstance(exc, KeyboardInterrupt):
+            child.durable_snapshot(output / 'matrix-interrupted.json', result)
+            raise
+    child.durable_snapshot(output / 'matrix-cell.json', result)
+    return result
+
+
+def mechanism_matrix_main(argv):
+    parser = __import__('argparse').ArgumentParser(description='Explicit zero-model Windows DACL mechanism matrix')
+    parser.add_argument('--mechanism-matrix', action='store_true', required=True)
+    parser.add_argument('--actor-sid', required=True)
+    parser.add_argument('--expected-source-commit', required=True)
+    parser.add_argument('--expected-helper-sha256', required=True)
+    parser.add_argument('--output', required=True)
+    parser.add_argument('--fixture-parent', required=True)
+    parser.add_argument('--preflight', action='store_true')
+    args = parser.parse_args(argv)
+    report = matrix_preflight(args)
+    if args.preflight:
+        report['status'] = 'preflight_passed'
+        print(json.dumps(report, indent=2))
+        return 0
+    if os.name != 'nt':
+        raise ValueError('actual matrix requires Windows; source preflight is not native acceptance')
+    collector_sid = child.current_sid()
+    child.sid_bytes(collector_sid)
+    if collector_sid == args.actor_sid:
+        raise ValueError('collector cannot stand in for ordinary actor')
+    output = Path(report['output'])
+    output.mkdir()
+    # Exclusive, private fixture workspace; retain all cells for Root readback.
+    cwd = Path(tempfile.mkdtemp(prefix='cg-acl-matrix-owned-', dir=report['fixture_parent']))
+    report.update(collector_sid=collector_sid, fixture_workspace=str(cwd), status='running', results=[])
+    child.durable_snapshot(output / 'matrix-input.json', report)
+    repo = Path(child.__file__).resolve().parents[2]
+    for number, cell in enumerate(matrix_cells(), 1):
+        cell_output = output / ('cell-' + str(number).zfill(2))
+        cell_output.mkdir()
+        report['results'].append(matrix_cell(cell, args.actor_sid, collector_sid, repo, cell_output, cwd))
+    report['status'] = 'passed' if all(c['status'] == 'passed' for c in report['results']) else 'failed'
+    report['passed_cells'] = sum(c['status'] == 'passed' for c in report['results'])
+    child.durable_snapshot(output / 'matrix-result.json', report)
+    index = {p.relative_to(output).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in sorted(output.rglob('*')) if p.is_file()}
+    child.durable_snapshot(output / 'matrix-index.json', index)
+    print(json.dumps({'status': report['status'], 'passed_cells': report['passed_cells'],
+                      'total_cells': 32, 'ordinary_actor_execution': 'not_run', 'output': str(output)}))
+    return 0 if report['status'] == 'passed' else 1
+
+
+class MatrixSourceContractsTests(unittest.TestCase):
+    def test_32_cells_are_unique_and_preflight_does_not_execute_acl_or_actor(self):
+        from types import SimpleNamespace
+        cells = matrix_cells()
+        self.assertEqual(len(cells), 32)
+        self.assertEqual(len({(c['kind'], c['control'], c['actor_shape']) for c in cells}), 32)
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(actor_sid='S-1-5-21-200', expected_source_commit='a' * 40,
+                                   expected_helper_sha256=hashlib.sha256(Path(child.__file__).read_bytes()).hexdigest(),
+                                   output=str(Path(directory) / 'new-result'), fixture_parent=directory)
+            with mock.patch.object(subprocess, 'check_output', side_effect=['a' * 40, b'']), \
+                 mock.patch.object(child, 'current_sid') as actor, \
+                 mock.patch.object(child, 'windows_descriptor') as api:
+                report = matrix_preflight(args)
+                actor.assert_not_called()
+                api.assert_not_called()
+                self.assertEqual(report['ordinary_actor_execution'], 'not_run')
+                self.assertFalse(Path(args.output).exists())
+            for fault in ('source', 'helper', 'dirty', 'output', 'sid'):
+                bad = copy.copy(args)
+                replies = ['a' * 40, b'']
+                if fault == 'source':
+                    replies[0] = 'b' * 40
+                elif fault == 'helper':
+                    bad.expected_helper_sha256 = 'b' * 64
+                elif fault == 'dirty':
+                    replies[1] = b' M tools/validation/incident_readonly_child.py'
+                elif fault == 'output':
+                    bad.output = directory
+                else:
+                    bad.actor_sid = 'S-1-5-18'
+                with self.subTest(fault=fault), mock.patch.object(subprocess, 'check_output', side_effect=replies), \
+                     mock.patch.object(child, 'windows_descriptor') as api, self.assertRaises(ValueError):
+                    matrix_preflight(bad)
+                api.assert_not_called()
+
+
 if __name__ == '__main__':
+    if '--mechanism-matrix' in sys.argv:
+        raise SystemExit(mechanism_matrix_main(sys.argv[1:]))
     unittest.main()

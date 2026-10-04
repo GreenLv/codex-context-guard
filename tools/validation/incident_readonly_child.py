@@ -17,6 +17,7 @@ import re
 import stat
 import struct
 import subprocess
+import tempfile
 from pathlib import Path
 
 SCHEMA = 'incident-readonly-child/v1'
@@ -26,6 +27,12 @@ class RestrictionError(OSError):
     def __init__(self, record):
         super().__init__('fixture restriction unavailable; inspect retained record')
         self.record = record
+
+
+class DACLWriteError(OSError):
+    def __init__(self, result):
+        super().__init__('native DACL write failed')
+        self.native_result = result
 
 
 def inventory(root):
@@ -99,9 +106,12 @@ def windows_descriptor(path, descriptor=None):
         write = api.SetFileSecurityW
         write.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
         write.restype = wintypes.BOOL
-        if not write(str(path), flags, buffer):
-            raise ctypes.WinError(ctypes.get_last_error())
-        return
+        result = int(write(str(path), flags, buffer))
+        observed = {'api': 'SetFileSecurityW', 'security_information': flags,
+                    'return_value': result, 'winerror': 0 if result else ctypes.get_last_error()}
+        if not result:
+            raise DACLWriteError(observed)
+        return observed
     # The saved descriptor already uses automatic inheritance. Reapply that
     # model with its original protection setting, never convert a non-AI ACL.
     acl = ctypes.c_void_p()
@@ -119,8 +129,11 @@ def windows_descriptor(path, descriptor=None):
                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     write.restype = wintypes.DWORD
     error = write(str(path), 1, flags, None, None, acl, None)
+    observed = {'api': 'SetNamedSecurityInfoW', 'security_information': flags,
+                'return_value': int(error), 'winerror': int(error)}
     if error:
-        raise ctypes.WinError(error)
+        raise DACLWriteError(observed)
+    return observed
 
 
 def restoration_strategy(descriptor):
@@ -163,6 +176,8 @@ def descriptor_contract(descriptor):
 
 def check_fixture_identity(root, record):
     paths = fixture_paths(root)
+    if any(p.is_file() and p.lstat().st_nlink != 1 for p in paths):
+        raise ValueError('fixture hardlink identity drift')
     observed = {str(p): [p.lstat().st_dev, p.lstat().st_ino] for p in paths}
     if observed != {k: list(v) for k, v in record['objects'].items()}:
         raise ValueError('fixture object identity changed')
@@ -284,6 +299,223 @@ def check_write_deny(before, after, sid, *, directory):
             raise ValueError('deny changed ordered permissions beyond one exact ACE')
 
 
+def sid_bytes(sid):
+    if not isinstance(sid, str) or not re.fullmatch(r'S-1-(?:[0-9]+-)*[0-9]+', sid):
+        raise ValueError('invalid actor SID')
+    parts = list(map(int, sid.split('-')[2:]))
+    if not 2 <= len(parts) <= 16 or not 0 <= parts[0] < 2 ** 48 or any(
+            not 0 <= value < 2 ** 32 for value in parts[1:]):
+        raise ValueError('actor SID bounds')
+    if sid != 'S-1-' + '-'.join(map(str, parts)):
+        raise ValueError('noncanonical actor SID')
+    return bytes([1, len(parts) - 1]) + parts[0].to_bytes(6, 'big') + struct.pack(
+        '<' + 'I' * (len(parts) - 1), *parts[1:])
+
+
+def descriptor_with_aces(before, aces):
+    """DACL-only SD; unrelated owner/group/SACL are never written by our API."""
+    contract = descriptor_contract(before)
+    body = b''.join(bytes.fromhex(value) for value in aces)
+    if len(body) + 8 > 65535 or len(aces) > 65535:
+        raise ValueError('planned ACL bounds')
+    header = struct.pack('<BBHIIII', contract['descriptor_revision'], 0,
+                         contract['dacl_control'] | 0x8000, 0, 0, 0, 20)
+    acl = struct.pack('<BBHHH', contract['dacl_revision'], 0, len(body) + 8, len(aces), 0)
+    return base64.b64encode(header + acl + body).decode('ascii')
+
+
+def planned_acl_change(before, sid, phase, directory, policy=READ_BASELINE_POLICY):
+    """Pure actor-only change; existing validators are never relaxed."""
+    if (type(directory) is not bool or phase not in ('grant', 'deny')
+            or policy not in (READ_BASELINE_POLICY, 'specific-write-deny/v2')
+            or (phase == 'grant' and policy != READ_BASELINE_POLICY)):
+        raise ValueError('unsupported ACL mutation policy or type')
+    actor_bytes = sid_bytes(sid)
+    restoration_strategy(before)
+    old = descriptor_contract(before)
+    ranks, seen, aces = [], set(), []
+    actor_present, merged = False, False
+    read_mask = 0x1200a9 if directory else 0x120089
+    write_mask = 0x10156 if directory else 0x10116
+    for value in old['aces']:
+        raw = bytearray.fromhex(value)
+        actor = ace_sid(raw) == sid
+        ranks.append((2 if raw[1] & 0x10 else 0) + (1 if raw[0] == 0 else 0))
+        if actor:
+            actor_present = True
+            key = (raw[0], raw[1])
+            if key in seen:
+                raise ValueError('ambiguous original actor ACEs')
+            seen.add(key)
+            mask = struct.unpack_from('<I', raw, 4)[0]
+            if phase == 'grant' and raw[:2] == b'\x00\x00':
+                struct.pack_into('<I', raw, 4, mask | read_mask)
+                merged = True
+            elif phase == 'deny' and raw[:2] == b'\x01\x00':
+                struct.pack_into('<I', raw, 4, mask | write_mask)
+                merged = True
+            elif phase == 'deny' and raw[0] == 0 and not raw[1] & 0x10:
+                remaining = mask & ~write_mask
+                if not remaining:
+                    continue
+                struct.pack_into('<I', raw, 4, remaining)
+        aces.append(raw.hex())
+    if ranks != sorted(ranks):
+        raise ValueError('noncanonical original ACL order')
+    if not merged:
+        ace_type, mask = (0, read_mask) if phase == 'grant' else (1, write_mask)
+        added = (struct.pack('<BBHI', ace_type, 0, 8 + len(actor_bytes), mask) + actor_bytes).hex()
+        position = (next((i for i, value in enumerate(aces)
+                          if bytes.fromhex(value)[1] & 0x10), len(aces))
+                    if phase == 'grant' else 0)
+        aces.insert(position, added)
+    planned = descriptor_with_aces(before, aces)
+    if phase == 'grant':
+        check_read_grant(before, planned, sid, directory)
+    elif policy == READ_BASELINE_POLICY or actor_present:
+        check_write_deny(before, planned, sid, directory=directory)
+    # Legacy v2 allows an absent actor without a v3 read grant. Its exact
+    # planned contract is checked below; do not fabricate a validator baseline.
+    return planned
+
+
+def write_windows_dacl(path, planned):
+    return windows_descriptor(path, planned)
+
+
+def check_native_result(result, planned):
+    strategy, flags = restoration_strategy(planned)
+    api = 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW'
+    if (not isinstance(result, dict)
+            or set(result) != {'api', 'security_information', 'return_value', 'winerror'}
+            or result['api'] != api or result['security_information'] != flags
+            or type(result['security_information']) is not int
+            or type(result['return_value']) is not int or type(result['winerror']) is not int
+            or result['winerror'] != 0
+            or (not result['return_value'] if strategy == 'raw-explicit' else result['return_value'] != 0)):
+        raise ValueError('native API result unavailable or unsuccessful')
+
+
+def acl_failure(exc, phase, step):
+    reasons = {'preflight': 'acl_preflight_failed', 'intent': 'acl_intent_persistence_failed',
+               'write': 'native_dacl_write_failed', 'readback': 'dacl_readback_failed',
+               'validate': 'exact_dacl_validation_failed',
+               'observed': 'acl_observation_persistence_failed', 'receipt': 'acl_receipt_failed'}
+    return {'phase': phase, 'step': step, 'reason': reasons.get(step, 'acl_transaction_failed'),
+            'exception': type(exc).__name__, 'private_message': str(exc),
+            'errno': getattr(exc, 'errno', None), 'winerror': getattr(exc, 'winerror', None)}
+
+
+def operation_snapshot(record, operation, suffix):
+    output = Path(record.get('operation_output') or record['ownership']['output'])
+    if (not output.is_dir() or output.is_symlink()
+            or [output.stat().st_dev, output.stat().st_ino] != record['operation_output_identity']):
+        raise ValueError('private operation output unavailable')
+    name = f"fixture-{operation['phase']}-op-{operation['sequence']:04d}-{suffix}.json"
+    return durable_snapshot(output / name, operation)
+
+
+def apply_acl_change(root, record, path, before, planned, phase, expected):
+    """Persist actual after state before validation and before any rollback."""
+    strategy, flags = restoration_strategy(planned)
+    operation = {'sequence': len(record.setdefault('operations', [])) + 1,
+                 'phase': phase, 'path': path.relative_to(root).as_posix(),
+                 'sid': record['sid'], 'policy': record['policy'], 'directory': path.is_dir(),
+                 'object_identity': list(record['objects'][str(path)]),
+                 'selected_api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                 'security_information': flags,
+                 'original_snapshot_sha256': record.get('original_snapshot_sha256'),
+                 'before': before, 'planned': planned, 'actual': None,
+                 'before_contract': descriptor_contract(before), 'planned_contract': descriptor_contract(planned),
+                 'native_result': None, 'status': 'intent', 'step': 'preflight'}
+    record['operations'].append(operation)
+    step = 'preflight'
+    try:
+        verify_original_snapshot(record)
+        if record['root'] != str(root) or record['collector_sid'] != current_sid():
+            raise ValueError('ACL transaction scope or collector differs')
+        check_fixture_identity(root, record)
+        if descriptor_contract(planned) != descriptor_contract(planned_acl_change(
+                before, record['sid'], phase, path.is_dir(), record['policy'])):
+            raise ValueError('planned ACL differs from preconstructed exact target')
+        actual = windows_descriptor(path)
+        if descriptor_contract(actual) != descriptor_contract(before):
+            raise ValueError('phase DACL changed before write')
+        step = operation['step'] = 'intent'
+        operation['intent_sha256'] = operation_snapshot(record, operation, 'intent')
+        step = operation['step'] = 'write'
+        try:
+            operation['native_result'] = write_windows_dacl(path, planned)
+        except BaseException as exc:
+            operation['native_result'] = getattr(exc, 'native_result', None)
+            # A failing API can still partially mutate. Observe before restore.
+            try:
+                operation['actual'] = windows_descriptor(path)
+            except Exception as read_error:
+                operation['readback_error'] = acl_failure(read_error, phase, 'readback')
+            raise
+        step = operation['step'] = 'readback'
+        operation['actual'] = windows_descriptor(path)
+        check_fixture_identity(root, record)
+        unexpected = {}
+        for other in fixture_paths(root):
+            observed = windows_descriptor(other)
+            wanted = planned if other == path else expected[str(other)]
+            if descriptor_contract(observed) != descriptor_contract(wanted):
+                unexpected[other.relative_to(root).as_posix()] = observed
+        operation['unexpected_objects'] = unexpected
+        step = operation['step'] = 'observed'
+        operation['observed_sha256'] = operation_snapshot(record, operation, 'observed')
+        step = operation['step'] = 'validate'
+        check_native_result(operation['native_result'], planned)
+        if phase == 'grant':
+            check_read_grant(before, operation['actual'], record['sid'], path.is_dir())
+        elif record['policy'] == READ_BASELINE_POLICY:
+            check_write_deny(before, operation['actual'], record['sid'], directory=path.is_dir())
+        if unexpected or descriptor_contract(operation['actual']) != descriptor_contract(planned):
+            raise ValueError('actual ordered DACL differs from exact target')
+        operation['status'] = 'verified'
+        step = operation['step'] = 'receipt'
+        operation['verified_sha256'] = operation_snapshot(record, operation, 'verified')
+        expected[str(path)] = operation['actual']
+    except BaseException as exc:
+        if operation['actual'] is None and step in ('write', 'readback'):
+            try:
+                operation['actual'] = windows_descriptor(path)
+            except Exception as read_error:
+                operation['readback_error'] = acl_failure(read_error, phase, 'readback')
+        operation['status'] = 'failed'
+        operation['failure'] = acl_failure(exc, phase, step)
+        record['application_failure'] = operation['failure']
+        try:
+            operation['failure_sha256'] = operation_snapshot(record, operation, 'failure')
+        except Exception as persistence:
+            operation['failure_persistence_error'] = acl_failure(persistence, phase, 'observed')
+        raise
+
+
+def apply_acl_family(root, record, phase):
+    paths = fixture_paths(root)
+    check_fixture_identity(root, record)
+    expected = dict(record['original_dacls'] if phase == 'grant'
+                    else record.get('granted_dacls', record['original_dacls']))
+    plans = {}
+    # Close the entire input family before the first native write.
+    for path in paths:
+        before = windows_descriptor(path)
+        if descriptor_contract(before) != descriptor_contract(expected[str(path)]):
+            raise ValueError('phase DACL differs from frozen snapshot')
+        planned = planned_acl_change(before, record['sid'], phase, path.is_dir(), record['policy'])
+        plans[str(path)] = (before, planned)
+    for path in sorted(paths, key=lambda p: (-len(p.parts), str(p))):
+        before, planned = plans[str(path)]
+        apply_acl_change(root, record, path, before, planned, phase, expected)
+    if inventory(root) != record['original_inventory']:
+        raise ValueError('fixture changed during ACL transaction')
+    if phase == 'grant':
+        record['granted_dacls'] = expected
+
+
 def prepare_read_transaction(root, *, sid, ownership):
     root = Path(root).absolute()
     required = {'cwd', 'output', 'repo', 'home', 'plugin_root', 'data_root',
@@ -304,7 +536,8 @@ def prepare_read_transaction(root, *, sid, ownership):
         raise ValueError('linked fixture file')
     acl_argv(root, sid)
     record = {'family': 'windows-acl', 'policy': READ_BASELINE_POLICY, 'root': str(root),
-              'sid': sid, 'collector_sid': current_sid(), 'commands': [], 'ownership': ownership,
+              'sid': sid, 'collector_sid': current_sid(), 'commands': [], 'operations': [], 'ownership': ownership,
+              'operation_output_identity': [output.stat().st_dev, output.stat().st_ino],
               'grant_complete': False, 'deny_complete': False,
               'original_dacls': {str(p): windows_descriptor(p) for p in paths},
               'original_inventory': inventory(root),
@@ -314,6 +547,9 @@ def prepare_read_transaction(root, *, sid, ownership):
     for descriptor in record['original_dacls'].values():
         for ace in descriptor_contract(descriptor)['aces']:
             ace_sid(bytes.fromhex(ace))  # Fail before any ACL mutation on unsupported ACEs.
+    for path in paths:
+        granted = planned_acl_change(record['original_dacls'][str(path)], sid, 'grant', path.is_dir())
+        planned_acl_change(granted, sid, 'deny', path.is_dir())
     snapshot = output / 'fixture-original-transaction.json'
     record['original_snapshot_sha256'] = durable_snapshot(snapshot, record)
     record['original_snapshot_path'] = str(snapshot)
@@ -322,13 +558,20 @@ def prepare_read_transaction(root, *, sid, ownership):
 
 def verify_original_snapshot(record):
     path = Path(record['original_snapshot_path'])
-    if path.absolute() != Path(record['ownership']['output']).resolve(strict=True) / 'fixture-original-transaction.json':
+    output = Path(record.get('operation_output') or record['ownership']['output'])
+    if (output.is_symlink()
+            or ('operation_output_identity' in record
+                and [output.stat().st_dev, output.stat().st_ino] != record['operation_output_identity'])
+            or path.absolute() != output.resolve(strict=True) / 'fixture-original-transaction.json'):
         raise ValueError('original snapshot scope changed')
     if not path.is_file() or path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != record['original_snapshot_sha256']:
         raise ValueError('original snapshot changed')
     saved = json.loads(path.read_text())
-    fields = ('policy', 'root', 'sid', 'collector_sid', 'ownership', 'original_dacls',
+    fields = ('policy', 'root', 'sid', 'collector_sid', 'original_dacls',
               'original_inventory', 'objects', 'original_restore_strategies')
+    fields += ('operation_output',) if 'operation_output' in record else ('ownership',)
+    if 'operation_output_identity' in record:
+        fields += ('operation_output_identity',)
     if any(saved[k] != json.loads(json.dumps(record[k])) for k in fields):
         raise ValueError('original restore authority changed')
 
@@ -350,37 +593,17 @@ def apply_read_transaction(root, record, phase, *, baseline_record, baseline_req
     verify_original_snapshot(record)
     if record['root'] != str(root) or record['collector_sid'] != current_sid():
         raise ValueError('fixture transaction scope differs')
-    paths = fixture_paths(root)
+    step = 'preflight'
     try:
-        for path in sorted(paths, key=lambda p: (-len(p.parts), str(p))):
-            check_fixture_identity(root, record)
-            if any(p.is_file() and p.lstat().st_nlink != 1 for p in paths):
-                raise ValueError('fixture hardlink identity drift')
-            info = path.lstat()
-            if (not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
-                    or getattr(info, 'st_file_attributes', 0) & 0x400):
-                raise ValueError('transaction object type unavailable')
-            directory = stat.S_ISDIR(info.st_mode)
-            argv = read_grant_argv(path, record['sid']) if phase == 'grant' else acl_argv(path, record['sid'])[0]
-            before = windows_descriptor(path) if phase == 'deny' else None
-            result = subprocess.run(argv, capture_output=True, timeout=30, check=False)
-            record['commands'].append({'phase': phase, 'argv': argv, 'exit_code': result.returncode,
-                                      'output': (result.stdout + result.stderr).decode(errors='replace')})
-            if result.returncode:
-                raise OSError('fixture transaction ACL application failed')
-            if phase == 'grant':
-                check_read_grant(record['original_dacls'][str(path)], windows_descriptor(path),
-                                 record['sid'], path.is_dir())
-            else:
-                check_fixture_identity(root, record)
-                check_write_deny(before, windows_descriptor(path), record['sid'], directory=directory)
-        if inventory(root) != record['original_inventory']:
-            raise ValueError('fixture changed during transaction')
+        apply_acl_family(root, record, phase)
+        step = 'receipt'
         record[phase + '_complete'] = True
         durable_snapshot(Path(record['ownership']['output']) / ('fixture-' + phase + '-receipt.json'), record)
         return record
     except (Exception, KeyboardInterrupt) as exc:
+        record[phase + '_complete'] = False
         record['application_error'] = type(exc).__name__
+        record.setdefault('application_failure', acl_failure(exc, phase, step))
         try:
             restore(root, record)
             record['restoration'] = 'verified'
@@ -493,21 +716,21 @@ def windows_restrict(root, *, sid=None):
               'objects': {str(p): (p.lstat().st_dev, p.lstat().st_ino) for p in paths}}
     record['original_restore_strategies'] = {name: restoration_strategy(descriptor)
                                              for name, descriptor in record['original_dacls'].items()}
+    for path in paths:
+        planned_acl_change(record['original_dacls'][str(path)], sid, 'deny', path.is_dir(), record['policy'])
+    record['operation_output'] = str(Path(tempfile.mkdtemp(prefix='cg-acl-private-operation-')).resolve(strict=True))
+    output = Path(record['operation_output'])
+    record['operation_output_identity'] = [output.stat().st_dev, output.stat().st_ino]
+    snapshot = Path(record['operation_output']) / 'fixture-original-transaction.json'
+    record['original_snapshot_sha256'] = durable_snapshot(snapshot, record)
+    record['original_snapshot_path'] = str(snapshot)
     # All unsupported controls/NULL shapes reject before any ACL command.
     try:
-        for path in sorted(paths, key=lambda p: (-len(p.parts), str(p))):
-            check_fixture_identity(root, record)
-            for argv in acl_argv(path, sid):
-                result = subprocess.run(argv, capture_output=True, timeout=30, check=False)
-                record['commands'].append({'argv': argv, 'exit_code': result.returncode,
-                                           'output': (result.stdout + result.stderr).decode(errors='replace')})
-                if result.returncode:
-                    raise OSError('fixture DACL application failed')
-        if inventory(root) != record['original_inventory']:
-            raise ValueError('fixture bytes or stat changed during restriction')
+        apply_acl_family(root, record, 'deny')
         return record
     except (Exception, KeyboardInterrupt) as exc:
         record['application_error'] = type(exc).__name__
+        record.setdefault('application_failure', acl_failure(exc, 'deny', 'preflight'))
         try:
             restore(root, record)
             record['restoration'] = 'verified'
@@ -544,7 +767,7 @@ def restore(root, record):
                 or record.get('root') != str(root) or record.get('collector_sid') != current_sid()
                 or set(record.get('original_dacls', {})) != {str(p) for p in paths}):
             raise ValueError('restoration scope or principal differs')
-        if record.get('policy') == READ_BASELINE_POLICY:
+        if record.get('policy') == READ_BASELINE_POLICY or 'original_snapshot_path' in record:
             verify_original_snapshot(record)
         check_fixture_identity(root, record)
         # Restore traversal first, then descendants, preserving original DACLs.
