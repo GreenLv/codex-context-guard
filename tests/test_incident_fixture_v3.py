@@ -92,7 +92,7 @@ class InheritanceAPIDouble:
         self.values[str(path)] = actual
         if named and path.is_dir():
             self.cascade(path)
-        result = {'api': 'SetNamedSecurityInfoW' if named else 'SetFileSecurityW',
+        result = {'api': 'SetSecurityInfo' if flags == 0x80000000 else ('SetNamedSecurityInfoW' if named else 'SetFileSecurityW'),
                   'security_information': flags,
                   'return_value': 0 if named else 1, 'winerror': 0}
         self.writes.append({'path': str(path), 'planned': planned, 'actual': actual, 'native_result': result})
@@ -107,14 +107,31 @@ class InheritanceAPIDouble:
             self.values[key] = self.sd(4, [self.ace(p, 3 if path.is_dir() else 0) for p in self.principals])
         return self.values[key]
 
-    def protect(self, path, before):
+    def protect(self, path, before, expected_identity, observe):
         path = Path(path)
         contract = child.descriptor_contract(before)
         if contract['dacl_control'] != 0x404 or child.descriptor_contract(self.descriptor(path)) != contract:
             raise ValueError('protection-only source model preimage differs')
         planned = self.sd(0x1404, [bytes.fromhex(a) for a in contract['aces']])
+        if self.object_identity(path) != expected_identity:
+            raise ValueError('conditional handle model S0 identity differs')
+        event = {'native_result': None, 'before': before}
+        observe('intent', event)
+        observe('preflight', event)
         # Conditional capability model only; Windows native support remains unknown.
-        return self.write(path, planned, security_information=0x80000000)
+        try:
+            event['native_result'] = self.write(path, planned, security_information=0x80000000)
+            event['actual'] = self.descriptor(path)
+            observe('observed', event)
+            return event['native_result']
+        finally:
+            event['close_result'] = {'return_value': 1, 'winerror': 0}
+            observe('closed', event)
+
+    def object_identity(self, path):
+        path = Path(path)
+        return {'volume_serial': 101, 'file_id': hashlib.sha256(str(path).encode()).hexdigest()[:32],
+                'kind': 'directory' if path.is_dir() else 'file', 'reparse_tag': 0}
 
     def patches(self):
         from contextlib import ExitStack
@@ -122,6 +139,7 @@ class InheritanceAPIDouble:
         stack.enter_context(mock.patch.object(child, 'current_sid', return_value=self.collector))
         stack.enter_context(mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor))
         stack.enter_context(mock.patch.object(child, 'protect_windows_dacl', side_effect=self.protect))
+        stack.enter_context(mock.patch.object(child, 'windows_object_identity', side_effect=self.object_identity))
         double = self
         class Setter:
             def __call__(self, path, flags, buffer):
@@ -271,7 +289,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
             for profile in ('full32', 'protected8'):
                 double, result, _ = self.run_cell(control=control, profile=profile)
                 target = next(e for e in result['setup'] if e['phase'] == 'target')
-                self.assertEqual(target['native_result']['api'], 'SetNamedSecurityInfoW' if control == 0x1404 else 'SetFileSecurityW')
+                self.assertEqual(target['native_result']['api'], 'SetSecurityInfo' if control == 0x1404 else 'SetFileSecurityW')
                 self.assertEqual(target['native_result']['security_information'], 0x80000000 if control == 0x1404 else 4)
                 self.assertEqual(len(target['steps']), 2 if control == 0x1404 else 1)
                 intermediate = child.descriptor_contract(target['steps'][0]['actual'])
@@ -295,7 +313,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                                 and any(bytes.fromhex(a)[1] & 16 for a in contract['aces'])):
                             double.fail_write = None
                             if mode == 'api':
-                                raise child.DACLWriteError({'api': 'SetNamedSecurityInfoW', 'security_information': 0x80000000,
+                                raise child.DACLWriteError({'api': 'SetSecurityInfo', 'security_information': 0x80000000,
                                                             'return_value': 5, 'winerror': 5})
                             double.bad_readback = True
                     double.fail_write = write
@@ -305,6 +323,35 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                     self.assertNotIn('s1_record', result)
                     self.assert_s0(double, result)
                     self.assertEqual([r['phase'] for r in result['restorations']], ['setup_s0'])
+
+    def test_control_and_outer_finally_persistence_failures_keep_DWORD5_and_S0(self):
+        original = child.durable_snapshot
+        for suffix in ('-control-only-observed.json', '-observed.json'):
+            injected = []
+            def durable(path, value):
+                if (Path(path).name.endswith(suffix) and isinstance(value, dict)
+                        and (value.get('native_result') or {}).get('winerror') == 5 and not injected):
+                    injected.append(str(path))
+                    raise OSError('synthetic failure after setter DWORD5')
+                return original(path, value)
+            def fault(double, output):
+                def write(path, planned, count):
+                    contract = child.descriptor_contract(planned)
+                    if contract['dacl_control'] == 0x1404 and any(bytes.fromhex(a)[1] & 16 for a in contract['aces']):
+                        double.fail_write = None
+                        raise child.DACLWriteError({'api': 'SetSecurityInfo', 'security_information': 0x80000000,
+                                                    'return_value': 5, 'winerror': 5})
+                double.fail_write = write
+            with self.subTest(suffix=suffix), mock.patch.object(child, 'durable_snapshot', side_effect=durable):
+                double, result, _ = self.run_cell('file', 0x1404, fault=fault)
+                self.assertTrue(injected)
+                self.assertEqual(result['status'], 'failed')
+                target = next(e for e in result['setup'] if e['phase'] == 'target')
+                self.assertEqual(target['native_result']['winerror'], 5)
+                self.assertEqual(target['failure']['exception'], 'DACLWriteError')
+                self.assertNotIn('s1_record', result)
+                self.assertEqual([r['phase'] for r in result['restorations']], ['setup_s0'])
+                self.assert_s0(double, result)
 
     def test_ready_drift_is_refused_before_any_reconciliation_write(self):
         original = legacy.matrix_ready_descendants
@@ -403,8 +450,8 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
     def test_control_only_semantic_drift_fails_before_S1_and_restores_S0_once(self):
         for drift in ('AI', 'ACE_flags', 'order', 'outside'):
             original = InheritanceAPIDouble.protect
-            def protect(double, path, before):
-                result = original(double, path, before)
+            def protect(double, path, before, expected_identity, observe):
+                result = original(double, path, before, expected_identity, observe)
                 contract = child.descriptor_contract(double.descriptor(path))
                 aces = [bytearray.fromhex(a) for a in contract['aces']]
                 control = contract['dacl_control']

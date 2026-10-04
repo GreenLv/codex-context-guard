@@ -150,15 +150,220 @@ def named_security_write(api, path, flags, acl):
     return observed
 
 
-def protect_windows_dacl(path, before):
-    """One protection-only call after the durable complete 0404 family check."""
-    expected = descriptor_contract(before)
-    if expected['dacl_control'] != 0x404:
-        raise ValueError('control-only protection requires exact unprotected AI input')
-    if descriptor_contract(windows_descriptor(path)) != expected:
-        raise ValueError('control-only protection preimage differs')
+class HandleOperationError(OSError):
+    def __init__(self, stage, code):
+        super().__init__(code, 'native handle ' + stage + ' failed')
+        self.stage = stage
+        self.winerror = code
+
+
+def open_windows_handle(path, access):
+    from ctypes import wintypes
+    info = Path(path).lstat()
+    if (not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+            or getattr(info, 'st_file_attributes', 0) & 0x400
+            or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)):
+        raise ValueError('linked or special handle target')
+    if access not in (0x20080, 0x60080):
+        raise ValueError('unsupported handle access mask')
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = api.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, ctypes.c_uint32, ctypes.c_uint32,
+                      ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    flags = 0x00200000 | (0x02000000 if stat.S_ISDIR(info.st_mode) else 0)
+    handle = create(str(path), access, 3, None, 3, flags, None)
+    if not handle or handle == ctypes.c_void_p(-1).value:
+        raise HandleOperationError('open', ctypes.get_last_error())
+    return api, handle
+
+
+def close_windows_handle(api, handle):
+    from ctypes import wintypes
+    close = api.CloseHandle
+    close.argtypes, close.restype = [wintypes.HANDLE], wintypes.BOOL
+    result = int(close(handle))
+    return {'api': 'CloseHandle', 'return_value': result,
+            'winerror': 0 if result else ctypes.get_last_error()}
+
+
+def windows_handle_identity(api, handle):
+    from ctypes import wintypes
+    class FileId(ctypes.Structure):
+        _fields_ = [('volume', ctypes.c_uint64), ('file_id', ctypes.c_ubyte * 16)]
+    class Attributes(ctypes.Structure):
+        _fields_ = [('attributes', ctypes.c_uint32), ('tag', ctypes.c_uint32)]
+    query = api.GetFileInformationByHandleEx
+    query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    query.restype = wintypes.BOOL
+    identity, attributes = FileId(), Attributes()
+    for number, value in ((18, identity), (9, attributes)):
+        if not query(handle, number, ctypes.byref(value), ctypes.sizeof(value)):
+            raise HandleOperationError('identity', ctypes.get_last_error())
+    if attributes.attributes & 0x400 or attributes.tag:
+        raise ValueError('reparse handle target')
+    return {'volume_serial': identity.volume, 'file_id': bytes(identity.file_id).hex(),
+            'kind': 'directory' if attributes.attributes & 0x10 else 'file',
+            'reparse_tag': attributes.tag}
+
+
+def windows_object_identity(path):
+    api, handle = open_windows_handle(path, 0x20080)
+    primary, identity = None, None
+    try:
+        identity = windows_handle_identity(api, handle)
+        if identity['kind'] != ('directory' if Path(path).is_dir() else 'file'):
+            raise ValueError('path and handle type differ')
+    except BaseException as exc:
+        primary = exc
+    finally:
+        try:
+            closed = close_windows_handle(api, handle)
+            if not closed['return_value']:
+                raise HandleOperationError('close', closed['winerror'])
+        except BaseException as exc:
+            if primary is None:
+                primary = exc
+            else:
+                primary.close_failure = {'exception': type(exc).__name__, 'winerror': getattr(exc, 'winerror', None)}
+    if primary is not None:
+        raise primary
+    return identity
+
+
+def windows_handle_descriptor(handle):
+    from ctypes import wintypes
     api = ctypes.WinDLL('advapi32', use_last_error=True)
-    return named_security_write(api, path, 0x80000000, None)
+    read = api.GetKernelObjectSecurity
+    read.argtypes = [wintypes.HANDLE, ctypes.c_uint32, ctypes.c_void_p,
+                     ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+    read.restype = wintypes.BOOL
+    size = ctypes.c_uint32()
+    first = int(read(handle, 4, None, 0, ctypes.byref(size)))
+    if first or ctypes.get_last_error() != 122 or not 20 <= size.value <= 65536:
+        raise HandleOperationError('descriptor_size', ctypes.get_last_error())
+    buffer = ctypes.create_string_buffer(size.value)
+    if not read(handle, 4, buffer, size.value, ctypes.byref(size)):
+        raise HandleOperationError('descriptor_read', ctypes.get_last_error())
+    value = base64.b64encode(buffer.raw[:size.value]).decode('ascii')
+    descriptor_contract(value)
+    return value
+
+
+def set_protected_handle(api, handle, flags=0x80000000, owner=None, group=None, dacl=None, sacl=None):
+    from ctypes import wintypes
+    if type(flags) is not int or flags != 0x80000000 or any(v is not None for v in (owner, group, dacl, sacl)):
+        raise ValueError('unsafe pure-protection handle arguments')
+    write = api.SetSecurityInfo
+    write.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_uint32,
+                      ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    write.restype = ctypes.c_uint32
+    error = int(write(handle, 1, flags, None, None, None, None))
+    return {'api': 'SetSecurityInfo', 'security_information': flags,
+            'return_value': error, 'winerror': error}
+
+
+def protect_windows_dacl(path, before, expected_identity, observe):
+    """Preselected handle route; persist actual effects before judging or closing."""
+    expected = descriptor_contract(before)
+    if (expected['dacl_control'] != 0x404 or not callable(observe)
+            or not isinstance(expected_identity, dict)
+            or set(expected_identity) != {'volume_serial', 'file_id', 'kind', 'reparse_tag'}
+            or type(expected_identity['volume_serial']) is not int
+            or not 0 <= expected_identity['volume_serial'] < 2**64
+            or not re.fullmatch('[0-9a-f]{32}', expected_identity['file_id'])
+            or expected_identity['kind'] not in ('file', 'directory') or expected_identity['reparse_tag'] != 0):
+        raise ValueError('pure-protection frozen identity or 0404 input unavailable')
+    lifecycle = {'selected_api': 'SetSecurityInfo', 'security_information': 0x80000000,
+                 'desired_access': 0x60080, 'share': 3, 'creation': 3,
+                 'open_flags': 0x02200000 if expected_identity['kind'] == 'directory' else 0x00200000,
+                 'expected_identity': expected_identity, 'before': before,
+                 'native_result': None, 'actual': None, 'status': 'intent', 'secondary_errors': []}
+    api, handle, primary, stage = None, None, None, 'intent'
+    try:
+        observe('intent', lifecycle)
+        stage = 'open'
+        api, handle = open_windows_handle(path, 0x60080)
+        lifecycle['opened'] = True
+        observe('opened', lifecycle)
+        stage = 'identity'
+        lifecycle['identity_before'] = windows_handle_identity(api, handle)
+        lifecycle['path_identity_before'] = windows_object_identity(path)
+        if lifecycle['identity_before'] != expected_identity or lifecycle['path_identity_before'] != expected_identity:
+            raise ValueError('handle/path identity differs from frozen S0 target')
+        stage = 'descriptor_preimage'
+        lifecycle['handle_before'] = windows_handle_descriptor(handle)
+        if (descriptor_contract(lifecycle['handle_before']) != expected
+                or descriptor_contract(windows_descriptor(path)) != expected):
+            raise ValueError('handle/path complete 0404 preimage differs')
+        # The caller closes complete family/outside guards and persists this witness.
+        observe('preflight', lifecycle)
+        stage = 'setter'
+        security = ctypes.WinDLL('advapi32', use_last_error=True)
+        lifecycle['native_result'] = set_protected_handle(security, handle)
+        if lifecycle['native_result']['return_value'] != 0:
+            primary = DACLWriteError(lifecycle['native_result'])
+            lifecycle['status'] = 'failed'
+            lifecycle['failure'] = {'stage': 'setter', 'exception': type(primary).__name__, 'winerror': primary.winerror}
+        stage = 'actual_readback'
+        read_errors = []
+        for key, query in (('actual', lambda: windows_handle_descriptor(handle)),
+                           ('identity_after', lambda: windows_handle_identity(api, handle)),
+                           ('path_identity_after', lambda: windows_object_identity(path)),
+                           ('path_actual', lambda: windows_descriptor(path))):
+            try:
+                lifecycle[key] = query()
+            except BaseException as exc:
+                read_errors.append({'field': key, 'exception': type(exc).__name__,
+                                    'winerror': getattr(exc, 'winerror', None)})
+        lifecycle['readback_errors'] = read_errors
+        lifecycle['secondary_errors'].extend(dict(e, stage='actual_readback') for e in read_errors)
+        stage = 'observed_persistence'
+        observe('observed', lifecycle)
+        stage = 'validate'
+        if primary is not None:
+            raise primary
+        wanted = dict(expected, dacl_control=0x1404)
+        if (read_errors or lifecycle['identity_after'] != expected_identity
+                or lifecycle['path_identity_after'] != expected_identity
+                or descriptor_contract(lifecycle['actual']) != wanted
+                or descriptor_contract(lifecycle['path_actual']) != wanted):
+            raise ValueError('pure-protection actual identity/control/ordered ACEs differ')
+        lifecycle['status'] = 'verified'
+    except BaseException as exc:
+        if primary is None:
+            primary = exc
+            lifecycle['failure'] = {'stage': stage, 'exception': type(exc).__name__,
+                                    'winerror': getattr(exc, 'winerror', None),
+                                    'query_close_failure': getattr(exc, 'close_failure', None)}
+        elif exc is not primary:
+            lifecycle['secondary_errors'].append({'stage': stage, 'exception': type(exc).__name__,
+                                                  'winerror': getattr(exc, 'winerror', None)})
+        lifecycle['status'] = 'failed'
+    finally:
+        if handle is not None:
+            try:
+                lifecycle['close_result'] = close_windows_handle(api, handle)
+                if not lifecycle['close_result']['return_value']:
+                    raise HandleOperationError('close', lifecycle['close_result']['winerror'])
+            except BaseException as exc:
+                lifecycle['status'] = 'failed'
+                lifecycle['secondary_errors'].append({'stage': 'close', 'exception': type(exc).__name__,
+                                                      'winerror': getattr(exc, 'winerror', None)})
+                if primary is None:
+                    primary = exc
+        try:
+            observe('closed', lifecycle)
+        except BaseException as exc:
+            lifecycle['status'] = 'failed'
+            lifecycle['secondary_errors'].append({'stage': 'closed_persistence', 'exception': type(exc).__name__})
+            if primary is None:
+                primary = exc
+    if primary is not None:
+        primary.handle_lifecycle = lifecycle
+        primary.native_result = lifecycle['native_result']
+        raise primary
+    return lifecycle['native_result']
 
 
 def restoration_strategy(descriptor):
