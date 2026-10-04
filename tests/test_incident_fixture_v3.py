@@ -1,11 +1,14 @@
 """Synthetic v3 transaction/actor tests; no native Windows ACL acceptance."""
 import base64
 import copy
+import hashlib
+import io
 import json
 import os
 import struct
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -465,6 +468,143 @@ class FixtureV3Tests(unittest.TestCase):
             child.judge(dict(value, schema=child.SCHEMA), old)
         with self.patches():
             child.restore(self.root, record)
+
+
+@contextmanager
+def platform_newline_sink(newline):
+    """Simulate text translation only; binary writes retain exact bytes."""
+    original = Path.open
+
+    def open_with_translation(path, mode='r', *args, **kwargs):
+        if mode == 'x' and kwargs.get('encoding') == 'utf-8':
+            return io.TextIOWrapper(original(path, 'xb'), encoding='utf-8', newline=newline)
+        return original(path, mode, *args, **kwargs)
+
+    with mock.patch.object(Path, 'open', open_with_translation):
+        yield
+
+
+class DurableSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.output = Path(self.tmp.name)
+
+    def test_exact_utf8_bytes_and_digest_under_lf_and_crlf_text_platforms(self):
+        record = {'z': ['中文', 'é', '🧭', '  \t spaces  ', 'inside\r\nstring\nend\r'],
+                  'a': {'empty': '', 'blank': ' \n '}}
+        expected = (json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2) + '\n').encode('utf-8')
+        actual_fsync = os.fsync
+        for index, newline in enumerate(('\n', '\r\n')):
+            path = self.output / ('snapshot-' + str(index) + '.json')
+
+            def sync_after_flush(fd):
+                self.assertEqual(path.read_bytes(), expected)
+                return actual_fsync(fd)
+
+            with self.subTest(newline=newline), platform_newline_sink(newline), \
+                 mock.patch.object(child.os, 'fsync', side_effect=sync_after_flush) as synced:
+                digest = child.durable_snapshot(path, record)
+                self.assertEqual(path.read_bytes(), expected)
+                self.assertEqual(digest, hashlib.sha256(path.read_bytes()).hexdigest())
+                self.assertEqual(json.loads(path.read_bytes()), record)
+                synced.assert_called_once()
+
+    def test_exclusive_duplicate_preserves_existing_original_bytes(self):
+        path = self.output / 'snapshot.json'
+        digest = child.durable_snapshot(path, {'original': '中文\r\n  '})
+        before = (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        with platform_newline_sink('\r\n'), self.assertRaises(FileExistsError):
+            child.durable_snapshot(path, {'replacement': True})
+        self.assertEqual((path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns), before)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
+    def test_short_write_never_returns_a_full_payload_digest(self):
+        original = Path.open
+        path = self.output / 'short.json'
+
+        def open_short(target, mode='r', *args, **kwargs):
+            stream = original(target, mode, *args, **kwargs)
+            if target == path and mode in ('x', 'xb'):
+                proxy = mock.Mock(wraps=stream)
+                proxy.__enter__ = mock.Mock(return_value=proxy)
+                proxy.__exit__ = mock.Mock(side_effect=stream.__exit__)
+                proxy.write.side_effect = lambda raw: stream.write(raw[:-1])
+                return proxy
+            return stream
+
+        with mock.patch.object(Path, 'open', open_short), \
+             mock.patch.object(child.os, 'fsync') as synced, \
+             self.assertRaisesRegex(OSError, 'snapshot write incomplete'):
+            child.durable_snapshot(path, {'value': 'not complete'})
+        synced.assert_not_called()
+        self.assertTrue(path.is_file())
+        self.assertFalse(path.read_bytes().endswith(b'\n'))
+
+    def test_fsync_failure_is_not_reported_as_a_durable_digest(self):
+        path = self.output / 'unsynced.json'
+        with mock.patch.object(child.os, 'fsync', side_effect=OSError('sync unavailable')), \
+             self.assertRaisesRegex(OSError, 'sync unavailable'):
+            child.durable_snapshot(path, {'value': 'retained for diagnosis'})
+        self.assertTrue(path.is_file())
+
+    def test_all_transaction_stage_hashes_match_disk_with_newline_simulation(self):
+        for newline in ('\n', '\r\n'):
+            with self.subTest(newline=newline):
+                fixture = FixtureV3Tests()
+                fixture.setUp()
+                self.addCleanup(fixture.doCleanups)
+                receipts = []
+                writer = child.durable_snapshot
+
+                def save(path, record):
+                    digest = writer(path, record)
+                    raw = Path(path).read_bytes()
+                    self.assertEqual(digest, hashlib.sha256(raw).hexdigest())
+                    self.assertNotIn(b'\r\n', raw)
+                    receipts.append(Path(path).name)
+                    return digest
+
+                with fixture.patches(), platform_newline_sink(newline), \
+                     mock.patch.object(child, 'durable_snapshot', side_effect=save), \
+                     mock.patch.object(child.os, 'fsync', wraps=os.fsync) as synced:
+                    record = fixture.prepare()
+                    child.verify_original_snapshot(record)
+                    fixture.grant(record)
+                    req = fixture.request(record, 'baseline_granted')
+                    child.apply_read_transaction(fixture.root, record, 'deny',
+                                                 baseline_record=fixture.observed(req), baseline_request=req)
+                    child.verify_original_snapshot(record)
+                    child.restore(fixture.root, record)
+                    self.assertEqual(fixture.descriptors, fixture.original)
+                self.assertEqual(receipts, ['fixture-original-transaction.json',
+                                           'fixture-grant-receipt.json', 'fixture-deny-receipt.json'])
+                self.assertEqual(synced.call_count, 3)
+
+    def test_snapshot_newline_tampering_is_rejected_without_repair_or_rehash(self):
+        fixture = FixtureV3Tests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        with fixture.patches(), platform_newline_sink('\r\n'):
+            record = fixture.prepare()
+        child.verify_original_snapshot(record)
+        path = Path(record['original_snapshot_path'])
+        original, digest = path.read_bytes(), record['original_snapshot_sha256']
+        variants = {'structural-crlf': original.replace(b'\n', b'\r\n'),
+                    'missing-final-lf': original[:-1], 'extra-whitespace': original + b' '}
+        for label, raw in variants.items():
+            with self.subTest(tampering=label):
+                self.assertNotEqual(raw, original)
+                self.assertEqual(json.loads(raw), json.loads(original))
+                path.write_bytes(raw)
+                with self.assertRaisesRegex(ValueError, 'original snapshot changed'):
+                    child.verify_original_snapshot(record)
+                with self.assertRaises(FileExistsError):
+                    child.durable_snapshot(path, record)
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(record['original_snapshot_sha256'], digest)
+        path.write_bytes(original)
+        child.verify_original_snapshot(record)
 
 
 if __name__ == '__main__':

@@ -172,12 +172,14 @@ READ_BASELINE_POLICY = 'read-baseline-specific-write-deny/v3'
 
 
 def durable_snapshot(path, record):
-    raw = json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2) + '\n'
-    with Path(path).open('x', encoding='utf-8') as stream:
-        stream.write(raw)
+    # Hash the exact exclusive binary write, independent of text newline rules.
+    raw = (json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2) + '\n').encode('utf-8')
+    with Path(path).open('xb') as stream:
+        if stream.write(raw) != len(raw):
+            raise OSError('snapshot write incomplete')
         stream.flush()
         os.fsync(stream.fileno())
-    return hashlib.sha256(raw.encode()).hexdigest()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def read_grant_argv(path, sid):
