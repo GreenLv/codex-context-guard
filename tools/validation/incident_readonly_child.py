@@ -113,8 +113,11 @@ def windows_descriptor(path, descriptor=None):
         if not result:
             raise DACLWriteError(observed)
         return observed
-    # The saved descriptor already uses automatic inheritance. Reapply that
-    # model with its original protection setting, never convert a non-AI ACL.
+    if strategy == 'protected-current':
+        if descriptor_contract(windows_descriptor(path))['dacl_control'] != 0x1404:
+            raise ValueError('protected AI current control differs before DACL-only write')
+    # Protected AI tails use the already protected object's DACL-only route.
+    # Explicit-only seeds retain their original conversion route.
     acl = ctypes.c_void_p()
     present, defaulted = wintypes.BOOL(), wintypes.BOOL()
     get_dacl = api.GetSecurityDescriptorDacl
@@ -125,23 +128,47 @@ def windows_descriptor(path, descriptor=None):
         raise ctypes.WinError(ctypes.get_last_error())
     if not present.value or not acl.value:
         raise ValueError('missing saved DACL')
+    return named_security_write(api, path, flags, acl)
+
+
+def named_security_write(api, path, flags, acl):
+    """Closed ABI: protection alone must never carry DACL plus a NULL ACL."""
+    from ctypes import wintypes
+    if flags not in (4, 0x20000004, 0x80000004, 0x80000000):
+        raise ValueError('unsupported named security information')
+    if (flags == 0x80000000 and acl is not None) or (flags & 4 and not acl):
+        raise ValueError('unsafe named DACL pointer/flags combination')
     write = api.SetNamedSecurityInfoW
     write.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
                       ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
     write.restype = wintypes.DWORD
-    error = write(str(path), 1, flags, None, None, acl, None)
+    error = int(write(str(path), 1, flags, None, None, acl, None))
     observed = {'api': 'SetNamedSecurityInfoW', 'security_information': flags,
-                'return_value': int(error), 'winerror': int(error)}
+                'return_value': error, 'winerror': error}
     if error:
         raise DACLWriteError(observed)
     return observed
 
 
+def protect_windows_dacl(path, before):
+    """One protection-only call after the durable complete 0404 family check."""
+    expected = descriptor_contract(before)
+    if expected['dacl_control'] != 0x404:
+        raise ValueError('control-only protection requires exact unprotected AI input')
+    if descriptor_contract(windows_descriptor(path)) != expected:
+        raise ValueError('control-only protection preimage differs')
+    api = ctypes.WinDLL('advapi32', use_last_error=True)
+    return named_security_write(api, path, 0x80000000, None)
+
+
 def restoration_strategy(descriptor):
     """Choose the saved inheritance model before any fixture mutation."""
-    control = descriptor_contract(descriptor)['dacl_control']
+    contract = descriptor_contract(descriptor)
+    control = contract['dacl_control']
     if control not in (4, 0x404, 0x1004, 0x1404):
         raise ValueError('unsupported original DACL control model')
+    if control == 0x1404 and any(bytes.fromhex(a)[1] & 0x10 for a in contract['aces']):
+        return 'protected-current', 4
     if control & 0x400:
         return 'auto-inherited', 4 | (0x80000000 if control & 0x1000 else 0x20000000)
     return 'raw-explicit', 4
@@ -803,10 +830,21 @@ def restore(root, record):
                 save(str(sequence) + '-intent', operation)
                 step = 'preflight'
                 try:
+                    if diagnostics['persistence_errors']:
+                        raise OSError('restoration intent was not durably saved')
                     check_fixture_identity(root, record)
+                    strategy, flags = restoration_strategy(operation['planned'])
+                    operation.update(selected_api='SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                                     security_information=flags)
+                    if strategy == 'protected-current':
+                        operation['before'] = windows_descriptor(path)
+                        if descriptor_contract(operation['before'])['dacl_control'] != 0x1404:
+                            raise ValueError('S1 restore requires current protected AI control')
+                        save(str(sequence) + '-preflight', operation)
+                        if diagnostics['persistence_errors']:
+                            raise OSError('protected restoration preflight was not durably saved')
                     step = 'write'
                     operation['native_result'] = windows_descriptor(path, operation['planned'])
-                    check_native_result(operation['native_result'], operation['planned'])
                 except Exception as exc:
                     operation['native_result'] = getattr(exc, 'native_result', operation['native_result'])
                     operation['failure'] = acl_failure(exc, 'restore', step)
@@ -814,6 +852,8 @@ def restore(root, record):
                 try:
                     check_fixture_identity(root, record)
                     operation['actual'] = windows_descriptor(path)
+                    save(str(sequence) + '-readback', operation)
+                    check_native_result(operation['native_result'], operation['planned'])
                     if descriptor_contract(operation['actual']) != descriptor_contract(operation['planned']):
                         raise ValueError('immediate restored DACL or inheritance controls differ')
                 except Exception as exc:

@@ -452,6 +452,115 @@ class NativeWriterBindingTests(unittest.TestCase):
                         if strategy != 'raw-explicit':
                             self.assertEqual((args[1], args[3], args[4], args[6]), (1, None, None, None))
 
+    def test_control_only_ABI_NULL_and_preimage_rejection(self):
+        from types import SimpleNamespace
+        api = SimpleNamespace(SetNamedSecurityInfoW=mock.Mock(return_value=0))
+        target = self.root / 'nested/lock'
+        before = self.descriptor_value('other', control=0x8404)
+        real = child.windows_descriptor
+        with mock.patch.object(child, 'windows_descriptor', return_value=before), \
+             mock.patch.object(ctypes, 'WinDLL', return_value=api, create=True):
+            result = child.protect_windows_dacl(target, before)
+        self.assertEqual(result, {'api': 'SetNamedSecurityInfoW', 'security_information': 0x80000000,
+                                  'return_value': 0, 'winerror': 0})
+        api.SetNamedSecurityInfoW.assert_called_once_with(str(target), 1, 0x80000000, None, None, None, None)
+        api.SetNamedSecurityInfoW.reset_mock()
+        for flags in (4, 0x80000004, 0x20000004):
+            with self.subTest(flags=flags), self.assertRaises(ValueError):
+                child.named_security_write(api, target, flags, None)
+        with mock.patch.object(child, 'windows_descriptor', return_value=self.descriptor_value('drift', control=0x8404)), \
+             self.assertRaises(ValueError):
+            child.protect_windows_dacl(target, before)
+        api.SetNamedSecurityInfoW.assert_not_called()
+        self.assertTrue(callable(real))
+
+    def test_protected_current_inherited_tail_uses_only_DACL_and_refuses_control_drift(self):
+        from ctypes import wintypes
+        from types import SimpleNamespace
+        target = self.root / 'nested/lock'
+        raw = bytearray.fromhex(child.descriptor_contract(self.descriptor_value('other'))['aces'][0])
+        raw[1] |= 16
+        before = matrix_descriptor(0x1404, [raw.hex()])
+        planned = child.planned_acl_change(before, self.sid, 'grant', False)
+        def get_dacl(buffer, present, acl, defaulted):
+            ctypes.cast(present, ctypes.POINTER(wintypes.BOOL))[0] = 1
+            ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0] = 100
+            return 1
+        api = SimpleNamespace(GetFileSecurityW=mock.Mock(), GetSecurityDescriptorDacl=mock.Mock(side_effect=get_dacl),
+                              SetNamedSecurityInfoW=mock.Mock(return_value=0), SetFileSecurityW=mock.Mock())
+        real = child.windows_descriptor
+        with mock.patch.object(ctypes, 'WinDLL', return_value=api, create=True), \
+             mock.patch.object(child, 'windows_descriptor', return_value=before):
+            result = real(target, planned)
+        child.check_native_result(result, planned)
+        self.assertEqual(result['security_information'], 4)
+        api.SetNamedSecurityInfoW.assert_called_once()
+        self.assertEqual(api.SetNamedSecurityInfoW.call_args.args[1:5], (1, 4, None, None))
+        api.SetFileSecurityW.assert_not_called()
+        api.SetNamedSecurityInfoW.reset_mock()
+        for control in (4, 0x404, 0x1004):
+            drifted = matrix_descriptor(control, [raw.hex()])
+            with self.subTest(control=control), mock.patch.object(ctypes, 'WinDLL', return_value=api, create=True), \
+                 mock.patch.object(child, 'windows_descriptor', return_value=drifted), self.assertRaises(ValueError):
+                real(target, planned)
+        api.SetNamedSecurityInfoW.assert_not_called()
+
+    def test_real_shared_writer_success_tail_loss_has_twelve_strict_rejections(self):
+        from ctypes import wintypes
+        from types import SimpleNamespace
+        real = child.windows_descriptor
+        for directory in (False, True):
+            for shape in ('missing', 'inherited'):
+                for phase in ('grant', 'deny', 'restore'):
+                    with self.subTest(directory=directory, shape=shape, phase=phase):
+                        explicit = [matrix_ace('S-1-5-18'), matrix_ace('S-1-5-32-544'), matrix_ace('S-1-5-19'), matrix_ace('S-1-3-4')]
+                        inherited = [matrix_ace(sid, flags=0x13 if directory else 0x10)
+                                     for sid in ('S-1-5-18', 'S-1-5-32-544', 'S-1-5-19')]
+                        if shape == 'inherited':
+                            inherited.append(matrix_ace(self.sid, flags=0x13 if directory else 0x10))
+                        before = matrix_descriptor(0x1404, explicit + inherited)
+                        if phase == 'deny':
+                            before = child.planned_acl_change(before, self.sid, 'grant', directory)
+                        planned = (before if phase == 'restore' else
+                                   child.planned_acl_change(before, self.sid, phase, directory))
+                        actual = before
+                        def get_dacl(buffer, present, acl, defaulted):
+                            ctypes.cast(present, ctypes.POINTER(wintypes.BOOL))[0] = 1
+                            ctypes.cast(acl, ctypes.POINTER(ctypes.c_void_p))[0] = ctypes.addressof(buffer) + 20
+                            return 1
+                        def setter(path, kind, flags, owner, group, acl, sacl):
+                            nonlocal actual
+                            self.assertEqual((kind, flags, owner, group, sacl), (1, 4, None, None, None))
+                            header = ctypes.string_at(acl, 8)
+                            size, count = struct.unpack_from('<HH', header, 2)
+                            raw, pos, aces = ctypes.string_at(acl, size), 8, []
+                            for _ in range(count):
+                                length = struct.unpack_from('<H', raw, pos + 2)[0]
+                                ace = raw[pos:pos + length]
+                                if not ace[1] & 16:
+                                    aces.append(ace.hex())
+                                pos += length
+                            actual = matrix_descriptor(0x1404, aces)
+                            return 0  # API success does not establish exact readback.
+                        api = SimpleNamespace(GetFileSecurityW=mock.Mock(), GetSecurityDescriptorDacl=mock.Mock(side_effect=get_dacl),
+                                              SetNamedSecurityInfoW=mock.Mock(side_effect=setter), SetFileSecurityW=mock.Mock())
+                        target = self.root / 'nested' if directory else self.root / 'nested/lock'
+                        with mock.patch.object(ctypes, 'WinDLL', return_value=api, create=True), \
+                             mock.patch.object(child, 'windows_descriptor', side_effect=lambda p: actual):
+                            result = real(target, planned)
+                            readback = child.windows_descriptor(target)
+                        child.check_native_result(result, planned)
+                        self.assertNotEqual(child.descriptor_contract(readback), child.descriptor_contract(planned))
+                        self.assertEqual(child.descriptor_contract(readback)['aces'],
+                                         [a for a in child.descriptor_contract(planned)['aces'] if not bytes.fromhex(a)[1] & 16])
+                        if phase == 'grant':
+                            with self.assertRaises(ValueError):
+                                child.check_read_grant(before, readback, self.sid, directory)
+                        elif phase == 'deny':
+                            with self.assertRaises(ValueError):
+                                child.check_write_deny(before, readback, self.sid, directory=directory)
+                        api.SetFileSecurityW.assert_not_called()
+
     def test_legacy_new_snapshot_cannot_be_rebound_but_old_record_still_restores(self):
         record = self.restricted()
         drifted = copy.deepcopy(record)
@@ -547,9 +656,44 @@ def matrix_descriptor(control, aces):
 def matrix_setup_write(path, descriptor, *, record_step=None, protected_ai_probe=False):
     """Fixture setup only; exact disk controls are checked after the real call."""
     control = child.descriptor_contract(descriptor)['dacl_control']
-    if control & 0x400 and not protected_ai_probe:
+    if protected_ai_probe:
+        if control != 0x1404 or record_step is None:
+            raise ValueError('protected AI setup requires durable fixed stages')
+        intermediate = matrix_descriptor(0x404, child.descriptor_contract(descriptor)['aces'])
+        intent = record_step('protect', intermediate)
+        try:
+            intent['native_result'] = child.windows_descriptor(path, intermediate)
+        except BaseException as exc:
+            intent['native_result'] = getattr(exc, 'native_result', None)
+            intent['failure'] = child.acl_failure(exc, 'setup_materialize_AI', 'write')
+            raise
+        finally:
+            try:
+                intent['actual'] = child.windows_descriptor(path)
+            except Exception as exc:
+                intent['readback_error'] = child.acl_failure(exc, 'setup_materialize_AI', 'readback')
+            record_step('protect_observed', intent)
+        child.check_native_result(intent['native_result'], intermediate)
+        if child.descriptor_contract(intent['actual']) != child.descriptor_contract(intermediate):
+            raise ValueError('complete unprotected AI materialization differs')
+        final_intent = record_step('control_only', descriptor)
+        final_intent.update(before=intermediate)
+        try:
+            final_intent['native_result'] = child.protect_windows_dacl(path, intermediate)
+            return final_intent['native_result']
+        except BaseException as exc:
+            final_intent['native_result'] = getattr(exc, 'native_result', None)
+            final_intent['failure'] = child.acl_failure(exc, 'setup_protect_control', 'write')
+            raise
+        finally:
+            try:
+                final_intent['actual'] = child.windows_descriptor(path)
+            except Exception as exc:
+                final_intent['readback_error'] = child.acl_failure(exc, 'setup_protect_control', 'readback')
+            record_step('control_only_observed', final_intent)
+    if control & 0x400:
         return child.windows_descriptor(path, descriptor)
-    if control == 0x1004 or protected_ai_probe:
+    if control == 0x1004:
         if record_step is None:
             raise ValueError('protected non-AI setup requires durable step observations')
         explicit = [a for a in child.descriptor_contract(descriptor)['aces']
@@ -568,6 +712,7 @@ def matrix_setup_write(path, descriptor, *, record_step=None, protected_ai_probe
             except Exception as exc:
                 intent['readback_error'] = child.acl_failure(exc, 'setup_protect', 'readback')
             record_step('protect_observed', intent)
+        child.check_native_result(intent['native_result'], protected)
         if child.descriptor_contract(intent['actual']) != child.descriptor_contract(protected):
             raise ValueError('protected setup DACL differs before raw non-AI write')
     from ctypes import wintypes
@@ -598,12 +743,19 @@ def matrix_setup_operation(root, path, planned, result, output):
     number = str(len(result['setup']))
     child.durable_snapshot(output / ('setup-' + number + '-intent.json'), entry)
     def step(label, value):
-        if label == 'protect':
-            observed = {'phase': label, 'planned': value, 'native_result': None, 'actual': None}
+        if label in ('protect', 'control_only'):
+            strategy, flags = child.restoration_strategy(value)
+            observed = {'phase': label, 'planned': value, 'before': child.windows_descriptor(path),
+                        'selected_api': 'SetNamedSecurityInfoW' if label == 'control_only' or strategy != 'raw-explicit' else 'SetFileSecurityW',
+                        'security_information': 0x80000000 if label == 'control_only' else flags,
+                        'pDacl': 'NULL' if label == 'control_only' else 'complete planned ACL',
+                        'native_result': None, 'actual': None}
             entry.setdefault('steps', []).append(observed)
-            child.durable_snapshot(output / ('setup-' + number + '-protect-intent.json'), observed)
+            child.durable_snapshot(output / ('setup-' + number + '-' + label + '-intent.json'), observed)
             return observed
-        child.durable_snapshot(output / ('setup-' + number + '-protect-observed.json'), value)
+        child.durable_snapshot(output / ('setup-' + number + '-' + label.replace('_', '-') + '.json'), value)
+        if label == 'control_only_observed':
+            return
         transition = result.get('current_setup_transition')
         if transition is not None:
             observed = matrix_assert_setup_state(root, transition['intermediate'], result)
@@ -627,6 +779,12 @@ def matrix_setup_operation(root, path, planned, result, output):
         except Exception as exc:
             entry['readback_error'] = child.acl_failure(exc, 'setup', 'readback')
         child.durable_snapshot(output / ('setup-' + number + '-observed.json'), entry)
+    if probe:
+        if entry['native_result'] != {'api': 'SetNamedSecurityInfoW', 'security_information': 0x80000000,
+                                      'return_value': 0, 'winerror': 0}:
+            raise ValueError('control-only native protection result differs')
+    else:
+        child.check_native_result(entry['native_result'], planned)
     if child.descriptor_contract(entry['actual']) != child.descriptor_contract(planned):
         raise ValueError('native original fixture differs from requested control or ACE shape')
 
@@ -714,6 +872,9 @@ def matrix_setup_snapshot(root, actor_sid, collector_sid, output):
     output = output.resolve(strict=True)
     observation = matrix_stable_observation(root)
     paths = child.fixture_paths(root)
+    if any(child.restoration_strategy(d) != ('raw-explicit', 4)
+           for d in observation['raw_dacls'].values()):
+        raise ValueError('S0 requires preselected raw-explicit rollback eligibility')
     if set(observation['raw_dacls']) != {str(p) for p in paths}:
         raise ValueError('whole-family snapshot topology differs')
     record = {'family': 'windows-acl', 'policy': 'specific-write-deny/v2',
@@ -803,8 +964,13 @@ def matrix_setup_transition(root, path, planned, expected, result, output, phase
               or (phase == 'target' and child.descriptor_contract(planned)['dacl_control'] == 0x1404))
     intermediate = None
     if staged:
-        explicit = [a for a in child.descriptor_contract(planned)['aces'] if not bytes.fromhex(a)[1] & 0x10]
-        intermediate = matrix_setup_expected(root, path, matrix_descriptor(0x1404, explicit), before)
+        contract = child.descriptor_contract(planned)
+        if contract['dacl_control'] == 0x1404:
+            materialized = matrix_descriptor(0x404, contract['aces'])
+        else:
+            explicit = [a for a in contract['aces'] if not bytes.fromhex(a)[1] & 0x10]
+            materialized = matrix_descriptor(0x1404, explicit)
+        intermediate = matrix_setup_expected(root, path, materialized, before)
         after = dict(intermediate)
         after[str(path)] = planned
     else:
@@ -831,7 +997,8 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
     parent_sd = matrix_descriptor(0x1404, parent)
     explicit = [matrix_ace(sid) for sid in (collector_sid, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4')]
     tail = matrix_inherited_aces(parent_sd, directory)
-    intermediate = matrix_descriptor(0x1404, explicit)
+    intermediate = matrix_descriptor(0x404 if cell['control'] == 0x1404 else 0x1404,
+                                     explicit + tail if cell['control'] == 0x1404 else explicit)
     final = matrix_descriptor(cell['control'], explicit + tail)
     grant = child.planned_acl_change(final, actor_sid, 'grant', directory)
     deny = child.planned_acl_change(grant, actor_sid, 'deny', directory)
@@ -858,10 +1025,13 @@ def matrix_probe_plan(cell, actor_sid, collector_sid):
                     seed_aces + matrix_inherited_aces(parent_sd, False))),
                  'directory_expected': child.descriptor_contract(matrix_descriptor(0x404,
                     seed_aces + matrix_inherited_aces(parent_sd, True)))},
-                {'name': 'protect_intermediate', 'path': 'target', 'api': 'SetNamedSecurityInfoW',
-                 'security_information': 0x80000004, 'expected': child.descriptor_contract(intermediate)},
-                {'name': 'raw_final', 'path': 'target', 'api': 'SetFileSecurityW',
-                 'security_information': 4, 'expected': child.descriptor_contract(final)},
+                {'name': 'materialize_AI' if cell['control'] == 0x1404 else 'protect_intermediate',
+                 'path': 'target', 'api': 'SetNamedSecurityInfoW',
+                 'security_information': 0x20000004 if cell['control'] == 0x1404 else 0x80000004, 'expected': child.descriptor_contract(intermediate)},
+                {'name': 'protect_control_only' if cell['control'] == 0x1404 else 'raw_final',
+                 'path': 'target', 'api': 'SetNamedSecurityInfoW' if cell['control'] == 0x1404 else 'SetFileSecurityW',
+                 'security_information': 0x80000000 if cell['control'] == 0x1404 else 4,
+                 'pDacl': 'NULL' if cell['control'] == 0x1404 else 'complete planned ACL', 'expected': child.descriptor_contract(final)},
                 {'name': 'ready_descendants', 'paths': ['target/nested', 'target/nested/leaf'] if directory else [],
                  'api': 'SetNamedSecurityInfoW', 'security_information': 0x20000004,
                  'expected': {name: child.descriptor_contract(matrix_descriptor(0x404,
