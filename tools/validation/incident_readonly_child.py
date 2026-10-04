@@ -33,6 +33,7 @@ class DACLWriteError(OSError):
     def __init__(self, result):
         super().__init__('native DACL write failed')
         self.native_result = result
+        self.winerror = result['winerror']
 
 
 def inventory(root):
@@ -770,27 +771,99 @@ def restore(root, record):
         if record.get('policy') == READ_BASELINE_POLICY or 'original_snapshot_path' in record:
             verify_original_snapshot(record)
         check_fixture_identity(root, record)
-        # Restore traversal first, then descendants, preserving original DACLs.
+        output_name = record.get('operation_output') or record.get('ownership', {}).get('output')
+        output = Path(output_name) if output_name else None  # Legacy capture compatibility.
+        if output is not None and (output.is_symlink() or not output.is_dir()
+                or ('operation_output_identity' in record and
+                    [output.stat().st_dev, output.stat().st_ino] != record['operation_output_identity'])):
+            raise ValueError('restoration output identity differs')
+        attempt = os.urandom(16).hex()
+        diagnostics = {'schema': 'fixture-dacl-restoration/v1', 'attempt': attempt,
+                       'original_snapshot_sha256': record.get('original_snapshot_sha256'),
+                       'collector_sid': record['collector_sid'], 'status': 'intent',
+                       'operations': [], 'persistence_errors': []}
+        def save(label, value):
+            if output is not None:
+                try:
+                    durable_snapshot(output / ('fixture-restore-' + attempt + '-' + label + '.json'), value)
+                except Exception as exc:
+                    diagnostics['persistence_errors'].append(acl_failure(exc, 'restore', 'observed'))
+        save('intent', diagnostics)
         failures = []
-        for path in sorted(paths, key=lambda p: (len(p.parts), str(p))):
-            try:
-                check_fixture_identity(root, record)
-                windows_descriptor(path, record['original_dacls'][str(path)])
-            except Exception as exc:
-                failures.append(type(exc).__name__)
-        if failures:
-            raise OSError('DACL restoration incomplete: ' + ','.join(failures))
-        readback = {str(path): windows_descriptor(path) for path in paths}
-        differences = {name: {'before': descriptor_contract(record['original_dacls'][name]),
-                              'after': descriptor_contract(observed)}
-                       for name, observed in readback.items()
-                       if descriptor_contract(observed) != descriptor_contract(record['original_dacls'][name])}
-        if differences:
-            record['restoration_readback'] = readback
-            record['restoration_differences'] = differences
-            raise ValueError('restored DACL or inheritance controls differ')
-        if inventory(root) != record['original_inventory']:
-            raise ValueError('fixture bytes or stat differ after restoration')
+        try:
+            # Restore traversal first, then descendants. A failed write still
+            # receives immediate readback and does not prevent other restores.
+            for sequence, path in enumerate(sorted(paths, key=lambda p: (len(p.parts), str(p))), 1):
+                operation = {'sequence': sequence, 'phase': 'restore',
+                             'path': path.relative_to(root).as_posix(),
+                             'object_identity': list(record['objects'][str(path)]),
+                             'planned': record['original_dacls'][str(path)],
+                             'native_result': None, 'actual': None, 'status': 'intent'}
+                diagnostics['operations'].append(operation)
+                save(str(sequence) + '-intent', operation)
+                step = 'preflight'
+                try:
+                    check_fixture_identity(root, record)
+                    step = 'write'
+                    operation['native_result'] = windows_descriptor(path, operation['planned'])
+                    check_native_result(operation['native_result'], operation['planned'])
+                except Exception as exc:
+                    operation['native_result'] = getattr(exc, 'native_result', operation['native_result'])
+                    operation['failure'] = acl_failure(exc, 'restore', step)
+                    failures.append(type(exc).__name__)
+                try:
+                    check_fixture_identity(root, record)
+                    operation['actual'] = windows_descriptor(path)
+                    if descriptor_contract(operation['actual']) != descriptor_contract(operation['planned']):
+                        raise ValueError('immediate restored DACL or inheritance controls differ')
+                except Exception as exc:
+                    operation['readback_failure'] = acl_failure(exc, 'restore', 'readback')
+                    failures.append(type(exc).__name__)
+                operation['status'] = 'failed' if 'failure' in operation or 'readback_failure' in operation else 'verified'
+                save(str(sequence) + '-observed', operation)
+            if failures:
+                step = 'write' if any('failure' in o for o in diagnostics['operations']) else 'readback'
+                raise OSError('DACL restoration incomplete: ' + ','.join(failures))
+            # Retain the original whole-fixture exact DACL/control and inventory
+            # success predicates; per-object API success cannot replace them.
+            step = 'readback'
+            readback = {}
+            diagnostics['final_readback'] = readback
+            for path in paths:
+                try:
+                    readback[str(path)] = windows_descriptor(path)
+                except Exception as exc:
+                    diagnostics['final_readback_failure'] = {'path': path.relative_to(root).as_posix(),
+                                                            **acl_failure(exc, 'restore', 'readback')}
+                    raise
+            differences = {name: {'before': descriptor_contract(record['original_dacls'][name]),
+                                  'after': descriptor_contract(observed)}
+                           for name, observed in readback.items()
+                           if descriptor_contract(observed) != descriptor_contract(record['original_dacls'][name])}
+            if differences:
+                record['restoration_readback'] = readback
+                record['restoration_differences'] = differences
+                raise ValueError('restored DACL or inheritance controls differ')
+            diagnostics['final_inventory'] = inventory(root)
+            if diagnostics['final_inventory'] != record['original_inventory']:
+                raise ValueError('fixture bytes or stat differ after restoration')
+            if diagnostics['persistence_errors']:
+                step = 'observed'
+                raise OSError('restoration evidence persistence incomplete')
+            diagnostics['status'] = 'verified'
+        except (Exception, KeyboardInterrupt) as exc:
+            diagnostics['status'] = 'failed'
+            diagnostics['failure'] = acl_failure(exc, 'restore', step)
+            save('failure', diagnostics)
+            record['restoration_diagnostics'] = diagnostics
+            raise
+        record['restoration_diagnostics'] = diagnostics
+        save('receipt', diagnostics)
+        if diagnostics['persistence_errors']:
+            diagnostics['status'] = 'failed'
+            diagnostics['failure'] = acl_failure(OSError('restoration receipt unavailable'), 'restore', 'receipt')
+            record['restoration_diagnostics'] = diagnostics
+            raise OSError('restoration receipt unavailable')
     else:
         for name, mode in record['modes'].items():
             Path(name).chmod(mode)

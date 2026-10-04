@@ -46,6 +46,10 @@ class FixtureV3Tests(unittest.TestCase):
         if value is not None:
             self.events.append(('restore', str(path)))
             self.descriptors[str(path)] = value
+            strategy, flags = child.restoration_strategy(value)
+            return {'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                    'security_information': flags, 'return_value': 1 if strategy == 'raw-explicit' else 0,
+                    'winerror': 0}
         return self.descriptors[str(path)]
 
     @staticmethod
@@ -546,11 +550,12 @@ class DurableSnapshotTests(unittest.TestCase):
                     child.verify_original_snapshot(record)
                     child.restore(fixture.root, record)
                     self.assertEqual(fixture.descriptors, fixture.original)
-                self.assertEqual([n for n in receipts if '-op-' not in n],
+                self.assertEqual([n for n in receipts if '-op-' not in n and '-restore-' not in n],
                                  ['fixture-original-transaction.json',
                                   'fixture-grant-receipt.json', 'fixture-deny-receipt.json'])
                 self.assertEqual(sum('-op-' in n for n in receipts),
                                  len(fixture.original) * 2 * 3)
+                self.assertEqual(sum('-restore-' in n for n in receipts), len(fixture.original) * 2 + 2)
                 self.assertEqual(synced.call_count, len(receipts))
 
     def test_snapshot_newline_tampering_is_rejected_without_repair_or_rehash(self):
@@ -733,6 +738,75 @@ class ExactACLPlansTests(unittest.TestCase):
                             self.assertIsNotNone(record['operations'][-1]['actual'])
                 finally:
                     fixture.doCleanups()
+
+    def test_production_restore_records_success_api_failure_and_readback_failure(self):
+        for fault in ('ok', 'api', 'readback', 'final_readback', 'persist'):
+            fixture = FixtureV3Tests()
+            fixture.setUp()
+            try:
+                with fixture.patches():
+                    record = fixture.prepare()
+                    fixture.grant(record)
+                    immutable = copy.deepcopy(record)
+                    frozen_request = fixture.request(record, 'baseline_granted')
+                    original = fixture.descriptor
+                    durable = child.durable_snapshot
+                    reads = 0
+                    def api(path, value=None):
+                        nonlocal reads
+                        if value is None and path == fixture.root:
+                            reads += 1
+                            if (fault == 'readback' and reads == 1) or (fault == 'final_readback' and reads == 2):
+                                raise OSError(5, 'injected restoration descriptor readback failure')
+                        result = original(path, value)
+                        if value is not None and path == fixture.root and fault == 'api':
+                            raise child.DACLWriteError({**result, 'return_value': 0, 'winerror': 5})
+                        return result
+                    def persist(path, value):
+                        if fault == 'persist' and '-restore-' in Path(path).name:
+                            raise OSError(28, 'injected restoration evidence storage failure')
+                        return durable(path, value)
+                    with mock.patch.object(child, 'windows_descriptor', side_effect=api), \
+                         mock.patch.object(child, 'durable_snapshot', side_effect=persist):
+                        if fault == 'ok':
+                            child.restore(fixture.root, record)
+                            self.assertEqual({k: record[k] for k in immutable}, immutable)
+                            receipts = list(fixture.output.glob('fixture-restore-*-receipt.json'))
+                            self.assertEqual(len(receipts), 1)
+                            diagnostics = json.loads(receipts[0].read_text())
+                            self.assertEqual(diagnostics['status'], 'verified')
+                        else:
+                            with self.assertRaises(OSError):
+                                child.restore(fixture.root, record)
+                            diagnostics = record['restoration_diagnostics']
+                            self.assertEqual(diagnostics['status'], 'failed')
+                    self.assertEqual(fixture.descriptors, fixture.original)
+                    child.v2_request(frozen_request)
+                    child.verify_original_snapshot(record)
+                    self.assertEqual(len(diagnostics['operations']), len(fixture.original))
+                    operation = diagnostics['operations'][0]
+                    self.assertEqual(operation['phase'], 'restore')
+                    self.assertEqual(operation['path'], '.')
+                    self.assertNotIn('argv', operation)
+                    self.assertNotIn('exit_code', operation)
+                    if fault == 'api':
+                        self.assertEqual(operation['native_result']['winerror'], 5)
+                        self.assertEqual(operation['failure']['winerror'], 5)
+                        self.assertEqual(operation['failure']['step'], 'write')
+                        self.assertIsNotNone(operation['actual'])
+                    elif fault == 'readback':
+                        self.assertEqual(operation['readback_failure']['step'], 'readback')
+                        self.assertEqual(operation['readback_failure']['errno'], 5)
+                        self.assertIsNone(operation['actual'])
+                    elif fault == 'final_readback':
+                        self.assertEqual(diagnostics['final_readback_failure']['path'], '.')
+                    elif fault == 'persist':
+                        self.assertTrue(diagnostics['persistence_errors'])
+                    else:
+                        self.assertTrue(all(o['status'] == 'verified' and o['actual'] is not None
+                                            and o['native_result']['winerror'] == 0 for o in diagnostics['operations']))
+            finally:
+                fixture.doCleanups()
 
     def test_changed_object_or_new_hardlink_rejects_unsafe_restore(self):
         for fault in ('replace', 'hardlink'):

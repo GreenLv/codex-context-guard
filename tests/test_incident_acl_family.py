@@ -72,6 +72,10 @@ class ACLFamilyTests(unittest.TestCase):
         if value is None:
             return self.descriptors[str(path)]
         self.descriptors[str(path)] = value
+        strategy, flags = child.restoration_strategy(value)
+        return {'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                'security_information': flags, 'return_value': 1 if strategy == 'raw-explicit' else 0,
+                'winerror': 0}
 
     def apply(self, path, planned):
         self.descriptors[str(path)] = planned
@@ -147,7 +151,9 @@ class ACLFamilyTests(unittest.TestCase):
         with mock.patch.object(child, 'current_sid', return_value=self.sid), \
              mock.patch.object(child, 'windows_descriptor', side_effect=self.descriptor):
             child.restore(self.root, record)
-        self.assertEqual(record, before)
+        self.assertEqual({k: record[k] for k in before}, before)
+        self.assertEqual(set(record) - set(before), {'restoration_diagnostics'})
+        self.assertEqual(record['restoration_diagnostics']['status'], 'verified')
 
     def test_invalid_original_descriptor_and_explicit_empty_sid_never_mutate(self):
         for sid in ('', 'S-1-'):
@@ -204,10 +210,13 @@ class ACLFamilyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     child.restore(self.root, {**record, key: value})
                 api.assert_not_called()
+        def drift(path, value=None):
+            return self.descriptor(path, value) if value is not None else self.descriptor_value('drift')
         with mock.patch.object(child, 'current_sid', return_value=self.sid), \
-             mock.patch.object(child, 'windows_descriptor', return_value='wrong'):
-            with self.assertRaises(ValueError):
+             mock.patch.object(child, 'windows_descriptor', side_effect=drift):
+            with self.assertRaises(OSError):
                 child.restore(self.root, record)
+        self.assertTrue(all('readback_failure' in o for o in record['restoration_diagnostics']['operations']))
 
     def test_nested_special_object_and_invalid_principal_rejected_before_mutation(self):
         with mock.patch.object(child, 'current_sid', return_value='bad'), \
@@ -538,7 +547,7 @@ def matrix_observe(root):
 
 
 def matrix_setup_operation(root, path, planned, result, output):
-    entry = {'path': path.relative_to(root).as_posix(), 'planned': planned,
+    entry = {'path': path.relative_to(root).as_posix(), 'before': child.windows_descriptor(path), 'planned': planned,
              'native_result': None, 'actual': None}
     result['setup'].append(entry)
     number = str(len(result['setup']))
@@ -594,6 +603,9 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd):
     result = {**cell, 'fixture': str(root), 'status': 'failed', 'step': 'setup',
               'ordinary_actor_execution': 'not_run', 'setup': []}
     original_root = child.windows_descriptor(root)
+    setup_originals = {str(root): original_root}
+    setup_objects = {str(root): [root.stat().st_dev, root.stat().st_ino]}
+    setup_inventory = child.inventory(root)
     result['initial_root'] = original_root
     active = None
     try:
@@ -607,6 +619,9 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd):
             target.mkdir()
         else:
             target.write_bytes(b'owned mechanism fixture\n')
+        setup_originals[str(target)] = child.windows_descriptor(target)
+        setup_objects[str(target)] = [target.stat().st_dev, target.stat().st_ino]
+        setup_inventory = child.inventory(root)
         inherited = child.descriptor_contract(child.windows_descriptor(target))['aces']
         inherited = [a for a in inherited if bytes.fromhex(a)[1] & 0x10]
         if cell['actor_shape'] == 'inherited' and not any(child.ace_sid(bytes.fromhex(a)) == actor_sid for a in inherited):
@@ -676,17 +691,55 @@ def matrix_cell(cell, actor_sid, collector_sid, repo, output, cwd):
             except Exception as restoration:
                 result['restoration_error'] = type(restoration).__name__
         else:
-            # Setup failed before product transaction authority existed.
-            # Retain the new fixture; never label this cell a mutation pass.
+            # Restore only these exclusively created objects from observations
+            # captured before their setup writes; no next cell may run.
             try:
                 result['failed_observation'] = matrix_observe(root)
             except Exception as observation:
                 result['observation_error'] = type(observation).__name__
+            child.durable_snapshot(output / 'setup-before-restoration-failure.json', result)
+            fallback = {'family': 'windows-acl', 'policy': 'specific-write-deny/v2',
+                        'root': str(root), 'sid': actor_sid, 'collector_sid': collector_sid,
+                        'original_dacls': setup_originals, 'objects': setup_objects,
+                        'original_inventory': setup_inventory, 'commands': [],
+                        'operation_output': str(output),
+                        'operation_output_identity': [output.stat().st_dev, output.stat().st_ino],
+                        'original_restore_strategies': {}}
+            try:
+                fallback_output = output / 'setup-restoration'
+                fallback_output.mkdir()
+                fallback_output = fallback_output.resolve(strict=True)
+                fallback.update(operation_output=str(fallback_output),
+                                operation_output_identity=[fallback_output.stat().st_dev, fallback_output.stat().st_ino],
+                                original_restore_strategies={p: child.restoration_strategy(d)
+                                                             for p, d in setup_originals.items()})
+                original = fallback_output / 'fixture-original-transaction.json'
+                fallback['original_snapshot_sha256'] = child.durable_snapshot(original, fallback)
+                fallback['original_snapshot_path'] = str(original)
+                result['setup_restore_api'] = matrix_restore(root, fallback, fallback_output, 'setup-failure')
+                result['setup_restored'] = matrix_observe(root)
+            except Exception as restoration:
+                result['restoration_error'] = type(restoration).__name__
+            result['setup_restore_record'] = fallback
         if isinstance(exc, KeyboardInterrupt):
-            child.durable_snapshot(output / 'matrix-interrupted.json', result)
-            raise
+            result['interrupted'] = True
     child.durable_snapshot(output / 'matrix-cell.json', result)
     return result
+
+
+def matrix_run_cells(report, actor_sid, collector_sid, repo, output, cwd):
+    cells = matrix_cells()
+    for number, cell in enumerate(cells, 1):
+        cell_output = output / ('cell-' + str(number).zfill(2))
+        cell_output.mkdir()
+        result = matrix_cell(cell, actor_sid, collector_sid, repo, cell_output, cwd)
+        report['results'].append(result)
+        if result['status'] != 'passed' or result.get('restoration_error'):
+            break
+    report['attempted_cells'] = len(report['results'])
+    report['remaining_cells'] = [{**cell, 'status': 'not_run'} for cell in cells[len(report['results']):]]
+    report['passed_cells'] = sum(c['status'] == 'passed' for c in report['results'])
+    report['status'] = 'passed' if report['passed_cells'] == len(cells) else 'failed'
 
 
 def mechanism_matrix_main(argv):
@@ -717,22 +770,88 @@ def mechanism_matrix_main(argv):
     report.update(collector_sid=collector_sid, fixture_workspace=str(cwd), status='running', results=[])
     child.durable_snapshot(output / 'matrix-input.json', report)
     repo = Path(child.__file__).resolve().parents[2]
-    for number, cell in enumerate(matrix_cells(), 1):
-        cell_output = output / ('cell-' + str(number).zfill(2))
-        cell_output.mkdir()
-        report['results'].append(matrix_cell(cell, args.actor_sid, collector_sid, repo, cell_output, cwd))
-    report['status'] = 'passed' if all(c['status'] == 'passed' for c in report['results']) else 'failed'
-    report['passed_cells'] = sum(c['status'] == 'passed' for c in report['results'])
+    matrix_run_cells(report, args.actor_sid, collector_sid, repo, output, cwd)
     child.durable_snapshot(output / 'matrix-result.json', report)
     index = {p.relative_to(output).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
              for p in sorted(output.rglob('*')) if p.is_file()}
     child.durable_snapshot(output / 'matrix-index.json', index)
     print(json.dumps({'status': report['status'], 'passed_cells': report['passed_cells'],
+                      'attempted_cells': report['attempted_cells'], 'remaining_cells': len(report['remaining_cells']),
                       'total_cells': 32, 'ordinary_actor_execution': 'not_run', 'output': str(output)}))
     return 0 if report['status'] == 'passed' else 1
 
 
 class MatrixSourceContractsTests(unittest.TestCase):
+    def test_setup_api_failure_restores_owned_scene_then_stops_batch(self):
+        for restore_failed in (False, True):
+            with self.subTest(restore_failed=restore_failed), tempfile.TemporaryDirectory() as directory:
+                base = Path(directory)
+                output, cwd = base / 'output', base / 'workspace'
+                output.mkdir()
+                cwd.mkdir()
+                descriptors, originals = {}, {}
+                setup_calls = []
+                restored = []
+                def descriptor(path, value=None):
+                    name = str(path)
+                    if name not in descriptors:
+                        descriptors[name] = ACLFamilyTests.descriptor_value(name)
+                        originals[name] = descriptors[name]
+                    if value is None:
+                        return descriptors[name]
+                    descriptors[name] = value
+                    restored.append(name)
+                    strategy, flags = child.restoration_strategy(value)
+                    result = {'api': 'SetFileSecurityW' if strategy == 'raw-explicit' else 'SetNamedSecurityInfoW',
+                              'security_information': flags,
+                              'return_value': 1 if strategy == 'raw-explicit' else 0, 'winerror': 0}
+                    if restore_failed and len(restored) == 1:
+                        raise child.DACLWriteError({**result, 'return_value': 0, 'winerror': 5})
+                    return result
+                def setup(path, planned):
+                    setup_calls.append(str(path))
+                    descriptors[str(path)] = planned
+                    if len(setup_calls) == 2:
+                        raise child.DACLWriteError({'api': 'SetFileSecurityW', 'security_information': 4,
+                                                    'return_value': 0, 'winerror': 5})
+                    return {'api': 'SetNamedSecurityInfoW', 'security_information': 0x80000004,
+                            'return_value': 0, 'winerror': 0}
+                report = {'results': []}
+                with mock.patch.object(child, 'current_sid', return_value='S-1-5-21-100'), \
+                     mock.patch.object(child, 'windows_descriptor', side_effect=descriptor), \
+                     mock.patch(__name__ + '.matrix_setup_write', side_effect=setup):
+                    matrix_run_cells(report, 'S-1-5-21-200', 'S-1-5-21-100', base / 'source', output, cwd)
+                self.assertEqual(report['attempted_cells'], 1)
+                self.assertEqual(len(report['remaining_cells']), 31)
+                self.assertEqual(len(setup_calls), 2)
+                self.assertEqual(len(restored), 2)
+                self.assertEqual(descriptors, originals)
+                result = report['results'][0]
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['setup'][1]['native_result']['winerror'], 5)
+                self.assertEqual('restoration_error' in result, restore_failed)
+
+    def test_failed_cell_and_failed_restore_stop_without_later_mutations(self):
+        for restoration_failed in (False, True):
+            with self.subTest(restoration_failed=restoration_failed), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                mutations = []
+                def failed(cell, *args):
+                    mutations.append(cell)
+                    return {**cell, 'status': 'failed',
+                            **({'restoration_error': 'OSError'} if restoration_failed else {'restoration': 'verified'})}
+                report = {'results': []}
+                with mock.patch(__name__ + '.matrix_cell', side_effect=failed) as invoke:
+                    matrix_run_cells(report, 'S-1-5-21-200', 'S-1-5-21-100', output, output, output)
+                self.assertEqual(invoke.call_count, 1)
+                self.assertEqual(len(mutations), 1)
+                self.assertEqual(report['attempted_cells'], 1)
+                self.assertEqual(report['passed_cells'], 0)
+                self.assertEqual(len(report['remaining_cells']), 31)
+                self.assertTrue(all(c['status'] == 'not_run' for c in report['remaining_cells']))
+                self.assertEqual(report['status'], 'failed')
+                self.assertEqual(sorted(p.name for p in output.iterdir()), ['cell-01'])
+
     def test_32_cells_are_unique_and_preflight_does_not_execute_acl_or_actor(self):
         from types import SimpleNamespace
         cells = matrix_cells()
