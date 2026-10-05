@@ -1293,7 +1293,8 @@ def collect(plan, output, *, supplemental=False):
                 capture['failure_class'] = type(exc).__name__
         if request:
             try:
-                restriction = request['restriction']
+                # Restore mutates diagnostics; preserve the exact signed tool request.
+                restriction = json.loads(json.dumps(request['restriction']))
                 if not restriction.get('restoration_error') and restriction.get('restoration') != 'verified':
                     child.restore(fixture, restriction)
                 base.require(not restriction.get('restoration_error'), 'fixture restoration failed')

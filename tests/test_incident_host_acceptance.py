@@ -1379,6 +1379,151 @@ class IncidentHostTests(P0Harness):
                 # Collector routing uses synthetic dependencies only, never native acceptance.
 
 
+class CollectorRequestLifecycleTests(unittest.TestCase):
+    """Synthetic collector lifecycle; no native process, ACL or model calls."""
+
+    def collect_case(self, profile=h.PROFILE_FULL, failure=None, already_restored=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / 'capture'
+            plan = {'schema': 'incident-host-plan/' + h.profile_version(profile),
+                    'gate_profile': profile, 'platform': 'Windows', 'python': sys.executable,
+                    'cli_version': 'codex-cli 0.160.0', 'cwd': str(root), 'output': str(output),
+                    'repo': str(h.ROOT), 'home': str(root / 'home'), 'plugin_root': str(h.ROOT),
+                    'data_root': str(root / 'state'), 'source': {'head': 'a' * 40},
+                    'runtime_sha256': 'b' * 64, 'toolkit': h.toolkit()}
+            if h.is_v2(profile):
+                plan.update(observation_contracts=dict(h.OBSERVATION_CONTRACTS),
+                            negative_parser_reference={'schema': 'incident-parser-reference/v1',
+                                'python_sha256': 'c' * 64, 'script_sha256': 'd' * 64,
+                                'runtime_sha256': 'b' * 64, 'cases': {'unknown': {}, 'missing': {}}})
+            if profile == h.PROFILE_FULL:
+                plan.update(gate_scope='full', required_gates=list(h.GATES))
+            restriction = {'policy': child.READ_BASELINE_POLICY, 'sid': 'S-1-5-21-200',
+                           'collector_sid': 'S-1-5-21-100', 'grant_complete': False,
+                           'deny_complete': False, 'original_snapshot_sha256': 'e' * 64,
+                           'nested': {'text': '原样\r\n', 'values': [None, True, 17]}}
+            if already_restored:
+                restriction['restoration'] = 'verified'
+            request = {'schema': 'incident-readonly-request/' + ('v2' if h.is_v2(profile) else 'v1'),
+                       'restriction': restriction}
+            request['request_sha256'] = child.request_identity_v2(request)
+            calls, observed_requests = [], []
+            class Client:
+                inventory = {}
+                def __init__(self, *_):
+                    self.sequence = self.turn = 0
+                def start(self, *_):
+                    self.sequence += 1
+                    return 'thread-' + str(self.sequence)
+                def observed_turn(self, thread, prompt):
+                    self.turn += 1
+                    return {'thread': thread, 'turn': str(self.turn), 'rows': []}
+                def close(self):
+                    calls.append('close')
+                    return {'owned_process_exited': True, 'owned_tree_no_running_members': True}
+            def apply(_root, transaction, phase, **_):
+                transaction[phase + '_complete'] = True
+            def baseline(_stage, _inventory, _plan, current, _argv, name):
+                child.v2_request(current)
+                observed_requests.append(copy.deepcopy(current))
+                if name == failure:
+                    raise ValueError('synthetic baseline failure')
+                return {'phase': name}
+            def restore(_root, record):
+                calls.append('restore')
+                # The production Windows helper writes nested diagnostics on both outcomes.
+                record['restoration_diagnostics'] = {'status': 'verified', 'operations': [{'api': 'restore'}]}
+                record['nested']['values'].append('restore-only')
+                if failure == 'restore':
+                    record.update(restoration_readback={}, restoration_differences=['fixture'])
+                    raise OSError('synthetic restoration failure')
+            def restoration(_root, record):
+                calls.append('receipt')
+                if not already_restored:
+                    self.assertEqual(record['restoration_diagnostics']['status'], 'verified')
+                if failure == 'receipt':
+                    raise ValueError('synthetic restoration receipt failure')
+                return {'status': 'verified', 'original_snapshot_sha256': 'e' * 64}
+            def stop(*_):
+                calls.append('stop')
+                if failure == 'stop':
+                    raise RuntimeError('synthetic stop failure')
+                return {'cleanups': []}
+            with mock.patch.object(h, 'Client', Client), \
+                 mock.patch.object(h, 'copy_session'), \
+                 mock.patch.object(h, 'command_observation', return_value={}), \
+                 mock.patch.object(h, 'principal_observation', return_value=restriction['sid']), \
+                 mock.patch.object(h, 'make_fixture', return_value=request), \
+                 mock.patch.object(h, 'baseline_observation', side_effect=baseline), \
+                 mock.patch.object(child, 'apply_read_transaction', side_effect=apply), \
+                 mock.patch.object(child, 'restore', side_effect=restore), \
+                 mock.patch.object(child, 'restored_transaction_observation', side_effect=restoration), \
+                 mock.patch.object(h, 'prepared_source_identity', return_value=plan['source']), \
+                 mock.patch.object(h.base, 'runtime', return_value=plan['runtime_sha256']), \
+                 mock.patch.object(h.base, 'collect', side_effect=stop):
+                capture = h.collect(plan, output, supplemental=profile == h.PROFILE_V2)
+            self.assertEqual(json.loads((output / 'capture.json').read_bytes()), capture)
+            authored = {p.name: json.loads(p.read_bytes()) for p in root.glob('incident-request-*.json')}
+            for baseline_request in observed_requests:
+                persisted = authored['incident-request-capture-' + baseline_request['phase'] + '.json']
+                self.assertEqual(persisted, baseline_request)
+                self.assertEqual(capture['baseline_requests'][baseline_request['phase']], persisted)
+                child.v2_request(persisted)
+            if 'readonly_request' in capture:
+                self.assertEqual(capture['readonly_request'], authored['incident-request-capture.json'])
+                self.assertNotIn('restoration_diagnostics', capture['readonly_request']['restriction'])
+                if h.is_v2(profile):
+                    child.v2_request(capture['readonly_request'])
+            self.assertEqual(calls.count('close'), 1)
+            self.assertEqual(calls.count('restore'), 0 if already_restored else 1)
+            return capture, calls
+
+    def test_full_signed_request_survives_successful_restoration(self):
+        capture, calls = self.collect_case()
+        self.assertNotIn('failure_class', capture)
+        self.assertNotIn('pending_class', capture)
+        self.assertEqual(capture['fixture_restoration']['status'], 'verified')
+        self.assertEqual(calls, ['close', 'stop', 'restore', 'receipt'])
+
+    def test_v2_and_legacy_request_snapshots_survive_restoration(self):
+        for profile in (h.PROFILE_V2, h.PROFILE):
+            with self.subTest(profile=profile):
+                self.collect_case(profile)
+
+    def test_post_request_stop_failure_retains_signed_request_and_restores(self):
+        capture, _ = self.collect_case(failure='stop')
+        self.assertEqual(capture['failure_class'], 'RuntimeError')
+        self.assertEqual(capture['fixture_restoration']['status'], 'verified')
+
+    def test_restoration_and_receipt_failures_stay_pending_without_request_drift(self):
+        for failure, kind in (('restore', 'OSError'), ('receipt', 'ValueError')):
+            with self.subTest(failure=failure):
+                capture, _ = self.collect_case(failure=failure)
+                self.assertEqual(capture['pending_class'], kind)
+                self.assertNotIn('fixture_restoration', capture)
+
+    def test_early_baseline_failure_and_verified_restoration_skip(self):
+        for phase in ('baseline_granted', 'baseline_denied'):
+            with self.subTest(phase=phase):
+                capture, _ = self.collect_case(failure=phase)
+                self.assertEqual(capture['failure_class'], 'ValueError')
+                self.assertNotIn('readonly_request', capture)
+                self.assertEqual(capture['fixture_restoration']['status'], 'verified')
+        self.collect_case(already_restored=True)
+
+    def test_signed_request_tampering_is_still_rejected(self):
+        capture, _ = self.collect_case()
+        original = capture['readonly_request']
+        for field, value in (('restoration_diagnostics', {'status': 'verified'}),
+                             ('grant_complete', False), ('nested', {'text': '原样\n'})):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(original)
+                changed['restriction'][field] = value
+                with self.assertRaisesRegex(ValueError, 'v2 readonly request digest changed'):
+                    child.v2_request(changed)
+
+
 class PlanPinTests(unittest.TestCase):
     def test_cli_version_explicit_0160_and_old_default_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
