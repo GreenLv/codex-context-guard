@@ -2987,12 +2987,32 @@ class ContextGuardTests(unittest.TestCase):
                 session="concurrent-session",
             )
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            list(executor.map(write, range(20)))
+        # Serialization/data integrity is the oracle here, not CI I/O speed.
+        # Keep the real process/kernel locks; timeout behavior has separate tests.
+        session_lock = cg.session_lock
+
+        def serialization_lock(directory: Path, timeout: float):
+            return session_lock(directory, timeout=30.0)
+
+        with (
+            mock.patch.object(
+                cg, "session_lock",
+                side_effect=serialization_lock,
+            ),
+            concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor,
+        ):
+            list(executor.map(write, range(20), timeout=60.0))
         state = self.state("concurrent-session")
         self.assertEqual(len(state["prompts"]), 20)
         self.assertEqual(
             len({item["id"] for item in state["prompts"]}), 20
+        )
+        self.assertEqual(
+            {item["sha256"] for item in state["prompts"]},
+            {
+                hashlib.sha256(f"并发需求 {index}：实现步骤并验证结果。".encode("utf-8")).hexdigest()
+                for index in range(20)
+            },
         )
 
     def test_process_queue_wait_and_filesystem_share_total_timeout(self) -> None:
