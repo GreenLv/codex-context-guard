@@ -15,8 +15,10 @@ from unittest import mock
 
 from tools.validation import incident_readonly_child as child
 
-NODE = ("tests.test_incident_acl_family.WindowsACLMechanismTests."
-        "test_original_inherited_and_protected_controls_restore")
+NODES = tuple("tests.test_incident_acl_family.WindowsACLMechanismTests." + name for name in (
+    "test_original_inherited_and_protected_controls_restore",
+    "test_actor_inheritable_write_propagation_fails_closed_and_restores",
+))
 OWNED_NAMES = {".", "nested", "nested/lock"}
 
 
@@ -101,7 +103,7 @@ def run():
             reports.append(report)
             raise
 
-    suite = unittest.defaultTestLoader.loadTestsFromName(NODE)
+    suite = unittest.defaultTestLoader.loadTestsFromNames(NODES)
     count = suite.countTestCases()
     result = unittest.TestResult()
     # The original fixture prints its retained private path; keep those messages
@@ -114,9 +116,9 @@ def run():
             suite.run(result)
     for report in reports:
         print("ACL_STRUCTURE=" + json.dumps(report, sort_keys=True), file=output)
-    passed = (count == result.testsRun == 1
+    passed = (count == result.testsRun == len(NODES)
               and result.wasSuccessful() and not result.skipped)
-    print(json.dumps({"scope": "fixed-node CI diagnosis", "node": NODE,
+    print(json.dumps({"scope": "fixed-node CI diagnosis", "nodes": NODES,
                       "python": list(sys.version_info[:3]), "tests": result.testsRun,
                       "failures": len(result.failures), "errors": len(result.errors),
                       "skipped": len(result.skipped), "status": "passed" if passed else "failed"}))

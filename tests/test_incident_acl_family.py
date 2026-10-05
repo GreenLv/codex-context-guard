@@ -18,6 +18,16 @@ from unittest import mock
 from tools.validation import incident_readonly_child as child
 
 
+def owned_actor_descriptor(sid, entries):
+    """Explicit synthetic fixture seed; Windows inheritance is observed separately."""
+    principal = child.sid_bytes(sid)
+    aces = b''.join(struct.pack('<BBHI', 0, flags, 8 + len(principal), mask) + principal
+                    for flags, mask in entries)
+    acl = struct.pack('<BBHHH', 2, 0, 8 + len(aces), len(entries), 0) + aces
+    header = struct.pack('<BBHIIII', 1, 0, 0x8004, 0, 0, 0, 20)
+    return base64.b64encode(header + acl).decode('ascii')
+
+
 class ACLFamilyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -36,6 +46,25 @@ class ACLFamilyTests(unittest.TestCase):
         acl = struct.pack('<BBHHH', 2, 0, 8 + len(ace), 1, 0) + ace
         header = struct.pack('<BBHIIII', 1, 0, control, 0, 0, 0, 20 + padding)
         return base64.b64encode(header + b'\x00' * padding + acl).decode()
+
+    def test_owned_parent_inheritance_grants_read_traverse_without_write_propagation(self):
+        before = owned_actor_descriptor(self.sid, [(0, 0x1f01ff), (3, 0x1200a9)])
+        planned = child.planned_acl_change(before, self.sid, 'deny', True, 'specific-write-deny/v2')
+        aces = [bytes.fromhex(a) for a in child.descriptor_contract(planned)['aces']]
+        inherited = [a for a in aces if a[1] == 3]
+        self.assertEqual(len(inherited), 1)
+        self.assertEqual(struct.unpack_from('<I', inherited[0], 4)[0], 0x1200a9)
+        self.assertEqual(0x1200a9 & 0x10156, 0)
+        self.assertEqual(child.ace_sid(inherited[0]), self.sid)
+
+    def test_inheritable_write_seed_retains_the_original_propagation_counterexample(self):
+        before = owned_actor_descriptor(self.sid, [(3, 0x1f01ff)])
+        planned = child.planned_acl_change(before, self.sid, 'deny', True, 'specific-write-deny/v2')
+        aces = [bytes.fromhex(a) for a in child.descriptor_contract(planned)['aces']]
+        allow = next(a for a in aces if a[0] == 0)
+        self.assertEqual(allow[1], 3)
+        self.assertEqual(struct.unpack_from('<I', allow, 4)[0], 0x1e00a9)
+        self.assertEqual(0x1f01ff ^ 0x1e00a9, 0x10156)
 
     def test_descriptor_layout_diff_allowed_but_ace_and_controls_exact(self):
         before = self.descriptor_value('principal')
@@ -310,49 +339,79 @@ class WindowsACLMechanismTests(unittest.TestCase):
                              {k: child.descriptor_contract(v) for k, v in dacls.items()})
             self.assertEqual(child.inventory(root), before)
 
-    def test_original_inherited_and_protected_controls_restore(self):
+    def set_owned_fixture_dacl(self, path, descriptor, *, protected):
         from ctypes import wintypes
+        buffer = ctypes.create_string_buffer(base64.b64decode(descriptor))
+        api = ctypes.WinDLL('advapi32', use_last_error=True)
+        get_dacl = api.GetSecurityDescriptorDacl
+        get_dacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+                             ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+        get_dacl.restype = wintypes.BOOL
+        acl = ctypes.c_void_p()
+        present, defaulted = wintypes.BOOL(), wintypes.BOOL()
+        self.assertTrue(get_dacl(buffer, ctypes.byref(present), ctypes.byref(acl),
+                                ctypes.byref(defaulted)))
+        self.assertTrue(present.value and acl.value)
+        flags = 4 | (0x80000000 if protected else 0x20000000)
+        result = child.named_security_write(api, path, flags, acl)
+        self.assertEqual(result['return_value'], 0)
+        return result
+
+    def seed_owned_acl_family(self, root, *, protected, auto, propagate_write=False):
+        # All objects already belong to this exclusively-created test tree.
+        # Parent maintenance rights do not inherit; only read/traverse does.
+        sid = child.current_sid()
+        parent = owned_actor_descriptor(sid, [(0, 0x1f01ff), (3, 0x1200a9)])
+        self.set_owned_fixture_dacl(root.parent, parent, protected=True)
+        full = owned_actor_descriptor(sid, [(0, 0x1f01ff)])
+        paths = sorted(child.fixture_paths(root), key=lambda p: (len(p.parts), str(p)))
+        for path in paths:
+            self.set_owned_fixture_dacl(path, full, protected=False)
+        if protected:
+            entries = [(3, 0x1f01ff)] if propagate_write else [(0, 0x1f01ff), (3, 0x1200a9)]
+            self.set_owned_fixture_dacl(root, owned_actor_descriptor(sid, entries), protected=True)
+        if propagate_write:
+            # Recompute real inherited tails from the harmful root seed.
+            for path in paths[1:]:
+                self.set_owned_fixture_dacl(path, full, protected=False)
+        if not auto:
+            from ctypes import wintypes
+            buffer = ctypes.create_string_buffer(base64.b64decode(child.windows_descriptor(root)))
+            api = ctypes.WinDLL('advapi32', use_last_error=True)
+            setter = api.SetFileSecurityW
+            setter.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
+            setter.restype = wintypes.BOOL
+            self.assertTrue(setter(str(root), 4, buffer))
+        return sid, child.descriptor_contract(child.windows_descriptor(root.parent))
+
+    def test_original_inherited_and_protected_controls_restore(self):
         for protected, auto in ((False, True), (True, True), (True, False)):
             with self.subTest(protected=protected, auto=auto), self.owned_fixture() as tmp:
                 root = Path(tmp) / 'fixture'
                 (root / 'nested').mkdir(parents=True)
                 (root / 'nested' / 'lock').write_bytes(b'fixed')
-                # Fixture-only setup deliberately creates the two distinct
-                # original inheritance families before saving the baseline.
-                raw = base64.b64decode(child.windows_descriptor(root))
-                buffer = ctypes.create_string_buffer(raw)
-                api = ctypes.WinDLL('advapi32', use_last_error=True)
-                get_dacl = api.GetSecurityDescriptorDacl
-                get_dacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
-                                     ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
-                get_dacl.restype = wintypes.BOOL
-                acl = ctypes.c_void_p()
-                present, defaulted = wintypes.BOOL(), wintypes.BOOL()
-                self.assertTrue(get_dacl(buffer, ctypes.byref(present), ctypes.byref(acl),
-                                        ctypes.byref(defaulted)))
-                setter = api.SetNamedSecurityInfoW
-                setter.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
-                                   ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
-                setter.restype = wintypes.DWORD
-                self.assertEqual(setter(str(root), 1, 4 | 0x20000000, None, None, acl, None), 0)
-                if protected:
-                    self.assertEqual(setter(str(root), 1, 4 | 0x80000000, None, None, acl, None), 0)
-                if not auto:
-                    raw = base64.b64decode(child.windows_descriptor(root))
-                    raw_buffer = ctypes.create_string_buffer(raw)
-                    raw_setter = api.SetFileSecurityW
-                    raw_setter.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
-                    raw_setter.restype = wintypes.BOOL
-                    self.assertTrue(raw_setter(str(root), 4, raw_buffer))
+                sid, parent = self.seed_owned_acl_family(root, protected=protected, auto=auto)
                 control = child.descriptor_contract(child.windows_descriptor(root))['dacl_control']
                 self.assertEqual(bool(control & 0x1000), protected)
                 self.assertEqual(bool(control & 0x400), auto)
                 self.snapshot(root, 'before')
                 paths = child.fixture_paths(root)
                 before = {str(path): child.descriptor_contract(child.windows_descriptor(path)) for path in paths}
+                for path in paths:
+                    actor = [bytes.fromhex(a) for a in before[str(path)]['aces']
+                             if child.ace_sid(bytes.fromhex(a)) == sid]
+                    for ace in actor:
+                        if ace[1] & 3:
+                            self.assertEqual(struct.unpack_from('<I', ace, 4)[0] & 0x10156, 0)
+                    if path != root or not protected:
+                        self.assertTrue(any(a[1] & 0x10 and
+                                            struct.unpack_from('<I', a, 4)[0] == 0x1200a9
+                                            for a in actor), 'real inherited read/traverse ACE required')
+                inventory = child.inventory(root)
                 record = child.restrict(root)
                 try:
-                    self.assertEqual(child.inventory(root), record['original_inventory'])
+                    self.assertEqual(child.inventory(root), inventory)
+                    self.assertEqual(child.descriptor_contract(child.windows_descriptor(root.parent)), parent)
                 finally:
                     try:
                         child.restore(root, record)
@@ -360,6 +419,52 @@ class WindowsACLMechanismTests(unittest.TestCase):
                         self.snapshot(root, 'after', record)
                 self.assertEqual({str(path): child.descriptor_contract(child.windows_descriptor(path))
                                   for path in paths}, before)
+                self.assertEqual(child.inventory(root), inventory)
+                self.assertEqual(child.descriptor_contract(child.windows_descriptor(root.parent)), parent)
+
+    def test_actor_inheritable_write_propagation_fails_closed_and_restores(self):
+        with self.owned_fixture() as tmp:
+            root = Path(tmp) / 'fixture'
+            (root / 'nested').mkdir(parents=True)
+            (root / 'nested' / 'lock').write_bytes(b'fixed')
+            sid, parent = self.seed_owned_acl_family(root, protected=True, auto=True, propagate_write=True)
+            self.assertEqual(child.descriptor_contract(child.windows_descriptor(root))['dacl_control'], 0x1404)
+            paths = child.fixture_paths(root)
+            before = {str(path): child.descriptor_contract(child.windows_descriptor(path)) for path in paths}
+            inventory = child.inventory(root)
+            self.snapshot(root, 'before-propagation')
+            with self.assertRaises(child.RestrictionError) as raised:
+                child.restrict(root)
+            record = raised.exception.record
+            self.snapshot(root, 'after-propagation', record)
+            failed = record['operations'][-1]
+            self.assertEqual((failed['phase'], failed['path'], failed['step']), ('deny', '.', 'validate'))
+            self.assertEqual(failed['failure']['reason'], 'exact_dacl_validation_failed')
+            self.assertEqual(child.descriptor_contract(failed['actual']), child.descriptor_contract(failed['planned']))
+            self.assertEqual(set(failed['unexpected_objects']), {'nested', 'nested/lock'})
+            expected = {op['path']: child.descriptor_contract(op['planned'])
+                        for op in record['operations'][:-1] if op['status'] == 'verified'}
+            for relative, observed in failed['unexpected_objects'].items():
+                actual = child.descriptor_contract(observed)
+                wanted = expected[relative]
+                self.assertEqual({k: v for k, v in actual.items() if k != 'aces'},
+                                 {k: v for k, v in wanted.items() if k != 'aces'})
+                self.assertEqual(len(actual['aces']), len(wanted['aces']))
+                changes = 0
+                for original, changed in zip(wanted['aces'], actual['aces']):
+                    raw, found = bytearray.fromhex(original), bytes.fromhex(changed)
+                    if raw[1] & 0x10 and child.ace_sid(raw) == sid:
+                        self.assertEqual(struct.unpack_from('<I', raw, 4)[0], 0x1f01ff)
+                        struct.pack_into('<I', raw, 4, 0x1e00a9)
+                        changes += 1
+                    self.assertEqual(bytes(raw), found)
+                self.assertGreater(changes, 0, 'must observe real inherited write-grant propagation')
+            self.assertEqual(record.get('restoration'), 'verified')
+            self.assertNotIn('restoration_error', record)
+            self.assertEqual({str(path): child.descriptor_contract(child.windows_descriptor(path))
+                              for path in paths}, before)
+            self.assertEqual(child.inventory(root), inventory)
+            self.assertEqual(child.descriptor_contract(child.windows_descriptor(root.parent)), parent)
 
     def test_actual_partial_apply_restores_original_dacls(self):
         with self.owned_fixture() as tmp:

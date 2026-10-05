@@ -94,10 +94,10 @@ class ACLDiagnosticTests(unittest.TestCase):
 
         class FixedSuite:
             def countTestCases(self):
-                return 1
+                return len(diagnostic.NODES)
 
             def run(suite, result):
-                result.testsRun = 1
+                result.testsRun = len(diagnostic.NODES)
                 try:
                     child.apply_acl_change(self.root, record, self.root / "nested/lock",
                                            None, None, "deny", expected)
@@ -108,7 +108,7 @@ class ACLDiagnosticTests(unittest.TestCase):
         stream = io.StringIO()
         with mock.patch.object(diagnostic, "os", SimpleNamespace(name="nt")), \
                 mock.patch.object(child, "apply_acl_change", side_effect=failure), \
-                mock.patch.object(unittest.defaultTestLoader, "loadTestsFromName", return_value=FixedSuite()), \
+                mock.patch.object(unittest.defaultTestLoader, "loadTestsFromNames", return_value=FixedSuite()), \
                 mock.patch("sys.stdout", stream):
             self.assertEqual(diagnostic.run(), 1)
         self.assertEqual(caught, [failure])
@@ -123,6 +123,23 @@ class ACLDiagnosticTests(unittest.TestCase):
         self.assertNotEqual(unexpected["expected"], report["before"])
         for private in ("private-original-exception", "private-traceback", self.actor, str(self.root)):
             self.assertNotIn(private, stream.getvalue())
+
+    def test_diagnostic_rejects_partial_and_skipped_fixed_nodes(self):
+        for total, skipped in ((1, []), (2, [(None, "unavailable")])):
+            class FixedSuite:
+                def countTestCases(self):
+                    return 2
+
+                def run(self, result):
+                    result.testsRun = total
+                    result.skipped = skipped
+
+            stream = io.StringIO()
+            with mock.patch.object(diagnostic, "os", SimpleNamespace(name="nt")), \
+                    mock.patch.object(unittest.defaultTestLoader, "loadTestsFromNames", return_value=FixedSuite()), \
+                    mock.patch("sys.stdout", stream):
+                self.assertEqual(diagnostic.run(), 1)
+            self.assertIn('"status": "failed"', stream.getvalue())
 
     def test_workflow_is_bounded_manual_read_only_and_fixed_to_two_failed_versions(self):
         root = Path(__file__).resolve().parents[1]
