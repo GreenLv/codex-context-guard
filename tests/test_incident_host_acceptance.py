@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import ntpath
 import os
 import platform
 import subprocess
@@ -976,11 +977,15 @@ class IncidentHostTests(P0Harness):
         shell = self.root / 'bound-shell' / 'pwsh.exe'
         shell.parent.mkdir(exist_ok=True)
         shell.write_bytes(b'synthetic shell identity; never executed')
+        # A POSIX root-only spelling is not Windows-absolute on Python 3.13+.
+        # The UNC spelling still names this owned file on POSIX; native Windows
+        # keeps its real drive-qualified path. This shell is never executed.
+        shell_path = str(shell) if os.name == 'nt' else '/' + str(shell)
         self.plan.update(schema='incident-host-plan/v2', gate_profile=h.PROFILE_V2,
                          observation_contracts=dict(h.OBSERVATION_CONTRACTS), platform='Windows',
                          python_sha256=base.sha(Path(self.plan['python'])),
                          runtime_sha256=base.runtime(h.ROOT),
-                         shell={'name': 'powershell', 'path': str(shell), 'sha256': base.sha(shell)})
+                         shell={'name': 'powershell', 'path': shell_path, 'sha256': base.sha(shell)})
         self.plan['negative_parser_reference'] = h.derive_parser_reference(self.plan)
         stage = self.stage(kind, query_options=['--unknown-status-option'] if kind == 'unknown'
                            else ['--item', '--commands'])
@@ -988,12 +993,61 @@ class IncidentHostTests(P0Harness):
             item = row.get('params', {}).get('item')
             if item and item.get('type') == 'commandExecution':
                 body = item['command'].replace("'", "''")
-                item['command'] = '"' + str(shell) + '" -Command ' + "'" + body + "'"
+                item['command'] = '"' + shell_path + '" -Command ' + "'" + body + "'"
                 if row['method'] == 'item/completed':
                     item['exitCode'] = 1
             if row.get('method') == 'hook/completed' and row['params']['run']['eventName'] == 'postToolUse':
                 row['params']['run']['entries'] = [{'kind': 'feedback', 'text': 'Synthetic malformed refusal.'}]
         return stage
+
+    def test_v2_host_shell_fixture_is_fully_qualified_and_bound(self):
+        for kind in ('unknown', 'missing'):
+            with self.subTest(kind=kind):
+                stage = self.v2_host(kind)
+                identity = self.plan['shell']
+                self.assertTrue(ntpath.isabs(identity['path']))
+                self.assertTrue(ntpath.splitdrive(identity['path'])[0])
+                self.assertEqual(h.verify_shell_file(identity), identity)
+                owned = self.root / 'bound-shell' / 'pwsh.exe'
+                self.assertEqual(Path(identity['path']).resolve(), owned.resolve())
+                self.assertEqual(identity['sha256'], base.sha(owned))
+                item = next(row['params']['item'] for row in stage['rows']
+                            if row['method'] == 'item/completed')
+                outer = h.windows_display_tokens(item['command'])
+                self.assertEqual(outer[0], identity['path'])
+                self.assertEqual(h.rejection_observation(
+                    stage, self.inventory, self.plan, kind)['status'], 'passed')
+                for wrong in ({**identity, 'path': identity['path'] + '.foreign'},
+                              {**identity, 'sha256': 'invalid'}):
+                    self.assertIsNone(h.ordinary_command_argv(
+                        item['command'], windows=True, shell_identity=wrong))
+                compound = '"' + identity['path'] + '" -Command ' + "'" + outer[2] + "; echo extra'"
+                self.assertIsNone(h.ordinary_command_argv(
+                    compound, windows=True, shell_identity=identity))
+
+    def test_windows_shell_qualified_and_rooted_path_family(self):
+        body = r'& "C:\Python Space\python.exe" "C:\Plugin Space\context_guard.py" checkpoint-status'
+        expected = [r'C:\Python Space\python.exe',
+                    r'C:\Plugin Space\context_guard.py', 'checkpoint-status']
+        paths = (r'C:\Fixture Shell\pwsh.exe', r'\\fixture-host\Fixture Share\pwsh.exe')
+        for path in paths:
+            identity = {'name': 'powershell', 'path': path, 'sha256': 'a' * 64}
+            for command in (subprocess.list2cmdline([path, '-Command', body]),
+                            '"' + path + '" -Command ' + "'" + body + "'"):
+                with self.subTest(path=path, command=command):
+                    self.assertEqual(h.ordinary_command_argv(
+                        command, windows=True, shell_identity=identity), expected)
+                    self.assertIsNone(h.ordinary_command_argv(
+                        command, windows=True, shell_identity={**identity, 'path': path + '.foreign'}))
+        # Pin the stdlib boundary; do not promote rooted paths into native pins.
+        for path in (r'\Fixture Shell\pwsh.exe', '/Fixture Shell/pwsh.exe'):
+            identity = {'name': 'powershell', 'path': path, 'sha256': 'a' * 64}
+            command = '"' + path + '" -Command ' + "'" + body + "'"
+            absolute = sys.version_info < (3, 13)
+            with self.subTest(rooted=path):
+                self.assertEqual(ntpath.isabs(path), absolute)
+                self.assertEqual(h.ordinary_command_argv(
+                    command, windows=True, shell_identity=identity), expected if absolute else None)
 
     def test_v2_explicit_host1_parser_signature_and_v1_failure(self):
         for kind in ('unknown', 'missing'):
