@@ -7,6 +7,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tools.validation import acl_ci_diagnostic as diagnostic
@@ -89,6 +90,7 @@ class ACLDiagnosticTests(unittest.TestCase):
         record = self.record()
         failure = ValueError("private-original-exception")
         caught = []
+        expected = {str(self.root / "nested"): record["operations"][0]["actual"]}
 
         class FixedSuite:
             def countTestCases(self):
@@ -98,13 +100,13 @@ class ACLDiagnosticTests(unittest.TestCase):
                 result.testsRun = 1
                 try:
                     child.apply_acl_change(self.root, record, self.root / "nested/lock",
-                                           None, None, "deny", record["original_dacls"])
+                                           None, None, "deny", expected)
                 except ValueError as exc:
                     caught.append(exc)
                     result.errors.append((None, "private-traceback"))
 
         stream = io.StringIO()
-        with mock.patch.object(diagnostic.os, "name", "nt"), \
+        with mock.patch.object(diagnostic, "os", SimpleNamespace(name="nt")), \
                 mock.patch.object(child, "apply_acl_change", side_effect=failure), \
                 mock.patch.object(unittest.defaultTestLoader, "loadTestsFromName", return_value=FixedSuite()), \
                 mock.patch("sys.stdout", stream):
@@ -112,6 +114,13 @@ class ACLDiagnosticTests(unittest.TestCase):
         self.assertEqual(caught, [failure])
         self.assertIn('"status": "failed"', stream.getvalue())
         self.assertEqual(stream.getvalue().count("ACL_STRUCTURE="), 1)
+        line = next(line for line in stream.getvalue().splitlines()
+                    if line.startswith("ACL_STRUCTURE="))
+        report = json.loads(line.removeprefix("ACL_STRUCTURE="))
+        self.assertNotIn("structure", report)
+        unexpected = report["unexpected_objects"][0]
+        self.assertEqual(unexpected["expected"], unexpected["actual"])
+        self.assertNotEqual(unexpected["expected"], report["before"])
         for private in ("private-original-exception", "private-traceback", self.actor, str(self.root)):
             self.assertNotIn(private, stream.getvalue())
 
