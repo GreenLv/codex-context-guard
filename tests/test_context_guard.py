@@ -3230,7 +3230,7 @@ class ContextGuardTests(unittest.TestCase):
                 "legacy-turn",
                 "legacy-token",
             )
-        on_disk = json.loads((session_dir / "state.json").read_text())
+        on_disk = json.loads((session_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(on_disk["schema_version"], 4)
 
         self.prompt("继续迁移后的任务，并建立新的 turn-bound control。")

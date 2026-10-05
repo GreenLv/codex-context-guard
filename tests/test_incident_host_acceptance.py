@@ -24,6 +24,8 @@ from tools.validation import stop_host_acceptance as base
 
 class IncidentHostTests(P0Harness):
     def ready(self):
+        # Owned fixture inputs use long paths; native helper pins reject 8.3 aliases.
+        self.root = self.root.resolve()
         self.activate()
         self.plan = {'source': {'head': 'a' * 40, 'prepared_source_sha256': 'e' * 64,
                                 'dirty_paths': [], 'renamed_away': []},
@@ -348,13 +350,23 @@ class IncidentHostTests(P0Harness):
         variants = [[], [{'kind': 'context', 'text': ''}],
                     [{'kind': 'message', 'text': text}],
                     [{'kind': 'context', 'text': text}, {'kind': 'context', 'text': text}]]
-        for old, new in ((sys.executable, '/other/python'),
-                         (str(h.ROOT / 'scripts/context_guard.py'), '/other/script'),
-                         ('--session-id p0', '--session-id other'),
-                         ('--turn-id ', '--turn-id other-'),
-                         (self.plan['data_root'], '/other/data'),
-                         ('p0token', 'wrong-token'), ('p0token', '[REDACTED_SECRET]')):
-            changed = text.replace(old, new)
+        windows = self.plan['platform'] == 'Windows'
+        commands = [(line, cg.private_control_command_tokens(line, windows=windows))
+                    for line in text.splitlines()]
+        selected = [(line, argv) for line, argv in commands
+                    if argv and len(argv) > 3 and argv[2] == 'checkpoint-status']
+        self.assertEqual(len(selected), 1, 'negative control needs the observed discovery command')
+        line, observed = selected[0]
+        token = next(i for i, arg in enumerate(observed) if arg.startswith('--token='))
+        mutations = [(0, '/other/python'), (1, '/other/script'),
+                     (observed.index('--session-id') + 1, 'other'),
+                     (observed.index('--turn-id') + 1, 'other-turn'),
+                     (observed.index('--data-dir') + 1, '/other/data'),
+                     (token, '--token=wrong-token'), (token, '--token=[REDACTED_SECRET]')]
+        for index, value in mutations:
+            argv = list(observed)
+            argv[index] = value
+            changed = text.replace(line, cg.shell_join(argv, windows=windows))
             self.assertNotEqual(changed, text, 'negative control must change an input')
             variants.append([{'kind': 'context', 'text': changed}])
         for index, entries in enumerate(variants):

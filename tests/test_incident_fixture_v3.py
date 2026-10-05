@@ -462,12 +462,14 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
     def test_v2_descendant_ACE_mask_flags_loss_and_midway_failure_restore_entire_S0(self):
         for damage in ('drop', 'mask', 'flags', 'api_failure'):
             with self.subTest(damage=damage):
+                injected = []
                 def fault(double, output):
                     original = double.write
                     def write(path, planned, **kwargs):
                         contract = child.descriptor_contract(planned)
-                        if (str(path).endswith('target/nested') and contract['dacl_control'] == 0x1404
+                        if (path == double.root / 'target' / 'nested' and contract['dacl_control'] == 0x1404
                                 and len(contract['aces']) > 3):
+                            injected.append(damage)
                             if damage == 'api_failure':
                                 raise OSError('synthetic second descendant setup failure')
                             aces = list(contract['aces'])
@@ -485,6 +487,7 @@ class MatrixInheritanceFamilyTests(unittest.TestCase):
                     double.write = write
                 double, result, _ = self.run_cell('directory', 0x1404, 'inherited', fault=fault,
                                                   profile=legacy.MATRIX_V2_PROFILE)
+                self.assertTrue(injected, 'negative control must reach the owned descendant')
                 self.assertEqual(result['status'], 'failed')
                 self.assertNotIn('s1_record', result)
                 self.assertEqual(result['restorations'][-1]['status'], 'verified')
@@ -1206,7 +1209,7 @@ class FixtureV3Tests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
+        self.base = Path(self.tmp.name).resolve()
         self.cwd = self.base / 'workspace'
         self.cwd.mkdir()
         self.output = self.base / 'result'

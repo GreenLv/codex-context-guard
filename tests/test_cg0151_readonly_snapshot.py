@@ -14,6 +14,7 @@ import os
 import stat
 import sys
 import threading
+import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +37,22 @@ def tree_inventory(root: Path) -> dict[str, list]:
             info.st_ino,
         ]
     return result
+
+
+def retired_publication_sample(sample, receipt):
+    """Classify only a real single-link publication's retired regular inode."""
+    if not receipt or set(receipt) != {"before", "retired", "current"}:
+        return False
+    before, retired, current = (receipt[key] for key in
+                                ("before", "retired", "current"))
+    def identity(info):
+        return info.st_dev, info.st_ino
+    return (all(stat.S_ISREG(info.st_mode) for info in
+                (sample, before, retired, current))
+            and sample.st_nlink == retired.st_nlink == 0
+            and before.st_nlink == current.st_nlink == 1
+            and identity(sample) == identity(before) == identity(retired)
+            and identity(current) != identity(retired))
 
 
 class ReadOnlySnapshotTests(P0Harness):
@@ -217,6 +234,22 @@ class ReadOnlySnapshotTests(P0Harness):
         published: list[str] = [self.state()["content_hash"]]
         stop = threading.Event()
         writer_errors: list[BaseException] = []
+        state_path = self.session_dir / "state.json"
+        real_lstat = Path.lstat
+        publications = []
+        query_samples = []
+        rejected_samples = []
+
+        def observe_lstat(path, *args, **kwargs):
+            # Return the actual kernel result. No manufactured link counts,
+            # descriptor identities, or acceptance responses enter the query.
+            started = time.monotonic_ns()
+            info = real_lstat(path, *args, **kwargs)
+            finished = time.monotonic_ns()
+            if path == state_path and threading.current_thread() is threading.main_thread():
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    query_samples.append((info, started, finished))
+            return info
 
         def writer():
             try:
@@ -225,7 +258,19 @@ class ReadOnlySnapshotTests(P0Harness):
                     with cg.session_lock(self.session_dir):
                         state = self.state()
                         state["wait_condition_sequence"] = index + 1
-                        self.save_state(state)
+                        # The production opener shares deletion on Windows.
+                        # Holding this owned fd prevents inode reuse and binds
+                        # every sampled retirement to this exact real save.
+                        fd = cg._open_committed_state(state_path)
+                        receipt = {"before": os.fstat(fd)}
+                        started = time.monotonic_ns()
+                        try:
+                            self.save_state(state)
+                            receipt["retired"] = os.fstat(fd)
+                            receipt["current"] = real_lstat(state_path)
+                            publications.append((receipt, started, time.monotonic_ns()))
+                        finally:
+                            os.close(fd)
                         published.append(self.state()["content_hash"])
                     index += 1
             except BaseException as exc:
@@ -236,9 +281,19 @@ class ReadOnlySnapshotTests(P0Harness):
         try:
             revisions = set()
             for _ in range(20):
+                query_samples.clear()
                 try:
-                    result = self.query()
+                    with mock.patch.object(Path, "lstat", observe_lstat):
+                        result = self.query()
                 except RuntimeError as exc:
+                    if str(exc) == "state_file_not_a_regular_file":
+                        # This coarse production error also covers a stat of
+                        # an inode retired during atomic publication. Require
+                        # its last real sample and exact completed receipt;
+                        # hardlinks/nonregular objects never qualify.
+                        self.assertTrue(query_samples, "missing real rejection sample")
+                        rejected_samples.append(query_samples[-1])
+                        continue
                     # A bounded transient failure is allowed; an invented
                     # revision never is.
                     self.assertIn(str(exc), {
@@ -254,6 +309,12 @@ class ReadOnlySnapshotTests(P0Harness):
                 raise writer_errors[0]
             self.assertEqual(len(published), 25,
                              "writer must publish all 24 requested revisions")
+            for sample, started, finished in rejected_samples:
+                self.assertTrue(any(
+                    start <= finished and end >= started
+                    and retired_publication_sample(sample, receipt)
+                    for receipt, start, end in publications),
+                    "nonregular rejection lacks overlapping exact retirement evidence")
             # Every racing query may legitimately report explicit stale: the
             # whole-query verifier now spans the final projection too. Once
             # publication is quiescent, a healthy snapshot must succeed.
@@ -265,6 +326,56 @@ class ReadOnlySnapshotTests(P0Harness):
         finally:
             stop.set()
             thread.join(timeout=10)
+
+    def test_r05_retirement_classifier_requires_exact_real_publication(self):
+        self.ready()
+        path = self.session_dir / "state.json"
+        fd = cg._open_committed_state(path)
+        try:
+            before = os.fstat(fd)
+            state = self.state()
+            state["wait_condition_sequence"] += 1
+            self.save_state(state)
+            retired = os.fstat(fd)
+            current = path.lstat()
+            receipt = {"before": before, "retired": retired, "current": current}
+            # POSIX replacement exposes nlink zero; platforms that keep a
+            # link on the old handle must reject that different observation.
+            self.assertEqual(retired_publication_sample(retired, receipt),
+                             retired.st_nlink == 0)
+            self.assertFalse(retired_publication_sample(current, receipt))
+            self.assertFalse(retired_publication_sample(retired, {}))
+            self.assertFalse(retired_publication_sample(
+                retired, dict(receipt, current=before)))
+            self.assertFalse(retired_publication_sample(
+                retired, dict(receipt, before=current)))
+            self.assertFalse(retired_publication_sample(self.session_dir.lstat(), receipt))
+        finally:
+            os.close(fd)
+
+    def test_r05_static_hardlink_and_directory_still_fail_closed(self):
+        self.ready()
+        path = self.session_dir / "state.json"
+        linked = self.session_dir / "state-linked"
+        os.link(path, linked)
+        try:
+            self.assertEqual(path.lstat().st_nlink, 2)
+            with self.assertRaisesRegex(RuntimeError, "state_file_not_a_regular_file"):
+                self.query()
+        finally:
+            linked.unlink()
+        original = path.read_bytes()
+        path.unlink()
+        path.mkdir()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "state_file_not_a_regular_file"):
+                cg.read_only_committed_state(self.session_dir)
+            with self.assertRaisesRegex(RuntimeError, "session_not_found"):
+                self.query()
+        finally:
+            path.rmdir()
+            path.write_bytes(original)
+        self.assertIn("revision", self.query())
 
     def test_r05_worker_exception_fails_publication_witness(self):
         original = type(self).save_state
@@ -600,7 +711,7 @@ class ReadOnlySnapshotTests(P0Harness):
             # File witnesses: the query saw two different committed
             # worlds, and the turn really moved on disk.
             self.assertEqual(pass_results, [True, False])
-            committed = json.loads(state_path.read_text())
+            committed = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertNotEqual(committed["completion_attempt"]["turn_id"],
                                 turn)
         finally:
@@ -636,7 +747,7 @@ class ReadOnlySnapshotTests(P0Harness):
                     RuntimeError, "state_replaced_during_query"
                 ):
                     self.query(turn=turn)
-            committed = json.loads(state_path.read_text())
+            committed = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(committed["wait_condition_sequence"], 77)
         finally:
             state_path.write_bytes(original_state)
@@ -694,13 +805,13 @@ class ReadOnlySnapshotTests(P0Harness):
                         source.write_bytes(original_source)
 
     def _mutate_rehashed(self, source, companion):
-        record = json.loads(source.read_text())
+        record = json.loads(source.read_text(encoding="utf-8"))
         record["authority"] = "untrusted_attachment"
         record["origin"] = "delegated"
         record["record_sha256"] = cg.prompt_record_hash(record)
         source.write_text(json.dumps(record), encoding="utf-8")
         if companion.exists():
-            binding = json.loads(companion.read_text())
+            binding = json.loads(companion.read_text(encoding="utf-8"))
             binding["prompt_record_sha256"] = record["record_sha256"]
             binding["record_sha256"] = cg.sha256_text(cg.canonical_json(
                 {key: value for key, value in binding.items()
@@ -708,7 +819,7 @@ class ReadOnlySnapshotTests(P0Harness):
             companion.write_text(json.dumps(binding), encoding="utf-8")
 
     def _mutate_drop_record_hash(self, source):
-        record = json.loads(source.read_text())
+        record = json.loads(source.read_text(encoding="utf-8"))
         record.pop("record_sha256", None)
         source.write_text(json.dumps(record), encoding="utf-8")
 
@@ -727,7 +838,7 @@ class ReadOnlySnapshotTests(P0Harness):
                              record)
 
     def _mutate_changed_text(self, source):
-        record = json.loads(source.read_text())
+        record = json.loads(source.read_text(encoding="utf-8"))
         record["text"] = "请检查另一个示例。"
         source.write_text(json.dumps(record), encoding="utf-8")
 
