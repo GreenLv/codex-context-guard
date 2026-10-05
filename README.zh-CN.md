@@ -12,13 +12,11 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **最新已发布：0.15.0 — 2026-10-02。** 减少 Hook 启动开销、精简指令，并保证状态的独占写入。新会话使用独立状态；旧任务需要原运行时。修改现有安装前，请阅读[发布说明](docs/releases/v0.15.0.md)和[升级边界](docs/SESSION_STORAGE.md)。
-
-> **未发布的 0.15.1 源码候选：** 明确续行可解除普通暂停并保留未完成工作；后续用户事件即使重复相同的暂停文字，也会重新等待。诊断选项共用契约，状态查询完整核验适用来源且不写私有状态。已完成检查及仍待完成的 Windows、最终候选与发布门槛，见草稿[发布说明](docs/releases/v0.15.1.md)和[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **当前版本：0.15.1 — 2026-10-05。** 明确续行可解除普通暂停并保留未完成工作；后续用户消息可再次暂停。诊断状态查询在不写私有状态的前提下核验适用来源。有界原生 macOS/Windows 验收已通过。公开可用状态以 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)为准；修改安装前请阅读[发布说明](docs/releases/v0.15.1.md)和[升级边界](docs/SESSION_STORAGE.md)。
 
 ## 安装
 
-需要 Python 3.10 或更高版本、Codex CLI，以及能够加载插件和生命周期 Hook 的 Codex 界面。0.15.0 验收批次面向 Codex CLI `0.158.0`，本版不补测旧 CLI；已完成与待完成检查见[兼容性说明](docs/COMPATIBILITY.md)。
+需要 Python 3.10 或更高版本、Codex CLI，以及能够加载插件和生命周期 Hook 的 Codex 界面。0.15.1 验收批次面向 Codex CLI `0.160.0`，本版不补测旧 CLI；已完成与待完成检查见[兼容性说明](docs/COMPATIBILITY.md)。
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -50,7 +48,7 @@ py -3 scripts\manage_plugin.py --apply
 
 ### 升级说明
 
-升级到 0.15.0 前，先核实其公开 Release。这里的 HOME 指 `CODEX_HOME` 指定的 Codex 配置与任务数据目录。修改 HOME 的插件选择前先完成旧任务；若要同时开展新旧任务，请让旧任务留在明确使用原版本的独立 HOME，新任务使用新的 HOME。保留旧缓存并不能固定 Hook 版本：Codex 可能在下一回合选择新版。本版不迁移旧任务状态。
+升级到 0.15.1 前，先核实其公开 Release。这里的 HOME 指 `CODEX_HOME` 指定的 Codex 配置与任务数据目录。修改 HOME 的插件选择前先完成旧任务；若要同时开展新旧任务，请让旧任务留在明确使用原版本的独立 HOME，新任务使用新的 HOME。保留旧缓存并不能固定 Hook 版本：Codex 可能在下一回合选择新版。本版不迁移旧任务状态。
 
 使用受管安装器并读回已安装版本。在全新任务中检查并信任全部九个 Hook，再启动另一个任务加载新版。不要覆盖已消费的缓存。独立 HOME 的操作见[会话存储与升级](docs/SESSION_STORAGE.md)，已验证的边界见[兼容性说明](docs/COMPATIBILITY.md)。
 
@@ -194,7 +192,7 @@ flowchart TB
 
 运行时数据写入 Codex 管理的 `PLUGIN_DATA`。提示正文、任务状态、证据摘要和恢复文件都属于本地运行时数据，不属于本仓库。
 
-0.15.0 中，已结束且未恢复活动的 v2 会话在 30 天后可以清理；legacy 会话树继续保留。脱敏导出只在显式请求时创建，并省略原始提示、会话正文、凭据、认证头、URL 查询参数和插件私有路径。详见[隐私说明](docs/PRIVACY.md)。
+0.15.1 中，已结束且未恢复活动的 v2 会话在 30 天后可以清理；legacy 会话树继续保留。脱敏导出只在显式请求时创建，并省略原始提示、会话正文、凭据、认证头、URL 查询参数和插件私有路径。详见[隐私说明](docs/PRIVACY.md)。
 
 ## 更新与卸载
 

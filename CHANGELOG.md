@@ -4,7 +4,7 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.15.1 — Unreleased
+## 0.15.1 — 2026-10-05
 
 ### Highlights
 
@@ -20,11 +20,14 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - `checkpoint-status` accepts `--commands`, `--full`, `--item VALUE` and `--after-revision VALUE` under the shared option contract. Abbreviations, duplicate bindings, missing values, unknown options and incompatible modes are rejected. All four commands returned by `--commands` use the explicitly queried data directory, even without the Hook environment.
 - Windows concurrent publication requires Windows 10 RS1+ FileRenameInfoEx and a filesystem supporting replace-existing POSIX semantics. Kernel-lock ownership and fsync remain required; no target pre-deletion, in-place replacement or legacy fallback runs.
 - Schema 13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path without execution approval are unchanged. No state migration runs. Finish old tasks before changing their HOME’s selected plugin, or keep a separate HOME on the original runtime; never overwrite a consumed cache. A misclassified 0.15.0 pause recovers only after its original source re-verifies during a real later resume.
+- Windows validation fixtures preserve distinct read/traverse entries and strict restoration. The acceptance collector now restores through separate state, so restoration diagnostics cannot change the signed request executed by the ordinary tool. These acceptance-tool repairs do not change the plugin runtime.
+- The HOL workflow retains original reports with a repository-owned evidence companion binding the exact checkout, plugin manifest, runtime tree and dependency lockfiles. This supports independent CI review; it does not certify registry ingestion, publisher identity or a public Trust score.
 
 ### Validation
 
-- This is an unreleased source candidate. The original runtime passed the ten-gate native macOS incident profile with all nine Hooks normally trusted. Its source suite and historical coverage retain their original commit; later tools-only checks do not establish a new full-suite or native run.
-- Native Windows acceptance and strict result composition, the final candidate source/history checks, exact-commit CI/HOL and publication remain pending. Source counts, original subjects and the failed Windows environment-readiness step are recorded separately in the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
+- The release source checks passed 2,389 tests across 102 modules with zero failures or errors and 28 explicit platform/capability skips. Bounded native macOS and Windows host checks passed all ten incident-profile gates.
+- Canonical history source checks cover 86 raw records, 61 active cases and 230 unique test nodes; 61 results were reused only with unchanged inputs. All 60 eligible source cases passed, including 17 DSH shared-semantics analogues; one approved incomplete case is excluded. The two current incidents have accepted macOS and Windows evidence. Other historical native gaps remain visible.
+- The Windows fixture matrix passed all 32 cells with restoration verified. Its full host evidence retains the original execution identity and a later strict mapping identity; it does not represent a new native collection on the repaired source. Exact source/platform evidence, CI/HOL and publication records are recorded separately in the [acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
 ## 0.15.0 — 2026-10-02
 

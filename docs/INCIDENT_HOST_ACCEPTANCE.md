@@ -12,6 +12,11 @@ logs in, copies credentials or trust, installs a plugin, changes the sandbox,
 or answers an approval request. An official request interrupts observation and
 is retained privately as a pending condition, not a product defect.
 
+For Windows exact-source materialization, start with a fresh no-checkout clone
+and set only that clone's local `core.autocrlf=false` and `core.eol=lf` before
+checkout. This is a maintainer source-materialization boundary, not a change to
+product attributes, global Git configuration or installation instructions.
+
 ## Generate the concrete plan
 
 Use the `plan` action with existing absolute paths for `--codex`, `--python`,
@@ -53,8 +58,10 @@ calls and proves neither authentication, Hook trust nor native behavior.
   copy of that committed session in a collector-owned workspace fixture. Actual
   new-file and write-intent lock-open attempts must be denied; the CLI query
   must succeed with unchanged file and directory inventory. POSIX uses mode
-  bits and a non-root effective UID. Windows uses a narrowly scoped current-SID
-  deny ACL, retains its setup commands, and verifies the actual child principal.
+  bits and a non-root effective UID. Windows pins the actual ordinary-tool
+  principal observed in the probe thread and applies an exact planned DACL only
+  to owned fixture objects. API operation receipts and descriptor readback are
+  retained separately from CLI commands.
   This proves the copied-session reader boundary, not a write-denial result for
   the live HOME. The direct diagnostic separately exercises the real HOME.
 - Existing `stop_host/v1` supplies four positive Stops, a blocked completion
@@ -138,8 +145,12 @@ Unsupported control/request/default shapes reject before ACL mutation. Readback 
 and presence/default/auto-inheritance/protection control, plus byte/stat identity.
 Unrelated self-relative offsets and unused allocation padding are not permissions;
 actual ACE additions or control changes always fail. Native tests save before/after
-raw descriptors and contracts before teardown and retain failed fixtures. Partial failures retain each applied command and attempt
-complete restoration; an unverified restoration stays a failure.
+raw descriptors and contracts before teardown and retain failed fixtures.
+Partial failures retain operation intent, actual native API return/error and
+descriptor readback before restoration. Per-object restoration diagnostics
+record the real API result and immediate readback, followed by the whole-fixture
+strict check. Complete restoration is attempted on failure; an unverified
+restoration stays a failure.
 
 Windows collector and normal sandbox tool users can differ. Before restricting
 the copied session, a real ordinary tool executes the pinned child helper with
@@ -225,8 +236,8 @@ and lock-write denial. Deny readback uses the verified object type: files requir
 It compares ordered ACEs without aggregating same-SID deny masks. Only one exact
 explicit deny insertion in the canonical deny block, or an exact mask update of
 one existing explicit deny, is permitted. Other ACEs keep their byte identity and
-relative order; same-SID explicit grants lose only the exact requested deny bits,
-as specified by icacls. Duplicate, split, reordered or generic-right deny ACEs,
+relative order; same-SID explicit grants lose only the exact requested deny bits
+in the planned DACL. Duplicate, split, reordered or generic-right deny ACEs,
 other-principal changes and control drift fail. Every exit attempts restoration to the pre-grant original,
 including partial grant, deny, readback and interruption failures. An unverified
 restoration remains a failure, with the original snapshot and receipts retained.
@@ -277,6 +288,19 @@ and mocked Windows ACL operations; they establish parser, codec, transaction and
 composition behavior only. Actual Windows grant/read/deny/query/write/restore,
 model execution, host readiness and required full candidate gates remain separate.
 
+### Exact planned-DACL API mechanism matrix
+
+The current reviewed tooling source is `66e90790c1ef972cd2cc8b084025f736ffe1b6a6`; the accepted matrix/native execution remains at `329e5947cc5df0fbb865137aeb745e9e378359fa`. The helper still shares one exact planned-DACL builder and application route across v3 read grant, v3 write deny and v2 write deny. Required DACL controls, other-principal ordered ACE bytes and actor-mask rules remain exact. Intent, actual API result/error and readback failure are retained before rollback. The original helper and plugin runtime did not change in the latest fixture repair.
+
+The repository entrypoint is `python -B -m tests.test_incident_acl_family --mechanism-matrix --cell-profile distinct-source32`. Supply actual `--actor-sid`, `--collector-sid`, full `--expected-source-commit`, `--expected-helper-sha256`, `--expected-runner-sha256`, `--output` and `--fixture-parent`; first use those same arguments with `--preflight`. Preflight checks all 32 plans without API calls, tokens or models. It cannot establish an executable token for a declared SID or certify native feasibility.
+
+The explicit v3 profile uses `incident-acl-mechanism-matrix/v3` and `distinct-read-source-retention/v3`. It retains the 32 file/directory, control and actor-shape identities while constructing three distinct read/traverse sources and preserving the explicit management base. Protected directory descendants use `0x1404` in deepest-first order before S1; unprotected cells retain true inheritance. Coverage is not permission-equivalent to v1/v2. The earlier profiles and failed results keep their original contracts. See the [v3 fixture contract](ACL_MATRIX_FIXTURE_V3.md) for all mapped cells and strict supported inputs.
+
+Fixture-side instrumentation verifies the exact live-buffer ACL passed to the original Named setter, captures API/flags and ordered hashes before writing, and invokes the setter once. Private raw ACL files remain outside public exports. This witness covers Named fixture construction only; raw assignment, business grant/deny and restoration retain their original checks. SDK mocks establish source forwarding, not Windows ABI or internal behavior.
+
+Strict readback and whole-fixture restoration remain required. A failed cell stops the matrix after restoration is attempted; subsequent cells remain not_run. Earlier native matrix attempts at `57fe70c`, `7809df1`, `4a354e5` and `b8b861a` remain failed. The native Windows R4 `distinct-source32` matrix for `329e594` passed all 32 cells; each cell's v3, v2 and `setup_s0` restoration and the preservation guards were verified. The conditional full-v2 run then executed once but failed before its unified exec command could start. Its missing PostToolUse follows that launch failure; that original result remains failed. A subsequent complete R5 execution at `329e594` passed all ten gates through strict mapping at `66e9079`, as described below. See the [acceptance record](LOCAL_ACCEPTANCE.md) for the observed error and diagnosis boundary.
+
+The matrix does not execute an ordinary model-tool actor. It cannot replace same-thread principal capture, three read baselines, actual denied writes, normal Hook trust or the exact-source ten-gate full host run. Earlier v1/v2/v3 request identities and failed captures retain their original subjects.
 
 ## Explicit full Windows v2 run
 
@@ -310,7 +334,10 @@ five-gate shortcut. Synthetic captures always export `native_acceptance: not_run
 The legacy supplement explicitly refuses full plans, captures and results; it
 cannot drop full scenes or compose this run with older subjects.
 
-A full exact-source release gate requires a fresh normally trusted HOME and an
-actual complete host run after source and packaged bytes converge. A tools-only
-prepared result, zero-model preflight or synthetic matrix does not certify that
-run. The coordinator owns normal trust, native execution and independent readback.
+A full native gate requires a fresh normally trusted HOME and an actual complete host run with bound source and packaged inputs. A tools-only prepared result, zero-model preflight or synthetic matrix does not certify that run. The coordinator owns normal trust, native execution and independent readback; release-source checks and final CI/HOL remain separate.
+
+### Accepted retained execution and strict mapping
+
+The R5 execution at `329e5947cc5df0fbb865137aeb745e9e378359fa` completed the full Windows profile. Its original mapper failed because restoration diagnostics changed the captured signed-request object after the ordinary tool had consumed the persisted request. The repair at `66e90790c1ef972cd2cc8b084025f736ffe1b6a6` separates mutable restoration state without changing the request digest, judge, helper or runtime.
+
+The accepted offline derivation retains the original catalog and all four authored request hashes. It permits exactly the observed restoration-diagnostics addition, verifies all eleven restore objects/operations and the original durable receipt, then invokes the unchanged full mapper. All ten gates passed under the original execution identity and the new mapping identity. The original capture and failed result remain unchanged; no new model, ACL, setup, restore or collector run occurred. This R5-specific evidence path does not make the general mapper tolerant of changed digests or arbitrary capture repair, and does not establish unrelated historical cases. Full identities, result/provenance hashes and source controls are in the [acceptance record](LOCAL_ACCEPTANCE.md).

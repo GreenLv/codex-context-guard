@@ -1,8 +1,8 @@
 # Compatibility and Verification Status
 
-## 0.15.1 — Unreleased
+## 0.15.1 — 2026-10-05
 
-The candidate keeps the 0.15.0 storage and upgrade boundaries: new sessions
+0.15.1 keeps the 0.15.0 storage and upgrade boundaries: new sessions
 use `sessions-v2`, legacy `sessions` stay read-only, no migration runs, and
 consumed caches are never refreshed. Finish old tasks before changing their
 HOME’s selected plugin, or keep a separate HOME on the original runtime.
@@ -37,18 +37,26 @@ with POSIX semantics. Unsupported API/filesystem or permission denial fails
 closed without fallback, target pre-deletion or in-place writes. Python 3.10+
 and standard-library-only runtime requirements remain unchanged.
 
-The original `fc7665058759d8a074df779be94cb75e67923aba` runtime passed the
-ten-gate native macOS incident profile with normally trusted Hooks on CLI
-0.160.0/Python 3.12.2. The later tools-only source revision
-`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe` retains that runtime digest; reuse
-covers unchanged runtime inputs, not a native rerun on the later commit.
-Native Windows acceptance and strict result composition remain pending. A
-failed official setup step with readiness `updateRequired` is an environment
-gate, not product validation. Final candidate source/history checks and
-exact-commit CI/HOL are also pending. See the [acceptance record](LOCAL_ACCEPTANCE.md)
-for original subjects and counts. The historical 0.15.0 CLI 0.158.0 evidence
-below is unchanged. Changed candidate runtime bytes need a fresh isolated
-installation; no consumed cache is repaired from new bytes.
+At `67bdb7ed0f19bedd70adce57c753b2d1d4ed6e91`, a new native macOS
+`incident_host/v1` batch passed all ten gates with normally trusted Hooks on
+CLI 0.160.0/Python 3.12.2. It observed runtime-tree SHA-256
+`9149cfe72cde0750afa97c9a2aafad2a92edf969905026e029a8931c5da57fc1`;
+this is a new actual batch, not relabeled evidence from `fc76650`.
+The full Windows batch on the same source/runtime ran once and failed in
+read-grant fixture preparation: five gates passed, five remain pending and
+exact fixture restoration was independently verified. The original failing
+grant's post-mutation descriptor and inner exception message were not retained.
+Later fresh owned-object experiments do not reconstruct that missing telemetry.
+
+The current tooling source is `66e90790c1ef972cd2cc8b084025f736ffe1b6a6`. Its complete local suite passed 2,389 tests across 102 modules, with zero failures or errors and 28 explicit platform/capability skips. The 43-file plugin runtime and original ACL helper are unchanged from the accepted native subjects.
+
+The native Windows `distinct-source32` matrix at `329e5947cc5df0fbb865137aeb745e9e378359fa` passed all 32 cells with v3, v2 and `setup_s0` restoration verified. A subsequent complete `incident_host/v2-full` execution at the same source passed all ten gates through strict offline mapping at `66e9079`. The signed ordinary-tool request was recovered from its exact original persisted bytes; only the collector's extra restoration-diagnostics field differed. Request digests, actor/tool bindings, raw permission readback, restoration and nested Stop checks stayed strict. This retains the original native execution identity and does not claim a new collector execution on `66e9079`. Earlier failed runs remain failed on their original subjects.
+
+Canonical history source checks cover 86 raw records, 61 active cases and 230 unique nodes: 169 fresh passes and 61 unchanged-input reuses. All 60 eligible source cases passed; this includes 17 DSH shared-semantics analogues and excludes one approved incomplete case. The two current incidents have accepted macOS and Windows evidence. Other historical native gaps remain visible and do not imply extra native model batches under the frozen release plan. Final reader acceptance, exact-final-commit full CI/HOL and publication remain coordinator gates. The HOL report companion binds checkout/report identities; it does not establish registry ingestion, publisher certification or a public Trust score.
+See the [acceptance record](LOCAL_ACCEPTANCE.md) for original subjects and
+counts. The earlier setup/readiness failure and historical 0.15.0 CLI 0.158.0
+evidence retain their own subjects. Changed candidate runtime bytes need a
+fresh isolated installation; no consumed cache is repaired from new bytes.
 
 ## 0.15.0 — 2026-10-02
 

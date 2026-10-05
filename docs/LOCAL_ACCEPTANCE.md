@@ -1,15 +1,16 @@
 # Local Release Acceptance
 
-## 0.15.1 — Unreleased source candidate
+## 0.15.1 — 2026-10-05
 
-The current tools-only source revision is
-`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe`. Its runtime-tree SHA-256 remains
-`b0cf80c458b41b8e84c12c14a690707e026191cb5fdb7f0d984e7084b0ca63b0`, identical
-to the runtime accepted at `fc7665058759d8a074df779be94cb75e67923aba`.
-Latest published remains 0.15.0; none of the candidate results below
-establishes publication or final acceptance of a later source revision.
+The current reviewed tooling source is `66e90790c1ef972cd2cc8b084025f736ffe1b6a6`; its complete source, canonical-history and strict native-remapping results are recorded below. Its 43-file runtime-tree SHA-256 is
+`9149cfe72cde0750afa97c9a2aafad2a92edf969905026e029a8931c5da57fc1`,
+observed in the new native batch at
+`67bdb7ed0f19bedd70adce57c753b2d1d4ed6e91`. This is distinct from the earlier
+`b0cf80c458b41b8e84c12c14a690707e026191cb5fdb7f0d984e7084b0ca63b0`
+runtime accepted at `fc7665058759d8a074df779be94cb75e67923aba`.
+This record prepares release 0.15.1 dated 2026-10-05. Final release-commit CI/HOL, tag and GitHub Release readback remain the coordinator’s publication gates. Documentation revisions keep their own identities without retagging original evidence.
 
-### Original source, history and native macOS results
+### Original source/history results and new native macOS batch
 
 At `fc7665058759d8a074df779be94cb75e67923aba`, the complete source suite ran
 96 modules and 2,234 tests with zero failures, zero errors and 25 explicit
@@ -17,14 +18,17 @@ platform/capability skips. The two unchanged original incident reproducers
 passed 6/6 and 8/8 desired oracles. That historical batch covered 76 raw
 records, 57 active cases, 67 unique test nodes and 90 executions. These are
 original-subject counts, not the final inventory or full-suite result for the
-current tools revision.
+later tooling repair. Its original ten-gate macOS result remains on that subject.
 
-The same source/runtime passed all ten `incident_host/v1` gates on native
-macOS with Codex CLI 0.160.0, Python 3.12.2 and all nine Hooks normally
-trusted. Later tools-only revisions may reuse that runtime fact only when
-all relevant inputs are unchanged. They have not rerun native acceptance on
-`9c6d3a377d6bd6139abe89bc2e2c5928201cedfe`. The 0.15.0 CLI 0.158.0 batch
-below retains its own version and subject.
+At `67bdb7ed0f19bedd70adce57c753b2d1d4ed6e91`, a new native macOS
+`incident_host/v1` batch passed all ten gates with Codex CLI 0.160.0,
+Python 3.12.2 and all nine Hooks normally trusted. Independent remapping was
+byte-identical; source, executable and installed runtime identities matched.
+The owned process trees exited and had no running members; escaped descendants
+were not established. The prior failed nested-sandbox attempt remains failed.
+The later tooling repair does not change the successful batch's original subject.
+Reuse requires unchanged affected inputs, not runtime-digest equality alone.
+The historical 0.15.0 CLI 0.158.0 batch below retains its own version and subject.
 
 ### Windows results and remaining host gates
 
@@ -32,30 +36,98 @@ below retains its own version and subject.
 | --- | --- | --- |
 | Original `fc7665058759d8a074df779be94cb75e67923aba` | Five gates passed; five pending | Partial `incident_host/v1`, not a complete Windows pass |
 | `e2812df4c4ac43ec9a01b57dd17e982ea14a764e` | Whole result failed; Stop and compaction components independently passed | Component reuse retains this original subject; the failed whole remains failed |
-| Current v3 owned-fixture route | Native observations pending | Actual same-thread principal, read baselines before/after grant and deny, read-only query, write denial and exact restoration must be observed |
-| Official setup/readiness step | Failed: `success=false`, readiness `updateRequired` | Environment gate; no new model, command-execution or product acceptance result |
+| Earlier official setup/readiness step | Failed: `success=false`, readiness `updateRequired` | Historical environment failure; later actual execution makes it no longer the current blocker, without rewriting it as passed |
+| `67bdb7ed0f19bedd70adce57c753b2d1d4ed6e91`, runtime `9149cf` | Full batch ran once and failed, collector exit 1; five gates passed, five pending; restoration verified | Read-grant preparation failed; granted/denied baselines, read-only witness, negatives and Stop/compaction did not run |
+| ACL tooling repair `ec3c01f206a4f23fa57c71a0e023ea278c279899` | Exact planned-DACL helper and focused source controls accepted | No actual Windows API or ordinary-model-tool execution on this helper revision |
+| Matrix `57fe70c4411314701f5f73cd770ca658f5e88c38` | 12 cells passed; cell 13 failed; 19 not run | Control-only Named setter returned error 5; whole-family restoration and outside guards verified; full host stage did not run |
+| Matrix `7809df1cae59116865808c6d3546ef61f9a1c8b4` | First cell failed; 31 not run | Handle setter returned success but protection read back `0x0404`, not planned `0x1404`; S0, inventory and outside guards restored; full host stage did not run |
+| Matrix `4a354e55ac1bfabdd0710e55e54bbf12aff3b7fc` | First cell failed; 31 not run | Planned seven entries read back as four, losing three inherited entries; S0 restoration independently verified; full host stage did not run |
+| Matrix `b8b861a981f6a89fc8e435711c2632a4d49a23e2` | First cell failed; 31 not run | Planned seven explicit entries read back as four; removed entries exactly duplicated the first three; S1 did not form, S0 and outside guards restored; full host stage did not run |
+| `329e5947cc5df0fbb865137aeb745e9e378359fa`, `distinct-source32` | Native Windows matrix passed 32/32; v3, v2 and `setup_s0` restoration verified for every cell | Source, configuration and historical-evidence preservation guards passed; this new fixture contract does not reinterpret earlier failures or replace full host gates |
+| Same source, conditional `incident_host/v2-full` | Executed once, then failed at command startup | Unified exec process could not start: setup-helper launch error 1223, command exit code -1; that original run remains failed |
+| `329e594` R5 full host execution, strictly mapped at `66e9079` | All ten `incident_host/v2-full` gates passed; original failed mapper receipt retained | Original native execution and later mapping identities remain separate; no new collector, model, ACL or restore run |
 
-The current route separates an explicitly declared host process exit from a
+The `67bdb7e` batch passed `hook_trust`, `pause_same_unit`,
+`resume_provenance_pending`, `status_cli_posttool` and `typed_wait_retained`.
+`cleanup`, `compaction_cold_resume`, `positive_negative_stop`,
+`restricted_child_readonly` and `status_negative_controls` remain pending.
+The original baseline and actual ordinary principal were captured. One owned
+process tree exited and was empty; the required other two cleanup observations
+did not run, so full-profile cleanup remains pending. Escaped descendants are
+not established. Exact fixture restoration is a separate verified fact.
+
+The first grant command exited zero, but its readback validation failed before
+the grant phase completed. The production catch retained the inner exception
+class, not its message or the post-grant descriptor. The specific original
+unequal field therefore remains unknown. Later experiments on two fresh owned
+objects reproduced inheritance/control behavior without reconstructing the
+missing original telemetry. The failed batch remains failed.
+
+The route separates an explicitly declared host process exit from a
 source-command exit; an unobserved source exit stays unobserved. Original
 passes, retained Stop/compaction components and fresh negative/read-only/cleanup
 observations require strict composition. Preparation and portable controls
 do not establish actual Windows ACL behavior or a passing composed result.
 
-### Current tools-only checks
+### Windows matrix and full-host result on the reviewed source
+
+The native Windows R4 run of `distinct-source32` passed all 32 cells. Each cell's v3, v2 and `setup_s0` restoration was verified. Source identity and bytes, the 89-item configuration preservation inventory and retained historical-evidence guards passed before and after both stages. The coordinator read back and hash-verified the primary summary. This is bounded native mechanism/readback/restoration evidence for source `329e5947cc5df0fbb865137aeb745e9e378359fa`, not an ordinary model-tool access or full-host pass; it does not change any earlier failed subject.
+
+The conditional `incident_host/v2-full` run actually executed once and returned 1. Its only `commandExecution` failed to start unified exec, with `orchestrator_helper_launch_canceled: ShellExecuteExW failed to launch setup helper: 1223` and command exit code -1. The collector then reported the missing completed PostToolUse observation. That missing observation follows the command launch failure; it does not by itself establish a Hook defect. The launch cause remains under diagnosis, with no established attribution to a user cancellation, UAC or approval review. One owned process tree exited with no running members; escaped descendants were not established. These observations do not close all required cleanup or full-profile gates. The overall run remains failed and complete native host acceptance remains pending.
+
+### Accepted complete Windows execution through strict remapping
+
+The subsequent R5 collector completed all native scenarios at execution commit `329e5947cc5df0fbb865137aeb745e9e378359fa`. The original signed readonly request and actor output matched, the ordinary tool exited zero, fixture restoration was verified, and the independent `stop_host/v1` result passed. The original whole mapping failed because restoration appended `restriction.restoration_diagnostics` to the same in-memory object stored as the signed request. The original failed result, capture and four authored request files remain unchanged.
+
+At mapping commit `66e90790c1ef972cd2cc8b084025f736ffe1b6a6`, the reviewed R5-specific offline derivation required all four original request hashes, a complete original capture catalog and exactly that one diagnostic-field addition. Eleven restoration objects/operations, native setter results, final DACL/inventory readback and the durable restoration receipt were verified. The unchanged production full mapper then passed all ten gates, including same-thread principal/baselines, ordinary-tool and actor bindings, negative controls, independent Stop/compaction and all three owned-process cleanups. Root independently validated the formal result and accepted this native evidence. Its result SHA-256 is `8c24cf25100bfedfb24f16cfba1e69fd11a3caf0b5e63a8367b32ea7423e92a1`; provenance SHA-256 is `bdaab735c86ffeb4f5e1d3df1050650e1dd3e2884e3dc55a739470943638cda3`.
+
+The original 263-file inventory, four authored requests, 89-item configuration inventory, earlier evidence and both source identities were preserved by before/after checks. The R5 execution recorded 18 turn-start requests at requested Medium effort; that request field is not per-turn model execution telemetry. Owned process trees had no running members; escaped descendants remain unestablished. Strict remapping made zero model, ACL, setup or restore calls. It certifies the original native execution through the new mapper, not a fresh native collector run at `66e9079` or full historical native coverage.
+
+The collector repair at `66e9079` passes a deep copy of restoration state to the unchanged helper. Six new synthetic lifecycle regressions cover successful and failed restoration, receipt failure, post-request Stop failure, early baseline failure, prior verified restoration, legacy/v2 routing, nested Unicode/CRLF values and digest tampering. On old code they reproduced seven failing subcases; all six pass on the repair. The private remapping driver also passed both output-record shapes and rejected mismatched durable receipts. These are source regressions, distinct from the accepted original native evidence.
+
+### Tools-only checks and remaining candidate gates
 
 The reviewed prepared bytes carried into
 `9c6d3a377d6bd6139abe89bc2e2c5928201cedfe` passed 33 affected tests without
-skips. Independent review controls passed 16/16 ordered-ACE cases, 4/4
-completion-token binding cases and 10/10 canonical-encoding cases. The
-commit retained the reviewed bytes; these focused results are neither a new
-complete source suite nor native Windows acceptance. The runtime digest
-above did not change.
+skips. Its independent review controls passed 16/16 ordered-ACE cases, 4/4
+completion-token binding cases and 10/10 canonical-encoding cases. Those
+focused results retain their original subject and runtime digest; they are
+neither a new complete source suite nor native Windows acceptance.
 
-Five new incident drafts have not yet entered the canonical library. Their final counts
-and mappings, the final candidate source/history checks, complete native
-Windows acceptance and strict composition, exact-commit full CI/HOL and
-bilingual reader freeze remain pending. Tags and a public Release require
-separate acceptance and readback.
+The ACL tooling repair subject `ec3c01f206a4f23fa57c71a0e023ea278c279899`
+ran 43 focused tests with three explicit Windows native skips, and 26 public
+contract tests without failures. Repository validation, tracked-tree privacy,
+Ruff, compile and diff checks passed. Independent controls passed 4/4 driver
+cases and 16/16 ordered cases. The earlier 75 affected host-contract results
+retain their original subject and input-equivalence reuse evidence. These
+results establish the source repair, not a new complete suite, native API
+execution, ordinary-tool acceptance or the final candidate gate.
+
+At `329e5947cc5df0fbb865137aeb745e9e378359fa`, 94 affected tests ran: 91 passed and three native checks were explicitly skipped. Independent review verified the four-file source diff and all 273 source-file hashes, then passed 41 fixture-family tests. Repository validation, tracked-tree privacy, Ruff, in-memory compilation, whitespace and commit identity checks passed on the clean source. All 32 mapped fixture plans passed zero-API preflight. The original helper and all 43 runtime files are byte-identical to the previous source; this parity does not establish v3 Windows behavior or a new complete source suite.
+
+At `66e90790c1ef972cd2cc8b084025f736ffe1b6a6`, 169 owning-module and invalidated-input tests passed without skips. The complete current-behavior suite ran 102 modules and 2,389 tests with zero failures or errors and 28 explicit platform/capability skips. Repository validation, tracked-tree privacy, Ruff, whitespace, Phase-3 transition, self-test, in-memory compilation of 180 files and noreply commit identity checks passed. All 273 clean committed files match the validated source overlay; prepared-source SHA-256 is `4e55b3844639b92376971ca71286ad38dd4a5dcb48efc7e295d71d836b3b0c0c`. The two-file collector/test change leaves the runtime, original helper and mapper gate logic unchanged. Exact-final-release CI/HOL remains separate.
+
+The new `distinct-source32` profile (`incident-acl-mechanism-matrix/v3`, construction `distinct-read-source-retention/v3`) adds three different read-source principals while preserving the explicit management entries. Source models check all 32 targets and leaves, live-buffer binding at the original Named setter, one setter call, strict readback and complete recovery. Raw descriptors are not normalized, and unknown roles, masks, flags or duplicate constructed entries reject before writing. SDK doubles are source evidence, not Windows ABI or internal normalization evidence. The v1 full32, protected8 and v2 profiles retain all 72 original plans exactly. The [English](ACL_MATRIX_FIXTURE_V3.md) and [Simplified Chinese](ACL_MATRIX_FIXTURE_V3.zh-CN.md) fixture contracts explain the mapping and its limits.
+
+### Canonical history coverage at the reviewed source
+
+The reviewed registry contains 86 raw records and 61 active cases, with 25 superseded records retaining their successors. This includes four reviewed additions to the earlier canonical snapshot: three same-platform Windows native successors and one source-fixed collector lifecycle incident. All 60 eligible active source cases are covered by 230 unique passing nodes: 169 fresh and 61 complete-input reuses. Ninety-one invalidated earlier nodes were rerun; five unchanged-input nodes were also refreshed. One approved incomplete case is excluded, never counted as a pass. Seventeen DSH-origin cases establish Codex-side shared-semantics analogues only.
+
+The frozen development plan requires all applicable source/shared-semantics regressions and native closure of the two current pause/resume and diagnostic incidents. Both current incidents have accepted macOS evidence at `67bdb7e` and Windows execution evidence at `329e594`, strictly mapped at `66e9079`. The returned four-command explicit-root inventory is also verified by the production status-output oracle. Those obligations pass. Same-platform Windows helper-path, ACL and durable-byte successors retain their observed platform; the new collector repair is source-fixed and is not relabeled as a fresh native collector run.
+
+The earlier official whole-history snapshot remains valid with 42 pending, 17 analogue-only and one excluded-incomplete row. It records missing per-case current native coverage, not 42 new failures or required model batches. The old checker always requires a macOS pass for `executed_pass`, so it cannot express a Windows-only native pass with macOS `not_required`. That bounded representation gap is recorded separately rather than changing runtime bytes or inventing a macOS observation. Existing macOS records are never superseded across platform lanes, and all original failures remain intact. This whole-history limitation does not reopen the accepted release-scoped obligations; no full historical native pass is claimed.
+
+Local source validation, this release’s source/history obligations and bounded two-platform host acceptance have passed within the identities above. Final reader acceptance, exact-final-release-commit full CI/HOL and publication readback remain with the coordinator. This is prepared release text; it does not establish a tag or public Release.
+### HOL report evidence boundary
+
+The HOL workflow retains original reports with a repository-owned evidence
+companion binding report identity to the exact checkout commit, plugin
+manifest, runtime-tree digest and both real dependency lockfiles. This supports
+independent CI review. The companion is not a HOL component signature, registry
+ingestion proof or publisher certification. Artifact upload or scanner success
+does not establish Cisco broker availability or promise a public Trust score.
+Exact final-commit full CI/HOL execution and public readback remain separate
+gates; no such final-commit result is claimed here.
 
 ### Retained repair evidence and operating boundaries
 

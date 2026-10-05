@@ -1,6 +1,6 @@
 # Versioning policy
 
-## 0.15.1 — Unreleased
+## 0.15.1 — 2026-10-05
 
 This compatible patch repairs the two reproduced 0.15.0 incidents
 (CG-0151-HOOK-REPAIR): ordinary-pause resume recognition and the
@@ -27,7 +27,11 @@ same-directory atomic visibility and kernel ownership remain required.
 Unsupported or denied publication fails without legacy fallback.
 Unpublished candidate revisions may share this version number; full commits
 and the runtime-tree digest identify revisions, and changed bytes install in a
-fresh isolated HOME.
+fresh isolated HOME. Tools-only validation-helper, test, workflow and reader
+revisions retain their own full commit and input digests. Changes outside the
+runtime-tree roots do not change that digest or relabel earlier installed/native
+results; source/plan identities and affected validation inputs remain distinct.
+The reviewed ACL tooling source is `329e5947cc5df0fbb865137aeb745e9e378359fa`. It does not change schema, protocol, Hook definitions or the 43-file runtime. The explicitly selected `distinct-source32` profile uses `incident-acl-mechanism-matrix/v3` and `distinct-read-source-retention/v3`; it binds different constructed read-source entries from v1/v2 and does not claim permission-equivalent coverage. Earlier profiles, failed native observations and their source identities remain unchanged. Source and SDK-mock checks do not establish actual Windows API or ordinary-tool behavior; changes to native fixture construction, executed helper inputs or permission operations require new affected-input native evidence even when runtime bytes match. The collector-only successor `66e90790c1ef972cd2cc8b084025f736ffe1b6a6` restores using independent state while preserving the exact signed request. Accepted Windows evidence retains execution commit `329e594` and mapping commit `66e9079`; strict remapping of the frozen original inputs is not a new native collector run. The runtime, helper, request digest and full gate contract are unchanged.
 
 ## 0.15.0 — 2026-10-02
 
