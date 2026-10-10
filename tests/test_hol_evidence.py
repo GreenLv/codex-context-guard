@@ -19,7 +19,7 @@ assert SPEC and SPEC.loader
 HE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HE)
 REPOSITORY = "example/context-guard"
-SCANNER = "3.12.1"
+SCANNER = "3.27.1"
 
 
 class HolEvidenceTests(unittest.TestCase):
@@ -106,6 +106,20 @@ class HolEvidenceTests(unittest.TestCase):
         self.assertEqual(result["source_commit"], self.head)
         self.assertIn("workflow_source_sha_mismatch", result["diagnostics"])
         self.assertEqual(result["status"], "failed")
+
+    def test_previous_scanner_reports_cannot_satisfy_upgraded_identity(self):
+        self.payload["scannerVersion"] = "3.12.1"
+        self.sarif["runs"][0]["tool"]["driver"]["version"] = "3.12.1"
+        self.write_reports()
+        before = {name: (self.root / name).read_bytes()
+                  for name in (HE.SARIF, HE.PAYLOAD)}
+        result = self.collect()
+        self.assertEqual(result["status"], "failed")
+        for error in ("payload:payload_scanner_mismatch", "sarif:sarif_scanner_mismatch"):
+            self.assertIn(error, result["diagnostics"])
+        self.assertEqual(result["upload_paths"], [HE.COMPANION])
+        for name, raw in before.items():
+            self.assertEqual((self.root / name).read_bytes(), raw)
 
     def test_scanner_failure_cannot_be_promoted_by_valid_reports(self):
         for outcome in ("failure", "cancelled", "skipped"):

@@ -52,7 +52,7 @@ jobs:
           python -B tools/validation/hol_evidence.py \
             --expected-source-sha "$SOURCE_SHA" \
             --expected-repository "$SOURCE_REPOSITORY" \
-            --expected-scanner-version "3.12.1" \
+            --expected-scanner-version "3.27.1" \
             --scanner-outcome "$SCANNER_OUTCOME" >> "$GITHUB_OUTPUT"
       - name: Retain original HOL reports and repository evidence
         if: ${{ always() && steps.evidence.outputs.companion_path != '' }}
