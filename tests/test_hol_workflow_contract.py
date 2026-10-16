@@ -36,7 +36,7 @@ class HolWorkflowContractTests(unittest.TestCase):
         self.assertIn("if: ${{ always() && steps.evidence.outputs.companion_path != '' }}", self.workflow)
 
     def test_upload_is_pinned_and_only_uses_validated_whitelist_outputs(self):
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", self.workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", self.workflow)
         block = self.workflow.split("          path: |\n", 1)[1].split("          if-no-files-found:", 1)[0]
         self.assertEqual(block.strip().splitlines(), [
             "${{ steps.evidence.outputs.companion_path }}",
