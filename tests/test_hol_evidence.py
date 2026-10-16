@@ -19,7 +19,7 @@ assert SPEC and SPEC.loader
 HE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HE)
 REPOSITORY = "example/context-guard"
-SCANNER = "3.27.1"
+SCANNER = "3.43.1"
 
 
 class HolEvidenceTests(unittest.TestCase):
@@ -108,8 +108,8 @@ class HolEvidenceTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
 
     def test_previous_scanner_reports_cannot_satisfy_upgraded_identity(self):
-        self.payload["scannerVersion"] = "3.12.1"
-        self.sarif["runs"][0]["tool"]["driver"]["version"] = "3.12.1"
+        self.payload["scannerVersion"] = "3.27.1"
+        self.sarif["runs"][0]["tool"]["driver"]["version"] = "3.27.1"
         self.write_reports()
         before = {name: (self.root / name).read_bytes()
                   for name in (HE.SARIF, HE.PAYLOAD)}
