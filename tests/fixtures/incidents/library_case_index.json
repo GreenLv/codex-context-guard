@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "6fb2e9ceab75cec0997c13a26398ed5d18e68088",
+  "library_commit": "4ed85ea11ff8ccd307e3c59be885161a265892c4",
   "frozen_at": "2026-10-03",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
-    "raw_record_count": 60,
-    "active_case_count": 49,
+    "raw_record_count": 70,
+    "active_case_count": 53,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -529,7 +529,8 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "2e608098a01e0937dd285ce0ac4e6ec2e27c536620852e91619b406f5213879e",
-        "status": "active"
+        "status": "superseded",
+        "successor": "CGI-20261002-codex-pause-resume-wait-stall-0151-macos-verified"
       },
       "CGI-20261003-codex-advanced-command-explicit-root-drift": {
         "title": "显式状态查询返回的高级命令指向默认数据目录",
@@ -538,7 +539,8 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "111ad4ca13372ac178e3afc7fa0b589e921ceb52bc8c220624c85039802988c3",
-        "status": "active"
+        "status": "superseded",
+        "successor": "CGI-20261003-codex-advanced-command-explicit-root-drift-0151-macos-verified"
       },
       "CGI-20261003-codex-checkpoint-status-posttool-rejection": {
         "title": "合法诊断选项被 PostToolUse 误拒绝，只读查询依赖私有写锁",
@@ -547,7 +549,8 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "450790c2fb6414a29f8319a4d265556860b93ef4e6f309839ad5a5b5c5ec1237",
-        "status": "active"
+        "status": "superseded",
+        "successor": "CGI-20261003-codex-checkpoint-status-posttool-rejection-0151-macos-verified"
       },
       "CGI-20261003-dsh-desktop-market-bundle-conflict": {
         "title": "Guard 0.8.3 把官方插件市场硬编码为 Web 专属 bundle 并拒绝 Desktop profile",
@@ -556,6 +559,99 @@
         "platform": "macos",
         "supersedes": null,
         "record_sha256": "97bc03b64cfc8bd583be805ccbd873c5df32cc53434a5f310b1c88f27abd7043",
+        "status": "active"
+      },
+      "CGI-20261003-codex-windows-helper-path-representation-rejection": {
+        "title": "Windows 普通工具 helper 的同路径表示被验收比较器误拒",
+        "family": "incident-ordinary-helper-argv-binding",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "5c743d88937ff9664273c2f222e1f35abb0ce3bec5215e7a50a788aa2eead6e8",
+        "status": "superseded",
+        "successor": "CGI-20261005-codex-helper-path-0151-windows-verified"
+      },
+      "CGI-20261003-codex-windows-readonly-fixture-acl-self-denial": {
+        "title": "Windows 只读验收夹具的通用写拒绝导致读取自拒",
+        "family": "incident-native-readonly-fixture-acl",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "03287dc8d1d683b8a38079e7345520e7a55dc49ac2becdc0b8766ce5c0465c92",
+        "status": "superseded",
+        "successor": "CGI-20261005-codex-readonly-acl-0151-windows-verified"
+      },
+      "CGI-20261004-codex-windows-fixture-snapshot-newline-hash": {
+        "title": "Windows 验收夹具快照的换行转换导致文件哈希自拒",
+        "family": "incident-native-fixture-durable-snapshot-bytes",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "83fbea5de918edfaad0409955dee2d5d1d4ea2f7a0d4be6f9b07473b4eb815c7",
+        "status": "superseded",
+        "successor": "CGI-20261005-codex-snapshot-bytes-0151-windows-verified"
+      },
+      "CGI-20261002-codex-pause-resume-wait-stall-0151-macos-verified": {
+        "title": "普通暂停与明确续行用语漏识别，恢复后等待账本滞留",
+        "family": "root-pause-resume-wait-lifecycle",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20261002-codex-pause-resume-wait-stall",
+        "record_sha256": "5cacbbf3eb6c2d4c1ee01e2f52fef53fdc09521fd56316c3885478aef6698629",
+        "status": "active"
+      },
+      "CGI-20261003-codex-advanced-command-explicit-root-drift-0151-macos-verified": {
+        "title": "显式状态查询返回的高级命令指向默认数据目录",
+        "family": "checkpoint-status-command-inventory-explicit-root",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20261003-codex-advanced-command-explicit-root-drift",
+        "record_sha256": "e793cf65bf8f7f829ba15d2e6bdd3133c85858dc54f7b1b92c672c70ad27a937",
+        "status": "active"
+      },
+      "CGI-20261003-codex-checkpoint-status-posttool-rejection-0151-macos-verified": {
+        "title": "合法诊断选项被 PostToolUse 误拒绝，只读查询依赖私有写锁",
+        "family": "checkpoint-status-option-parsing-and-readonly-lock",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": "CGI-20261003-codex-checkpoint-status-posttool-rejection",
+        "record_sha256": "f860cfad1caa992eabb36ad76d23db7cdde54dabe143691acf3da3078e43ab98",
+        "status": "active"
+      },
+      "CGI-20261005-codex-collector-signed-request-restoration-drift": {
+        "title": "验收采集器恢复诊断修改已签名请求，最终映射摘要自拒",
+        "family": "incident-collector-signed-request-lifecycle",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "c8464da5459143474f46f19639393facc103b53bd228df59fe55c4b7a86c3f96",
+        "status": "active"
+      },
+      "CGI-20261005-codex-helper-path-0151-windows-verified": {
+        "title": "Windows 普通工具 helper 的同路径表示被验收比较器误拒",
+        "family": "incident-ordinary-helper-argv-binding",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": "CGI-20261003-codex-windows-helper-path-representation-rejection",
+        "record_sha256": "32f329f02c0892352ba82cf6324f02c589fd0c7ae5fd60c141a805f37b50d260",
+        "status": "active"
+      },
+      "CGI-20261005-codex-readonly-acl-0151-windows-verified": {
+        "title": "Windows 只读验收夹具的通用写拒绝导致读取自拒",
+        "family": "incident-native-readonly-fixture-acl",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": "CGI-20261003-codex-windows-readonly-fixture-acl-self-denial",
+        "record_sha256": "69a01bd2a12cc66c350d8377f7f2e359150e59118a8b7646258059407f2d3b3c",
+        "status": "active"
+      },
+      "CGI-20261005-codex-snapshot-bytes-0151-windows-verified": {
+        "title": "Windows 验收夹具快照的换行转换导致文件哈希自拒",
+        "family": "incident-native-fixture-durable-snapshot-bytes",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": "CGI-20261004-codex-windows-fixture-snapshot-newline-hash",
+        "record_sha256": "1bca7119bae5a544908cf94349b64ae92a0f24f78b863971d49d65e037511e9d",
         "status": "active"
       }
     }

@@ -35,6 +35,48 @@ IGNORED_TREE_NAMES = {
     "dist",
 }
 PLUGIN_TREE_ROOTS: set[str] | None = {".codex-plugin", "assets", "hooks", "scripts", "skills"}
+# The staging artifact is built from an allowlist, never from a blacklist:
+# only these roots and doc files may enter the distribution, and any other
+# top-level repository entry (an `.env`, a private note, a scratch checkout)
+# fails the build instead of being copied silently.
+DISTRIBUTION_TREE_ROOTS = (".codex-plugin", "assets", "hooks", "scripts", "skills")
+DISTRIBUTION_DOC_FILES = (
+    ".codexignore",
+    "CHANGELOG.md",
+    "CHANGELOG.zh-CN.md",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "pyproject.toml",
+)
+# The host reads this manifest when registering the marketplace directory, so
+# it ships with the distribution; every other file under .agents is rejected.
+DISTRIBUTION_NESTED_FILES = (".agents/plugins/marketplace.json",)
+NON_DISTRIBUTION_TOP_LEVEL = {
+    ".DS_Store",
+    ".codex",
+    ".git",
+    ".gitattributes",
+    ".github",
+    ".gitignore",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "Thumbs.db",
+    "__pycache__",
+    "build",
+    "contracts",
+    "dist",
+    "docs",
+    "requirements-lock.txt",
+    "tests",
+    "tools",
+    "uv.lock",
+    "validation-map.json",
+}
 ARCHIVE_INDEX_NAME = "archive-index.json"
 ARCHIVE_SCHEMA_VERSION = 1
 PRESERVATION_ROOT_NAME = ".historical-cache-preservation"
@@ -147,51 +189,186 @@ def prior_managed_marketplace_root(
     )
 
 
-def marketplace_staging(codex_home: Path, repo_root: Path) -> Path:
+def _reject_unsafe_distribution_entry(path: Path) -> None:
+    """Links, reparse points and special files never enter the distribution."""
+    if path.is_symlink():
+        raise RuntimeError(f"unsafe link in distribution tree: {path}")
+    info = path.lstat()
+    if getattr(info, "st_reparse_tag", 0):
+        raise RuntimeError(f"reparse point in distribution tree: {path}")
+    if stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode):
+        return
+    raise RuntimeError(f"unsupported entry type in distribution tree: {path}")
+
+
+def _check_distribution_top_level(source_root: Path) -> None:
+    """Classify every top-level repository entry before anything is copied."""
+    for entry in sorted(source_root.iterdir()):
+        name = entry.name
+        if name in DISTRIBUTION_TREE_ROOTS or name in DISTRIBUTION_DOC_FILES:
+            continue
+        if name == ".agents":
+            # Only the exact marketplace manifest ships; anything else under
+            # .agents is an unrecognized private entry and stops the build.
+            allowed = {source_root / item for item in DISTRIBUTION_NESTED_FILES}
+            for current, dirnames, filenames in os.walk(entry):
+                base = Path(current)
+                for item in [*dirnames, *filenames]:
+                    candidate = base / item
+                    if any(path == candidate or path.is_relative_to(candidate)
+                           for path in allowed):
+                        continue
+                    raise RuntimeError(
+                        f"unrecognized entry under .agents is not part "
+                        f"of the distribution set: {candidate}; add it "
+                        "to the distribution allowlist or remove it "
+                        "before staging"
+                    )
+            continue
+        if name in NON_DISTRIBUTION_TOP_LEVEL or name in IGNORED_TREE_NAMES:
+            continue
+        if name.endswith((".pyc", ".pyo")):
+            continue
+        raise RuntimeError(
+            f"unrecognized top-level repository entry is not part of the "
+            f"distribution set: {name}; add it to the distribution allowlist "
+            "or remove it before staging"
+        )
+
+
+def _iter_distribution_files(root: Path) -> list[str]:
+    """List every allowlisted distribution file, rejecting unsafe entries."""
+    files: list[str] = []
+    for top in DISTRIBUTION_TREE_ROOTS:
+        top_path = root / top
+        if not top_path.exists():
+            continue
+        _reject_unsafe_distribution_entry(top_path)
+        for current, dirnames, filenames in os.walk(top_path):
+            # Local caches never ship: prune in place so os.walk skips them.
+            dirnames[:] = sorted(
+                name for name in dirnames if name not in IGNORED_TREE_NAMES
+            )
+            for name in sorted(filenames):
+                if name in IGNORED_TREE_NAMES or name.endswith((".pyc", ".pyo")):
+                    continue
+                candidate = Path(current) / name
+                _reject_unsafe_distribution_entry(candidate)
+                files.append(candidate.relative_to(root).as_posix())
+    for name in DISTRIBUTION_DOC_FILES:
+        candidate = root / name
+        if candidate.is_file():
+            _reject_unsafe_distribution_entry(candidate)
+            files.append(name)
+    for name in DISTRIBUTION_NESTED_FILES:
+        candidate = root / name
+        if candidate.is_file():
+            _reject_unsafe_distribution_entry(candidate)
+            files.append(name)
+    return sorted(files)
+
+
+def distribution_manifest(root: Path) -> dict[str, str]:
+    """Full manifest of the allowlisted distribution set (not just runtime roots)."""
+    if not root.is_dir():
+        return {}
+    manifest: dict[str, str] = {}
+    for relative in _iter_distribution_files(root):
+        manifest[relative] = hashlib.sha256(
+            (root / relative).read_bytes()
+        ).hexdigest()
+    return manifest
+
+
+def build_distribution_tree(source_root: Path, destination: Path) -> None:
+    """Materialize the allowlisted distribution into a fresh destination."""
+    _check_distribution_top_level(source_root)
+    destination.mkdir(parents=True)
+    for relative in _iter_distribution_files(source_root):
+        source = source_root / relative
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+
+
+def marketplace_staging(
+    codex_home: Path,
+    repo_root: Path,
+    *,
+    keep_replaced_bytes: Path | None = None,
+) -> Path:
     """Return a sanitized marketplace root for the Codex CLI to clone from.
 
     The Codex CLI materializes plugin caches from the registered marketplace
     directory without filtering, so registering the verified immutable Git
     checkout directly leaks its ``.git`` metadata into the live cache whenever
     the CLI refreshes the cache (the trusted-archive repair only runs under
-    ``--apply``). Registering an on-disk filtered copy of the product tree
-    removes that possibility at the source.
+    ``--apply``). Registering an on-disk copy of the exact distribution
+    allowlist removes both that possibility and every other repository-only
+    or private file. When ``keep_replaced_bytes`` names a path, the previous
+    staged bytes are preserved there for installation-transaction rollback
+    instead of being destroyed.
     """
     staged = marketplace_staging_root(codex_home, repo_root)
-    if staged.is_dir() and tree_manifest(staged) == tree_manifest(repo_root):
+    expected = distribution_manifest(repo_root)
+    if staged.is_dir() and distribution_manifest(staged) == expected:
         if embedded_git_metadata(staged) is None:
             return staged
     staged.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".marketplace-", dir=staged.parent))
+    replaced_backup: Path | None = None
     try:
         filtered = temporary / "tree"
-        shutil.copytree(repo_root, filtered, ignore=_ignored_tree_names)
-        if tree_manifest(filtered) != tree_manifest(repo_root):
-            raise RuntimeError("sanitized marketplace staging failed manifest parity")
+        build_distribution_tree(repo_root, filtered)
+        if distribution_manifest(filtered) != expected:
+            raise RuntimeError("sanitized marketplace staging failed distribution parity")
         if embedded_git_metadata(filtered) is not None:
             raise RuntimeError("sanitized marketplace staging still carries Git metadata")
-        _replace_tree_atomically(filtered, staged)
+        if staged.exists():
+            replaced_backup = staged.with_name(f".{staged.name}.replaced-{os.getpid()}")
+            if replaced_backup.exists():
+                shutil.rmtree(replaced_backup)
+            os.replace(staged, replaced_backup)
+        os.replace(filtered, staged)
+        if replaced_backup is not None and keep_replaced_bytes is not None:
+            if keep_replaced_bytes.exists():
+                shutil.rmtree(keep_replaced_bytes)
+            os.replace(replaced_backup, keep_replaced_bytes)
+            replaced_backup = None
     finally:
+        if replaced_backup is not None and replaced_backup.exists() and staged.exists():
+            shutil.rmtree(replaced_backup, ignore_errors=True)
         shutil.rmtree(temporary, ignore_errors=True)
     print(f"[OK] staged sanitized marketplace root: {staged}")
     return staged
 
 
 def ensure_marketplace(
-    codex: str, repo_root: Path, codex_home: Path, apply: bool
+    codex: str,
+    repo_root: Path,
+    codex_home: Path,
+    apply: bool,
+    txn: dict | None = None,
 ) -> bool:
     staging = marketplace_staging_root(codex_home, repo_root)
+    if txn is not None:
+        txn["staging"] = staging
+    keep_replaced_bytes = txn.get("staging_backup_slot") if txn else None
     entry = marketplace_entry(codex)
+    if txn is not None:
+        txn["prior_entry"] = entry
     if entry is not None:
         root = entry.get("root")
         source = entry.get("marketplaceSource", {}).get("source")
         known = {value for value in (root, source) if value}
         if any(same_path(value, staging) for value in known):
             if apply:
-                marketplace_staging(codex_home, repo_root)
+                marketplace_staging(
+                    codex_home, repo_root, keep_replaced_bytes=keep_replaced_bytes
+                )
             elif (
                 not staging.is_dir()
-                or tree_manifest(staging) != tree_manifest(repo_root)
+                or distribution_manifest(staging) != distribution_manifest(repo_root)
                 or embedded_git_metadata(staging) is not None
             ):
                 raise RuntimeError(
@@ -216,9 +393,13 @@ def ensure_marketplace(
                     "or prior managed staging root; "
                     "run --apply to repoint it at the sanitized staging root"
                 )
-            marketplace_staging(codex_home, repo_root)
+            marketplace_staging(
+                codex_home, repo_root, keep_replaced_bytes=keep_replaced_bytes
+            )
             run(codex, "plugin", "marketplace", "remove", MARKETPLACE)
             run(codex, "plugin", "marketplace", "add", str(staging), "--json")
+            if txn is not None:
+                txn["reregistered"] = True
             entry = marketplace_entry(codex)
             if entry is None or not any(
                 same_path(value, staging) for value in (entry.get("root"), entry.get("marketplaceSource", {}).get("source")) if value
@@ -237,8 +418,12 @@ def ensure_marketplace(
         )
     if not apply:
         raise RuntimeError(f"marketplace {MARKETPLACE!r} is not registered")
-    marketplace_staging(codex_home, repo_root)
+    marketplace_staging(
+        codex_home, repo_root, keep_replaced_bytes=keep_replaced_bytes
+    )
     run(codex, "plugin", "marketplace", "add", str(staging), "--json")
+    if txn is not None:
+        txn["registered_fresh"] = True
     entry = marketplace_entry(codex)
     if entry is None or not any(
         same_path(value, staging)
@@ -875,8 +1060,56 @@ def audit_cache_archive(
     return repaired
 
 
+@contextmanager
+def _maybe_install_lock(cache_root: Path, enabled: bool) -> Iterator[None]:
+    """Acquire the install lock, unless an outer transaction already holds it."""
+    if enabled:
+        with cache_install_lock(cache_root):
+            yield
+        return
+    yield
+
+
+def same_version_drift_preflight(
+    codex: str, repo_root: Path, codex_home: Path
+) -> bool:
+    """Refuse an unresolvable same-version drift before any staged mutation.
+
+    Returns True when the installed entry matches the desired version. A live
+    cache that a trusted archive can restore to the exact source manifest
+    keeps the healthy in-place repair path inside ensure_plugin; every other
+    same-version difference raises the identical refusal here, before the
+    marketplace staging or registration can change, so a rejected upgrade
+    never leaves a mixed-identity installation.
+    """
+    source_root = source_plugin_root(repo_root)
+    desired_version = source_plugin_version(source_root)
+    cache_root = plugin_cache_root(codex_home)
+    archive_root = cache_archive_root(codex_home)
+    entry = plugin_entry(codex)
+    if entry is None or entry.get("version") != desired_version:
+        return False
+    require_no_embedded_git_metadata(cache_root, archive_root, desired_version)
+    if not tree_difference(source_root, cache_root / desired_version):
+        return True
+    versions = _archive_index(archive_root)
+    if desired_version in versions and not tree_difference(
+        source_root, archive_root / desired_version
+    ):
+        # ensure_plugin restores the live tree from this trusted archive and
+        # re-checks parity afterwards; that repair path stays where it was.
+        return True
+    require_cache_parity(
+        source_root,
+        cache_root / desired_version,
+        desired_version,
+        same_version=True,
+    )
+    return True
+
+
 def ensure_plugin(
-    codex: str, repo_root: Path, codex_home: Path, apply: bool
+    codex: str, repo_root: Path, codex_home: Path, apply: bool, *, lock: bool = True
 ) -> bool:
     source_root = source_plugin_root(repo_root)
     desired_version = source_plugin_version(source_root)
@@ -892,7 +1125,7 @@ def ensure_plugin(
                 "an interrupted historical cache preservation transaction is pending; "
                 "run with --apply to restore it before continuing"
             )
-        with cache_install_lock(cache_root):
+        with _maybe_install_lock(cache_root, lock):
             restored = restore_historical_cache_preservation(cache_root, archive_root)
         if restored:
             print(
@@ -941,7 +1174,7 @@ def ensure_plugin(
         return False
 
     if entry is not None and entry.get("version") == desired_version:
-        with cache_install_lock(cache_root):
+        with _maybe_install_lock(cache_root, lock):
             entry = plugin_entry(codex)
             if entry is not None and entry.get("version") == desired_version:
                 sanitized = sanitize_untrusted_current_cache(
@@ -987,7 +1220,7 @@ def ensure_plugin(
             f"but the repository requires {desired_version!r}"
         )
 
-    with cache_install_lock(cache_root):
+    with _maybe_install_lock(cache_root, lock):
         entry = plugin_entry(codex)
         if entry is not None and entry.get("version") == desired_version:
             sanitized = sanitize_untrusted_current_cache(
@@ -1093,6 +1326,86 @@ def ensure_plugin(
     return not was_installed
 
 
+def _rollback_install_transaction(
+    codex: str, codex_home: Path, repo_root: Path, txn: dict
+) -> list[str]:
+    """Best-effort restore of the pre-transaction registration and staging.
+
+    Returns human-readable notes for anything that could not be restored; an
+    incomplete rollback is reported explicitly and never presented as a
+    successful no-op.
+    """
+    notes: list[str] = []
+    staging = txn.get("staging")
+    backup = txn.get("staging_backup_slot")
+    if isinstance(staging, Path) and isinstance(backup, Path) and backup.is_dir():
+        try:
+            if staging.exists():
+                shutil.rmtree(staging)
+            os.replace(backup, staging)
+            notes.append(
+                f"restored previous marketplace staging bytes at {staging}"
+            )
+        except OSError as exc:
+            notes.append(
+                f"INCOMPLETE: could not restore previous staging bytes "
+                f"({backup} kept for recovery): {exc}"
+            )
+            return notes
+    try:
+        current = marketplace_entry(codex)
+    except Exception:  # noqa: BLE001 - rollback keeps collecting notes
+        current = None
+    prior = txn.get("prior_entry")
+    registered_fresh = bool(txn.get("registered_fresh"))
+    reregistered = bool(txn.get("reregistered"))
+    if current is not None:
+        if prior is None and (registered_fresh or reregistered):
+            try:
+                run(codex, "plugin", "marketplace", "remove", MARKETPLACE)
+                notes.append(
+                    "removed the marketplace registration added by this failed run"
+                )
+            except RuntimeError as exc:
+                notes.append(
+                    f"INCOMPLETE: marketplace registration added by this run "
+                    f"could not be removed: {exc}"
+                )
+        elif reregistered:
+            notes.append(
+                "marketplace registration was repointed during this run; verify "
+                "it still points at the restored staging root"
+            )
+    return notes
+
+
+def _run_install_transaction(
+    codex: str, repo_root: Path, codex_home: Path
+) -> None:
+    cache_root = plugin_cache_root(codex_home)
+    staging_backup = (
+        codex_home.expanduser().resolve()
+        / "upstreams"
+        / PLUGIN_NAME
+        / f".{repo_root.name}.marketplace.txn-backup"
+    )
+    txn: dict = {"staging_backup_slot": staging_backup}
+    try:
+        with cache_install_lock(cache_root):
+            ensure_marketplace(codex, repo_root, codex_home, apply=True, txn=txn)
+            ensure_plugin(codex, repo_root, codex_home, apply=True, lock=False)
+    except BaseException as exc:
+        notes = _rollback_install_transaction(codex, codex_home, repo_root, txn)
+        if notes:
+            summary = "; ".join(notes)
+            if isinstance(exc, RuntimeError):
+                raise RuntimeError(f"{exc}\n[transaction] {summary}") from exc
+            print(f"[transaction] {summary}", file=sys.stderr)
+        raise
+    if staging_backup.exists():
+        shutil.rmtree(staging_backup, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1119,8 +1432,15 @@ def main() -> int:
                 f"Codex {actual} is below the Context Guard baseline {minimum}; upgrade first"
             )
         print(f"[OK] Codex version supports stable hooks: {'.'.join(map(str, version))}")
-        ensure_marketplace(args.codex, repo_root, codex_home, args.apply)
-        ensure_plugin(args.codex, repo_root, codex_home, args.apply)
+        if args.apply:
+            # Same-version immutability is decided before the marketplace
+            # staging or registration can change, so a rejected drift never
+            # leaves a mixed-identity installation behind.
+            same_version_drift_preflight(args.codex, repo_root, codex_home)
+            _run_install_transaction(args.codex, repo_root, codex_home)
+        else:
+            ensure_marketplace(args.codex, repo_root, codex_home, args.apply)
+            ensure_plugin(args.codex, repo_root, codex_home, args.apply)
     except (OSError, RuntimeError) as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1

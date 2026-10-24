@@ -1209,10 +1209,13 @@ class HostTerminalWireTests(unittest.TestCase):
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")
         locator = self.root_target(target)
-        self.start(f"请修改 {locator}，并核对改动后的文件。")
+        root_prompt = f"请修改 {locator}，并核对改动后的文件。"
+        self.start(root_prompt)
         self.patch("first-patch", target, "before\n", "after\n")
         self.readback("first-read", target, "after\n")
-        cg.dispatch(self.event("UserPromptSubmit", prompt=f"请修改 {locator}，并核对改动后的文件。"))
+        # A genuinely new root in the same turn (different bytes) may not be
+        # closed by the prior root's edit and readback evidence.
+        cg.dispatch(self.event("UserPromptSubmit", prompt=root_prompt + " 再核对一次。"))
         state = self.state()
         session_dir = self.root / "private/sessions-v2" / self.session_id
         roots = {p["id"]: cg.read_prompt_record(session_dir, p)
@@ -1226,6 +1229,40 @@ class HostTerminalWireTests(unittest.TestCase):
             turn=self.turn_id, root_scope=root["text"])
         self.assertNotEqual(projection["predicates"].get(item["id"]), "satisfied")
 
+    def test_same_turn_identical_redelivery_collapses_to_one_root(self):
+        """0.16.0 restricted re-delivery handling: one exact (session, turn,
+        bytes) tuple journals one root. The re-delivered copy derives no
+        second requirement, and the single root's own post-root evidence
+        still satisfies it; the collapse stays visible in the replay ledger."""
+        target = self.cwd / "module.py"
+        self.write_file(target, "before\n")
+        locator = self.root_target(target)
+        root_prompt = f"请修改 {locator}，并核对改动后的文件。"
+        self.start(root_prompt)
+        self.patch("first-patch", target, "before\n", "after\n")
+        self.readback("first-read", target, "after\n")
+        cg.dispatch(self.event("UserPromptSubmit", prompt=root_prompt))
+        state = self.state()
+        session_dir = self.root / "private/sessions-v2" / self.session_id
+        import hashlib as _hashlib
+        human_rows = [p for p in state["prompts"] if p.get("origin", "human") == "human"]
+        root_rows = [p for p in human_rows
+                     if p.get("turn_id") == self.turn_id
+                     and p.get("sha256") == _hashlib.sha256(
+                         root_prompt.encode("utf-8")).hexdigest()]
+        self.assertEqual(len(root_rows), 1)
+        replays = state.get("prompt_replays", [])
+        self.assertEqual(len(replays), 1)
+        self.assertEqual(replays[0]["replay_count"], 1)
+        roots = {p["id"]: cg.read_prompt_record(session_dir, p)
+                 for p in human_rows}
+        from cg_codex_core_adapter import project_current_action
+        item = state["requirements"][-1]
+        root = roots[item["prompt_id"]]
+        projection = project_current_action(
+            state, roots, item=item, action="local_edit", target=str(target),
+            turn=self.turn_id, root_scope=root["text"])
+        self.assertEqual(projection["predicates"].get(item["id"]), "satisfied")
     def test_real_wire_update_without_current_readback_is_evidence_insufficient(self):
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")

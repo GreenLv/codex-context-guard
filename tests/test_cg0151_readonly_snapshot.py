@@ -1123,7 +1123,13 @@ class WindowsCommittedPublisherAdapterTests(unittest.TestCase):
             target.write_bytes(b"old valid target")
             with mock.patch.object(cg, "os", wraps=os) as platform, \
                     mock.patch.object(cg, "_replace_windows_committed_state",
-                                      side_effect=PermissionError("publication denied")):
+                                      side_effect=PermissionError("publication denied")), \
+                    mock.patch.object(cg, "_harden_private_directory_windows",
+                                      side_effect=lambda path: os.chmod(path, 0o700)):
+                # ABI-mock scope: the 0.16.0 Windows directory hardening is
+                # stood in by a plain chmod so this test exercises only the
+                # committed-publication path; real DACL behavior stays a
+                # native acceptance fact.
                 platform.name = "nt"
                 with self.assertRaisesRegex(PermissionError, "publication denied"):
                     cg.atomic_write_text(target, "new bytes", committed_state=True)

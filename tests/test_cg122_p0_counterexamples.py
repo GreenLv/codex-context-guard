@@ -115,7 +115,7 @@ SCHEMA10_PARKED_FIXTURE = (
     '"token_sha256": '
     '"1a7674eb4ee78df7e1ac439a93c3fa8e3c945784d4dec9fd8e3011738b2f1d62", '
     '"turn_id": "t2"}, "completion_checkpoint": null, "content_hash": '
-    '"1498967e325e71c21937bf5aea6e55d099fdd77c0b1303c054cb938e9fd93e57", '
+    '"196ad77d3d62338d5e949e64e727c0a054438ee6dfbf6eba06832f14fee18fdb", '
     '"continuation_attempts": 0, "decision_log": [{"actions": '
     '[{"authorization": "user_only", "category": "user_action", "owner": '
     '"user"}], "classifier_version": "3.2.1", "created_at": '
@@ -181,7 +181,7 @@ SCHEMA10_PARKED_FIXTURE = (
     '"schema_version": 10, "session": {"asset_reconciliation": '
     '{"pending_prompt_ids": ["P0001", "P0002"], "post_tool_attempted_prompt_ids": '
     '[]}, "created_at": "2026-09-07T07:57:12.714285Z", "cwd": '
-    '"/synthetic/cg122-p0/project", "ended_at": null, "id": "probe", "model": '
+    '"/synthetic/cg122-p0/project", "ended_at": null, "id": "p0", "model": '
     'null, "permission_mode": null, "transcript_path": null, "updated_at": '
     '"2026-09-07T07:57:12.719640Z"}, "supersedes": [], "work_state": '
     '{"active_work_unit_id": "WU0001", "plan_snapshot": null, '
@@ -1605,7 +1605,7 @@ class MigrationCounterexampleTests(P0Harness):
     counterexamples.
     """
 
-    EXPECTED_FIXTURE_SHA256 = "31f46de7a507219e347d938a418848df26d5be3fa26f7b9036cc5ee8e1e79429"
+    EXPECTED_FIXTURE_SHA256 = "9282e2e97bbd4292e89b5a36609a8f29bee9e713f5d45a98284c7a74d92700fb"
 
     def load_frozen_schema10_fixture(self) -> tuple[Path, dict]:
         fixture = json.loads(SCHEMA10_PARKED_FIXTURE)

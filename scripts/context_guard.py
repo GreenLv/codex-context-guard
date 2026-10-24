@@ -7,6 +7,7 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+import errno
 import hashlib
 import hmac
 import json
@@ -48,7 +49,7 @@ except ModuleNotFoundError as exc:
     governed_test_action = _instruction_module.governed_test_action
     instruction_text = _instruction_module.instruction_text
 
-PRODUCT_VERSION = "0.15.1"
+PRODUCT_VERSION = "0.16.0"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -1604,6 +1605,14 @@ AGENT_RESULT_FIELDS = {
     "limitations": ("limitations", "limitation", "限制", "局限", "未覆盖"),
     "next": ("next", "next steps", "下一步", "后续"),
 }
+# The structured key domain below is deliberately narrow and documented in
+# docs/PRIVACY.md: matching a key name replaces the whole value. Redaction is
+# defense in depth, not recognition of arbitrary unknown secrets.
+SENSITIVE_FIELD_KEYS = frozenset({
+    "password", "passwd", "pwd", "secret", "secretkey",
+    "apikey", "accesskey", "accesstoken", "refreshtoken", "authtoken",
+    "clientsecret", "privatekey", "bearer", "authorization", "credentials",
+})
 SECRET_PATTERNS = (
     (re.compile(r"\b(sk-[A-Za-z0-9_-]{12,})\b"), "[REDACTED]"),
     (
@@ -1611,12 +1620,39 @@ SECRET_PATTERNS = (
         r"\1[REDACTED]",
     ),
     (
+        # Serialized JSON keeps a quote between the field name and the colon
+        # (``"password": "x"``); accept quoted or bare keys, escaped quotes,
+        # and quoted values.
         re.compile(
-            r"(?i)\b(api[_-]?key|access[_-]?token|secret|password)"
-            r"(\s*[:=]\s*)[^\s,;]+"
+            r"(?i)\b(api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token"
+            r"|auth[_-]?token|client[_-]?secret|private[_-]?key|secret"
+            r"|secret[_-]?key|password|passwd|pwd|bearer|authorization|credentials)"
+            r"(\\?[\"']?\s*[:=]\s*)(\\?[\"'])[^\"'\\}]{1,512}\3"
+        ),
+        r"\1\2\3[REDACTED]\3",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token"
+            r"|auth[_-]?token|client[_-]?secret|private[_-]?key|secret"
+            r"|secret[_-]?key|password|passwd|pwd|bearer|authorization|credentials)"
+            r"(\\?[\"']?\s*[:=]\s*)[^\s,;}\]]+"
         ),
         r"\1\2[REDACTED]",
     ),
+    (
+        # URL userinfo (``scheme://user:secret@host``) is a credential surface
+        # for any bounded scheme-like prefix, not just http(s).
+        re.compile(
+            r"(?i)\b([a-z][a-z0-9+.\-]{1,16}://)[^\s/@:]+(?::[^\s/@]{1,256})?@"
+        ),
+        r"\1[user:secret-redacted]@",
+    ),
+    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{16,}\b"), "[REDACTED]"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), "[REDACTED]"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED]"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\b"), "[REDACTED]"),
     (
         re.compile(r"([?&](?:token|key|secret|signature|auth)=)[^&#\s]+", re.I),
         r"\1[REDACTED]",
@@ -1714,6 +1750,10 @@ def binary_placeholder(value: str, *, mime: str | None = None) -> str:
     return f"[binary omitted: type={kind}, chars={len(value)}, sha256={digest}]"
 
 
+def _normalized_sensitive_key(key: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (key or "").lower())
+
+
 def sanitize_evidence_value(
     value: Any,
     *,
@@ -1721,10 +1761,26 @@ def sanitize_evidence_value(
     binary_context: bool = False,
     depth: int = 0,
 ) -> Any:
-    """Remove binary payloads before serializing bounded tool evidence."""
+    """Remove binary payloads and structured credentials before serialization."""
     if depth >= 8:
         return "[nested value omitted]"
+    if key is not None and _normalized_sensitive_key(key) in SENSITIVE_FIELD_KEYS:
+        # Field-aware redaction replaces the whole value under a sensitive key
+        # regardless of shape; the text fallback below still covers serialized
+        # forms that arrive as plain strings.
+        return "[REDACTED]"
     if isinstance(value, str):
+        # A tool response often arrives as one JSON-encoded string; redact the
+        # structured form before any later serialization escapes its quotes.
+        stripped = value.lstrip()
+        if stripped[:1] in {"{", "["} and len(value) <= 65536:
+            with contextlib.suppress(ValueError):
+                decoded = json.loads(value)
+                if isinstance(decoded, (dict, list)):
+                    return json.dumps(
+                        sanitize_evidence_value(decoded, depth=depth + 1),
+                        ensure_ascii=False, sort_keys=True,
+                    )
         match = DATA_URL_RE.match(value)
         if match:
             return binary_placeholder(value, mime=match.group("mime") or "data-url")
@@ -1791,6 +1847,37 @@ def bounded_evidence(value: Any, limit: int) -> str:
     return bounded(sanitize_evidence_value(value), limit)
 
 
+def _private_path_roots() -> tuple[str, ...]:
+    """Plugin-private absolute path prefixes never shown in shareable exports."""
+    roots: set[str] = set()
+    for name in (
+        "CONTEXT_GUARD_DATA_DIR",
+        "PLUGIN_DATA",
+        "CLAUDE_PLUGIN_DATA",
+        "PLUGIN_ROOT",
+        "CODEX_HOME",
+    ):
+        value = os.environ.get(name)
+        if value and value.strip():
+            with contextlib.suppress(OSError, RuntimeError, ValueError):
+                roots.add(str(Path(value).expanduser()))
+    with contextlib.suppress(OSError, RuntimeError, ValueError):
+        roots.add(str(data_root()))
+    return tuple(sorted(roots, key=len, reverse=True))
+
+
+def redact_private_paths(text: str, roots: tuple[str, ...] | None = None) -> str:
+    for root in (_private_path_roots() if roots is None else roots):
+        if len(root) > 1 and root in text:
+            text = text.replace(root, "[private path omitted]")
+    return text
+
+
+def export_visible_text(text: str) -> str:
+    """Shareable-export view: secret redaction plus private-path removal."""
+    return redact_private_paths(redact_text(text))
+
+
 def console_write(value: Any, *, stream: Any = None) -> None:
     target = stream or sys.stdout
     text = str(value)
@@ -1802,36 +1889,322 @@ def console_write(value: Any, *, stream: Any = None) -> None:
         target.write(safe + "\n")
 
 
+class SessionIdentityError(ValueError):
+    """A host session identity is missing or outside the supported domain."""
+
+
+_SESSION_ID_SAFE_BYTE_RE = re.compile(r"[A-Za-z0-9._-]")
+
+
 def safe_session_id(value: Any) -> str:
-    raw = str(value or "unknown-session")
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", raw)[:160]
-    if safe in {".", "..", ".locks"}:
-        raise ValueError("reserved session identity")
-    return safe or "unknown-session"
+    """Map a host session identity onto one collision-free directory name.
+
+    The mapping is injective: allowed bytes pass through unchanged and every
+    other UTF-8 byte escapes as ``~xx``. Over-long encodings truncate to a
+    stable prefix plus a digest of the full raw identity. Missing identities
+    are rejected instead of collapsing into one shared directory, and names
+    that cannot exist safely on either supported platform (dot-reserved and
+    Windows device names) fail closed. The original identity is verified
+    against persisted state at load time; the encoding alone is not trusted.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise SessionIdentityError(
+            "hook payload has no usable session_id; Context Guard refuses to "
+            "merge unknown sessions into shared private state"
+        )
+    raw = value.strip()
+    encoded: list[str] = []
+    for byte in raw.encode("utf-8"):
+        char = chr(byte)
+        if _SESSION_ID_SAFE_BYTE_RE.fullmatch(char):
+            encoded.append(char)
+        else:
+            encoded.append(f"~{byte:02x}")
+    name = "".join(encoded)
+    if len(name) > 120:
+        name = name[:103] + "~" + sha256_text(raw)[:16]
+    stem = name.split(".", 1)[0].casefold()
+    if name in {".", "..", ".locks"} or stem in _WINDOWS_RESERVED_DEVICE_NAMES:
+        raise SessionIdentityError(
+            f"session identity {bounded(raw, 48)!r} maps to a reserved or "
+            "unsupported name; Context Guard refuses to use it as private state"
+        )
+    if not name:
+        raise SessionIdentityError("session identity is empty after encoding")
+    return name
 
 
 def data_root() -> Path:
-    configured = (
-        os.environ.get("CONTEXT_GUARD_DATA_DIR")
-        or os.environ.get("PLUGIN_DATA")
-        or os.environ.get("CLAUDE_PLUGIN_DATA")
+    """Resolve the private data root.
+
+    Explicit roots win in this order: ``CONTEXT_GUARD_DATA_DIR``, then the
+    host-provided ``PLUGIN_DATA``/``CLAUDE_PLUGIN_DATA``. With no explicit
+    root, a set ``CODEX_HOME`` owns its own ``<home>/context-guard`` directory
+    so isolated direct invocations never share state; without it the default
+    stays the historical ``~/.codex/context-guard`` path. Empty values are
+    treated as unset. No root is ever copied, migrated or deleted.
+    """
+    for name in ("CONTEXT_GUARD_DATA_DIR", "PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
+        configured = os.environ.get(name)
+        if configured and configured.strip():
+            return Path(configured).expanduser()
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home and codex_home.strip():
+        return Path(codex_home).expanduser() / "context-guard"
+    return Path.home() / ".codex" / "context-guard"
+
+
+class PrivateBoundaryError(RuntimeError):
+    """A private object could not be restricted or verified; never write through."""
+
+
+_WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul",
+     *(f"com{index}" for index in range(1, 10)),
+     *(f"lpt{index}" for index in range(1, 10))}
+)
+
+
+def _windows_current_user_sid() -> str:
+    """Return the current process user's SID as a string via native APIs."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    GetCurrentProcess = kernel32.GetCurrentProcess
+    GetCurrentProcess.restype = wintypes.HANDLE
+    OpenProcessToken = advapi32.OpenProcessToken
+    OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                 ctypes.POINTER(wintypes.HANDLE)]
+    OpenProcessToken.restype = wintypes.BOOL
+    GetTokenInformation = advapi32.GetTokenInformation
+    GetTokenInformation.argtypes = [wintypes.HANDLE, wintypes.INT,
+                                    wintypes.LPVOID, wintypes.DWORD,
+                                    ctypes.POINTER(wintypes.DWORD)]
+    GetTokenInformation.restype = wintypes.BOOL
+    GetLengthSid = advapi32.GetLengthSid
+    GetLengthSid.argtypes = [wintypes.LPVOID]
+    GetLengthSid.restype = wintypes.DWORD
+    ConvertSidToStringSidW = advapi32.ConvertSidToStringSidW
+    ConvertSidToStringSidW.argtypes = [wintypes.LPVOID,
+                                       ctypes.POINTER(wintypes.LPWSTR)]
+    ConvertSidToStringSidW.restype = wintypes.BOOL
+    LocalFree = kernel32.LocalFree
+    LocalFree.argtypes = [wintypes.HLOCAL]
+    LocalFree.restype = wintypes.HLOCAL
+
+    token = wintypes.HANDLE()
+    if not OpenProcessToken(GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        needed = wintypes.DWORD(0)
+        if GetTokenInformation(token, 1, None, 0, ctypes.byref(needed)):
+            raise OSError("token user query unexpectedly succeeded with no buffer")
+        user_and_groups = ctypes.create_string_buffer(needed.value or 64)
+        if not GetTokenInformation(token, 1, user_and_groups, needed.value,
+                                   ctypes.byref(needed)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # TOKEN_USER layout: SID pointer (align 8 on x64), then attributes.
+        sid_offset = 8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 4
+        sid = ctypes.cast(
+            ctypes.byref(user_and_groups, sid_offset), wintypes.LPVOID
+        )
+        length = GetLengthSid(sid)
+        raw = ctypes.string_at(sid, length)
+        sid_copy = ctypes.create_string_buffer(raw, length)
+        sid_ptr = ctypes.cast(sid_copy, wintypes.LPVOID)
+        text = wintypes.LPWSTR()
+        if not ConvertSidToStringSidW(sid_ptr, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return text.value
+        finally:
+            LocalFree(ctypes.cast(text, wintypes.HLOCAL))
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _windows_expected_sddl(is_directory: bool) -> str:
+    inheritance = "OICI;" if is_directory else ";"
+    sid = _windows_current_user_sid()
+    return (
+        "D:P"
+        f"(A;{inheritance}FA;;;{sid})"
+        f"(A;{inheritance}FA;;;SY)"
+        f"(A;{inheritance}FA;;;BA)"
     )
-    return Path(configured).expanduser() if configured else Path.home() / ".codex" / "context-guard"
+
+
+def _windows_query_dacl_sddl(path: Path) -> str | None:
+    """Read an object's DACL as canonical SDDL text, or None when unavailable."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    GetNamedSecurityInfoW = advapi32.GetNamedSecurityInfoW
+    GetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR, wintypes.INT, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    GetNamedSecurityInfoW.restype = wintypes.INT
+    ConvertSecurityDescriptorToStringSecurityDescriptorW = (
+        advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW
+    )
+    ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR), ctypes.POINTER(wintypes.DWORD),
+    ]
+    ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+    LocalFree = ctypes.WinDLL("kernel32", use_last_error=True).LocalFree
+    LocalFree.argtypes = [wintypes.HLOCAL]
+    LocalFree.restype = wintypes.HLOCAL
+
+    security = wintypes.LPVOID()
+    # SE_FILE_OBJECT; DACL only: owner/group/SACL pointers stay null.
+    result = GetNamedSecurityInfoW(
+        str(path.absolute()), 1, 0x4, None, None, None, None,
+        ctypes.byref(security),
+    )
+    if result != 0 or not security:
+        return None
+    try:
+        text = wintypes.LPWSTR()
+        returned = wintypes.DWORD(0)
+        # SDDL_REVISION_1, DACL section only.
+        if not ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            security, 1, 0x4, ctypes.byref(text), ctypes.byref(returned)
+        ):
+            return None
+        try:
+            return text.value
+        finally:
+            LocalFree(ctypes.cast(text, wintypes.HLOCAL))
+    finally:
+        LocalFree(ctypes.cast(security, wintypes.HLOCAL))
+
+
+def _windows_apply_protected_dacl(path: Path, expected_sddl: str) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ConvertStringSecurityDescriptorToSecurityDescriptorW = (
+        advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    )
+    ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID), ctypes.POINTER(wintypes.DWORD),
+    ]
+    ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    SetNamedSecurityInfoW = advapi32.SetNamedSecurityInfoW
+    SetNamedSecurityInfoW.argtypes = [
+        wintypes.LPCWSTR, wintypes.INT, wintypes.DWORD,
+        wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID,
+    ]
+    SetNamedSecurityInfoW.restype = wintypes.INT
+    kernel32.LocalFree.argtypes = [wintypes.HLOCAL]
+    kernel32.LocalFree.restype = wintypes.HLOCAL
+
+    descriptor = wintypes.LPVOID()
+    size = wintypes.DWORD(0)
+    if not ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        expected_sddl, 1, ctypes.byref(descriptor), ctypes.byref(size)
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # Self-relative security descriptor layout: revision (1), control (2),
+        # then owner/group/sacl/dacl offset slots; the DACL slot starts at
+        # byte 8. Its offset is valid only when SD_DACL_PRESENT is set.
+        raw = ctypes.string_at(descriptor, size.value)
+        control = int.from_bytes(raw[2:4], "little")
+        dacl_offset = int.from_bytes(raw[8:12], "little")
+        if not control & 0x4 or not 0 < dacl_offset < size.value:
+            raise OSError("expected security descriptor carries no usable DACL")
+        dacl = wintypes.LPVOID(
+            ctypes.cast(descriptor, ctypes.c_void_p).value + dacl_offset
+        )
+        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION; null
+        # owner/group/SACL so the kernel does not require extra privileges.
+        result = SetNamedSecurityInfoW(
+            str(path.absolute()), 1, 0x4 | 0x800, None, None, dacl, None
+        )
+        if result != 0:
+            raise OSError(f"SetNamedSecurityInfoW failed with winerror {result}")
+    finally:
+        kernel32.LocalFree(ctypes.cast(descriptor, wintypes.HLOCAL))
+
+
+def _harden_private_directory_windows(path: Path) -> None:
+    expected = _windows_expected_sddl(is_directory=True)
+    try:
+        current = _windows_query_dacl_sddl(path)
+        if current != expected:
+            _windows_apply_protected_dacl(path, expected)
+            current = _windows_query_dacl_sddl(path)
+    except PrivateBoundaryError:
+        raise
+    except OSError as exc:
+        raise PrivateBoundaryError(
+            f"private directory {path.name} could not be restricted to a "
+            f"protected owner-only DACL ({exc}); refusing to write private data"
+        ) from exc
+    if current != expected:
+        raise PrivateBoundaryError(
+            f"private directory {path.name} could not be restricted to a "
+            "protected owner-only DACL; refusing to write private data"
+        )
 
 
 def secure_directory(path: Path) -> None:
+    """Create/tighten a product-owned private directory and verify the result.
+
+    Fail closed: when the boundary cannot be established (chmod denied,
+    verification mismatch, unsupported ACL operation) the error propagates and
+    callers must not write private data through this path.
+    """
     path.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        _harden_private_directory_windows(path)
+        return
     try:
-        path.chmod(0o700)
-    except OSError:
-        pass
+        os.chmod(path, 0o700)
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        raise PrivateBoundaryError(
+            f"cannot restrict private directory {path.name}: {exc}"
+        ) from exc
+    if mode != 0o700:
+        raise PrivateBoundaryError(
+            f"private directory {path.name} has mode {oct(mode)} after "
+            "restriction; refusing to write private data"
+        )
 
 
 def secure_file(path: Path) -> None:
+    """Restrict a product-owned private file, verifying the final mode.
+
+    On Windows the read-only attribute is not an isolation boundary; file
+    isolation comes from the verified protected parent DACL plus inheritance,
+    so no per-file ACL mutation runs here (see docs/PRIVACY.md).
+    """
+    if os.name == "nt":
+        return
     try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+        os.chmod(path, 0o600)
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        raise PrivateBoundaryError(
+            f"cannot restrict private file {path.name}: {exc}"
+        ) from exc
+    if mode != 0o600:
+        raise PrivateBoundaryError(
+            f"private file {path.name} has mode {oct(mode)} after "
+            "restriction; refusing to write private data"
+        )
 
 
 def _replace_windows_committed_state(source: Path, target: Path) -> None:
@@ -1930,6 +2303,55 @@ def atomic_write_json(path: Path, value: Any, *, committed_state: bool = False) 
         atomic_write_text(path, content, committed_state=True)
     else:
         atomic_write_text(path, content)
+
+
+class ExportTargetExistsError(RuntimeError):
+    """A user-facing export would replace existing bytes; exports never do."""
+
+
+def export_write_text(target: Path, content: str) -> None:
+    """Write a project-bounded export without touching project permissions.
+
+    Exports create their target exclusively: an existing file keeps its exact
+    bytes and the caller receives an actionable error. Missing parent
+    directories are created with default modes; no project directory is ever
+    chmod'ed, and the new export file itself stays owner-only on POSIX.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=target.parent, delete=False,
+        prefix=f".{target.name}.",
+    )
+    temp_path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if target.exists() or target.is_symlink():
+            raise ExportTargetExistsError(
+                f"export target already exists: {target}; exports never "
+                "overwrite existing files — choose a new file name"
+            )
+        try:
+            os.link(temp_path, target)
+        except FileExistsError as exc:
+            raise ExportTargetExistsError(
+                f"export target already exists: {target}; exports never "
+                "overwrite existing files — choose a new file name"
+            ) from exc
+        except OSError as exc:
+            if exc.errno in (errno.EPERM, errno.EACCES, errno.EXDEV, errno.ENOTSUP,
+                             getattr(errno, "EFSERROR", errno.EPERM),
+                             getattr(errno, "ENOTSUP", errno.EPERM)):
+                raise OSError(
+                    f"exclusive export publication is not supported for "
+                    f"{target}: {exc}"
+                ) from exc
+            raise
+    finally:
+        with contextlib.suppress(OSError):
+            temp_path.unlink()
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -8589,6 +9011,27 @@ def migrate_state(state: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
     return state
 
 
+def _reject_casefold_sibling(session_dir: Path) -> None:
+    """Refuse two raw identities that differ only by letter case.
+
+    Case-insensitive filesystems (default macOS/Windows layouts) would place
+    both encoded names in one directory while load-time identity verification
+    expects exactly one owner, so creation fails closed with an actionable
+    error instead of silently merging the sessions.
+    """
+    parent = session_dir.parent
+    if not parent.is_dir():
+        return
+    folded = session_dir.name.casefold()
+    for sibling in parent.iterdir():
+        if sibling.name != session_dir.name and sibling.name.casefold() == folded:
+            raise SessionIdentityError(
+                "another session directory differs from this session identity "
+                "only by letter case; refusing to create a state directory "
+                "that case-insensitive filesystems would merge"
+            )
+
+
 def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
     state_path = session_dir / "state.json"
     if not state_path.exists():
@@ -8601,6 +9044,7 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 backup_file=None,
             )
         else:
+            _reject_casefold_sibling(session_dir)
             state = new_state(payload)
     else:
         issue: str | None = None
@@ -8641,6 +9085,16 @@ def load_state(session_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
                 backup_file=backup.name if backup is not None else None,
             )
     session = state.setdefault("session", {})
+    recorded_id = session.get("id")
+    raw_id = payload.get("session_id")
+    if isinstance(recorded_id, str) and recorded_id and raw_id != recorded_id:
+        # The encoded directory name resolved two different raw identities
+        # onto one state directory (encoding collision or tampered state).
+        # Fail closed: never mix one session's records into another's.
+        raise SessionIdentityError(
+            "private state records a different session identity than this "
+            "event; refusing to mix sessions (fail closed, nothing written)"
+        )
     for key in ("cwd", "model", "permission_mode", "transcript_path"):
         # The first Host session path is the transcript identity.  A later
         # Hook payload may observe that file, but cannot replace its source.
@@ -18061,11 +18515,82 @@ def stage_private_disposition(
         return receipt
 
 
+PROMPT_REPLAY_LEDGER_LIMIT = 32
+
+
+def find_replayed_root_prompt(
+    state: dict[str, Any], turn_id: str, text: str
+) -> dict[str, Any] | None:
+    """Return the journaled human root matching this exact (turn, bytes) pair.
+
+    The Codex hook payload carries no per-message identity, so the strongest
+    stable key the host provides is the tuple (session, turn id, exact prompt
+    bytes). A match is a re-delivery candidate of one already-journaled root;
+    different text or a different turn is always a new input. Sessions or
+    hosts without a turn id keep the fully un-deduplicated legacy behavior.
+    """
+    digest = sha256_text(text)
+    for row in reversed(state.get("prompts", [])):
+        if (
+            isinstance(row, dict)
+            and row.get("origin", "human") == "human"
+            and row.get("turn_id") == turn_id
+            and row.get("sha256") == digest
+        ):
+            return row
+    return None
+
+
+def record_prompt_replay(
+    state: dict[str, Any], prompt_row: dict[str, Any], turn_id: str, text: str
+) -> None:
+    """Record a bounded, text-free observation that one root was re-delivered."""
+    now = utc_now()
+    ledger = state.setdefault("prompt_replays", [])
+    if not isinstance(ledger, list):
+        ledger = []
+        state["prompt_replays"] = ledger
+    digest = sha256_text(text)
+    for entry in ledger:
+        if (
+            isinstance(entry, dict)
+            and entry.get("turn_id") == turn_id
+            and entry.get("prompt_sha256") == digest
+        ):
+            entry["replay_count"] = int(entry.get("replay_count") or 0) + 1
+            entry["last_seen_at"] = now
+            return
+    ledger.append({
+        "prompt_id": str(prompt_row.get("id") or ""),
+        "turn_id": bounded(turn_id, 64),
+        "prompt_sha256": digest,
+        "replay_count": 1,
+        "first_seen_at": now,
+        "last_seen_at": now,
+    })
+    state["prompt_replays"] = ledger[-PROMPT_REPLAY_LEDGER_LIMIT:]
+
+
 def handle_user_prompt(
     session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
 ) -> dict[str, Any]:
     text = prompt_text(payload)
     origin, authority, actor_id = classify_prompt_origin(state, payload, text)
+    turn_id = (
+        str(payload["turn_id"])
+        if isinstance(payload.get("turn_id"), str) and payload["turn_id"]
+        else None
+    )
+    if origin == "human" and turn_id:
+        replayed = find_replayed_root_prompt(state, turn_id, text)
+        if replayed is not None:
+            # Restricted re-delivery handling: one (turn, exact bytes) key
+            # journals exactly one root. The collapse is visible in the
+            # bounded replay ledger, and no second requirement, unit, wait or
+            # control effect is derived from the re-delivered copy.
+            record_prompt_replay(state, replayed, turn_id, text)
+            save_state(session_dir, state)
+            return {}
     supplied_cwd = payload.get("cwd")
     locator_base = None
     if isinstance(supplied_cwd, str) and Path(supplied_cwd).is_absolute():
@@ -18082,8 +18607,7 @@ def handle_user_prompt(
         authority=authority,
         actor_id=actor_id,
         locator_base=locator_base,
-        turn_id=(str(payload["turn_id"]) if isinstance(payload.get("turn_id"), str)
-                 and payload["turn_id"] else None),
+        turn_id=turn_id,
     )
     asset_ids = discover_assets(
         state, payload, prompt_id=prompt["id"], source="hook_payload"
@@ -21146,6 +21670,12 @@ def safe_export_path(state: dict[str, Any], argument: str | None) -> Path:
         candidate = candidate if candidate.is_absolute() else cwd / candidate
     else:
         candidate = cwd / ".codex" / "context-guard" / "CONTEXT_HANDOFF.md"
+    if candidate.is_symlink():
+        # Exports never write through a symbolic link, including a dangling
+        # one whose resolution would silently create a different file.
+        raise ValueError(
+            "export path must not be a symbolic link; choose a regular path"
+        )
     resolved = candidate.resolve()
     try:
         resolved.relative_to(cwd)
@@ -21604,7 +22134,7 @@ def export_successor_pack(
         tempfile.mkdtemp(prefix=".context-guard-pack.", dir=output.parent)
     )
     try:
-        handoff_text = successor_handoff_text(state, normalized)
+        handoff_text = export_visible_text(successor_handoff_text(state, normalized))
         handoff_path = temporary / SUCCESSOR_HANDOFF_FILENAME
         atomic_write_text(handoff_path, handoff_text)
         manifest = {
@@ -21628,7 +22158,7 @@ def export_successor_pack(
                 {
                     "id": item["id"],
                     "status": item.get("status", "pending"),
-                    "text": redact_text(bounded(item.get("text", ""), 700)),
+                    "text": export_visible_text(bounded(item.get("text", ""), 700)),
                     "source_prompt_sha256": item.get("sha256"),
                 }
                 for item in state["requirements"]
@@ -21638,7 +22168,7 @@ def export_successor_pack(
                 {
                     "id": item["id"],
                     "status": item.get("status", "pending"),
-                    "text": redact_text(bounded(item.get("text", ""), 700)),
+                    "text": export_visible_text(bounded(item.get("text", ""), 700)),
                     "evidence": item.get("evidence", []),
                 }
                 for item in state["acceptance_items"]
@@ -21660,6 +22190,11 @@ def export_successor_pack(
             },
         }
         atomic_write_json(temporary / SUCCESSOR_MANIFEST_FILENAME, manifest)
+        if output.exists() or output.is_symlink():
+            raise ExportTargetExistsError(
+                f"rollover output directory already exists: {output}; "
+                "successor packs never overwrite existing directories"
+            )
         os.replace(temporary, output)
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -21719,46 +22254,95 @@ def export_handoff(
             "",
         ]
     )
-    atomic_write_text(target, redact_text("\n".join(lines)))
+    export_write_text(target, export_visible_text("\n".join(lines)))
     return target
 
 
-def cleanup_old_sessions(root: Path, current: Path | None = None) -> int:
+CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
+CLEANUP_MAX_ENTRIES_PER_PASS = 512
+
+
+class _CleanupBudgetExhausted(Exception):
+    """Internal: the SessionEnd cleanup deadline passed mid-pass."""
+
+
+def cleanup_old_sessions(
+    root: Path,
+    current: Path | None = None,
+    *,
+    deadline: float | None = None,
+) -> int:
     """Sweep expired v2 sessions only; legacy trees are never touched.
 
-    Eligibility is RE-READ inside the session's lifecycle lock, which every
-    writer holds across its whole transaction, so a cleanup pass can never
-    delete a tree a writer is mid-write on, and the lock files themselves
-    (outside the session subtrees) are never removed.
+    The sweep is bounded by a monotonic deadline covering enumeration, lock
+    acquisition and deletion, with a per-pass entry cap. Candidate locks are
+    attempted without blocking. A session already judged eligible is marked
+    before deletion starts, so an interrupted pass leaves a resumable partial
+    tree that the next pass removes without re-deriving eligibility; repeated
+    calls therefore always make forward progress.
     """
     sessions = root / V2_NAMESPACE
     if not sessions.is_dir():
         return 0
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
+
+    def budget_left() -> bool:
+        return deadline is None or time.monotonic() < deadline
+
     removed = 0
-    for candidate in sessions.iterdir():
-        if candidate.name == ".locks":
-            continue
-        if candidate.is_symlink() or not candidate.is_dir():
-            continue
-        if current is not None and candidate.resolve() == current.resolve():
-            continue
-        try:
-            with session_lock(candidate, timeout=0.25):
-                if not _session_expired(candidate, cutoff):
-                    continue
-                for path in sorted(candidate.rglob("*"), reverse=True):
-                    if path.is_symlink() or path.is_file():
-                        path.unlink()
-                    elif path.is_dir():
-                        path.rmdir()
-                candidate.rmdir()
-        except (TimeoutError, OSError):
-            # A writer holds the lifecycle lock: skip this round; the
-            # session stays and a later pass re-reads eligibility.
-            continue
-        removed += 1
+    scanned = 0
+    try:
+        for candidate in sorted(sessions.iterdir()):
+            if not budget_left() or scanned >= CLEANUP_MAX_ENTRIES_PER_PASS:
+                break
+            if candidate.name == ".locks":
+                continue
+            if candidate.is_symlink() or not candidate.is_dir():
+                continue
+            if current is not None and candidate.resolve() == current.resolve():
+                continue
+            scanned += 1
+            try:
+                with session_lock(candidate, timeout=0.0):
+                    resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
+                    if not resumable and not _session_expired(candidate, cutoff):
+                        continue
+                    # Mark eligibility inside the lock: an interrupted deletion
+                    # must stay deletable without re-reading state.json.
+                    if not resumable:
+                        atomic_write_text(
+                            candidate / CLEANUP_PARTIAL_MARKER,
+                            "eligible cleanup marker (content-free)\n",
+                        )
+                    _delete_session_tree_bounded(candidate, budget_left)
+            except _CleanupBudgetExhausted:
+                break
+            except (TimeoutError, OSError):
+                # A writer holds the lifecycle lock: skip this round; the
+                # session stays and a later pass re-reads eligibility.
+                continue
+            removed += 1
+    except OSError:
+        pass
     return removed
+
+
+def _delete_session_tree_bounded(candidate: Path, budget_left) -> None:
+    """Delete one session subtree bottom-up under the remaining budget."""
+    for dirpath, dirnames, filenames in os.walk(candidate, topdown=False):
+        for name in filenames:
+            if not budget_left():
+                raise _CleanupBudgetExhausted
+            path = Path(dirpath) / name
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+        for name in dirnames:
+            if not budget_left():
+                raise _CleanupBudgetExhausted
+            (Path(dirpath) / name).rmdir()
+    if not budget_left():
+        raise _CleanupBudgetExhausted
+    candidate.rmdir()
 
 
 def _session_expired(candidate: Path, cutoff: dt.datetime) -> bool:
@@ -21782,19 +22366,46 @@ def _session_expired(candidate: Path, cutoff: dt.datetime) -> bool:
     return ended is not None and ended < cutoff
 
 
+SESSION_END_HOST_BUDGET_SECONDS = 3.0
+SESSION_END_CLEANUP_RESERVE_SECONDS = 0.35
+
+
 def handle_session_end(
-    session_dir: Path, state: dict[str, Any], payload: dict[str, Any]
+    session_dir: Path,
+    state: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    budget_started_at: float | None = None,
 ) -> dict[str, Any]:
     del payload
+    # This session's durable persistence always runs first; only the sweep
+    # afterwards is budget-limited.
     state["session"]["ended_at"] = utc_now()
     save_state(session_dir, state)
     if state["mode"]["active"]:
         write_recovery(session_dir, state, "SessionEnd")
-    cleanup_old_sessions(data_root(), current=session_dir)
+    cleanup_deadline: float | None = None
+    if budget_started_at is not None:
+        remaining = (
+            budget_started_at
+            + SESSION_END_HOST_BUDGET_SECONDS
+            - SESSION_END_CLEANUP_RESERVE_SECONDS
+            - time.monotonic()
+        )
+        if remaining > 0:
+            cleanup_deadline = time.monotonic() + remaining
+    if cleanup_deadline is None and budget_started_at is not None:
+        # Out of budget: skip this sweep round; a later SessionEnd continues
+        # it under the fair rescan rules.
+        return {}
+    cleanup_old_sessions(
+        data_root(), current=session_dir, deadline=cleanup_deadline
+    )
     return {}
 
 
 def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
+    dispatch_started_at = time.monotonic()
     repaired_payload, unicode_repairs = repair_unicode_scalars(payload)
     if not isinstance(repaired_payload, dict):
         raise TypeError("hook payload must be an object")
@@ -21895,12 +22506,23 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         handler = handlers.get(event)
         if handler is None:
             return {}
+        if event == "SessionEnd":
+            return handler(
+                session_dir, state, payload,
+                budget_started_at=dispatch_started_at,
+            )
         return handler(session_dir, state, payload)
 
 
 def _pre_tool_profile_hint(payload: dict[str, Any]) -> str:
     """Read-only routing through the last verified posture, never recovery."""
-    session_dir = session_dir_for(payload)
+    try:
+        session_dir = session_dir_for(payload)
+    except (OSError, ValueError, TypeError):
+        # Without a usable session identity no private state exists, so no
+        # adopted release contract can be active either: this is the same
+        # posture as an untracked session, not an unreadable one.
+        return "inactive"
     try:
         if (session_dir / "release-required").exists():
             return "release"

@@ -1,5 +1,32 @@
 # Versioning policy
 
+## 0.16.0 — Unreleased (source candidate)
+
+This minor candidate closes the 2026-10 engineering review (F01–F10, D01).
+Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the
+default business-tool path without execution approval are unchanged; no state
+migration runs. Observable runtime changes relative to published 0.15.1:
+field-aware structured-credential redaction plus private-path scrubbing in
+derived evidence and exports; exclusive never-overwriting exports that never
+change project directory permissions; fail-closed private permission
+establishment (POSIX mode verify; Windows protected DACL set plus read-back on
+directories through native APIs, no per-file ACL on the write path, no
+PowerShell in the Hook hot path); an allowlisted distribution staging set and
+a single installation transaction with same-version preflight, staged-byte
+backup, rollback, and explicit incomplete reporting; validated injective
+session-identity encoding with load-time identity verification (missing ids
+refused, old underscore-merged directories no longer addressed); the
+direct-command data root following `CODEX_HOME` (`<home>/context-guard`) when
+no explicit root is set; bounded SessionEnd retention cleanup (monotonic
+deadline, non-blocking locks, bounded batches, resumable partial deletions);
+and restricted re-delivery handling that journals exactly one root per exact
+(session, turn, prompt-bytes) tuple with a bounded text-free replay ledger.
+The optional `prompt_replays` ledger adds no schema migration; 0.15.x readers
+ignore it under the existing content-hash rules. Native Windows DACL facts
+and real host re-delivery behavior are separate gates from these source-level
+checks. Changed runtime bytes require a fresh isolated HOME for installation
+evidence; consumed 0.15.1 caches stay immutable.
+
 ## 0.15.1 — 2026-10-05
 
 This compatible patch repairs the two reproduced 0.15.0 incidents

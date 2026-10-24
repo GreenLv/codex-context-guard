@@ -6,7 +6,20 @@ their original runtime. There is no migration command, automatic import or
 legacy cleanup in this version.
 
 Here, HOME means the Codex configuration and task-data directory selected by
-`CODEX_HOME`, not the operating system user directory.
+`CODEX_HOME`, not the operating system user directory. Since the 0.16.0
+candidate, direct commands without an explicit data root resolve their private
+state under the active `CODEX_HOME` (`<home>/context-guard`), so isolated
+homes never share state; with `CODEX_HOME` unset the historical default is
+unchanged.
+
+Session identities are validated before any directory is used: a missing or
+empty id is refused rather than merged into one shared directory, and ids are
+injectively encoded (allowed bytes pass through; every other UTF-8 byte
+percent-escapes, with a digest suffix for over-long ids). Reserved names and
+Windows device names are rejected, a new directory whose name differs from a
+sibling only by letter case is refused, and loading verifies that the
+persisted session identity equals the event's identity before any write.
+UUID-shaped ids map exactly as before.
 
 ## Continue existing work
 
@@ -60,11 +73,22 @@ budget within its three-second Hook deadline. Descriptor/path identity checks
 harden commits, and a zero inode fails closed. Identity checks do not replace
 kernel exclusion or provide a sandbox against arbitrary same-user mutation.
 
-Cleanup scans only v2, acquires that same lock, then rereads state and retention
-eligibility before deleting the session subtree. It leaves the lifecycle lock
-in place. Contention skips cleanup within the budget; a queued writer proceeds
-only after release. Resumed v2 activity clears the old retention timestamp.
-Legacy trees and their timestamps are unchanged.
+Cleanup scans only v2, acquires that same lock without blocking, then rereads
+state and retention eligibility before deleting the session subtree. It leaves
+the lifecycle lock in place. Contention skips cleanup within the budget; a
+queued writer proceeds only after release. Resumed v2 activity clears the old
+retention timestamp. Legacy trees and their timestamps are unchanged.
+
+Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
+budget: candidates are visited in sorted order under a monotonic deadline,
+each pass scans at most a bounded number of entries, an interrupted
+deletion leaves a
+content-free resume marker so the next pass finishes it without re-deriving
+eligibility, and running out of budget returns safely with the remaining
+backlog for later passes. Current-session persistence always runs before the
+sweep. A re-delivered UserPromptSubmit carrying the exact same session, turn
+id and prompt bytes journals one root; the collapse is recorded in a bounded,
+text-free replay ledger and derives no second requirement or wait.
 
 `test_session_namespace` covers routing, read-only legacy access, ordinary-tool
 and release boundaries, cleanup and resumed activity. `test_session_lock_protocol`

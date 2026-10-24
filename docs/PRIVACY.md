@@ -90,8 +90,12 @@ When installed as a plugin, Codex supplies:
 
 Context Guard writes session state, immutable prompt records, recovery files,
 and private completion state only under `PLUGIN_DATA`. A direct-command fallback
-under the user's Codex home exists for isolated development; production plugin
-execution should use the Codex-provided data directory.
+exists for isolated development: with no explicit
+`CONTEXT_GUARD_DATA_DIR`/`PLUGIN_DATA`/`CLAUDE_PLUGIN_DATA` root, each
+`CODEX_HOME` owns its own `<home>/context-guard` directory, so two isolated
+homes never share or sweep the same state; without `CODEX_HOME` the historical
+`~/.codex/context-guard` default is unchanged. Production plugin execution
+should use the Codex-provided data directory.
 
 No plugin runtime state belongs in this Git repository.
 
@@ -234,12 +238,41 @@ Redacted handoff and successor exports remove or omit:
 
 - raw prompt files and transcript bodies;
 - common API keys, bearer credentials, passwords, and authorization headers;
-- URL query values;
-- private completion metadata and plugin-private paths;
+- URL query values and URL userinfo credentials;
+- private completion metadata and plugin-private absolute paths (the data root,
+  plugin root, and configured Codex home prefixes);
 - unrequested binary payloads.
 
-Redaction is defense in depth, not a guarantee that arbitrary user text contains
-no sensitive information. Review every export before sharing or committing it.
+Evidence, diagnostics, and exports apply two layers. Structured sanitization
+replaces the whole value under a documented set of sensitive key names —
+`password`, `passwd`, `pwd`, `secret`, `secret_key`, `api_key`, `apikey`,
+`access_key`, `access_token`, `refresh_token`, `auth_token`, `client_secret`,
+`private_key`, `bearer`, `authorization`, `credentials` — matched
+case-insensitively and ignoring separator shape, including values nested in
+JSON-encoded tool-response strings. A text fallback additionally recognizes
+serialized JSON key/value forms (quoted or escaped), common token shapes
+(`sk-`, `ghp_`-family, `github_pat_`, `xox*`-family, AWS `AKIA` access-key ids,
+JWT shapes), `--token` arguments, authorization headers, and URL credentials.
+Exports are published exclusively and never overwrite an existing file; the
+export writer does not change project directory permissions.
+
+The supported domain is deliberately bounded and listed here; recognition of
+arbitrary unknown secrets is out of scope. Redaction is defense in depth, not a
+guarantee that arbitrary user text contains no sensitive information. Review
+every export before sharing or committing it.
+
+## Private permission boundary
+
+Private directories and files under the data root are restricted and verified:
+POSIX objects are tightened to `0700`/`0600` and re-read; when that cannot be
+established the write fails closed with a visible, content-free error. On
+Windows, private directories receive a protected three-entry DACL (current
+user, `SYSTEM`, Administrators) applied and read-back verified through native
+APIs, without starting PowerShell on the Hook path; file-level isolation comes
+from the verified parent directory plus inheritance, and no per-file ACL call
+runs on the write path. These source-level contracts are validated as native
+Windows facts separately; they are not a sandbox against a malicious
+same-account process.
 
 ## Network behavior
 

@@ -1,5 +1,37 @@
 # Compatibility and Verification Status
 
+## 0.16.0 — Unreleased (source candidate)
+
+Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
+13, Stop protocol 5.0.0, the nine Hooks, and the default business-tool path
+without execution approval are unchanged. Upgrade boundaries relative to
+published 0.15.1:
+
+- Exports create their target exclusively. Re-exporting to an existing path
+  now fails with an actionable error instead of replacing the file; choose a
+  new file name. Export paths reject symbolic links, and exports no longer
+  tighten project directory permissions.
+- Private-state writes fail closed when the permission boundary cannot be
+  established or verified. On Windows this candidate sets and verifies a
+  protected DACL on private directories through native APIs; that behavior is
+  a source-level contract here, with native Windows acceptance recorded
+  separately.
+- Session identities are validated. Missing or empty ids are refused; ids are
+  injectively encoded instead of underscore-folded. Sessions whose ids contain
+  only `[A-Za-z0-9._-]` (all UUID-shaped host ids) resolve exactly as before.
+  A directory produced by the old underscore merging stays on disk but is no
+  longer addressed by this runtime; continue such tasks under their original
+  runtime.
+- Direct CLI commands without an explicit data root now store state under the
+  active `CODEX_HOME` (`<home>/context-guard`) instead of always
+  `~/.codex/context-guard`; with `CODEX_HOME` unset the default is unchanged.
+  Existing explicit data roots keep their meaning, and nothing is migrated,
+  merged, or deleted.
+- A re-delivered UserPromptSubmit with the exact same session, turn id and
+  prompt bytes journals one root and derives no second requirement or wait.
+  Distinct text or a distinct turn id is always new input; payloads without a
+  turn id keep the previous behavior.
+
 ## 0.15.1 — 2026-10-05
 
 0.15.1 keeps the 0.15.0 storage and upgrade boundaries: new sessions

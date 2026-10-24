@@ -1,6 +1,6 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "6fb2e9ceab75cec0997c13a26398ed5d18e68088",
+  "library_commit": "4ed85ea11ff8ccd307e3c59be885161a265892c4",
   "denominator": {
     "case_registry": {
       "records": 60,
@@ -1150,7 +1150,7 @@
     {
       "id": "CGI-20261002-codex-pause-resume-wait-stall",
       "lineage": "case-registry",
-      "status": "active",
+      "status": "superseded",
       "title": "普通暂停与明确续行用语漏识别，恢复后等待账本滞留",
       "runtime": "codex",
       "platform": "macos",
@@ -1171,12 +1171,13 @@
         "exact-commit full CI and HOL for the frozen candidate",
         "next owner: coordinator (final acceptance, integration, release)"
       ],
-      "owner": "coordinator"
+      "owner": "coordinator",
+      "successor": "CGI-20261002-codex-pause-resume-wait-stall-0151-macos-verified"
     },
     {
       "id": "CGI-20261003-codex-advanced-command-explicit-root-drift",
       "lineage": "case-registry",
-      "status": "active",
+      "status": "superseded",
       "title": "显式状态查询返回的高级命令指向默认数据目录",
       "runtime": "codex",
       "platform": "macos",
@@ -1196,12 +1197,13 @@
         "exact-commit full CI/HOL and integration/publication remain separate",
         "next owner: coordinator"
       ],
-      "owner": "coordinator"
+      "owner": "coordinator",
+      "successor": "CGI-20261003-codex-advanced-command-explicit-root-drift-0151-macos-verified"
     },
     {
       "id": "CGI-20261003-codex-checkpoint-status-posttool-rejection",
       "lineage": "case-registry",
-      "status": "active",
+      "status": "superseded",
       "title": "合法诊断选项被 PostToolUse 误拒绝，只读查询依赖私有写锁",
       "runtime": "codex",
       "platform": "macos",
@@ -1222,7 +1224,8 @@
         "exact-commit full CI and HOL for the frozen candidate",
         "next owner: coordinator (final acceptance, integration, release)"
       ],
-      "owner": "coordinator"
+      "owner": "coordinator",
+      "successor": "CGI-20261003-codex-checkpoint-status-posttool-rejection-0151-macos-verified"
     },
     {
       "id": "CGI-20261003-dsh-desktop-market-bundle-conflict",
@@ -1247,6 +1250,210 @@
         "DSH Desktop bundle/profile admission is outside this standalone Codex product. Existing Codex provider-binding source tests supply only the named narrow analogue, not DSH native acceptance."
       ],
       "windows_evidence_note": "No new Windows source analogue execution claimed; DSH native evidence remains library-owned."
+    },
+    {
+      "id": "CGI-20261002-codex-pause-resume-wait-stall-0151-macos-verified",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "普通暂停与明确续行用语漏识别，恢复后等待账本滞留",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "root-pause-resume-wait-lifecycle",
+      "current_contract": "0.15.1 candidate: a source-verified unique ordinary pause is released by the same task's explicit resume; polite softeners and user-action follow-up sentences keep the pause ordinary, polite/direct-address/mid-sentence resumes match the same clause-anchored contract, and only a negation of the resume action itself keeps waiting. Named inputs, exact markers, choice waits and external dependencies still need their own evidence; legacy sessions stay read-only",
+      "trigger": "canonical sanitized reproducer codex-pause-resume-wait-stall-v1 (6 scenarios), the W01-W15 dispatch/state/cold-read/Stop matrix, the review R1 new-root-repeat-of-released-pause family, and the review R2 source-snapshot matrix (state-anchored identity, completeness, newer-root and real-concurrency witnesses); review R3 fd-loaded identity and final projection checks (plain/typed x five modes, real resume/new-root writers), and raw capture field-type validation before boolean projection",
+      "positive": "polite-pause, polite-resume, replacement-with-negated-old-object, replacement-without-negation scenarios release the unique ordinary wait with recorded provenance and restore the unit to active; Stop stays silent",
+      "negative": "negated-resume guard keeps waiting; quotes, questions, third-party continuation, ambiguous double waits, typed waits and external dependencies do not release; changed or missing source stays fail-closed; 0.15.0 misclassified v2 recovers only with re-verified source; a new root pause event with identical bytes re-raises the wait while same-event replay stays idempotent (review F1)",
+      "test_locator": "tests/test_cg0151_pause_resume_family.py::PauseResumeFamilyTests::test_w02_polite_pause_suffix_does_not_create_named_object and ::test_w04_negated_old_object_does_not_block_current_resume and ::test_w12_changed_or_missing_source_stays_fail_closed and ::test_f1_new_root_event_with_identical_pause_bytes_rewaits and ::test_f1b_same_source_event_replay_stays_idempotent and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r2_source_snapshot_family_matrix and ::test_f3_source_change_between_passes_is_explicit_real_event and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r3_query_lifecycle_matrix and ::test_r3_final_projection_rechecks_authority_matrix and tests/test_cg0151_incident_toolkit.py::IncidentToolkitTests::test_r3_mapper_original_value_type_matrix and ::test_r3_mapper_valid_behavior_inversions",
+      "deeper_authority": "tests/test_cg122_p0_counterexamples.py P0Harness dispatch chain; canonical reproducer replay.py 6/6 in the incident library (unchanged driver/fixture bytes)",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "pending",
+      "windows_result": "not_required",
+      "missing_evidence": [
+        "accepted 0.15.1 macOS evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input macOS confirmation",
+        "current-candidate exact-source gates and native confirmation are coordinator-gated",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-codex-advanced-command-explicit-root-drift-0151-macos-verified",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "显式状态查询返回的高级命令指向默认数据目录",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "checkpoint-status-command-inventory-explicit-root",
+      "current_contract": "0.15.1 candidate: command discovery preserves the explicitly queried data root, interpreter, script, session, turn and private binding across all four returned commands; Hook discovery retains its ambient root contract",
+      "trigger": "real CLI queries with no Hook environment or wrong CONTEXT_GUARD_DATA_DIR/PLUGIN_DATA/CLAUDE_PLUGIN_DATA, distinct and spaced roots; four-command consumer mutation matrix",
+      "positive": "all four commands bind the explicit root and current private attempt; the returned status command executes successfully with unchanged private bytes and metadata",
+      "negative": "wrong root, executable, script, subcommand, session, turn, token hash, sentinel inventory token, duplicate fields and extra/compound command shapes fail; no default-root directory is created",
+      "test_locator": "tests/test_cg0151_status_command_contract.py::StatusCommandContractTests::test_c09_explicit_query_root_binds_all_commands_without_hook_environment and ::test_c10_encoder_explicit_space_root_and_hook_default_are_separate and tests/test_incident_host_acceptance.py::IncidentHostTests::test_cli0160_all_four_inventory_commands_require_exact_authority",
+      "deeper_authority": "scripts/context_guard.py checkpoint_status, advanced_command_context and shared command encoder; tools/validation/incident_host_acceptance.py status_output",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "pending",
+      "windows_result": "not_required",
+      "missing_evidence": [
+        "accepted 0.15.1 macOS evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input macOS confirmation",
+        "current-candidate exact-source gates and native confirmation are coordinator-gated",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-codex-checkpoint-status-posttool-rejection-0151-macos-verified",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "合法诊断选项被 PostToolUse 误拒绝，只读查询依赖私有写锁",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "checkpoint-status-option-parsing-and-readonly-lock",
+      "current_contract": "0.15.1 candidate: the documented checkpoint-status options (--commands, --full, --item VALUE, --after-revision VALUE) are recognized by PostToolUse under the explicit contract the CLI enforces; abbreviations, duplicates, missing/empty values, unknown options and mode conflicts are rejected on both surfaces; the status read path loads one committed revision with zero write side effects and never takes the private write lock",
+      "trigger": "canonical sanitized reproducer codex-checkpoint-status-posttool-rejection-v1 (7 CLI/Hook scenarios plus the private-lock write-denial probe), the C01-C08 and R01-R10 matrices, the review R1 missing-value and typed-authority families, and the review R2 source-snapshot/oracle/storage matrices (state-anchored identity, strict judge/mapper, exclusive result creation); review R3 fd-loaded identity and final projection checks (plain/typed x five modes, real resume/new-root writers), and raw capture field-type validation before boolean projection",
+      "positive": "real CLI subprocess success with documented options is recognized and the PostToolUse event stays silent; a failing diagnostic result grants no business evidence; the read-only snapshot serves queries with a byte-stable private tree",
+      "negative": "unknown/abbreviated options, duplicate bindings, missing values, mode conflicts, shell chains, wrong session/turn/data-root/token or a different runtime/script stay rejected; damaged or replaced state fails explicitly without rebuild, backup or migration; a separated value must not consume a following option-like token (review F2); the read-only query also verifies still-authoritative external sources, companions, typed controls, newer roots and mid-query source changes with controlled reasons (review F3)",
+      "test_locator": "tests/test_cg0151_status_command_contract.py::StatusCommandContractTests::test_c08_real_cli_success_then_post_chain_cold_read and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r01_all_modes_read_without_tree_changes and ::test_f3_typed_control_source_mutations_fail_explicitly and ::test_f3_ordinary_root_source_mutations_fail_explicitly and ::test_r2_source_snapshot_family_matrix and tests/test_cg0151_incident_toolkit.py::IncidentToolkitTests::test_r2_judge_oracle_matrix and ::test_r2_mapper_structural_matrix and ::test_r2_preflight_preserves_existing_output and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r3_query_lifecycle_matrix and ::test_r3_final_projection_rechecks_authority_matrix and tests/test_cg0151_incident_toolkit.py::IncidentToolkitTests::test_r3_mapper_original_value_type_matrix and ::test_r3_mapper_valid_behavior_inversions",
+      "deeper_authority": "tests/test_session_lock_protocol.py writer kernel-lock contract; tools/validation/incident_toolkit.py zero-model scenario toolchain; canonical reproducer replay.py 8/8 in the incident library (unchanged driver/fixture bytes)",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "pending",
+      "windows_result": "not_required",
+      "missing_evidence": [
+        "accepted 0.15.1 macOS evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input macOS confirmation",
+        "current-candidate exact-source gates and native confirmation are coordinator-gated",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261005-codex-collector-signed-request-restoration-drift",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "验收采集器恢复诊断修改已签名请求，最终映射摘要自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-collector-signed-request-lifecycle",
+      "current_contract": "0.15.1 acceptance tooling: the incident collector restores through independent state so the persisted request, the request the ordinary tool consumed and the capture-saved signed request keep identical digests; restoration diagnostics live in separate state and never mutate the signed request",
+      "trigger": "a full native incident_host collection whose restoration path appended diagnostics onto the persisted request object; the final capture digest then refused the modified request on the original Windows execution identity",
+      "positive": "restoration reads independent persisted state; request/actor/capture digests stay identical; judge and restore states stay strictly bound; the final mapping summary accepts only unmodified signed requests",
+      "negative": "a restoration that mutates the request fails the final mapping instead of re-hashing or stripping fields; the original failing capture stays failed on its original identity and is not relabeled as a pass",
+      "test_locator": "tests/test_incident_host_acceptance.py::CollectorRequestLifecycleTests::test_full_signed_request_survives_successful_restoration and ::test_v2_and_legacy_request_snapshots_survive_restoration and ::test_post_request_stop_failure_retains_signed_request_and_restores and ::test_restoration_and_receipt_failures_stay_pending_without_request_drift and ::test_signed_request_tampering_is_still_rejected",
+      "deeper_authority": "canonical library evidence at 4ed85ea binds the original Windows observation, the repair commits and the strict derived mapping",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "not_required",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "native Windows rerun on the current candidate is a coordinator-gated native fact",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-codex-windows-helper-path-representation-rejection",
+      "lineage": "case-registry",
+      "status": "superseded",
+      "title": "Windows 普通工具 helper 的同路径表示被验收比较器误拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-ordinary-helper-argv-binding",
+      "successor": "CGI-20261005-codex-helper-path-0151-windows-verified"
+    },
+    {
+      "id": "CGI-20261005-codex-helper-path-0151-windows-verified",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "Windows 普通工具 helper 的同路径表示被验收比较器误拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-ordinary-helper-argv-binding",
+      "current_contract": "0.15.1 Windows acceptance fixtures represent helper paths through the reviewed prepared-source identity; separator, flag, arity and foreign-path shapes fail closed before any helper execution on both platforms",
+      "trigger": "Windows distinct-source32 and helper-path matrices executed real PowerShell helper invocations through the prepared source; POSIX quoting and foreign paths stay rejected",
+      "positive": "37 focused Windows tests passed with three precise platform skips; 169 owning/affected-input tests pass; helper shapes are bound to the prepared-source identity",
+      "negative": "a helper path is never taken from unchecked prompt bytes; changed helper inputs or executed helper inputs require new affected-input native evidence even when runtime bytes match",
+      "test_locator": "tests/test_incident_host_acceptance.py::IncidentHostTests::test_windows_helper_separator_family_and_strict_negative_controls and ::test_windows_both_helper_entrypoints_keep_hook_source_and_scope_binding and ::test_helper_execution_repository_and_pinned_bytes_are_not_mapper_identity",
+      "deeper_authority": "canonical library evidence at 4ed85ea binds prepared identities and native observations",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "not_required",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "accepted 0.15.1 Windows evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input Windows confirmation",
+        "current-candidate native Windows rerun is a coordinator-gated gate; this row records the 0.15.1 evidence lineage",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261003-codex-windows-readonly-fixture-acl-self-denial",
+      "lineage": "case-registry",
+      "status": "superseded",
+      "title": "Windows 只读验收夹具的通用写拒绝导致读取自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-native-readonly-fixture-acl",
+      "successor": "CGI-20261005-codex-readonly-acl-0151-windows-verified"
+    },
+    {
+      "id": "CGI-20261005-codex-readonly-acl-0151-windows-verified",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "Windows 只读验收夹具的通用写拒绝导致读取自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-native-readonly-fixture-acl",
+      "current_contract": "0.15.1 Windows read-only acceptance fixtures grant read/list/query to the tested ordinary-tool principal while truly denying new-file creation and lock-file writes; nested objects are covered and restoration is read back",
+      "trigger": "the distinct-source32 matrix and the full incident_host/v2-full run prepared real DACLs on Windows; the original generic write-denial fixture had refused its own reader",
+      "positive": "the v3 fixture admits the tested principal read/list/query, denies create and lock-write opens, covers nested objects, and restores the original DACL with verified readback",
+      "negative": "a fixture that cannot express the read-grant boundary fails preparation instead of downgrading the run; the original failing grant stays failed on its original identity",
+      "test_locator": "tests/test_incident_acl_family.py::ACLFamilyTests::test_owned_parent_inheritance_grants_read_traverse_without_write_propagation and ::test_exact_bits_bottom_up_and_original_dacl_restore and ::test_partial_failure_restores_every_saved_object",
+      "deeper_authority": "canonical library evidence at 4ed85ea binds fixture identities, permission operations and native observations",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "not_required",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "accepted 0.15.1 Windows evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input Windows confirmation",
+        "current-candidate native Windows rerun is a coordinator-gated gate; this row records the 0.15.1 evidence lineage",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261004-codex-windows-fixture-snapshot-newline-hash",
+      "lineage": "case-registry",
+      "status": "superseded",
+      "title": "Windows 验收夹具快照的换行转换导致文件哈希自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-native-fixture-durable-snapshot-bytes",
+      "successor": "CGI-20261005-codex-snapshot-bytes-0151-windows-verified"
+    },
+    {
+      "id": "CGI-20261005-codex-snapshot-bytes-0151-windows-verified",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "Windows 验收夹具快照的换行转换导致文件哈希自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "incident-native-fixture-durable-snapshot-bytes",
+      "current_contract": "0.15.1 fixture snapshots preserve exact bytes: a newline-converted snapshot is rejected before any grant, and a 54-case immutable byte oracle separates text-mode corruption from real bytes",
+      "trigger": "a fresh v3 fixture rejected the original newline-converted snapshot; the byte oracle failed the old source (40/54 with 14 simulated-Windows-newline corruptions) and passes 54/54 after the repair",
+      "positive": "the root immutable byte oracle passes 54/54; six regression tests pass; owning v3/ACL/host suites pass with only precise Windows-only skips; fixture digests bind saved bytes",
+      "negative": "a newline- or encoding-mutated snapshot is refused instead of re-hashed; failed old-source observations remain failed and are not relabeled",
+      "test_locator": "tests/test_incident_host_acceptance.py::IncidentHostTests::test_helper_execution_repository_and_pinned_bytes_are_not_mapper_identity and tests/test_acceptance_identity.py::PreparedIdentityTests::test_new_directory_content_changes_identity",
+      "deeper_authority": "canonical library evidence at 4ed85ea binds byte oracles and native observations",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "not_required",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "accepted 0.15.1 Windows evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input Windows confirmation",
+        "current-candidate native Windows rerun is a coordinator-gated gate; this row records the 0.15.1 evidence lineage",
+        "next owner: coordinator (final acceptance, integration, release)"
+      ],
+      "owner": "coordinator"
     }
   ],
   "legacy": [

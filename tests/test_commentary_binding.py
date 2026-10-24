@@ -91,7 +91,21 @@ class BindingTests(unittest.TestCase):
 
     def test_duplicate_same_text_root_is_unknown(self):
         self.p.collect()
+        # Since 0.16.0 an identical (session, turn, bytes) re-delivery is the
+        # restricted same-event replay: it collapses to the one journaled
+        # root instead of creating a competing root, so binding stays
+        # resolvable and the collapse stays visible in the replay ledger.
         cg.dispatch(self.p.host.event('UserPromptSubmit', prompt=self.p.request['root_text']))
+        state = self.p.host.state()
+        self.assertEqual(cg.reviewed_information(state)[
+            self.p.item['id']]['coverage'], 'complete')
+        self.assertEqual(len(state.get('prompt_replays', [])), 1)
+        # A genuinely different root event — same bytes on a different turn —
+        # still produces competing identical roots and stays unknown.
+        replay_turn = self.p.host.event('UserPromptSubmit',
+                                        prompt=self.p.request['root_text'])
+        replay_turn['turn_id'] = 'next-turn'
+        cg.dispatch(replay_turn)
         self.unknown()
         self.assertEqual(cg.reviewed_information(self.p.host.state())[self.p.item['id']]['coverage'], 'unknown')
 

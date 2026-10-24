@@ -12,11 +12,11 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **Current version: 0.15.1 — 2026-10-05.** Explicit resumes release ordinary pauses while preserving unfinished work; later user messages can pause again. Diagnostic status queries verify applicable sources without private writes. Bounded native macOS/Windows acceptance passed. Public availability is determined by the [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases); see [release notes](docs/releases/v0.15.1.md) and [upgrade boundaries](docs/SESSION_STORAGE.md) before changing an installation.
+> **Current version: 0.16.0 source candidate (unreleased).** The latest published release remains [0.15.1 — 2026-10-05](docs/releases/v0.15.1.md). The candidate closes a 2026-10 engineering review: structured-credential redaction in evidence and exports, exclusive never-overwriting exports that leave project permissions alone, fail-closed private-state permissions, an allowlisted installer distribution with one installation transaction, validated session identities and per-`CODEX_HOME` data roots, bounded SessionEnd cleanup, and restricted handling of re-delivered prompts. Public availability is determined by the [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases); see [release notes](docs/releases/v0.16.0.md) and [upgrade boundaries](docs/SESSION_STORAGE.md) before changing an installation.
 
 ## Install
 
-Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The 0.15.1 acceptance batch targets Codex CLI `0.160.0`; earlier CLI versions are not retested for this release. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.
+Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The published 0.15.1 acceptance batch targets Codex CLI `0.160.0`; earlier CLI versions are not retested. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.
 
 ```shell
 git clone https://github.com/GreenLv/codex-context-guard.git
@@ -51,7 +51,7 @@ hashes or bypass trust. Tell me if a new task or client restart is needed.
 
 ### Upgrade notes
 
-Before upgrading to 0.15.1, verify its published Release. Here, HOME means Codex’s configuration and task-data directory, selected by `CODEX_HOME`. Finish old tasks before changing their HOME’s selected plugin, or keep an independent HOME explicitly on the original version while new work uses a fresh HOME. Keeping an old cache alone does not pin its Hooks: Codex may select the new version on the next turn. This release does not migrate old task state.
+Before upgrading, verify the published Release of the version you adopt. Here, HOME means Codex’s configuration and task-data directory, selected by `CODEX_HOME`. Finish old tasks before changing their HOME’s selected plugin, or keep an independent HOME explicitly on the original version while new work uses a fresh HOME. Keeping an old cache alone does not pin its Hooks: Codex may select the new version on the next turn. This release does not migrate old task state.
 
 Use the managed installer and check the installed-version readback. Review and trust all nine Hooks in a fresh task, then start another task to load the new version. Do not overwrite consumed caches. See [session storage and upgrades](docs/SESSION_STORAGE.md) for the separate-HOME route and [compatibility](docs/COMPATIBILITY.md) for tested limits.
 
@@ -195,7 +195,7 @@ Read [Successor Pack Input](skills/context-guard/references/successor-pack.md) b
 
 Runtime data is stored under Codex-managed `PLUGIN_DATA`. Prompt bodies, task state, evidence summaries, and recovery files remain local runtime data and are not part of this repository.
 
-In 0.15.1, ended v2 sessions with no resumed activity are eligible for cleanup after 30 days; legacy session trees are retained. Redacted exports are created only when requested and omit raw prompts, transcripts, credentials, authorization headers, URL query values, and plugin-private paths. See [Privacy](docs/PRIVACY.md).
+Ended v2 sessions with no resumed activity are eligible for cleanup after 30 days; legacy session trees are retained, and the retention sweep stays inside the three-second SessionEnd budget. Redacted exports are created only when requested, never overwrite an existing file, and omit raw prompts, transcripts, credentials, authorization headers, URL query values, URL userinfo, and plugin-private paths; the documented redaction domain is listed in [Privacy](docs/PRIVACY.md). Direct CLI fallback state lives under the active `CODEX_HOME` when no plugin data directory is provided.
 
 ## Update and uninstall
 

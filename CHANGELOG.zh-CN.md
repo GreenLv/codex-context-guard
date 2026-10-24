@@ -4,6 +4,33 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
+## 0.16.0 — 未发布（source candidate）
+
+### 亮点
+
+- 结构化凭据不再进入派生证据、诊断或可分享导出。脱敏现可识别 JSON 序列化的凭据字段（含转义引号形式）、URL userinfo、授权头与常见 token 形态，导出还会额外抹除插件私有绝对路径。支持域有文档且 bounded；任意未知秘密仍不在承诺范围。
+- 导出绝不覆盖既有文件，也绝不改动项目目录权限。可分享交接文件以独占方式发布（既有目标的原字节保持不变），项目父目录保留自身权限。
+- 私有状态在权限边界无法建立时失败关闭。POSIX 上无法收紧并验证为 `0700`/`0600` 的私有目录/文件会阻止写入；Windows 上私有目录通过原生 API 建立并读回验证受保护 DACL，热 Hook 内不启动 PowerShell。
+- 安装器改为按显式分发清单构建 marketplace 暂存，并执行单一安装事务：同版本漂移在任何暂存/注册变更之前被拒绝；安装失败会恢复原暂存字节与注册，而不是留下混合身份。
+- SessionEnd 清理有界化：保留清理在 3 秒宿主预算内的单调 deadline 下执行，使用非阻塞锁、有界批次与可续扫的部分删除。16 个繁忙会话锁不再超时。
+
+### 变更
+
+- 字段感知的证据清理会在序列化前替换文档化敏感键（`password`、`api_key`、`client_secret`、`authorization`、`credentials` 及近变体，忽略大小写与分隔符）下的值；JSON 编码的工具响应字符串也会先解码再结构化清理。同形状的普通业务字段（如 `password_policy`）不受影响。原始 prompt 记录保持权威原始字节。
+- `context-guard export` 以基于原子 link 的独占发布创建目标；已存在的文件、目录或符号链接目标会得到明确错误且原字节不变。successor pack 拒绝已存在的输出目录。导出路径拒绝符号链接；导出写入器不 chmod 项目目录；新导出文件在 POSIX 上保持仅属主可读。
+- 私有权限失败显式可见：`PrivateBoundaryError` 向上传播而非被吞掉，未通过验证的边界不再写入敏感数据，错误文本不含私有内容。Windows 上目录隔离使用受保护三条目 DACL（当前用户、`SYSTEM`、Administrators），经原生 API 设置并读回验证；文件级隔离来自已验证父目录加继承，写路径不做逐文件 ACL 调用。真实 Windows 行为是与源码测试分开的原生验收事实。
+- marketplace 暂存恰好包含分发集合：五个运行树根加上文档化的 license/readme/changelog/security/pyproject 文件，其他任何顶层仓库条目在构建时被拒绝。分发内任何位置的符号链接、reparse、FIFO 及特殊条目在读之前被拒绝。五根运行树 parity 仍是子集校验，不构成分发充分性声明。
+- 安装器在触碰 marketplace 之前先判定同版本不可变性：无法解决的同版本漂移在不改变暂存/注册的情况下失败；仍能恢复出精确源清单的可信归档保留既有修复路径。marketplace 注册与插件安装运行在同一把锁下，旧暂存字节保留、失败恢复、成功释放；无法完成的回滚会显式报告 incomplete 事务。
+- 会话身份经过验证并注入式编码：缺失或空 session id 被拒绝而不是合并进同一个 `unknown-session` 目录；`[A-Za-z0-9._-]` 之外的字符按字节转义而不是折叠（`a/b` 与 `a_b` 是不同会话）；超长 id 以摘要后缀截断；保留名与 Windows 设备名被拒绝；仅大小写不同的兄弟碰撞被拒绝；已加载状态记录的会话身份与事件不符时失败关闭。UUID 形态 id 的映射与之前完全一致；旧下划线归并产生的目录留在磁盘上但不再被寻址。
+- 直接命令的数据根遵循 `CODEX_HOME`：显式 `CONTEXT_GUARD_DATA_DIR`/`PLUGIN_DATA`/`CLAUDE_PLUGIN_DATA` 仍优先；否则每个 `CODEX_HOME` 拥有自己的 `<home>/context-guard` 目录（未设置 `CODEX_HOME` 时默认路径仍是 `~/.codex/context-guard`）。不迁移、不合并、不删除任何数据。
+- 同一 (session, turn, prompt 字节) 三元组的 UserPromptSubmit 重投只记录一个 root：重投副本不追加第二个需求、工作单元、等待或控制效果，且有界无文本的重投台账保持折叠可见。不同文本或不同 turn 永远是新输入；无 turn id 的负载保持原行为。Codex hook 负载没有逐消息 ID，同 turn 同字节的两次真实独立消息仍不可区分，折叠以可见方式进行而非静默吞掉。
+- SessionEnd 持久化保持优先，清理获得剩余预算：排序的确定性候选、每轮条目上限、零超时锁尝试、中断删除的无内容续删标记、预算不足时安全返回。legacy 树、活动会话、当前会话与生命周期锁绝不触碰。
+- `SECURITY.md` 改为陈述真实支持线与当前 schema/Stop 协议，替换过期的 `0.7.x`/schema-5/Stop-1.1.0 表述。Schema 13、Stop 协议 5.0.0、九个 Hook、matcher 与无执行审批的默认业务工具路径不变；可选重投台账不引入迁移。
+
+### 验证
+
+- 源码候选：本候选的完整源码门、隔离安装/生命周期检查、canonical 历史回归、交错性能 A/B 与受影响原生门在完成后记录于[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。Windows DACL/继承行为与真实宿主重投是独立原生事实，不由源码测试代替。
+
 ## 0.15.1 — 2026-10-05
 
 ### Highlights
