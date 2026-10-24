@@ -243,6 +243,12 @@ Redacted handoff and successor exports remove or omit:
   plugin root, and configured Codex home prefixes);
 - unrequested binary payloads.
 
+The private-path domain covers the plugin data root, the host plugin root,
+the configured Codex home, and the operating-system home directory of the
+running account; shareable exports scrub all of these from free text in the
+handoff and successor-pack surfaces, including status, next-action, and
+authorization fields.
+
 Evidence, diagnostics, and exports apply two layers. Structured sanitization
 replaces the whole value under a documented set of sensitive key names —
 `password`, `passwd`, `pwd`, `secret`, `secret_key`, `api_key`, `apikey`,

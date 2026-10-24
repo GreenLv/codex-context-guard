@@ -15,7 +15,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 
 MARKETPLACE = "codex-context-guard"
@@ -189,6 +189,10 @@ def prior_managed_marketplace_root(
     )
 
 
+DISTRIBUTION_MANIFEST_RELATIVE = ".codex-plugin/distribution-manifest.json"
+DISTRIBUTION_SCAN_AREAS = tuple(DISTRIBUTION_TREE_ROOTS) + (".agents",)
+
+
 def _reject_unsafe_distribution_entry(path: Path) -> None:
     """Links, reparse points and special files never enter the distribution."""
     if path.is_symlink():
@@ -201,94 +205,329 @@ def _reject_unsafe_distribution_entry(path: Path) -> None:
     raise RuntimeError(f"unsupported entry type in distribution tree: {path}")
 
 
-def _check_distribution_top_level(source_root: Path) -> None:
-    """Classify every top-level repository entry before anything is copied."""
-    for entry in sorted(source_root.iterdir()):
-        name = entry.name
-        if name in DISTRIBUTION_TREE_ROOTS or name in DISTRIBUTION_DOC_FILES:
-            continue
-        if name == ".agents":
-            # Only the exact marketplace manifest ships; anything else under
-            # .agents is an unrecognized private entry and stops the build.
-            allowed = {source_root / item for item in DISTRIBUTION_NESTED_FILES}
-            for current, dirnames, filenames in os.walk(entry):
-                base = Path(current)
-                for item in [*dirnames, *filenames]:
-                    candidate = base / item
-                    if any(path == candidate or path.is_relative_to(candidate)
-                           for path in allowed):
-                        continue
-                    raise RuntimeError(
-                        f"unrecognized entry under .agents is not part "
-                        f"of the distribution set: {candidate}; add it "
-                        "to the distribution allowlist or remove it "
-                        "before staging"
-                    )
-            continue
-        if name in NON_DISTRIBUTION_TOP_LEVEL or name in IGNORED_TREE_NAMES:
-            continue
-        if name.endswith((".pyc", ".pyo")):
-            continue
+def _reject_unsafe_ancestors(source_root: Path, relative: str) -> None:
+    """Every ancestor of a distribution file must be a real directory.
+
+    A symbolic link or reparse point anywhere on the ancestor chain (for
+    example ``.agents/plugins`` pointing outside the checkout) is rejected
+    before any byte of the final entry is read.
+    """
+    parts = PurePosixPath(relative).parts
+    for depth in range(1, len(parts)):
+        ancestor = source_root.joinpath(*parts[:depth])
+        _reject_unsafe_distribution_entry(ancestor)
+    _reject_unsafe_distribution_entry(source_root / relative)
+
+
+def load_distribution_manifest(source_root: Path) -> dict | None:
+    """Read the committed per-file release set when present.
+
+    A present but malformed manifest fails closed; an absent manifest selects
+    the structural allowlist fallback (synthetic/foreign sources), while the
+    repository itself pins the manifest's presence and content by contract
+    test.
+    """
+    path = source_root / DISTRIBUTION_MANIFEST_RELATIVE
+    if not path.is_file():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            f"unrecognized top-level repository entry is not part of the "
-            f"distribution set: {name}; add it to the distribution allowlist "
-            "or remove it before staging"
+            f"the reviewed distribution manifest is unreadable "
+            f"({path}): {exc}; regenerate it with "
+            "`python scripts/manage_plugin.py --write-distribution-manifest`"
+        ) from exc
+    if not isinstance(manifest, dict) or manifest.get("schema") != (
+        "cg-distribution-manifest/v1"
+    ):
+        raise RuntimeError(
+            f"{path} does not carry schema cg-distribution-manifest/v1"
+        )
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise RuntimeError(f"{path} lists no distribution files")
+    for relative, digest in files.items():
+        if not isinstance(relative, str) or not isinstance(digest, str):
+            raise RuntimeError(f"{path} has a malformed entry: {relative!r}")
+        if relative.endswith(("/",)) or "\\" in relative or ".." in relative.split("/"):
+            raise RuntimeError(f"{path} has an unsafe path entry: {relative!r}")
+    return manifest
+
+
+def _structural_distribution_files(source_root: Path) -> dict[str, str]:
+    """Structural allowlist fallback for sources without a committed manifest.
+
+    Unsafe entries (links, reparse points, special files) and dot-prefixed
+    files (``.env`` and every other private-looking name) are skipped without
+    reading a single byte; they never enter the distribution. The repository
+    itself pins the strict reviewed-manifest mode via contract tests.
+    """
+
+    def excluded(name: str) -> bool:
+        return name in IGNORED_TREE_NAMES or name.endswith((".pyc", ".pyo"))
+
+    files: dict[str, str] = {}
+
+    def note(candidate: Path) -> None:
+        if candidate.name.startswith(".") or excluded(candidate.name):
+            return
+        try:
+            _reject_unsafe_distribution_entry(candidate)
+        except RuntimeError:
+            return
+        files[candidate.relative_to(source_root).as_posix()] = hashlib.sha256(
+            candidate.read_bytes()
+        ).hexdigest()
+
+    for top in DISTRIBUTION_SCAN_AREAS:
+        area = source_root / top
+        if not area.exists():
+            continue
+        if area.is_symlink():
+            continue
+        kept: list[str] = []
+        for name in sorted(os.listdir(area)):
+            if name in IGNORED_TREE_NAMES:
+                continue
+            entry = area / name
+            try:
+                _reject_unsafe_distribution_entry(entry)
+            except RuntimeError:
+                continue
+            kept.append(name)
+        for name in kept:
+            entry = area / name
+            if entry.is_dir():
+                for current, dirnames, filenames in os.walk(entry):
+                    dirnames[:] = sorted(
+                        other for other in dirnames
+                        if other not in IGNORED_TREE_NAMES
+                        and not (Path(current) / other).is_symlink()
+                    )
+                    for other in sorted(filenames):
+                        if excluded(other):
+                            continue
+                        note(Path(current) / other)
+            elif entry.is_file():
+                note(entry)
+    for name in DISTRIBUTION_DOC_FILES:
+        candidate = source_root / name
+        if candidate.is_file():
+            note(candidate)
+    return files
+
+
+def _expected_distribution(source_root: Path) -> dict[str, str]:
+    """The exact reviewed set a source must stage, with digests.
+
+    With a committed manifest this is the reviewed per-file set, hashes
+    verified and every unreviewed file rejected. Without one it is the
+    structural allowlist; the repository itself pins the manifest via
+    contract tests.
+    """
+    manifest = load_distribution_manifest(source_root)
+    if manifest is None:
+        return _structural_distribution_files(source_root)
+    return _checked_distribution_files(
+        source_root, manifest, verify_hashes=True
+    )
+
+
+def _full_tree_digests(tree_root: Path) -> dict[str, str]:
+    """Digest every file actually present under a staging tree.
+
+    No allowlist projection: this is the side that exposes extra, injected
+    or stale files in an existing staging directory.
+    """
+    digests: dict[str, str] = {}
+    if not tree_root.is_dir():
+        return digests
+    for current, dirnames, filenames in os.walk(tree_root):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in IGNORED_TREE_NAMES
+        )
+        for name in sorted(filenames):
+            if name in IGNORED_TREE_NAMES or name.endswith((".pyc", ".pyo")):
+                continue
+            candidate = Path(current) / name
+            _reject_unsafe_distribution_entry(candidate)
+            digests[candidate.relative_to(tree_root).as_posix()] = (
+                hashlib.sha256(candidate.read_bytes()).hexdigest()
+            )
+    return digests
+
+
+def _checked_distribution_files(
+    source_root: Path, manifest: dict, *, verify_hashes: bool
+) -> dict[str, str]:
+    """Resolve the manifest against the source and reject every deviation.
+
+    Both directions are enforced: a listed file that is missing, unsafe or
+    (optionally) hash-drifted fails, and any regular file found inside the
+    distribution areas that the manifest does not list also fails, so
+    untracked private files (``scripts/.env``) can never ride along.
+    """
+    listed: dict[str, str] = dict(manifest["files"])
+    listed[DISTRIBUTION_MANIFEST_RELATIVE] = ""
+    observed: set[str] = set()
+
+    def note(relative: str, path: Path) -> None:
+        if relative in observed:
+            raise RuntimeError(f"duplicate distribution path: {relative}")
+        if relative not in listed:
+            raise RuntimeError(
+                f"unreviewed file inside the distribution set: {relative}; "
+                "add it to .codex-plugin/distribution-manifest.json via "
+                "`--write-distribution-manifest` after review, or remove it"
+            )
+        _reject_unsafe_ancestors(source_root, relative)
+        observed.add(relative)
+
+    for top in DISTRIBUTION_SCAN_AREAS:
+        area = source_root / top
+        if not area.exists():
+            continue
+        _reject_unsafe_distribution_entry(area)
+        for current, dirnames, filenames in os.walk(area):
+            dirnames[:] = sorted(
+                name for name in dirnames if name not in IGNORED_TREE_NAMES
+            )
+            for name in sorted(dirnames):
+                _reject_unsafe_distribution_entry(Path(current) / name)
+            for name in sorted(filenames):
+                if name in IGNORED_TREE_NAMES or name.endswith((".pyc", ".pyo")):
+                    continue
+                candidate = Path(current) / name
+                _reject_unsafe_distribution_entry(candidate)
+                note(candidate.relative_to(source_root).as_posix(), candidate)
+    for name in DISTRIBUTION_DOC_FILES:
+        candidate = source_root / name
+        if candidate.exists() or candidate.is_symlink():
+            note(name, candidate)
+
+    missing = sorted(set(listed) - observed)
+    if missing:
+        raise RuntimeError(
+            "reviewed distribution files are missing from the source: "
+            + ", ".join(missing[:5])
+            + ("..." if len(missing) > 5 else "")
+        )
+    digests: dict[str, str] = {}
+    for relative in sorted(observed):
+        if relative == DISTRIBUTION_MANIFEST_RELATIVE:
+            digests[relative] = hashlib.sha256(
+                (source_root / relative).read_bytes()
+            ).hexdigest()
+            continue
+        digest = hashlib.sha256(
+            (source_root / relative).read_bytes()
+        ).hexdigest()
+        if verify_hashes and listed[relative] and digest != listed[relative]:
+            raise RuntimeError(
+                f"distribution file {relative} does not match its reviewed "
+                "sha256 in .codex-plugin/distribution-manifest.json; review "
+                "the change and regenerate the manifest"
+            )
+        digests[relative] = digest
+    return digests
+
+
+def distribution_manifest(root: Path) -> dict[str, str]:
+    """Exact digest set of the reviewed distribution present at ``root``."""
+    if not root.is_dir():
+        return {}
+    return _expected_distribution(root)
+
+
+def _distribution_matches(source_root: Path, staged_root: Path) -> bool:
+    """True when staged bytes equal the expected set exactly, both ways.
+
+    The staged side is enumerated in full (no allowlist projection), so an
+    extra file planted in an existing staging directory forces a rebuild
+    instead of a no-op.
+    """
+    try:
+        expected = _expected_distribution(source_root)
+    except RuntimeError:
+        return False
+    return _full_tree_digests(staged_root) == expected
+
+
+def build_distribution_tree(source_root: Path, destination: Path) -> None:
+    """Materialize the reviewed distribution into a fresh destination."""
+    expected = _expected_distribution(source_root)
+    destination.mkdir(parents=True)
+    for relative in sorted(expected):
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_root / relative, target)
+    copied = _full_tree_digests(destination)
+    if copied != expected:
+        raise RuntimeError(
+            "distribution staging failed exact-set verification: "
+            f"extra={sorted(set(copied) - set(expected))[:5]} "
+            f"missing={sorted(set(expected) - set(copied))[:5]} "
+            f"changed={[k for k in sorted(set(copied) & set(expected)) if copied[k] != expected[k]][:5]}"
         )
 
 
-def _iter_distribution_files(root: Path) -> list[str]:
-    """List every allowlisted distribution file, rejecting unsafe entries."""
-    files: list[str] = []
-    for top in DISTRIBUTION_TREE_ROOTS:
-        top_path = root / top
-        if not top_path.exists():
+def write_distribution_manifest(source_root: Path) -> Path:
+    """Regenerate the committed manifest from the current distribution set."""
+    probe = source_root / DISTRIBUTION_MANIFEST_RELATIVE
+    if probe.is_file():
+        current = load_distribution_manifest(source_root)
+        listed = set(current["files"])
+    else:
+        listed = set()
+    observed: set[str] = set()
+    for top in DISTRIBUTION_SCAN_AREAS:
+        area = source_root / top
+        if not area.exists():
             continue
-        _reject_unsafe_distribution_entry(top_path)
-        for current, dirnames, filenames in os.walk(top_path):
-            # Local caches never ship: prune in place so os.walk skips them.
+        for current_dir, dirnames, filenames in os.walk(area):
             dirnames[:] = sorted(
                 name for name in dirnames if name not in IGNORED_TREE_NAMES
             )
             for name in sorted(filenames):
                 if name in IGNORED_TREE_NAMES or name.endswith((".pyc", ".pyo")):
                     continue
-                candidate = Path(current) / name
-                _reject_unsafe_distribution_entry(candidate)
-                files.append(candidate.relative_to(root).as_posix())
+                observed.add(
+                    (Path(current_dir) / name)
+                    .relative_to(source_root)
+                    .as_posix()
+                )
     for name in DISTRIBUTION_DOC_FILES:
-        candidate = root / name
-        if candidate.is_file():
-            _reject_unsafe_distribution_entry(candidate)
-            files.append(name)
-    for name in DISTRIBUTION_NESTED_FILES:
-        candidate = root / name
-        if candidate.is_file():
-            _reject_unsafe_distribution_entry(candidate)
-            files.append(name)
-    return sorted(files)
-
-
-def distribution_manifest(root: Path) -> dict[str, str]:
-    """Full manifest of the allowlisted distribution set (not just runtime roots)."""
-    if not root.is_dir():
-        return {}
-    manifest: dict[str, str] = {}
-    for relative in _iter_distribution_files(root):
-        manifest[relative] = hashlib.sha256(
-            (root / relative).read_bytes()
-        ).hexdigest()
-    return manifest
-
-
-def build_distribution_tree(source_root: Path, destination: Path) -> None:
-    """Materialize the allowlisted distribution into a fresh destination."""
-    _check_distribution_top_level(source_root)
-    destination.mkdir(parents=True)
-    for relative in _iter_distribution_files(source_root):
-        source = source_root / relative
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        if (source_root / name).is_file():
+            observed.add(name)
+    untracked = sorted(observed - listed)
+    if untracked and probe.is_file():
+        raise RuntimeError(
+            "refusing to silently adopt new distribution files; review and "
+            "re-run with --adopt-distribution-files to include: "
+            + ", ".join(untracked[:10])
+        )
+    files = {}
+    for relative in sorted(observed | listed):
+        path = source_root / relative
+        if not path.is_file():
+            continue
+        files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {
+        "schema": "cg-distribution-manifest/v1",
+        "description": (
+            "Reviewed per-file release set; the installer refuses any "
+            "distribution entry missing from or added to this list."
+        ),
+        "file_count": len(files),
+        "files": dict(sorted(files.items())),
+    }
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return probe
 
 
 def marketplace_staging(
@@ -310,18 +549,18 @@ def marketplace_staging(
     instead of being destroyed.
     """
     staged = marketplace_staging_root(codex_home, repo_root)
-    expected = distribution_manifest(repo_root)
-    if staged.is_dir() and distribution_manifest(staged) == expected:
+    if staged.is_dir() and _distribution_matches(repo_root, staged):
         if embedded_git_metadata(staged) is None:
             return staged
+    # A contaminated or drifted staging root is rebuilt from the reviewed
+    # set, never accepted as a no-op: extra files in the staging directory
+    # would otherwise be copied verbatim by the host.
     staged.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".marketplace-", dir=staged.parent))
     replaced_backup: Path | None = None
     try:
         filtered = temporary / "tree"
         build_distribution_tree(repo_root, filtered)
-        if distribution_manifest(filtered) != expected:
-            raise RuntimeError("sanitized marketplace staging failed distribution parity")
         if embedded_git_metadata(filtered) is not None:
             raise RuntimeError("sanitized marketplace staging still carries Git metadata")
         if staged.exists():
@@ -353,6 +592,7 @@ def ensure_marketplace(
     staging = marketplace_staging_root(codex_home, repo_root)
     if txn is not None:
         txn["staging"] = staging
+        txn.setdefault("stages", []).append("staging_resolved")
     keep_replaced_bytes = txn.get("staging_backup_slot") if txn else None
     entry = marketplace_entry(codex)
     if txn is not None:
@@ -368,7 +608,7 @@ def ensure_marketplace(
                 )
             elif (
                 not staging.is_dir()
-                or distribution_manifest(staging) != distribution_manifest(repo_root)
+                or not _distribution_matches(repo_root, staging)
                 or embedded_git_metadata(staging) is not None
             ):
                 raise RuntimeError(
@@ -396,10 +636,18 @@ def ensure_marketplace(
             marketplace_staging(
                 codex_home, repo_root, keep_replaced_bytes=keep_replaced_bytes
             )
+            if txn is not None:
+                txn.setdefault("stages", []).append("staging_replaced")
             run(codex, "plugin", "marketplace", "remove", MARKETPLACE)
+            if txn is not None:
+                # Recorded before the add attempt: a failure here is exactly
+                # the state the rollback must restore (prior registration).
+                txn["registration_removed"] = True
+                txn.setdefault("stages", []).append("registration_removed")
             run(codex, "plugin", "marketplace", "add", str(staging), "--json")
             if txn is not None:
                 txn["reregistered"] = True
+                txn.setdefault("stages", []).append("registration_repointed")
             entry = marketplace_entry(codex)
             if entry is None or not any(
                 same_path(value, staging) for value in (entry.get("root"), entry.get("marketplaceSource", {}).get("source")) if value
@@ -421,9 +669,12 @@ def ensure_marketplace(
     marketplace_staging(
         codex_home, repo_root, keep_replaced_bytes=keep_replaced_bytes
     )
+    if txn is not None:
+        txn.setdefault("stages", []).append("staging_created")
     run(codex, "plugin", "marketplace", "add", str(staging), "--json")
     if txn is not None:
         txn["registered_fresh"] = True
+        txn.setdefault("stages", []).append("registration_added")
     entry = marketplace_entry(codex)
     if entry is None or not any(
         same_path(value, staging)
@@ -1331,13 +1582,20 @@ def _rollback_install_transaction(
 ) -> list[str]:
     """Best-effort restore of the pre-transaction registration and staging.
 
-    Returns human-readable notes for anything that could not be restored; an
+    Runs under the same installation lock as the transaction itself. Returns
+    human-readable notes for anything that could not be restored; an
     incomplete rollback is reported explicitly and never presented as a
-    successful no-op.
+    successful no-op. The recovery objects (previous staging bytes, prior
+    registration source) are preserved whenever restoration fails so a
+    later operator run can finish the repair.
     """
     notes: list[str] = []
+    stages = list(txn.get("stages") or [])
     staging = txn.get("staging")
     backup = txn.get("staging_backup_slot")
+    prior = txn.get("prior_entry")
+    if stages:
+        notes.append(f"stages completed before failure: {', '.join(stages)}")
     if isinstance(staging, Path) and isinstance(backup, Path) and backup.is_dir():
         try:
             if staging.exists():
@@ -1355,12 +1613,49 @@ def _rollback_install_transaction(
     try:
         current = marketplace_entry(codex)
     except Exception:  # noqa: BLE001 - rollback keeps collecting notes
-        current = None
-    prior = txn.get("prior_entry")
-    registered_fresh = bool(txn.get("registered_fresh"))
-    reregistered = bool(txn.get("reregistered"))
-    if current is not None:
-        if prior is None and (registered_fresh or reregistered):
+        current = "unknown"
+
+    def prior_source() -> str | None:
+        if not isinstance(prior, dict):
+            return None
+        for value in (prior.get("root"),
+                      prior.get("marketplaceSource", {}).get("source")):
+            if value:
+                return str(value)
+        return None
+
+    if current is None:
+        # The registration disappeared during this transaction.
+        if txn.get("registration_removed") or txn.get("registered_fresh"):
+            source = prior_source()
+            if prior is not None and source:
+                try:
+                    run(codex, "plugin", "marketplace", "add", source, "--json")
+                    notes.append(
+                        f"restored prior marketplace registration at {source}"
+                    )
+                except RuntimeError as exc:
+                    notes.append(
+                        f"INCOMPLETE: prior marketplace registration at "
+                        f"{source} could not be restored: {exc}"
+                    )
+            elif prior is not None:
+                notes.append(
+                    "INCOMPLETE: prior registration had no readable source; "
+                    "restore it manually before the next install"
+                )
+            else:
+                notes.append(
+                    "INCOMPLETE: this run removed the only marketplace "
+                    "registration and no prior registration exists to restore"
+                )
+    elif current == "unknown":
+        notes.append(
+            "INCOMPLETE: marketplace registration state is unreadable after "
+            "the failure; run a read-only audit before the next install"
+        )
+    else:
+        if txn.get("registered_fresh") and prior is None:
             try:
                 run(codex, "plugin", "marketplace", "remove", MARKETPLACE)
                 notes.append(
@@ -1371,7 +1666,7 @@ def _rollback_install_transaction(
                     f"INCOMPLETE: marketplace registration added by this run "
                     f"could not be removed: {exc}"
                 )
-        elif reregistered:
+        elif txn.get("reregistered"):
             notes.append(
                 "marketplace registration was repointed during this run; verify "
                 "it still points at the restored staging root"
@@ -1390,20 +1685,27 @@ def _run_install_transaction(
         / f".{repo_root.name}.marketplace.txn-backup"
     )
     txn: dict = {"staging_backup_slot": staging_backup}
-    try:
-        with cache_install_lock(cache_root):
+    with cache_install_lock(cache_root):
+        try:
             ensure_marketplace(codex, repo_root, codex_home, apply=True, txn=txn)
             ensure_plugin(codex, repo_root, codex_home, apply=True, lock=False)
-    except BaseException as exc:
-        notes = _rollback_install_transaction(codex, codex_home, repo_root, txn)
-        if notes:
-            summary = "; ".join(notes)
-            if isinstance(exc, RuntimeError):
-                raise RuntimeError(f"{exc}\n[transaction] {summary}") from exc
-            print(f"[transaction] {summary}", file=sys.stderr)
-        raise
-    if staging_backup.exists():
-        shutil.rmtree(staging_backup, ignore_errors=True)
+        except BaseException as exc:
+            # Rollback runs while this transaction still holds the install
+            # lock, so a concurrent installer cannot interleave with the
+            # recovery or be overwritten by it.
+            notes = _rollback_install_transaction(
+                codex, codex_home, repo_root, txn
+            )
+            if notes:
+                summary = "; ".join(notes)
+                if isinstance(exc, RuntimeError):
+                    raise RuntimeError(f"{exc}\n[transaction] {summary}") from exc
+                print(f"[transaction] {summary}", file=sys.stderr)
+            raise
+        # Success cleanup also stays inside the lock: releasing the backup
+        # only after the whole transaction committed.
+        if staging_backup.exists():
+            shutil.rmtree(staging_backup, ignore_errors=True)
 
 
 def main() -> int:
@@ -1416,6 +1718,18 @@ def main() -> int:
     parser.add_argument(
         "--apply", action="store_true", help="register/install missing components"
     )
+    parser.add_argument(
+        "--write-distribution-manifest",
+        action="store_true",
+        help="regenerate .codex-plugin/distribution-manifest.json from the "
+             "reviewed distribution set and exit",
+    )
+    parser.add_argument(
+        "--adopt-distribution-files",
+        action="store_true",
+        help="with --write-distribution-manifest, adopt new files into the "
+             "reviewed set after manual review instead of refusing",
+    )
     args = parser.parse_args()
     repo_root = args.repo_root.expanduser().resolve()
     codex_home = args.codex_home.expanduser().resolve()
@@ -1424,6 +1738,14 @@ def main() -> int:
     # silently mutate the caller's default ~/.codex installation.
     os.environ["CODEX_HOME"] = str(codex_home)
     try:
+        if args.write_distribution_manifest:
+            if args.adopt_distribution_files:
+                probe = repo_root / DISTRIBUTION_MANIFEST_RELATIVE
+                if probe.is_file():
+                    probe.unlink()
+            manifest_path = write_distribution_manifest(repo_root)
+            print(f"[OK] wrote reviewed distribution manifest: {manifest_path}")
+            return 0
         version = codex_version(args.codex)
         if version < MINIMUM_CODEX:
             minimum = ".".join(map(str, MINIMUM_CODEX))

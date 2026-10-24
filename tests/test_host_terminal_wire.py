@@ -1209,13 +1209,10 @@ class HostTerminalWireTests(unittest.TestCase):
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")
         locator = self.root_target(target)
-        root_prompt = f"请修改 {locator}，并核对改动后的文件。"
-        self.start(root_prompt)
+        self.start(f"请修改 {locator}，并核对改动后的文件。")
         self.patch("first-patch", target, "before\n", "after\n")
         self.readback("first-read", target, "after\n")
-        # A genuinely new root in the same turn (different bytes) may not be
-        # closed by the prior root's edit and readback evidence.
-        cg.dispatch(self.event("UserPromptSubmit", prompt=root_prompt + " 再核对一次。"))
+        cg.dispatch(self.event("UserPromptSubmit", prompt=f"请修改 {locator}，并核对改动后的文件。"))
         state = self.state()
         session_dir = self.root / "private/sessions-v2" / self.session_id
         roots = {p["id"]: cg.read_prompt_record(session_dir, p)
@@ -1229,11 +1226,13 @@ class HostTerminalWireTests(unittest.TestCase):
             turn=self.turn_id, root_scope=root["text"])
         self.assertNotEqual(projection["predicates"].get(item["id"]), "satisfied")
 
-    def test_same_turn_identical_redelivery_collapses_to_one_root(self):
-        """0.16.0 restricted re-delivery handling: one exact (session, turn,
-        bytes) tuple journals one root. The re-delivered copy derives no
-        second requirement, and the single root's own post-root evidence
-        still satisfies it; the collapse stays visible in the replay ledger."""
+    def test_same_turn_identical_redelivery_stays_independent(self):
+        """F10 boundary (repair round): the hook payload carries no
+        per-message identity, so an identical (turn, bytes) re-delivery is
+        ambiguous and every event is journaled as its own independent root.
+        A prior root's edit/readback evidence cannot close the later
+        identical request, and the repetition stays visible in the bounded
+        replay ledger."""
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")
         locator = self.root_target(target)
@@ -1243,26 +1242,33 @@ class HostTerminalWireTests(unittest.TestCase):
         self.readback("first-read", target, "after\n")
         cg.dispatch(self.event("UserPromptSubmit", prompt=root_prompt))
         state = self.state()
-        session_dir = self.root / "private/sessions-v2" / self.session_id
         import hashlib as _hashlib
-        human_rows = [p for p in state["prompts"] if p.get("origin", "human") == "human"]
-        root_rows = [p for p in human_rows
-                     if p.get("turn_id") == self.turn_id
+        root_rows = [p for p in state["prompts"]
+                     if p.get("origin", "human") == "human"
+                     and p.get("turn_id") == self.turn_id
                      and p.get("sha256") == _hashlib.sha256(
                          root_prompt.encode("utf-8")).hexdigest()]
-        self.assertEqual(len(root_rows), 1)
+        self.assertEqual(len(root_rows), 2)
         replays = state.get("prompt_replays", [])
         self.assertEqual(len(replays), 1)
         self.assertEqual(replays[0]["replay_count"], 1)
+        session_dir = self.root / "private/sessions-v2" / self.session_id
         roots = {p["id"]: cg.read_prompt_record(session_dir, p)
-                 for p in human_rows}
+                 for p in state["prompts"]
+                 if p.get("origin", "human") == "human"}
         from cg_codex_core_adapter import project_current_action
         item = state["requirements"][-1]
         root = roots[item["prompt_id"]]
         projection = project_current_action(
             state, roots, item=item, action="local_edit", target=str(target),
             turn=self.turn_id, root_scope=root["text"])
-        self.assertEqual(projection["predicates"].get(item["id"]), "satisfied")
+        self.assertNotEqual(projection["predicates"].get(item["id"]), "satisfied")
+        # Competing roots keep the evidence origin ambiguous.
+        self.assertIsNone(cg.core_host_origin_prompt(state, {
+            "turn_id": self.turn_id,
+            "work_state": state.get("work_state", {}),
+            "requirements": state.get("requirements", []),
+            "prompts": state.get("prompts", [])}))
     def test_real_wire_update_without_current_readback_is_evidence_insufficient(self):
         target = self.cwd / "module.py"
         self.write_file(target, "before\n")

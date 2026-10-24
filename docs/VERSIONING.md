@@ -19,12 +19,13 @@ refused, old underscore-merged directories no longer addressed); the
 direct-command data root following `CODEX_HOME` (`<home>/context-guard`) when
 no explicit root is set; bounded SessionEnd retention cleanup (monotonic
 deadline, non-blocking locks, bounded batches, resumable partial deletions);
-and restricted re-delivery handling that journals exactly one root per exact
-(session, turn, prompt-bytes) tuple with a bounded text-free replay ledger.
-The optional `prompt_replays` ledger adds no schema migration; 0.15.x readers
-ignore it under the existing content-hash rules. Native Windows DACL facts
-and real host re-delivery behavior are separate gates from these source-level
-checks. Changed runtime bytes require a fresh isolated HOME for installation
+and observability-only handling of repeated inputs: UserPromptSubmit events
+are never collapsed (the hook payload carries no per-message identity), and
+a repeated (session, turn, prompt-bytes) shape is recorded only as a bounded
+text-free `prompt_replays` diagnostic. The optional ledger adds no schema
+migration; 0.15.x readers ignore it under the existing content-hash rules.
+Native Windows DACL facts and real host re-delivery behavior are separate
+gates from these source-level checks. Changed runtime bytes require a fresh isolated HOME for installation
 evidence; consumed 0.15.1 caches stay immutable.
 
 ## 0.15.1 — 2026-10-05

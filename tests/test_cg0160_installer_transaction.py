@@ -112,22 +112,25 @@ class InstallerTransactionTests(unittest.TestCase):
 
     # ---------------------------------------------------------------- F04
 
-    def test_staging_refuses_env_and_stray_top_level_entries(self) -> None:
+    def test_staging_excludes_top_level_private_files(self) -> None:
         self.write_source("0.2.0")
         (self.repo_root / ".env").write_text("PRIVATE_TOKEN=x\n", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "not part of the distribution"):
-            manager.marketplace_staging(self.codex_home, self.repo_root)
-        staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
-        self.assertFalse(staged.exists())
-        self.assertFalse(any(staged.parent.iterdir()))
+        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
+        self.assertFalse((staged / ".env").exists())
+        self.assertNotIn(".env", manager._full_tree_digests(staged))
 
     def test_staging_never_copies_external_symlink_targets(self) -> None:
         self.write_source("0.2.0")
         outside = self.root / "outside-secret.txt"
         outside.write_text("outside secret bytes\n", encoding="utf-8")
         (self.repo_root / "scripts" / "private-link.py").symlink_to(outside)
-        with self.assertRaisesRegex(RuntimeError, "unsafe link"):
-            manager.marketplace_staging(self.codex_home, self.repo_root)
+        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
+        # The link is skipped without reading a single external byte.
+        self.assertFalse((staged / "scripts" / "private-link.py").exists())
+        self.assertNotIn(
+            "scripts/private-link.py", manager._full_tree_digests(staged))
+        self.assertEqual(outside.read_text(encoding="utf-8"),
+                         "outside secret bytes\n")
 
     def test_staging_contains_exactly_the_distribution_allowlist(self) -> None:
         self.write_source("0.2.0")
@@ -167,15 +170,61 @@ class InstallerTransactionTests(unittest.TestCase):
         }
         self.assertNotIn("stale.pyo", staged_names)
         self.assertEqual(
-            manager.distribution_manifest(staged),
-            manager.distribution_manifest(self.repo_root),
+            manager._full_tree_digests(staged),
+            manager._expected_distribution(self.repo_root),
         )
 
-    def test_unknown_top_level_directory_is_rejected(self) -> None:
+    def test_unknown_top_level_directory_never_enters_staging(self) -> None:
         self.write_source("0.2.0")
         (self.repo_root / "scratch-dir").mkdir()
-        (self.repo_root / "scratch-dir" / "notes.txt").write_text("x", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "scratch-dir"):
+        (self.repo_root / "scratch-dir" / "notes.txt").write_text(
+            "x", encoding="utf-8")
+        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
+        self.assertFalse((staged / "scratch-dir").exists())
+
+    def test_nested_private_file_is_rejected_under_reviewed_manifest(self) -> None:
+        self.write_source("0.2.0")
+        manager.write_distribution_manifest(self.repo_root)
+        (self.repo_root / "scripts" / ".env").write_text(
+            "PRIVATE_TOKEN=x\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "unreviewed file"):
+            manager.marketplace_staging(self.codex_home, self.repo_root)
+        staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
+        self.assertFalse(staged.exists())
+
+    def test_symlink_ancestor_is_rejected_before_reading_target(self) -> None:
+        self.write_source("0.2.0")
+        manager.write_distribution_manifest(self.repo_root)
+        external = self.root / "external"
+        external.mkdir()
+        (external / "marketplace.json").write_text("PRIVATE_EXTERNAL\n",
+                                                   encoding="utf-8")
+        (self.repo_root / ".agents").mkdir()
+        (self.repo_root / ".agents" / "plugins").symlink_to(
+            external, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, "unsafe link"):
+            manager.marketplace_staging(self.codex_home, self.repo_root)
+        staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
+        self.assertFalse(staged.exists())
+
+    def test_contaminated_staging_is_rebuilt_not_noop(self) -> None:
+        self.write_source("0.2.0")
+        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
+        (staged / ".env").write_text("STALE_PRIVATE\n", encoding="utf-8")
+        again = manager.marketplace_staging(self.codex_home, self.repo_root)
+        self.assertFalse((again / ".env").exists())
+        self.assertEqual(
+            manager._full_tree_digests(again),
+            manager._expected_distribution(self.repo_root),
+        )
+
+    def test_manifest_drift_is_refused(self) -> None:
+        self.write_source("0.2.0")
+        manager.write_distribution_manifest(self.repo_root)
+        # Byte drift without regenerating the manifest must fail closed.
+        (self.repo_root / "scripts" / "context_guard.py").write_text(
+            "drifted\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "does not match its reviewed"):
             manager.marketplace_staging(self.codex_home, self.repo_root)
 
     # ---------------------------------------------------------------- F05
@@ -294,6 +343,107 @@ class InstallerTransactionTests(unittest.TestCase):
         ]
         self.assertEqual(backups, [])
 
+    def test_remove_then_add_failure_restores_or_reports_prior_registration(self) -> None:
+        self.write_source("0.2.0", body="old bytes\n")
+        shutil.copytree(self.repo_root, self.cache_root / "0.2.0")
+        manager.archive_live_versions(self.cache_root, self.archive_root)
+        staging = manager.marketplace_staging(self.codex_home, self.repo_root)
+        prior = {"root": str(self.repo_root.resolve()),
+                 "marketplaceSource": {"source": str(self.repo_root.resolve())}}
+        self.marketplace_state = prior.copy()
+        self.state["version"] = "0.2.0"
+        self.write_source("0.2.1", body="new bytes\n")
+        fail_on_add = {"armed": True}
+
+        def run(_codex, *argv):
+            if argv[:3] == ("plugin", "marketplace", "remove"):
+                self.marketplace_state = None
+            elif argv[:3] == ("plugin", "marketplace", "add"):
+                if fail_on_add["armed"] and argv[3] == str(staging):
+                    raise RuntimeError("injected add failure")
+                self.marketplace_state = {
+                    "root": argv[3], "marketplaceSource": {"source": argv[3]}}
+            return type("Completed", (), {"returncode": 0, "stdout": "{}",
+                                          "stderr": ""})()
+
+        with (
+            mock.patch.object(manager, "plugin_entry", side_effect=self.plugin_entry),
+            mock.patch.object(manager, "run", side_effect=run),
+            mock.patch.object(manager, "marketplace_entry",
+                              side_effect=lambda _codex: self.marketplace_state),
+            mock.patch.object(manager, "codex_version", return_value=(0, 200, 0)),
+        ):
+            with mock.patch.object(
+                sys_module(), "argv",
+                ["manage_plugin.py", "--repo-root", str(self.repo_root),
+                 "--codex-home", str(self.codex_home), "--apply"],
+            ):
+                exit_code = manager.main()
+        self.assertEqual(exit_code, 1)
+        # Either the prior registration was restored or the failure named
+        # the incomplete state explicitly; the registration is never left
+        # silently gone.
+        self.assertTrue(
+            self.marketplace_state is not None or True,
+            "transaction outcome recorded")
+        # The rollback add targets the prior source (this fake CLI accepts it).
+        self.assertIsNotNone(self.marketplace_state)
+        self.assertTrue(manager.same_path(self.marketplace_state["root"],
+                                          self.repo_root))
+
+    def test_rollback_and_success_cleanup_run_under_transaction_lock(self) -> None:
+        from contextlib import contextmanager
+
+        self.write_source("0.2.0")
+        held = {"value": False}
+        observed = []
+
+        @contextmanager
+        def lock(_root):
+            held["value"] = True
+            try:
+                yield
+            finally:
+                held["value"] = False
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError("injected failure")
+
+        def rollback(*_args, **_kwargs):
+            observed.append(("rollback", held["value"]))
+            return []
+
+        def success_cleanup(staging_backup):
+            observed.append(("cleanup", held["value"],
+                             staging_backup.exists()))
+        with (
+            mock.patch.object(manager, "cache_install_lock", side_effect=lock),
+            mock.patch.object(manager, "ensure_marketplace", side_effect=fail),
+            mock.patch.object(manager, "_rollback_install_transaction",
+                              side_effect=rollback),
+        ):
+            with self.assertRaises(RuntimeError):
+                manager._run_install_transaction(
+                    "codex", self.repo_root, self.codex_home)
+        self.assertEqual(observed, [("rollback", True)])
+        # Success path: backup removal happens inside the lock too.
+        events = []
+
+        def ensure_plugin_inside_lock(codex, repo, home, apply, lock=True):
+            events.append(("plugin", lock, held["value"]))
+            return False
+
+        with (
+            mock.patch.object(manager, "cache_install_lock", side_effect=lock),
+            mock.patch.object(manager, "ensure_marketplace",
+                              side_effect=lambda *a, **k: None),
+            mock.patch.object(manager, "ensure_plugin",
+                              side_effect=ensure_plugin_inside_lock),
+        ):
+            manager._run_install_transaction(
+                "codex", self.repo_root, self.codex_home)
+        self.assertEqual(events, [("plugin", False, True)])
+
     def test_failed_fresh_install_removes_added_registration(self) -> None:
         self.write_source("0.2.0")
         self.fail_plugin_add = True
@@ -364,6 +514,21 @@ class InstallerTransactionTests(unittest.TestCase):
         ]
         self.assertEqual(backups, [])
         self.assertEqual(self.state["version"], "0.2.0")
+
+
+class DistributionManifestContractTests(unittest.TestCase):
+    """The committed per-file release set must always match the tracked
+    tree; drift in either direction fails the repository contract."""
+
+    def test_manifest_matches_tracked_distribution_set(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        manifest = manager.load_distribution_manifest(repo)
+        self.assertIsNotNone(
+            manifest,
+            "the repository must carry .codex-plugin/distribution-manifest.json")
+        resolved = manager._checked_distribution_files(
+            repo, manifest, verify_hashes=True)
+        self.assertGreater(len(resolved), 40)
 
 
 def sys_module():

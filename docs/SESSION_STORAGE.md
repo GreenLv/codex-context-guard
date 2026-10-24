@@ -15,7 +15,7 @@ unchanged.
 Session identities are validated before any directory is used: a missing or
 empty id is refused rather than merged into one shared directory, and ids are
 injectively encoded (allowed bytes pass through; every other UTF-8 byte
-percent-escapes, with a digest suffix for over-long ids). Reserved names and
+byte-for-byte ``~xx`` escapes, with a digest suffix for over-long ids). Reserved names and
 Windows device names are rejected, a new directory whose name differs from a
 sibling only by letter case is refused, and loading verifies that the
 persisted session identity equals the event's identity before any write.
@@ -80,15 +80,19 @@ queued writer proceeds only after release. Resumed v2 activity clears the old
 retention timestamp. Legacy trees and their timestamps are unchanged.
 
 Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
-budget: candidates are visited in sorted order under a monotonic deadline,
-each pass scans at most a bounded number of entries, an interrupted
-deletion leaves a
-content-free resume marker so the next pass finishes it without re-deriving
-eligibility, and running out of budget returns safely with the remaining
-backlog for later passes. Current-session persistence always runs before the
-sweep. A re-delivered UserPromptSubmit carrying the exact same session, turn
-id and prompt bytes journals one root; the collapse is recorded in a bounded,
-text-free replay ledger and derives no second requirement or wait.
+budget: enumeration is lazy under a per-entry monotonic deadline, each pass
+visits at most a bounded number of candidates and resumes from a content-free
+cursor so retained sessions cannot starve the tail, an interrupted deletion
+leaves a content-free marker so the next pass finishes it without
+re-deriving eligibility, and running out of budget returns safely with the
+remaining backlog for later passes. Directory links are unlinked without
+following them. A successful later write for a marked session — a real
+resume — retires the marker inside the same lifecycle lock, so historical
+cleanup eligibility can never delete a live session. Current-session
+persistence always runs before the sweep. UserPromptSubmit events are never
+collapsed: repeated (session, turn, prompt-bytes) shapes are recorded only
+as a bounded, text-free diagnostic observation, because the hook payload
+carries no per-message identity.
 
 `test_session_namespace` covers routing, read-only legacy access, ordinary-tool
 and release boundaries, cleanup and resumed activity. `test_session_lock_protocol`

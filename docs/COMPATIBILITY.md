@@ -27,10 +27,12 @@ published 0.15.1:
   `~/.codex/context-guard`; with `CODEX_HOME` unset the default is unchanged.
   Existing explicit data roots keep their meaning, and nothing is migrated,
   merged, or deleted.
-- A re-delivered UserPromptSubmit with the exact same session, turn id and
-  prompt bytes journals one root and derives no second requirement or wait.
-  Distinct text or a distinct turn id is always new input; payloads without a
-  turn id keep the previous behavior.
+- Re-delivered or repeated UserPromptSubmit events stay independent: the
+  hook payload carries no stable per-message identity, so nothing collapses
+  and no input is dropped. A repeated (session, turn, prompt-bytes) shape is
+  recorded only as a bounded, text-free diagnostic observation. Whether a
+  real host re-delivers events, and whether a future host exposes a usable
+  message identity, remain pending native facts.
 
 ## 0.15.1 — 2026-10-05
 
