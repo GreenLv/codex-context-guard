@@ -2432,18 +2432,31 @@ def _verify_export_parent(dir_fd: int, parent: Path) -> None:
         )
 
 
-def _export_write_text_posix(target: Path, content: str) -> None:
+def _export_write_text_posix(
+    target: Path, content: str, expected_parent_identity: tuple[int, int]
+) -> None:
     """Publish inside the opened parent via dir-scoped handles.
 
     The parent directory is opened once and every later operation (temp
     creation, exclusivity check, hard-link publication, temp cleanup) is
     scoped to that descriptor, so replacing or re-pointing the parent path
-    mid-export cannot move the write outside the verified directory.
+    mid-export cannot move the write outside the verified directory. The
+    descriptor is verified against the identity captured when the export
+    path was resolved, closing the window between resolution and open: a
+    parent replaced in that window fails the export before anything is
+    created.
     """
     dir_flags = os.O_RDONLY
     directory = getattr(os, "O_DIRECTORY", 0)
     dir_fd = os.open(target.parent, dir_flags | directory)
     try:
+        opened = os.fstat(dir_fd)
+        if (opened.st_dev, opened.st_ino) != expected_parent_identity:
+            raise ExportParentChangedError(
+                f"export parent directory {target.parent} no longer "
+                "identifies as the directory captured when the export path "
+                "was resolved; refusing to publish"
+            )
         _verify_export_parent(dir_fd, target.parent)
         temp_name = f".{target.name}.{os.getpid()}." + secrets.token_hex(6)
         fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -2498,7 +2511,9 @@ def _export_write_text_posix(target: Path, content: str) -> None:
         os.close(dir_fd)
 
 
-def _export_write_text_windows(target: Path, content: str) -> None:
+def _export_write_text_windows(
+    target: Path, content: str, expected_parent_identity: tuple[int, int]
+) -> None:
     """Windows publication: exclusive hard link with parent identity checks.
 
     dir-scoped descriptors are not portable here, so the parent is verified
@@ -2516,6 +2531,12 @@ def _export_write_text_windows(target: Path, content: str) -> None:
         return (info.st_dev, getattr(info, "st_ino", 0))
 
     identity = parent_identity()
+    if identity != expected_parent_identity:
+        raise ExportParentChangedError(
+            f"export parent directory {target.parent} no longer identifies "
+            "as the directory captured when the export path was resolved; "
+            "refusing to publish"
+        )
     handle = tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=target.parent, delete=False,
         prefix=f".{target.name}.",
@@ -2551,35 +2572,87 @@ def _export_write_text_windows(target: Path, content: str) -> None:
                     f"{target}: {exc}"
                 ) from exc
             raise
-        if parent_identity() != identity:
-            with contextlib.suppress(OSError):
-                target.unlink()
-            raise ExportParentChangedError(
-                f"export parent directory {target.parent} was replaced "
-                "during the export; the withdrawn link never published "
-                "through the replaced path"
-            )
+        # Capture the published entry's own identity immediately: withdrawal
+        # must remove exactly this object, verified by identity, not merely
+        # clear whatever the (possibly re-pointed) path names later.
+        published = _path_identity(target)
+        try:
+            if parent_identity() != identity:
+                raise ExportParentChangedError(
+                    f"export parent directory {target.parent} was replaced "
+                    "during publication"
+                )
+        except BaseException:
+            _withdraw_published_object(target, published)
+            raise
     finally:
         with contextlib.suppress(OSError):
             temp_path.unlink()
 
 
-def export_write_text(target: Path, content: str) -> None:
+def _path_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.lstat()
+        return (info.st_dev, info.st_ino)
+    except OSError:
+        return None
+
+
+def _withdraw_published_object(target: Path, published: tuple[int, int] | None) -> None:
+    """Withdraw the published entry by its own identity, never by path alone.
+
+    When the parent directory was replaced during publication the visible
+    path may resolve somewhere unexpected; the withdrawal re-checks that the
+    entry at that path still IS the published object before unlinking, and
+    reports an explicit incomplete cleanup when it cannot.
+    """
+    if published is None:
+        raise ExportParentChangedError(
+            f"export parent was replaced during publication and the "
+            f"published object at {target} could not be identified for "
+            "withdrawal; remove it manually"
+        )
+    current = _path_identity(target)
+    if current != published:
+        raise ExportParentChangedError(
+            f"export parent was replaced during publication and the entry "
+            f"at {target} no longer identifies as the published object; "
+            "remove it manually"
+        )
+    try:
+        target.unlink()
+    except OSError as exc:
+        raise ExportParentChangedError(
+            f"export parent was replaced during publication and the "
+            f"published object at {target} could not be withdrawn: {exc}"
+        ) from exc
+    if _path_identity(target) is not None:
+        raise ExportParentChangedError(
+            f"the published object at {target} survived its withdrawal; "
+            "remove it manually"
+        )
+
+
+def export_write_text(
+    target: Path, content: str, *, expected_parent_identity: tuple[int, int]
+) -> None:
     """Write a project-bounded export without touching project permissions.
 
     Exports create their target exclusively: an existing file keeps its exact
     bytes and the caller receives an actionable error. Missing parent
     directories are created with default modes; no project directory is ever
     chmod'ed, and the new export file itself stays owner-only on POSIX. The
-    verified parent directory is bound by handle (POSIX) or file identity
-    (Windows) for the whole publication, so replacing the checked path with
-    a link mid-export fails the export instead of writing outside it.
+    parent identity is captured when the export path is resolved and
+    re-verified when the directory is opened and at each publication
+    boundary, so a replacement anywhere on that chain fails the export (and,
+    after publication, withdraws the published object by its own identity)
+    instead of writing outside the project.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        _export_write_text_windows(target, content)
+        _export_write_text_windows(target, content, expected_parent_identity)
     else:
-        _export_write_text_posix(target, content)
+        _export_write_text_posix(target, content, expected_parent_identity)
 
 
 def read_json(path: Path, default: Any = None) -> Any:
@@ -18173,6 +18246,26 @@ def existing_session_dir(root: Path, session_id: str) -> Path:
     return root / V2_NAMESPACE / session_id
 
 
+_LEGACY_SESSION_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,160}\Z")
+
+
+def _legacy_session_identity(supplied: str) -> str | None:
+    """Return the legacy directory name for a supplied identity, or None.
+
+    Legacy directory names came from the historical underscore encoding, so
+    they are always single bounded ``[A-Za-z0-9._-]`` components. Anything
+    else — path-shaped raw identities, reserved names, separators — cannot
+    name a legacy directory and never reaches a filesystem join.
+    """
+    if supplied in {".", "..", ".locks", ""}:
+        return None
+    if "/" in supplied or "\\" in supplied:
+        return None
+    if not _LEGACY_SESSION_NAME_RE.fullmatch(supplied):
+        return None
+    return supplied
+
+
 def resolve_supplied_session(root: Path, supplied: str) -> tuple[str, Path] | None:
     """Resolve a user-supplied identifier to (raw_identity, directory).
 
@@ -18181,18 +18274,24 @@ def resolve_supplied_session(root: Path, supplied: str) -> tuple[str, Path] | No
     directory granularity. The raw identity is read from the persisted
     state — the directory leaf is never treated as the host identity — and
     the v2 match requires that the stored raw id encodes to exactly this
-    directory. Legacy trees keep their historical directory-name identity.
-    Read-only: never creates anything. Raises SessionIdentityError for an
-    invalid supplied identity and returns None when nothing resolves.
+    directory. Legacy trees keep their historical directory-name identity,
+    but a legacy lookup requires a plausible legacy directory name first, so
+    reserved identifiers and path-shaped raw identities (which the Hook
+    encoding domain supports) never reach a filesystem join and can never
+    turn an ordinary directory into a session. Read-only: never creates
+    anything. Raises SessionIdentityError for an invalid supplied identity
+    and returns None when nothing resolves.
     """
     if not isinstance(supplied, str) or not supplied.strip():
         raise SessionIdentityError("no session identity supplied")
-    legacy_dir = root / LEGACY_NAMESPACE / supplied
-    if (session_namespace(root, supplied) == "legacy"
-            or legacy_dir.is_dir()):
-        if legacy_dir.is_symlink():
-            raise SessionIdentityError("legacy session path is a link")
-        return supplied, legacy_dir
+    legacy_name = _legacy_session_identity(supplied)
+    if legacy_name is not None:
+        legacy_dir = root / LEGACY_NAMESPACE / legacy_name
+        if (session_namespace(root, legacy_name) == "legacy"
+                and legacy_dir.is_dir()):
+            if legacy_dir.is_symlink():
+                raise SessionIdentityError("legacy session path is a link")
+            return supplied, legacy_dir
     # Candidate directory names: the re-encoding of the supplied value, and
     # (when it is already a safe single path component) the value itself as
     # an encoded-name alias. The stored raw identity must encode to exactly
@@ -21987,6 +22086,27 @@ def safe_export_path(state: dict[str, Any], argument: str | None) -> Path:
     return resolved
 
 
+def _capture_parent_identity(target: Path) -> tuple[int, int]:
+    """Capture the verified parent identity at export-path resolution time.
+
+    The resolved export path is inside the project when returned; recording
+    its parent's on-disk identity here gives the open-time check an anchor,
+    so a parent swapped into a link between resolution and directory open is
+    detected before anything is created.
+    """
+    parent = target.parent
+    info = parent.lstat()
+    if parent.is_symlink() or getattr(info, "st_reparse_tag", 0):
+        raise ValueError(
+            "export parent directory is a symbolic link or reparse point; "
+            "choose a regular path"
+        )
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("export parent directory is not a directory")
+    resolved = parent.stat()
+    return (resolved.st_dev, resolved.st_ino)
+
+
 def project_root_from_state(state: dict[str, Any]) -> Path:
     root = Path(str(state["session"].get("cwd") or os.getcwd())).expanduser().resolve()
     if not root.is_dir():
@@ -22565,7 +22685,13 @@ def export_handoff(
             "",
         ]
     )
-    export_write_text(target, export_visible_text("\n".join(lines)))
+    # The parent identity must be captured after the parent exists (the
+    # writer also creates missing parents with default modes, never chmod).
+    target.parent.mkdir(parents=True, exist_ok=True)
+    expected_parent_identity = _capture_parent_identity(target)
+    export_write_text(
+        target, export_visible_text("\n".join(lines)),
+        expected_parent_identity=expected_parent_identity)
     return target
 
 
@@ -22629,16 +22755,19 @@ def cleanup_old_sessions(
 
     removed = 0
     scanned = 0
-    # The cursor names the last fully processed entry. An entry interrupted
-    # by the budget is NOT recorded, so the next pass resumes at exactly the
-    # interrupted session instead of skipping it.
+    # The cursor names the lexical-max entry whose decision is FINAL for this
+    # sweep generation: retained, retired-marker, lock-busy and deleted
+    # entries all advance it. Only an entry whose processing was interrupted
+    # by the budget stays below the cursor, so the next pass resumes at
+    # exactly that session. The current session and non-directory entries are
+    # decided per pass without moving the generation cursor.
     last_completed = cursor
+    pass_done = False
     try:
-        # Lazy enumeration: no eager full-directory sort ahead of the first
-        # deadline check. Names at or before the cursor were already scanned
-        # in this sweep generation and are skipped without counting.
-        for entry in sessions.iterdir():
-            name = entry.name
+        # Sorted enumeration: the cursor is lexical, so the visit order must
+        # be lexical too; sorting one namespace listing is bounded by the
+        # per-entry deadline and gives pass-to-pass consistent fairness.
+        for name in sorted(entry.name for entry in sessions.iterdir()):
             if name <= cursor and cursor:
                 continue
             if not budget_left() or scanned >= CLEANUP_MAX_ENTRIES_PER_PASS:
@@ -22651,40 +22780,49 @@ def cleanup_old_sessions(
             if current is not None and candidate.resolve() == current.resolve():
                 continue
             scanned += 1
+            decided = True
+            deleted = False
             try:
                 with session_lock(candidate, timeout=0.0):
                     resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
-                    if not resumable and not _session_expired(candidate, cutoff):
-                        continue
                     if resumable and _resume_retired_marker(candidate):
                         # A successful later write for this session (a real
                         # resume) invalidates the historical eligibility.
                         with contextlib.suppress(OSError):
                             (candidate / CLEANUP_PARTIAL_MARKER).unlink()
-                        continue
-                    if not resumable:
-                        atomic_write_text(
-                            candidate / CLEANUP_PARTIAL_MARKER,
-                            "eligible cleanup marker (content-free)\n",
-                        )
-                    _delete_session_tree_bounded(candidate, budget_left)
+                    elif not resumable and not _session_expired(candidate, cutoff):
+                        pass  # retained: decided for this generation
+                    else:
+                        if not resumable:
+                            atomic_write_text(
+                                candidate / CLEANUP_PARTIAL_MARKER,
+                                "eligible cleanup marker (content-free)\n",
+                            )
+                        _delete_session_tree_bounded(candidate, budget_left)
+                        deleted = True
             except _CleanupBudgetExhausted:
+                decided = False
                 break
             except (TimeoutError, OSError):
                 # A writer holds the lifecycle lock: skip this round; the
-                # session stays and a later pass re-reads eligibility.
-                continue
-            removed += 1
-            last_completed = name
+                # session stays and a later pass re-reads eligibility. The
+                # entry still counts as decided for the generation cursor.
+                pass
+            if decided:
+                last_completed = name
+            if deleted:
+                removed += 1
+        else:
+            pass_done = True
     except OSError:
-        pass
-    if not budget_left() or scanned >= CLEANUP_MAX_ENTRIES_PER_PASS:
-        # The pass ended mid-namespace: keep the resumption position at the
-        # last fully processed entry.
+        pass_done = True
+    if not pass_done:
+        # The pass ended mid-namespace (cap or budget): keep the resumption
+        # position at the last finally-decided entry.
         if last_completed != cursor:
             _write_cleanup_cursor(root, last_completed)
     else:
-        # The full namespace was visited in this pass: the next sweep starts
+        # The full namespace was decided in this pass: the next sweep starts
         # over so every session keeps being re-checked.
         if cursor or last_completed:
             with contextlib.suppress(OSError):

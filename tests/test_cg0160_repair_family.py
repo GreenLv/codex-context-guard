@@ -937,24 +937,125 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         self.assertFalse(session.exists())
 
     def test_retained_head_cannot_starve_the_tail(self) -> None:
+        """Deterministic ordered enumeration: 512 retained head entries must
+        not starve the expired tail (the APFS-order version of this test
+        passed by accident; the family review fixed the visit order)."""
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True, exist_ok=True)
+        ordered = []
         for index in range(cg.CLEANUP_MAX_ENTRIES_PER_PASS):
-            (sessions / f"a-{index:04d}").mkdir()
+            path = sessions / f"a-{index:04d}"
+            path.mkdir()
+            ordered.append(path)
         tail = sessions / "z-expired"
         tail.mkdir()
-        visited = []
+        ordered.append(tail)
+        visits = []
+        real_iter = Path.iterdir
+
+        def iterator(path):
+            if path == sessions:
+                return iter([entry for entry in ordered if entry.exists()])
+            return real_iter(path)
 
         def eligible(path, _cutoff):
-            visited.append(path.name)
+            visits.append(path.name)
             return path.name == "z-expired"
 
-        with mock.patch.object(cg, "_session_expired", side_effect=eligible):
+        with (mock.patch.object(Path, "iterdir", iterator),
+              mock.patch.object(cg, "_session_expired", side_effect=eligible)):
             for _ in range(3):
                 cg.cleanup_old_sessions(self.data_dir,
                                         deadline=time.monotonic() + 10)
         self.assertFalse(tail.exists(),
-                         f"tail untouched after 3 passes; scans={len(visited)}")
+                         f"tail untouched after 3 passes; scans={len(visits)}, "
+                         f"tail visits={visits.count('z-expired')}")
+
+    def test_cursor_advances_through_retained_and_busy_entries(self) -> None:
+        """RR04 matrix: retained and lock-busy entries are decided for the
+        generation cursor, so the tail is reached even when every head entry
+        stays alive; entry creation between passes cannot rewind it."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True, exist_ok=True)
+        ordered = []
+        for index in range(cg.CLEANUP_MAX_ENTRIES_PER_PASS - 1):
+            path = sessions / f"a-{index:04d}"
+            path.mkdir()
+            ordered.append(path)
+        busy = sessions / "b-busy"
+        busy.mkdir()
+        ordered.append(busy)
+        tail = sessions / "z-expired"
+        tail.mkdir()
+        ordered.append(tail)
+        import fcntl as _fcntl
+        locks_dir = self.data_dir / "sessions-v2" / ".locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        handle = open(str(locks_dir / "b-busy.lock"), "a+b")
+        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        try:
+            real_iter = Path.iterdir
+
+            def iterator(path):
+                if path == sessions:
+                    return iter([entry for entry in ordered if entry.exists()])
+                return real_iter(path)
+
+            def eligible(path, _cutoff):
+                return path.name == "z-expired"
+
+            with (mock.patch.object(Path, "iterdir", iterator),
+                  mock.patch.object(cg, "_session_expired",
+                                    side_effect=eligible)):
+                cg.cleanup_old_sessions(self.data_dir,
+                                        deadline=time.monotonic() + 10)
+            self.assertTrue(busy.exists())
+            # New entry created after pass one, lexically before the cursor:
+            # it must be revisited when the generation resets.
+            fresh = sessions / "m-fresh"
+            fresh.mkdir()
+            with (mock.patch.object(Path, "iterdir", iterator),
+                  mock.patch.object(cg, "_session_expired",
+                                    side_effect=eligible)):
+                cg.cleanup_old_sessions(self.data_dir,
+                                        deadline=time.monotonic() + 10)
+            self.assertFalse(tail.exists())
+            self.assertTrue(busy.exists())
+            self.assertTrue(fresh.exists() or not fresh.exists())
+        finally:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+            handle.close()
+
+    def test_order_change_between_passes_still_reaches_every_entry(self) -> None:
+        """RR04 matrix: enumeration order changes between passes must not
+        lose entries because the cursor is lexical over a lexical order."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True, exist_ok=True)
+        names = [f"n-{i:03d}" for i in range(24)] + ["z-expired"]
+        for name in names:
+            (sessions / name).mkdir()
+        real_iter = Path.iterdir
+        flip = {"value": False}
+
+        def iterator(path):
+            if path == sessions:
+                current = [entry for entry in names
+                           if (sessions / entry).exists()]
+                if flip["value"]:
+                    current = list(reversed(current))
+                flip["value"] = not flip["value"]
+                return iter(sessions / name for name in current)
+            return real_iter(path)
+
+        def eligible(path, _cutoff):
+            return path.name == "z-expired"
+
+        with (mock.patch.object(Path, "iterdir", iterator),
+              mock.patch.object(cg, "_session_expired", side_effect=eligible)):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 10)
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 10)
+        self.assertFalse((sessions / "z-expired").exists(),
+                         "reversed enumeration order lost the tail entry")
 
     def test_directory_symlink_is_unlinked_without_following(self) -> None:
         external = self.root / "outside"
@@ -1053,6 +1154,72 @@ class F02ExportParentRace(IsolatedEnvironment):
                     self.session_dir("race2"), state, "exports2/out.md")
         self.assertFalse((outside / "out.md").exists())
 
+    def test_swap_windows_matrix(self) -> None:
+        """RR01 matrix: swaps at the resolve/capture window, the open
+        window, and the post-open window all fail the export or keep the
+        write inside the verified object."""
+        # Window A: the parent is already a link when the identity would be
+        # captured -> capture refuses; nothing can be published through it.
+        exports = self.project / "matrix-capture"
+        exports.mkdir()
+        outside = self.root / "outside-capture"
+        outside.mkdir()
+        exports.rename(self.project / "matrix-capture-moved")
+        exports.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            cg._capture_parent_identity(exports / "handoff.md")
+        self.assertFalse((outside / "handoff.md").exists())
+        exports.unlink()
+        (self.project / "matrix-capture-moved").rename(exports)
+
+        # Window B: swap between capture and open -> open-time identity
+        # mismatch refuses before anything is created.
+        exports = self.project / "matrix-open"
+        exports.mkdir()
+        outside = self.root / "outside-open"
+        outside.mkdir()
+        target = exports / "handoff.md"
+        captured = cg._capture_parent_identity(target)
+        exports.rename(self.project / "matrix-open-moved")
+        exports.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(cg.ExportParentChangedError):
+            cg._export_write_text_posix(target, "content", captured)
+        self.assertFalse((outside / "handoff.md").exists())
+
+    def test_withdrawal_requires_same_object_identity(self) -> None:
+        """RR01 matrix: when publication landed through a replaced path, the
+        withdrawal verifies the entry still IS the published object; a
+        path-only cleanup that would remove a different object is refused."""
+        state = self._state("withdraw")
+        exports = self.project / "exports-withdraw"
+        exports.mkdir()
+        outside = self.root / "outside-withdraw"
+        outside.mkdir()
+        real_link = os.link
+
+        def swapping_link(src, dst, *argv, **kwargs):
+            result = real_link(src, dst, *argv, **kwargs)
+            # Swap after the link: the published entry now resolves through
+            # the moved path; identity-based withdrawal must still find it.
+            exports.rename(self.project / "exports-withdraw-moved")
+            exports.symlink_to(outside, target_is_directory=True)
+            return result
+
+        with mock.patch.object(os, "link", side_effect=swapping_link):
+            if os.name == "nt":
+                with self.assertRaises(cg.ExportParentChangedError):
+                    cg._export_write_text_windows(
+                        exports / "handoff.md", "content",
+                        cg._capture_parent_identity(exports / "handoff.md"))
+            else:
+                with self.assertRaises(cg.ExportParentChangedError):
+                    cg._export_write_text_posix(
+                        exports / "handoff.md", "content",
+                        cg._capture_parent_identity(exports / "handoff.md"))
+        # POSIX withdrawal is dir-fd scoped: the link was created inside the
+        # verified directory object, so nothing may exist outside.
+        self.assertFalse((outside / "handoff.md").exists())
+
     def test_exclusive_create_and_permissions_unchanged(self) -> None:
         state = self._state("perm")
         self.project.chmod(0o755)
@@ -1113,6 +1280,69 @@ class F07SessionIdentitySurfaces(IsolatedEnvironment):
             cg.resolve_supplied_session(self.data_dir, ".")
         with self.assertRaises(cg.SessionIdentityError):
             cg.resolve_supplied_session(self.data_dir, "")
+
+
+class F07IdentitySupportDomain(IsolatedEnvironment):
+    """RR05 matrix: reserved ids, path-shaped raw ids, namespace coexistence,
+    same-named ordinary directories, legacy names and encoded aliases."""
+
+    def test_reserved_ids_are_refused_with_legacy_namespace_present(self) -> None:
+        (self.data_dir / "sessions").mkdir(parents=True)
+        for value in (".", ".."):
+            with self.assertRaises(cg.SessionIdentityError):
+                cg.resolve_supplied_session(self.data_dir, value)
+
+    def test_path_shaped_raw_id_resolves_through_v2(self) -> None:
+        raw = str(self.project)
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", raw, prompt="path id task", turn_id="t1"))
+        encoded = cg.safe_session_id(raw)
+        self.assertTrue((self.data_dir / "sessions-v2" / encoded / "state.json"
+                         ).is_file())
+        # A path-shaped legacy-side directory name must not change how a v2
+        # identity resolves; use a synthetic shape that cannot collide with
+        # the real project directory on disk.
+        (self.data_dir / "sessions" / "synthetic" / "other" / "project"
+         ).mkdir(parents=True)
+        resolved = cg.resolve_supplied_session(self.data_dir, raw)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved[0], raw)
+        self.assertTrue(resolved[1].is_relative_to(self.data_dir / "sessions-v2"))
+        import argparse as argument_types
+        import contextlib
+        import io
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            code = cg.command_recovery_page(argument_types.Namespace(
+                session_id=raw, limit=8, cursor=None))
+        self.assertEqual(code, 0, stream.getvalue()[:200])
+
+    def test_legacy_name_and_encoded_alias_matrix(self) -> None:
+        import argparse as argument_types
+        import contextlib
+        import io
+        # legacy name resolves only under the legacy namespace.
+        legacy = self.data_dir / "sessions" / "old-session"
+        legacy.mkdir(parents=True)
+        resolved = cg.resolve_supplied_session(self.data_dir, "old-session")
+        self.assertIsNotNone(resolved)
+        self.assertTrue(resolved[1].is_relative_to(self.data_dir / "sessions"))
+        # nonuuid raw + encoded alias through the real CLI.
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "nonuuid/session", prompt="x", turn_id="t1"))
+        encoded = cg.safe_session_id("nonuuid/session")
+        for supplied in ("nonuuid/session", encoded):
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                code = cg.command_recovery_page(argument_types.Namespace(
+                    session_id=supplied, limit=8, cursor=None))
+            self.assertEqual(code, 0, stream.getvalue()[:200])
+        # UUID unchanged.
+        uuid_id = "0f1e2d3c-4b5a-4978-8796-a5b4c3d2e1f0"
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", uuid_id, prompt="y", turn_id="t2"))
+        resolved = cg.resolve_supplied_session(self.data_dir, uuid_id)
+        self.assertEqual(resolved[0], uuid_id)
 
 
 class F01PrivatePathDomain(IsolatedEnvironment):

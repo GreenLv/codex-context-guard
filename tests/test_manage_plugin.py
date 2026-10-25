@@ -627,6 +627,10 @@ class SafePluginInstallTests(unittest.TestCase):
 
     def test_marketplace_staging_excludes_git_metadata_and_matches_manifest(self) -> None:
         self.write_source("0.1.2")
+        # The strict distribution contract requires the reviewed manifest in
+        # any git-carrying source; the fixture constructs it explicitly.
+        self.repo_root.mkdir(parents=True, exist_ok=True)
+        manager.write_distribution_manifest(self.repo_root)
         (self.repo_root / ".git" / "config").parent.mkdir(parents=True)
         (self.repo_root / ".git" / "config").write_text(
             "git metadata\n", encoding="utf-8"

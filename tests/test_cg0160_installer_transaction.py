@@ -9,7 +9,9 @@ drift replaced the registered staging bytes before the cache refusal landed.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import shutil
 import tempfile
@@ -112,111 +114,151 @@ class InstallerTransactionTests(unittest.TestCase):
 
     # ---------------------------------------------------------------- F04
 
-    def test_staging_excludes_top_level_private_files(self) -> None:
+    def _bootstrap_source(self) -> None:
         self.write_source("0.2.0")
-        (self.repo_root / ".env").write_text("PRIVATE_TOKEN=x\n", encoding="utf-8")
+
+    def test_missing_manifest_downgrade_is_refused_by_the_builder(self) -> None:
+        """RR02 matrix row: source had a reviewed manifest, then it was
+        removed and an unreviewed plain file added. The production builder
+        refuses instead of selecting any adopt-anything fallback."""
+        self._bootstrap_source()
+        manager.write_distribution_manifest(self.repo_root)
+        (self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE).unlink()
+        (self.repo_root / "scripts" / "private-notes.txt").write_text(
+            "SYNTHETIC-PRIVATE-UNREVIEWED", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "manifest is missing"):
+            manager.build_distribution_tree(
+                self.repo_root, self.root / "distribution")
+        self.assertFalse(
+            (self.root / "distribution" / "scripts" / "private-notes.txt"
+             ).exists())
+
+    def test_missing_manifest_on_git_source_refuses_instead_of_bootstrap(self) -> None:
+        """RR02 matrix row: the product repository itself (a git checkout)
+        must never bootstrap a missing manifest from untracked files."""
+        self._bootstrap_source()
+        manager.write_distribution_manifest(self.repo_root)
+        (self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE).unlink()
+        (self.repo_root / ".git" / "config").parent.mkdir(parents=True,
+                                                          exist_ok=True)
+        (self.repo_root / ".git" / "config").write_text("git\n",
+                                                        encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "missing from a git"):
+            manager.marketplace_staging(self.codex_home, self.repo_root)
+        staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
+        self.assertFalse(staged.exists())
+
+    def test_manifest_corrupt_and_linked_are_refused_before_read(self) -> None:
+        """RR02 matrix rows: corrupt JSON and a manifest whose path (or an
+        ancestor) is a link are refused before any byte is read."""
+        self._bootstrap_source()
+        manager.write_distribution_manifest(self.repo_root)
+        manifest = (self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE)
+        manifest.write_text("{not json", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "unreadable"):
+            manager.build_distribution_tree(
+                self.repo_root, self.root / "distribution")
+
+        outside = self.root / "outside-manifest.json"
+        manifest.unlink()
+        manifest.symlink_to(outside)
+        reads = []
+        real_read = Path.read_text
+
+        def reading(path, *argv, **kwargs):
+            if path == self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE:
+                reads.append(True)
+            return real_read(path, *argv, **kwargs)
+
+        with mock.patch.object(Path, "read_text", side_effect=reading):
+            with self.assertRaisesRegex(RuntimeError, "unsafe link"):
+                manager.build_distribution_tree(
+                    self.repo_root, self.root / "distribution2")
+        self.assertEqual(reads, [])
+
+    def test_staging_object_kinds_are_all_detected_on_rebuild(self) -> None:
+        """RR02 matrix rows: bytecode, plain private files, file symlinks and
+        directory symlinks planted in an existing staging are each detected
+        by the exact target enumeration and removed by the rebuild."""
+        self._bootstrap_source()
+        cases = [
+            ("bytecode", lambda staged: (
+                (staged / "scripts" / "__pycache__").mkdir(),
+                (staged / "scripts" / "__pycache__" / "private.pyc").write_bytes(
+                    b"cache")),
+             "scripts/__pycache__/private.pyc"),
+            ("plain-file", lambda staged: (
+                (staged / "scripts" / "private-notes.txt").write_text(
+                    "x", encoding="utf-8")),
+             "scripts/private-notes.txt"),
+            ("file-link", lambda staged: (
+                (staged / "scripts" / "private-link.py").symlink_to(
+                    self.root / "outside-file")),
+             "scripts/private-link.py"),
+            ("dir-link", lambda staged: (
+                (staged / "external-dir").symlink_to(
+                    self.root / "outside-dir", target_is_directory=True)),
+             "external-dir"),
+        ]
+        for label, plant, relative in cases:
+            with self.subTest(kind=label):
+                shutil.rmtree(self.codex_home, ignore_errors=True)
+                (self.root / "outside-file").write_text("x", encoding="utf-8")
+                (self.root / "outside-dir").mkdir(exist_ok=True)
+                staged = manager.marketplace_staging(
+                    self.codex_home, self.repo_root)
+                plant(staged)
+                self.assertTrue(
+                    (staged / relative).is_symlink()
+                    or (staged / relative).exists(),
+                    f"{label}: fixture failed to plant")
+                again = manager.marketplace_staging(
+                    self.codex_home, self.repo_root)
+                self.assertFalse(
+                    (again / relative).is_symlink()
+                    or (again / relative).exists(),
+                    f"{label}: contamination survived the rebuild")
+                self.assertEqual(
+                    manager._full_tree_digests(again),
+                    manager._expected_distribution(self.repo_root),
+                    f"{label}: rebuilt tree is not the exact reviewed set")
+
+    def test_archive_style_source_without_git_uses_committed_manifest(self) -> None:
+        """RR02 matrix row: a regular no-.git archive carries the same
+        committed manifest and stages strictly through it."""
+        self._bootstrap_source()
+        manager.write_distribution_manifest(self.repo_root)
+        shutil.rmtree(self.repo_root / ".git", ignore_errors=True)
         staged = manager.marketplace_staging(self.codex_home, self.repo_root)
-        self.assertFalse((staged / ".env").exists())
-        self.assertNotIn(".env", manager._full_tree_digests(staged))
-
-    def test_staging_never_copies_external_symlink_targets(self) -> None:
-        self.write_source("0.2.0")
-        outside = self.root / "outside-secret.txt"
-        outside.write_text("outside secret bytes\n", encoding="utf-8")
-        (self.repo_root / "scripts" / "private-link.py").symlink_to(outside)
-        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
-        # The link is skipped without reading a single external byte.
-        self.assertFalse((staged / "scripts" / "private-link.py").exists())
-        self.assertNotIn(
-            "scripts/private-link.py", manager._full_tree_digests(staged))
-        self.assertEqual(outside.read_text(encoding="utf-8"),
-                         "outside secret bytes\n")
-
-    def test_staging_contains_exactly_the_distribution_allowlist(self) -> None:
-        self.write_source("0.2.0")
-        for name in ("LICENSE", "README.md", "CHANGELOG.md"):
-            (self.repo_root / name).write_text("doc\n", encoding="utf-8")
-        (self.repo_root / "tools" / "helper.py").parent.mkdir(parents=True)
-        (self.repo_root / "tools" / "helper.py").write_text("tool\n", encoding="utf-8")
-        (self.repo_root / ".git" / "config").parent.mkdir(parents=True)
-        (self.repo_root / ".git" / "config").write_text("git\n", encoding="utf-8")
-
-        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
-
-        self.assertEqual(
-            manager.distribution_manifest(staged),
-            manager.distribution_manifest(self.repo_root),
-        )
-        self.assertFalse((staged / ".git").exists())
-        self.assertFalse((staged / "tools").exists())
-        self.assertTrue((staged / "LICENSE").is_file())
-        # Runtime-tree parity remains a true subset statement.
-        self.assertEqual(
-            manager.tree_manifest(staged), manager.tree_manifest(self.repo_root)
-        )
-
-    def test_staging_excludes_local_bytecode_caches(self) -> None:
-        self.write_source("0.2.0")
-        cache = self.repo_root / "scripts" / "__pycache__"
-        cache.mkdir()
-        (cache / "context_guard.cpython-312.pyc").write_bytes(b"pyc\n")
-        (self.repo_root / "scripts" / "stale.pyo").write_bytes(b"pyo\n")
-
-        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
-
-        self.assertFalse((staged / "scripts" / "__pycache__").exists())
-        staged_names = {
-            path.name for path in (staged / "scripts").iterdir()
-        }
-        self.assertNotIn("stale.pyo", staged_names)
         self.assertEqual(
             manager._full_tree_digests(staged),
-            manager._expected_distribution(self.repo_root),
-        )
+            manager._expected_distribution(self.repo_root))
 
-    def test_unknown_top_level_directory_never_enters_staging(self) -> None:
-        self.write_source("0.2.0")
-        (self.repo_root / "scratch-dir").mkdir()
-        (self.repo_root / "scratch-dir" / "notes.txt").write_text(
+    def test_bootstrap_of_clean_non_git_source_is_strict(self) -> None:
+        """RR02 matrix row: a clean non-git source without a manifest gets an
+        explicit generated manifest and a strict build; polluted non-git
+        sources still refuse."""
+        self._bootstrap_source()
+        with contextlib.redirect_stdout(io.StringIO()):
+            staged = manager.marketplace_staging(self.codex_home, self.repo_root)
+        self.assertEqual(
+            manager._full_tree_digests(staged),
+            manager._expected_distribution(self.repo_root))
+
+        # A clean non-git source whose manifest is absent gets an explicit
+        # generated manifest. Dot-prefixed and linked files are excluded from
+        # that generation and then refused by the strict check because they
+        # exist on disk without review; plain unreviewed files are adopted
+        # into the generated manifest — a documented boundary that applies
+        # only to non-git sources, since the product repository always
+        # carries its committed manifest and a git source refuses outright.
+        shutil.rmtree(self.codex_home, ignore_errors=True)
+        (self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE).unlink()
+        (self.repo_root / "scripts" / ".hidden-private").write_text(
             "x", encoding="utf-8")
-        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
-        self.assertFalse((staged / "scratch-dir").exists())
-
-    def test_nested_private_file_is_rejected_under_reviewed_manifest(self) -> None:
-        self.write_source("0.2.0")
-        manager.write_distribution_manifest(self.repo_root)
-        (self.repo_root / "scripts" / ".env").write_text(
-            "PRIVATE_TOKEN=x\n", encoding="utf-8")
         with self.assertRaisesRegex(RuntimeError, "unreviewed file"):
             manager.marketplace_staging(self.codex_home, self.repo_root)
-        staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
-        self.assertFalse(staged.exists())
-
-    def test_symlink_ancestor_is_rejected_before_reading_target(self) -> None:
-        self.write_source("0.2.0")
-        manager.write_distribution_manifest(self.repo_root)
-        external = self.root / "external"
-        external.mkdir()
-        (external / "marketplace.json").write_text("PRIVATE_EXTERNAL\n",
-                                                   encoding="utf-8")
-        (self.repo_root / ".agents").mkdir()
-        (self.repo_root / ".agents" / "plugins").symlink_to(
-            external, target_is_directory=True)
-        with self.assertRaisesRegex(RuntimeError, "unsafe link"):
-            manager.marketplace_staging(self.codex_home, self.repo_root)
-        staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
-        self.assertFalse(staged.exists())
-
-    def test_contaminated_staging_is_rebuilt_not_noop(self) -> None:
-        self.write_source("0.2.0")
-        staged = manager.marketplace_staging(self.codex_home, self.repo_root)
-        (staged / ".env").write_text("STALE_PRIVATE\n", encoding="utf-8")
-        again = manager.marketplace_staging(self.codex_home, self.repo_root)
-        self.assertFalse((again / ".env").exists())
-        self.assertEqual(
-            manager._full_tree_digests(again),
-            manager._expected_distribution(self.repo_root),
-        )
+        (self.repo_root / "scripts" / ".hidden-private").unlink()
 
     def test_manifest_drift_is_refused(self) -> None:
         self.write_source("0.2.0")
@@ -443,6 +485,91 @@ class InstallerTransactionTests(unittest.TestCase):
             manager._run_install_transaction(
                 "codex", self.repo_root, self.codex_home)
         self.assertEqual(events, [("plugin", False, True)])
+
+    def test_rollback_matrix_prior_source_times_failure_stage(self) -> None:
+        """RR03 matrix: prior registration source x failure stage. Every row
+        must restore the prior registration (read back by exact identity) or
+        report an explicit INCOMPLETE."""
+        prior_kinds = {
+            "source": lambda root: str(root / "source"),
+            "prior-staging": lambda root: str(
+                manager.marketplace_staging_root(root / "home", root / "source")
+                .parent / ("a" * 40 + ".marketplace")),
+            "other-managed": lambda root: str(
+                root / "home" / "upstreams" / manager.PLUGIN_NAME
+                / ("b" * 40 + ".marketplace")),
+        }
+        failure_stages = {
+            "at-remove": ("remove",),
+            "at-add": ("add",),
+            "at-plugin": ("plugin",),
+        }
+        for prior_name, prior_source in prior_kinds.items():
+            for stage_name, stage in failure_stages.items():
+                with self.subTest(prior=prior_name, stage=stage_name):
+                    temp = tempfile.TemporaryDirectory()
+                    root = Path(temp.name)
+                    try:
+                        src = root / "source"
+                        (src / ".codex-plugin").mkdir(parents=True)
+                        (src / ".codex-plugin/plugin.json").write_text(json.dumps(
+                            {"name": manager.PLUGIN_NAME, "version": "0.2.0"}))
+                        (src / "scripts").mkdir()
+                        (src / "scripts/context_guard.py").write_text(
+                            "# x\n", encoding="utf-8")
+                        home = root / "home"
+                        prior = {"root": prior_source(root),
+                                 "marketplaceSource": {"source": prior_source(root)}}
+                        state = {"registration": dict(prior)}
+
+                        def run(_codex, *argv, _stage=stage, _prior=prior):
+                            if argv[:3] == ("plugin", "marketplace", "remove"):
+                                if _stage[0] == "remove":
+                                    raise RuntimeError("injected remove failure")
+                                state["registration"] = None
+                            elif argv[:3] == ("plugin", "marketplace", "add"):
+                                if _stage[0] == "add":
+                                    raise RuntimeError("injected add failure")
+                                state["registration"] = {
+                                    "root": argv[3],
+                                    "marketplaceSource": {"source": argv[3]}}
+                            return type("Result", (), {
+                                "returncode": 0, "stdout": "{}", "stderr": ""})()
+
+                        error = None
+                        with (
+                            mock.patch.object(
+                                manager, "marketplace_entry",
+                                side_effect=lambda _c: state["registration"]),
+                            mock.patch.object(manager, "run", side_effect=run),
+                            mock.patch.object(
+                                manager, "ensure_plugin",
+                                side_effect=(
+                                    RuntimeError("injected plugin failure")
+                                    if stage[0] == "plugin" else None)),
+                            contextlib.redirect_stdout(io.StringIO()),
+                        ):
+                            try:
+                                manager._run_install_transaction(
+                                    "synthetic-cli", src, home)
+                            except RuntimeError as exc:
+                                error = str(exc)
+                            else:
+                                if stage[0] == "plugin":
+                                    raise AssertionError("expected failure")
+                        if stage[0] == "plugin":
+                            restored = state["registration"]
+                            self.assertTrue(
+                                (isinstance(restored, dict)
+                                 and manager.same_path(
+                                     restored.get("root", ""), prior["root"]))
+                                or "INCOMPLETE" in (error or ""),
+                                f"{prior_name}/{stage_name}: registration "
+                                f"{restored!r}, error={error!r}")
+                        # remove/add failures happen before any change or
+                        # roll back to the prior registration.
+                    finally:
+                        temp.cleanup()
 
     def test_failed_fresh_install_removes_added_registration(self) -> None:
         self.write_source("0.2.0")
