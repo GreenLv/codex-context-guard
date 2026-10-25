@@ -1779,6 +1779,41 @@ def _run_install_transaction(
             shutil.rmtree(staging_backup, ignore_errors=True)
 
 
+INTERPRETER_CONF_RELATIVE = Path("context-guard") / "interpreter.conf"
+
+
+def bind_gui_interpreter(codex_home: Path) -> Path:
+    """Record the verified interpreter for GUI launches under this HOME.
+
+    The installer itself runs on a verified Python 3.10+; binding its own
+    resolved executable gives a GUI host whose PATH lacks the installed
+    Python a stable, HOME-scoped discovery source that the plain shell and
+    PowerShell launchers can read before any Python runs. The binding is
+    verified by actually executing the interpreter before it is written,
+    and re-verified by the launchers on every Hook start, so a moved or
+    removed interpreter is never treated as current fact.
+    """
+    interpreter = Path(sys.executable).resolve()
+    if not interpreter.is_file():
+        raise RuntimeError(
+            f"cannot bind the GUI interpreter: {interpreter} is not a file")
+    probe = subprocess.run(
+        [str(interpreter), "-c",
+         "import sys; raise SystemExit(sys.version_info < (3, 10))"],
+        capture_output=True)
+    if probe.returncode != 0:
+        raise RuntimeError(
+            f"cannot bind the GUI interpreter: {interpreter} does not "
+            "provide Python 3.10+")
+    conf_path = codex_home / INTERPRETER_CONF_RELATIVE
+    conf_path.parent.mkdir(parents=True, exist_ok=True)
+    conf_path.write_text(f"{interpreter}\n", encoding="utf-8")
+    if os.name != "nt":
+        os.chmod(conf_path, 0o600)
+    print(f"[OK] bound GUI interpreter for this HOME: {interpreter}")
+    return conf_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1831,6 +1866,7 @@ def main() -> int:
             # leaves a mixed-identity installation behind.
             same_version_drift_preflight(args.codex, repo_root, codex_home)
             _run_install_transaction(args.codex, repo_root, codex_home)
+            bind_gui_interpreter(codex_home)
         else:
             ensure_marketplace(args.codex, repo_root, codex_home, args.apply)
             ensure_plugin(args.codex, repo_root, codex_home, args.apply)

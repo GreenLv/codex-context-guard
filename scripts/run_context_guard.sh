@@ -23,6 +23,45 @@ elif [ "${1:-}" = "hook" ]; then
     target="$script_dir/cg_hook.py"
 fi
 
+# Installer-bound interpreter (RR08): manage_plugin.py records the verified
+# interpreter absolute path in a plain single-line file under the selected
+# HOME, so a GUI host whose PATH lacks the installed Python still starts the
+# Hook. The file is read with shell builtins only — no eval, no sourcing —
+# and the path is exec'd directly with quoting, never re-parsed as command
+# text. An explicit configured path that is missing or not executable is an
+# error distinct from "nothing configured": it never silently falls back to
+# PATH probing, because that would keep a stale binding looking current.
+configured=""
+config_file=""
+if [ -n "${CODEX_HOME:-}" ]; then
+    config_file="$CODEX_HOME/context-guard/interpreter.conf"
+else
+    config_file="$HOME/.codex/context-guard/interpreter.conf"
+fi
+if [ -f "$config_file" ] && [ -r "$config_file" ]; then
+    configured=$(head -n 1 "$config_file" 2>/dev/null || true)
+    case "$configured" in
+        /*) : ;;
+        "")
+            configured=""
+            ;;
+        *)
+            printf '%s\n' "Context Guard interpreter configuration must contain an absolute path; ignoring $config_file." >&2
+            configured=""
+            ;;
+    esac
+fi
+if [ -n "$configured" ]; then
+    if [ ! -x "$configured" ]; then
+        printf '%s\n' "Context Guard interpreter configuration is missing or not executable: $configured. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
+        exit 2
+    fi
+    if [ "$router" -eq 1 ]; then
+        exec "$configured" -S "$target" "$@"
+    fi
+    exec "$configured" "$target" "$@"
+fi
+
 for candidate in python3.14 python3.13 python3.12 python3.11 python3.10; do
     if command -v "$candidate" >/dev/null 2>&1; then
         if [ "$router" -eq 1 ]; then
@@ -42,5 +81,5 @@ for candidate in python3 python; do
     fi
 done
 
-printf '%s\n' 'Context Guard requires Python 3.10 or newer, but no supported interpreter was found on PATH.' >&2
+printf '%s\n' 'Context Guard requires Python 3.10 or newer, but no supported interpreter was found on PATH. If a supported Python is installed outside PATH, reinstall Context Guard with scripts/manage_plugin.py --apply so its location is bound for GUI launches.' >&2
 exit 2

@@ -27,6 +27,14 @@ published 0.15.1:
   `~/.codex/context-guard`; with `CODEX_HOME` unset the default is unchanged.
   Existing explicit data roots keep their meaning, and nothing is migrated,
   merged, or deleted.
+- GUI hosts whose PATH lacks an installed supported Python now work when the
+  installer could bind one: `manage_plugin.py --apply` verifies and records
+  the interpreter in `<home>/context-guard/interpreter.conf` for that HOME,
+  and the launchers consult it before PATH probing. A configured path that
+  disappears fails with its own message (never a silent PATH fallback);
+  unconfigured hosts keep the previous discovery. Old 0.15.x installs keep
+  their consumed caches unchanged and gain the binding only through a new
+  0.16.0 install into the same HOME.
 - Re-delivered or repeated UserPromptSubmit events stay independent: the
   hook payload carries no stable per-message identity, so nothing collapses
   and no input is dropped. A repeated (session, turn, prompt-bytes) shape is

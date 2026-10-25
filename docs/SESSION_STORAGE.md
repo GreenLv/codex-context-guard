@@ -10,7 +10,10 @@ Here, HOME means the Codex configuration and task-data directory selected by
 candidate, direct commands without an explicit data root resolve their private
 state under the active `CODEX_HOME` (`<home>/context-guard`), so isolated
 homes never share state; with `CODEX_HOME` unset the historical default is
-unchanged.
+unchanged. The same directory also carries the installer-written
+`interpreter.conf` (one absolute interpreter path) that the Hook launchers
+consult on GUI hosts whose PATH lacks the installed Python; each HOME binds
+its own interpreter and the launchers re-verify it on every start.
 
 Session identities are validated before any directory is used: a missing or
 empty id is refused rather than merged into one shared directory, and ids are
