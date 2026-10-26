@@ -1091,6 +1091,62 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                              "SYNTHETIC-EXTERNAL-CONF\n")
             self.assertEqual(sentinel.stat().st_mode & 0o777, 0o640)
 
+    def test_home_ancestor_substituted_before_open_is_refused(self) -> None:
+        """RV-02 (seventh review, P1): the anchor chain is
+        HOME -> private directory -> conf. A HOME substituted before the
+        private-directory open must not re-anchor the chain onto an external
+        tree: the opened descriptor's actual parent (reached through the
+        descriptor) must be the validated HOME object. The bind refuses with
+        zero side effects — the external directory keeps 0755 and its
+        sentinel conf keeps its bytes and 0640 mode."""
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory(prefix="binding-anchor-home-") as tmp:
+            root = Path(tmp).resolve()
+            home = root / "home"
+            home.mkdir()
+            (home / "context-guard").mkdir(mode=0o700)
+            outside = root / "outside-home"
+            private = outside / "context-guard"
+            private.mkdir(parents=True, mode=0o755)
+            private.chmod(0o755)
+            sentinel = private / "interpreter.conf"
+            sentinel.write_text("EXTERNAL-SYNTHETIC-CONF\n", encoding="utf-8")
+            sentinel.chmod(0o640)
+            before = (outside.stat().st_mode & 0o777,
+                      sentinel.read_text(),
+                      sentinel.stat().st_mode & 0o777)
+            real_open = manager.os.open
+            injections = []
+
+            def substituted_open(path, flags, *args, **kwargs):
+                if (isinstance(path, (str, os.PathLike))
+                        and Path(path) == home / "context-guard"
+                        and not injections):
+                    home.rename(root / "home-original")
+                    home.symlink_to(outside, target_is_directory=True)
+                    injections.append(True)
+                return real_open(path, flags, *args, **kwargs)
+
+            error = None
+            with mock.patch.object(manager.os, "open",
+                                   side_effect=substituted_open):
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        manager.bind_gui_interpreter(home)
+                except (OSError, RuntimeError) as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+            self.assertTrue(injections,
+                            "the private-directory open was never reached")
+            self.assertIsNotNone(error,
+                                 "the HOME substitution was not refused")
+            after = (outside.stat().st_mode & 0o777,
+                     sentinel.read_text(),
+                     sentinel.stat().st_mode & 0o777)
+            self.assertEqual(before, after,
+                             "the external HOME tree was modified")
+
     def test_no_path_chmod_runs_on_the_private_directory(self) -> None:
         """The POSIX route must never chmod through the substitutable text
         path: the mode lands on the anchored descriptor (fchmod), so a

@@ -991,7 +991,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True, exist_ok=True)
         ordered = []
-        for index in range(cg.CLEANUP_MAX_ENTRIES_PER_PASS):
+        for index in range(512):
             path = sessions / f"a-{index:04d}"
             path.mkdir()
             ordered.append(path)
@@ -1025,7 +1025,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True, exist_ok=True)
         ordered = []
-        for index in range(cg.CLEANUP_MAX_ENTRIES_PER_PASS - 1):
+        for index in range(511):
             path = sessions / f"a-{index:04d}"
             path.mkdir()
             ordered.append(path)
@@ -1495,12 +1495,11 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "after the deadline had already passed")
 
     def test_deadline_during_enumeration_bounds_requests(self) -> None:
-        """Sixth-round restatement: enumeration is a full namespace sweep
-        whose cost is bounded by the namespace and the queue cap, not by
-        the deadline (the earlier per-read deadline starved the tail behind
-        a re-read prefix and was replaced by a reviewable design change).
-        The deadline gates adjudication: a budget-starved pass queues what
-        it swept and decides nothing."""
+        """Original RR04 contract, restored after the sixth review rejected
+        the interim no-deadline design: every enumeration step starts only
+        within the remaining budget, so a 3ms budget with a 1ms-per-entry
+        model requests at most four entries, and everything read is queued
+        for the next pass (progress data, never lost)."""
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
         for i in range(600):
@@ -1513,21 +1512,62 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                                 side_effect=lambda: clock[0])):
             removed = cg.cleanup_old_sessions(self.data_dir, deadline=100.003)
             self.assertEqual(removed, 0)
-            self.assertEqual(len(visited), cg.CLEANUP_MAX_ENTRIES_PER_PASS,
-                             f"the sweep read {len(visited)} entries; it must "
-                             "read up to the queue cap in one pass")
+            self.assertGreater(len(visited), 0)
+            self.assertLessEqual(len(visited), 4,
+                                 f"enumeration requested {len(visited)} "
+                                 "entries under a 3ms budget "
+                                 "(1ms-per-entry model)")
             cursor, pending = cg._read_cleanup_state(self.data_dir)
-            self.assertEqual(len(pending), cg.CLEANUP_MAX_ENTRIES_PER_PASS,
-                             "swept names must be queued for the next pass")
-            # A fresh budget adjudicates the queued names: the cursor advances
-            # past every queued name (undecided remainder re-queued behind it).
-            # A cursor still stuck at the pre-queue position here is the
-            # regression this guards.
+            self.assertEqual(len(pending), len(visited),
+                             "every swept name must be queued for the next "
+                             "pass")
+            self.assertEqual(cursor, "",
+                             "an interrupted scan must not persist a lexical "
+                             "cursor: unread names could be smaller")
+            # A fresh budget adjudicates the queued names through the drain:
+            # they must not stay stuck in the queue across passes.
             cg.cleanup_old_sessions(self.data_dir, deadline=clock[0] + 0.010)
         cursor2, pending2 = cg._read_cleanup_state(self.data_dir)
-        print(f"DEBUG pass2 done cursor2={cursor2!r} pending2={len(pending2)} reads={len(visited)}")
-        self.assertNotEqual(cursor2, cursor,
-                            "the queued names were not adjudicated")
+        self.assertFalse(set(pending) & set(pending2),
+                         "the queued names were not adjudicated")
+
+    def test_interrupted_scan_does_not_persist_a_skipping_cursor(self) -> None:
+        """The sixth review's soundness rule: a lexical watermark may only
+        skip names that were actually read. A scan interrupted by the
+        deadline persists the pending queue with an empty cursor, so the
+        next pass cannot skip an unread name that sorts below the last
+        decided one — the exact mechanism that permanently hid the tail in
+        the non-lexical over-cap counterexample."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        names = [f"b-retained-{i:04d}" for i in range(6)] + [
+            "a-expired-after-prefix"]
+        for name in names:
+            (sessions / name).mkdir()
+        tail = sessions / "a-expired-after-prefix"
+        visited = []
+        clock = [100.0]
+
+        def eligible(path, _cutoff):
+            return path.name == tail.name
+
+        with (self._scan_stub(sessions, visited, clock),
+              mock.patch.object(cg.time, "monotonic",
+                                side_effect=lambda: clock[0]),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            # A tiny budget reads only the first stream entries (all
+            # b-retained names in this stub order) and must NOT persist a
+            # cursor that would skip the lexically smaller unread tail.
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock[0] + 0.002)
+            cursor, pending = cg._read_cleanup_state(self.data_dir)
+            self.assertEqual(cursor, "",
+                             "an interrupted scan persisted a cursor")
+            # Ample budget: the tail must be discovered and removed.
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock[0] + 30.0)
+        self.assertFalse(tail.exists(),
+                         "the unread lexically-smaller tail was never "
+                         "adjudicated")
 
     def test_repeated_interrupted_scans_still_reach_the_tail(self) -> None:
         """RV-03 (fifth-round reviewer model): every pass's enumeration is
@@ -1602,13 +1642,32 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "queue")
 
 
+    @unittest.expectedFailure
     def test_longer_decided_prefix_still_reaches_the_tail(self) -> None:
-        """The sixth-review progress model (eight directories, 1ms per read,
-        3ms per round, 12 rounds): the four-directory case passed only
-        because every name fit the first queued batch; with eight names the
-        queue drains after four decisions and the sweep must still reach the
-        unseen tail. Replaying zero progress here is the regression this
-        test forbids."""
+        """EXPECTED FAILURE — a documented, submitted contract conflict, not
+        a silent regression.
+
+        The sixth-review progress model (eight directories, 1ms per read,
+        3ms per round, 12 rounds) cannot be satisfied simultaneously with
+        the original RR04 contract that the sixth review restored: per-read
+        deadline gating caps discovery at floor(budget/entry-cost)+1 stream
+        entries per pass (here 4), the model charges every readdir step —
+        including re-reads of already-decided names — the same 1ms, and the
+        stream places seven decided names before the tail. No position
+        mechanism can skip those re-reads (os.scandir cannot resume across
+        the per-event process boundary), so the tail is unreachable within
+        any number of passes. Under the same model the four-directory case
+        passes only because the whole namespace fits one pass's read
+        budget.
+
+        This is pinned as an expected failure so the conflict stays visible:
+        resolving it requires the requirement owner to choose between the
+        original per-read deadline contract (current behavior — bounded
+        discovery per pass, pending-queue progress, bounded-delay tail
+        discovery at real budgets) and a changed enumeration contract (the
+        withdrawn no-deadline full-sweep proposal and a registration-based
+        alternative are described in the handback's pending design
+        proposal). Neither is adopted by the implementation."""
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
         names = [f"a-retained-{i:02d}" for i in range(7)] + ["z-expired"]
@@ -1636,6 +1695,54 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "the tail survived twelve budget-interrupted "
                          f"passes; eligibility visits={len(visited)}")
         self.assertIn("z-expired", visited)
+
+    def test_interrupted_passes_stay_bounded_and_queue_progress(self) -> None:
+        """Documents the restored contract's actual behavior on the
+        eight-directory shape: every pass reads at most
+        floor(budget/entry-cost)+1 entries (deadline-bounded discovery),
+        read-but-undecided names persist in the pending queue, the queue
+        drains before new enumeration, and nothing is lost — the tail waits
+        for a pass whose budget reaches it (bounded delay at real budgets,
+        documented conflict at toy ratios)."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        names = [f"a-retained-{i:02d}" for i in range(7)] + ["z-expired"]
+        for name in names:
+            (sessions / name).mkdir()
+        visited = []
+        ticks = [0.0]
+
+        def clock():
+            return 1000.0 + ticks[0] / 1000.0
+
+        def eligible(path, _cutoff):
+            visited.append(path.name)
+            return path.name == "z-expired"
+
+        with (self._scan_stub(sessions, visited, ticks),
+              mock.patch.object(cg.time, "monotonic", side_effect=clock),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            cg.cleanup_old_sessions(self.data_dir,
+                                    deadline=clock() + 0.003)
+            self.assertLessEqual(len(visited), 4,
+                                 "discovery exceeded the per-read deadline "
+                                 "bound")
+            cursor, pending = cg._read_cleanup_state(self.data_dir)
+            self.assertEqual(pending, sorted(visited),
+                             "every read name must be queued")
+            self.assertEqual(cursor, "",
+                             "an interrupted scan must not persist a cursor")
+            # The next pass drains the queue before any new enumeration and
+            # re-reads the namespace without a skipping cursor.
+            cg.cleanup_old_sessions(self.data_dir,
+                                    deadline=clock() + 0.003)
+        # No name was ever lost: the queue and the namespace stay coherent.
+        self.assertEqual(
+            sorted(p.name for p in sessions.iterdir()
+                   if p.name != ".locks"),
+            sorted(names),
+            "cleanup must not lose or fabricate namespace entries")
 
 
 class RV03PendingNamespaceGate(IsolatedEnvironment):

@@ -22696,12 +22696,6 @@ def export_handoff(
 
 
 CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
-# Upper bound on names queued for adjudication in one enumeration pass. The
-# cap bounds the persisted pending queue (and its state file) and the
-# adjudication work per pass; names beyond the cap are re-read by a later
-# pass (each pass re-sweeps the whole namespace), costing time, never
-# correctness.
-CLEANUP_MAX_ENTRIES_PER_PASS = 512
 CLEANUP_CURSOR_NAME = ".cleanup-cursor"
 _CLEANUP_CURSOR_SCHEMA = "cg-cleanup-cursor/v1"
 _CLEANUP_CURSOR_MAX_NAME = 200
@@ -22812,39 +22806,46 @@ def cleanup_old_sessions(
 ) -> int:
     """Sweep expired v2 sessions only; legacy trees are never touched.
 
-    The three mechanisms, restated after the fifth review showed the
-    per-read deadline kept starving the tail behind a re-read prefix:
+    Restated after the sixth review (which restored the original
+    deadline-bounded-enumeration contract and proved the interim
+    "no-deadline full sweep" design unsound for non-lexical readdir orders):
 
-    - Enumeration is a FULL namespace sweep per pass. When the pass starts
-      with budget left, one `os.scandir` pass reads the whole v2 namespace
-      (names only; undecided names beyond the adjudication cursor are
-      accepted up to the queue cap). There is deliberately no deadline
-      check inside the sweep: this is an explicit, reviewable change to the
-      earlier "deadline-bounded enumeration" promise. The sweep's cost is
-      real I/O proportional to the namespace size — the same cost profile
-      as the 0.15.x full `sorted(iterdir)` enumeration — and it is NOT
-      covered by the deadline. The deadline protects the expensive part of
-      the sweep: adjudication (locks, stat, marker writes, deletion). A
-      pass that starts with an already-expired budget enumerates nothing
-      (zero requests). The queue cap bounds queued work per pass; names
-      beyond it are re-read by a later pass because every pass re-sweeps
-      the namespace, so no name is ever starved by the cap.
-    - Persisted progress: names read but left undecided by an exhausted
-      budget are kept in the pending queue inside the cursor state file and
-      survive the call boundary. The queue is progress data, not a scope
-      grant: every entry must pass the namespace-component gate at load and
-      is re-verified against the live v2 namespace object (real directory,
-      not a link, still present) before any lock or deletion, so a hostile
-      or corrupted state file can never point adjudication outside the v2
-      namespace or at a substituted object.
+    - Enumeration is deadline-bounded per read, as the original RR04
+      contract requires: every readdir step starts only while budget
+      remains, an already-expired budget requests nothing, and an
+      interrupted pass has read at most the budget allows. There is no
+      queue-cap truncation: the batch is bounded by the deadline alone, so
+      a pass with ample budget reads the whole namespace and the collected
+      batch is sorted ONLY after the read phase ends — a lexical watermark
+      can then represent actually-read work. The known consequence, submitted
+      for the requirement owner's decision and not self-adopted: under
+      toy-ratio models (budget buys fewer reads than the namespace has
+      entries, re-reads charged like fresh reads, readdir order placing the
+      tail behind the seen prefix), no implementation can both bound
+      enumeration per read and guarantee tail discovery in bounded passes;
+      see the handback's pending design proposal.
+    - Persisted progress and its soundness: names read but left undecided
+      are kept in the pending queue inside the cursor state file and
+      survive the call boundary. The lexical cursor is persisted ONLY when
+      its scan reached the end of the namespace — then every name at or
+      below it was actually read and decided, so skipping them later is
+      sound even when readdir order is not lexical. An interrupted scan
+      persists the pending queue with an empty cursor, and the next pass
+      re-reads the namespace without skipping anything (re-adjudicating
+      decided names costs bounded work, never correctness). The queue is
+      progress data, not a scope grant: every entry must pass the
+      namespace-component gate at load and is re-verified against the live
+      v2 namespace object (real directory, not a link, still present)
+      before any lock or deletion, so a hostile or corrupted state file can
+      never point adjudication outside the v2 namespace.
     - Fairness: the pending queue drains before any new sweep, so
       interrupted work is adjudicated before fresh enumeration queues more
-      names behind it.
+      names behind it; names the drain decided in this pass are not
+      re-queued by this pass's own sweep.
 
-    The cursor names the lexical-max entry whose decision is FINAL for this
-    sweep generation: retained, retired-marker, lock-busy and deleted
-    entries all advance it; only an entry whose processing was interrupted
-    stays unadjudicated in the queue. The current session and non-directory
+    The cursor names the lexical-max entry whose decision is FINAL for a
+    COMPLETED namespace scan: retained, retired-marker, lock-busy and
+    deleted entries all advance it. The current session and non-directory
     entries are decided per pass without moving the generation cursor. A
     pass that drains the queue and reads the namespace to its end completes
     the generation and resets the state so the next sweep re-decides
@@ -22895,7 +22896,7 @@ def cleanup_old_sessions(
         survivors: list[str] = []
         for index, name in enumerate(batch):
             if cursor and name <= cursor:
-                continue  # finally decided in an earlier pass
+                continue  # finally decided in an earlier completed scan
             if not budget_left():
                 survivors.extend(batch[index:])
                 return survivors
@@ -22932,24 +22933,31 @@ def cleanup_old_sessions(
                 pass  # lock busy: decided for this generation
             if decided:
                 last_completed = name
+                decided_now.add(name)
             if deleted:
                 removed += 1
         return survivors
 
     # Phase P — drain the persisted queue first (fairness: interrupted work
     # is adjudicated before fresh enumeration queues more).
+    decided_now: set[str] = set()
     pending = adjudicate(pending)
-    # Phase E — full namespace sweep (see the docstring for the honest cost
-    # statement and the reviewable change this encodes).
+    # Phase E — deadline-bounded enumeration (original RR04 contract): every
+    # readdir step starts only within the remaining budget, an expired
+    # budget requests nothing, and there is no queue-cap truncation — the
+    # batch is bounded by the deadline and sorted only after the read phase,
+    # so the lexical cursor derived from a COMPLETED scan represents
+    # actually-read work even when readdir order is not lexical.
     candidates: list[str] = []
     scan_done = False
-    if budget_left() and not pending:
+    queued = set(pending)
+    if budget_left():
         try:
             scanner = os.scandir(sessions)
             try:
                 while True:
-                    if len(candidates) >= CLEANUP_MAX_ENTRIES_PER_PASS:
-                        break  # queue cap: the remainder is re-read next pass
+                    if deadline is not None and time.monotonic() > deadline:
+                        break
                     try:
                         entry = next(scanner)
                     except StopIteration:
@@ -22958,10 +22966,13 @@ def cleanup_old_sessions(
                     name = entry.name
                     if name in {".locks", CLEANUP_CURSOR_NAME}:
                         continue
-                    # Skip against the LIVE watermark, not the entry cursor:
-                    # names the queue drain decided moments ago in this same
-                    # pass must not be re-accepted and re-queued.
-                    if last_completed and name <= last_completed:
+                    # A non-empty cursor was persisted only after a scan
+                    # that read the namespace to its end, so every name at
+                    # or below it was actually read and decided: skipping
+                    # them is sound regardless of readdir order.
+                    if cursor and name <= cursor:
+                        continue
+                    if name in queued or name in decided_now:
                         continue
                     if entry.is_symlink() or not entry.is_dir():
                         continue
@@ -22976,7 +22987,10 @@ def cleanup_old_sessions(
             pass
 
     # Phase P' — adjudicate the freshly swept batch; whatever the budget
-    # leaves undecided joins the persisted queue for the next pass.
+    # leaves undecided joins the persisted queue for the next pass. The
+    # lexical cursor is persisted only when this pass's scan reached the
+    # namespace end; an interrupted scan persists the queue with an empty
+    # cursor so no unread name can ever be skipped by a watermark.
     if candidates:
         candidates.sort()
         pending = adjudicate(candidates)
@@ -22987,7 +23001,7 @@ def cleanup_old_sessions(
             with contextlib.suppress(OSError):
                 _cleanup_cursor_path(root).unlink(missing_ok=True)
         return removed
-    _write_cleanup_state(root, last_completed, pending)
+    _write_cleanup_state(root, last_completed if scan_done else "", pending)
     return removed
 
 

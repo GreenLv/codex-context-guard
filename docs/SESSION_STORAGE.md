@@ -84,39 +84,46 @@ retention timestamp. Legacy trees and their timestamps are unchanged.
 
 Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
 budget, with budget, persisted progress and fairness as separate mechanisms
-(restated after review showed the earlier per-read deadline starved the tail
-behind a re-read prefix). Enumeration is a full namespace sweep per pass: one
-`os.scandir` pass reads the whole v2 namespace when the pass starts with
-budget left, and there is deliberately no deadline check inside that sweep —
-this is an explicit, reviewable change to the earlier deadline-bounded-
-enumeration design. The sweep's cost is real I/O proportional to the
-namespace size (the same cost profile as the 0.15.x full ordered
-enumeration) and is not covered by the deadline; the deadline protects the
-expensive part of the sweep — adjudication (locks, stat, marker writes,
-deletion) — and a pass that starts with an already-expired budget enumerates
-nothing. Swept names beyond the queue cap are re-read by a later pass
-because every pass re-sweeps the namespace, so no name is ever starved by
-the cap. Names read but left undecided by an exhausted budget are persisted
-in a content-free pending queue next to the resumption cursor, and the queue
-drains before any new sweep, so interrupted work survives the call boundary
-and is adjudicated before fresh enumeration queues more names behind it.
-The queue is progress data, not a scope grant: every queued name must be a
-plain encoded v2 session component (validated at load and re-verified
-against the live namespace object at adjudication — real directory, not a
-link, still present), so a hostile or corrupted state file can never point
-deletion outside the v2 namespace, and the legacy namespace stays read-only.
-A pass that drains the queue and reads the namespace to its end resets the
-generation so order changes and recreated names are re-decided. An
-interrupted deletion leaves a content-free marker so the next pass finishes
-it without re-deriving eligibility, and running out of budget returns safely
-with the remaining backlog in the queue for later passes. Directory links
-are unlinked without following them. A successful later write for a marked
-session — a real resume — retires the marker inside the same lifecycle lock,
-so historical cleanup eligibility can never delete a live session.
-Current-session persistence always runs before the sweep. UserPromptSubmit
-events are never collapsed: repeated (session, turn, prompt-bytes) shapes are
-recorded only as a bounded, text-free diagnostic observation, because the
-hook payload carries no per-message identity.
+(restated twice after review: the original per-read deadline starved the
+tail behind a re-read prefix, and the interim no-deadline full-sweep design
+was rejected as an unadopted contract change and withdrawn). Enumeration is
+deadline-bounded per read, as originally required: every readdir step starts
+only within the remaining budget, an already-expired budget requests
+nothing, and there is no queue-cap truncation — the batch is bounded by the
+deadline and sorted only after the read phase ends. The lexical resumption
+cursor is persisted only when its scan reached the end of the namespace
+(every name at or below it was then actually read and decided, so skipping
+them later is sound even when readdir order is not lexical); an interrupted
+scan persists the pending queue with an empty cursor and the next pass
+re-reads the namespace without skipping anything, re-adjudicating decided
+names at bounded cost rather than risking an unread name. Names read but
+left undecided are persisted in a content-free pending queue next to the
+cursor, and the queue drains before any new sweep, so interrupted work
+survives the call boundary and is adjudicated before fresh enumeration
+queues more names behind it; the drain's decisions are not re-queued by the
+same pass's own sweep. The queue is progress data, not a scope grant: every
+queued name must be a plain encoded v2 session component (validated at load
+and re-verified against the live namespace object at adjudication — real
+directory, not a link, still present), so a hostile or corrupted state file
+can never point deletion outside the v2 namespace, and the legacy namespace
+stays read-only. A pass that drains the queue and reads the namespace to
+its end resets the generation so order changes and recreated names are
+re-decided. Because discovery is deadline-bounded per read, a pass whose
+budget buys fewer reads than the namespace has entries discovers names
+across passes (bounded delay); the interaction of per-read gating with
+adversarial readdir orders at toy ratios is a documented open contract
+question submitted for the requirement owner's decision, not resolved by
+this implementation. An interrupted deletion leaves a content-free marker
+so the next pass finishes it without re-deriving eligibility, and running
+out of budget returns safely with the remaining backlog in the queue for
+later passes. Directory links are unlinked without following them. A
+successful later write for a marked session — a real resume — retires the
+marker inside the same lifecycle lock, so historical cleanup eligibility
+can never delete a live session. Current-session persistence always runs
+before the sweep. UserPromptSubmit events are never collapsed: repeated
+(session, turn, prompt-bytes) shapes are recorded only as a bounded,
+text-free diagnostic observation, because the hook payload carries no
+per-message identity.
 
 `test_session_namespace` covers routing, read-only legacy access, ordinary-tool
 and release boundaries, cleanup and resumed activity. `test_session_lock_protocol`
