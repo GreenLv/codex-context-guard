@@ -22697,6 +22697,8 @@ def export_handoff(
 
 CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
 CLEANUP_MAX_ENTRIES_PER_PASS = 512
+CLEANUP_SCAN_CAP = 4096
+CLEANUP_SCAN_CHECK_INTERVAL = 32
 CLEANUP_CURSOR_NAME = ".cleanup-cursor"
 
 
@@ -22763,70 +22765,100 @@ def cleanup_old_sessions(
     # decided per pass without moving the generation cursor.
     last_completed = cursor
     pass_done = False
+    # Phase E — bounded enumeration. The directory stream itself must never
+    # run unbounded: entries are collected lazily with the deadline checked
+    # every CLEANUP_SCAN_CHECK_INTERVAL entries and a hard scan cap. If the
+    # deadline passes (before or during the scan) or the scan cap is hit
+    # before the stream ends, the pass aborts without processing anything
+    # (no decision, no cursor movement) — the cost is bounded and the next
+    # pass retries. Phase P — sorted processing — only runs on a completed
+    # scan, where the lexical cursor's skip semantics are sound because the
+    # full remaining stream was observed.
+    candidates: list[str] = []
+    scan_complete = False
     try:
-        # Sorted enumeration: the cursor is lexical, so the visit order must
-        # be lexical too; sorting one namespace listing is bounded by the
-        # per-entry deadline and gives pass-to-pass consistent fairness.
-        for name in sorted(entry.name for entry in sessions.iterdir()):
-            if name <= cursor and cursor:
-                continue
-            if not budget_left() or scanned >= CLEANUP_MAX_ENTRIES_PER_PASS:
-                break
-            if name == ".locks" or name == CLEANUP_CURSOR_NAME:
-                continue
-            candidate = sessions / name
-            if candidate.is_symlink() or not candidate.is_dir():
-                continue
-            if current is not None and candidate.resolve() == current.resolve():
-                continue
-            scanned += 1
-            decided = True
-            deleted = False
-            try:
-                with session_lock(candidate, timeout=0.0):
-                    resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
-                    if resumable and _resume_retired_marker(candidate):
-                        # A successful later write for this session (a real
-                        # resume) invalidates the historical eligibility.
-                        with contextlib.suppress(OSError):
-                            (candidate / CLEANUP_PARTIAL_MARKER).unlink()
-                    elif not resumable and not _session_expired(candidate, cutoff):
-                        pass  # retained: decided for this generation
-                    else:
-                        if not resumable:
-                            atomic_write_text(
-                                candidate / CLEANUP_PARTIAL_MARKER,
-                                "eligible cleanup marker (content-free)\n",
-                            )
-                        _delete_session_tree_bounded(candidate, budget_left)
-                        deleted = True
-            except _CleanupBudgetExhausted:
-                decided = False
-                break
-            except (TimeoutError, OSError):
-                # A writer holds the lifecycle lock: skip this round; the
-                # session stays and a later pass re-reads eligibility. The
-                # entry still counts as decided for the generation cursor.
-                pass
-            if decided:
-                last_completed = name
-            if deleted:
-                removed += 1
-        else:
-            pass_done = True
+        if budget_left():
+            scanner = sessions.iterdir()
+            while True:
+                if not budget_left() or len(candidates) >= CLEANUP_SCAN_CAP:
+                    break
+                try:
+                    name = next(scanner).name
+                except StopIteration:
+                    scan_complete = True
+                    break
+                if name in {".locks", CLEANUP_CURSOR_NAME}:
+                    continue
+                candidates.append(name)
+                if len(candidates) % CLEANUP_SCAN_CHECK_INTERVAL == 0 \
+                        and not budget_left():
+                    break
     except OSError:
-        pass_done = True
-    if not pass_done:
-        # The pass ended mid-namespace (cap or budget): keep the resumption
-        # position at the last finally-decided entry.
-        if last_completed != cursor:
-            _write_cleanup_cursor(root, last_completed)
-    else:
-        # The full namespace was decided in this pass: the next sweep starts
-        # over so every session keeps being re-checked.
-        if cursor or last_completed:
-            with contextlib.suppress(OSError):
-                _cleanup_cursor_path(root).unlink(missing_ok=True)
+        pass
+    if scan_complete:
+        candidates.sort()
+        try:
+            for name in candidates:
+                if name <= cursor and cursor:
+                    continue
+                if not budget_left() or scanned >= CLEANUP_MAX_ENTRIES_PER_PASS:
+                    pass_done = False
+                    break
+                candidate = sessions / name
+                if candidate.is_symlink() or not candidate.is_dir():
+                    continue
+                if current is not None \
+                        and candidate.resolve() == current.resolve():
+                    continue
+                scanned += 1
+                decided = True
+                deleted = False
+                try:
+                    with session_lock(candidate, timeout=0.0):
+                        resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
+                        if resumable and _resume_retired_marker(candidate):
+                            # A successful later write for this session (a
+                            # real resume) invalidates the historical
+                            # eligibility.
+                            with contextlib.suppress(OSError):
+                                (candidate / CLEANUP_PARTIAL_MARKER).unlink()
+                        elif not resumable and not _session_expired(candidate, cutoff):
+                            pass  # retained: decided for this generation
+                        else:
+                            if not resumable:
+                                atomic_write_text(
+                                    candidate / CLEANUP_PARTIAL_MARKER,
+                                    "eligible cleanup marker (content-free)\n",
+                                )
+                            _delete_session_tree_bounded(candidate, budget_left)
+                            deleted = True
+                except _CleanupBudgetExhausted:
+                    decided = False
+                    break
+                except (TimeoutError, OSError):
+                    # A writer holds the lifecycle lock: skip this round; the
+                    # session stays and a later pass re-reads eligibility. The
+                    # entry still counts as decided for the generation cursor.
+                    pass
+                if decided:
+                    last_completed = name
+                if deleted:
+                    removed += 1
+            else:
+                pass_done = True
+        except OSError:
+            pass_done = True
+        if pass_done:
+            # The full remaining namespace was decided in this pass: the next
+            # sweep starts over so every session keeps being re-checked.
+            if cursor or last_completed:
+                with contextlib.suppress(OSError):
+                    _cleanup_cursor_path(root).unlink(missing_ok=True)
+            return removed
+    # The pass ended mid-namespace (budget, cap, or partial scan): keep the
+    # resumption position at the last finally-decided entry.
+    if last_completed != cursor:
+        _write_cleanup_cursor(root, last_completed)
     return removed
 
 

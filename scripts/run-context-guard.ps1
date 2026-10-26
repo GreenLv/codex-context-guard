@@ -75,7 +75,40 @@ if ($configuredInterpreter) {
         Write-HookTraceEnd 2
         exit 2
     }
-    if ($isHook -and -not $isSessionEnd) {
+    if ($isHook) {
+        # A replaced or non-Python executable can exit 0 with completely
+        # empty output, which would silently skip the Hook. Run the real
+        # runtime with stdout captured to a file and verify it produced a
+        # Hook wire result before re-emitting it; otherwise fail visibly.
+        $hookOut = New-TemporaryFile
+        $savedErrorActionPreference = $ErrorActionPreference
+        try {
+            # A nonzero runtime exit is an expected outcome that must reach
+            # the post-verification below, so keep native failures
+            # non-terminating inside this capture scope.
+            $ErrorActionPreference = "Continue"
+            if (-not $isSessionEnd) {
+                & $configuredInterpreter -S $runtime @runtimeArgs > $hookOut
+            } else {
+                & $configuredInterpreter $runtime @runtimeArgs > $hookOut
+            }
+            $hookExitCode = $LASTEXITCODE
+            if ($hookExitCode -eq 0 -and $hookOut.Length -eq 0) {
+                [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced no Hook result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
+                Write-HookTraceEnd 2
+                exit 2
+            }
+            Get-Content -LiteralPath $hookOut
+            Write-HookTraceEnd $hookExitCode
+            exit $hookExitCode
+        } finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+            Remove-Item -LiteralPath $hookOut -ErrorAction SilentlyContinue
+        }
+    }
+    # Non-hook CLI invocations keep the direct call (the operator sees the
+    # output directly); hook events took the verified path above.
+    if (-not $isSessionEnd) {
         & $configuredInterpreter -S $runtime @runtimeArgs
     } else {
         & $configuredInterpreter $runtime @runtimeArgs

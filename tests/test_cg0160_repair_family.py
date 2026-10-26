@@ -1190,7 +1190,9 @@ class F02ExportParentRace(IsolatedEnvironment):
         """RR01 matrix: when publication landed through a replaced path, the
         withdrawal verifies the entry still IS the published object; a
         path-only cleanup that would remove a different object is refused."""
-        state = self._state("withdraw")
+        # The call seeds the journaled session; the state is read through
+        # self.state() inside the assertions below, so no local binding.
+        self._state("withdraw")
         exports = self.project / "exports-withdraw"
         exports.mkdir()
         outside = self.root / "outside-withdraw"
@@ -1375,6 +1377,119 @@ class F01PrivatePathDomain(IsolatedEnvironment):
             "handoff-root.md")
         self.assertNotIn(str(self.os_home) + "/cache",
                          out.read_text(encoding="utf-8"))
+
+
+class RV03BoundedEnumeration(IsolatedEnvironment):
+    """RV-03: enumeration itself must respect the deadline and a hard scan
+    cap; processing only runs on a completed scan so lexical cursor
+    semantics stay sound. The 1ms-per-entry model is a boundedness probe,
+    not a real filesystem measurement."""
+
+    def test_expired_deadline_requests_nothing(self) -> None:
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        visited = []
+        original = Path.iterdir
+
+        def controlled(path):
+            if path == sessions:
+                def stream():
+                    for i in range(4096):
+                        visited.append(i)
+                        yield sessions / f"synthetic-{i:05d}"
+                return stream()
+            return original(path)
+
+        with mock.patch.object(Path, "iterdir", controlled):
+            removed = cg.cleanup_old_sessions(self.data_dir,
+                                              deadline=time.monotonic() - 1)
+        self.assertEqual(removed, 0)
+        self.assertEqual(visited, [],
+                         f"enumeration requested {len(visited)} entries "
+                         "after the deadline had already passed")
+
+    def test_deadline_during_enumeration_bounds_requests(self) -> None:
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        visited = []
+        clock = [100.0]
+        original = Path.iterdir
+
+        def controlled(path):
+            if path == sessions:
+                def stream():
+                    for i in range(4096):
+                        clock[0] += 0.001
+                        visited.append(i)
+                        yield sessions / f"synthetic-{i:05d}"
+                return stream()
+            return original(path)
+
+        with (mock.patch.object(Path, "iterdir", controlled),
+              mock.patch.object(cg.time, "monotonic",
+                                side_effect=lambda: clock[0])):
+            removed = cg.cleanup_old_sessions(self.data_dir, deadline=100.003)
+        self.assertEqual(removed, 0)
+        self.assertLessEqual(len(visited), 4,
+                             f"enumeration requested {len(visited)} entries "
+                             "under a 3ms budget (1ms-per-entry model)")
+
+
+class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
+    """RV-01: the configured interpreter route must not silently skip the
+    Hook when the configured path is replaced by a non-Python executable."""
+
+    def _write_conf(self, interpreter: str) -> Path:
+        # The launcher reads the conf from CODEX_HOME's private
+        # context-guard directory, not from the data root.
+        conf = Path(os.environ["CODEX_HOME"]) / "context-guard" / "interpreter.conf"
+        conf.parent.mkdir(parents=True, exist_ok=True)
+        conf.write_text(f"{interpreter}\n", encoding="utf-8")
+        conf.chmod(0o600)
+        return conf
+
+    def test_silent_skip_signature_fails_visibly(self) -> None:
+        """A replaced executable (/usr/bin/true) exits 0 with empty output —
+        the silent-skip signature. The launcher must fail with its own
+        distinct error instead of letting the Hook vanish."""
+        import subprocess
+
+        tree = Path(cg.__file__).resolve().parents[1]
+        launcher = tree / "scripts" / "run_context_guard.sh"
+        router = tree / "scripts" / "cg_hook.py"
+        self._write_conf("/usr/bin/true")
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit", "cwd": str(self.project),
+            "session_id": "replaced-exec", "turn_id": "t1",
+            "prompt": "Repair demo.py and run tests."})
+        proc = subprocess.run(
+            ["/bin/sh", str(launcher), "hook", "UserPromptSubmit"],
+            input=payload, capture_output=True, text=True, env=env, timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("not a working Context Guard runtime", proc.stderr)
+        self.assertEqual(proc.stdout, "", "silent skip left empty stdout")
+
+    def test_real_interpreter_passes_the_guard(self) -> None:
+        """The valid configured interpreter still passes the same check."""
+        import subprocess
+        import sys
+
+        tree = Path(cg.__file__).resolve().parents[1]
+        launcher = tree / "scripts" / "run_context_guard.sh"
+        self._write_conf(sys.executable)
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit", "cwd": str(self.project),
+            "session_id": "valid-exec", "turn_id": "t1",
+            "prompt": "Repair demo.py and run tests."})
+        proc = subprocess.run(
+            ["/bin/sh", str(launcher), "hook", "UserPromptSubmit"],
+            input=payload, capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        self.assertNotEqual(proc.stdout, "", "valid hook produced no output")
 
 
 class D01DocumentationContract(IsolatedEnvironment):

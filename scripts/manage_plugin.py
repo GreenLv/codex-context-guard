@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import contextlib
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -496,6 +497,12 @@ def write_distribution_manifest(source_root: Path) -> Path:
         # exclusion applies to unlisted files inside the areas.
         if candidate.is_file() and is_plain_object(candidate):
             observed.add(name)
+    # The manifest file is a distribution member but cannot enumerate itself:
+    # dropping it here separates "the manifest file exists" from "a genuinely
+    # new distribution file", so ordinary regeneration and digest updates of
+    # already-listed files work while truly new files still require explicit
+    # adoption.
+    observed.discard(DISTRIBUTION_MANIFEST_RELATIVE)
     untracked = sorted(observed - listed)
     if untracked and probe.is_file():
         raise RuntimeError(
@@ -1782,17 +1789,58 @@ def _run_install_transaction(
 INTERPRETER_CONF_RELATIVE = Path("context-guard") / "interpreter.conf"
 
 
-def bind_gui_interpreter(codex_home: Path) -> Path:
-    """Record the verified interpreter for GUI launches under this HOME.
+def _reject_unsafe_binding_component(component: Path, label: str) -> None:
+    """Refuse symlink/reparse/non-directory components before any write.
 
-    The installer itself runs on a verified Python 3.10+; binding its own
-    resolved executable gives a GUI host whose PATH lacks the installed
-    Python a stable, HOME-scoped discovery source that the plain shell and
-    PowerShell launchers can read before any Python runs. The binding is
-    verified by actually executing the interpreter before it is written,
-    and re-verified by the launchers on every Hook start, so a moved or
-    removed interpreter is never treated as current fact.
+    The binding must live inside the selected HOME as real private state;
+    a link anywhere on the conf chain could redirect writes outside the
+    HOME or clobber an external object.
     """
+    info = component.lstat()
+    if component.is_symlink() or getattr(info, "st_reparse_tag", 0):
+        raise RuntimeError(
+            f"refusing to write the GUI interpreter binding through a link "
+            f"or reparse point ({label}: {component}); remove the link and "
+            "re-run --apply")
+    if not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(
+            f"refusing to write the GUI interpreter binding: {label} "
+            f"({component}) is not a real directory")
+
+
+def prepare_gui_interpreter_binding(codex_home: Path) -> tuple[Path, str]:
+    """Validate and create everything the binding needs, without writing it.
+
+    Runs before the installation transaction so an unsafe binding location
+    refuses the install instead of leaving a mixed state (installation done,
+    binding impossible). Verifies the interpreter by executing it and
+    returns the conf path plus the single-line content for the caller to
+    write atomically afterwards.
+    """
+    if not codex_home.exists() and not codex_home.is_symlink():
+        codex_home.mkdir(parents=True, exist_ok=True)
+    if codex_home.is_symlink():
+        raise RuntimeError(
+            "refusing to bind the GUI interpreter through a symlinked "
+            f"CODEX_HOME ({codex_home})")
+    _reject_unsafe_binding_component(codex_home, "CODEX_HOME")
+    private_dir = codex_home / INTERPRETER_CONF_RELATIVE.parent
+    if private_dir.exists() or private_dir.is_symlink():
+        _reject_unsafe_binding_component(private_dir, "context-guard data dir")
+    else:
+        private_dir.mkdir(mode=0o700)
+    os.chmod(private_dir, 0o700)
+    conf_path = codex_home / INTERPRETER_CONF_RELATIVE
+    if conf_path.exists() or conf_path.is_symlink():
+        info = conf_path.lstat()
+        if conf_path.is_symlink() or getattr(info, "st_reparse_tag", 0):
+            raise RuntimeError(
+                f"refusing to overwrite the interpreter binding through a "
+                f"link ({conf_path}); remove the link and re-run --apply")
+        if not stat.S_ISREG(info.st_mode):
+            raise RuntimeError(
+                f"refusing to write the interpreter binding: {conf_path} "
+                "is not a regular file")
     interpreter = Path(sys.executable).resolve()
     if not interpreter.is_file():
         raise RuntimeError(
@@ -1805,12 +1853,39 @@ def bind_gui_interpreter(codex_home: Path) -> Path:
         raise RuntimeError(
             f"cannot bind the GUI interpreter: {interpreter} does not "
             "provide Python 3.10+")
-    conf_path = codex_home / INTERPRETER_CONF_RELATIVE
-    conf_path.parent.mkdir(parents=True, exist_ok=True)
-    conf_path.write_text(f"{interpreter}\n", encoding="utf-8")
-    if os.name != "nt":
-        os.chmod(conf_path, 0o600)
-    print(f"[OK] bound GUI interpreter for this HOME: {interpreter}")
+    content = f"{interpreter}\n"
+    return conf_path, content
+
+
+def write_gui_interpreter_binding(conf_path: Path, content: str) -> None:
+    """Atomically publish the verified binding within its private directory.
+
+    The write uses a same-directory temporary file with an exclusive create,
+    fsync, and an atomic replace, so a crash never leaves a partial binding
+    and no path component is ever followed out of the verified private
+    directory. Failures clean up the temporary and propagate.
+    """
+    fd, temp_name = tempfile.mkstemp(
+        dir=conf_path.parent, prefix=".interpreter.conf.")
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o600)
+        os.replace(temp, conf_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            temp.unlink()
+        raise
+
+
+def bind_gui_interpreter(codex_home: Path) -> Path:
+    """Prepare and publish the GUI interpreter binding for this HOME."""
+    conf_path, content = prepare_gui_interpreter_binding(codex_home)
+    write_gui_interpreter_binding(conf_path, content)
+    print(f"[OK] bound GUI interpreter for this HOME: {content.strip()}")
     return conf_path
 
 
@@ -1863,10 +1938,16 @@ def main() -> int:
         if args.apply:
             # Same-version immutability is decided before the marketplace
             # staging or registration can change, so a rejected drift never
-            # leaves a mixed-identity installation behind.
+            # leaves a mixed-identity installation behind. The GUI
+            # interpreter binding location is validated just as early: an
+            # unsafe binding location refuses the install instead of
+            # completing it and then failing to bind.
             same_version_drift_preflight(args.codex, repo_root, codex_home)
+            conf_path, interpreter_line = prepare_gui_interpreter_binding(
+                codex_home)
             _run_install_transaction(args.codex, repo_root, codex_home)
-            bind_gui_interpreter(codex_home)
+            write_gui_interpreter_binding(conf_path, interpreter_line)
+            print(f"[OK] bound GUI interpreter for this HOME: {interpreter_line.strip()}")
         else:
             ensure_marketplace(args.codex, repo_root, codex_home, args.apply)
             ensure_plugin(args.codex, repo_root, codex_home, args.apply)

@@ -56,6 +56,31 @@ if [ -n "$configured" ]; then
         printf '%s\n' "Context Guard interpreter configuration is missing or not executable: $configured. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
         exit 2
     fi
+    if [ "${1:-}" = "hook" ]; then
+        # A replaced or non-Python executable can exit 0 with completely
+        # empty output, which would silently skip the Hook. Run the real
+        # runtime with stdout captured and verify it produced a Hook wire
+        # result before re-emitting it; otherwise fail visibly instead of
+        # skipping. stdin passes through unchanged and stderr stays direct.
+        hook_out=$(mktemp "${TMPDIR:-/tmp}/cg-hook-out.XXXXXX") || {
+            printf '%s\n' "Context Guard could not create a temporary file for the configured interpreter output." >&2
+            exit 2
+        }
+        hook_exit=0
+        if [ "$router" -eq 1 ]; then
+            "$configured" -S "$target" "$@" >"$hook_out" || hook_exit=$?
+        else
+            "$configured" "$target" "$@" >"$hook_out" || hook_exit=$?
+        fi
+        if [ "$hook_exit" -eq 0 ] && [ ! -s "$hook_out" ]; then
+            rm -f "$hook_out"
+            printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced no Hook result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
+            exit 2
+        fi
+        cat "$hook_out"
+        rm -f "$hook_out"
+        exit "$hook_exit"
+    fi
     if [ "$router" -eq 1 ]; then
         exec "$configured" -S "$target" "$@"
     fi
