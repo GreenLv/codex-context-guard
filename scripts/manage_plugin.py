@@ -1841,27 +1841,49 @@ def prepare_gui_interpreter_binding(
         _reject_unsafe_binding_component(private_dir, "context-guard data dir")
     else:
         private_dir.mkdir(mode=0o700)
-    os.chmod(private_dir, 0o700)
     if os.name == "nt":
         # Windows has no directory descriptor support in Python; the anchor
-        # is the lstat identity of the first-validated directory and every
-        # later boundary re-verifies the path against it. Native Windows
-        # behaviour remains a separate acceptance gate.
+        # is the lstat identity of the first-validated directory. The mode
+        # side effect happens only after the identity is captured and is
+        # re-verified on both sides of the call, so a substituted path
+        # cannot be chmod'ed through. Native Windows behaviour remains a
+        # separate acceptance gate.
         anchor_info = private_dir.lstat()
         if private_dir.is_symlink() or getattr(anchor_info, "st_reparse_tag", 0):
             raise RuntimeError(
                 "refusing to bind the GUI interpreter: the context-guard "
                 f"data dir ({private_dir}) became a link or reparse point")
         dir_identity = (anchor_info.st_dev, anchor_info.st_ino)
+        if (private_dir.lstat().st_mode & 0o777) != 0o700:
+            os.chmod(private_dir, 0o700)
+        recheck = private_dir.lstat()
+        if private_dir.is_symlink() or getattr(recheck, "st_reparse_tag", 0) \
+                or (recheck.st_dev, recheck.st_ino) != dir_identity:
+            raise RuntimeError(
+                "refusing to bind the GUI interpreter: the context-guard "
+                f"data dir ({private_dir}) changed during mode handling")
         dir_fd = -1
     else:
-        # Anchor the first-validated object with a descriptor: every later
-        # operation is scoped to this object, so substituting the text path
-        # after this point cannot redirect or re-anchor the write.
+        # Anchor the first-validated object with a descriptor BEFORE any
+        # permission side effect: the mode is set on the anchored object via
+        # fchmod, never through the (substitutable) text path. The path is
+        # re-verified against the descriptor right after the open, so a
+        # substitution that happened before the open is refused here and no
+        # object outside HOME is ever chmod'ed.
         dir_fd = os.open(
             private_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             opened = os.fstat(dir_fd)
+            path_info = private_dir.lstat()
+            if (private_dir.is_symlink()
+                    or not stat.S_ISDIR(path_info.st_mode)
+                    or (path_info.st_dev, path_info.st_ino)
+                    != (opened.st_dev, opened.st_ino)):
+                raise RuntimeError(
+                    "refusing to bind the GUI interpreter: the context-guard "
+                    f"data dir ({private_dir}) does not resolve to the "
+                    "validated directory object")
+            os.fchmod(dir_fd, 0o700)
             dir_identity = (opened.st_dev, opened.st_ino)
         except BaseException:
             os.close(dir_fd)

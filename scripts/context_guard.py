@@ -22697,18 +22697,46 @@ def export_handoff(
 
 CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
 # Upper bound on names queued for adjudication in one enumeration pass. The
-# cap bounds the persisted pending queue (and its state file) no matter how
-# large the namespace grows; unqueued names are simply re-read by a later
-# pass, costing resumption position, never correctness.
+# cap bounds the persisted pending queue (and its state file) and the
+# adjudication work per pass; names beyond the cap are re-read by a later
+# pass (each pass re-sweeps the whole namespace), costing time, never
+# correctness.
 CLEANUP_MAX_ENTRIES_PER_PASS = 512
 CLEANUP_CURSOR_NAME = ".cleanup-cursor"
 _CLEANUP_CURSOR_SCHEMA = "cg-cleanup-cursor/v1"
 _CLEANUP_CURSOR_MAX_NAME = 200
 _CLEANUP_CURSOR_MAX_PENDING = 4096
+_CLEANUP_COMPONENT_RESERVED = frozenset({
+    ".locks", CLEANUP_CURSOR_NAME, CLEANUP_PARTIAL_MARKER, ".", "..",
+})
+# The encoded session-directory name domain: `safe_session_id` maps every
+# byte outside [A-Za-z0-9._-] to a "~xx" escape, so a legitimate v2 session
+# directory name can only contain these characters. Anything else — path
+# separators on any platform, whitespace, absolute or parent-relative
+# shapes — is not a namespace component and can never be queued or
+# adjudicated.
+_CLEANUP_COMPONENT_ALLOWED = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-~")
 
 
 class _CleanupBudgetExhausted(Exception):
     """Internal: the SessionEnd cleanup deadline passed mid-pass."""
+
+
+def _is_session_component(name: object) -> bool:
+    """True when `name` is a permissible v2 session directory component.
+
+    This is the single namespace gate for every queued or cursor name: the
+    queue is progress data, not a scope grant, so a hostile or corrupted
+    state file can never point adjudication outside the v2 namespace — a
+    name that is not a plain encoded component is simply not a session.
+    """
+    return (
+        isinstance(name, str)
+        and 0 < len(name) <= _CLEANUP_CURSOR_MAX_NAME
+        and name not in _CLEANUP_COMPONENT_RESERVED
+        and not any(ch not in _CLEANUP_COMPONENT_ALLOWED for ch in name)
+    )
 
 
 def _cleanup_cursor_path(root: Path) -> Path:
@@ -22718,10 +22746,15 @@ def _cleanup_cursor_path(root: Path) -> Path:
 def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
     """Load persisted resumption state: (cursor, pending queue).
 
-    Accepts the current JSON schema and the legacy plain-text cursor. A
-    failed, corrupted or hostile read only costs resumption position and
-    queued names, never correctness: every queued name is re-adjudicated
-    through the full eligibility check before any deletion.
+    Accepts the current JSON schema and the legacy plain-text cursor. The
+    queue is untrusted control data: every entry must pass the namespace
+    component gate or it is dropped at load, and the cursor must be a valid
+    component too (it only feeds lexical comparisons, but a hostile cursor
+    could otherwise suppress names). A failed, corrupted or hostile read
+    only costs resumption position and queued names, never correctness:
+    every surviving queued name is re-checked against the live namespace
+    object at adjudication and passes the full eligibility check before any
+    deletion.
     """
     try:
         raw = _cleanup_cursor_path(root).read_text(encoding="utf-8").strip()
@@ -22740,17 +22773,16 @@ def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
                 and len(cursor) <= _CLEANUP_CURSOR_MAX_NAME
                 and isinstance(pending, list)
                 and len(pending) <= _CLEANUP_CURSOR_MAX_PENDING
-                and all(
-                    isinstance(name, str)
-                    and 0 < len(name) <= _CLEANUP_CURSOR_MAX_NAME
-                    for name in pending
-                )
             ):
-                return cursor, sorted(set(pending))
+                safe_cursor = cursor if _is_session_component(cursor) else ""
+                safe_pending = sorted({
+                    name for name in pending if _is_session_component(name)
+                })
+                return safe_cursor, safe_pending
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass
         return "", []
-    return (raw if len(raw) <= _CLEANUP_CURSOR_MAX_NAME else ""), []
+    return ((raw if _is_session_component(raw) else ""), [])
 
 
 def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
@@ -22780,33 +22812,43 @@ def cleanup_old_sessions(
 ) -> int:
     """Sweep expired v2 sessions only; legacy trees are never touched.
 
-    Budget, persisted progress and fairness are three separate mechanisms:
+    The three mechanisms, restated after the fifth review showed the
+    per-read deadline kept starving the tail behind a re-read prefix:
 
-    - Budget: the deadline gates accepting each NEW candidate (checked at
-      the decision point, so at most one already-read entry can land past
-      it) and every adjudication step. Re-reading already-recorded names —
-      lexically at or below the cursor, or already queued — is bounded by
-      the namespace itself, not by the deadline: a per-read deadline on
-      those bookkeeping reads lets the re-read of a growing decided prefix
-      consume every pass without ever reaching new work, which is exactly
-      the starvation this sweep forbids.
-    - Persisted progress: names enumerated but not yet adjudicated are kept
-      in the pending queue inside the cursor state file, so an interrupted
-      pass never re-consumes its budget re-deciding the same prefix and
-      queued work survives the call boundary.
-    - Fairness: the pending queue is drained before any new enumeration,
-      so earlier interrupted work is adjudicated before fresh scans queue
-      more names behind it.
+    - Enumeration is a FULL namespace sweep per pass. When the pass starts
+      with budget left, one `os.scandir` pass reads the whole v2 namespace
+      (names only; undecided names beyond the adjudication cursor are
+      accepted up to the queue cap). There is deliberately no deadline
+      check inside the sweep: this is an explicit, reviewable change to the
+      earlier "deadline-bounded enumeration" promise. The sweep's cost is
+      real I/O proportional to the namespace size — the same cost profile
+      as the 0.15.x full `sorted(iterdir)` enumeration — and it is NOT
+      covered by the deadline. The deadline protects the expensive part of
+      the sweep: adjudication (locks, stat, marker writes, deletion). A
+      pass that starts with an already-expired budget enumerates nothing
+      (zero requests). The queue cap bounds queued work per pass; names
+      beyond it are re-read by a later pass because every pass re-sweeps
+      the namespace, so no name is ever starved by the cap.
+    - Persisted progress: names read but left undecided by an exhausted
+      budget are kept in the pending queue inside the cursor state file and
+      survive the call boundary. The queue is progress data, not a scope
+      grant: every entry must pass the namespace-component gate at load and
+      is re-verified against the live v2 namespace object (real directory,
+      not a link, still present) before any lock or deletion, so a hostile
+      or corrupted state file can never point adjudication outside the v2
+      namespace or at a substituted object.
+    - Fairness: the pending queue drains before any new sweep, so
+      interrupted work is adjudicated before fresh enumeration queues more
+      names behind it.
 
     The cursor names the lexical-max entry whose decision is FINAL for this
     sweep generation: retained, retired-marker, lock-busy and deleted
     entries all advance it; only an entry whose processing was interrupted
     stays unadjudicated in the queue. The current session and non-directory
     entries are decided per pass without moving the generation cursor. A
-    pass completes a generation when the queue is drained and the namespace
-    scan reached its end; the cursor state then resets so the next
-    generation re-decides everything (order changes and recreated names
-    included).
+    pass that drains the queue and reads the namespace to its end completes
+    the generation and resets the state so the next sweep re-decides
+    everything (order changes and recreated names included).
 
     Candidate locks are attempted without blocking. A session already
     judged eligible is marked before deletion starts; a partial deletion
@@ -22828,6 +22870,25 @@ def cleanup_old_sessions(
     last_completed = cursor
     pending = sorted(set(pending))
 
+    def live_v2_directory(name: str) -> Path | None:
+        """The candidate path only when `name` still names a real v2
+        namespace object: a plain encoded component that resolves to a real
+        directory directly under the v2 root, not a link. Anything else —
+        stale, missing, replaced by a link — is decided (dropped) without
+        touching anything."""
+        if not _is_session_component(name):
+            return None
+        candidate = sessions / name
+        try:
+            info = candidate.lstat()
+        except OSError:
+            return None
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        if candidate.is_symlink():
+            return None
+        return candidate
+
     def adjudicate(batch: list[str]) -> list[str]:
         """Decide a lexically sorted batch; return the undecided remainder."""
         nonlocal removed, scanned, last_completed
@@ -22838,7 +22899,9 @@ def cleanup_old_sessions(
             if not budget_left():
                 survivors.extend(batch[index:])
                 return survivors
-            candidate = sessions / name
+            candidate = live_v2_directory(name)
+            if candidate is None:
+                continue  # stale, missing, or not a real v2 directory
             if current is not None and candidate.resolve() == current.resolve():
                 continue
             scanned += 1
@@ -22876,14 +22939,8 @@ def cleanup_old_sessions(
     # Phase P — drain the persisted queue first (fairness: interrupted work
     # is adjudicated before fresh enumeration queues more).
     pending = adjudicate(pending)
-    # Phase E — bounded enumeration with os.scandir (incremental readdir on
-    # POSIX; Path.iterdir would eagerly listdir the whole namespace). Names
-    # at or below the cursor are bookkeeping re-reads, skipped without
-    # consulting the deadline; the deadline gates only accepting new
-    # candidates, per decision. The pending cap bounds queue growth; a
-    # capped, interrupted, or budget-exhausted pass leaves unqueued names to
-    # a later pass — bounded delay, never lost work, and no deletion ever
-    # happens without the full eligibility check.
+    # Phase E — full namespace sweep (see the docstring for the honest cost
+    # statement and the reviewable change this encodes).
     candidates: list[str] = []
     scan_done = False
     if budget_left() and not pending:
@@ -22891,15 +22948,8 @@ def cleanup_old_sessions(
             scanner = os.scandir(sessions)
             try:
                 while True:
-                    # The deadline gates STARTING the next readdir step; a
-                    # step already begun completes and its new candidate is
-                    # accepted, so the overrun is bounded to one entry per
-                    # pass. Without this pre-read placement, the re-read of
-                    # a growing decided prefix would consume every pass
-                    # before new work could ever start — the starvation
-                    # this sweep forbids.
-                    if deadline is not None and time.monotonic() > deadline:
-                        break
+                    if len(candidates) >= CLEANUP_MAX_ENTRIES_PER_PASS:
+                        break  # queue cap: the remainder is re-read next pass
                     try:
                         entry = next(scanner)
                     except StopIteration:
@@ -22908,14 +22958,15 @@ def cleanup_old_sessions(
                     name = entry.name
                     if name in {".locks", CLEANUP_CURSOR_NAME}:
                         continue
-                    if cursor and name <= cursor:
+                    # Skip against the LIVE watermark, not the entry cursor:
+                    # names the queue drain decided moments ago in this same
+                    # pass must not be re-accepted and re-queued.
+                    if last_completed and name <= last_completed:
                         continue
                     if entry.is_symlink() or not entry.is_dir():
                         continue
                     if current is not None and Path(entry.path).resolve() == current.resolve():
                         continue
-                    if len(candidates) >= CLEANUP_MAX_ENTRIES_PER_PASS:
-                        break  # queue cap: remainder deferred to a later pass
                     candidates.append(name)
             except OSError:
                 pass
@@ -22924,8 +22975,8 @@ def cleanup_old_sessions(
         except OSError:
             pass
 
-    # Phase P' — adjudicate the freshly enumerated batch; whatever the
-    # budget leaves undecided joins the persisted queue for the next pass.
+    # Phase P' — adjudicate the freshly swept batch; whatever the budget
+    # leaves undecided joins the persisted queue for the next pass.
     if candidates:
         candidates.sort()
         pending = adjudicate(candidates)

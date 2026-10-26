@@ -1044,6 +1044,81 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                              str(Path(sys.executable).resolve()))
             self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
 
+    def test_mode_side_effect_never_follows_a_substituted_path(self) -> None:
+        """RV-02 (sixth review, P2): the 0700 mode is a side effect and must
+        land on the first-validated directory object, never on whatever the
+        text path names at that moment. A directory substituted before the
+        permission boundary must leave the external object's mode untouched
+        (0755 stays 0755) and the binding must be refused."""
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory(prefix="binding-anchor-mode-") as tmp:
+            root = Path(tmp).resolve()
+            home = root / "home"
+            home.mkdir()
+            outside = root / "unrelated-directory"
+            outside.mkdir(mode=0o755)
+            outside.chmod(0o755)
+            sentinel = outside / "interpreter.conf"
+            sentinel.write_text("SYNTHETIC-EXTERNAL-CONF\n", encoding="utf-8")
+            sentinel.chmod(0o640)
+            original_fchmod = manager.os.fchmod
+            injections = []
+
+            def swap_at_mode_boundary(fd, mode, *args, **kwargs):
+                if not injections:
+                    parent = home / "context-guard"
+                    parent.rename(home / "context-guard-original")
+                    parent.symlink_to(outside, target_is_directory=True)
+                    injections.append(True)
+                return original_fchmod(fd, mode, *args, **kwargs)
+
+            error = None
+            with mock.patch.object(manager.os, "fchmod",
+                                   side_effect=swap_at_mode_boundary):
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        manager.bind_gui_interpreter(home)
+                except (OSError, RuntimeError) as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+            self.assertTrue(injections,
+                            "the mode boundary was never reached")
+            self.assertIsNotNone(error, "the substitution was not refused")
+            self.assertEqual(outside.stat().st_mode & 0o777, 0o755,
+                             "the external directory mode was modified")
+            self.assertEqual(sentinel.read_text(),
+                             "SYNTHETIC-EXTERNAL-CONF\n")
+            self.assertEqual(sentinel.stat().st_mode & 0o777, 0o640)
+
+    def test_no_path_chmod_runs_on_the_private_directory(self) -> None:
+        """The POSIX route must never chmod through the substitutable text
+        path: the mode lands on the anchored descriptor (fchmod), so a
+        substitution between validation and the mode call cannot redirect
+        the side effect."""
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory(prefix="binding-anchor-fchmod-") as tmp:
+            home = Path(tmp).resolve() / "home"
+            chmod_paths = []
+            original_chmod = manager.os.chmod
+
+            def spy_chmod(path, mode, *args, **kwargs):
+                chmod_paths.append(str(path))
+                return original_chmod(path, mode, *args, **kwargs)
+
+            with mock.patch.object(manager.os, "chmod", side_effect=spy_chmod):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    conf = manager.bind_gui_interpreter(home)
+            self.assertFalse(
+                [p for p in chmod_paths
+                 if Path(p).name == "context-guard"],
+                "a path-based chmod ran on the private directory")
+            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                (home / "context-guard").stat().st_mode & 0o777, 0o700)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -83,21 +83,34 @@ queued writer proceeds only after release. Resumed v2 activity clears the old
 retention timestamp. Legacy trees and their timestamps are unchanged.
 
 Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
-budget, with budget, persisted progress and fairness as separate mechanisms.
-Enumeration scans names incrementally; names already decided for the current
-generation (lexically at or below the cursor) or already queued are bookkeeping
-re-reads bounded by the namespace itself, while the deadline gates starting
-each new read and every adjudication decision, so at most one in-flight read
-can land past it. Names enumerated but left undecided by an exhausted budget
-are persisted in a content-free pending queue next to the resumption cursor,
-and the queue drains before any new enumeration, so an interrupted pass never
-re-consumes its budget on the same prefix and queued work survives the call
-boundary. A pass that drains the queue and reads the namespace to its end
-resets the generation so order changes and recreated names are re-decided. An
-interrupted deletion leaves a content-free marker so the next pass finishes it
-without re-deriving eligibility, and running out of budget returns safely with
-the remaining backlog in the queue for later passes. Directory links are
-unlinked without following them. A successful later write for a marked
+budget, with budget, persisted progress and fairness as separate mechanisms
+(restated after review showed the earlier per-read deadline starved the tail
+behind a re-read prefix). Enumeration is a full namespace sweep per pass: one
+`os.scandir` pass reads the whole v2 namespace when the pass starts with
+budget left, and there is deliberately no deadline check inside that sweep —
+this is an explicit, reviewable change to the earlier deadline-bounded-
+enumeration design. The sweep's cost is real I/O proportional to the
+namespace size (the same cost profile as the 0.15.x full ordered
+enumeration) and is not covered by the deadline; the deadline protects the
+expensive part of the sweep — adjudication (locks, stat, marker writes,
+deletion) — and a pass that starts with an already-expired budget enumerates
+nothing. Swept names beyond the queue cap are re-read by a later pass
+because every pass re-sweeps the namespace, so no name is ever starved by
+the cap. Names read but left undecided by an exhausted budget are persisted
+in a content-free pending queue next to the resumption cursor, and the queue
+drains before any new sweep, so interrupted work survives the call boundary
+and is adjudicated before fresh enumeration queues more names behind it.
+The queue is progress data, not a scope grant: every queued name must be a
+plain encoded v2 session component (validated at load and re-verified
+against the live namespace object at adjudication — real directory, not a
+link, still present), so a hostile or corrupted state file can never point
+deletion outside the v2 namespace, and the legacy namespace stays read-only.
+A pass that drains the queue and reads the namespace to its end resets the
+generation so order changes and recreated names are re-decided. An
+interrupted deletion leaves a content-free marker so the next pass finishes
+it without re-deriving eligibility, and running out of budget returns safely
+with the remaining backlog in the queue for later passes. Directory links
+are unlinked without following them. A successful later write for a marked
 session — a real resume — retires the marker inside the same lifecycle lock,
 so historical cleanup eligibility can never delete a live session.
 Current-session persistence always runs before the sweep. UserPromptSubmit

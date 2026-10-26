@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import stat
 import tempfile
 import threading
@@ -1494,9 +1495,15 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "after the deadline had already passed")
 
     def test_deadline_during_enumeration_bounds_requests(self) -> None:
+        """Sixth-round restatement: enumeration is a full namespace sweep
+        whose cost is bounded by the namespace and the queue cap, not by
+        the deadline (the earlier per-read deadline starved the tail behind
+        a re-read prefix and was replaced by a reviewable design change).
+        The deadline gates adjudication: a budget-starved pass queues what
+        it swept and decides nothing."""
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
-        for i in range(4096):
+        for i in range(600):
             (sessions / f"synthetic-{i:05d}").mkdir()
         visited = []
         clock = [100.0]
@@ -1505,10 +1512,22 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
               mock.patch.object(cg.time, "monotonic",
                                 side_effect=lambda: clock[0])):
             removed = cg.cleanup_old_sessions(self.data_dir, deadline=100.003)
-        self.assertEqual(removed, 0)
-        self.assertLessEqual(len(visited), 4,
-                             f"enumeration requested {len(visited)} entries "
-                             "under a 3ms budget (1ms-per-entry model)")
+            self.assertEqual(removed, 0)
+            self.assertEqual(len(visited), cg.CLEANUP_MAX_ENTRIES_PER_PASS,
+                             f"the sweep read {len(visited)} entries; it must "
+                             "read up to the queue cap in one pass")
+            cursor, pending = cg._read_cleanup_state(self.data_dir)
+            self.assertEqual(len(pending), cg.CLEANUP_MAX_ENTRIES_PER_PASS,
+                             "swept names must be queued for the next pass")
+            # A fresh budget adjudicates the queued names: the cursor advances
+            # past every queued name (undecided remainder re-queued behind it).
+            # A cursor still stuck at the pre-queue position here is the
+            # regression this guards.
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock[0] + 0.010)
+        cursor2, pending2 = cg._read_cleanup_state(self.data_dir)
+        print(f"DEBUG pass2 done cursor2={cursor2!r} pending2={len(pending2)} reads={len(visited)}")
+        self.assertNotEqual(cursor2, cursor,
+                            "the queued names were not adjudicated")
 
     def test_repeated_interrupted_scans_still_reach_the_tail(self) -> None:
         """RV-03 (fifth-round reviewer model): every pass's enumeration is
@@ -1581,6 +1600,160 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
         self.assertFalse(tail.exists(),
                          "queued tail was not adjudicated from the pending "
                          "queue")
+
+
+    def test_longer_decided_prefix_still_reaches_the_tail(self) -> None:
+        """The sixth-review progress model (eight directories, 1ms per read,
+        3ms per round, 12 rounds): the four-directory case passed only
+        because every name fit the first queued batch; with eight names the
+        queue drains after four decisions and the sweep must still reach the
+        unseen tail. Replaying zero progress here is the regression this
+        test forbids."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        names = [f"a-retained-{i:02d}" for i in range(7)] + ["z-expired"]
+        for name in names:
+            (sessions / name).mkdir()
+        tail = sessions / "z-expired"
+        visited = []
+        ticks = [0.0]
+
+        def clock():
+            return 1000.0 + ticks[0] / 1000.0
+
+        def eligible(path, _cutoff):
+            visited.append(path.name)
+            return path.name == "z-expired"
+
+        with (self._scan_stub(sessions, visited, ticks),
+              mock.patch.object(cg.time, "monotonic", side_effect=clock),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            for _ in range(12):
+                cg.cleanup_old_sessions(self.data_dir,
+                                        deadline=clock() + 0.003)
+        self.assertFalse(tail.exists(),
+                         "the tail survived twelve budget-interrupted "
+                         f"passes; eligibility visits={len(visited)}")
+        self.assertIn("z-expired", visited)
+
+
+class RV03PendingNamespaceGate(IsolatedEnvironment):
+    """RV-03 (sixth review, P1): the pending queue is progress data, not a
+    scope grant. Queued names are untrusted control data — they must be
+    plain encoded v2 session components and must still resolve to a real
+    v2 directory object at adjudication; anything else is decided (dropped)
+    without touching anything, so a hostile state file can never point
+    deletion outside the v2 namespace. The legacy namespace stays read-only
+    and valid v2 pending work still proceeds."""
+
+    def _expire_session(self, name: str) -> None:
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", name, prompt="expired task", turn_id="t1"))
+        state_path = self.session_dir(name) / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["session"]["ended_at"] = "2000-01-01T00:00:00Z"
+        state["content_hash"] = cg.state_content_hash(state)
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+        old = time.time() - 90 * 86400
+        os.utime(state_path, (old, old))
+
+    def _write_state_file(self, cursor: str, pending: list) -> None:
+        path = cg._cleanup_cursor_path(self.data_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"schema": cg._CLEANUP_CURSOR_SCHEMA,
+                        "cursor": cursor, "pending": pending}) + "\n",
+            encoding="utf-8")
+        path.chmod(0o600)
+
+    def test_parent_relative_pending_cannot_reach_the_legacy_tree(self) -> None:
+        """The sixth-review counterexample: an expired session synthesized
+        into the legacy namespace (production dispatch/save, valid expiry)
+        stays untouched; the same fixture with a poisoned
+        '../<legacy>/<name>' pending entry must also stay untouched — the
+        name is dropped at load, nothing is locked, marked, or deleted
+        outside the v2 namespace, and no lock directory appears there."""
+        self._expire_session("v2-anchor")
+        legacy_dir = self.data_dir / cg.LEGACY_NAMESPACE / "legacy-preserve"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "state.json").write_text("{}", encoding="utf-8")
+        (legacy_dir / "KEEP.txt").write_text("SYNTHETIC-SENTINEL\n",
+                                             encoding="utf-8")
+        before = sorted(str(p.relative_to(self.data_dir))
+                        for p in self.data_dir.rglob("*")
+                        if "legacy" in str(p.relative_to(self.data_dir)))
+        self._write_state_file("", ["../" + cg.LEGACY_NAMESPACE
+                                    + "/legacy-preserve"])
+        parsed_cursor, parsed_pending = cg._read_cleanup_state(self.data_dir)
+        self.assertEqual(parsed_pending, [],
+                         "a parent-relative name must be dropped at load")
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        after = sorted(str(p.relative_to(self.data_dir))
+                       for p in self.data_dir.rglob("*")
+                       if "legacy" in str(p.relative_to(self.data_dir)))
+        # The sweep stays active: the expired *v2* fixture is legitimately
+        # removed (removed == 1 proves cleanup ran), while the legacy tree
+        # the poisoned queue pointed at is untouched.
+        self.assertEqual(removed, 1)
+        self.assertTrue(legacy_dir.exists())
+        self.assertEqual(before, after, "the legacy tree changed")
+        self.assertFalse(
+            (self.data_dir / cg.LEGACY_NAMESPACE / ".locks").exists(),
+            "the legacy namespace must never gain a lock directory")
+
+    def test_valid_v2_pending_still_adjudicates(self) -> None:
+        """Positive control: a legitimate encoded v2 name queued in valid
+        state still resolves, adjudicates and deletes."""
+        self._expire_session("queued-v2-control")
+        self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir("queued-v2-control").exists())
+
+    def test_stale_pending_name_is_decided_without_action(self) -> None:
+        """A queued name whose directory vanished between passes is decided
+        (dropped) without error and without touching anything else."""
+        self._expire_session("still-here")
+        self._write_state_file("", ["vanished-session", "still-here"])
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir("vanished-session").exists())
+        self.assertFalse(self.session_dir("still-here").exists())
+
+    def test_pending_replaced_by_link_is_refused(self) -> None:
+        """A queued name whose directory was replaced by a symlink between
+        passes is decided without following the link."""
+        self._expire_session("queued-v2-control")
+        outside = self.root / "outside-queue"
+        (outside / "keep").mkdir(parents=True)
+        (outside / "keep" / "data.txt").write_text("keep", encoding="utf-8")
+        target = self.session_dir("queued-v2-control")
+        shutil.rmtree(target)
+        target.symlink_to(outside / "keep", target_is_directory=True)
+        self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 0)
+        self.assertTrue(target.is_symlink(), "the link must not be deleted")
+        self.assertTrue((outside / "keep" / "data.txt").exists())
+
+    def test_hostile_cursor_shape_is_ignored(self) -> None:
+        """A cursor that is not a plain component cannot suppress names via
+        lexical comparison; it is treated as empty."""
+        self._expire_session("queued-v2-control")
+        self._write_state_file("../sessions/zzz", [])
+        cursor, pending = cg._read_cleanup_state(self.data_dir)
+        self.assertEqual(cursor, "")
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1,
+                         "a hostile cursor must not suppress adjudication")
 
 
 class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
