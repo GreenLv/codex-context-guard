@@ -73,18 +73,33 @@ if [ -n "$configured" ]; then
             "$configured" "$target" "$@" >"$hook_out" || hook_exit=$?
         fi
         if [ "$hook_exit" -eq 0 ]; then
-            # Hook wire results are always JSON objects (at minimum "{}"
-            # for the silent allow path). A configured interpreter whose
-            # exit-0 output does not start with '{' is not a working
-            # Context Guard runtime.
-            case "$(head -c 1 "$hook_out" 2>/dev/null)" in
-                '{') : ;;  # JSON object: valid Hook wire result
-                *)
-                    printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced non-JSON output for a hook event. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
-                    rm -f "$hook_out"
-                    exit 2
-                    ;;
-            esac
+            # Hook wire results are always JSON objects (at minimum "{}" for
+            # the silent allow path). Output shape (first byte, brace count)
+            # cannot distinguish a working runtime from an unrelated program
+            # that prints similar text, and "exit 0 with empty output" proves
+            # nothing either, so the configured interpreter itself must parse
+            # the captured result and print a deterministic marker. Only a
+            # program that actually executes the Python json parse above and
+            # finds a JSON object can emit that marker: empty output,
+            # incomplete or malformed JSON, a non-object value, or an
+            # unrelated program that ignores arguments and prints its own
+            # (or no) text all fail visibly with no state written.
+            wire_rc=0
+            wire_noise=$("$configured" -I -S -c '
+import json, sys
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(3)
+if not isinstance(payload, dict):
+    raise SystemExit(4)
+print("CG-HOOK-WIRE-VERIFIED")
+' "$hook_out" 2>/dev/null) || wire_rc=$?
+            if [ "$wire_rc" -ne 0 ] || [ "$wire_noise" != "CG-HOOK-WIRE-VERIFIED" ]; then
+                printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced output that is not a Hook wire result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
+                rm -f "$hook_out"
+                exit 2
+            fi
         fi
         cat "$hook_out"
         rm -f "$hook_out"

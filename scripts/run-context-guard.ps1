@@ -95,11 +95,35 @@ if ($configuredInterpreter) {
             $hookExitCode = $LASTEXITCODE
             if ($hookExitCode -eq 0) {
                 # Hook wire results are always JSON objects (at minimum "{}").
-                $firstChar = if ($hookOut.Length -gt 0) {
-                    (Get-Content -LiteralPath $hookOut -TotalCount 1).Trim()[0]
-                } else { $null }
-                if ("$firstChar" -ne "{") {
-                    [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced non-JSON output for a hook event. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
+                # Output shape (first character, brace count) cannot
+                # distinguish a working runtime from an unrelated program
+                # printing similar text, and "exit 0 with empty output"
+                # proves nothing either, so the configured interpreter itself
+                # must parse the captured result and print a deterministic
+                # marker. Only a program that actually executes the Python
+                # json parse and finds a JSON object can emit that marker;
+                # empty, incomplete, malformed, non-object, or self-printing
+                # programs all fail visibly.
+                $wireCode = @'
+import json, sys
+try:
+    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(3)
+if not isinstance(payload, dict):
+    raise SystemExit(4)
+print("CG-HOOK-WIRE-VERIFIED")
+'@
+                $savedWirePreference = $ErrorActionPreference
+                try {
+                    $ErrorActionPreference = "Continue"
+                    $wireNoise = & $configuredInterpreter -I -S -c $wireCode $hookOut 2>$null
+                    $wireExitCode = $LASTEXITCODE
+                } finally {
+                    $ErrorActionPreference = $savedWirePreference
+                }
+                if ($wireExitCode -ne 0 -or ((-join $wireNoise) -ne "CG-HOOK-WIRE-VERIFIED")) {
+                    [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced output that is not a Hook wire result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
                     Write-HookTraceEnd 2
                     exit 2
                 }

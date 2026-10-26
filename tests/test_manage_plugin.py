@@ -963,5 +963,87 @@ class SafePluginInstallTests(unittest.TestCase):
         self.assertEqual(observed, [str(self.codex_home.resolve())] * 2)
 
 
+class GuiInterpreterBindingAnchorTests(unittest.TestCase):
+    """RV-02 (fifth review): the identity anchor for the binding write must
+    come from the FIRST validated directory object — captured before the
+    interpreter capability probe — and every later operation must stay on
+    that object. Re-following the text path after prepare would silently
+    re-anchor onto a substituted directory and authorize writing outside
+    HOME."""
+
+    def test_parent_swapped_during_probe_is_refused(self) -> None:
+        """Swapping the context-guard directory for a symlink to an outside
+        directory while the real interpreter probe runs must be detected:
+        the write refuses and the external object is untouched."""
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory(prefix="binding-anchor-") as tmp:
+            root = Path(tmp).resolve()
+            home = root / "home"
+            home.mkdir()
+            outside = root / "outside-selected-home"
+            outside.mkdir()
+            victim = outside / "interpreter.conf"
+            victim.write_text("SYNTHETIC-EXTERNAL-CONTENT\n", encoding="utf-8")
+            victim.chmod(0o640)
+            real_run = manager.subprocess.run
+            injections = []
+
+            def swap_during_probe(*args, **kwargs):
+                result = real_run(*args, **kwargs)
+                command = args[0]
+                if isinstance(command, list) and "-c" in command and not injections:
+                    if result.returncode:
+                        raise AssertionError(
+                            "probe error: capability check failed")
+                    parent = home / "context-guard"
+                    parent.rename(home / "context-guard-first-validated")
+                    parent.symlink_to(outside, target_is_directory=True)
+                    injections.append(True)
+                return result
+
+            error = None
+            with mock.patch.object(manager.subprocess, "run",
+                                   side_effect=swap_during_probe):
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        manager.bind_gui_interpreter(home)
+                except (OSError, RuntimeError) as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+            self.assertTrue(injections,
+                            "the real capability probe was never reached")
+            self.assertIsNotNone(error,
+                                 "the swap was not detected")
+            self.assertEqual(victim.read_text(),
+                             "SYNTHETIC-EXTERNAL-CONTENT\n",
+                             "the external object was overwritten")
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o640,
+                             "the external object mode changed")
+            self.assertEqual(
+                sorted(p.name for p in outside.glob(".interpreter.conf.*")),
+                [], "temp files escaped HOME")
+            anchored = home / "context-guard-first-validated"
+            if anchored.is_dir():
+                self.assertFalse(
+                    (anchored / "interpreter.conf").exists(),
+                    "a write into the anchored object was not undone after "
+                    "the path substitution was detected")
+
+    def test_regular_binding_still_publishes(self) -> None:
+        """Positive control: an unmodified HOME binds normally at 0600."""
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory(prefix="binding-anchor-ok-") as tmp:
+            home = Path(tmp).resolve() / "home"
+            with contextlib.redirect_stdout(io.StringIO()):
+                conf = manager.bind_gui_interpreter(home)
+            self.assertEqual(conf, home / "context-guard" / "interpreter.conf")
+            self.assertEqual(conf.read_text().strip(),
+                             str(Path(sys.executable).resolve()))
+            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
+
+
 if __name__ == "__main__":
     unittest.main()

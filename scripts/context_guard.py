@@ -22696,8 +22696,15 @@ def export_handoff(
 
 
 CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
+# Upper bound on names queued for adjudication in one enumeration pass. The
+# cap bounds the persisted pending queue (and its state file) no matter how
+# large the namespace grows; unqueued names are simply re-read by a later
+# pass, costing resumption position, never correctness.
 CLEANUP_MAX_ENTRIES_PER_PASS = 512
 CLEANUP_CURSOR_NAME = ".cleanup-cursor"
+_CLEANUP_CURSOR_SCHEMA = "cg-cleanup-cursor/v1"
+_CLEANUP_CURSOR_MAX_NAME = 200
+_CLEANUP_CURSOR_MAX_PENDING = 4096
 
 
 class _CleanupBudgetExhausted(Exception):
@@ -22708,21 +22715,61 @@ def _cleanup_cursor_path(root: Path) -> Path:
     return root / V2_NAMESPACE / ".locks" / CLEANUP_CURSOR_NAME
 
 
-def _read_cleanup_cursor(root: Path) -> str:
+def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
+    """Load persisted resumption state: (cursor, pending queue).
+
+    Accepts the current JSON schema and the legacy plain-text cursor. A
+    failed, corrupted or hostile read only costs resumption position and
+    queued names, never correctness: every queued name is re-adjudicated
+    through the full eligibility check before any deletion.
+    """
     try:
-        text = _cleanup_cursor_path(root).read_text(encoding="utf-8").strip()
+        raw = _cleanup_cursor_path(root).read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
-        return ""
-    return text if len(text) <= 200 else ""
+        return "", []
+    if not raw:
+        return "", []
+    if raw.startswith("{"):
+        try:
+            state = json.loads(raw)
+            cursor = state["cursor"]
+            pending = state["pending"]
+            if (
+                state.get("schema") == _CLEANUP_CURSOR_SCHEMA
+                and isinstance(cursor, str)
+                and len(cursor) <= _CLEANUP_CURSOR_MAX_NAME
+                and isinstance(pending, list)
+                and len(pending) <= _CLEANUP_CURSOR_MAX_PENDING
+                and all(
+                    isinstance(name, str)
+                    and 0 < len(name) <= _CLEANUP_CURSOR_MAX_NAME
+                    for name in pending
+                )
+            ):
+                return cursor, sorted(set(pending))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+        return "", []
+    return (raw if len(raw) <= _CLEANUP_CURSOR_MAX_NAME else ""), []
 
 
-def _write_cleanup_cursor(root: Path, name: str) -> None:
-    # Content-free position marker for fair resumption across passes; a
-    # failed write only costs resumption position, never correctness.
+def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
+    # Content-free position and queue markers for fair resumption across
+    # passes; a failed write only costs resumption position, never
+    # correctness.
+    payload = {
+        "schema": _CLEANUP_CURSOR_SCHEMA,
+        "cursor": cursor,
+        "pending": sorted(set(pending)),
+    }
     with contextlib.suppress(OSError):
         path = _cleanup_cursor_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(name + "\n", encoding="utf-8")
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _read_cleanup_cursor(root: Path) -> str:
+    return _read_cleanup_state(root)[0]
 
 
 def cleanup_old_sessions(
@@ -22733,66 +22780,142 @@ def cleanup_old_sessions(
 ) -> int:
     """Sweep expired v2 sessions only; legacy trees are never touched.
 
-    The sweep is bounded by a monotonic deadline checked per entry, with a
-    per-pass cap on visited candidates. Enumeration is lazy and resumes from
-    a content-free cursor, so retained sessions cannot starve the tail: each
-    pass continues after the last name the previous pass visited, and the
-    cursor resets only when a pass reaches the end of the namespace.
-    Candidate locks are attempted without blocking. A session already judged
-    eligible is marked before deletion starts; a partial deletion leaves the
-    marker, and any later successful state write for that session (a real
-    resume) retires the marker inside the lifecycle lock, so historical
-    eligibility never authorizes deleting a live session.
+    Budget, persisted progress and fairness are three separate mechanisms:
+
+    - Budget: the deadline gates accepting each NEW candidate (checked at
+      the decision point, so at most one already-read entry can land past
+      it) and every adjudication step. Re-reading already-recorded names —
+      lexically at or below the cursor, or already queued — is bounded by
+      the namespace itself, not by the deadline: a per-read deadline on
+      those bookkeeping reads lets the re-read of a growing decided prefix
+      consume every pass without ever reaching new work, which is exactly
+      the starvation this sweep forbids.
+    - Persisted progress: names enumerated but not yet adjudicated are kept
+      in the pending queue inside the cursor state file, so an interrupted
+      pass never re-consumes its budget re-deciding the same prefix and
+      queued work survives the call boundary.
+    - Fairness: the pending queue is drained before any new enumeration,
+      so earlier interrupted work is adjudicated before fresh scans queue
+      more names behind it.
+
+    The cursor names the lexical-max entry whose decision is FINAL for this
+    sweep generation: retained, retired-marker, lock-busy and deleted
+    entries all advance it; only an entry whose processing was interrupted
+    stays unadjudicated in the queue. The current session and non-directory
+    entries are decided per pass without moving the generation cursor. A
+    pass completes a generation when the queue is drained and the namespace
+    scan reached its end; the cursor state then resets so the next
+    generation re-decides everything (order changes and recreated names
+    included).
+
+    Candidate locks are attempted without blocking. A session already
+    judged eligible is marked before deletion starts; a partial deletion
+    leaves the marker, and any later successful state write for that
+    session (a real resume) retires the marker inside the lifecycle lock,
+    so historical eligibility never authorizes deleting a live session.
     """
     sessions = root / V2_NAMESPACE
     if not sessions.is_dir():
         return 0
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
-    cursor = _read_cleanup_cursor(root)
+    cursor, pending = _read_cleanup_state(root)
 
     def budget_left() -> bool:
         return deadline is None or time.monotonic() < deadline
 
     removed = 0
     scanned = 0
-    # The cursor names the lexical-max entry whose decision is FINAL for this
-    # sweep generation: retained, retired-marker, lock-busy and deleted
-    # entries all advance it. Only an entry whose processing was interrupted
-    # by the budget stays below the cursor, so the next pass resumes at
-    # exactly that session. The current session and non-directory entries are
-    # decided per pass without moving the generation cursor.
     last_completed = cursor
-    pass_done = False
-    # Phase E — bounded enumeration. Uses os.scandir for incremental
-    # directory reading on POSIX (each readdir block is bounded, unlike
-    # Path.iterdir which calls os.listdir eagerly to collect all names
-    # before yielding). The deadline is checked per entry during
-    # enumeration. If the deadline expires mid-scan, the collected prefix
-    # is sorted and processed as a partial batch — progress is made and
-    # the lexical cursor advances past every decided entry. Entries
-    # lexically below the cursor but not yet scanned are deferred to a
-    # later generation (when a full scan completes) — they are never
-    # deleted without an eligibility check, so this is a bounded delay,
-    # not a correctness issue.
+    pending = sorted(set(pending))
+
+    def adjudicate(batch: list[str]) -> list[str]:
+        """Decide a lexically sorted batch; return the undecided remainder."""
+        nonlocal removed, scanned, last_completed
+        survivors: list[str] = []
+        for index, name in enumerate(batch):
+            if cursor and name <= cursor:
+                continue  # finally decided in an earlier pass
+            if not budget_left():
+                survivors.extend(batch[index:])
+                return survivors
+            candidate = sessions / name
+            if current is not None and candidate.resolve() == current.resolve():
+                continue
+            scanned += 1
+            decided = True
+            deleted = False
+            try:
+                with session_lock(candidate, timeout=0.0):
+                    resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
+                    if resumable and _resume_retired_marker(candidate):
+                        with contextlib.suppress(OSError):
+                            (candidate / CLEANUP_PARTIAL_MARKER).unlink()
+                    elif not resumable and not _session_expired(candidate, cutoff):
+                        pass  # retained: decided for this generation
+                    else:
+                        if not resumable:
+                            atomic_write_text(
+                                candidate / CLEANUP_PARTIAL_MARKER,
+                                "eligible cleanup marker (content-free)\n",
+                            )
+                        _delete_session_tree_bounded(candidate, budget_left)
+                        deleted = True
+            except _CleanupBudgetExhausted:
+                decided = False
+                survivors.append(name)
+                survivors.extend(batch[index + 1:])
+                return survivors
+            except (TimeoutError, OSError):
+                pass  # lock busy: decided for this generation
+            if decided:
+                last_completed = name
+            if deleted:
+                removed += 1
+        return survivors
+
+    # Phase P — drain the persisted queue first (fairness: interrupted work
+    # is adjudicated before fresh enumeration queues more).
+    pending = adjudicate(pending)
+    # Phase E — bounded enumeration with os.scandir (incremental readdir on
+    # POSIX; Path.iterdir would eagerly listdir the whole namespace). Names
+    # at or below the cursor are bookkeeping re-reads, skipped without
+    # consulting the deadline; the deadline gates only accepting new
+    # candidates, per decision. The pending cap bounds queue growth; a
+    # capped, interrupted, or budget-exhausted pass leaves unqueued names to
+    # a later pass — bounded delay, never lost work, and no deletion ever
+    # happens without the full eligibility check.
     candidates: list[str] = []
-    if budget_left():
+    scan_done = False
+    if budget_left() and not pending:
         try:
             scanner = os.scandir(sessions)
             try:
                 while True:
-                    if not budget_left():
+                    # The deadline gates STARTING the next readdir step; a
+                    # step already begun completes and its new candidate is
+                    # accepted, so the overrun is bounded to one entry per
+                    # pass. Without this pre-read placement, the re-read of
+                    # a growing decided prefix would consume every pass
+                    # before new work could ever start — the starvation
+                    # this sweep forbids.
+                    if deadline is not None and time.monotonic() > deadline:
                         break
                     try:
                         entry = next(scanner)
                     except StopIteration:
+                        scan_done = True
                         break
                     name = entry.name
                     if name in {".locks", CLEANUP_CURSOR_NAME}:
+                        continue
+                    if cursor and name <= cursor:
                         continue
                     if entry.is_symlink() or not entry.is_dir():
                         continue
                     if current is not None and Path(entry.path).resolve() == current.resolve():
                         continue
+                    if len(candidates) >= CLEANUP_MAX_ENTRIES_PER_PASS:
+                        break  # queue cap: remainder deferred to a later pass
                     candidates.append(name)
             except OSError:
                 pass
@@ -22801,66 +22924,19 @@ def cleanup_old_sessions(
         except OSError:
             pass
 
-    # Phase P — sorted processing with lexical cursor. Each decided entry
-    # advances the cursor past itself; an interrupted deletion leaves the
-    # cursor below the interrupted entry for exact next-pass resume.
-    removed = 0
-    scanned = 0
-    last_completed = cursor
-    pass_done = True
+    # Phase P' — adjudicate the freshly enumerated batch; whatever the
+    # budget leaves undecided joins the persisted queue for the next pass.
     if candidates:
         candidates.sort()
-        try:
-            for name in candidates:
-                if name <= cursor and cursor:
-                    continue
-                if not budget_left():
-                    pass_done = False
-                    break
-                candidate = sessions / name
-                if current is not None and candidate.resolve() == current.resolve():
-                    continue
-                scanned += 1
-                decided = True
-                deleted = False
-                try:
-                    with session_lock(candidate, timeout=0.0):
-                        resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
-                        if resumable and _resume_retired_marker(candidate):
-                            with contextlib.suppress(OSError):
-                                (candidate / CLEANUP_PARTIAL_MARKER).unlink()
-                        elif not resumable and not _session_expired(candidate, cutoff):
-                            pass  # retained: decided for this generation
-                        else:
-                            if not resumable:
-                                atomic_write_text(
-                                    candidate / CLEANUP_PARTIAL_MARKER,
-                                    "eligible cleanup marker (content-free)\n",
-                                )
-                            _delete_session_tree_bounded(candidate, budget_left)
-                            deleted = True
-                except _CleanupBudgetExhausted:
-                    decided = False
-                    break
-                except (TimeoutError, OSError):
-                    pass  # lock busy: decided for this generation
-                if decided:
-                    last_completed = name
-                if deleted:
-                    removed += 1
-            else:
-                pass_done = True
-        except OSError:
-            pass_done = True
-        if pass_done:
-            if cursor or last_completed:
-                with contextlib.suppress(OSError):
-                    _cleanup_cursor_path(root).unlink(missing_ok=True)
-            return removed
-    # The pass ended mid-namespace: keep the resumption position at the
-    # last finally-decided entry.
-    if last_completed != cursor:
-        _write_cleanup_cursor(root, last_completed)
+        pending = adjudicate(candidates)
+    if not pending and scan_done:
+        # Generation complete: reset so the next sweep re-decides the
+        # namespace from scratch (picks up order changes and recreations).
+        if cursor or last_completed:
+            with contextlib.suppress(OSError):
+                _cleanup_cursor_path(root).unlink(missing_ok=True)
+        return removed
+    _write_cleanup_state(root, last_completed, pending)
     return removed
 
 

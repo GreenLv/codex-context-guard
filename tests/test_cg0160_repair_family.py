@@ -936,6 +936,53 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         self.assertEqual(removed, 1)
         self.assertFalse(session.exists())
 
+    def _patch_cleanup_scan(self, sessions, names_provider, arrivals):
+        """Patch os.scandir for the cleanup namespace with an arrival check.
+
+        The stub yields real-filesystem-backed entries so the sweep's
+        is_dir/current-session checks keep working; arrivals records every
+        scan of the namespace so a test fails if its injection silently
+        stopped executing after a runtime change."""
+        real_scandir = os.scandir
+
+        class Entry:
+            def __init__(self, name):
+                self.name = name
+                self.path = str(sessions / name)
+
+            def is_symlink(self):
+                return (sessions / self.name).is_symlink()
+
+            def is_dir(self, **kwargs):
+                return (sessions / self.name).is_dir()
+
+        class Scan:
+            def __init__(self):
+                self.items = iter(names_provider())
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return Entry(next(self.items))
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def scanner(path):
+            if Path(path) == sessions:
+                arrivals.append(True)
+                return Scan()
+            return real_scandir(path)
+
+        return mock.patch.object(cg.os, "scandir", side_effect=scanner)
+
     def test_retained_head_cannot_starve_the_tail(self) -> None:
         """Deterministic ordered enumeration: 512 retained head entries must
         not starve the expired tail (the APFS-order version of this test
@@ -951,22 +998,21 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         tail.mkdir()
         ordered.append(tail)
         visits = []
-        real_iter = Path.iterdir
+        arrivals = []
 
-        def iterator(path):
-            if path == sessions:
-                return iter([entry for entry in ordered if entry.exists()])
-            return real_iter(path)
+        def names_provider():
+            return [path.name for path in ordered if path.exists()]
 
         def eligible(path, _cutoff):
             visits.append(path.name)
             return path.name == "z-expired"
 
-        with (mock.patch.object(Path, "iterdir", iterator),
+        with (self._patch_cleanup_scan(sessions, names_provider, arrivals),
               mock.patch.object(cg, "_session_expired", side_effect=eligible)):
             for _ in range(3):
                 cg.cleanup_old_sessions(self.data_dir,
                                         deadline=time.monotonic() + 10)
+        self.assertTrue(arrivals, "scandir injection never executed")
         self.assertFalse(tail.exists(),
                          f"tail untouched after 3 passes; scans={len(visits)}, "
                          f"tail visits={visits.count('z-expired')}")
@@ -994,27 +1040,26 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         handle = open(str(locks_dir / "b-busy.lock"), "a+b")
         _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
         try:
-            real_iter = Path.iterdir
+            arrivals = []
 
-            def iterator(path):
-                if path == sessions:
-                    return iter([entry for entry in ordered if entry.exists()])
-                return real_iter(path)
+            def names_provider():
+                return [path.name for path in ordered if path.exists()]
 
             def eligible(path, _cutoff):
                 return path.name == "z-expired"
 
-            with (mock.patch.object(Path, "iterdir", iterator),
+            with (self._patch_cleanup_scan(sessions, names_provider, arrivals),
                   mock.patch.object(cg, "_session_expired",
                                     side_effect=eligible)):
                 cg.cleanup_old_sessions(self.data_dir,
                                         deadline=time.monotonic() + 10)
+            self.assertTrue(arrivals, "scandir injection never executed")
             self.assertTrue(busy.exists())
             # New entry created after pass one, lexically before the cursor:
             # it must be revisited when the generation resets.
             fresh = sessions / "m-fresh"
             fresh.mkdir()
-            with (mock.patch.object(Path, "iterdir", iterator),
+            with (self._patch_cleanup_scan(sessions, names_provider, arrivals),
                   mock.patch.object(cg, "_session_expired",
                                     side_effect=eligible)):
                 cg.cleanup_old_sessions(self.data_dir,
@@ -1034,26 +1079,24 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         names = [f"n-{i:03d}" for i in range(24)] + ["z-expired"]
         for name in names:
             (sessions / name).mkdir()
-        real_iter = Path.iterdir
-        flip = {"value": False}
+        flip = {"value": True}
+        arrivals = []
 
-        def iterator(path):
-            if path == sessions:
-                current = [entry for entry in names
-                           if (sessions / entry).exists()]
-                if flip["value"]:
-                    current = list(reversed(current))
-                flip["value"] = not flip["value"]
-                return iter(sessions / name for name in current)
-            return real_iter(path)
+        def names_provider():
+            current = [name for name in names if (sessions / name).exists()]
+            if flip["value"]:
+                current = list(reversed(current))
+            flip["value"] = not flip["value"]
+            return current
 
         def eligible(path, _cutoff):
             return path.name == "z-expired"
 
-        with (mock.patch.object(Path, "iterdir", iterator),
+        with (self._patch_cleanup_scan(sessions, names_provider, arrivals),
               mock.patch.object(cg, "_session_expired", side_effect=eligible)):
             cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 10)
             cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 10)
+        self.assertTrue(arrivals, "scandir injection never executed")
         self.assertFalse((sessions / "z-expired").exists(),
                          "reversed enumeration order lost the tail entry")
 
@@ -1380,27 +1423,69 @@ class F01PrivatePathDomain(IsolatedEnvironment):
 
 
 class RV03BoundedEnumeration(IsolatedEnvironment):
-    """RV-03: enumeration itself must respect the deadline and a hard scan
-    cap; processing only runs on a completed scan so lexical cursor
-    semantics stay sound. The 1ms-per-entry model is a boundedness probe,
-    not a real filesystem measurement."""
+    """RV-03: enumeration must respect the deadline and the persisted pending
+    queue must carry interrupted passes forward, so repeated partial scans
+    cannot re-consume their budget on the same prefix. The 1ms-per-entry
+    model is a boundedness probe, not a real filesystem measurement."""
+
+    def _scan_stub(self, sessions, visited, clock):
+        """scandir stub over the namespace charging 1ms per entry, with a
+        names provider reflecting the live directory."""
+        real_scandir = os.scandir
+
+        class Entry:
+            def __init__(self, name):
+                self.name = name
+                self.path = str(sessions / name)
+
+            def is_symlink(self):
+                return False
+
+            def is_dir(self, **kwargs):
+                return True
+
+        class Scan:
+            def __init__(self):
+                self.items = iter(
+                    name for name in sorted(p.name for p in sessions.iterdir())
+                    if name not in {".locks"})
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                name = next(self.items)
+                clock[0] += 1
+                visited.append(name)
+                return Entry(name)
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def scanner(path):
+            if Path(path) == sessions:
+                return Scan()
+            return real_scandir(path)
+
+        return mock.patch.object(cg.os, "scandir", side_effect=scanner)
 
     def test_expired_deadline_requests_nothing(self) -> None:
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
+        for i in range(4):
+            (sessions / f"synthetic-{i:05d}").mkdir()
         visited = []
-        original = Path.iterdir
+        clock = [100.0]
 
-        def controlled(path):
-            if path == sessions:
-                def stream():
-                    for i in range(4096):
-                        visited.append(i)
-                        yield sessions / f"synthetic-{i:05d}"
-                return stream()
-            return original(path)
-
-        with mock.patch.object(Path, "iterdir", controlled):
+        with (self._scan_stub(sessions, visited, clock),
+              mock.patch.object(cg.time, "monotonic",
+                                side_effect=lambda: clock[0])):
             removed = cg.cleanup_old_sessions(self.data_dir,
                                               deadline=time.monotonic() - 1)
         self.assertEqual(removed, 0)
@@ -1411,21 +1496,12 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
     def test_deadline_during_enumeration_bounds_requests(self) -> None:
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
+        for i in range(4096):
+            (sessions / f"synthetic-{i:05d}").mkdir()
         visited = []
         clock = [100.0]
-        original = Path.iterdir
 
-        def controlled(path):
-            if path == sessions:
-                def stream():
-                    for i in range(4096):
-                        clock[0] += 0.001
-                        visited.append(i)
-                        yield sessions / f"synthetic-{i:05d}"
-                return stream()
-            return original(path)
-
-        with (mock.patch.object(Path, "iterdir", controlled),
+        with (self._scan_stub(sessions, visited, clock),
               mock.patch.object(cg.time, "monotonic",
                                 side_effect=lambda: clock[0])):
             removed = cg.cleanup_old_sessions(self.data_dir, deadline=100.003)
@@ -1433,6 +1509,78 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
         self.assertLessEqual(len(visited), 4,
                              f"enumeration requested {len(visited)} entries "
                              "under a 3ms budget (1ms-per-entry model)")
+
+    def test_repeated_interrupted_scans_still_reach_the_tail(self) -> None:
+        """RV-03 (fifth-round reviewer model): every pass's enumeration is
+        interrupted by a small shared budget, yet the pending queue carries
+        the enumerated-but-undecided names forward, so the expired tail is
+        adjudicated and removed within a bounded number of passes. Replaying
+        this exact shape with zero progress is the regression this test
+        forbids."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        for name in ("a-retained-0", "b-retained-1", "c-retained-2",
+                     "z-expired"):
+            (sessions / name).mkdir()
+        tail = sessions / "z-expired"
+        visited = []
+        ticks = [0.0]
+
+        def clock():
+            return 1000.0 + ticks[0] / 1000.0
+
+        def eligible(path, _cutoff):
+            return path.name == "z-expired"
+
+        with (self._scan_stub(sessions, visited, ticks),
+              mock.patch.object(cg.time, "monotonic", side_effect=clock),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            for _ in range(8):
+                cg.cleanup_old_sessions(self.data_dir,
+                                        deadline=clock() + 0.003)
+        self.assertFalse(tail.exists(),
+                         "tail survived eight budget-interrupted passes; "
+                         f"eligibility visits={len(visited)}")
+
+    def test_pending_queue_persists_across_calls(self) -> None:
+        """Names enumerated but left undecided by an exhausted budget are
+        persisted and adjudicated first on the next call, before any new
+        enumeration runs."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        for name in ("a-keep", "b-keep", "z-expired"):
+            (sessions / name).mkdir()
+        tail = sessions / "z-expired"
+        ticks = [0.0]
+        visited = []
+
+        def clock():
+            return 1000.0 + ticks[0] / 1000.0
+
+        def eligible(path, _cutoff):
+            return path.name == "z-expired"
+
+        with (self._scan_stub(sessions, visited, ticks),
+              mock.patch.object(cg.time, "monotonic", side_effect=clock),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            # Pass 1: the budget expires before the queue can be adjudicated.
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock() + 0.001)
+            cursor, pending = cg._read_cleanup_state(self.data_dir)
+            self.assertTrue(pending, "interrupted enumeration saved no names")
+            self.assertTrue(tail.exists(), "tail untouched in pass 1")
+            # Pass 2 with an expired deadline: the queue still drains? No —
+            # an expired deadline adjudicates nothing; the names survive.
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock() - 1)
+            cursor2, pending2 = cg._read_cleanup_state(self.data_dir)
+            self.assertEqual(sorted(pending2), sorted(pending),
+                             "an expired deadline must not lose queued names")
+            # Pass 3: a fresh budget adjudicates the queued names first.
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock() + 0.010)
+        self.assertFalse(tail.exists(),
+                         "queued tail was not adjudicated from the pending "
+                         "queue")
 
 
 class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
@@ -1489,6 +1637,61 @@ class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
             input=payload, capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
         self.assertNotEqual(proc.stdout, "", "valid hook produced no output")
+
+    def _invoke_with_script(self, script_body: str, session: str):
+        """Run the installed-tree launcher with a configured executable that
+        prints exactly the given shell script's output."""
+        import subprocess
+
+        tree = Path(cg.__file__).resolve().parents[1]
+        launcher = tree / "scripts" / "run_context_guard.sh"
+        fake = Path(os.environ["CODEX_HOME"]) / "fake-interpreter"
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        fake.write_text(f"#!/bin/sh\n{script_body}\n", encoding="utf-8")
+        fake.chmod(0o700)
+        self._write_conf(str(fake))
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        payload = json.dumps({
+            "hook_event_name": "UserPromptSubmit", "cwd": str(self.project),
+            "session_id": session, "turn_id": "t1",
+            "prompt": "Repair demo.py and run tests."})
+        return subprocess.run(
+            ["/bin/sh", str(launcher), "hook", "UserPromptSubmit"],
+            input=payload, capture_output=True, text=True, env=env, timeout=60)
+
+    def test_malformed_object_output_is_not_a_hook_result(self) -> None:
+        """An unrelated program printing JSON-lookalike text ('{startup
+        diagnostic') and exiting 0 must fail the wire verification: the
+        first byte being '{' is not a Hook result (fifth-round RV-01)."""
+        proc = self._invoke_with_script(
+            "printf '%s\\n' '{startup diagnostic'", "malformed-object")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
+        self.assertIn("not a working Context Guard runtime", proc.stderr)
+        self.assertFalse(
+            (Path(os.environ["CODEX_HOME"]) / "sessions-v2").exists(),
+            "a rejected wire result must not create session state")
+
+    def test_valid_json_non_object_is_not_a_hook_result(self) -> None:
+        """A complete JSON value that is not an object is equally not a Hook
+        wire result (Hook results are always JSON objects)."""
+        proc = self._invoke_with_script(
+            "printf '[1,2]\\n'", "json-array")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
+        self.assertIn("not a working Context Guard runtime", proc.stderr)
+
+    def test_json_looking_output_without_python_capability_is_rejected(
+            self) -> None:
+        """A program whose hook output is even a complete JSON object is
+        still rejected when it cannot execute the validator: the marker is
+        only printable by a program that actually runs the Python json
+        parse, so output coincidence alone cannot pass (the wire check
+        verifies the configured interpreter's claimed capability AND the
+        claimed output)."""
+        proc = self._invoke_with_script(
+            'printf \'{"continue": true}\\n\'', "json-object")
+        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
+        self.assertIn("not a working Context Guard runtime", proc.stderr)
 
 
 class D01DocumentationContract(IsolatedEnvironment):

@@ -1809,14 +1809,25 @@ def _reject_unsafe_binding_component(component: Path, label: str) -> None:
             f"({component}) is not a real directory")
 
 
-def prepare_gui_interpreter_binding(codex_home: Path) -> tuple[Path, str]:
+def prepare_gui_interpreter_binding(
+    codex_home: Path,
+) -> tuple[Path, str, tuple[int, int], int]:
     """Validate and create everything the binding needs, without writing it.
 
     Runs before the installation transaction so an unsafe binding location
     refuses the install instead of leaving a mixed state (installation done,
     binding impossible). Verifies the interpreter by executing it and
-    returns the conf path plus the single-line content for the caller to
-    write atomically afterwards.
+    returns the conf path, the single-line content, the identity of the
+    first-validated directory object, and (POSIX) an open descriptor for
+    that object.
+
+    The identity anchor is taken from the FIRST validated object —
+    immediately after the directory is created and verified, before the
+    interpreter capability probe and before the installation transaction.
+    Later operations must keep using that anchor (POSIX: the returned
+    descriptor; Windows: the recorded identity); the text path is never
+    re-statted to obtain a fresh identity, because a path substituted after
+    the first validation would otherwise silently re-anchor the write.
     """
     if not codex_home.exists() and not codex_home.is_symlink():
         codex_home.mkdir(parents=True, exist_ok=True)
@@ -1831,6 +1842,30 @@ def prepare_gui_interpreter_binding(codex_home: Path) -> tuple[Path, str]:
     else:
         private_dir.mkdir(mode=0o700)
     os.chmod(private_dir, 0o700)
+    if os.name == "nt":
+        # Windows has no directory descriptor support in Python; the anchor
+        # is the lstat identity of the first-validated directory and every
+        # later boundary re-verifies the path against it. Native Windows
+        # behaviour remains a separate acceptance gate.
+        anchor_info = private_dir.lstat()
+        if private_dir.is_symlink() or getattr(anchor_info, "st_reparse_tag", 0):
+            raise RuntimeError(
+                "refusing to bind the GUI interpreter: the context-guard "
+                f"data dir ({private_dir}) became a link or reparse point")
+        dir_identity = (anchor_info.st_dev, anchor_info.st_ino)
+        dir_fd = -1
+    else:
+        # Anchor the first-validated object with a descriptor: every later
+        # operation is scoped to this object, so substituting the text path
+        # after this point cannot redirect or re-anchor the write.
+        dir_fd = os.open(
+            private_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            opened = os.fstat(dir_fd)
+            dir_identity = (opened.st_dev, opened.st_ino)
+        except BaseException:
+            os.close(dir_fd)
+            raise
     conf_path = codex_home / INTERPRETER_CONF_RELATIVE
     if conf_path.exists() or conf_path.is_symlink():
         info = conf_path.lstat()
@@ -1855,37 +1890,46 @@ def prepare_gui_interpreter_binding(codex_home: Path) -> tuple[Path, str]:
             f"cannot bind the GUI interpreter: {interpreter} does not "
             "provide Python 3.10+")
     content = f"{interpreter}\n"
-    dir_info = private_dir.stat()
-    dir_identity = (dir_info.st_dev, dir_info.st_ino)
-    dir_info = private_dir.stat()
-    dir_identity = (dir_info.st_dev, dir_info.st_ino)
-    return conf_path, content, dir_identity
+    return conf_path, content, dir_identity, dir_fd
+
+
+def _binding_parent_path_identity(conf_path: Path) -> tuple[int, int]:
+    """Identity of the parent directory as the text path resolves right now.
+
+    Used only to DETECT that the path no longer names the anchored object;
+    it never replaces the anchor captured at first validation.
+    """
+    info = conf_path.parent.lstat()
+    if conf_path.parent.is_symlink() or getattr(info, "st_reparse_tag", 0):
+        raise RuntimeError(
+            f"refusing to write the GUI interpreter binding: parent "
+            f"{conf_path.parent} is a link or reparse point")
+    return info.st_dev, info.st_ino
 
 
 def write_gui_interpreter_binding(
-    conf_path: Path, content: str, *, expected_dir_identity: tuple[int, int]
+    conf_path: Path,
+    content: str,
+    *,
+    expected_dir_identity: tuple[int, int],
+    dir_fd: int = -1,
 ) -> None:
-    """Atomically publish the verified binding through a dir-scoped fd.
+    """Atomically publish the verified binding onto the anchored object.
 
-    The private directory is opened once and every file operation (temp
-    creation, fsync, atomic replace, temp cleanup) is scoped to that
-    descriptor, so replacing the parent path with a link after prepare
-    cannot redirect the write outside the verified directory object.
-    The descriptor's identity is verified against the one recorded by
-    prepare before any write occurs.
+    POSIX: the caller passes the descriptor opened by prepare against the
+    first-validated directory object. The write refuses when the text path
+    no longer resolves to that object (a swap between prepare and the write
+    cannot redirect or re-anchor), then creates the temp file, fsyncs and
+    atomically replaces, all through the descriptor. A path substitution
+    detected after publication is undone inside the anchored object; the
+    external object is never touched.
 
-    On Windows (no dir_fd in Python), path-based operations with
-    lstat identity re-verification at each boundary are used; native
-    Windows behaviour remains a separate acceptance gate.
+    Windows (no dir_fd in Python): the anchor recorded by prepare is
+    re-verified against the path at each boundary; native Windows behaviour
+    remains a separate acceptance gate.
     """
     if os.name == "nt":
-        # Windows path: verify parent identity at write time using lstat.
-        info = conf_path.parent.lstat()
-        if conf_path.parent.is_symlink() or getattr(info, "st_reparse_tag", 0):
-            raise RuntimeError(
-                f"refusing to write the GUI interpreter binding: parent "
-                f"{conf_path.parent} is a link or reparse point")
-        current_identity = (info.st_dev, info.st_ino)
+        current_identity = _binding_parent_path_identity(conf_path)
         if current_identity != expected_dir_identity:
             raise RuntimeError(
                 f"GUI interpreter binding parent identity changed between "
@@ -1899,8 +1943,7 @@ def write_gui_interpreter_binding(
                 handle.flush()
                 os.fsync(handle.fileno())
             os.chmod(temp, 0o600)
-            info2 = conf_path.parent.lstat()
-            if (info2.st_dev, getattr(info2, "st_ino", 0)) != current_identity:
+            if _binding_parent_path_identity(conf_path) != current_identity:
                 raise RuntimeError(
                     f"GUI interpreter binding parent identity changed during "
                     f"write ({conf_path.parent}); cleaning up")
@@ -1911,40 +1954,63 @@ def write_gui_interpreter_binding(
             raise
         return
 
-    # POSIX: dir-scoped fd binding
-    dir_fd = os.open(conf_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    # POSIX: publish through the anchored descriptor from prepare.
+    if dir_fd < 0:
+        raise RuntimeError(
+            "GUI interpreter binding write requires the descriptor opened by "
+            "prepare; refusing to re-open the (possibly substituted) path")
+    opened = os.fstat(dir_fd)
+    if (opened.st_dev, opened.st_ino) != expected_dir_identity:
+        raise RuntimeError(
+            f"GUI interpreter binding anchor descriptor does not match the "
+            f"recorded identity ({conf_path.parent}); refusing to write")
+    if _binding_parent_path_identity(conf_path) != expected_dir_identity:
+        raise RuntimeError(
+            f"GUI interpreter binding parent identity changed between "
+            f"prepare and write ({conf_path.parent}); refusing to write")
+    temp_name = ".interpreter.conf." + secrets.token_hex(6)
+    temp_fd = os.open(
+        temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+        dir_fd=dir_fd)
     try:
-        opened = os.fstat(dir_fd)
-        if (opened.st_dev, opened.st_ino) != expected_dir_identity:
-            raise RuntimeError(
-                f"GUI interpreter binding parent identity changed between "
-                f"prepare and write ({conf_path.parent}); refusing to write")
-        temp_name = ".interpreter.conf." + secrets.token_hex(6)
-        temp_fd = os.open(
-            temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
-            dir_fd=dir_fd)
-        try:
-            with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            # Atomic replace within the verified directory object; the
-            # dir_fd prevents a swapped path from redirecting the write.
-            os.replace(temp_name, INTERPRETER_CONF_RELATIVE.name,
-                       src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except BaseException:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Atomic replace within the anchored directory object; the
+        # descriptor prevents a substituted path from redirecting the write.
+        os.replace(temp_name, INTERPRETER_CONF_RELATIVE.name,
+                   src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        published = os.stat(INTERPRETER_CONF_RELATIVE.name, dir_fd=dir_fd)
+        if _binding_parent_path_identity(conf_path) != expected_dir_identity:
+            # The text path was substituted after the pre-write check: the
+            # published file lives inside the anchored object, not at the
+            # path the launcher would read. Undo inside the anchored object
+            # and fail; the external object is never touched.
             with contextlib.suppress(OSError):
-                os.unlink(temp_name, dir_fd=dir_fd)
-            raise
-    finally:
-        os.close(dir_fd)
+                os.unlink(INTERPRETER_CONF_RELATIVE.name, dir_fd=dir_fd)
+            raise RuntimeError(
+                f"GUI interpreter binding parent identity changed during "
+                f"publish ({conf_path.parent}); the write was undone inside "
+                "the anchored object")
+        del published
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_name, dir_fd=dir_fd)
+        raise
 
 
 def bind_gui_interpreter(codex_home: Path) -> Path:
     """Prepare and publish the GUI interpreter binding for this HOME."""
-    conf_path, content, dir_identity = prepare_gui_interpreter_binding(codex_home)
-    write_gui_interpreter_binding(conf_path, content,
-                                  expected_dir_identity=dir_identity)
+    conf_path, content, dir_identity, binding_fd = (
+        prepare_gui_interpreter_binding(codex_home))
+    try:
+        write_gui_interpreter_binding(conf_path, content,
+                                      expected_dir_identity=dir_identity,
+                                      dir_fd=binding_fd)
+    finally:
+        if binding_fd >= 0:
+            os.close(binding_fd)
     print(f"[OK] bound GUI interpreter for this HOME: {content.strip()}")
     return conf_path
 
@@ -2003,11 +2069,16 @@ def main() -> int:
             # unsafe binding location refuses the install instead of
             # completing it and then failing to bind.
             same_version_drift_preflight(args.codex, repo_root, codex_home)
-            conf_path, interpreter_line, dir_identity = prepare_gui_interpreter_binding(
-                codex_home)
-            _run_install_transaction(args.codex, repo_root, codex_home)
-            write_gui_interpreter_binding(conf_path, interpreter_line,
-                                          expected_dir_identity=dir_identity)
+            conf_path, interpreter_line, dir_identity, binding_fd = (
+                prepare_gui_interpreter_binding(codex_home))
+            try:
+                _run_install_transaction(args.codex, repo_root, codex_home)
+                write_gui_interpreter_binding(
+                    conf_path, interpreter_line,
+                    expected_dir_identity=dir_identity, dir_fd=binding_fd)
+            finally:
+                if binding_fd >= 0:
+                    os.close(binding_fd)
             print(f"[OK] bound GUI interpreter for this HOME: {interpreter_line.strip()}")
         else:
             ensure_marketplace(args.codex, repo_root, codex_home, args.apply)
