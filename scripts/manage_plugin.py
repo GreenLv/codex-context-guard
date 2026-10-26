@@ -4,16 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
-import contextlib
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -1854,37 +1855,96 @@ def prepare_gui_interpreter_binding(codex_home: Path) -> tuple[Path, str]:
             f"cannot bind the GUI interpreter: {interpreter} does not "
             "provide Python 3.10+")
     content = f"{interpreter}\n"
-    return conf_path, content
+    dir_info = private_dir.stat()
+    dir_identity = (dir_info.st_dev, dir_info.st_ino)
+    dir_info = private_dir.stat()
+    dir_identity = (dir_info.st_dev, dir_info.st_ino)
+    return conf_path, content, dir_identity
 
 
-def write_gui_interpreter_binding(conf_path: Path, content: str) -> None:
-    """Atomically publish the verified binding within its private directory.
+def write_gui_interpreter_binding(
+    conf_path: Path, content: str, *, expected_dir_identity: tuple[int, int]
+) -> None:
+    """Atomically publish the verified binding through a dir-scoped fd.
 
-    The write uses a same-directory temporary file with an exclusive create,
-    fsync, and an atomic replace, so a crash never leaves a partial binding
-    and no path component is ever followed out of the verified private
-    directory. Failures clean up the temporary and propagate.
+    The private directory is opened once and every file operation (temp
+    creation, fsync, atomic replace, temp cleanup) is scoped to that
+    descriptor, so replacing the parent path with a link after prepare
+    cannot redirect the write outside the verified directory object.
+    The descriptor's identity is verified against the one recorded by
+    prepare before any write occurs.
+
+    On Windows (no dir_fd in Python), path-based operations with
+    lstat identity re-verification at each boundary are used; native
+    Windows behaviour remains a separate acceptance gate.
     """
-    fd, temp_name = tempfile.mkstemp(
-        dir=conf_path.parent, prefix=".interpreter.conf.")
-    temp = Path(temp_name)
+    if os.name == "nt":
+        # Windows path: verify parent identity at write time using lstat.
+        info = conf_path.parent.lstat()
+        if conf_path.parent.is_symlink() or getattr(info, "st_reparse_tag", 0):
+            raise RuntimeError(
+                f"refusing to write the GUI interpreter binding: parent "
+                f"{conf_path.parent} is a link or reparse point")
+        current_identity = (info.st_dev, info.st_ino)
+        if current_identity != expected_dir_identity:
+            raise RuntimeError(
+                f"GUI interpreter binding parent identity changed between "
+                f"prepare and write ({conf_path.parent}); refusing to write")
+        fd, temp_name = tempfile.mkstemp(
+            dir=conf_path.parent, prefix=".interpreter.conf.")
+        temp = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp, 0o600)
+            info2 = conf_path.parent.lstat()
+            if (info2.st_dev, getattr(info2, "st_ino", 0)) != current_identity:
+                raise RuntimeError(
+                    f"GUI interpreter binding parent identity changed during "
+                    f"write ({conf_path.parent}); cleaning up")
+            os.replace(temp, conf_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                temp.unlink()
+            raise
+        return
+
+    # POSIX: dir-scoped fd binding
+    dir_fd = os.open(conf_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp, 0o600)
-        os.replace(temp, conf_path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            temp.unlink()
-        raise
+        opened = os.fstat(dir_fd)
+        if (opened.st_dev, opened.st_ino) != expected_dir_identity:
+            raise RuntimeError(
+                f"GUI interpreter binding parent identity changed between "
+                f"prepare and write ({conf_path.parent}); refusing to write")
+        temp_name = ".interpreter.conf." + secrets.token_hex(6)
+        temp_fd = os.open(
+            temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600,
+            dir_fd=dir_fd)
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # Atomic replace within the verified directory object; the
+            # dir_fd prevents a swapped path from redirecting the write.
+            os.replace(temp_name, INTERPRETER_CONF_RELATIVE.name,
+                       src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temp_name, dir_fd=dir_fd)
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 def bind_gui_interpreter(codex_home: Path) -> Path:
     """Prepare and publish the GUI interpreter binding for this HOME."""
-    conf_path, content = prepare_gui_interpreter_binding(codex_home)
-    write_gui_interpreter_binding(conf_path, content)
+    conf_path, content, dir_identity = prepare_gui_interpreter_binding(codex_home)
+    write_gui_interpreter_binding(conf_path, content,
+                                  expected_dir_identity=dir_identity)
     print(f"[OK] bound GUI interpreter for this HOME: {content.strip()}")
     return conf_path
 
@@ -1943,10 +2003,11 @@ def main() -> int:
             # unsafe binding location refuses the install instead of
             # completing it and then failing to bind.
             same_version_drift_preflight(args.codex, repo_root, codex_home)
-            conf_path, interpreter_line = prepare_gui_interpreter_binding(
+            conf_path, interpreter_line, dir_identity = prepare_gui_interpreter_binding(
                 codex_home)
             _run_install_transaction(args.codex, repo_root, codex_home)
-            write_gui_interpreter_binding(conf_path, interpreter_line)
+            write_gui_interpreter_binding(conf_path, interpreter_line,
+                                          expected_dir_identity=dir_identity)
             print(f"[OK] bound GUI interpreter for this HOME: {interpreter_line.strip()}")
         else:
             ensure_marketplace(args.codex, repo_root, codex_home, args.apply)

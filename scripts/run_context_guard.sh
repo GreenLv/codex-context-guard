@@ -72,10 +72,19 @@ if [ -n "$configured" ]; then
         else
             "$configured" "$target" "$@" >"$hook_out" || hook_exit=$?
         fi
-        if [ "$hook_exit" -eq 0 ] && [ ! -s "$hook_out" ]; then
-            rm -f "$hook_out"
-            printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced no Hook result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
-            exit 2
+        if [ "$hook_exit" -eq 0 ]; then
+            # Hook wire results are always JSON objects (at minimum "{}"
+            # for the silent allow path). A configured interpreter whose
+            # exit-0 output does not start with '{' is not a working
+            # Context Guard runtime.
+            case "$(head -c 1 "$hook_out" 2>/dev/null)" in
+                '{') : ;;  # JSON object: valid Hook wire result
+                *)
+                    printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced non-JSON output for a hook event. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
+                    rm -f "$hook_out"
+                    exit 2
+                    ;;
+            esac
         fi
         cat "$hook_out"
         rm -f "$hook_out"

@@ -1456,7 +1456,6 @@ class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
 
         tree = Path(cg.__file__).resolve().parents[1]
         launcher = tree / "scripts" / "run_context_guard.sh"
-        router = tree / "scripts" / "cg_hook.py"
         self._write_conf("/usr/bin/true")
         env = dict(os.environ)
         env["PYTHONDONTWRITEBYTECODE"] = "1"

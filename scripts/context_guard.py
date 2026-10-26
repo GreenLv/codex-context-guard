@@ -22697,8 +22697,6 @@ def export_handoff(
 
 CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
 CLEANUP_MAX_ENTRIES_PER_PASS = 512
-CLEANUP_SCAN_CAP = 4096
-CLEANUP_SCAN_CHECK_INTERVAL = 32
 CLEANUP_CURSOR_NAME = ".cleanup-cursor"
 
 
@@ -22765,50 +22763,62 @@ def cleanup_old_sessions(
     # decided per pass without moving the generation cursor.
     last_completed = cursor
     pass_done = False
-    # Phase E — bounded enumeration. The directory stream itself must never
-    # run unbounded: entries are collected lazily with the deadline checked
-    # every CLEANUP_SCAN_CHECK_INTERVAL entries and a hard scan cap. If the
-    # deadline passes (before or during the scan) or the scan cap is hit
-    # before the stream ends, the pass aborts without processing anything
-    # (no decision, no cursor movement) — the cost is bounded and the next
-    # pass retries. Phase P — sorted processing — only runs on a completed
-    # scan, where the lexical cursor's skip semantics are sound because the
-    # full remaining stream was observed.
+    # Phase E — bounded enumeration. Uses os.scandir for incremental
+    # directory reading on POSIX (each readdir block is bounded, unlike
+    # Path.iterdir which calls os.listdir eagerly to collect all names
+    # before yielding). The deadline is checked per entry during
+    # enumeration. If the deadline expires mid-scan, the collected prefix
+    # is sorted and processed as a partial batch — progress is made and
+    # the lexical cursor advances past every decided entry. Entries
+    # lexically below the cursor but not yet scanned are deferred to a
+    # later generation (when a full scan completes) — they are never
+    # deleted without an eligibility check, so this is a bounded delay,
+    # not a correctness issue.
     candidates: list[str] = []
-    scan_complete = False
-    try:
-        if budget_left():
-            scanner = sessions.iterdir()
-            while True:
-                if not budget_left() or len(candidates) >= CLEANUP_SCAN_CAP:
-                    break
-                try:
-                    name = next(scanner).name
-                except StopIteration:
-                    scan_complete = True
-                    break
-                if name in {".locks", CLEANUP_CURSOR_NAME}:
-                    continue
-                candidates.append(name)
-                if len(candidates) % CLEANUP_SCAN_CHECK_INTERVAL == 0 \
-                        and not budget_left():
-                    break
-    except OSError:
-        pass
-    if scan_complete:
+    if budget_left():
+        try:
+            scanner = os.scandir(sessions)
+            try:
+                while True:
+                    if not budget_left():
+                        break
+                    try:
+                        entry = next(scanner)
+                    except StopIteration:
+                        break
+                    name = entry.name
+                    if name in {".locks", CLEANUP_CURSOR_NAME}:
+                        continue
+                    if entry.is_symlink() or not entry.is_dir():
+                        continue
+                    if current is not None and Path(entry.path).resolve() == current.resolve():
+                        continue
+                    candidates.append(name)
+            except OSError:
+                pass
+            finally:
+                scanner.close()
+        except OSError:
+            pass
+
+    # Phase P — sorted processing with lexical cursor. Each decided entry
+    # advances the cursor past itself; an interrupted deletion leaves the
+    # cursor below the interrupted entry for exact next-pass resume.
+    removed = 0
+    scanned = 0
+    last_completed = cursor
+    pass_done = True
+    if candidates:
         candidates.sort()
         try:
             for name in candidates:
                 if name <= cursor and cursor:
                     continue
-                if not budget_left() or scanned >= CLEANUP_MAX_ENTRIES_PER_PASS:
+                if not budget_left():
                     pass_done = False
                     break
                 candidate = sessions / name
-                if candidate.is_symlink() or not candidate.is_dir():
-                    continue
-                if current is not None \
-                        and candidate.resolve() == current.resolve():
+                if current is not None and candidate.resolve() == current.resolve():
                     continue
                 scanned += 1
                 decided = True
@@ -22817,9 +22827,6 @@ def cleanup_old_sessions(
                     with session_lock(candidate, timeout=0.0):
                         resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
                         if resumable and _resume_retired_marker(candidate):
-                            # A successful later write for this session (a
-                            # real resume) invalidates the historical
-                            # eligibility.
                             with contextlib.suppress(OSError):
                                 (candidate / CLEANUP_PARTIAL_MARKER).unlink()
                         elif not resumable and not _session_expired(candidate, cutoff):
@@ -22836,10 +22843,7 @@ def cleanup_old_sessions(
                     decided = False
                     break
                 except (TimeoutError, OSError):
-                    # A writer holds the lifecycle lock: skip this round; the
-                    # session stays and a later pass re-reads eligibility. The
-                    # entry still counts as decided for the generation cursor.
-                    pass
+                    pass  # lock busy: decided for this generation
                 if decided:
                     last_completed = name
                 if deleted:
@@ -22849,14 +22853,12 @@ def cleanup_old_sessions(
         except OSError:
             pass_done = True
         if pass_done:
-            # The full remaining namespace was decided in this pass: the next
-            # sweep starts over so every session keeps being re-checked.
             if cursor or last_completed:
                 with contextlib.suppress(OSError):
                     _cleanup_cursor_path(root).unlink(missing_ok=True)
             return removed
-    # The pass ended mid-namespace (budget, cap, or partial scan): keep the
-    # resumption position at the last finally-decided entry.
+    # The pass ended mid-namespace: keep the resumption position at the
+    # last finally-decided entry.
     if last_completed != cursor:
         _write_cleanup_cursor(root, last_completed)
     return removed

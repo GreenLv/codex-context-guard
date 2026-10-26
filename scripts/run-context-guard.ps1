@@ -93,10 +93,16 @@ if ($configuredInterpreter) {
                 & $configuredInterpreter $runtime @runtimeArgs > $hookOut
             }
             $hookExitCode = $LASTEXITCODE
-            if ($hookExitCode -eq 0 -and $hookOut.Length -eq 0) {
-                [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced no Hook result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
-                Write-HookTraceEnd 2
-                exit 2
+            if ($hookExitCode -eq 0) {
+                # Hook wire results are always JSON objects (at minimum "{}").
+                $firstChar = if ($hookOut.Length -gt 0) {
+                    (Get-Content -LiteralPath $hookOut -TotalCount 1).Trim()[0]
+                } else { $null }
+                if ("$firstChar" -ne "{") {
+                    [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced non-JSON output for a hook event. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
+                    Write-HookTraceEnd 2
+                    exit 2
+                }
             }
             Get-Content -LiteralPath $hookOut
             Write-HookTraceEnd $hookExitCode
