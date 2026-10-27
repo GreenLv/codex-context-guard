@@ -94,6 +94,66 @@ class IsolatedEnvironment(unittest.TestCase):
         os.environ.update(self._env)
         self.temporary.cleanup()
 
+    def _scan_stub(self, sessions, visited, clock):
+        """scandir stub over the namespace charging 1ms per entry, with a
+        names provider reflecting the live directory."""
+        real_scandir = os.scandir
+
+        class Entry:
+            def __init__(self, name):
+                self.name = name
+                self.path = str(sessions / name)
+
+            def is_symlink(self):
+                return False
+
+            def is_dir(self, **kwargs):
+                return True
+
+        class Scan:
+            def __init__(self):
+                self.items = iter(
+                    name for name in sorted(p.name for p in sessions.iterdir())
+                    if name not in {".locks"})
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                name = next(self.items)
+                clock[0] += 1
+                visited.append(name)
+                return Entry(name)
+
+            def close(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def scanner(path):
+            if Path(path) == sessions:
+                return Scan()
+            return real_scandir(path)
+
+        return mock.patch.object(cg.os, "scandir", side_effect=scanner)
+
+    def _expire_session(self, name: str) -> None:
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", name, prompt="expired task", turn_id="t1"))
+        state_path = self.session_dir(name) / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["session"]["ended_at"] = "2000-01-01T00:00:00Z"
+        state["content_hash"] = cg.state_content_hash(state)
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8")
+        old = time.time() - 90 * 86400
+        os.utime(state_path, (old, old))
+
     def payload(self, event: str, session: str, **extra) -> dict:
         base = {
             "hook_event_name": event,
@@ -870,18 +930,6 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
     fairness, and link deletion interact; every row here failed on the
     19a4cb5 candidate."""
 
-    def _expire_session(self, name: str) -> None:
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", name, prompt="expired task", turn_id="t1"))
-        state_path = self.session_dir(name) / "state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["session"]["ended_at"] = "2000-01-01T00:00:00Z"
-        state["content_hash"] = cg.state_content_hash(state)
-        state_path.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8")
-        old = time.time() - 90 * 86400
-        os.utime(state_path, (old, old))
 
     def test_resumed_session_is_never_deleted_after_marker(self) -> None:
         name = "resume-marker"
@@ -1429,52 +1477,6 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
     cannot re-consume their budget on the same prefix. The 1ms-per-entry
     model is a boundedness probe, not a real filesystem measurement."""
 
-    def _scan_stub(self, sessions, visited, clock):
-        """scandir stub over the namespace charging 1ms per entry, with a
-        names provider reflecting the live directory."""
-        real_scandir = os.scandir
-
-        class Entry:
-            def __init__(self, name):
-                self.name = name
-                self.path = str(sessions / name)
-
-            def is_symlink(self):
-                return False
-
-            def is_dir(self, **kwargs):
-                return True
-
-        class Scan:
-            def __init__(self):
-                self.items = iter(
-                    name for name in sorted(p.name for p in sessions.iterdir())
-                    if name not in {".locks"})
-
-            def __iter__(self):
-                return self
-
-            def __next__(self):
-                name = next(self.items)
-                clock[0] += 1
-                visited.append(name)
-                return Entry(name)
-
-            def close(self):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-        def scanner(path):
-            if Path(path) == sessions:
-                return Scan()
-            return real_scandir(path)
-
-        return mock.patch.object(cg.os, "scandir", side_effect=scanner)
 
     def test_expired_deadline_requests_nothing(self) -> None:
         sessions = self.data_dir / "sessions-v2"
@@ -1754,18 +1756,6 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
     deletion outside the v2 namespace. The legacy namespace stays read-only
     and valid v2 pending work still proceeds."""
 
-    def _expire_session(self, name: str) -> None:
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", name, prompt="expired task", turn_id="t1"))
-        state_path = self.session_dir(name) / "state.json"
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-        state["session"]["ended_at"] = "2000-01-01T00:00:00Z"
-        state["content_hash"] = cg.state_content_hash(state)
-        state_path.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8")
-        old = time.time() - 90 * 86400
-        os.utime(state_path, (old, old))
 
     def _write_state_file(self, cursor: str, pending: list) -> None:
         path = cg._cleanup_cursor_path(self.data_dir)
@@ -1861,6 +1851,225 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
                                           deadline=time.monotonic() + 30)
         self.assertEqual(removed, 1,
                          "a hostile cursor must not suppress adjudication")
+
+
+class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
+    """RV-03 (eighth round): the durable discovery registry and the chunked
+    pending queue together carry legitimate undecided work across calls.
+
+    - The registry (content-free encoded names) is written by the session
+      write path, so hook-created sessions are discovered without depending
+      on readdir order; sweep-discovered names are added to it too, so even
+      a deadline-interrupted scan persists its discoveries position-free.
+    - The pending queue is persisted as fixed-size chunks plus an index —
+      the producer's write domain equals the reader's read domain, so
+      legitimate work can never be written into a shape its own reader
+      refuses.
+    - The registry is a hint, never an authority: entries are
+      component-gated on read, live-verified at adjudication, and a lost or
+      corrupted registry falls back to the deadline-bounded backfill sweep.
+    """
+
+    def _register(self, names):
+        cg._add_cleanup_registry_entries(self.data_dir, names)
+
+    def test_write_path_registers_sessions_for_discovery(self) -> None:
+        """Production save_state registers the encoded session name, so a
+        hook-created session is discoverable without any scan."""
+        self._expire_session("registered-session")
+        registry = cg._read_discovery_registry(self.data_dir)
+        self.assertIn(cg.safe_session_id("registered-session"), registry)
+
+    def test_registered_eight_directory_model_reaches_the_tail(self) -> None:
+        """The eighth-round design proof on the sixth-review toy model: the
+        same eight directories, 1ms per read, 3ms per round — but the
+        sessions are durably registered by the write path (as production
+        hook-created sessions are). The registry is adjudicated directly,
+        so the expired tail is discovered without depending on readdir
+        order and removed within bounded passes."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        names = [f"a-retained-{i:02d}" for i in range(7)] + ["z-expired"]
+        for name in names:
+            (sessions / name).mkdir()
+        tail = sessions / "z-expired"
+        self._register(names)
+        visited = []
+        ticks = [0.0]
+
+        def clock():
+            return 1000.0 + ticks[0] / 1000.0
+
+        def eligible(path, _cutoff):
+            visited.append(path.name)
+            return path.name == "z-expired"
+
+        with (self._scan_stub(sessions, visited, ticks),
+              mock.patch.object(cg.time, "monotonic", side_effect=clock),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            for _ in range(12):
+                cg.cleanup_old_sessions(self.data_dir,
+                                        deadline=clock() + 0.003)
+        self.assertFalse(tail.exists(),
+                         "registered sessions were not fairly discovered")
+        self.assertIn("z-expired", visited)
+
+    def test_pending_chunks_carry_more_than_one_legacy_file(self) -> None:
+        """The seventh-review capacity counterexample, as a repository
+        regression: a budget-starved pass whose sweep reads more names than
+        one legacy state file held must persist ALL of them through the
+        chunk protocol, and the next pass adjudicates the whole queue (the
+        expired tail included)."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        count = 4097
+        names = [f"a-retained-{i:05d}" for i in range(count - 1)] + [
+            "z-expired"]
+        for name in names:
+            (sessions / name).mkdir()
+        tail = sessions / "z-expired"
+        visited = []
+        # The reviewer's clock: reads cost ~nothing and the LAST in-flight
+        # read of each pass consumes the remainder of the budget, so every
+        # name is read and none is adjudicated in the first pass.
+        clock = [1000.0]
+
+        def eligible(path, _cutoff):
+            visited.append(path.name)
+            return path.name == "z-expired"
+
+        real_scandir = os.scandir
+        reads_per_pass = []
+
+        class Entry:
+            def __init__(self, name):
+                self.name = name
+                self.path = str(sessions / name)
+
+            def is_symlink(self):
+                return False
+
+            def is_dir(self, **kwargs):
+                return True
+
+        class Scanner:
+            def __init__(self):
+                self.names = [n for n in names
+                              if (sessions / n).exists()]
+                self.index = 0
+                reads_per_pass.append(0)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.index >= len(self.names):
+                    raise StopIteration
+                name = self.names[self.index]
+                self.index += 1
+                reads_per_pass[-1] += 1
+                visited.append(name)
+                if self.index == len(self.names):
+                    clock[0] = 1000.101  # last read consumes the remainder
+                return Entry(name)
+
+            def close(self):
+                pass
+
+        def scanner(path):
+            if Path(path) == sessions:
+                return Scanner()
+            return real_scandir(path)
+
+        with (mock.patch.object(cg.os, "scandir", side_effect=scanner),
+              mock.patch.object(cg.time, "monotonic",
+                                side_effect=lambda: clock[0]),
+              mock.patch.object(cg, "_session_expired",
+                                side_effect=eligible)):
+            cg.cleanup_old_sessions(self.data_dir, deadline=1000.100)
+            cursor, pending = cg._read_cleanup_state(self.data_dir)
+            self.assertEqual(len(pending), count,
+                             "the reader refused a queue its own writer "
+                             "produced")
+            self.assertEqual(reads_per_pass[0], count)
+            self.assertEqual(
+                len(list((self.data_dir / "sessions-v2" / ".locks").glob(
+                    "*.cleanup-pending-*.json"))), 2,
+                "the queue must be split into two chunks at the legacy "
+                "file-size boundary")
+            clock[0] = 1000.0
+            cg.cleanup_old_sessions(self.data_dir, deadline=clock[0] + 30.0)
+        self.assertFalse(tail.exists(),
+                         "the over-legacy-limit queue lost its tail")
+        self.assertIn("z-expired", visited)
+
+    def test_corrupted_chunk_costs_only_its_own_names(self) -> None:
+        """One corrupted chunk file drops that chunk's names only; the other
+        chunks still load (bounded, progress-only loss — never a whole-queue
+        refusal)."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        for name in ("a-one", "b-two", "c-three"):
+            (sessions / name).mkdir()
+        cg._write_cleanup_state(self.data_dir, "", ["a-one", "b-two",
+                                                    "c-three"])
+        chunk_dir = self.data_dir / "sessions-v2" / ".locks"
+        chunks = sorted(chunk_dir.glob("*.cleanup-pending-*.json"))
+        self.assertEqual(len(chunks), 1)
+        chunks[0].write_text("{corrupted", encoding="utf-8")
+        cursor, pending = cg._read_cleanup_state(self.data_dir)
+        self.assertEqual(pending, [],
+                         "a corrupted chunk must not smuggle names through")
+        # A repaired write restores the queue.
+        cg._write_cleanup_state(self.data_dir, "", ["a-one", "b-two",
+                                                    "c-three"])
+        _, pending = cg._read_cleanup_state(self.data_dir)
+        self.assertEqual(pending, ["a-one", "b-two", "c-three"])
+
+    def test_registry_corruption_and_loss_fall_back_to_backfill(self) -> None:
+        """A corrupted registry drops its invalid lines; a deleted registry
+        falls back to the deadline-bounded backfill sweep — expired sessions
+        are still adjudicated correctly in both cases."""
+        self._expire_session("registered-expired")
+        registry = cg._cleanup_registry_path(self.data_dir)
+        registry.write_text("registered-expired\n../../evil\n.locks\n",
+                            encoding="utf-8")
+        loaded = cg._read_discovery_registry(self.data_dir)
+        self.assertEqual(loaded, {"registered-expired"},
+                         "invalid registry lines must be dropped")
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir("registered-expired").exists())
+        # Loss: with no registry at all, the backfill sweep still finds the
+        # expired session (bounded delay per pass under the deadline).
+        self._expire_session("backfill-expired")
+        cg._cleanup_registry_path(self.data_dir).unlink(missing_ok=True)
+        self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir("backfill-expired").exists())
+
+    def test_registry_entries_pointing_outside_v2_are_dropped(self) -> None:
+        """Registry names are hints, not authority: an entry whose live
+        object is missing (renamed away, e.g. into the legacy namespace by
+        the seventh-review poison fixture) is decided without action and
+        the legacy tree stays untouched."""
+        self._expire_session("registered-session")
+        legacy = self.data_dir / cg.LEGACY_NAMESPACE / "registered-session"
+        legacy.mkdir(parents=True, exist_ok=True)
+        (legacy / "KEEP.txt").write_text("SYNTHETIC-SENTINEL\n",
+                                         encoding="utf-8")
+        shutil.rmtree(self.session_dir("registered-session"))
+        self._register([cg.safe_session_id("registered-session")])
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 0)
+        self.assertTrue(legacy.exists())
+        self.assertFalse(
+            (self.data_dir / cg.LEGACY_NAMESPACE / ".locks").exists())
 
 
 class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):

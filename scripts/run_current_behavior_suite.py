@@ -83,6 +83,8 @@ def main() -> int:
                     "tests": 0,
                     "failures": 1,
                     "errors": 1,
+                    "expected_failures": 0,
+                    "unexpected_successes": 1,
                     "skipped": 0,
                     "note": f"import/load failed: {type(exc).__name__}: {exc}",
                 }
@@ -96,6 +98,8 @@ def main() -> int:
                 "tests": result.testsRun,
                 "failures": len(result.failures),
                 "errors": len(result.errors),
+                "expected_failures": len(result.expectedFailures),
+                "unexpected_successes": len(result.unexpectedSuccesses),
                 "skipped": len(result.skipped),
             }
         )
@@ -103,6 +107,12 @@ def main() -> int:
             aggregate_failures.append(f"{module_name}: FAIL {test.id()}")
         for test, _ in result.errors:
             aggregate_failures.append(f"{module_name}: ERROR {test.id()}")
+        # A test marked expectedFailure that actually passes is a broken
+        # pin: the suite must fail on it exactly like unittest does,
+        # instead of silently folding it into the pass column.
+        for test in result.unexpectedSuccesses:
+            aggregate_failures.append(
+                f"{module_name}: UNEXPECTED SUCCESS {test.id()}")
 
     total = {
         "excluded_historical_baseline": EXCLUDED_HISTORICAL_BASELINE,
@@ -111,6 +121,10 @@ def main() -> int:
         "tests": sum(item["tests"] for item in matrix),
         "failures": sum(item["failures"] for item in matrix),
         "errors": sum(item["errors"] for item in matrix),
+        "expected_failures": sum(item["expected_failures"] for item in matrix),
+        "unexpected_successes": sum(
+            item["unexpected_successes"] for item in matrix
+        ),
         "skipped": sum(item["skipped"] for item in matrix),
     }
     if args.json:
@@ -126,6 +140,8 @@ def main() -> int:
                 "tests": total["tests"],
                 "failures": total["failures"],
                 "errors": total["errors"],
+                "expected_failures": total["expected_failures"],
+                "unexpected_successes": total["unexpected_successes"],
                 "skipped": total["skipped"],
             },
             ensure_ascii=False,

@@ -230,7 +230,7 @@ prompt as an unverified obligation; it does not infer a missing unit binding.
   work unit's pending-item count, one reason, and one next step — never
   requirement, acceptance, or evidence IDs, which stay in `diagnose` and
   explicit audit views.
-- Ended sessions become eligible for cleanup after 30 days.
+- Ended sessions become eligible for cleanup after 30 days. The sweep's resumption state adds only content-free position and queue markers: the resumption cursor, pending-queue chunk files, and the discovered-session registry hold encoded session directory names and nothing else — no prompts, tool text, paths beyond the names already on disk, or counts beyond the queue's own bookkeeping. They are private state under the same retention policy and are never exported.
 
 ## Redaction
 

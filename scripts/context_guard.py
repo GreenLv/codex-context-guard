@@ -9470,6 +9470,17 @@ def save_state(session_dir: Path, state: dict[str, Any]) -> None:
     # and also retires eligibility for the cleanup-side re-read.
     with contextlib.suppress(OSError):
         (session_dir / CLEANUP_PARTIAL_MARKER).unlink(missing_ok=True)
+    # Durable discovery (registration): record the session's encoded name so
+    # the retention sweep adjudicates it without depending on readdir order.
+    # Content-free name only; best-effort — a failed registration costs
+    # timely discovery, the deadline-bounded backfill sweep still covers the
+    # session. Per-process bookkeeping keeps one append per session.
+    try:
+        if str(session_dir) not in _REGISTRY_ENTRIES_THIS_PROCESS:
+            _add_cleanup_registry_entries(session_dir.parent.parent,
+                                          [session_dir.name])
+    except OSError:
+        pass
 
 
 def prompt_text(payload: dict[str, Any]) -> str:
@@ -22697,9 +22708,19 @@ def export_handoff(
 
 CLEANUP_PARTIAL_MARKER = ".cleanup-partial"
 CLEANUP_CURSOR_NAME = ".cleanup-cursor"
-_CLEANUP_CURSOR_SCHEMA = "cg-cleanup-cursor/v1"
+_CLEANUP_PENDING_CHUNK_PREFIX = ".cleanup-pending-"
+_CLEANUP_CURSOR_SCHEMA = "cg-cleanup-cursor/v2"
+_CLEANUP_PENDING_CHUNK_SCHEMA = "cg-cleanup-pending/v1"
+_CLEANUP_LEGACY_CURSOR_SCHEMA = "cg-cleanup-cursor/v1"
 _CLEANUP_CURSOR_MAX_NAME = 200
+# The write and read domains are the same by construction: the pending
+# queue is persisted as fixed-size chunks of at most this many validated
+# names each, plus an index listing the chunk files. There is no total
+# queue cap in either direction — the chunk count is bounded instead, so a
+# resumable queue cannot grow into an unbounded file and a producer can
+# never write a queue its own reader would refuse.
 _CLEANUP_CURSOR_MAX_PENDING = 4096
+_CLEANUP_CURSOR_MAX_CHUNKS = 1024
 _CLEANUP_COMPONENT_RESERVED = frozenset({
     ".locks", CLEANUP_CURSOR_NAME, CLEANUP_PARTIAL_MARKER, ".", "..",
 })
@@ -22729,6 +22750,7 @@ def _is_session_component(name: object) -> bool:
         isinstance(name, str)
         and 0 < len(name) <= _CLEANUP_CURSOR_MAX_NAME
         and name not in _CLEANUP_COMPONENT_RESERVED
+        and not name.startswith(".cleanup")
         and not any(ch not in _CLEANUP_COMPONENT_ALLOWED for ch in name)
     )
 
@@ -22737,18 +22759,33 @@ def _cleanup_cursor_path(root: Path) -> Path:
     return root / V2_NAMESPACE / ".locks" / CLEANUP_CURSOR_NAME
 
 
+def _cleanup_pending_chunk_path(root: Path, index: int) -> Path:
+    return (root / V2_NAMESPACE / ".locks" /
+            f"{_CLEANUP_PENDING_CHUNK_PREFIX}{index:04d}.json")
+
+
+def _cleanup_orphan_chunk_paths(root: Path) -> list[Path]:
+    locks = root / V2_NAMESPACE / ".locks"
+    try:
+        return sorted(locks.glob(f"{_CLEANUP_PENDING_CHUNK_PREFIX}*.json"))
+    except OSError:
+        return []
+
+
 def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
     """Load persisted resumption state: (cursor, pending queue).
 
-    Accepts the current JSON schema and the legacy plain-text cursor. The
-    queue is untrusted control data: every entry must pass the namespace
-    component gate or it is dropped at load, and the cursor must be a valid
-    component too (it only feeds lexical comparisons, but a hostile cursor
-    could otherwise suppress names). A failed, corrupted or hostile read
-    only costs resumption position and queued names, never correctness:
-    every surviving queued name is re-checked against the live namespace
-    object at adjudication and passes the full eligibility check before any
-    deletion.
+    The current protocol is a small index file plus fixed-size pending
+    chunk files (at most _CLEANUP_CURSOR_MAX_PENDING validated names per
+    chunk, at most _CLEANUP_CURSOR_MAX_CHUNKS chunks); the producer writes
+    exactly this shape, so the read domain equals the write domain and a
+    legitimate queue can never be refused by its own reader. Each chunk is
+    validated independently: a missing or corrupted chunk costs that
+    chunk's names only. Names must pass the namespace-component gate; a
+    failed, corrupted or hostile read costs resumption position and queued
+    names, never correctness — every surviving name is re-checked against
+    the live namespace object at adjudication. The v1 single-file schema
+    and the legacy plain-text cursor remain readable for old state.
     """
     try:
         raw = _cleanup_cursor_path(root).read_text(encoding="utf-8").strip()
@@ -22756,46 +22793,176 @@ def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
         return "", []
     if not raw:
         return "", []
-    if raw.startswith("{"):
-        try:
-            state = json.loads(raw)
-            cursor = state["cursor"]
+    if not raw.startswith("{"):
+        return ((raw if _is_session_component(raw) else ""), [])
+    try:
+        state = json.loads(raw)
+        cursor = state["cursor"]
+        if not (isinstance(cursor, str)
+                and len(cursor) <= _CLEANUP_CURSOR_MAX_NAME):
+            return "", []
+        safe_cursor = cursor if _is_session_component(cursor) else ""
+        if state.get("schema") == _CLEANUP_LEGACY_CURSOR_SCHEMA:
             pending = state["pending"]
-            if (
-                state.get("schema") == _CLEANUP_CURSOR_SCHEMA
-                and isinstance(cursor, str)
-                and len(cursor) <= _CLEANUP_CURSOR_MAX_NAME
-                and isinstance(pending, list)
-                and len(pending) <= _CLEANUP_CURSOR_MAX_PENDING
-            ):
-                safe_cursor = cursor if _is_session_component(cursor) else ""
-                safe_pending = sorted({
+            if (isinstance(pending, list)
+                    and len(pending) <= _CLEANUP_CURSOR_MAX_PENDING):
+                return safe_cursor, sorted({
                     name for name in pending if _is_session_component(name)
                 })
-                return safe_cursor, safe_pending
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            pass
+            return safe_cursor, []
+        if state.get("schema") != _CLEANUP_CURSOR_SCHEMA:
+            return "", []
+        chunks = state["chunks"]
+        if not (isinstance(chunks, list)
+                and len(chunks) <= _CLEANUP_CURSOR_MAX_CHUNKS
+                and all(isinstance(c, str) for c in chunks)):
+            return safe_cursor, []
+        pending: set[str] = set()
+        for chunk_name in chunks:
+            expected = (root / V2_NAMESPACE / ".locks") / chunk_name
+            try:
+                if not expected.resolve().is_relative_to(
+                        (root / V2_NAMESPACE / ".locks").resolve()):
+                    continue  # a hostile index must not point outside .locks
+                chunk_raw = expected.read_text(encoding="utf-8")
+                chunk = json.loads(chunk_raw)
+                names = chunk["names"]
+            except (OSError, UnicodeError, json.JSONDecodeError, KeyError,
+                    TypeError, ValueError):
+                continue  # one bad chunk costs its names only
+            if chunk.get("schema") != _CLEANUP_PENDING_CHUNK_SCHEMA:
+                continue
+            if not isinstance(names, list) or len(names) > _CLEANUP_CURSOR_MAX_PENDING:
+                continue
+            pending.update(
+                name for name in names if _is_session_component(name))
+        return safe_cursor, sorted(pending)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return "", []
-    return ((raw if _is_session_component(raw) else ""), [])
 
 
 def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
-    # Content-free position and queue markers for fair resumption across
-    # passes; a failed write only costs resumption position, never
-    # correctness.
-    payload = {
-        "schema": _CLEANUP_CURSOR_SCHEMA,
-        "cursor": cursor,
-        "pending": sorted(set(pending)),
-    }
+    """Persist the resumption state in the same shape its reader accepts.
+
+    Pending names are chunked into fixed-size files (the write domain
+    equals the read domain), the index lists exactly the chunk files that
+    carry this queue, and chunk files not listed by the fresh index are
+    removed so orphaned files from an interrupted earlier write cannot
+    accumulate. A failed write only costs resumption position, never
+    correctness.
+    """
+    names = sorted(set(pending))
+    locks = root / V2_NAMESPACE / ".locks"
+    chunk_names: list[str] = []
+    try:
+        locks.mkdir(parents=True, exist_ok=True)
+        for index in range(0, len(names), _CLEANUP_CURSOR_MAX_PENDING):
+            if len(chunk_names) >= _CLEANUP_CURSOR_MAX_CHUNKS:
+                break  # resumable-queue bound: excess waits for a later pass
+            chunk_path = _cleanup_pending_chunk_path(root, len(chunk_names))
+            chunk_payload = {
+                "schema": _CLEANUP_PENDING_CHUNK_SCHEMA,
+                "names": names[index:index + _CLEANUP_CURSOR_MAX_PENDING],
+            }
+            atomic_write_text(
+                chunk_path,
+                json.dumps(chunk_payload, ensure_ascii=False) + "\n")
+            chunk_names.append(chunk_path.name)
+        payload = {
+            "schema": _CLEANUP_CURSOR_SCHEMA,
+            "cursor": cursor,
+            "pending_count": min(len(names),
+                                 len(chunk_names) * _CLEANUP_CURSOR_MAX_PENDING),
+            "chunks": chunk_names,
+        }
+        atomic_write_text(
+            _cleanup_cursor_path(root),
+            json.dumps(payload, ensure_ascii=False) + "\n")
+        keep = set(chunk_names)
+        for orphan in _cleanup_orphan_chunk_paths(root):
+            if orphan.name not in keep:
+                with contextlib.suppress(OSError):
+                    orphan.unlink()
+    except OSError:
+        pass
+
+
+def _reset_cleanup_state(root: Path) -> None:
+    """Drop the resumption state entirely (completed generation): the index
+    and every pending chunk file."""
     with contextlib.suppress(OSError):
-        path = _cleanup_cursor_path(root)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps(payload, ensure_ascii=False) + "\n")
+        _cleanup_cursor_path(root).unlink(missing_ok=True)
+    for chunk in _cleanup_orphan_chunk_paths(root):
+        with contextlib.suppress(OSError):
+            chunk.unlink()
 
 
 def _read_cleanup_cursor(root: Path) -> str:
     return _read_cleanup_state(root)[0]
+
+
+CLEANUP_REGISTRY_NAME = ".session-registry"
+_REGISTRY_ENTRIES_THIS_PROCESS: set[tuple[str, str]] = set()
+
+
+def _cleanup_registry_path(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / CLEANUP_REGISTRY_NAME
+
+
+def _read_discovery_registry(root: Path) -> set[str]:
+    """Load the durable discovered-session set (content-free encoded names).
+
+    The registry is a discovery hint, never an authority: entries are
+    component-gated on read and re-verified against the live namespace
+    object at adjudication. A missing, truncated or corrupted file simply
+    falls back to scan discovery at bounded cost.
+    """
+    try:
+        raw = _cleanup_registry_path(root).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return set()
+    return {
+        line.strip() for line in raw.splitlines()
+        if _is_session_component(line.strip())
+    }
+
+
+def _add_cleanup_registry_entries(root: Path, names) -> None:
+    """Best-effort durable discovery: record encoded session names so later
+    passes adjudicate them without depending on readdir order. Duplicates
+    are harmless (set semantics on read) and the file is compacted at
+    generation reset; a failed append costs timely discovery only — the
+    backfill sweep still covers the name at bounded cost."""
+    fresh = sorted(
+        name for name in set(names)
+        if _is_session_component(name)
+        and (str(root), name) not in _REGISTRY_ENTRIES_THIS_PROCESS
+    )
+    if not fresh:
+        return
+    try:
+        path = _cleanup_registry_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            for name in fresh:
+                handle.write(name + "\n")
+                _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
+    except OSError:
+        return
+
+
+def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
+    """Rewrite the registry from a completed scan: exact live names only,
+    duplicates folded, stale entries (deleted sessions) dropped."""
+    valid = sorted(name for name in live_names if _is_session_component(name))
+    with contextlib.suppress(OSError):
+        path = _cleanup_registry_path(root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            path,
+            "".join(name + "\n" for name in valid))
+        for name in valid:
+            _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
 
 
 def cleanup_old_sessions(
@@ -22947,10 +23114,17 @@ def cleanup_old_sessions(
     # budget requests nothing, and there is no queue-cap truncation — the
     # batch is bounded by the deadline and sorted only after the read phase,
     # so the lexical cursor derived from a COMPLETED scan represents
-    # actually-read work even when readdir order is not lexical.
+    # actually-read work even when readdir order is not lexical. Discovery
+    # has a second, order-free source: the durable discovered-session set
+    # (write-path registrations plus every name this sweep has ever read),
+    # whose entries are adjudicated whether or not this pass's scan reaches
+    # them; sweep-discovered names are added to it, so discovery persists
+    # across interrupted passes without depending on stream position.
+    registry = _read_discovery_registry(root)
     candidates: list[str] = []
     scan_done = False
     queued = set(pending)
+    scanned_dirs: list[str] = []
     if budget_left():
         try:
             scanner = os.scandir(sessions)
@@ -22978,28 +23152,43 @@ def cleanup_old_sessions(
                         continue
                     if current is not None and Path(entry.path).resolve() == current.resolve():
                         continue
-                    candidates.append(name)
+                    scanned_dirs.append(name)
             except OSError:
                 pass
             finally:
                 scanner.close()
         except OSError:
             pass
+    # Persist this pass's discoveries durably (order-free, survives the
+    # call boundary) and union them with the registry into one candidate
+    # batch; every entry is still live-verified before any adjudication.
+    _add_cleanup_registry_entries(root, scanned_dirs)
+    registry.update(scanned_dirs)
+    for name in sorted(registry):
+        if name in queued or name in decided_now:
+            continue
+        if cursor and name <= cursor:
+            continue
+        candidates.append(name)
+    candidates.sort()
 
-    # Phase P' — adjudicate the freshly swept batch; whatever the budget
-    # leaves undecided joins the persisted queue for the next pass. The
-    # lexical cursor is persisted only when this pass's scan reached the
-    # namespace end; an interrupted scan persists the queue with an empty
-    # cursor so no unread name can ever be skipped by a watermark.
+    # Phase P' — adjudicate the candidate batch; whatever the budget leaves
+    # undecided joins the persisted queue for the next pass. The lexical
+    # cursor is persisted only when this pass's scan reached the namespace
+    # end; an interrupted scan persists the queue with an empty cursor so
+    # no unread name can ever be skipped by a watermark.
     if candidates:
-        candidates.sort()
         pending = adjudicate(candidates)
     if not pending and scan_done:
         # Generation complete: reset so the next sweep re-decides the
-        # namespace from scratch (picks up order changes and recreations).
+        # namespace from scratch (picks up order changes and recreations),
+        # and compact the registry to the live namespace (folds duplicates,
+        # drops entries for deleted sessions).
         if cursor or last_completed:
-            with contextlib.suppress(OSError):
-                _cleanup_cursor_path(root).unlink(missing_ok=True)
+            _reset_cleanup_state(root)
+            _compact_discovery_registry(
+                root, {name for name in registry
+                       if (sessions / name).is_dir()})
         return removed
     _write_cleanup_state(root, last_completed if scan_done else "", pending)
     return removed

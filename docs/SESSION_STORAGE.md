@@ -84,43 +84,59 @@ retention timestamp. Legacy trees and their timestamps are unchanged.
 
 Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
 budget, with budget, persisted progress and fairness as separate mechanisms
-(restated twice after review: the original per-read deadline starved the
-tail behind a re-read prefix, and the interim no-deadline full-sweep design
-was rejected as an unadopted contract change and withdrawn). Enumeration is
-deadline-bounded per read, as originally required: every readdir step starts
-only within the remaining budget, an already-expired budget requests
-nothing, and there is no queue-cap truncation — the batch is bounded by the
-deadline and sorted only after the read phase ends. The lexical resumption
-cursor is persisted only when its scan reached the end of the namespace
-(every name at or below it was then actually read and decided, so skipping
-them later is sound even when readdir order is not lexical); an interrupted
-scan persists the pending queue with an empty cursor and the next pass
-re-reads the namespace without skipping anything, re-adjudicating decided
-names at bounded cost rather than risking an unread name. Names read but
-left undecided are persisted in a content-free pending queue next to the
-cursor, and the queue drains before any new sweep, so interrupted work
-survives the call boundary and is adjudicated before fresh enumeration
-queues more names behind it; the drain's decisions are not re-queued by the
-same pass's own sweep. The queue is progress data, not a scope grant: every
-queued name must be a plain encoded v2 session component (validated at load
-and re-verified against the live namespace object at adjudication — real
-directory, not a link, still present), so a hostile or corrupted state file
-can never point deletion outside the v2 namespace, and the legacy namespace
-stays read-only. A pass that drains the queue and reads the namespace to
-its end resets the generation so order changes and recreated names are
-re-decided. Because discovery is deadline-bounded per read, a pass whose
-budget buys fewer reads than the namespace has entries discovers names
-across passes (bounded delay); the interaction of per-read gating with
-adversarial readdir orders at toy ratios is a documented open contract
-question submitted for the requirement owner's decision, not resolved by
-this implementation. An interrupted deletion leaves a content-free marker
-so the next pass finishes it without re-deriving eligibility, and running
-out of budget returns safely with the remaining backlog in the queue for
-later passes. Directory links are unlinked without following them. A
-successful later write for a marked session — a real resume — retires the
-marker inside the same lifecycle lock, so historical cleanup eligibility
-can never delete a live session. Current-session persistence always runs
-before the sweep. UserPromptSubmit events are never collapsed: repeated
+(restated three times after review; the current state is described below and
+the remaining open contract question is disclosed at the end — it is NOT
+accepted as resolved). Enumeration is deadline-bounded per read, as
+originally required: every readdir step starts only within the remaining
+budget, an already-expired budget requests nothing, and there is no
+queue-cap truncation — the batch is bounded by the deadline and sorted only
+after the read phase ends, so a pass with ample budget reads the whole
+namespace regardless of readdir order. The lexical resumption cursor is
+persisted only when its scan reached the end of the namespace (every name
+at or below it was then actually read and decided, so skipping them later is
+sound even when readdir order is not lexical); an interrupted scan persists
+the pending queue with an empty cursor and the next pass re-reads the
+namespace without skipping anything, re-adjudicating decided names at
+bounded cost rather than risking an unread name.
+
+Discovery has a second, order-free source: a durable discovered-session
+registry of content-free encoded names, written by the session save path
+when a v2 session is created and extended by every name the sweep reads
+(so even a deadline-interrupted scan persists its discoveries
+position-free). The registry is a hint, never an authority: entries are
+component-gated on read, re-verified against the live namespace object at
+adjudication (real directory, not a link, still present), and compacted to
+the live namespace when a generation completes. A missing, truncated or
+corrupted registry falls back to the deadline-bounded backfill sweep at
+bounded cost. Names read but left undecided are persisted in a content-free
+pending queue as fixed-size chunk files with an index — the producer's
+write domain equals the reader's read domain, so a legitimate queue can
+never be refused by its own reader, and each chunk is validated
+independently so one corrupted chunk costs only its own names. The queue
+drains before any new sweep and the drain's decisions are not re-queued by
+the same pass's own sweep. The queue and the registry are progress data,
+not a scope grant: the legacy namespace stays read-only. A pass that drains
+the queue and reads the namespace to its end resets the generation so order
+changes and recreated names are re-decided. An interrupted deletion leaves
+a content-free marker so the next pass finishes it without re-deriving
+eligibility, and running out of budget returns safely with the remaining
+backlog in the queue for later passes. Directory links are unlinked without
+following them. A successful later write for a marked session — a real
+resume — retires the marker inside the same lifecycle lock, so historical
+cleanup eligibility can never delete a live session. Current-session
+persistence always runs before the sweep.
+
+Open, unaccepted contract question: with per-read deadline gating restored,
+a pass whose budget buys fewer readdir steps than the namespace has entries
+discovers pre-existing (never-registered) names across passes, and the
+known toy-model counterexamples (small fixed budgets, adversarial readdir
+orders, direct-created directories) stay unreachable-by-design — pinned as
+an expected failure in the repository with the proof sketch and a pending
+design proposal for the requirement owner. Hook-created (registered)
+sessions are fairly discovered by the registry and are removed by this
+proposal's finite model; that proposal is NOT adopted as an acceptance
+change and the toy-model failures for unregistered directories are not
+counted as resolved. UserPromptSubmit events are never collapsed: repeated
 (session, turn, prompt-bytes) shapes are recorded only as a bounded,
 text-free diagnostic observation, because the hook payload carries no
 per-message identity.
