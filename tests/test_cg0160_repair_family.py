@@ -2052,6 +2052,68 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         self.assertEqual(removed, 1)
         self.assertFalse(self.session_dir("backfill-expired").exists())
 
+    def test_registry_created_private_mode_with_hostile_umask(self) -> None:
+        """Eighth review (P2): the registry is private state — created at
+        0600 with read-back verification even under a permissive umask, not
+        0644-by-accident. The 0700 parent does not substitute for the file
+        mode contract."""
+        old_mask = os.umask(0o022)
+        try:
+            self._expire_session("registry-mode-control")
+        finally:
+            os.umask(old_mask)
+        registry = cg._cleanup_registry_path(self.data_dir)
+        self.assertTrue(registry.exists())
+        self.assertEqual(registry.stat().st_mode & 0o777, 0o600,
+                         "the registry was created world-readable")
+
+    def test_static_link_registry_is_never_written_through(self) -> None:
+        """Eighth review (P1): every registry entrance (save-path
+        registration, sweep discovery registration, read) refuses a
+        substituted link object instead of appending through it, so an
+        external file keeps its exact bytes and the planted link stays."""
+        registry = cg._cleanup_registry_path(self.data_dir)
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        outside = self.root / "external-unrelated.conf"
+        outside.write_text("SYNTHETIC-EXTERNAL-CONFIG\n", encoding="utf-8")
+        outside.chmod(0o640)
+        before = outside.read_bytes()
+        registry.symlink_to(outside)
+        # save-path registration: refused, external untouched
+        self._expire_session("static-link-session")
+        self.assertEqual(outside.read_bytes(), before,
+                         "the save path appended through the link")
+        self.assertEqual(outside.stat().st_mode & 0o777, 0o640)
+        # sweep registration: refused too
+        cg._add_cleanup_registry_entries(self.data_dir, ["another-name"])
+        self.assertEqual(outside.read_bytes(), before,
+                         "the sweep appended through the link")
+        # compaction: refuses a substituted object instead of replacing it
+        cg._compact_discovery_registry(self.data_dir, {"some-session"})
+        self.assertEqual(outside.read_bytes(), before)
+        self.assertTrue(registry.is_symlink(),
+                        "the planted link itself was replaced")
+        # reads treat a linked registry as absent rather than reading the
+        # external file's lines as hints
+        self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
+
+    def test_cleanup_prefixed_sid_is_a_supported_session(self) -> None:
+        """Eighth review (P2): the production encoder keeps every byte of
+        `[A-Za-z0-9._-]` raw, so `.cleanup-report` is a legitimate encoded
+        session id. The cleanup gate must accept the same support domain —
+        only exact maintenance-object collisions (`.locks` and `.`/`..`)
+        are reserved — and the expired session must be adjudicated and
+        removed like any other."""
+        self._expire_session(".cleanup-report")
+        self._expire_session("ordinary-report")
+        self.assertEqual(cg.safe_session_id(".cleanup-report"),
+                         ".cleanup-report")
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 2)
+        self.assertFalse(self.session_dir(".cleanup-report").exists())
+        self.assertFalse(self.session_dir("ordinary-report").exists())
+
     def test_registry_entries_pointing_outside_v2_are_dropped(self) -> None:
         """Registry names are hints, not authority: an entry whose live
         object is missing (renamed away, e.g. into the legacy namespace by

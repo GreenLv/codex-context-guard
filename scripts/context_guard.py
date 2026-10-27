@@ -22721,9 +22721,14 @@ _CLEANUP_CURSOR_MAX_NAME = 200
 # never write a queue its own reader would refuse.
 _CLEANUP_CURSOR_MAX_PENDING = 4096
 _CLEANUP_CURSOR_MAX_CHUNKS = 1024
-_CLEANUP_COMPONENT_RESERVED = frozenset({
-    ".locks", CLEANUP_CURSOR_NAME, CLEANUP_PARTIAL_MARKER, ".", "..",
-})
+# Only components that collide with a real maintenance object at the
+# namespace root are reserved. Every other maintenance file (cursor,
+# pending chunks, registry, partial markers) lives under `.locks/` or
+# inside session directories, so encoded session names like
+# `.cleanup-report` are legitimate sessions and must reach adjudication —
+# the eighth review flagged the previous prefix-based rejection as a
+# domain split against the production write path, which accepts them.
+_CLEANUP_COMPONENT_RESERVED = frozenset({".", "..", ".locks"})
 # The encoded session-directory name domain: `safe_session_id` maps every
 # byte outside [A-Za-z0-9._-] to a "~xx" escape, so a legitimate v2 session
 # directory name can only contain these characters. Anything else — path
@@ -22741,16 +22746,21 @@ class _CleanupBudgetExhausted(Exception):
 def _is_session_component(name: object) -> bool:
     """True when `name` is a permissible v2 session directory component.
 
-    This is the single namespace gate for every queued or cursor name: the
-    queue is progress data, not a scope grant, so a hostile or corrupted
-    state file can never point adjudication outside the v2 namespace — a
-    name that is not a plain encoded component is simply not a session.
+    This is the single namespace gate for every queued, registered, or
+    cursor name: the queue and the registry are progress data, not a scope
+    grant, so a hostile or corrupted state file can never point
+    adjudication outside the v2 namespace — a name that is not a plain
+    encoded component is simply not a session. The only reserved components
+    are the ones that collide with a real maintenance object at the
+    namespace root (`.`/`..`/`.locks`); every other maintenance file lives
+    under `.locks/` or inside session directories, so production-encoded
+    names such as `.cleanup-report` are legitimate sessions and must reach
+    adjudication (eighth-review domain-split fix).
     """
     return (
         isinstance(name, str)
         and 0 < len(name) <= _CLEANUP_CURSOR_MAX_NAME
         and name not in _CLEANUP_COMPONENT_RESERVED
-        and not name.startswith(".cleanup")
         and not any(ch not in _CLEANUP_COMPONENT_ALLOWED for ch in name)
     )
 
@@ -22909,14 +22919,32 @@ def _cleanup_registry_path(root: Path) -> Path:
     return root / V2_NAMESPACE / ".locks" / CLEANUP_REGISTRY_NAME
 
 
+def _registry_object_is_writable(path: Path) -> bool:
+    """True when the registry path names a regular private file (or does not
+    exist yet). Any link or non-regular object makes every registry write
+    entrance refuse: maintenance metadata must never be appended through —
+    or replace — an object the operator did not place there (eighth-review
+    P1: a static link to an external config was appended through)."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return True  # creation is allowed
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and not path.is_symlink()
+
+
 def _read_discovery_registry(root: Path) -> set[str]:
     """Load the durable discovered-session set (content-free encoded names).
 
     The registry is a discovery hint, never an authority: entries are
     component-gated on read and re-verified against the live namespace
     object at adjudication. A missing, truncated or corrupted file simply
-    falls back to scan discovery at bounded cost.
+    falls back to scan discovery at bounded cost; a substituted (link)
+    object is treated as absent rather than read through.
     """
+    if not _registry_object_is_writable(_cleanup_registry_path(root)):
+        return set()
     try:
         raw = _cleanup_registry_path(root).read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -22931,8 +22959,12 @@ def _add_cleanup_registry_entries(root: Path, names) -> None:
     """Best-effort durable discovery: record encoded session names so later
     passes adjudicate them without depending on readdir order. Duplicates
     are harmless (set semantics on read) and the file is compacted at
-    generation reset; a failed append costs timely discovery only — the
-    backfill sweep still covers the name at bounded cost."""
+    generation reset. The append is private-boundary safe: opened with
+    O_NOFOLLOW (a planted link refuses the open), created at 0600, and the
+    file mode is verified with read-back before and after the write — a
+    boundary that cannot be established skips the registration entirely
+    (timely discovery is lost, the backfill sweep still covers the name);
+    it never writes through a link and never modifies an external object."""
     fresh = sorted(
         name for name in set(names)
         if _is_session_component(name)
@@ -22940,29 +22972,53 @@ def _add_cleanup_registry_entries(root: Path, names) -> None:
     )
     if not fresh:
         return
+    path = _cleanup_registry_path(root)
+    if not _registry_object_is_writable(path):
+        return
     try:
-        path = _cleanup_registry_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            for name in fresh:
-                handle.write(name + "\n")
-                _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
     except OSError:
         return
+    flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT
+             | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError:
+        return  # raced into a link (ELOOP) or unusable object: skip
+    try:
+        mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        if mode != 0o600:
+            os.fchmod(fd, 0o600)
+            mode = stat.S_IMODE(os.fstat(fd).st_mode)
+        if mode != 0o600:
+            os.ftruncate(fd, 0)  # never leave the names outside the boundary
+            return
+        os.write(fd, "".join(name + "\n" for name in fresh).encode("utf-8"))
+        for name in fresh:
+            _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
+    except OSError:
+        return
+    finally:
+        os.close(fd)
 
 
 def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
     """Rewrite the registry from a completed scan: exact live names only,
-    duplicates folded, stale entries (deleted sessions) dropped."""
+    duplicates folded, stale entries (deleted sessions) dropped. Refuses a
+    substituted (link/non-regular) registry object instead of replacing it;
+    the published file is written 0600 with the mode verified by the
+    private write path."""
+    if not _registry_object_is_writable(_cleanup_registry_path(root)):
+        return
     valid = sorted(name for name in live_names if _is_session_component(name))
-    with contextlib.suppress(OSError):
-        path = _cleanup_registry_path(root)
-        path.parent.mkdir(parents=True, exist_ok=True)
+    try:
         atomic_write_text(
-            path,
+            _cleanup_registry_path(root),
             "".join(name + "\n" for name in valid))
         for name in valid:
             _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
+    except (OSError, PrivateBoundaryError):
+        return
 
 
 def cleanup_old_sessions(
@@ -23138,8 +23194,8 @@ def cleanup_old_sessions(
                         scan_done = True
                         break
                     name = entry.name
-                    if name in {".locks", CLEANUP_CURSOR_NAME}:
-                        continue
+                    if name == ".locks":
+                        continue  # the only maintenance object at this level
                     # A non-empty cursor was persisted only after a scan
                     # that read the namespace to its end, so every name at
                     # or below it was actually read and decided: skipping
