@@ -2052,7 +2052,126 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         self.assertEqual(removed, 1)
         self.assertFalse(self.session_dir("backfill-expired").exists())
 
-    def test_registry_created_private_mode_with_hostile_umask(self) -> None:
+    def test_maintenance_boundary_refuses_linked_locks_root(self) -> None:
+        """Ninth review (P1): the `.locks` maintenance root itself must be a
+        real directory. When it is planted as a link to an outside
+        directory, EVERY cleanup maintenance entrance — sweep registration,
+        registry read, cursor/pending write, generation reset — refuses
+        before any external read, append, rewrite, mode change or deletion,
+        instead of verifying only the registry leaf."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        outside = self.root / "external-maintenance-like-directory"
+        outside.mkdir(mode=0o755)
+        outside.chmod(0o755)
+        registry = outside / cg.CLEANUP_REGISTRY_NAME
+        registry.write_text("prior-known-session\n", encoding="utf-8")
+        registry.chmod(0o640)
+        (outside / cg.CLEANUP_CURSOR_NAME).write_text(
+            "prior-known-session\n", encoding="utf-8")
+        (sessions / "sweep-discovered").mkdir()
+        (sessions / ".locks").symlink_to(outside, target_is_directory=True)
+        before = sorted(p.relative_to(outside).as_posix()
+                        for p in outside.rglob("*"))
+        before_bytes = {p.relative_to(outside).as_posix():
+                        p.read_bytes() for p in outside.rglob("*")
+                        if p.is_file()}
+        root_mode = outside.stat().st_mode & 0o777
+        # Sweep entry: registration and any state writes must be skipped.
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        # Registry read: treats a linked registry as absent.
+        self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
+        # Reset/orphan deletion: refused.
+        cg._reset_cleanup_state(self.data_dir)
+        after = sorted(p.relative_to(outside).as_posix()
+                       for p in outside.rglob("*"))
+        after_bytes = {p.relative_to(outside).as_posix():
+                       p.read_bytes() for p in outside.rglob("*")
+                       if p.is_file()}
+        self.assertEqual(before, after, "the external tree changed")
+        self.assertEqual(before_bytes, after_bytes,
+                         "external file bytes changed")
+        self.assertEqual(outside.stat().st_mode & 0o777, root_mode,
+                         "the external directory mode was modified")
+
+    def test_add_registry_entries_windows_capability_profile(self) -> None:
+        """Ninth review (P1, capability model): when the interpreter exposes
+        no os.fchmod (Python 3.12 documents it Unix-only) and the file is a
+        plain writable 0666, the registration must still happen — the file
+        boundary on such a platform comes from the validated parent
+        directory, not POSIX mode bits — and the session save must not
+        crash after the state was published."""
+        sessions = self.data_dir / "sessions-v2"
+        sessions.mkdir(parents=True)
+        actual_fstat = os.fstat
+        actual_fchmod = os.fchmod
+        calls = []
+
+        def file_mode_666(fd):
+            value = actual_fstat(fd)
+            fields = list(value)
+            fields[0] = (fields[0] & ~0o777) | 0o666
+            return os.stat_result(fields)
+
+        real_fchmod = os.fchmod
+        real_add = cg._add_cleanup_registry_entries
+        modeled = {"deleted": False}
+
+        def profile_add(root, names):
+            calls.append(True)
+            if modeled["deleted"]:
+                # A nested save within the same dispatch reuses the modeled
+                # capability surface: fchmod stays absent.
+                with mock.patch.object(os, "fstat",
+                                       side_effect=file_mode_666):
+                    return real_add(root, names)
+            del os.fchmod
+            modeled["deleted"] = True
+            try:
+                with mock.patch.object(os, "fstat",
+                                       side_effect=file_mode_666):
+                    return real_add(root, names)
+            finally:
+                os.fchmod = real_fchmod
+                modeled["deleted"] = False
+
+        self._expire_session("windows-capability-session")
+        with mock.patch.object(cg, "_add_cleanup_registry_entries",
+                               side_effect=profile_add):
+            cg.dispatch(self.payload(
+                "UserPromptSubmit", "windows-capability-session",
+                prompt="capability model", turn_id="t1"))
+        self.assertTrue(calls, "the registry helper was never reached")
+        # Registration still happened (mode bits are not the boundary on
+        # a platform without fchmod; the parent directory is).
+        registry = cg._read_discovery_registry(self.data_dir)
+        self.assertIn(cg.safe_session_id("windows-capability-session"),
+                      registry)
+        # Restore os.fchmod for the assertion block below.
+        setattr(os, "fchmod", actual_fchmod)
+        self.assertTrue(
+            self.session_dir("windows-capability-session").exists())
+
+    def test_failed_mode_readback_preserves_prior_registrations(self) -> None:
+        """Ninth review observation, updated semantics: when fchmod succeeds
+        but the read-back mode still mismatches, the append is SKIPPED and
+        prior registry content is preserved exactly — no truncation, no
+        data loss; the skipped names fall back to the bounded sweep."""
+        registry = cg._cleanup_registry_path(self.data_dir)
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        registry.write_text("prior-registered-session\n", encoding="utf-8")
+        registry.chmod(0o644)
+        before = registry.read_bytes()
+        with mock.patch.object(os, "fchmod",
+                               side_effect=lambda fd, mode: None):
+            cg._add_cleanup_registry_entries(self.data_dir, ["fresh-session"])
+        self.assertEqual(registry.read_bytes(), before,
+                         "prior registry content was truncated")
+        self.assertEqual(cg._read_discovery_registry(self.data_dir),
+                         {"prior-registered-session"})
+
+    def test_registry_entries_pointing_outside_v2_are_dropped(self) -> None:
         """Eighth review (P2): the registry is private state — created at
         0600 with read-back verification even under a permissive umask, not
         0644-by-accident. The 0700 parent does not substitute for the file

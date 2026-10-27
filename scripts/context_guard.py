@@ -22775,11 +22775,36 @@ def _cleanup_pending_chunk_path(root: Path, index: int) -> Path:
 
 
 def _cleanup_orphan_chunk_paths(root: Path) -> list[Path]:
+    if not _maintenance_boundary_ok(root):
+        return []
     locks = root / V2_NAMESPACE / ".locks"
     try:
         return sorted(locks.glob(f"{_CLEANUP_PENDING_CHUNK_PREFIX}*.json"))
     except OSError:
         return []
+
+
+def _maintenance_boundary_ok(root: Path) -> bool:
+    """True when the maintenance root (`.locks` under the v2 namespace) is a
+    real directory, or does not exist yet and will be created as one.
+
+    Every maintenance I/O entrance — cursor/chunk read, write, reset, orphan
+    removal, registry read, append, compaction — checks this boundary FIRST
+    and refuses (skips) when it fails, so a substituted `.locks` link can
+    never redirect maintenance reads, appends, rewrites, permission changes
+    or deletions onto an outside object. This is the same parent-chain
+    invariant the lifecycle lock path already enforces for the save path
+    (ninth review: the leaf-only registry gate let a linked `.locks`
+    redirect sweep registration, generation reset and compaction).
+    """
+    locks = root / V2_NAMESPACE / ".locks"
+    try:
+        info = locks.lstat()
+    except FileNotFoundError:
+        return True  # nothing exists yet; creation makes it a real directory
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and not locks.is_symlink()
 
 
 def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
@@ -22797,6 +22822,8 @@ def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
     the live namespace object at adjudication. The v1 single-file schema
     and the legacy plain-text cursor remain readable for old state.
     """
+    if not _maintenance_boundary_ok(root):
+        return "", []
     try:
         raw = _cleanup_cursor_path(root).read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError):
@@ -22861,6 +22888,8 @@ def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
     accumulate. A failed write only costs resumption position, never
     correctness.
     """
+    if not _maintenance_boundary_ok(root):
+        return
     names = sorted(set(pending))
     locks = root / V2_NAMESPACE / ".locks"
     chunk_names: list[str] = []
@@ -22899,7 +22928,10 @@ def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
 
 def _reset_cleanup_state(root: Path) -> None:
     """Drop the resumption state entirely (completed generation): the index
-    and every pending chunk file."""
+    and every pending chunk file. Refuses a substituted `.locks` link so
+    the reset never deletes maintenance-shaped files outside the v2 tree."""
+    if not _maintenance_boundary_ok(root):
+        return
     with contextlib.suppress(OSError):
         _cleanup_cursor_path(root).unlink(missing_ok=True)
     for chunk in _cleanup_orphan_chunk_paths(root):
@@ -22941,9 +22973,11 @@ def _read_discovery_registry(root: Path) -> set[str]:
     component-gated on read and re-verified against the live namespace
     object at adjudication. A missing, truncated or corrupted file simply
     falls back to scan discovery at bounded cost; a substituted (link)
-    object is treated as absent rather than read through.
+    object — leaf or `.locks` ancestor — is treated as absent rather than
+    read through.
     """
-    if not _registry_object_is_writable(_cleanup_registry_path(root)):
+    if not (_maintenance_boundary_ok(root)
+            and _registry_object_is_writable(_cleanup_registry_path(root))):
         return set()
     try:
         raw = _cleanup_registry_path(root).read_text(encoding="utf-8")
@@ -22959,12 +22993,21 @@ def _add_cleanup_registry_entries(root: Path, names) -> None:
     """Best-effort durable discovery: record encoded session names so later
     passes adjudicate them without depending on readdir order. Duplicates
     are harmless (set semantics on read) and the file is compacted at
-    generation reset. The append is private-boundary safe: opened with
-    O_NOFOLLOW (a planted link refuses the open), created at 0600, and the
-    file mode is verified with read-back before and after the write — a
-    boundary that cannot be established skips the registration entirely
-    (timely discovery is lost, the backfill sweep still covers the name);
-    it never writes through a link and never modifies an external object."""
+    generation reset.
+
+    The append is boundary- and platform-safe: the maintenance `.locks`
+    root and the registry object itself must both be real (a planted link
+    skips the registration entirely — the append never follows it, and the
+    open uses O_NOFOLLOW so a race cannot redirect it either); on POSIX the
+    file mode is verified 0600 with read-back (fchmod when needed); on
+    Windows the file boundary comes from the validated parent directory per
+    the product's platform contract (no POSIX mode bits, no fchmod — the
+    registration still happens). When a POSIX boundary cannot be
+    established, the append is SKIPPED: prior registry content is preserved
+    exactly as it is (possibly in a wrong mode — disclosed), the new names
+    are not written, and the backfill sweep still covers them at bounded
+    cost. No truncation ever runs in this path.
+    """
     fresh = sorted(
         name for name in set(names)
         if _is_session_component(name)
@@ -22972,10 +23015,11 @@ def _add_cleanup_registry_entries(root: Path, names) -> None:
     )
     if not fresh:
         return
-    path = _cleanup_registry_path(root)
-    if not _registry_object_is_writable(path):
+    if not (_maintenance_boundary_ok(root)
+            and _registry_object_is_writable(_cleanup_registry_path(root))):
         return
     try:
+        path = _cleanup_registry_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
@@ -22986,13 +23030,19 @@ def _add_cleanup_registry_entries(root: Path, names) -> None:
     except OSError:
         return  # raced into a link (ELOOP) or unusable object: skip
     try:
-        mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        if mode != 0o600:
-            os.fchmod(fd, 0o600)
+        if os.name != "nt":
             mode = stat.S_IMODE(os.fstat(fd).st_mode)
-        if mode != 0o600:
-            os.ftruncate(fd, 0)  # never leave the names outside the boundary
-            return
+            if mode != 0o600:
+                fchmod = getattr(os, "fchmod", None)
+                if fchmod is not None:
+                    fchmod(fd, 0o600)
+                    mode = stat.S_IMODE(os.fstat(fd).st_mode)
+                if mode != 0o600:
+                    # The boundary could not be established: write nothing.
+                    # Prior registry content is preserved exactly as it is
+                    # (mode disclosed as unverified); the skipped names fall
+                    # back to the deadline-bounded sweep.
+                    return
         os.write(fd, "".join(name + "\n" for name in fresh).encode("utf-8"))
         for name in fresh:
             _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
@@ -23008,7 +23058,8 @@ def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
     substituted (link/non-regular) registry object instead of replacing it;
     the published file is written 0600 with the mode verified by the
     private write path."""
-    if not _registry_object_is_writable(_cleanup_registry_path(root)):
+    if not (_maintenance_boundary_ok(root)
+            and _registry_object_is_writable(_cleanup_registry_path(root))):
         return
     valid = sorted(name for name in live_names if _is_session_component(name))
     try:
@@ -23082,6 +23133,12 @@ def cleanup_old_sessions(
     """
     sessions = root / V2_NAMESPACE
     if not sessions.is_dir():
+        return 0
+    if not _maintenance_boundary_ok(root):
+        # A substituted `.locks` link would redirect every sweep lock,
+        # registration and state write onto an outside object; the sweep
+        # refuses entirely before any side effect (the lifecycle lock path
+        # on the save side already enforces the same chain).
         return 0
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
     cursor, pending = _read_cleanup_state(root)
