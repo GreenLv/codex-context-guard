@@ -2078,8 +2078,9 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                         if p.is_file()}
         root_mode = outside.stat().st_mode & 0o777
         # Sweep entry: registration and any state writes must be skipped.
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
+        self.assertEqual(
+            cg.cleanup_old_sessions(self.data_dir,
+                                    deadline=time.monotonic() + 30), 0)
         # Registry read: treats a linked registry as absent.
         self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
         # Reset/orphan deletion: refused.
@@ -2094,6 +2095,71 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                          "external file bytes changed")
         self.assertEqual(outside.stat().st_mode & 0o777, root_mode,
                          "the external directory mode was modified")
+
+    def _planted_outside(self, name: str) -> Path:
+        outside = self.root / name
+        outside.mkdir(mode=0o755)
+        outside.chmod(0o755)
+        registry = outside / cg.CLEANUP_REGISTRY_NAME
+        registry.write_text("prior-known-session\n", encoding="utf-8")
+        registry.chmod(0o640)
+        (outside / cg.CLEANUP_CURSOR_NAME).write_text(
+            "prior-known-session\n", encoding="utf-8")
+        return outside
+
+    @staticmethod
+    def _tree_state(outside: Path) -> tuple[list[str], dict[str, bytes], int]:
+        listing = sorted(p.relative_to(outside).as_posix()
+                         for p in outside.rglob("*"))
+        blobs = {p.relative_to(outside).as_posix():
+                 p.read_bytes() for p in outside.rglob("*") if p.is_file()}
+        return listing, blobs, outside.stat().st_mode & 0o777
+
+    def _assert_outside_untouched(self, outside: Path) -> None:
+        before = self._tree_state(outside)
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
+        cg._write_cleanup_state(self.data_dir, "", ["queued-name"])
+        cg._reset_cleanup_state(self.data_dir)
+        self.assertEqual(self._tree_state(outside), before,
+                         "the external maintenance object changed")
+        self.assertEqual(removed, 0, "the sweep adjudicated through a link")
+
+    def test_maintenance_boundary_refuses_linked_namespace(self) -> None:
+        """Tenth review (P1): the gate must cover the whole chain — when the
+        v2 namespace itself is planted as a link, every maintenance
+        entrance (sweep, registry read/append, cursor write, reset)
+        refuses before any external read, append, rewrite, mode change or
+        deletion, instead of verifying only the `.locks` leaf."""
+        outside = self._planted_outside("external-namespace-object")
+        self.data_dir.mkdir(parents=True)
+        (self.data_dir / "sessions-v2").symlink_to(outside,
+                                                   target_is_directory=True)
+        self.assertFalse(cg._maintenance_boundary_ok(self.data_dir))
+        self._assert_outside_untouched(outside)
+
+    def test_maintenance_boundary_refuses_linked_data_root(self) -> None:
+        """Tenth review (P1): when the configured data root itself is a
+        link to an outside directory, the whole public cleanup refuses —
+        the root tier is part of the maintenance boundary chain."""
+        outside = self._planted_outside("external-data-root-object")
+        # setUp never creates the data root; link it before anything does.
+        self.data_dir.symlink_to(outside, target_is_directory=True)
+        self.assertFalse(cg._maintenance_boundary_ok(self.data_dir))
+        self._assert_outside_untouched(outside)
+
+    def test_maintenance_boundary_allows_alias_above_configured_root(self) -> None:
+        """Ancestors ABOVE the configured data root may be platform aliases
+        (macOS /var, /tmp): a linked parent of the root must not disable
+        maintenance, because the boundary chain starts at the configured
+        root itself."""
+        home = self.root / "platform-home"
+        (home / "guard-data" / "sessions-v2" / ".locks").mkdir(parents=True)
+        alias = self.root / "alias-to-home"
+        alias.symlink_to(home, target_is_directory=True)
+        self.assertTrue(
+            cg._maintenance_boundary_ok(alias / "guard-data"))
 
     def test_add_registry_entries_windows_capability_profile(self) -> None:
         """Ninth review (P1, capability model): when the interpreter exposes
@@ -2233,7 +2299,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         self.assertFalse(self.session_dir(".cleanup-report").exists())
         self.assertFalse(self.session_dir("ordinary-report").exists())
 
-    def test_registry_entries_pointing_outside_v2_are_dropped(self) -> None:
+    def test_registry_hint_for_missing_live_object_decides_without_action(self) -> None:
         """Registry names are hints, not authority: an entry whose live
         object is missing (renamed away, e.g. into the legacy namespace by
         the seventh-review poison fixture) is decided without action and

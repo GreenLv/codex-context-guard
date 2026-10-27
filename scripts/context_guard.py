@@ -22785,19 +22785,35 @@ def _cleanup_orphan_chunk_paths(root: Path) -> list[Path]:
 
 
 def _maintenance_boundary_ok(root: Path) -> bool:
-    """True when the maintenance root (`.locks` under the v2 namespace) is a
-    real directory, or does not exist yet and will be created as one.
+    """True when the whole configured-root -> namespace -> `.locks` chain is
+    free of product-directory links, and the maintenance root is (or will
+    be created as) a real directory.
 
-    Every maintenance I/O entrance — cursor/chunk read, write, reset, orphan
-    removal, registry read, append, compaction — checks this boundary FIRST
-    and refuses (skips) when it fails, so a substituted `.locks` link can
-    never redirect maintenance reads, appends, rewrites, permission changes
-    or deletions onto an outside object. This is the same parent-chain
-    invariant the lifecycle lock path already enforces for the save path
-    (ninth review: the leaf-only registry gate let a linked `.locks`
-    redirect sweep registration, generation reset and compaction).
+    Every maintenance I/O entrance -- cursor/pending read, write, reset,
+    orphan removal, registry read, append, compaction, and the sweep itself
+    -- checks this boundary FIRST and refuses (skips) when it fails, so a
+    static link at ANY tier of the chain (`.locks`, the v2 namespace, or
+    the configured data root) can never redirect maintenance reads,
+    appends, rewrites, permission changes or deletions onto an outside
+    object. Ancestors ABOVE the configured root stay allowed (platform
+    aliases such as macOS /tmp) — each tier is checked by its own lstat,
+    matching the lifecycle lock path's `_reject_linked_session_path`
+    rejection conditions without climbing above the configured root
+    (tenth review: the gate only lstat'ed `.locks`, so a linked namespace
+    or data root still redirected public cleanup).
     """
-    locks = root / V2_NAMESPACE / ".locks"
+    namespace = root / V2_NAMESPACE
+    for tier in (root, namespace):
+        try:
+            info = tier.lstat()
+        except FileNotFoundError:
+            continue  # absent tier: nothing to redirect through yet
+        except OSError:
+            return False
+        if stat.S_ISLNK(info.st_mode) or getattr(
+                info, "st_file_attributes", 0) & 0x400:
+            return False
+    locks = namespace / ".locks"
     try:
         info = locks.lstat()
     except FileNotFoundError:
@@ -23135,10 +23151,11 @@ def cleanup_old_sessions(
     if not sessions.is_dir():
         return 0
     if not _maintenance_boundary_ok(root):
-        # A substituted `.locks` link would redirect every sweep lock,
-        # registration and state write onto an outside object; the sweep
-        # refuses entirely before any side effect (the lifecycle lock path
-        # on the save side already enforces the same chain).
+        # A static link at any tier of the root -> namespace -> `.locks`
+        # chain would redirect every sweep lock, registration and state
+        # write onto an outside object; the sweep refuses entirely before
+        # any side effect (the lifecycle lock path on the save side
+        # already enforces the same rejection conditions).
         return 0
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
     cursor, pending = _read_cleanup_state(root)
