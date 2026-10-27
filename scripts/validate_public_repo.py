@@ -431,12 +431,12 @@ def validate(root: Path) -> list[str]:
         if "dependencies = []" not in project:
             errors.append("Hook runtime project dependencies must remain empty")
         lock = (root / "requirements-lock.txt").read_text(encoding="utf-8")
-        if "ruff==0.16.1" not in lock or "plugin-scanner==3.0.157" not in lock:
+        if "ruff==0.16.1" not in lock or "plugin-scanner==3.51.0" not in lock:
             errors.append("validation-tool lock must pin Ruff and HOL scanner")
         if (
             "[dependency-groups]" not in project
             or "ruff==0.16.1" not in project
-            or "plugin-scanner==3.0.157" not in project
+            or "plugin-scanner==3.51.0" not in project
         ):
             errors.append("validation dependency group must pin Ruff and HOL scanner")
         if not (root / "uv.lock").is_file():

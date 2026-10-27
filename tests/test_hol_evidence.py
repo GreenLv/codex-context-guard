@@ -19,7 +19,7 @@ assert SPEC and SPEC.loader
 HE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(HE)
 REPOSITORY = "example/context-guard"
-SCANNER = "3.43.1"
+SCANNER = "3.51.0"
 
 
 class HolEvidenceTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class HolEvidenceTests(unittest.TestCase):
         (self.root / ".codex-plugin/plugin.json").write_text(
             json.dumps({"version": "0.15.1", "private_unrequested": "DO_NOT_EXPORT"}))
         (self.root / "uv.lock").write_text("version = 1\n")
-        (self.root / "requirements-lock.txt").write_text("plugin-scanner==3.0.157\n")
+        (self.root / "requirements-lock.txt").write_text("plugin-scanner==3.51.0\n")
         self.git("init", "-q")
         self.git("config", "user.name", "Fixture")
         self.git("config", "user.email", "fixture@users.noreply.github.com")
