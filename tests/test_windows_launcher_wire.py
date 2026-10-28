@@ -213,8 +213,7 @@ exit $code
                 self.assertIn(b"could not be read as UTF-8", proc.stderr)
                 self.assertNotIn(b"ignoring", proc.stderr)
 
-    def test_session_end_core_uses_exact_utf8_capture(self):
-        shutil.copyfile(self.runtime, self.scripts / "context_guard.py")
+    def test_session_end_router_uses_exact_utf8_capture(self):
         proc = self.invoke(event="SessionEnd")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout.decode("utf-8")), PAYLOAD)
@@ -255,7 +254,7 @@ exit $code
 
     def test_nested_caller_shadow_preserves_native_hook_exit_zero_and_seven(self):
         for event in ("PreToolUse", "SessionEnd"):
-            runtime = self.runtime if event == "PreToolUse" else self.scripts / "context_guard.py"
+            runtime = self.runtime
             for code in (0, 7):
                 for caller_exit in (None, 2):
                     with self.subTest(event=event, code=code, caller_exit=caller_exit):

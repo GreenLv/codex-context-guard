@@ -23014,14 +23014,17 @@ def _read_cleanup_state(root: Path) -> tuple[str, list[str]]:
         return "", []
 
 
-def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
+def _write_cleanup_state(
+    root: Path, cursor: str, pending: list[str], *, deadline: float | None = None,
+) -> None:
     """Persist the resumption state in the same shape its reader accepts.
 
     Pending names are chunked into fixed-size files (the write domain
     equals the read domain), the index lists exactly the chunk files that
     carry this queue, and chunk files not listed by the fresh index are
-    removed so orphaned files from an interrupted earlier write cannot
-    accumulate. A failed write only costs resumption position, never
+    retired when maintenance budget permits. Publication itself is never
+    interrupted by the deadline; deferred fixed-name orphans remain
+    unreferenced. A failed write only costs resumption position, never
     correctness.
     """
     if not _maintenance_boundary_ok(root):
@@ -23054,7 +23057,13 @@ def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
             _cleanup_cursor_path(root),
             json.dumps(payload, ensure_ascii=False) + "\n")
         keep = set(chunk_names)
-        for orphan in _cleanup_orphan_chunk_paths(root):
+        # Chunk/index publication above is one uninterrupted transaction.
+        # Only unreferenced orphan maintenance may be deferred for budget.
+        orphans = (_cleanup_orphan_chunk_paths(root)
+                   if deadline is None or time.monotonic() < deadline else [])
+        for orphan in orphans:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             if orphan.name not in keep:
                 with contextlib.suppress(OSError):
                     orphan.unlink()
@@ -23062,15 +23071,21 @@ def _write_cleanup_state(root: Path, cursor: str, pending: list[str]) -> None:
         pass
 
 
-def _reset_cleanup_state(root: Path) -> None:
-    """Drop the resumption state entirely (completed generation): the index
-    and every pending chunk file. Refuses a substituted `.locks` link so
-    the reset never deletes maintenance-shaped files outside the v2 tree."""
+def _reset_cleanup_state(root: Path, *, deadline: float | None = None) -> None:
+    """Drop a completed generation's index and retire unreferenced chunks.
+
+    A deadline may defer chunk retirement. Refuses a substituted `.locks`
+    link so reset never deletes maintenance-shaped files outside the v2 tree.
+    """
     if not _maintenance_boundary_ok(root):
         return
     with contextlib.suppress(OSError):
         _cleanup_cursor_path(root).unlink(missing_ok=True)
-    for chunk in _cleanup_orphan_chunk_paths(root):
+    chunks = (_cleanup_orphan_chunk_paths(root)
+              if deadline is None or time.monotonic() < deadline else [])
+    for chunk in chunks:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         with contextlib.suppress(OSError):
             chunk.unlink()
 
@@ -23267,6 +23282,8 @@ def cleanup_old_sessions(
     session (a real resume) retires the marker inside the lifecycle lock,
     so historical eligibility never authorizes deleting a live session.
     """
+    if deadline is not None and time.monotonic() >= deadline:
+        return 0
     sessions = root / V2_NAMESPACE
     if not sessions.is_dir():
         return 0
@@ -23279,6 +23296,9 @@ def cleanup_old_sessions(
         return 0
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
     cursor, pending = _read_cleanup_state(root)
+    if deadline is not None and time.monotonic() >= deadline:
+        # No decisions were made: retain the entire existing queue/index.
+        return 0
 
     def budget_left() -> bool:
         return deadline is None or time.monotonic() < deadline
@@ -23370,7 +23390,7 @@ def cleanup_old_sessions(
     # whose entries are adjudicated whether or not this pass's scan reaches
     # them; sweep-discovered names are added to it, so discovery persists
     # across interrupted passes without depending on stream position.
-    registry = _read_discovery_registry(root)
+    registry = _read_discovery_registry(root) if budget_left() else set()
     candidates: list[str] = []
     scan_done = False
     queued = set(pending)
@@ -23412,7 +23432,8 @@ def cleanup_old_sessions(
     # Persist this pass's discoveries durably (order-free, survives the
     # call boundary) and union them with the registry into one candidate
     # batch; every entry is still live-verified before any adjudication.
-    _add_cleanup_registry_entries(root, scanned_dirs)
+    if budget_left():
+        _add_cleanup_registry_entries(root, scanned_dirs)
     registry.update(scanned_dirs)
     for name in sorted(registry):
         if name in queued or name in decided_now:
@@ -23434,13 +23455,19 @@ def cleanup_old_sessions(
         # namespace from scratch (picks up order changes and recreations),
         # and compact the registry to the live namespace (folds duplicates,
         # drops entries for deleted sessions).
-        if cursor or last_completed:
-            _reset_cleanup_state(root)
-            _compact_discovery_registry(
-                root, {name for name in registry
-                       if (sessions / name).is_dir()})
+        if (cursor or last_completed) and budget_left():
+            _reset_cleanup_state(root, deadline=deadline)
+            live = set()
+            for name in registry:
+                if not budget_left():
+                    break
+                if (sessions / name).is_dir():
+                    live.add(name)
+            else:
+                if budget_left():
+                    _compact_discovery_registry(root, live)
         return removed
-    _write_cleanup_state(root, last_completed if scan_done else "", pending)
+    _write_cleanup_state(root, last_completed if scan_done else "", pending, deadline=deadline)
     return removed
 
 
@@ -23521,6 +23548,22 @@ def _session_expired(candidate: Path, cutoff: dt.datetime) -> bool:
 
 SESSION_END_HOST_BUDGET_SECONDS = 3.0
 SESSION_END_CLEANUP_RESERVE_SECONDS = 0.35
+SESSION_END_MAINTENANCE_QUANTUM_SECONDS = 1.0
+_SESSION_END_BUDGET_UNSET = object()
+
+
+def _session_end_budget_start(value: Any, now: float) -> float | None:
+    """Resolve a same-process invocation anchor, never a payload/env hint.
+
+    Omission starts a direct API call once. Explicit None, bool, nonfinite,
+    future and malformed starts disable maintenance rather than resetting
+    the clock. An expired valid anchor remains valid for zero-wait locking.
+    """
+    if value is _SESSION_END_BUDGET_UNSET:
+        return now
+    if type(value) in (int, float) and 0 <= value <= now:
+        return float(value)
+    return None
 
 
 def handle_session_end(
@@ -23531,23 +23574,24 @@ def handle_session_end(
     budget_started_at: float | None = None,
 ) -> dict[str, Any]:
     del payload
+    # Freeze validity at this entry. A future value must not become usable
+    # merely because mandatory persistence later advances the clock.
+    started = (None if budget_started_at is _SESSION_END_BUDGET_UNSET
+               else _session_end_budget_start(budget_started_at, time.monotonic()))
     # This session's durable persistence always runs first; only the sweep
     # afterwards is budget-limited.
     state["session"]["ended_at"] = utc_now()
     save_state(session_dir, state)
     if state["mode"]["active"]:
         write_recovery(session_dir, state, "SessionEnd")
-    cleanup_deadline: float | None = None
-    if budget_started_at is not None:
-        remaining = (
-            budget_started_at
-            + SESSION_END_HOST_BUDGET_SECONDS
-            - SESSION_END_CLEANUP_RESERVE_SECONDS
-            - time.monotonic()
-        )
-        if remaining > 0:
-            cleanup_deadline = time.monotonic() + remaining
-    if cleanup_deadline is None and budget_started_at is not None:
+    now = time.monotonic()
+    if started is None:
+        return {}
+    cleanup_deadline = min(
+        started + SESSION_END_HOST_BUDGET_SECONDS - SESSION_END_CLEANUP_RESERVE_SECONDS,
+        now + SESSION_END_MAINTENANCE_QUANTUM_SECONDS,
+    )
+    if cleanup_deadline <= now:
         # Out of budget: skip this sweep round; a later SessionEnd continues
         # it under the fair rescan rules.
         return {}
@@ -23557,7 +23601,9 @@ def handle_session_end(
     return {}
 
 
-def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
+def dispatch(
+    payload: dict[str, Any], *, budget_started_at: Any = _SESSION_END_BUDGET_UNSET,
+) -> dict[str, Any]:
     dispatch_started_at = time.monotonic()
     repaired_payload, unicode_repairs = repair_unicode_scalars(payload)
     if not isinstance(repaired_payload, dict):
@@ -23566,6 +23612,10 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     if unicode_repairs:
         payload["_context_guard_unicode_repairs"] = unicode_repairs
     event = str(payload.get("hook_event_name") or payload.get("event") or "")
+    session_end_start = (
+        _session_end_budget_start(budget_started_at, dispatch_started_at)
+        if event == "SessionEnd" else None
+    )
     if event == "PreToolUse":
         # Generic/malformed ambiguity fails open BEFORE any session lock or
         # state I/O: only candidate mutations (including the runner
@@ -23639,6 +23689,10 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
     # SessionEnd runs under a 3s host budget; keep its lock wait bounded so
     # contention degrades to a fail-closed timeout instead of an overruns.
     lock_timeout = 1.2 if event == "SessionEnd" else 5.0
+    if event == "SessionEnd" and session_end_start is not None:
+        lock_timeout = min(lock_timeout, max(0.0,
+            session_end_start + SESSION_END_HOST_BUDGET_SECONDS
+            - SESSION_END_CLEANUP_RESERVE_SECONDS - time.monotonic()))
     with session_lock(session_dir, timeout=lock_timeout):
         state = load_state(session_dir, payload)
         if event != "SessionEnd":
@@ -23662,7 +23716,7 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         if event == "SessionEnd":
             return handler(
                 session_dir, state, payload,
-                budget_started_at=dispatch_started_at,
+                budget_started_at=session_end_start,
             )
         return handler(session_dir, state, payload)
 
@@ -23731,9 +23785,14 @@ def _release_posture_plausibly_active(payload: dict[str, Any]) -> bool:
         return False
 
 
-def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
+def safe_dispatch(
+    payload: dict[str, Any], *, budget_started_at: Any = _SESSION_END_BUDGET_UNSET,
+) -> dict[str, Any]:
     event = str(payload.get("hook_event_name") or payload.get("event") or "")
     try:
+        if event == "SessionEnd":
+            started = _session_end_budget_start(budget_started_at, time.monotonic())
+            return dispatch(payload, budget_started_at=started)
         return dispatch(payload)
     except Exception as exc:
         message = bounded(f"{type(exc).__name__}: {exc}", 800)
@@ -23796,7 +23855,8 @@ def safe_dispatch(payload: dict[str, Any]) -> dict[str, Any]:
         return {"systemMessage": f"Context Guard {event or 'hook'} warning: {message}"}
 
 
-def command_hook() -> int:
+def command_hook(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
+    started = _session_end_budget_start(budget_started_at, time.monotonic())
     try:
         raw = sys.stdin.buffer.read()
     except AttributeError:
@@ -23824,7 +23884,11 @@ def command_hook() -> int:
             )
         )
         return 0
-    console_write(json.dumps(safe_dispatch(payload), ensure_ascii=True))
+    if isinstance(payload, dict) and str(payload.get("hook_event_name") or payload.get("event") or "") == "SessionEnd":
+        result = safe_dispatch(payload, budget_started_at=started)
+    else:
+        result = safe_dispatch(payload)
+    console_write(json.dumps(result, ensure_ascii=True))
     return 0
 
 
@@ -24211,7 +24275,9 @@ def command_self_test() -> int:
     return 0
 
 
-def main() -> int:
+def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
+    if budget_started_at is not _SESSION_END_BUDGET_UNSET:
+        budget_started_at = _session_end_budget_start(budget_started_at, time.monotonic())
     if sys.version_info < (3, 10):
         print(f"Python 3.10+ required, got {sys.version.split()[0]}")
         return 2
@@ -24312,6 +24378,8 @@ def main() -> int:
             command.add_argument("--after-revision")
     args = parser.parse_args()
     if args.command == "hook":
+        if budget_started_at is not _SESSION_END_BUDGET_UNSET:
+            return command_hook(budget_started_at=budget_started_at)
         return command_hook()
     if args.command == "status":
         return command_status()

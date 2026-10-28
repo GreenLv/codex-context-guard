@@ -15,8 +15,9 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 router=0
 target="$script_dir/context_guard.py"
 if [ "${1:-}" = "hook" ] && [ "${2:-}" = "SessionEnd" ] && [ "$#" -eq 2 ]; then
-    # The host allows at most three seconds for SessionEnd. Avoid the router's
-    # second Python process for this always-stateful event.
+    # Keep normal site flags, but let the thin entry start its same-process
+    # budget before loading the heavy core. No second core process is added.
+    target="$script_dir/cg_hook.py"
     set -- hook
 elif [ "${1:-}" = "hook" ]; then
     router=1

@@ -30,34 +30,40 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+
+_BUDGET_UNSET = object()
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-from cg_actions import (  # noqa: E402
-    STATE_AMBIGUOUS,
-    STATE_SAFE,
-    classify_pre_tool_state,
-)
-from cg_codex_adapter import codex_to_protocol_event  # noqa: E402
-from cg_protocol import ProtocolEventType, ProtocolToolCall  # noqa: E402
-
-
-def _delegate_subprocess(raw_stdin: bytes) -> None:
+def _delegate_subprocess(raw_stdin: bytes, *, disable_maintenance: bool = False) -> None:
     """Legacy fallback: run the heavy core in a child process.
 
-    Used only when the in-process import or execution of the heavy core
-    fails in this environment. Semantics are identical to the 0.14 router:
+    Used only when the in-process import fails in this environment:
     original bytes forwarded untouched, stdout/stderr never crossed, exit
-    code propagated, runaway child bounded by a 120s timeout.
+    code propagated, runaway child bounded by a 120s timeout. SessionEnd's
+    fallback explicitly disables optional maintenance instead of starting
+    another allowance in a different process.
     """
     heavy = os.path.join(_SCRIPT_DIR, "context_guard.py")
     import subprocess  # lazy: the SAFE fast path never delegates
     env = os.environ.copy()
     env["PYTHONPATH"] = _SCRIPT_DIR
+    command = [sys.executable, heavy, "hook"]
+    if disable_maintenance:
+        # A new process cannot inherit this invocation's raw clock anchor.
+        # Explicit None is essential: omission would start a fresh allowance.
+        code = (
+            "import os, sys; "
+            "sys.path.insert(0, os.path.dirname(sys.argv[1])); "
+            "import context_guard; sys.argv = [sys.argv[1], 'hook']; "
+            "raise SystemExit(context_guard.main(budget_started_at=None))"
+        )
+        command = [sys.executable, "-c", code, heavy]
     result = subprocess.run(
-        [sys.executable, heavy, "hook"],
+        command,
         input=raw_stdin,
         capture_output=True,
         env=env,
@@ -92,7 +98,7 @@ class _PreReadStdin:
         self.buffer = io.BytesIO(raw)
 
 
-def _delegate(raw_stdin: bytes) -> None:
+def _delegate(raw_stdin: bytes, *, budget_started_at=_BUDGET_UNSET) -> None:
     """Run the heavy context_guard.py core in this process.
 
     Saves the second interpreter start for every non-fast-path event while
@@ -114,14 +120,20 @@ def _delegate(raw_stdin: bytes) -> None:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     except BaseException:  # noqa: BLE001 - environment failure keeps old path
-        _delegate_subprocess(raw_stdin)
+        if budget_started_at is _BUDGET_UNSET:
+            _delegate_subprocess(raw_stdin)
+        else:
+            _delegate_subprocess(raw_stdin, disable_maintenance=True)
         return
     original_stdin = sys.stdin
     original_argv = sys.argv
     sys.stdin = _PreReadStdin(raw_stdin)  # type: ignore[assignment]
     sys.argv = [heavy, "hook"]
     try:
-        code = module.main()
+        if budget_started_at is _BUDGET_UNSET:
+            code = module.main()
+        else:
+            code = module.main(budget_started_at=budget_started_at)
     finally:
         sys.stdin = original_stdin
         sys.argv = original_argv
@@ -130,6 +142,9 @@ def _delegate(raw_stdin: bytes) -> None:
 
 
 def main() -> int:
+    # A fresh same-process anchor precedes stdin and heavy compilation/import.
+    # It deliberately does not claim to measure shell/interpreter startup.
+    started = time.monotonic()
     raw = sys.stdin.buffer.read()
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -140,12 +155,22 @@ def main() -> int:
         _delegate(raw)
         return
 
+    if (payload.get("hook_event_name") or payload.get("event")) == "SessionEnd":
+        _delegate(raw, budget_started_at=started)
+        return
+
     # Fast path requires the CANONICAL hook_event_name. Alias-only payloads
     # (e.g. {"event": "PreToolUse", ...}) and every non-PreToolUse event
     # delegate to the heavy core.
     if payload.get("hook_event_name") != "PreToolUse":
         _delegate(raw)
         return
+
+    # Only canonical PreToolUse needs classification and protocol adapters.
+    # Stateful events enter the core without loading these unrelated layers.
+    from cg_actions import STATE_AMBIGUOUS, STATE_SAFE, classify_pre_tool_state
+    from cg_codex_adapter import codex_to_protocol_event
+    from cg_protocol import ProtocolEventType, ProtocolToolCall
 
     # Protocol normalization: the fast path consumes the NORMALIZED
     # ProtocolToolCall (tool_name/tool_input), never the raw payload.

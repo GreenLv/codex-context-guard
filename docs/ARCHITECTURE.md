@@ -229,11 +229,19 @@ edit/readback/report or run/report closure persists its bounded Host and
 delivery references so resume does not restore a completed business item.
 Enforced proof, Goal, and adopted release contracts retain their own gates.
 
-The 0.13.8 source candidate retains the 0.13.6 reply delivery behavior.
-For SessionEnd, whose Codex CLI host deadline is at most three seconds, both
-launchers invoke the stateful core directly instead of starting the router
-and then a second Python process. The Windows launcher also treats broken
-interpreter probes as negative and continues to a supported Python.
+For the 0.16.0 source candidate, SessionEnd uses the lightweight Hook entry
+and loads the stateful core in that same Python process. A fresh monotonic
+anchor precedes stdin parsing and the heavy import; the core does not reset
+it after loading or locking. Current state and recovery remain first. Cleanup
+uses the smaller of its remaining allowance and a one-second cooperative
+work slice, with checkpoint and return work kept outside that slice. The
+complete installed command must separately pass the three-second native
+gate; this Python anchor does not measure prior shell or interpreter startup.
+
+The earlier 0.13.8 source candidate retained the 0.13.6 reply delivery behavior
+and invoked the core directly for SessionEnd to avoid the then-separate
+router child process. Its Windows launcher also treated broken interpreter
+probes as negative and continued to a supported Python.
 The 0.13.6 source candidate extends reply delivery to imperative explanations
 such as "explain this repository". The complete request must match a bounded reply-only grammar; execution, normative acceptance and unrecognized wording retain their obligations. How-to operations and their topics are parsed together, without a second operation-keyword veto. This deliberately limits automatic closure to supported wording rather than claiming arbitrary semantic classification. A supported how-to answer may contain complete imperative tutorial steps; delivery distinguishes those from an assistant promise without changing the general Stop action classifier. Existing historical delivery records are not reinterpreted.
 A direct execution-resume request uses the existing one-correction budget only

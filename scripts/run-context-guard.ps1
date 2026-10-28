@@ -36,7 +36,7 @@ function Write-HookTraceEnd([int]$code) {
 $isHook = ($args.Count -gt 0 -and $args[0] -eq "hook")
 $isSessionEnd = ($args.Count -eq 2 -and $args[0] -eq "hook" -and $args[1] -eq "SessionEnd")
 [string[]]$runtimeArgs = if ($isSessionEnd) { @("hook") } else { $args }
-if ($isHook -and -not $isSessionEnd) {
+if ($isHook) {
     $runtime = Join-Path $PSScriptRoot "cg_hook.py"
 } else {
     $runtime = Join-Path $PSScriptRoot "context_guard.py"

@@ -71,8 +71,9 @@ never unlinked by release or cleanup. POSIX uses `fcntl`; Windows uses
 `msvcrt`, with no third-party runtime dependency.
 
 The lock covers the entire transaction. Process-local queuing and kernel
-acquisition share one monotonic deadline; SessionEnd has a 1.2-second lock
-budget within its three-second Hook deadline. Descriptor/path identity checks
+acquisition share one monotonic deadline; SessionEnd waits at most 1.2 seconds
+for its current-session lock, further limited by a valid remaining Hook
+budget. Descriptor/path identity checks
 harden commits, and a zero inode fails closed. Identity checks do not replace
 kernel exclusion or provide a sandbox against arbitrary same-user mutation.
 
@@ -84,6 +85,21 @@ retention timestamp. Legacy trees and their timestamps are unchanged.
 
 Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
 budget, with budget, persisted progress and fairness as separate mechanisms.
+The lightweight Python entry supplies a fresh same-process monotonic anchor
+before stdin parsing and the heavy import. After mandatory state and recovery
+writes, the cleanup work deadline is the smaller of that anchor plus 3 seconds
+minus a 0.35-second return reserve, and the current time plus 1 second.
+This is a cooperative work deadline: mandatory writes, checkpoint publication
+and synchronous filesystem operations are not claimed to be preemptible.
+Prior shell/interpreter startup and the complete return path still need the
+separate full-command native timing gate.
+
+An omitted private timing argument on a direct API call starts a local bound;
+it does not claim to include earlier imports. An explicitly disabled, invalid
+or expired budget never becomes unlimited cleanup. State and recovery remain
+mandatory, and the router's import-failure child explicitly disables optional
+maintenance. No budget field is added to payloads or persisted state.
+
 The registry design is adopted with the unregistered-directory limitation
 stated below. Enumeration is deadline-bounded per read, as
 originally required: every readdir step starts only within the remaining
