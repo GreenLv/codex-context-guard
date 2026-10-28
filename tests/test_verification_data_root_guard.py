@@ -53,6 +53,10 @@ class GuardEnvironmentCase(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.home = self.root / "simulated-operator-home"
         self.ambient = dict(os.environ)
+        # Path.home() uses USERPROFILE on Windows; keep both platform
+        # home selectors inside the same synthetic per-test home.
+        os.environ["HOME"] = str(self.home)
+        os.environ["USERPROFILE"] = str(self.home)
 
     def tearDown(self) -> None:
         os.environ.clear()
