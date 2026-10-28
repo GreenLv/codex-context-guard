@@ -216,7 +216,8 @@ foreach ($extension in $pythonPathExtensions) {
 $pythonLegacyExtensions = @($pythonPathExtensions | Where-Object { $_ -notmatch '^\.(exe|com|cmd|bat)$' })
 
 function Resolve-ContextGuardPythonCommand([string]$Name) {
-    if (-not $ordinaryPythonPath -or (Test-Path -LiteralPath "Alias:$Name") -or (Test-Path -LiteralPath "Function:$Name")) {
+    if ($Name -match '[\\/:]' -or -not $ordinaryPythonPath -or
+        (Test-Path -LiteralPath "Alias:$Name") -or (Test-Path -LiteralPath "Function:$Name")) {
         return (Get-Command $Name -ErrorAction SilentlyContinue)
     }
     # Script and bare-file precedence stays with PowerShell, including .ps1

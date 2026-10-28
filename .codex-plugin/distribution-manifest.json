@@ -43,7 +43,7 @@
     "scripts/incident_corpus.py": "d9f8d0176ddd6caf288bac557ca3868f796d02e54a131c8dca0ac757838e2b3f",
     "scripts/manage_plugin.py": "4730e73d24a22e990b5aef134e0bce987e0989fb91cb5094e7117247d0106d25",
     "scripts/reference_digest_encoder.py": "454c18806618f9da09e7d95709fcd70bd08def724d24c438ee08952e7494267d",
-    "scripts/run-context-guard.ps1": "62e6b63b8ead5cc2af7ad2fa530567ac797bc786a2ff5b89042bf9bdb39d2c85",
+    "scripts/run-context-guard.ps1": "8c35928f3eb6ae90341c03e1ece581f4c477f1bafd9fa1ea0abdc0e9ecceaa4e",
     "scripts/run_context_guard.sh": "6129c1282f149a041313dad8247dedd95304bdf46703e6e035f588e90360cbee",
     "scripts/run_current_behavior_suite.py": "e9b27bd8562339f2a65114723f4230b3edb1c512456962d7747a98a5d6fc3ca7",
     "scripts/smoke_installed.py": "7b54c195e3676d721386f722102cb036d968de25656f81464dca09f1a3432a39",
