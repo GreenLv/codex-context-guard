@@ -133,26 +133,38 @@ class WindowsPowerShellWire(unittest.TestCase):
                         CG_TEST_RECEIPT=str(self.root / "receipt.json"))
         self.conf.write_text(str(self.interpreter) + "\n", encoding="utf-8")
 
-    def invoke(self, payload=PAYLOAD, event="PreToolUse"):
+    def invoke(self, payload=PAYLOAD, event="PreToolUse", *, caller_exit=None,
+               global_exit=0, route="hook", prelude=""):
         self.env["CG_TEST_EVENT"] = event
+        self.env["CG_TEST_ROUTE"] = route
+        self.env["CG_TEST_GLOBAL_EXIT"] = str(global_exit)
+        self.env["CG_TEST_CALLER_EXIT"] = "" if caller_exit is None else str(caller_exit)
         wrapper = self.root / "invoke.ps1"
-        wrapper.write_text(r'''
+        wrapper_source = r'''
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) { exit 91 }
 [Console]::InputEncoding = [Text.Encoding]::ASCII
 [Console]::OutputEncoding = [Text.Encoding]::ASCII
 $OutputEncoding = [Text.Encoding]::ASCII
 $before = @([Console]::InputEncoding.CodePage, [Console]::OutputEncoding.CodePage, $OutputEncoding.CodePage, $env:PYTHONIOENCODING)
+$global:LASTEXITCODE = [int]$env:CG_TEST_GLOBAL_EXIT
+if ($env:CG_TEST_CALLER_EXIT -ne '') { $script:LASTEXITCODE = [int]$env:CG_TEST_CALLER_EXIT }
+# TEST_PRELUDE
 try {
-    & $env:CG_TEST_LAUNCHER hook $env:CG_TEST_EVENT
-    $code = $LASTEXITCODE
+    if ($env:CG_TEST_ROUTE -eq 'hook') {
+        & $env:CG_TEST_LAUNCHER hook $env:CG_TEST_EVENT
+    } else {
+        & $env:CG_TEST_LAUNCHER $env:CG_TEST_ROUTE
+    }
+    $code = $global:LASTEXITCODE
 } finally {
     $after = @([Console]::InputEncoding.CodePage, [Console]::OutputEncoding.CodePage, $OutputEncoding.CodePage, $env:PYTHONIOENCODING)
     $receipt = @{before=$before; after=$after; version=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($env:CG_TEST_RECEIPT, $receipt, (New-Object Text.UTF8Encoding($false)))
 }
 exit $code
-''', encoding="ascii")
+'''
+        wrapper.write_text(wrapper_source.replace("# TEST_PRELUDE", prelude), encoding="ascii")
         proc = subprocess.run(
             [shutil.which("powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-File", str(wrapper)],
@@ -240,6 +252,135 @@ exit $code
         proc = self.invoke()
         self.assertEqual(proc.returncode, 2, proc.stderr)
         self.assertIn(b"missing or not executable", proc.stderr)
+
+    def test_nested_caller_shadow_preserves_native_hook_exit_zero_and_seven(self):
+        for event in ("PreToolUse", "SessionEnd"):
+            runtime = self.runtime if event == "PreToolUse" else self.scripts / "context_guard.py"
+            for code in (0, 7):
+                for caller_exit in (None, 2):
+                    with self.subTest(event=event, code=code, caller_exit=caller_exit):
+                        runtime.write_text(
+                            "import json, sys\n"
+                            "json.dump(json.load(sys.stdin), sys.stdout, ensure_ascii=False)\n"
+                            f"raise SystemExit({code})\n", encoding="utf-8")
+                        proc = self.invoke(event=event, caller_exit=caller_exit)
+                        self.assertEqual(proc.returncode, code, proc.stderr)
+                        self.assertEqual(json.loads(proc.stdout.decode("utf-8")), PAYLOAD)
+                        self.assertEqual(proc.stderr, b"")
+
+    def test_nested_nonhook_preserves_native_exit_zero_and_seven(self):
+        runtime = self.scripts / "context_guard.py"
+        for code in (0, 7):
+            with self.subTest(code=code):
+                runtime.write_text(f"print('native-marker')\nraise SystemExit({code})\n",
+                                   encoding="utf-8")
+                proc = self.invoke(route="self-test", caller_exit=2)
+                self.assertEqual(proc.returncode, code, proc.stderr)
+                self.assertEqual(proc.stdout.strip(), b"native-marker")
+                self.assertEqual(proc.stderr, b"")
+
+    def test_nested_configured_command_without_native_start_cannot_reuse_zero(self):
+        fake = self.root / "no-native.ps1"
+        fake.write_text("# Deliberately never starts a native process.\n", encoding="ascii")
+        self.conf.write_text(str(fake) + "\n", encoding="utf-8")
+        for route in ("hook", "self-test"):
+            with self.subTest(route=route):
+                proc = self.invoke(route=route, caller_exit=0, global_exit=0)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertEqual(proc.stdout, b"")
+
+    def test_nested_wire_verifier_nonzero_or_no_native_start_is_rejected(self):
+        fake = self.root / "wire-shim.ps1"
+        self.env["CG_TEST_PYTHON"] = str(self.interpreter)
+        self.conf.write_text(str(fake) + "\n", encoding="utf-8")
+        for wire_exit in (None, 7):
+            with self.subTest(wire_exit=wire_exit):
+                native = ("" if wire_exit is None else
+                          f"& $env:CG_TEST_PYTHON -c 'raise SystemExit({wire_exit})'\n")
+                fake.write_text(
+                    "if ($args[0] -eq '-I') {\n" + native +
+                    "Write-Output 'CG-HOOK-WIRE-VERIFIED'\n"
+                    "} else { & $env:CG_TEST_PYTHON @args }\n", encoding="ascii")
+                proc = self.invoke(caller_exit=0, global_exit=0)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertEqual(proc.stdout, b"")
+                self.assertIn(b"not a working Context Guard runtime", proc.stderr)
+
+    def test_nested_malformed_wire_is_rejected_with_caller_shadow(self):
+        for output in ("[]", "null", "{broken", ""):
+            with self.subTest(output=output):
+                self.runtime.write_text(f"print({output!r}, end='')\n", encoding="utf-8")
+                proc = self.invoke(caller_exit=0, global_exit=0)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertEqual(proc.stdout, b"")
+                self.assertIn(b"not a working Context Guard runtime", proc.stderr)
+
+    def fallback_prelude(self, source, candidate):
+        # Limit command discovery to one known source without depending on the
+        # Windows host's installed Python versions or PATH aliases.
+        self.conf.unlink(missing_ok=True)
+        self.env["CG_TEST_FALLBACK_SOURCE"] = str(source)
+        self.env["CG_TEST_FALLBACK_CANDIDATE"] = candidate
+        return r'''
+function Get-Command {
+    param([string]$Name, $ErrorAction)
+    if ($Name -eq $env:CG_TEST_FALLBACK_CANDIDATE) {
+        [pscustomobject]@{Source=$env:CG_TEST_FALLBACK_SOURCE}
+    }
+}
+'''
+
+    def test_nested_fallback_probe_and_runtime_preserve_native_exit(self):
+        for candidate in ("python3.14", "python"):
+            for code in (0, 7):
+                with self.subTest(candidate=candidate, code=code):
+                    self.runtime.write_text(
+                        f"print('native-marker')\nraise SystemExit({code})\n",
+                        encoding="utf-8")
+                    prelude = self.fallback_prelude(self.interpreter, candidate)
+                    proc = self.invoke(caller_exit=2, prelude=prelude)
+                    self.assertEqual(proc.returncode, code, proc.stderr)
+                    self.assertEqual(proc.stdout.strip(), b"native-marker")
+                    self.assertEqual(proc.stderr, b"")
+
+    def test_nested_fallback_without_native_start_cannot_reuse_zero(self):
+        fake = self.root / "no-native.ps1"
+        fake.write_text("# Deliberately never starts a native process.\n", encoding="ascii")
+        for candidate in ("python3.14", "python"):
+            with self.subTest(candidate=candidate):
+                prelude = self.fallback_prelude(fake, candidate)
+                proc = self.invoke(caller_exit=0, global_exit=0, prelude=prelude)
+                self.assertEqual(proc.returncode, 2, proc.stderr)
+                self.assertEqual(proc.stdout, b"")
+                if candidate == "python":
+                    self.assertIn(b"no supported interpreter", proc.stderr)
+
+    def test_nested_failed_fallback_probe_continues_to_working_candidate(self):
+        fake = self.root / "failed-probe.ps1"
+        fake.write_text("& $env:CG_TEST_PYTHON -c 'raise SystemExit(7)'\n", encoding="ascii")
+        self.env["CG_TEST_PYTHON"] = str(self.interpreter)
+        self.runtime.write_text("print('native-marker')\n", encoding="ascii")
+        prelude = self.fallback_prelude(fake, "python") + r'''
+function Get-Command {
+    param([string]$Name, $ErrorAction)
+    if ($Name -eq 'python') { [pscustomobject]@{Source=$env:CG_TEST_FALLBACK_SOURCE} }
+    if ($Name -eq 'python3') { [pscustomobject]@{Source=$env:CG_TEST_PYTHON} }
+}
+'''
+        proc = self.invoke(caller_exit=2, prelude=prelude)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), b"native-marker")
+        self.assertEqual(proc.stderr, b"")
+
+    def test_relative_config_keeps_warning_and_fallback_with_caller_shadow(self):
+        for encoding in ("utf-8", "utf-8-sig"):
+            with self.subTest(encoding=encoding):
+                prelude = self.fallback_prelude(self.interpreter, "python3.14")
+                self.conf.write_text("relative.exe\n", encoding=encoding)
+                proc = self.invoke(payload={}, caller_exit=2, prelude=prelude)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout.decode("utf-8")), {})
+                self.assertIn(b"must contain an absolute path; ignoring", proc.stderr)
 
 
 if __name__ == "__main__":

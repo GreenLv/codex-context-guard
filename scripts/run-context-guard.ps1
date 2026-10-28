@@ -126,13 +126,17 @@ runpy.run_path(target, run_name='__main__')
             # the post-verification below, so keep native failures
             # non-terminating inside this capture scope.
             $ErrorActionPreference = "Continue"
-            $LASTEXITCODE = 2
+            # Native processes update the global automatic variable. A caller
+            # invoking this script with & can have a local/script shadow;
+            # initialize and read the same global scope on every native call.
+            # The nonzero sentinel also refuses a command that never starts.
+            $global:LASTEXITCODE = 2
             if (-not $isSessionEnd) {
                 $runtimeNoise = & $configuredInterpreter -S -c $captureCode $hookOut.FullName $runtime @runtimeArgs
             } else {
                 $runtimeNoise = & $configuredInterpreter -c $captureCode $hookOut.FullName $runtime @runtimeArgs
             }
-            $hookExitCode = $LASTEXITCODE
+            $hookExitCode = $global:LASTEXITCODE
             if ($hookExitCode -eq 0) {
                 # Hook wire results are always JSON objects (at minimum "{}").
                 # Output shape (first character, brace count) cannot
@@ -157,8 +161,9 @@ print('CG-HOOK-WIRE-VERIFIED')
                 $savedWirePreference = $ErrorActionPreference
                 try {
                     $ErrorActionPreference = "Continue"
+                    $global:LASTEXITCODE = 2
                     $wireNoise = & $configuredInterpreter -I -S -c $wireCode $hookOut.FullName 2>$null
-                    $wireExitCode = $LASTEXITCODE
+                    $wireExitCode = $global:LASTEXITCODE
                 } finally {
                     $ErrorActionPreference = $savedWirePreference
                 }
@@ -182,12 +187,13 @@ print('CG-HOOK-WIRE-VERIFIED')
     }
     # Non-hook CLI invocations keep the direct call (the operator sees the
     # output directly); hook events took the verified path above.
+    $global:LASTEXITCODE = 2
     if (-not $isSessionEnd) {
         & $configuredInterpreter -S $runtime @runtimeArgs
     } else {
         & $configuredInterpreter $runtime @runtimeArgs
     }
-    $hookExitCode = $LASTEXITCODE
+    $hookExitCode = $global:LASTEXITCODE
     Write-HookTraceEnd $hookExitCode
     exit $hookExitCode
 }
@@ -226,8 +232,9 @@ foreach ($candidate in $candidates) {
         $savedErrorActionPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = "Continue"
+            $global:LASTEXITCODE = 2
             & $resolved.Source @($candidate.Prefix) -c "import sys; raise SystemExit(sys.version_info < (3, 10))" 2>$null
-            $probeExitCode = $LASTEXITCODE
+            $probeExitCode = $global:LASTEXITCODE
         } catch {
             # A broken optional launcher is a negative probe. Continue to a
             # different interpreter; runtime execution below still fails.
@@ -239,12 +246,13 @@ foreach ($candidate in $candidates) {
             continue
         }
     }
+    $global:LASTEXITCODE = 2
     if ($isHook -and -not $isSessionEnd) {
         & $resolved.Source @($candidate.Prefix) -S $runtime @runtimeArgs
     } else {
         & $resolved.Source @($candidate.Prefix) $runtime @runtimeArgs
     }
-    $hookExitCode = $LASTEXITCODE
+    $hookExitCode = $global:LASTEXITCODE
     Write-HookTraceEnd $hookExitCode
     exit $hookExitCode
 }

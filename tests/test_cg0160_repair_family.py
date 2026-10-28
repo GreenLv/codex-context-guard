@@ -1111,19 +1111,24 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         tail = sessions / "z-expired"
         tail.mkdir()
         ordered.append(tail)
-        import fcntl as _fcntl
         locks_dir = self.data_dir / "sessions-v2" / ".locks"
         locks_dir.mkdir(parents=True, exist_ok=True)
-        handle = open(str(locks_dir / "b-busy.lock"), "a+b")
-        _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        handle = acquire_exclusive_lock(locks_dir / "b-busy.lock")
         try:
+            # The fixture must contend with the product's actual lock, on
+            # byte zero with msvcrt as well as with flock on POSIX.
+            with self.assertRaises(TimeoutError):
+                with cg.session_lock(busy, timeout=0.0):
+                    self.fail("busy fixture did not hold the lifecycle lock")
             arrivals = []
+            eligibility_checks = []
 
             def names_provider():
                 return [path.name for path in ordered if path.exists()]
 
             def eligible(path, _cutoff):
-                return path.name == "z-expired"
+                eligibility_checks.append(path.name)
+                return path.name in {"b-busy", "z-expired"}
 
             with (self._patch_cleanup_scan(sessions, names_provider, arrivals),
                   mock.patch.object(cg, "_session_expired",
@@ -1143,10 +1148,14 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
                                         deadline=time.monotonic() + 10)
             self.assertFalse(tail.exists())
             self.assertTrue(busy.exists())
-            self.assertTrue(fresh.exists() or not fresh.exists())
+            self.assertIn("a-0000", eligibility_checks)
+            self.assertIn("z-expired", eligibility_checks)
+            self.assertNotIn("b-busy", eligibility_checks)
         finally:
-            _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
-            handle.close()
+            release_exclusive_lock(handle)
+        # Positive control: release restores access to that same lock file.
+        with cg.session_lock(busy, timeout=0.0):
+            pass
 
     def test_order_change_between_passes_still_reaches_every_entry(self) -> None:
         """RR04 matrix: enumeration order changes between passes must not
@@ -1494,11 +1503,12 @@ class F01PrivatePathDomain(IsolatedEnvironment):
         text = out.read_text(encoding="utf-8")
         self.assertNotIn(private, text)
         self.assertIn("[private path omitted]", text)
-        # The raw prompt record keeps its authoritative bytes.
+        # Decode JSON escaping before checking authoritative prompt text:
+        # Windows backslashes have a different serialized representation.
         record_dir = self.session_dir("home-path") / "prompts"
-        raw = "".join(
-            path.read_text(encoding="utf-8") for path in record_dir.glob("P*.json"))
-        self.assertIn(private, raw)
+        prompts = [json.loads(path.read_text(encoding="utf-8"))["text"]
+                   for path in record_dir.glob("P*.json")]
+        self.assertIn("Please inspect " + private, prompts)
 
     def test_home_root_change_is_scrubbed_too(self) -> None:
         cg.dispatch(self.payload(

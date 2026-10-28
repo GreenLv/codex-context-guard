@@ -446,7 +446,7 @@ def answer_review_subject(session_dir, state, item):
     ):
         raise ValueError("described_question_is_not_request")
     if item.get("information_source_span") is None:
-        clauses = item.get("clause_metadata", {}).get("clauses", [])
+        clauses = _semantic_clause_metadata(root["text"])["clauses"]
         action_operations = {name for name, _pattern in ACTION_PATTERNS}
         direct_action = re.match(
             r"^\s*(?:(?:请|请你|帮我|麻烦你|现在|先)\s*)*"
@@ -10033,8 +10033,10 @@ def verification_contract(
     protection subjects or physical-identity obligations, and the derivation
     version is sealed into the contract so certification can detect drift.
     """
-    if clauses is None:
-        clauses = clause_metadata(text)
+    # `clauses` is a backwards-compatible diagnostic input, never a source.
+    # Its bounded/redacted strings cannot recover complete locators, polarity
+    # or action roles. Both call routes derive semantics from the exact text.
+    clauses = _semantic_clause_metadata(text)
     positive_clauses = _positive_clause_texts(clauses)
     positive_text = "\n".join(positive_clauses)
     contract_operation = "unspecified"
@@ -10393,11 +10395,59 @@ def reconciliation_tracker(state: dict[str, Any]) -> dict[str, list[str]]:
     return raw  # type: ignore[return-value]
 
 
+def _item_contract_source_text(
+    item: dict[str, Any], root_record: dict[str, Any], *, acceptance: bool = False,
+) -> str | None:
+    """Recover one item's exact source from an already verified prompt record.
+
+    Existing child byte spans/hashes and session-constraint character spans
+    remain the binding. Summaries are compared only as diagnostic projections;
+    they never supply missing bytes. No new state or migration is introduced.
+    """
+    text = root_record.get("text")
+    if not isinstance(text, str) or item.get("prompt_id") != root_record.get("id"):
+        return None
+    if acceptance:
+        candidate = item.get("text")
+        return candidate if isinstance(candidate, str) and candidate in extract_acceptance(text) else None
+    if item.get("sha256") != root_record.get("sha256"):
+        return None
+    spans = [name for name in ("execution", "information")
+             if item.get(name + "_source_span") is not None]
+    if len(spans) > 1:
+        return None
+    if spans:
+        name = spans[0]
+        bounds = item[name + "_source_span"]
+        raw = text.encode("utf-8")
+        if (not isinstance(bounds, list) or len(bounds) != 2
+                or any(type(value) is not int for value in bounds)
+                or not 0 <= bounds[0] < bounds[1] <= len(raw)):
+            return None
+        try:
+            text = raw[bounds[0]:bounds[1]].decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if sha256_text(text) != item.get(name + "_source_sha256"):
+            return None
+    elif item.get("constraint_scope") == "session":
+        bounds = item.get("source_span")
+        if (not isinstance(bounds, list) or len(bounds) != 2
+                or any(type(value) is not int for value in bounds)
+                or not 0 <= bounds[0] < bounds[1] <= len(text)):
+            return None
+        text = text[bounds[0]:bounds[1]]
+    elif item.get("parent_id") is not None:
+        return None
+    return text if bounded(text, 900) == item.get("text") else None
+
+
 def reconcile_transcript_assets(
     state: dict[str, Any],
     payload: dict[str, Any],
     *,
     trigger: str,
+    session_dir: Path | None = None,
 ) -> None:
     """Supplement late assets once per prompt, plus forced lifecycle recovery."""
     tracker = reconciliation_tracker(state)
@@ -10448,6 +10498,13 @@ def reconcile_transcript_assets(
         )
         if prompt_meta is None:
             continue
+        # Transcript association cannot replace the immutable root source.
+        # Never upgrade from a bounded requirement summary if that source is
+        # unavailable or no longer matches its retained integrity binding.
+        source_record = read_prompt_record(session_dir, prompt_meta) if session_dir else None
+        if (source_record is None
+                or source_record.get("record_sha256") != prompt_meta.get("record_sha256")):
+            continue
         matched_prompt_ids.add(str(prompt_meta["id"]))
         before = set(
             item["id"]
@@ -10474,8 +10531,13 @@ def reconcile_transcript_assets(
                 contract = item.get("verification_contract")
                 if not isinstance(contract, dict) or contract.get("mode") != "legacy_fallback":
                     continue
-                upgraded = verification_contract(item["id"], item.get("text", ""), state, after)
-                if upgraded.get("mode") == "enforced":
+                source_text = _item_contract_source_text(
+                    item, source_record, acceptance=collection == "acceptance_items")
+                if source_text is None:
+                    continue
+                upgraded = verification_contract(item["id"], source_text, state, after)
+                if (upgraded.get("mode") == "enforced"
+                        and read_prompt_record(session_dir, prompt_meta) == source_record):
                     item["verification_contract"] = upgraded
     if matched_prompt_ids:
         tracker["pending_prompt_ids"] = [
@@ -12961,7 +13023,7 @@ def current_core_projections(
             remainder = raw[req["source"]["end"]:].decode("utf-8").strip(" \t\r\n。.!?？；;：:")
         except UnicodeDecodeError:
             continue
-        metadata = clause_metadata(root["text"])
+        metadata = _semantic_clause_metadata(root["text"])
         clauses = [str(c.get("clause") or "") for c in metadata.get("clauses", [])]
         action_text = raw[:req["source"]["end"]].decode("utf-8")
         trailing = [c for c in clauses if c and c not in action_text]
@@ -14268,9 +14330,10 @@ def latest_requirement_text(session_dir: Path, state: dict[str, Any]) -> str:
             ):
                 return text
             return ""
-        text = item.get("text")
-        if isinstance(text, str) and text.strip():
-            return text
+        # A requirement summary is diagnostic, even when it happens to fit
+        # under its limit. Missing root metadata cannot establish source for
+        # a semantic evidence stamp.
+        return ""
     return ""
 
 
@@ -14506,8 +14569,8 @@ def append_prompt_unit_binding(
     atomic_write_json(path, record)
 
 
-def clause_metadata(text: str) -> dict[str, Any]:
-    """Derive bounded, diagnostic bindings from each protected prompt clause."""
+def _semantic_clause_metadata(text: str) -> dict[str, Any]:
+    """Derive full source semantics in memory; never persist this projection."""
     clauses: list[dict[str, Any]] = []
     for clause in _protected_prompt_clauses(text):
         operations = [category for category, pattern in ACTION_PATTERNS if action_search(pattern, clause)]
@@ -14533,12 +14596,24 @@ def clause_metadata(text: str) -> dict[str, Any]:
         else:
             surface = "artifact"
         clauses.append({
-            "clause": bounded(clause, 400),
+            "clause": clause,
             "operation": operation,
             "subjectId": subjects,
             "requestedSurface": surface,
         })
     return {"version": CLAUSE_DERIVATION_VERSION, "clauses": clauses}
+
+
+def _diagnostic_clause_metadata(semantic: dict[str, Any]) -> dict[str, Any]:
+    return {"version": semantic["version"], "clauses": [
+        {**clause, "clause": bounded(clause["clause"], 400)}
+        for clause in semantic["clauses"]
+    ]}
+
+
+def clause_metadata(text: str) -> dict[str, Any]:
+    """Return the existing bounded diagnostic shape, not semantic source."""
+    return _diagnostic_clause_metadata(_semantic_clause_metadata(text))
 
 
 def primary_clause_operation(text: str) -> str:
@@ -14547,7 +14622,7 @@ def primary_clause_operation(text: str) -> str:
     Empty or wholly negated prompts stay ``unspecified``; denied operations
     therefore never become evidence stamps for affirmative work.
     """
-    clause = _primary_positive_clause(clause_metadata(text))
+    clause = _primary_positive_clause(_semantic_clause_metadata(text))
     if clause is None:
         return "unspecified"
     operation = clause.get("operation")
@@ -14555,7 +14630,7 @@ def primary_clause_operation(text: str) -> str:
 
 
 def _positive_clause_texts(metadata: dict[str, Any]) -> list[str]:
-    """Return the non-negated clause texts from precomputed clause metadata."""
+    """Return non-negated text from an ephemeral semantic derivation."""
     return [
         str(clause.get("clause"))
         for clause in _positive_clause_records(metadata)
@@ -14563,7 +14638,7 @@ def _positive_clause_texts(metadata: dict[str, Any]) -> list[str]:
 
 
 def _positive_clause_records(metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return only affirmative clause records for contract and pending state."""
+    """Filter full semantic records; diagnostic strings are not source."""
     return [
         clause
         for clause in metadata.get("clauses") or []
@@ -14600,7 +14675,7 @@ def append_requirement(
     requirement_id = f"R{len(state['requirements']) + 1:03d}"
     # One clause derivation feeds both the requirement record and the enforced
     # contract, so the stored triple cannot drift from what certification uses.
-    metadata = clause_metadata(text)
+    metadata = _semantic_clause_metadata(text)
     contract = verification_contract(requirement_id, text, state, asset_ids or [], clauses=metadata)
     positive_subjects = sorted(
         {
@@ -14623,7 +14698,7 @@ def append_requirement(
             "requestedSurface": sorted(
                 {clause["requestedSurface"] for clause in positive_clause_records}
             ),
-            "clause_metadata": metadata,
+            "clause_metadata": _diagnostic_clause_metadata(metadata),
             "verification_contract": contract,
         }
     )
@@ -20727,7 +20802,7 @@ def handle_post_tool(
         # Codex may persist attachment metadata only after UserPromptSubmit.
         # Reconcile the bounded transcript before recording the first tool so
         # an available prompt asset cannot remain an accidental fallback.
-        reconcile_transcript_assets(state, payload, trigger="post_tool")
+        reconcile_transcript_assets(state, payload, trigger="post_tool", session_dir=session_dir)
         tool_name = str(payload.get("tool_name") or "unknown-tool")
         control_intent = private_control_command_intent(payload)
         if control_intent:
@@ -20914,7 +20989,7 @@ def handle_pre_compact(
     if state["mode"]["manual_off"]:
         return {"continue": True}
     require_usable_state(state)
-    reconcile_transcript_assets(state, payload, trigger="pre_compact")
+    reconcile_transcript_assets(state, payload, trigger="pre_compact", session_dir=session_dir)
     record_commentary_observation(session_dir, state, payload)
     state["mode"]["active"] = True
     state["mode"]["activation_reasons"] = list(
@@ -20942,7 +21017,7 @@ def handle_session_start(
     if source not in {"compact", "resume"} or not state["mode"]["active"]:
         return {}
     require_usable_state(state)
-    reconcile_transcript_assets(state, payload, trigger="session_start")
+    reconcile_transcript_assets(state, payload, trigger="session_start", session_dir=session_dir)
     record_commentary_observation(session_dir, state, payload)
     existing_attempt = state.get("completion_attempt")
     transcript_turn_id = latest_transcript_turn_id(state, payload)
