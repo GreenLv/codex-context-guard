@@ -2162,62 +2162,88 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
             cg._maintenance_boundary_ok(alias / "guard-data"))
 
     def test_add_registry_entries_windows_capability_profile(self) -> None:
-        """Ninth review (P1, capability model): when the interpreter exposes
-        no os.fchmod (Python 3.12 documents it Unix-only) and the file is a
-        plain writable 0666, the registration must still happen — the file
-        boundary on such a platform comes from the validated parent
-        directory, not POSIX mode bits — and the session save must not
-        crash after the state was published."""
+        """Ninth review P1 (capability model), rewritten after the
+        eleventh review's non-vacuity finding: a FRESH session (never
+        registered before, process cache empty, registry file absent) is
+        saved while the registry helper runs under the Windows capability
+        profile — ``os.name == "nt"`` with no ``os.fchmod`` on the
+        interpreter. The registry file must actually gain the session's
+        line during that modeled phase (real append, read back from the
+        file), which fails on the pre-fix bytes that called ``os.fchmod``
+        unconditionally (the AttributeError escaped the OSError handler)
+        and passes on the fixed bytes whose nt branch takes the file
+        boundary from the validated parent directory. The modeled phase
+        never mutates the POSIX test host beyond the session tree, and a
+        missing ``os.fchmod`` attribute is restored to its exact prior
+        presence state."""
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
-        actual_fstat = os.fstat
-        actual_fchmod = os.fchmod
-        calls = []
+        session = "win-capability-fresh"
+        encoded = cg.safe_session_id(session)
+        registry_path = cg._cleanup_registry_path(self.data_dir)
+        # Fresh identity: nothing pre-registered, no process cache entry.
+        self.assertFalse(registry_path.exists())
+        self.assertNotIn(encoded, cg._read_discovery_registry(self.data_dir))
+        self.assertNotIn((str(self.data_dir), encoded),
+                         cg._REGISTRY_ENTRIES_THIS_PROCESS)
+        self.assertNotIn(str(self.session_dir(session)),
+                         cg._REGISTRY_ENTRIES_THIS_PROCESS)
+        actual_fchmod = getattr(os, "fchmod", None)
+        real_fstat = os.fstat
+        append_opens = []
+        real_open = os.open
+        real_add = cg._add_cleanup_registry_entries
+        modeled = {"entered": False}
 
         def file_mode_666(fd):
-            value = actual_fstat(fd)
+            value = real_fstat(fd)
             fields = list(value)
             fields[0] = (fields[0] & ~0o777) | 0o666
             return os.stat_result(fields)
 
-        real_fchmod = os.fchmod
-        real_add = cg._add_cleanup_registry_entries
-        modeled = {"deleted": False}
+        def traced_open(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if str(path).endswith(".session-registry"):
+                append_opens.append(fd)
+            return fd
 
         def profile_add(root, names):
-            calls.append(True)
-            if modeled["deleted"]:
-                # A nested save within the same dispatch reuses the modeled
-                # capability surface: fchmod stays absent.
-                with mock.patch.object(os, "fstat",
-                                       side_effect=file_mode_666):
+            modeled["entered"] = True
+            with mock.patch.object(os, "name", "nt"), \
+                    mock.patch.object(os, "fstat",
+                                      side_effect=file_mode_666), \
+                    mock.patch.object(os, "open",
+                                      side_effect=traced_open):
+                if actual_fchmod is not None:
+                    delattr(os, "fchmod")
+                try:
                     return real_add(root, names)
-            del os.fchmod
-            modeled["deleted"] = True
-            try:
-                with mock.patch.object(os, "fstat",
-                                       side_effect=file_mode_666):
-                    return real_add(root, names)
-            finally:
-                os.fchmod = real_fchmod
-                modeled["deleted"] = False
+                finally:
+                    # Restore os.fchmod to its exact prior presence state.
+                    if actual_fchmod is not None:
+                        os.fchmod = actual_fchmod
+                    elif hasattr(os, "fchmod"):
+                        delattr(os, "fchmod")
 
-        self._expire_session("windows-capability-session")
         with mock.patch.object(cg, "_add_cleanup_registry_entries",
                                side_effect=profile_add):
             cg.dispatch(self.payload(
-                "UserPromptSubmit", "windows-capability-session",
-                prompt="capability model", turn_id="t1"))
-        self.assertTrue(calls, "the registry helper was never reached")
-        # Registration still happened (mode bits are not the boundary on
-        # a platform without fchmod; the parent directory is).
-        registry = cg._read_discovery_registry(self.data_dir)
-        self.assertIn(cg.safe_session_id("windows-capability-session"),
-                      registry)
-        # Restore os.fchmod for the assertion block below.
-        setattr(os, "fchmod", actual_fchmod)
-        self.assertTrue(
-            self.session_dir("windows-capability-session").exists())
+                "UserPromptSubmit", session, prompt="capability model",
+                turn_id="t1"))
+        self.assertTrue(modeled["entered"], "the registry helper was never reached")
+        # The modeled phase really appended: at least one registry append
+        # open happened and the file now carries the fresh session's line.
+        self.assertTrue(append_opens,
+                        "no registry append open occurred in the modeled "
+                        "Windows capability phase")
+        raw_registry = registry_path.read_text(encoding="utf-8")
+        self.assertIn(encoded, raw_registry.splitlines(),
+                      "the fresh session was not durably registered in the "
+                      "modeled phase")
+        self.assertEqual(
+            cg._read_discovery_registry(self.data_dir), {encoded})
+        # The session save itself completed under the modeled profile.
+        self.assertTrue(self.session_dir(session).exists())
 
     def test_failed_mode_readback_preserves_prior_registrations(self) -> None:
         """Ninth review observation, updated semantics: when fchmod succeeds
