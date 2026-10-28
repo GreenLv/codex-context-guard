@@ -1,0 +1,81 @@
+"""Exercise distribution bytes through real Git checkout conversion."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location("checkout_manager", ROOT / "scripts/manage_plugin.py")
+assert SPEC and SPEC.loader
+MANAGER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MANAGER)
+
+
+class DistributionCheckoutBytesTests(unittest.TestCase):
+    def git(self, root: Path, *args: str) -> bytes:
+        env = os.environ.copy()
+        env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        return subprocess.run(["git", *args], cwd=root, env=env, check=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
+
+    def test_entire_reviewed_set_survives_crlf_checkout_settings(self) -> None:
+        # Freeze committed bytes, independent of concurrent source edits and
+        # the operator's checkout settings. The manifest is never regenerated.
+        manifest_path = MANAGER.DISTRIBUTION_MANIFEST_RELATIVE
+        manifest_bytes = self.git(ROOT, "show", f"HEAD:{manifest_path}")
+        expected = json.loads(manifest_bytes)["files"]
+        bodies = {path: self.git(ROOT, "show", f"HEAD:{path}") for path in expected}
+        bodies[manifest_path] = manifest_bytes
+        binary = b"\x00binary\r\nraw\n\xff\x00"
+        bodies["checkout-control.bin"] = binary
+        attributes = (ROOT / ".gitattributes").read_bytes()
+        old_attributes = attributes.replace(b"* text=auto eol=lf", b"* text=auto")
+        self.assertNotEqual(old_attributes, attributes)
+        settings = (("true", "crlf"), ("false", "crlf"), ("input", "lf"))
+        for autocrlf, eol in settings:
+            for label, rules in (("old", old_attributes), ("fixed", attributes)):
+                with self.subTest(autocrlf=autocrlf, eol=eol, rules=label), \
+                        tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.git(root, "init", "--quiet")
+                    self.git(root, "config", "core.autocrlf", "false")
+                    for relative, body in {**bodies, ".gitattributes": rules}.items():
+                        path = root / relative
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(body)
+                    self.git(root, "add", "--all")
+                    # Materialize the index under Windows-relevant conversion
+                    # settings; index fallback supplies .gitattributes itself.
+                    for relative in (*bodies, ".gitattributes"):
+                        (root / relative).unlink()
+                    self.git(root, "-c", f"core.autocrlf={autocrlf}", "-c", f"core.eol={eol}",
+                             "checkout-index", "--all", "--force")
+                    self.assertEqual((root / "checkout-control.bin").read_bytes(), binary)
+                    mismatches = set()
+                    for relative, body in bodies.items():
+                        blob = self.git(root, "show", f":{relative}")
+                        self.assertEqual(blob, body, relative)
+                        actual = (root / relative).read_bytes()
+                        if actual != blob:
+                            mismatches.add(relative)
+                        if label == "fixed" and relative in expected:
+                            self.assertEqual(hashlib.sha256(actual).hexdigest(), expected[relative], relative)
+                    if label == "old" and autocrlf != "input":
+                        self.assertEqual(mismatches, {".codexignore", "LICENSE", "pyproject.toml"})
+                        with self.assertRaisesRegex(RuntimeError, "reviewed sha256"):
+                            MANAGER.distribution_manifest(root)
+                    else:
+                        self.assertEqual(mismatches, set())
+                        self.assertEqual(set(MANAGER.distribution_manifest(root)),
+                                         set(expected) | {manifest_path})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -73,6 +73,18 @@ def release_exclusive_lock(handle) -> None:
     handle.close()
 
 
+def symlink_or_skip(test, link: Path, target: Path, **kwargs) -> None:
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as exc:
+        import errno
+
+        if (getattr(exc, "winerror", None) == 1314
+                or exc.errno in {errno.ENOSYS, errno.ENOTSUP}):
+            test.skipTest(f"symlink creation capability unavailable: {exc}")
+        raise
+
+
 class IsolatedEnvironment(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -84,6 +96,7 @@ class IsolatedEnvironment(unittest.TestCase):
         os.environ["CONTEXT_GUARD_DATA_DIR"] = str(self.data_dir)
         os.environ["CODEX_HOME"] = str(self.codex_home)
         os.environ["HOME"] = str(self.os_home)
+        os.environ["USERPROFILE"] = str(self.os_home)
         for name in ("PLUGIN_DATA", "CLAUDE_PLUGIN_DATA", "PLUGIN_ROOT"):
             os.environ.pop(name, None)
         self.project = self.root / "project"
@@ -289,19 +302,30 @@ class F02F06ExportWriter(IsolatedEnvironment):
     def test_parent_directory_permissions_are_preserved(self) -> None:
         state = self._active_state()
         self.project.chmod(0o755)
+        parent_dacl = (cg._windows_query_dacl_sddl(self.project)
+                       if os.name == "nt" else None)
         out = cg.export_handoff(
             self.session_dir("f02-export"), state, "handoff-new.md")
-        self.assertEqual(stat.S_IMODE(self.project.stat().st_mode), 0o755)
-        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(self.project.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+        else:
+            self.assertIsNotNone(parent_dacl)
+            self.assertEqual(cg._windows_query_dacl_sddl(self.project), parent_dacl)
+        self.assertTrue(out.read_text(encoding="utf-8").startswith(
+            "# Context Guard Handoff"))
 
-    def test_directory_and_symlink_targets_are_refused(self) -> None:
+    def test_directory_target_is_refused(self) -> None:
         state = self._active_state()
         target_dir = self.project / "target.md"
         target_dir.mkdir()
         with self.assertRaises(cg.ExportTargetExistsError):
             cg.export_handoff(self.session_dir("f02-export"), state, "target.md")
+
+    def test_symlink_target_is_refused(self) -> None:
+        state = self._active_state()
         link = self.project / "link.md"
-        link.symlink_to(self.project / "other.txt")
+        symlink_or_skip(self, link, self.project / "other.txt")
         with self.assertRaises(ValueError):
             cg.export_handoff(self.session_dir("f02-export"), state, "link.md")
         self.assertFalse((self.project / "other.txt").exists())
@@ -347,6 +371,7 @@ class F02F06ExportWriter(IsolatedEnvironment):
 
 
 class F03PrivatePermissionBoundary(IsolatedEnvironment):
+    @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_chmod_failure_is_visible_and_fail_closed(self) -> None:
         loose = self.root / "loose"
         loose.mkdir(mode=0o755)
@@ -357,6 +382,7 @@ class F03PrivatePermissionBoundary(IsolatedEnvironment):
                 cg.secure_directory(loose)
         self.assertEqual(stat.S_IMODE(loose.stat().st_mode), 0o755)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_mode_verification_failure_is_visible(self) -> None:
         target = self.root / "sneaky"
         target.mkdir(mode=0o700)
@@ -368,12 +394,14 @@ class F03PrivatePermissionBoundary(IsolatedEnvironment):
             with self.assertRaises(cg.PrivateBoundaryError):
                 cg.secure_directory(target)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_existing_loose_private_directory_is_tightened(self) -> None:
         loose = self.data_dir / "sessions-v2" / "late"
         loose.mkdir(parents=True, mode=0o755)
         cg.secure_directory(loose)
         self.assertEqual(stat.S_IMODE(loose.stat().st_mode), 0o700)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_hot_path_existing_hardened_directory_is_unchanged(self) -> None:
         hardened = self.data_dir / "sessions-v2" / "hot"
         hardened.mkdir(parents=True, mode=0o700)
@@ -1155,7 +1183,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         (external / "keep" / "data.txt").write_text("keep", encoding="utf-8")
         session = self.root / "session-tree"
         session.mkdir()
-        (session / "linked-dir").symlink_to(external / "keep",
+        symlink_or_skip(self, session / "linked-dir", external / "keep",
                                             target_is_directory=True)
         cg._delete_session_tree_bounded(session, lambda: True)
         self.assertFalse(session.exists())
@@ -1196,6 +1224,8 @@ class F02ExportParentRace(IsolatedEnvironment):
                                  prompt="export task", turn_id="t1"))
         return self.load_state(name)
 
+    @unittest.skipUnless(os.name == "posix" and os.open in os.supports_dir_fd,
+                         "POSIX anchored directory descriptor boundary")
     def test_parent_replaced_by_link_fails_without_escaping(self) -> None:
         state = self._state("race")
         parent = self.project / "exports"
@@ -1211,7 +1241,7 @@ class F02ExportParentRace(IsolatedEnvironment):
                 moved = self.project / "exports-original"
                 if not moved.exists():
                     parent.rename(moved)
-                    parent.symlink_to(outside, target_is_directory=True)
+                    symlink_or_skip(self, parent, outside, target_is_directory=True)
             return result
 
         with mock.patch.object(cg.os, "open", side_effect=swapping_open):
@@ -1220,6 +1250,8 @@ class F02ExportParentRace(IsolatedEnvironment):
                     self.session_dir("race"), state, "exports/handoff.md")
         self.assertFalse((outside / "handoff.md").exists())
 
+    @unittest.skipUnless(os.name == "posix" and os.open in os.supports_dir_fd,
+                         "POSIX anchored directory descriptor boundary")
     def test_parent_swapped_before_publication_refuses(self) -> None:
         state = self._state("race2")
         parent = self.project / "exports2"
@@ -1237,7 +1269,7 @@ class F02ExportParentRace(IsolatedEnvironment):
                 moved = self.project / "exports2-original"
                 if not moved.exists():
                     parent.rename(moved)
-                    parent.symlink_to(outside, target_is_directory=True)
+                    symlink_or_skip(self, parent, outside, target_is_directory=True)
 
         with mock.patch.object(cg, "_verify_export_parent",
                                side_effect=verify_then_swap):
@@ -1257,7 +1289,7 @@ class F02ExportParentRace(IsolatedEnvironment):
         outside = self.root / "outside-capture"
         outside.mkdir()
         exports.rename(self.project / "matrix-capture-moved")
-        exports.symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(self, exports, outside, target_is_directory=True)
         with self.assertRaises(ValueError):
             cg._capture_parent_identity(exports / "handoff.md")
         self.assertFalse((outside / "handoff.md").exists())
@@ -1273,9 +1305,10 @@ class F02ExportParentRace(IsolatedEnvironment):
         target = exports / "handoff.md"
         captured = cg._capture_parent_identity(target)
         exports.rename(self.project / "matrix-open-moved")
-        exports.symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(self, exports, outside, target_is_directory=True)
         with self.assertRaises(cg.ExportParentChangedError):
-            cg._export_write_text_posix(target, "content", captured)
+            (cg._export_write_text_windows if os.name == "nt"
+             else cg._export_write_text_posix)(target, "content", captured)
         self.assertFalse((outside / "handoff.md").exists())
 
     def test_withdrawal_requires_same_object_identity(self) -> None:
@@ -1296,7 +1329,7 @@ class F02ExportParentRace(IsolatedEnvironment):
             # Swap after the link: the published entry now resolves through
             # the moved path; identity-based withdrawal must still find it.
             exports.rename(self.project / "exports-withdraw-moved")
-            exports.symlink_to(outside, target_is_directory=True)
+            symlink_or_skip(self, exports, outside, target_is_directory=True)
             return result
 
         with mock.patch.object(os, "link", side_effect=swapping_link):
@@ -1317,10 +1350,18 @@ class F02ExportParentRace(IsolatedEnvironment):
     def test_exclusive_create_and_permissions_unchanged(self) -> None:
         state = self._state("perm")
         self.project.chmod(0o755)
+        parent_dacl = (cg._windows_query_dacl_sddl(self.project)
+                       if os.name == "nt" else None)
         out = cg.export_handoff(
             self.session_dir("perm"), state, "handoff-perm.md")
-        self.assertEqual(stat.S_IMODE(self.project.stat().st_mode), 0o755)
-        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(self.project.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+        else:
+            self.assertIsNotNone(parent_dacl)
+            self.assertEqual(cg._windows_query_dacl_sddl(self.project), parent_dacl)
+        self.assertTrue(out.read_text(encoding="utf-8").startswith(
+            "# Context Guard Handoff"))
         with self.assertRaises(cg.ExportTargetExistsError):
             cg.export_handoff(
                 self.session_dir("perm"), state, "handoff-perm.md")
@@ -1832,7 +1873,7 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         (outside / "keep" / "data.txt").write_text("keep", encoding="utf-8")
         target = self.session_dir("queued-v2-control")
         shutil.rmtree(target)
-        target.symlink_to(outside / "keep", target_is_directory=True)
+        symlink_or_skip(self, target, outside / "keep", target_is_directory=True)
         self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
         removed = cg.cleanup_old_sessions(self.data_dir,
                                           deadline=time.monotonic() + 30)
@@ -2070,7 +2111,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         (outside / cg.CLEANUP_CURSOR_NAME).write_text(
             "prior-known-session\n", encoding="utf-8")
         (sessions / "sweep-discovered").mkdir()
-        (sessions / ".locks").symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(self, sessions / ".locks", outside, target_is_directory=True)
         before = sorted(p.relative_to(outside).as_posix()
                         for p in outside.rglob("*"))
         before_bytes = {p.relative_to(outside).as_posix():
@@ -2134,7 +2175,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         deletion, instead of verifying only the `.locks` leaf."""
         outside = self._planted_outside("external-namespace-object")
         self.data_dir.mkdir(parents=True)
-        (self.data_dir / "sessions-v2").symlink_to(outside,
+        symlink_or_skip(self, self.data_dir / "sessions-v2", outside,
                                                    target_is_directory=True)
         self.assertFalse(cg._maintenance_boundary_ok(self.data_dir))
         self._assert_outside_untouched(outside)
@@ -2145,7 +2186,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         the root tier is part of the maintenance boundary chain."""
         outside = self._planted_outside("external-data-root-object")
         # setUp never creates the data root; link it before anything does.
-        self.data_dir.symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(self, self.data_dir, outside, target_is_directory=True)
         self.assertFalse(cg._maintenance_boundary_ok(self.data_dir))
         self._assert_outside_untouched(outside)
 
@@ -2157,7 +2198,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         home = self.root / "platform-home"
         (home / "guard-data" / "sessions-v2" / ".locks").mkdir(parents=True)
         alias = self.root / "alias-to-home"
-        alias.symlink_to(home, target_is_directory=True)
+        symlink_or_skip(self, alias, home, target_is_directory=True)
         self.assertTrue(
             cg._maintenance_boundary_ok(alias / "guard-data"))
 
@@ -2245,6 +2286,8 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         # The session save itself completed under the modeled profile.
         self.assertTrue(self.session_dir(session).exists())
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fchmod"),
+                         "POSIX permission-mode/fchmod contract")
     def test_failed_mode_readback_preserves_prior_registrations(self) -> None:
         """Ninth review observation, updated semantics: when fchmod succeeds
         but the read-back mode still mismatches, the append is SKIPPED and
@@ -2275,8 +2318,13 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
             os.umask(old_mask)
         registry = cg._cleanup_registry_path(self.data_dir)
         self.assertTrue(registry.exists())
-        self.assertEqual(registry.stat().st_mode & 0o777, 0o600,
-                         "the registry was created world-readable")
+        if os.name == "posix":
+            self.assertEqual(registry.stat().st_mode & 0o777, 0o600,
+                             "the registry was created world-readable")
+        else:
+            self.assertIsNotNone(cg._windows_query_dacl_sddl(registry))
+        self.assertIn(cg.safe_session_id("registry-mode-control"),
+                      cg._read_discovery_registry(self.data_dir))
 
     def test_static_link_registry_is_never_written_through(self) -> None:
         """Eighth review (P1): every registry entrance (save-path
@@ -2288,13 +2336,14 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         outside = self.root / "external-unrelated.conf"
         outside.write_text("SYNTHETIC-EXTERNAL-CONFIG\n", encoding="utf-8")
         outside.chmod(0o640)
+        outside_mode = outside.stat().st_mode & 0o777
         before = outside.read_bytes()
-        registry.symlink_to(outside)
+        symlink_or_skip(self, registry, outside)
         # save-path registration: refused, external untouched
         self._expire_session("static-link-session")
         self.assertEqual(outside.read_bytes(), before,
                          "the save path appended through the link")
-        self.assertEqual(outside.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(outside.stat().st_mode & 0o777, outside_mode)
         # sweep registration: refused too
         cg._add_cleanup_registry_entries(self.data_dir, ["another-name"])
         self.assertEqual(outside.read_bytes(), before,
@@ -2346,114 +2395,93 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
 
 
 class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
-    """RV-01: the configured interpreter route must not silently skip the
-    Hook when the configured path is replaced by a non-Python executable."""
+    """The configured interpreter must execute the Hook and verify its wire.
+
+    Windows executes the product PowerShell launcher with a real Python
+    positive control and native batch executables as non-Python negatives.
+    POSIX executes the shell launcher with equivalent shell negatives.
+    """
 
     def _write_conf(self, interpreter: str) -> Path:
-        # The launcher reads the conf from CODEX_HOME's private
-        # context-guard directory, not from the data root.
         conf = Path(os.environ["CODEX_HOME"]) / "context-guard" / "interpreter.conf"
         conf.parent.mkdir(parents=True, exist_ok=True)
         conf.write_text(f"{interpreter}\n", encoding="utf-8")
         conf.chmod(0o600)
         return conf
 
-    def test_silent_skip_signature_fails_visibly(self) -> None:
-        """A replaced executable (/usr/bin/true) exits 0 with empty output —
-        the silent-skip signature. The launcher must fail with its own
-        distinct error instead of letting the Hook vanish."""
+    def _invoke(self, session: str):
         import subprocess
 
         tree = Path(cg.__file__).resolve().parents[1]
-        launcher = tree / "scripts" / "run_context_guard.sh"
-        self._write_conf("/usr/bin/true")
-        env = dict(os.environ)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        payload = json.dumps({
-            "hook_event_name": "UserPromptSubmit", "cwd": str(self.project),
-            "session_id": "replaced-exec", "turn_id": "t1",
-            "prompt": "Repair demo.py and run tests."})
-        proc = subprocess.run(
-            ["/bin/sh", str(launcher), "hook", "UserPromptSubmit"],
-            input=payload, capture_output=True, text=True, env=env, timeout=60)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("not a working Context Guard runtime", proc.stderr)
-        self.assertEqual(proc.stdout, "", "silent skip left empty stdout")
-
-    def test_real_interpreter_passes_the_guard(self) -> None:
-        """The valid configured interpreter still passes the same check."""
-        import subprocess
-        import sys
-
-        tree = Path(cg.__file__).resolve().parents[1]
-        launcher = tree / "scripts" / "run_context_guard.sh"
-        self._write_conf(sys.executable)
-        env = dict(os.environ)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        payload = json.dumps({
-            "hook_event_name": "UserPromptSubmit", "cwd": str(self.project),
-            "session_id": "valid-exec", "turn_id": "t1",
-            "prompt": "Repair demo.py and run tests."})
-        proc = subprocess.run(
-            ["/bin/sh", str(launcher), "hook", "UserPromptSubmit"],
-            input=payload, capture_output=True, text=True, env=env, timeout=60)
-        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
-        self.assertNotEqual(proc.stdout, "", "valid hook produced no output")
-
-    def _invoke_with_script(self, script_body: str, session: str):
-        """Run the installed-tree launcher with a configured executable that
-        prints exactly the given shell script's output."""
-        import subprocess
-
-        tree = Path(cg.__file__).resolve().parents[1]
-        launcher = tree / "scripts" / "run_context_guard.sh"
-        fake = Path(os.environ["CODEX_HOME"]) / "fake-interpreter"
-        fake.parent.mkdir(parents=True, exist_ok=True)
-        fake.write_text(f"#!/bin/sh\n{script_body}\n", encoding="utf-8")
-        fake.chmod(0o700)
-        self._write_conf(str(fake))
-        env = dict(os.environ)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        if os.name == "nt":
+            powershell = shutil.which("powershell.exe")
+            if powershell is None:
+                self.skipTest("native Windows PowerShell executable unavailable")
+            command = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
+                       "-ExecutionPolicy", "Bypass", "-File",
+                       str(tree / "scripts" / "run-context-guard.ps1")]
+        else:
+            command = ["/bin/sh", str(tree / "scripts" / "run_context_guard.sh")]
         payload = json.dumps({
             "hook_event_name": "UserPromptSubmit", "cwd": str(self.project),
             "session_id": session, "turn_id": "t1",
             "prompt": "Repair demo.py and run tests."})
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         return subprocess.run(
-            ["/bin/sh", str(launcher), "hook", "UserPromptSubmit"],
-            input=payload, capture_output=True, text=True, env=env, timeout=60)
+            [*command, "hook", "UserPromptSubmit"], input=payload,
+            capture_output=True, text=True, encoding="utf-8", env=env,
+            timeout=60)
+
+    def _invoke_with_output(self, output: str, session: str):
+        fake = Path(os.environ["CODEX_HOME"]) / (
+            "fake-interpreter.cmd" if os.name == "nt" else "fake-interpreter")
+        fake.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "nt":
+            body = "@echo off\n" + (f"echo {output}\n" if output else "")
+            body += "exit /b 0\n"
+        else:
+            import shlex
+
+            body = "#!/bin/sh\n"
+            if output:
+                body += "printf '%s\\n' " + shlex.quote(output) + "\n"
+            body += "exit 0\n"
+        fake.write_text(body, encoding="utf-8")
+        fake.chmod(0o700)
+        self._write_conf(str(fake))
+        return self._invoke(session)
+
+    def _assert_rejected(self, proc) -> None:
+        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
+        self.assertIn("not a working Context Guard runtime", proc.stderr)
+        self.assertFalse((self.data_dir / "sessions-v2").exists(),
+                         "rejected executable created session state")
+
+    def test_silent_skip_signature_fails_visibly(self) -> None:
+        proc = self._invoke_with_output("", "replaced-exec")
+        self._assert_rejected(proc)
+        self.assertEqual(proc.stdout, "")
+
+    def test_real_interpreter_passes_the_guard(self) -> None:
+        import sys
+
+        self._write_conf(sys.executable)
+        proc = self._invoke("valid-exec")
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        self.assertIsInstance(json.loads(proc.stdout), dict)
+        self.assertTrue((self.session_dir("valid-exec") / "state.json").is_file())
 
     def test_malformed_object_output_is_not_a_hook_result(self) -> None:
-        """An unrelated program printing JSON-lookalike text ('{startup
-        diagnostic') and exiting 0 must fail the wire verification: the
-        first byte being '{' is not a Hook result (fifth-round RV-01)."""
-        proc = self._invoke_with_script(
-            "printf '%s\\n' '{startup diagnostic'", "malformed-object")
-        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
-        self.assertIn("not a working Context Guard runtime", proc.stderr)
-        self.assertFalse(
-            (Path(os.environ["CODEX_HOME"]) / "sessions-v2").exists(),
-            "a rejected wire result must not create session state")
+        self._assert_rejected(self._invoke_with_output(
+            "{startup diagnostic", "malformed-object"))
 
     def test_valid_json_non_object_is_not_a_hook_result(self) -> None:
-        """A complete JSON value that is not an object is equally not a Hook
-        wire result (Hook results are always JSON objects)."""
-        proc = self._invoke_with_script(
-            "printf '[1,2]\\n'", "json-array")
-        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
-        self.assertIn("not a working Context Guard runtime", proc.stderr)
+        self._assert_rejected(self._invoke_with_output("[1,2]", "json-array"))
 
-    def test_json_looking_output_without_python_capability_is_rejected(
-            self) -> None:
-        """A program whose hook output is even a complete JSON object is
-        still rejected when it cannot execute the validator: the marker is
-        only printable by a program that actually runs the Python json
-        parse, so output coincidence alone cannot pass (the wire check
-        verifies the configured interpreter's claimed capability AND the
-        claimed output)."""
-        proc = self._invoke_with_script(
-            'printf \'{"continue": true}\\n\'', "json-object")
-        self.assertNotEqual(proc.returncode, 0, proc.stdout[:200])
-        self.assertIn("not a working Context Guard runtime", proc.stderr)
+    def test_json_looking_output_without_python_capability_is_rejected(self) -> None:
+        self._assert_rejected(self._invoke_with_output(
+            '{"continue": true}', "json-object"))
 
 
 class D01DocumentationContract(IsolatedEnvironment):

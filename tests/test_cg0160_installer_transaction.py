@@ -26,6 +26,18 @@ manager = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(manager)
 
 
+def symlink_or_skip(test, link: Path, target: Path, **kwargs) -> None:
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as exc:
+        import errno
+
+        if (getattr(exc, "winerror", None) == 1314
+                or exc.errno in {errno.ENOSYS, errno.ENOTSUP}):
+            test.skipTest(f"symlink creation capability unavailable: {exc}")
+        raise
+
+
 class InstallerTransactionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -54,6 +66,8 @@ class InstallerTransactionTests(unittest.TestCase):
         script = self.repo_root / "scripts" / "context_guard.py"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(body, encoding="utf-8")
+        # Synthetic sources explicitly review their own distribution set.
+        manager.write_distribution_manifest(self.repo_root)
 
     def plugin_entry(self, _codex: str) -> dict | None:
         version = self.state["version"]
@@ -148,9 +162,8 @@ class InstallerTransactionTests(unittest.TestCase):
         staged = manager.marketplace_staging_root(self.codex_home, self.repo_root)
         self.assertFalse(staged.exists())
 
-    def test_manifest_corrupt_and_linked_are_refused_before_read(self) -> None:
-        """RR02 matrix rows: corrupt JSON and a manifest whose path (or an
-        ancestor) is a link are refused before any byte is read."""
+    def test_corrupt_manifest_is_refused_before_read(self) -> None:
+        """Corrupt manifest JSON cannot become distribution authority."""
         self._bootstrap_source()
         manager.write_distribution_manifest(self.repo_root)
         manifest = (self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE)
@@ -159,9 +172,12 @@ class InstallerTransactionTests(unittest.TestCase):
             manager.build_distribution_tree(
                 self.repo_root, self.root / "distribution")
 
+    def test_linked_manifest_is_refused_before_read(self) -> None:
+        self._bootstrap_source()
+        manifest = self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE
         outside = self.root / "outside-manifest.json"
         manifest.unlink()
-        manifest.symlink_to(outside)
+        symlink_or_skip(self, manifest, outside)
         reads = []
         real_read = Path.read_text
 
@@ -192,11 +208,11 @@ class InstallerTransactionTests(unittest.TestCase):
                     "x", encoding="utf-8")),
              "scripts/private-notes.txt"),
             ("file-link", lambda staged: (
-                (staged / "scripts" / "private-link.py").symlink_to(
+                symlink_or_skip(self, staged / "scripts" / "private-link.py",
                     self.root / "outside-file")),
              "scripts/private-link.py"),
             ("dir-link", lambda staged: (
-                (staged / "external-dir").symlink_to(
+                symlink_or_skip(self, staged / "external-dir",
                     self.root / "outside-dir", target_is_directory=True)),
              "external-dir"),
         ]
@@ -239,6 +255,7 @@ class InstallerTransactionTests(unittest.TestCase):
         explicit generated manifest and a strict build; polluted non-git
         sources still refuse."""
         self._bootstrap_source()
+        (self.repo_root / manager.DISTRIBUTION_MANIFEST_RELATIVE).unlink()
         with contextlib.redirect_stdout(io.StringIO()):
             staged = manager.marketplace_staging(self.codex_home, self.repo_root)
         self.assertEqual(

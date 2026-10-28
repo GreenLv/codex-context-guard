@@ -274,7 +274,11 @@ POSIX objects are tightened to `0700`/`0600` and re-read; when that cannot be
 established the write fails closed with a visible, content-free error. On
 Windows, private directories receive a protected three-entry DACL (current
 user, `SYSTEM`, Administrators) applied and read-back verified through native
-APIs, without starting PowerShell on the Hook path; file-level isolation comes
+APIs, without starting PowerShell on the Hook path. Read-back verifies the
+protected bit and the exact three-ACE permission structure. Windows may retain
+the separate AI auto-inherited metadata bit; that is accepted only with the
+same protected permission structure, never as permission to accept extra
+trustees, rights or inheritance flags. File-level isolation comes
 from the verified parent directory plus inheritance, and no per-file ACL call
 runs on the write path. These source-level contracts are validated as native
 Windows facts separately; they are not a sandbox against a malicious

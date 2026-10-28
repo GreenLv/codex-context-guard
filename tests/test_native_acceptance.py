@@ -18,6 +18,7 @@ SPEC = importlib.util.spec_from_file_location("native_acceptance", SCRIPT)
 assert SPEC and SPEC.loader
 NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
+MANAGER = NATIVE.load_manager(SCRIPT.parents[2])
 
 
 class FakeManager:
@@ -30,6 +31,18 @@ class FakeManager:
 
 
 class NativeAcceptanceEntrypointTests(unittest.TestCase):
+    def write_distribution_fixture(self, root: Path) -> None:
+        files = {".codex-plugin/plugin.json": b'{"version":"0.16.0"}\n',
+                 "scripts/example.py": b'print("fixture")\n',
+                 ".codexignore": b"private\n", "LICENSE": b"fixture license\n",
+                 "pyproject.toml": b"[project]\n"}
+        for relative, body in files.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+        # Explicit fixture construction; production preflight never regenerates.
+        MANAGER.write_distribution_manifest(root)
+
     def test_existing_result_stops_before_portable_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "result.json"
@@ -69,22 +82,57 @@ class NativeAcceptanceEntrypointTests(unittest.TestCase):
 
     def test_preflight_checks_inputs_without_installing_or_creating_annex(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            self.write_distribution_fixture(root)
             output = Path(directory) / "result.json"
             replies = [subprocess.CompletedProcess([], 0, "https://example.invalid/repo.git\n", ""),
                        subprocess.CompletedProcess([], 0, "codex test-version\n", "")]
             with mock.patch.object(NATIVE, "resolve_executable", return_value="codex"), \
                     mock.patch.object(NATIVE, "verify_exact_source") as verify, \
-                    mock.patch.object(NATIVE, "load_manager"), \
+                    mock.patch.object(NATIVE, "load_manager", return_value=MANAGER), \
                     mock.patch.object(NATIVE, "runtime_digest", return_value="b" * 64), \
                     mock.patch.object(NATIVE, "run", side_effect=replies), \
                     mock.patch.object(NATIVE, "portable_acceptance") as execute, \
                     contextlib.redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(NATIVE.main(["--source-commit", "a" * 40,
+                                             "--repo-root", str(root),
                                              "--output", str(output), "--preflight"]), 0)
             verify.assert_called_once()
             execute.assert_not_called()
             self.assertFalse(output.exists())
             self.assertIn("acceptance_not_run", stdout.getvalue())
+
+    def test_preflight_rejects_distribution_drift_before_codex_or_install(self) -> None:
+        for relative in (".codexignore", "LICENSE", "pyproject.toml", "scripts/example.py"):
+            for failure in ("crlf", "missing"):
+                with self.subTest(relative=relative, failure=failure), \
+                        tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "repo"
+                    self.write_distribution_fixture(root)
+                    path = root / relative
+                    if failure == "crlf":
+                        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+                    else:
+                        path.unlink()
+                    before = {p.relative_to(root): p.read_bytes()
+                              for p in root.rglob("*") if p.is_file()}
+                    output = Path(directory) / "result.json"
+                    with mock.patch.object(NATIVE, "resolve_executable", return_value="codex"), \
+                            mock.patch.object(NATIVE, "verify_exact_source"), \
+                            mock.patch.object(NATIVE, "load_manager", return_value=MANAGER), \
+                            mock.patch.object(NATIVE, "run", return_value=subprocess.CompletedProcess(
+                                [], 0, "https://example.invalid/repo.git\n", "")) as run, \
+                            mock.patch.object(NATIVE, "portable_acceptance") as execute, \
+                            contextlib.redirect_stderr(io.StringIO()), \
+                            self.assertRaises(SystemExit) as caught:
+                        NATIVE.main(["--source-commit", "a" * 40, "--repo-root", str(root),
+                                     "--output", str(output), "--preflight"])
+                    self.assertEqual(caught.exception.code, 2)
+                    execute.assert_not_called()
+                    self.assertFalse(any("--version" in call.args for call in run.call_args_list))
+                    self.assertFalse(output.exists())
+                    self.assertEqual(before, {p.relative_to(root): p.read_bytes()
+                                              for p in root.rglob("*") if p.is_file()})
 
     def test_unusable_result_parent_fails_before_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

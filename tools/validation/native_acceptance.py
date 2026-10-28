@@ -295,7 +295,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         root = args.repo_root.resolve()
         verify_exact_source(root, args.source_commit)
         normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout)
-        runtime_digest(load_manager(root), root)
+        manager = load_manager(root)
+        # Clean Git state and runtime identity do not cover checkout byte
+        # conversion in top-level distribution files. Reuse the installer's
+        # strict read-only validator before either preflight success or install.
+        manager.distribution_manifest(root)
+        runtime_digest(manager, root)
         run(root, codex, "--version")
     except (NativeRunError, OSError, RuntimeError) as exc:
         parser.error(str(exc))

@@ -15,7 +15,12 @@ published 0.15.1:
   established or verified. On Windows this candidate sets and verifies a
   protected DACL on private directories through native APIs; that behavior is
   a source-level contract here, with native Windows acceptance recorded
-  separately.
+  separately. Read-back compares the protected permission structure rather
+  than raw SDDL text, so an otherwise identical DACL carrying Windows' AI
+  metadata remains valid.
+- Distribution text has explicit LF checkout rules, including extensionless
+  files and TOML metadata; binary bytes are unchanged. Portable preflight
+  rejects distribution byte drift before any installation.
 - Session identities are validated. Missing or empty ids are refused; ids are
   injectively encoded instead of underscore-folded. Sessions whose ids contain
   only `[A-Za-z0-9._-]` (all UUID-shaped host ids) resolve exactly as before.

@@ -2240,11 +2240,56 @@ def _windows_apply_protected_dacl(path: Path, expected_sddl: str) -> None:
         kernel32.LocalFree(ctypes.cast(descriptor, wintypes.HLOCAL))
 
 
+def _windows_private_directory_dacl_matches(
+    current: str | None, expected: str,
+) -> bool:
+    """Compare the narrow private-directory DACL contract, not SDDL bytes.
+
+    P (SE_DACL_PROTECTED) is mandatory. The independent AI control bit
+    (SE_DACL_AUTO_INHERITED) may be present after a successful native set;
+    it does not grant an ACE or remove protection. No other control flags
+    are accepted. Require the same ordered three explicit allow ACEs,
+    OI+CI propagation, exact file-full-control mask and trustee identities.
+    This intentionally does not parse arbitrary SDDL or conditional ACEs.
+    """
+    def parse(sddl: str | None) -> tuple[tuple[int, str], ...] | None:
+        if not isinstance(sddl, str):
+            return None
+        descriptor = re.fullmatch(r"D:(?:P|PAI|AIP)((?:\([^()]*\)){3})", sddl)
+        if descriptor is None:
+            return None
+        entries = []
+        for ace in re.findall(r"\(([^()]*)\)", descriptor.group(1)):
+            fields = ace.split(";")
+            if len(fields) != 6:
+                return None
+            kind, inheritance, rights, object_guid, inherited_guid, trustee = fields
+            if (kind != "A" or inheritance not in {"OICI", "CIOI"}
+                    or object_guid or inherited_guid):
+                return None
+            if rights == "FA":
+                mask = 0x001F01FF  # FILE_ALL_ACCESS, not GENERIC_ALL.
+            elif re.fullmatch(r"0x[0-9a-fA-F]{1,8}", rights):
+                mask = int(rights, 16)
+            else:
+                return None
+            if not re.fullmatch(r"S-1-[0-9]+(?:-[0-9]+)+|SY|BA", trustee):
+                return None
+            sid = {"SY": "S-1-5-18", "BA": "S-1-5-32-544"}.get(trustee, trustee)
+            entries.append((mask, sid))
+        if len({sid for _, sid in entries}) != 3:
+            return None
+        return tuple(entries)
+
+    expected_entries = parse(expected)
+    return expected_entries is not None and parse(current) == expected_entries
+
+
 def _harden_private_directory_windows(path: Path) -> None:
     expected = _windows_expected_sddl(is_directory=True)
     try:
         current = _windows_query_dacl_sddl(path)
-        if current != expected:
+        if not _windows_private_directory_dacl_matches(current, expected):
             _windows_apply_protected_dacl(path, expected)
             current = _windows_query_dacl_sddl(path)
     except PrivateBoundaryError:
@@ -2254,7 +2299,7 @@ def _harden_private_directory_windows(path: Path) -> None:
             f"private directory {path.name} could not be restricted to a "
             f"protected owner-only DACL ({exc}); refusing to write private data"
         ) from exc
-    if current != expected:
+    if not _windows_private_directory_dacl_matches(current, expected):
         raise PrivateBoundaryError(
             f"private directory {path.name} could not be restricted to a "
             "protected owner-only DACL; refusing to write private data"
@@ -23107,13 +23152,13 @@ def cleanup_old_sessions(
       queue-cap truncation: the batch is bounded by the deadline alone, so
       a pass with ample budget reads the whole namespace and the collected
       batch is sorted ONLY after the read phase ends — a lexical watermark
-      can then represent actually-read work. The known consequence, submitted
-      for the requirement owner's decision and not self-adopted: under
-      toy-ratio models (budget buys fewer reads than the namespace has
-      entries, re-reads charged like fresh reads, readdir order placing the
-      tail behind the seen prefix), no implementation can both bound
-      enumeration per read and guarantee tail discovery in bounded passes;
-      see the handback's pending design proposal.
+      can then represent actually-read work. Under adopted option C,
+      registered-session fairness follows the registered maintenance-chain
+      contract. Unregistered old directories remain supported through this
+      fallback sweep, but a tiny budget can repeatedly expire before an
+      unseen tail is discovered; bounded discovery latency is not promised.
+      The retained expected-failure discovery case is an explicit limitation,
+      not passing evidence.
     - Persisted progress and its soundness: names read but left undecided
       are kept in the pending queue inside the cursor state file and
       survive the call boundary. The lexical cursor is persisted ONLY when

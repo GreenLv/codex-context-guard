@@ -60,7 +60,25 @@ $configuredInterpreter = $null
 $configRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
 $configFile = Join-Path $configRoot "context-guard\interpreter.conf"
 if (Test-Path -LiteralPath $configFile -PathType Leaf) {
-    $configuredInterpreter = (Get-Content -LiteralPath $configFile -TotalCount 1 -ErrorAction SilentlyContinue)
+    try {
+        # The installer writes BOM-less UTF-8, including non-ASCII paths.
+        # PS5.1 Get-Content otherwise guesses the system ANSI code page.
+        $configUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $configReader = New-Object System.IO.StreamReader($configFile, $configUtf8, $false)
+        try {
+            $configuredInterpreter = $configReader.ReadLine()
+            # PS5.1 -Encoding UTF8 commonly writes a BOM. Consume exactly
+            # that optional UTF-8 prefix without enabling UTF-16/32 encoding
+            # detection or weakening the strict UTF-8 decoder above.
+            if ($configuredInterpreter -and $configuredInterpreter[0] -eq [char]0xFEFF) {
+                $configuredInterpreter = $configuredInterpreter.Substring(1)
+            }
+        } finally { $configReader.Dispose() }
+    } catch {
+        [Console]::Error.WriteLine("Context Guard interpreter configuration could not be read as UTF-8: $configFile.")
+        Write-HookTraceEnd 2
+        exit 2
+    }
     if ($configuredInterpreter) {
         $configuredInterpreter = $configuredInterpreter.Trim()
     }
@@ -82,15 +100,37 @@ if ($configuredInterpreter) {
         # Hook wire result before re-emitting it; otherwise fail visibly.
         $hookOut = New-TemporaryFile
         $savedErrorActionPreference = $ErrorActionPreference
+        $savedConsoleInputEncoding = [Console]::InputEncoding
+        $savedConsoleOutputEncoding = [Console]::OutputEncoding
+        $savedOutputEncoding = $OutputEncoding
+        $savedPythonIOEncoding = $env:PYTHONIOENCODING
         try {
+            $wireUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+            [Console]::InputEncoding = $wireUtf8
+            [Console]::OutputEncoding = $wireUtf8
+            $OutputEncoding = $wireUtf8
+            $env:PYTHONIOENCODING = "utf-8"
+            # Let Python write its own UTF-8 bytes. PS5.1's > writes
+            # UTF-16LE, and decoding/re-encoding native stdout can silently
+            # damage non-ASCII JSON strings while leaving valid JSON.
+            # Preserve script argv and import-path behavior in this process.
+            $captureCode = @'
+import os, runpy, sys
+sys.stdout = open(sys.argv.pop(1), 'w', encoding='utf-8', newline='\n')
+target = sys.argv[1]
+sys.argv = sys.argv[1:]
+sys.path[0] = os.path.dirname(os.path.abspath(target))
+runpy.run_path(target, run_name='__main__')
+'@
             # A nonzero runtime exit is an expected outcome that must reach
             # the post-verification below, so keep native failures
             # non-terminating inside this capture scope.
             $ErrorActionPreference = "Continue"
+            $LASTEXITCODE = 2
             if (-not $isSessionEnd) {
-                & $configuredInterpreter -S $runtime @runtimeArgs > $hookOut
+                $runtimeNoise = & $configuredInterpreter -S -c $captureCode $hookOut.FullName $runtime @runtimeArgs
             } else {
-                & $configuredInterpreter $runtime @runtimeArgs > $hookOut
+                $runtimeNoise = & $configuredInterpreter -c $captureCode $hookOut.FullName $runtime @runtimeArgs
             }
             $hookExitCode = $LASTEXITCODE
             if ($hookExitCode -eq 0) {
@@ -107,33 +147,37 @@ if ($configuredInterpreter) {
                 $wireCode = @'
 import json, sys
 try:
-    payload = json.load(open(sys.argv[1], encoding="utf-8"))
+    payload = json.load(open(sys.argv[1], encoding='utf-8'))
 except Exception:
     raise SystemExit(3)
 if not isinstance(payload, dict):
     raise SystemExit(4)
-print("CG-HOOK-WIRE-VERIFIED")
+print('CG-HOOK-WIRE-VERIFIED')
 '@
                 $savedWirePreference = $ErrorActionPreference
                 try {
                     $ErrorActionPreference = "Continue"
-                    $wireNoise = & $configuredInterpreter -I -S -c $wireCode $hookOut 2>$null
+                    $wireNoise = & $configuredInterpreter -I -S -c $wireCode $hookOut.FullName 2>$null
                     $wireExitCode = $LASTEXITCODE
                 } finally {
                     $ErrorActionPreference = $savedWirePreference
                 }
-                if ($wireExitCode -ne 0 -or ((-join $wireNoise) -ne "CG-HOOK-WIRE-VERIFIED")) {
+                if ($runtimeNoise -or $wireExitCode -ne 0 -or ((-join $wireNoise) -ne "CG-HOOK-WIRE-VERIFIED")) {
                     [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced output that is not a Hook wire result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
                     Write-HookTraceEnd 2
                     exit 2
                 }
             }
-            Get-Content -LiteralPath $hookOut
+            [Console]::Out.Write([System.IO.File]::ReadAllText($hookOut.FullName, $wireUtf8))
             Write-HookTraceEnd $hookExitCode
             exit $hookExitCode
         } finally {
-            $ErrorActionPreference = $savedErrorActionPreference
             Remove-Item -LiteralPath $hookOut -ErrorAction SilentlyContinue
+            $ErrorActionPreference = $savedErrorActionPreference
+            $env:PYTHONIOENCODING = $savedPythonIOEncoding
+            $OutputEncoding = $savedOutputEncoding
+            [Console]::InputEncoding = $savedConsoleInputEncoding
+            [Console]::OutputEncoding = $savedConsoleOutputEncoding
         }
     }
     # Non-hook CLI invocations keep the direct call (the operator sees the

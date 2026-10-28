@@ -24,6 +24,18 @@ manager = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(manager)
 
 
+def symlink_or_skip(test, link: Path, target: Path, **kwargs) -> None:
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as exc:
+        import errno
+
+        if (getattr(exc, "winerror", None) == 1314
+                or exc.errno in {errno.ENOSYS, errno.ENOTSUP}):
+            test.skipTest(f"symlink creation capability unavailable: {exc}")
+        raise
+
+
 class SafePluginInstallTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -52,6 +64,8 @@ class SafePluginInstallTests(unittest.TestCase):
         script = self.source_root / "scripts" / "context_guard.py"
         script.parent.mkdir(parents=True, exist_ok=True)
         script.write_text(body, encoding="utf-8")
+        # Synthetic sources explicitly review their own distribution set.
+        manager.write_distribution_manifest(self.source_root)
 
     def cache_source_as(self, version: str) -> Path:
         target = self.cache_root / version
@@ -539,10 +553,7 @@ class SafePluginInstallTests(unittest.TestCase):
         self.archive_live()
         link = old_cache / "scripts" / "__pycache__" / "context_guard.pyc"
         link.parent.mkdir()
-        try:
-            link.symlink_to(old_cache / "scripts" / "context_guard.py")
-        except OSError as exc:
-            self.skipTest(f"symlink capability unavailable: {exc}")
+        symlink_or_skip(self, link, old_cache / "scripts" / "context_guard.py")
         self.state["version"] = "0.1.2"
         self.write_source("0.1.3")
 
@@ -987,6 +998,7 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
             victim = outside / "interpreter.conf"
             victim.write_text("SYNTHETIC-EXTERNAL-CONTENT\n", encoding="utf-8")
             victim.chmod(0o640)
+            victim_mode = victim.stat().st_mode & 0o777
             real_run = manager.subprocess.run
             injections = []
 
@@ -999,7 +1011,7 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                             "probe error: capability check failed")
                     parent = home / "context-guard"
                     parent.rename(home / "context-guard-first-validated")
-                    parent.symlink_to(outside, target_is_directory=True)
+                    symlink_or_skip(self, parent, outside, target_is_directory=True)
                     injections.append(True)
                 return result
 
@@ -1018,7 +1030,7 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
             self.assertEqual(victim.read_text(),
                              "SYNTHETIC-EXTERNAL-CONTENT\n",
                              "the external object was overwritten")
-            self.assertEqual(victim.stat().st_mode & 0o777, 0o640,
+            self.assertEqual(victim.stat().st_mode & 0o777, victim_mode,
                              "the external object mode changed")
             self.assertEqual(
                 sorted(p.name for p in outside.glob(".interpreter.conf.*")),
@@ -1029,6 +1041,70 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                     (anchored / "interpreter.conf").exists(),
                     "a write into the anchored object was not undone after "
                     "the path substitution was detected")
+
+    def test_regular_directory_substitution_during_probe_is_refused(self) -> None:
+        """Identity rejection also works without symlink creation privileges."""
+        with tempfile.TemporaryDirectory(prefix="binding-directory-swap-") as tmp:
+            root = Path(tmp).resolve()
+            home = root / "home"
+            home.mkdir()
+            replacement = root / "replacement"
+            replacement.mkdir()
+            sentinel = replacement / "interpreter.conf"
+            sentinel.write_bytes(b"SYNTHETIC-UNRELATED-CONF\n")
+            real_run = manager.subprocess.run
+            injected = []
+
+            def substitute(*args, **kwargs):
+                result = real_run(*args, **kwargs)
+                if not injected and "-c" in args[0]:
+                    self.assertEqual(result.returncode, 0)
+                    (home / "context-guard").rename(home / "context-guard-original")
+                    replacement.rename(home / "context-guard")
+                    injected.append(True)
+                return result
+
+            with mock.patch.object(manager.subprocess, "run", side_effect=substitute):
+                with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                    manager.bind_gui_interpreter(home)
+            self.assertEqual(injected, [True])
+            self.assertEqual((home / "context-guard" / "interpreter.conf").read_bytes(),
+                             b"SYNTHETIC-UNRELATED-CONF\n")
+            self.assertFalse((home / "context-guard-original" / "interpreter.conf").exists())
+            self.assertEqual(list((home / "context-guard").glob(
+                ".interpreter.conf.*")), [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows path-identity publication route")
+    def test_windows_directory_substitution_before_publish_is_refused(self) -> None:
+        """Windows rechecks the real parent after writing its temporary file."""
+        with tempfile.TemporaryDirectory(prefix="binding-windows-publish-") as tmp:
+            root = Path(tmp).resolve()
+            home = root / "home"
+            conf, content, identity, fd, home_identity = (
+                manager.prepare_gui_interpreter_binding(home))
+            self.assertEqual(fd, -1)
+            conf.write_bytes(b"ORIGINAL-CONF\n")
+            real_chmod = manager.os.chmod
+            injected = []
+
+            def substitute(path, mode, *args, **kwargs):
+                result = real_chmod(path, mode, *args, **kwargs)
+                if not injected and Path(path).name.startswith(".interpreter.conf."):
+                    conf.parent.rename(root / "original")
+                    conf.parent.mkdir()
+                    conf.write_bytes(b"REPLACEMENT-CONF\n")
+                    injected.append(True)
+                return result
+
+            with mock.patch.object(manager.os, "chmod", side_effect=substitute):
+                with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                    manager.write_gui_interpreter_binding(
+                        conf, content, expected_dir_identity=identity,
+                        dir_fd=fd, home_identity=home_identity)
+            self.assertEqual(injected, [True])
+            self.assertEqual(conf.read_bytes(), b"REPLACEMENT-CONF\n")
+            self.assertEqual((root / "original" / "interpreter.conf").read_bytes(),
+                             b"ORIGINAL-CONF\n")
 
     def test_regular_binding_still_publishes(self) -> None:
         """Positive control: an unmodified HOME binds normally at 0600."""
@@ -1042,8 +1118,12 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
             self.assertEqual(conf, home / "context-guard" / "interpreter.conf")
             self.assertEqual(conf.read_text().strip(),
                              str(Path(sys.executable).resolve()))
-            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
+            if os.name == "posix":
+                self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fchmod")
+                         and os.open in os.supports_dir_fd,
+                         "POSIX descriptor/fchmod boundary")
     def test_mode_side_effect_never_follows_a_substituted_path(self) -> None:
         """RV-02 (sixth review, P2): the 0700 mode is a side effect and must
         land on the first-validated directory object, never on whatever the
@@ -1070,7 +1150,7 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                 if not injections:
                     parent = home / "context-guard"
                     parent.rename(home / "context-guard-original")
-                    parent.symlink_to(outside, target_is_directory=True)
+                    symlink_or_skip(self, parent, outside, target_is_directory=True)
                     injections.append(True)
                 return original_fchmod(fd, mode, *args, **kwargs)
 
@@ -1091,6 +1171,9 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                              "SYNTHETIC-EXTERNAL-CONF\n")
             self.assertEqual(sentinel.stat().st_mode & 0o777, 0o640)
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fchmod")
+                         and os.open in os.supports_dir_fd,
+                         "POSIX descriptor/fchmod boundary")
     def test_home_ancestor_substituted_before_open_is_refused(self) -> None:
         """RV-02 (seventh review, P1): the anchor chain is
         HOME -> private directory -> conf. A HOME substituted before the
@@ -1125,7 +1208,7 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                         and Path(path) == home / "context-guard"
                         and not injections):
                     home.rename(root / "home-original")
-                    home.symlink_to(outside, target_is_directory=True)
+                    symlink_or_skip(self, home, outside, target_is_directory=True)
                     injections.append(True)
                 return real_open(path, flags, *args, **kwargs)
 
@@ -1147,6 +1230,9 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
             self.assertEqual(before, after,
                              "the external HOME tree was modified")
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "fchmod")
+                         and os.open in os.supports_dir_fd,
+                         "POSIX descriptor/fchmod boundary")
     def test_no_path_chmod_runs_on_the_private_directory(self) -> None:
         """The POSIX route must never chmod through the substitutable text
         path: the mode lands on the anchored descriptor (fchmod), so a
@@ -1171,7 +1257,8 @@ class GuiInterpreterBindingAnchorTests(unittest.TestCase):
                 [p for p in chmod_paths
                  if Path(p).name == "context-guard"],
                 "a path-based chmod ran on the private directory")
-            self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
+            if os.name == "posix":
+                self.assertEqual(conf.stat().st_mode & 0o777, 0o600)
             self.assertEqual(
                 (home / "context-guard").stat().st_mode & 0o777, 0o700)
 

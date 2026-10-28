@@ -83,10 +83,9 @@ queued writer proceeds only after release. Resumed v2 activity clears the old
 retention timestamp. Legacy trees and their timestamps are unchanged.
 
 Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
-budget, with budget, persisted progress and fairness as separate mechanisms
-(restated three times after review; the current state is described below and
-the remaining open contract question is disclosed at the end — it is NOT
-accepted as resolved). Enumeration is deadline-bounded per read, as
+budget, with budget, persisted progress and fairness as separate mechanisms.
+The registry design is adopted with the unregistered-directory limitation
+stated below. Enumeration is deadline-bounded per read, as
 originally required: every readdir step starts only within the remaining
 budget, an already-expired budget requests nothing, and there is no
 queue-cap truncation — the batch is bounded by the deadline and sorted only
@@ -126,17 +125,14 @@ resume — retires the marker inside the same lifecycle lock, so historical
 cleanup eligibility can never delete a live session. Current-session
 persistence always runs before the sweep.
 
-Open, unaccepted contract question: with per-read deadline gating restored,
-a pass whose budget buys fewer readdir steps than the namespace has entries
-discovers pre-existing (never-registered) names across passes, and the
-known toy-model counterexamples (small fixed budgets, adversarial readdir
-orders, direct-created directories) stay unreachable-by-design — pinned as
-an expected failure in the repository with the proof sketch and a pending
-design proposal for the requirement owner. Hook-created (registered)
-sessions are fairly discovered by the registry and are removed by this
-proposal's finite model; that proposal is NOT adopted as an acceptance
-change and the toy-model failures for unregistered directories are not
-counted as resolved. UserPromptSubmit events are never collapsed: repeated
+The registry design is accepted for registered-session discovery. Existing,
+never-registered directories remain supported, but repeated small budgets and
+adversarial directory order can leave tail entries undiscovered indefinitely.
+There is no bounded discovery-delay guarantee for that shape, including after
+registry loss until backfill actually discovers the entries. The known model
+counterexample remains an expected failure, not a passed original assertion.
+Registered sessions make fair progress in the finite model; real platform and
+host observations retain their own evidence boundaries. UserPromptSubmit events are never collapsed: repeated
 (session, turn, prompt-bytes) shapes are recorded only as a bounded,
 text-free diagnostic observation, because the hook payload carries no
 per-message identity.

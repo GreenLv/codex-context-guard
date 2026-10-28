@@ -1,4 +1,6 @@
-* text=auto
+# Text distribution hashes bind LF checkout bytes on every platform;
+# auto detection keeps binary content byte-for-byte unchanged.
+* text=auto eol=lf
 *.py text eol=lf
 *.json text eol=lf
 *.md text eol=lf
