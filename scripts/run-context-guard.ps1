@@ -198,6 +198,49 @@ print('CG-HOOK-WIRE-VERIFIED')
     exit $hookExitCode
 }
 
+# Avoid PowerShell's general command discovery for ordinary local PATHs.
+# Keep unusual inputs under the original resolver instead of reproducing its
+# provider, quote, relative-path or extensionless-file parsing rules.
+$pythonPathDirectories = @(([string]$env:PATH).Split([char]';') | Where-Object { $_.Length -gt 0 })
+$pythonPathExtensions = ([string]$env:PATHEXT).Split([char]';')
+$ordinaryPythonPath = $pythonPathDirectories.Count -gt 0 -and $pythonPathExtensions.Count -gt 0
+foreach ($directory in $pythonPathDirectories) {
+    if ($directory -notmatch '^[A-Za-z]:[\\/]' -or $directory -match '["<>|?*\x00-\x1f]' -or
+        $directory.Substring(2) -match ':' -or $directory -ne $directory.Trim()) {
+        $ordinaryPythonPath = $false
+    }
+}
+foreach ($extension in $pythonPathExtensions) {
+    if ($extension -notmatch '^\.[A-Za-z0-9]+$') { $ordinaryPythonPath = $false }
+}
+$pythonLegacyExtensions = @($pythonPathExtensions | Where-Object { $_ -notmatch '^\.(exe|com|cmd|bat)$' })
+
+function Resolve-ContextGuardPythonCommand([string]$Name) {
+    if (-not $ordinaryPythonPath -or (Test-Path -LiteralPath "Alias:$Name") -or (Test-Path -LiteralPath "Function:$Name")) {
+        return (Get-Command $Name -ErrorAction SilentlyContinue)
+    }
+    # Script and bare-file precedence stays with PowerShell, including .ps1
+    # outside PATHEXT. Inspect all directories before choosing an application.
+    foreach ($directory in $pythonPathDirectories) {
+        if ([System.IO.File]::Exists([System.IO.Path]::Combine($directory, $Name)) -or
+            [System.IO.File]::Exists([System.IO.Path]::Combine($directory, $Name + '.ps1'))) {
+            return (Get-Command $Name -ErrorAction SilentlyContinue)
+        }
+        foreach ($extension in $pythonLegacyExtensions) {
+            if ([System.IO.File]::Exists([System.IO.Path]::Combine($directory, $Name + $extension))) {
+                return (Get-Command $Name -ErrorAction SilentlyContinue)
+            }
+        }
+    }
+    foreach ($directory in $pythonPathDirectories) {
+        foreach ($extension in $pythonPathExtensions) {
+            $file = [System.IO.Path]::Combine($directory, $Name + $extension)
+            if ([System.IO.File]::Exists($file)) { return [pscustomobject]@{ Source = $file } }
+        }
+    }
+    return $null
+}
+
 $candidates = @(
     @{ Command = "python3.14"; Prefix = @(); Probe = $false },
     @{ Command = "python3.13"; Prefix = @(); Probe = $false },
@@ -218,7 +261,7 @@ $candidates = @(
 
 try {
 foreach ($candidate in $candidates) {
-    $resolved = Get-Command $candidate.Command -ErrorAction SilentlyContinue
+    $resolved = Resolve-ContextGuardPythonCommand $candidate.Command
     if ($null -eq $resolved) {
         continue
     }

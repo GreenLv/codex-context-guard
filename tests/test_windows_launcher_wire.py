@@ -109,6 +109,11 @@ class WindowsPowerShellWire(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(dir=self.base))
         self.tmp = self.root / "tmp"
         self.tmp.mkdir()
+        self.appdata = self.root / "appdata"
+        self.localappdata = self.root / "localappdata"
+        self.module_cache = self.root / "module-cache/ModuleAnalysisCache"
+        for directory in (self.appdata, self.localappdata, self.module_cache.parent):
+            directory.mkdir()
         self.home = self.root / "home"
         self.conf = self.home / "context-guard/interpreter.conf"
         self.conf.parent.mkdir(parents=True)
@@ -128,6 +133,8 @@ class WindowsPowerShellWire(unittest.TestCase):
                         USERPROFILE=str(self.root / "os-home"), CODEX_HOME=str(self.home),
                         CONTEXT_GUARD_DATA_DIR=str(self.root / "data"),
                         TMP=str(self.tmp), TEMP=str(self.tmp), TMPDIR=str(self.tmp),
+                        APPDATA=str(self.appdata), LOCALAPPDATA=str(self.localappdata),
+                        PSModuleAnalysisCachePath=str(self.module_cache),
                         PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="cp1252",
                         CG_TEST_LAUNCHER=str(self.scripts / LAUNCHER.name),
                         CG_TEST_RECEIPT=str(self.root / "receipt.json"))
@@ -135,6 +142,14 @@ class WindowsPowerShellWire(unittest.TestCase):
 
     def invoke(self, payload=PAYLOAD, event="PreToolUse", *, caller_exit=None,
                global_exit=0, route="hook", prelude=""):
+        injected_resolver = "function Resolve-ContextGuardPythonCommand" in prelude
+        if injected_resolver:
+            # Replace only the resolver definition in the private test copy;
+            # the product's candidate/probe/runtime path remains unchanged.
+            source = SOURCE.replace("function Resolve-ContextGuardPythonCommand(",
+                                    "function Unused-ProductResolver(", 1)
+            self.assertNotEqual(source, SOURCE, "resolver injection did not attach")
+            (self.scripts / LAUNCHER.name).write_text(source, encoding="utf-8")
         self.env["CG_TEST_EVENT"] = event
         self.env["CG_TEST_ROUTE"] = route
         self.env["CG_TEST_GLOBAL_EXIT"] = str(global_exit)
@@ -159,7 +174,7 @@ try {
     $code = $global:LASTEXITCODE
 } finally {
     $after = @([Console]::InputEncoding.CodePage, [Console]::OutputEncoding.CodePage, $OutputEncoding.CodePage, $env:PYTHONIOENCODING)
-    $receipt = @{before=$before; after=$after; version=$PSVersionTable.PSVersion.ToString()} | ConvertTo-Json -Compress
+    $receipt = @{before=$before; after=$after; version=$PSVersionTable.PSVersion.ToString(); resolver_hits=$global:CG_TEST_RESOLVER_HITS} | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($env:CG_TEST_RECEIPT, $receipt, (New-Object Text.UTF8Encoding($false)))
 }
 exit $code
@@ -169,9 +184,11 @@ exit $code
             [shutil.which("powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive",
              "-ExecutionPolicy", "Bypass", "-File", str(wrapper)],
             input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            capture_output=True, env=self.env, timeout=60)
+            capture_output=True, env=self.env, cwd=self.root, timeout=60)
         receipt = json.loads(Path(self.env["CG_TEST_RECEIPT"]).read_bytes())
         self.assertEqual(receipt["before"], receipt["after"])
+        if injected_resolver:
+            self.assertGreater(receipt["resolver_hits"], 0, "injected resolver was bypassed")
         self.assertEqual(list(self.tmp.iterdir()), [], "temporary stdout leaked")
         return proc
 
@@ -315,14 +332,15 @@ exit $code
                 self.assertIn(b"not a working Context Guard runtime", proc.stderr)
 
     def fallback_prelude(self, source, candidate):
-        # Limit command discovery to one known source without depending on the
-        # Windows host's installed Python versions or PATH aliases.
+        # Inject at the discovery boundary, with an invocation receipt, rather
+        # than shadow Get-Command which the ordinary PATH fast path avoids.
         self.conf.unlink(missing_ok=True)
         self.env["CG_TEST_FALLBACK_SOURCE"] = str(source)
         self.env["CG_TEST_FALLBACK_CANDIDATE"] = candidate
         return r'''
-function Get-Command {
+function Resolve-ContextGuardPythonCommand {
     param([string]$Name, $ErrorAction)
+    $global:CG_TEST_RESOLVER_HITS += 1
     if ($Name -eq $env:CG_TEST_FALLBACK_CANDIDATE) {
         [pscustomobject]@{Source=$env:CG_TEST_FALLBACK_SOURCE}
     }
@@ -360,8 +378,9 @@ function Get-Command {
         self.env["CG_TEST_PYTHON"] = str(self.interpreter)
         self.runtime.write_text("print('native-marker')\n", encoding="ascii")
         prelude = self.fallback_prelude(fake, "python") + r'''
-function Get-Command {
+function Resolve-ContextGuardPythonCommand {
     param([string]$Name, $ErrorAction)
+    $global:CG_TEST_RESOLVER_HITS += 1
     if ($Name -eq 'python') { [pscustomobject]@{Source=$env:CG_TEST_FALLBACK_SOURCE} }
     if ($Name -eq 'python3') { [pscustomobject]@{Source=$env:CG_TEST_PYTHON} }
 }
