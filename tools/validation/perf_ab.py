@@ -498,8 +498,24 @@ def run_stop_cell(tree: Path, attempts: int, out_dir: Path) -> dict:
 
 def write_report(path: Path, report: dict) -> None:
     tmp = path.with_name(path.name + ".partial")
-    tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
-    os.replace(tmp, path)
+    tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                   encoding="utf-8")
+    # Publication is outside sample timers. This cooperative retry window does
+    # not preempt filesystem calls or eliminate changes to inter-sample spacing.
+    deadline = time.monotonic() + 0.5 if sys.platform == "win32" else None
+    while True:
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as exc:
+            if deadline is None or getattr(exc, "winerror", None) not in (5, 32, 33):
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(0.02, remaining))
+            if time.monotonic() >= deadline:
+                raise
 
 
 def main() -> int:

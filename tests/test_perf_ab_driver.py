@@ -9,7 +9,9 @@ raw rows, blocks acceptance, exits nonzero, and preserves the partial report.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -265,6 +267,199 @@ class PerfDriverNegativeTests(unittest.TestCase):
         self.assertEqual(memory.call_count, 2)
         self.assertEqual(stop.call_count, 2)
         self.assertFalse(json.loads(out.read_text())["accepted"])
+
+
+class PerfReportPublicationTests(unittest.TestCase):
+    """Exercise the actual publisher without launching performance samples."""
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
+        import perf_ab
+        self.driver = perf_ab
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "证据 checkpoint.json"
+        self.partial = self.path.with_name(self.path.name + ".partial")
+        self.report = {"accepted": False, "rows": [{"error": "原始错误"}]}
+        self.expected = json.dumps(self.report, indent=2, ensure_ascii=False) + "\n"
+
+    @staticmethod
+    def windows_error(code):
+        error = PermissionError("synthetic publication conflict")
+        error.winerror = code
+        return error
+
+    def clock(self):
+        now, sleeps = [0.0], []
+        def sleep(seconds):
+            self.assertGreater(seconds, 0)
+            sleeps.append(seconds)
+            now[0] += seconds
+            self.assertLessEqual(len(sleeps), 30, "retry window did not terminate")
+        return now, sleeps, sleep
+
+    def test_first_publish_and_unicode_replacement_need_no_sleep(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                if existing:
+                    self.path.write_text("old", encoding="utf-8")
+                with patch.object(sys, "platform", "win32"), \
+                     patch.object(self.driver.time, "sleep") as sleep:
+                    self.driver.write_report(self.path, self.report)
+                sleep.assert_not_called()
+                self.assertEqual(self.path.read_text(encoding="utf-8"), self.expected)
+                self.assertFalse(self.partial.exists())
+
+    def test_cp1252_default_control_fails_but_publisher_emits_utf8_bytes(self):
+        actual_open = io.open
+        def cp1252_open(file, mode="r", buffering=-1, encoding=None, *args, **kwargs):
+            if "b" not in mode and encoding in (None, "locale"):
+                encoding = "cp1252"
+            return actual_open(file, mode, buffering, encoding, *args, **kwargs)
+        with patch.object(io, "text_encoding", side_effect=lambda encoding, *_: (
+                    "locale" if encoding is None else encoding)), \
+             patch.object(io, "open", side_effect=cp1252_open):
+            # Exercise real encoding/bytes, not a mock that merely records kwargs.
+            with self.assertRaises(UnicodeEncodeError):
+                self.partial.write_text(self.expected)
+            self.driver.write_report(self.path, self.report)
+        self.assertEqual(self.path.read_bytes(), self.expected.replace("\n", os.linesep).encode("utf-8"))
+        self.assertEqual(json.loads(self.path.read_bytes()), self.report)
+        self.assertFalse(self.partial.exists())
+
+    def test_each_windows_conflict_recovers_without_rewriting_partial(self):
+        for code in (5, 32, 33):
+            with self.subTest(winerror=code):
+                self.path.write_text("old", encoding="utf-8")
+                now, sleeps, sleep = self.clock()
+                actual_replace = self.driver.os.replace
+                actual_write = Path.write_text
+                attempts, writes = [], []
+                def write(path, text, *args, **kwargs):
+                    writes.append(path)
+                    return actual_write(path, text, *args, **kwargs)
+                def replace(source, destination):
+                    self.assertEqual(self.path.read_text(encoding="utf-8"), "old")
+                    self.assertEqual(source, self.partial)
+                    self.assertEqual(destination, self.path)
+                    self.assertEqual(self.partial.read_text(encoding="utf-8"), self.expected)
+                    attempts.append(now[0])
+                    if len(attempts) < 3:
+                        raise self.windows_error(code)
+                    return actual_replace(source, destination)
+                with patch.object(sys, "platform", "win32"), \
+                     patch.object(self.driver.time, "monotonic", side_effect=lambda: now[0]), \
+                     patch.object(self.driver.time, "sleep", side_effect=sleep), \
+                     patch.object(self.driver.os, "replace", side_effect=replace), \
+                     patch.object(Path, "write_text", autospec=True, side_effect=write):
+                    self.driver.write_report(self.path, self.report)
+                self.assertEqual(attempts[0], 0)
+                self.assertEqual(len(attempts), 3)
+                self.assertEqual(writes, [self.partial])
+                self.assertEqual(len(sleeps), 2)
+                self.assertEqual(self.path.read_text(encoding="utf-8"), self.expected)
+                self.assertFalse(self.partial.exists())
+
+    def test_persistent_windows_conflict_exhausts_one_window_and_keeps_files(self):
+        for code in (5, 32, 33):
+            with self.subTest(winerror=code):
+                self.path.write_text("old", encoding="utf-8")
+                now, sleeps, sleep = self.clock()
+                errors = []
+                def replace(_source, _destination):
+                    error = self.windows_error(code)
+                    errors.append(error)
+                    raise error
+                with patch.object(sys, "platform", "win32"), \
+                     patch.object(self.driver.time, "monotonic", side_effect=lambda: now[0]), \
+                     patch.object(self.driver.time, "sleep", side_effect=sleep), \
+                     patch.object(self.driver.os, "replace", side_effect=replace):
+                    with self.assertRaises(PermissionError) as caught:
+                        self.driver.write_report(self.path, self.report)
+                self.assertIs(caught.exception, errors[-1])
+                self.assertEqual(caught.exception.winerror, code)
+                self.assertGreater(len(errors), 1)
+                self.assertAlmostEqual(sum(sleeps), 0.5)
+                self.assertLessEqual(now[0], 0.5)
+                self.assertEqual(self.path.read_text(encoding="utf-8"), "old")
+                self.assertEqual(self.partial.read_text(encoding="utf-8"), self.expected)
+
+    def test_sleep_is_clipped_and_no_attempt_starts_at_deadline(self):
+        now, sleeps, sleep = self.clock()
+        error = self.windows_error(5)
+        def replace(_source, _destination):
+            now[0] = 0.495
+            raise error
+        with patch.object(sys, "platform", "win32"), \
+             patch.object(self.driver.time, "monotonic", side_effect=lambda: now[0]), \
+             patch.object(self.driver.time, "sleep", side_effect=sleep), \
+             patch.object(self.driver.os, "replace", side_effect=replace) as attempted:
+            with self.assertRaises(PermissionError) as caught:
+                self.driver.write_report(self.path, self.report)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(attempted.call_count, 1)
+        self.assertEqual(len(sleeps), 1)
+        self.assertAlmostEqual(sleeps[0], 0.005)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.partial.read_text(encoding="utf-8"), self.expected)
+
+    def test_nonwindows_never_retries_even_with_windows_codes(self):
+        for code in (5, 32, 33):
+            with self.subTest(winerror=code):
+                error = self.windows_error(code)
+                with patch.object(sys, "platform", "darwin"), \
+                     patch.object(self.driver.time, "sleep") as sleep, \
+                     patch.object(self.driver.time, "monotonic") as monotonic, \
+                     patch.object(self.driver.os, "replace", side_effect=error) as replace:
+                    with self.assertRaises(PermissionError) as caught:
+                        self.driver.write_report(self.path, self.report)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(replace.call_count, 1)
+                sleep.assert_not_called()
+                monotonic.assert_not_called()
+
+    def test_other_replace_errors_and_errno_alone_propagate_immediately(self):
+        errors = [self.windows_error(6), PermissionError(13, "not a Win32 code"),
+                  OSError("unclassified replacement failure")]
+        for error in errors:
+            with self.subTest(error=type(error).__name__, winerror=getattr(error, "winerror", None)):
+                with patch.object(sys, "platform", "win32"), \
+                     patch.object(self.driver.time, "sleep") as sleep, \
+                     patch.object(self.driver.os, "replace", side_effect=error) as replace:
+                    with self.assertRaises(OSError) as caught:
+                        self.driver.write_report(self.path, self.report)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(replace.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_partial_write_error_is_not_a_replace_retry(self):
+        error = self.windows_error(5)
+        with patch.object(sys, "platform", "win32"), \
+             patch.object(Path, "write_text", side_effect=error), \
+             patch.object(self.driver.time, "sleep") as sleep, \
+             patch.object(self.driver.os, "replace") as replace:
+            with self.assertRaises(PermissionError) as caught:
+                self.driver.write_report(self.path, self.report)
+        self.assertIs(caught.exception, error)
+        replace.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_replace_and_sleep_interruptions_propagate_without_another_attempt(self):
+        for interrupt in (KeyboardInterrupt("stop"), SystemExit(7)):
+            for during in ("replace", "sleep"):
+                with self.subTest(interrupt=type(interrupt).__name__, during=during):
+                    with patch.object(sys, "platform", "win32"), \
+                         patch.object(self.driver.time, "monotonic", return_value=0), \
+                         patch.object(self.driver.os, "replace", side_effect=(
+                             interrupt if during == "replace" else self.windows_error(32))) as replace, \
+                         patch.object(self.driver.time, "sleep", side_effect=(
+                             interrupt if during == "sleep" else None)) as sleep:
+                        with self.assertRaises(type(interrupt)) as caught:
+                            self.driver.write_report(self.path, self.report)
+                    self.assertIs(caught.exception, interrupt)
+                    self.assertEqual(replace.call_count, 1)
+                    self.assertEqual(sleep.call_count, 1 if during == "sleep" else 0)
+                    self.assertEqual(self.partial.read_text(encoding="utf-8"), self.expected)
 
 
 if __name__ == "__main__":

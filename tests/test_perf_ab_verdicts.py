@@ -2,8 +2,13 @@
 (metric, statistic) pair on its own — a tail-only regression whose median
 cannot move is still a declared slowdown, never folded into noise."""
 import importlib.util
+import io
+import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 MODULE_PATH = (Path(__file__).resolve().parents[1]
                / "tools" / "validation" / "perf_ab_verdicts.py")
@@ -66,6 +71,39 @@ class PerfVerdictGateTests(unittest.TestCase):
         self.assertEqual(cell["verdict"], "DECLARED-SLOWER(p95)")
         self.assertTrue(any(p["statistic"] == "p95"
                             for p in report["declared_regressions"]))
+
+
+class PerfVerdictEncodingTests(unittest.TestCase):
+    def test_utf8_input_and_output_survive_cp1252_default_io(self):
+        raw = _raw([1.0, 1.0], [1.0, 1.0])
+        raw["identities"]["label"] = "证据 路径"
+        original = json.dumps(raw, ensure_ascii=False).encode("utf-8")
+        expected = (json.dumps(verdicts.verdicts_from_raw(raw), indent=1) + "\n").replace("\n", os.linesep).encode("utf-8")
+        actual_open = io.open
+        opened = []
+        def cp1252_open(file, mode="r", buffering=-1, encoding=None, *args, **kwargs):
+            if "b" not in mode and encoding in (None, "locale"):
+                encoding = "cp1252"
+            opened.append((Path(file), mode, encoding))
+            return actual_open(file, mode, buffering, encoding, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_path = Path(temporary) / "原始 输入.json"
+            target = Path(temporary) / "统计 输出.json"
+            raw_path.write_bytes(original)
+            with patch.object(io, "text_encoding", side_effect=lambda encoding, *_: (
+                        "locale" if encoding is None else encoding)), \
+                 patch.object(io, "open", side_effect=cp1252_open), \
+                 patch("sys.stdout", new_callable=io.StringIO):
+                with self.assertRaises(UnicodeDecodeError):
+                    raw_path.read_text()
+                self.assertEqual(verdicts.main([str(raw_path), "--out", str(target)]), 0)
+            self.assertEqual(raw_path.read_bytes(), original)
+            self.assertEqual(target.read_bytes(), expected)
+            self.assertEqual(json.loads(target.read_bytes())["identities"], raw["identities"])
+            # Output JSON still escapes Unicode under its original format, so
+            # bytes alone cannot distinguish cp1252 from UTF-8 on that write.
+            self.assertIn((target, "w", "utf-8"), opened)
+            self.assertIn((raw_path, "r", "utf-8"), opened)
 
 
 if __name__ == "__main__":

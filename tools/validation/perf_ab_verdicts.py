@@ -162,10 +162,10 @@ def main(argv=None) -> int:
         return 0 if ok else 1
     if args.raw is None:
         parser.error("raw is required unless --check-tail-oracle is given")
-    report = verdicts_from_raw(json.loads(args.raw.read_text()))
+    report = verdicts_from_raw(json.loads(args.raw.read_text(encoding="utf-8")))
     target = args.out or args.raw.with_name(
         args.raw.name.replace(".json", "-verdicts.json"))
-    target.write_text(json.dumps(report, indent=1) + "\n")
+    target.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
     for cell, result in report["verdicts"].items():
         print(f"{cell:24s} {result['verdict']:30s} "
               f"med {result['median_elapsed_ratio_point']:.4f} "
