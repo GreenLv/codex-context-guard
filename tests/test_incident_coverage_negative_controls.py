@@ -473,6 +473,55 @@ class FrozenWaiverControls(unittest.TestCase):
     def setUp(self):
         self.index, self.table = load_pair()
 
+    def test_frozen_windows_only_cases_accept_actual_windows_pass(self):
+        # Independent oracle: the three exact entries in the frozen canonical
+        # closure's windows_tool_successors, not the validator's own allowlist.
+        for name in ("helper-path", "readonly-acl", "snapshot-bytes"):
+            rid = f"CGI-20261005-codex-{name}-0151-windows-verified"
+            with self.subTest(case=rid):
+                errors = []
+                cic._check_result_alignment(rid, {
+                    "source_result": "passed", "macos_result": "not_required",
+                    "windows_result": "passed", "final_verdict": "executed_pass",
+                }, errors)
+                self.assertEqual(errors, [])
+
+    def test_windows_only_waiver_never_waives_windows_evidence(self):
+        rid = "CGI-20261005-codex-readonly-acl-0151-windows-verified"
+        for result in (None, "unknown", "failed", "not_run", "pending",
+                       "environment_unavailable", "not_required"):
+            with self.subTest(result=result):
+                errors = []
+                cic._check_result_alignment(rid, {
+                    "source_result": "passed", "macos_result": "not_required",
+                    "windows_result": result, "final_verdict": "executed_pass",
+                }, errors)
+                self.assertTrue(errors)
+
+    def test_unreviewed_macos_waivers_are_rejected(self):
+        for rid in ("unknown", "CGI-20261005-codex-collector-signed-request-restoration-drift",
+                    "CGI-20261002-codex-pause-resume-wait-stall-0151-macos-verified"):
+            with self.subTest(case=rid):
+                errors = []
+                cic._check_result_alignment(rid, {
+                    "source_result": "passed", "macos_result": "not_required",
+                    "windows_result": "passed", "final_verdict": "executed_pass",
+                    "macos_not_required": True,
+                }, errors)
+                self.assertTrue(any("frozen applicability waiver" in e for e in errors))
+
+    def test_frozen_case_still_requires_known_macos_and_source_results(self):
+        rid = "CGI-20261005-codex-helper-path-0151-windows-verified"
+        for field, result in (("macos_result", None), ("macos_result", "unknown"),
+                              ("source_result", None), ("source_result", "not_required")):
+            with self.subTest(field=field, result=result):
+                row = {"source_result": "passed", "macos_result": "not_required",
+                       "windows_result": "passed", "final_verdict": "executed_pass"}
+                row[field] = result
+                errors = []
+                cic._check_result_alignment(rid, row, errors)
+                self.assertTrue(errors)
+
     def test_required_windows_cannot_self_waive(self):
         import copy
 

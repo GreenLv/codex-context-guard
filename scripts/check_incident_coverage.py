@@ -38,6 +38,18 @@ SOURCE_RESULTS = {"passed", "failed", "not_run", "pending",
 # ids are legitimately Windows-not-required. A pending-Windows row can never
 # waive itself into not_required; edits here require independent review.
 WINDOWS_NOT_REQUIRED_FROZEN: set[str] | None = None  # loaded from index
+# Frozen applicability, not a result inferred from the submitted coverage row.
+# Authority: the canonical library at 4ed85ea11ff8ccd307e3c59be885161a265892c4,
+# docs/acceptance/context-guard-0.15.1-case-closure-2026-10-05.json,
+# SHA-256 6720d4560482e1204559d5c1aafedad0701c8c5a5340a6f982ef527748201ab8,
+# windows_tool_successors[].native_macos. These three reviewed Windows-only
+# cases explicitly say not_required. Windows origin alone grants no waiver;
+# in particular the collector repair has no such applicability declaration.
+MACOS_NOT_REQUIRED_FROZEN = frozenset({
+    "CGI-20261005-codex-helper-path-0151-windows-verified",
+    "CGI-20261005-codex-readonly-acl-0151-windows-verified",
+    "CGI-20261005-codex-snapshot-bytes-0151-windows-verified",
+})
 
 
 def _windows_required(rid: str) -> bool:
@@ -63,7 +75,14 @@ def _check_result_alignment(rid, row, errors):
         if row.get("source_result") != "passed":
             errors.append(f"{rid}: executed_pass requires source passed")
         if row.get("macos_result") != "passed":
-            errors.append(f"{rid}: executed_pass requires macos passed")
+            if (row.get("macos_result") != "not_required"
+                    or rid not in MACOS_NOT_REQUIRED_FROZEN):
+                errors.append(
+                    f"{rid}: executed_pass requires macos passed or a frozen "
+                    "applicability waiver; the row cannot waive itself")
+            elif row.get("windows_result") != "passed":
+                errors.append(
+                    f"{rid}: frozen macos not_required requires windows passed")
         if row.get("windows_result") not in {"passed", "not_required"}:
             errors.append(
                 f"{rid}: executed_pass requires windows passed or not_required")

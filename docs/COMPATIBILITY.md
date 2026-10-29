@@ -1,6 +1,9 @@
 # Compatibility and Verification Status
 
-## 0.16.0 — Unreleased (source candidate)
+## 0.16.0 — 2026-10-30
+
+This is the local release-line source. Public availability is determined
+independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 
 Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
 13, Stop protocol 5.0.0, the nine Hooks, and the default business-tool path
@@ -12,7 +15,7 @@ published 0.15.1:
   new file name. Export paths reject symbolic links, and exports no longer
   tighten project directory permissions.
 - Private-state writes fail closed when the permission boundary cannot be
-  established or verified. On Windows this candidate sets and verifies a
+  established or verified. On Windows this version sets and verifies a
   protected DACL on private directories through native APIs; that behavior is
   a source-level contract here, with native Windows acceptance recorded
   separately. Read-back compares the protected permission structure rather

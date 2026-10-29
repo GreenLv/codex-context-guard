@@ -12,9 +12,11 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **Current version: 0.16.0 source candidate (unreleased).** The latest published release remains [0.15.1 — 2026-10-05](docs/releases/v0.15.1.md). The candidate closes a 2026-10 engineering review: structured-credential redaction in evidence and exports, exclusive never-overwriting exports that leave project permissions alone, fail-closed private-state permissions, an allowlisted installer distribution with one installation transaction, validated session identities and per-`CODEX_HOME` data roots, bounded SessionEnd cleanup, and restricted handling of re-delivered prompts. Public availability is determined by the [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases); see [release notes](docs/releases/v0.16.0.md) and [upgrade boundaries](docs/SESSION_STORAGE.md) before changing an installation.
+> **Release-line source: 0.16.0 — 2026-10-30.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and makes installation transactional. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
 
-## Install
+## Install from source
+
+The commands below install source from the repository's default branch. First check the [public Release](https://github.com/GreenLv/codex-context-guard/releases) and [upgrade boundaries](docs/SESSION_STORAGE.md) for the version you intend to use.
 
 Requirements: Python 3.10 or newer, Codex CLI, and a Codex surface that loads plugins and lifecycle Hooks. The published 0.15.1 acceptance batch targets Codex CLI `0.160.0`; earlier CLI versions are not retested. See [compatibility](docs/COMPATIBILITY.md) for completed and pending checks.
 

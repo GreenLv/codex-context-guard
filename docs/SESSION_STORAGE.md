@@ -7,7 +7,7 @@ legacy cleanup in this version.
 
 Here, HOME means the Codex configuration and task-data directory selected by
 `CODEX_HOME`, not the operating system user directory. Since the 0.16.0
-candidate, direct commands without an explicit data root resolve their private
+release-line source, direct commands without an explicit data root resolve their private
 state under the active `CODEX_HOME` (`<home>/context-guard`), so isolated
 homes never share state; with `CODEX_HOME` unset the historical default is
 unchanged. The same directory also carries the installer-written
@@ -83,7 +83,7 @@ the lifecycle lock in place. Contention skips cleanup within the budget; a
 queued writer proceeds only after release. Resumed v2 activity clears the old
 retention timestamp. Legacy trees and their timestamps are unchanged.
 
-Since the 0.16.0 candidate the sweep is bounded inside the SessionEnd host
+Since the 0.16.0 release-line source the sweep is bounded inside the SessionEnd host
 budget, with budget, persisted progress and fairness as separate mechanisms.
 The lightweight Python entry supplies a fresh same-process monotonic anchor
 before stdin parsing and the heavy import. After mandatory state and recovery

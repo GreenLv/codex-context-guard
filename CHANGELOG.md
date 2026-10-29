@@ -4,7 +4,7 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.16.0 — Unreleased (source candidate)
+## 0.16.0 — 2026-10-30
 
 ### Highlights
 
@@ -33,10 +33,11 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - File readback contracts use the complete source instruction before diagnostic text is shortened. A long request to test one file and read another keeps the correct readback target, including when the target falls beyond the diagnostic excerpt. When an attachment arrives later, contract rebuilding checks the original prompt record and its bound clause; a missing or changed source is never replaced by a diagnostic summary. Persisted excerpt limits and state fields are unchanged.
 - File-readback requests no longer require UI evidence merely because a directory or file name contains words such as `window` or `browser`. Explicit requests to inspect a window, browser or UI still require the corresponding UI evidence.
 - `SECURITY.md` now states the real support line and current schema/Stop protocol instead of the retired `0.7.x`/schema-5/Stop-1.1.0 wording. Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the default business-tool path without execution approval are unchanged; the optional replay ledger adds no migration.
+- Historical coverage can express the frozen macOS exemption for the three Windows-only helper, ACL and snapshot cases. Each still requires passing source and actual Windows evidence; a submitted row cannot exempt itself or waive an applicable native gate.
 
 ### Validation
 
-- Source candidate: the complete source gates, isolated install/lifecycle checks, canonical history regression, interleaved performance A/B, and affected native gates for this exact tree are recorded in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md) when complete. Windows DACL/inheritance behavior and real host re-delivery remain native facts, not source-test conclusions.
+- Exact-source checks, isolated installation, historical regression, performance and native evidence are recorded separately in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md). Windows DACL/inheritance behavior and real host re-delivery remain native facts, not source-test conclusions.
 
 ## 0.15.1 — 2026-10-05
 

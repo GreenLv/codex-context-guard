@@ -3,10 +3,11 @@
 ## Supported version
 
 Security and correctness fixes are applied to the current supported source
-line. The latest published release is `0.15.1`; the current source candidate
-is `0.16.0` (unreleased). Reports against the published line are triaged
-first; candidate builds are validated per the
-[versioning policy](docs/VERSIONING.md) before publication.
+line: `0.16.0`, dated `2026-10-30`. This is release-line source; public
+availability is determined independently by
+[GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
+Reports against published builds are triaged first; source and artifact checks
+follow the [versioning policy](docs/VERSIONING.md) before publication.
 
 ## Reporting a vulnerability
 

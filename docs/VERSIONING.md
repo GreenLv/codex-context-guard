@@ -1,8 +1,11 @@
 # Versioning policy
 
-## 0.16.0 — Unreleased (source candidate)
+## 0.16.0 — 2026-10-30
 
-This minor candidate closes the 2026-10 engineering review (F01–F10, D01).
+This is the local release-line source. Public availability is determined
+independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
+
+This minor release-line source addresses the 2026-10 engineering review (F01–F10, D01).
 Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the
 default business-tool path without execution approval are unchanged; no state
 migration runs. Observable runtime changes relative to published 0.15.1:
