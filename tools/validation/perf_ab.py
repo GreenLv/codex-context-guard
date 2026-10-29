@@ -136,6 +136,53 @@ def observe_natural_completion(owned) -> dict:
     return {"no_running_members": False, "error": "process_group_state_unknown"}
 
 
+def observe_natural_until_deadline(owned, deadline: float, record: dict, *,
+                                   observe=None, clock=None) -> bool:
+    """Retry only a known active Job count, inside the original event budget."""
+    observe = observe_natural_completion if observe is None else observe
+    clock = time.perf_counter if clock is None else clock
+    record.clear()
+    record.update(no_running_members=False, proof_within_deadline=False)
+    started = clock()
+    first, last, count = None, None, 0
+    try:
+        while True:
+            if clock() > deadline:
+                record["deadline_exhausted"] = True
+                break
+            observation = observe(owned)
+            count += 1
+            first = first if first is not None else dict(observation)
+            last = dict(observation)
+            record.clear()
+            record.update(observation)
+            observed_at = clock()
+            record["proof_within_deadline"] = (
+                observation.get("no_running_members") is True and observed_at <= deadline)
+            if observed_at > deadline:
+                record["deadline_exhausted"] = True
+                break
+            if observation.get("no_running_members") is True:
+                break
+            active = observation.get("active_processes")
+            if observation.get("error") or type(active) is not int or active <= 0:
+                break  # Denial/unknown/POSIX uncertainty never earns a retry.
+            remaining = deadline - observed_at
+            if remaining <= 0:
+                record["deadline_exhausted"] = True
+                break
+            time.sleep(min(0.01, remaining))
+    except BaseException as exc:
+        record["error"] = type(exc).__name__
+        raise
+    finally:
+        record.setdefault("proof_within_deadline", False)
+        record.update(first_observation=first, last_observation=last,
+                      observations=count, wait_elapsed=clock() - started)
+
+    return record.get("proof_within_deadline") is True and record.get("no_running_members") is True
+
+
 # On uncertain pipe recovery keep references until terminal export. Do not close
 # a buffered reader that a Windows communicate thread may still hold. A host
 # supervisor may need to end a stalled interpreter after the failed raw export.
@@ -151,7 +198,6 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
     error, interrupt = None, None
     returncode, stdout, stderr = None, b"", b""
     communicated = False
-    event_ended = None
     natural = None
     lifetime = {"event_budget": timeout, "recovery_budget": EVENT_RECOVERY_SECONDS}
     try:
@@ -168,14 +214,14 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
         stdout, stderr = owner.process.communicate(payload, timeout=remaining)
         communicated = True
         returncode = owner.process.returncode
-        event_ended = time.perf_counter()
-        elapsed = event_ended - started
-        if elapsed > timeout:
+        if time.perf_counter() > deadline:
             error = "TimeoutExpired:whole_command_deadline"
         else:
             natural = {"no_running_members": False, "error": "query_incomplete"}
-            natural = observe_natural_completion(owner)
-            if not natural.get("no_running_members"):
+            natural_ready = observe_natural_until_deadline(owner, deadline, natural)
+            if natural.get("deadline_exhausted"):
+                error = "TimeoutExpired:natural_completion_deadline"
+            elif not natural_ready:
                 error = "ProcessTreeError:natural_completion_unverified"
     except subprocess.TimeoutExpired as exc:
         error = f"TimeoutExpired:{exc}"
@@ -184,9 +230,9 @@ def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
         error = f"{type(exc).__name__}: {exc}"[:400]
         if not isinstance(exc, Exception):
             interrupt = exc
-    # Freeze the business clock before recovery. Natural-completion inspection
-    # is control evidence; it must not grant the command a second deadline.
-    elapsed = (event_ended if event_ended is not None else time.perf_counter()) - started
+    # Natural read-only proof, including waiting/query time, is part of the
+    # original business budget. Recovery starts only after this unrounded end.
+    elapsed = time.perf_counter() - started
     if elapsed > timeout and error is None:
         error = "TimeoutExpired:whole_command_deadline"
     lifetime["natural_completion"] = natural

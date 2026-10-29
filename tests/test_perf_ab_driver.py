@@ -861,5 +861,155 @@ class PerfDriverLifecycleTests(unittest.TestCase):
                 self.assertFalse(report['accepted'])
 
 
+class NaturalQuiescenceTests(unittest.TestCase):
+    """Read-only Job quiescence consumes the ORIGINAL command deadline."""
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO_ROOT / 'tools/validation'))
+        import perf_ab
+        self.driver = perf_ab
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.work = Path(self.tmp.name)
+        self.retained_before = len(perf_ab._RETAINED_EVENT_OWNERS)
+        self.addCleanup(lambda: perf_ab._RETAINED_EVENT_OWNERS.__delitem__(
+            slice(self.retained_before, None)))
+
+    def fixture(self, mode):
+        from types import SimpleNamespace
+        now, observations, sleeps, closes = [0.0], [], [], []
+        def clock():
+            return now[0]
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if mode == 'interrupt':
+                raise KeyboardInterrupt('quiescence wait interrupted')
+            now[0] += seconds
+            self.assertLessEqual(len(sleeps), 200, 'fake clock did not advance')
+        def communicate(input=None, timeout=None):
+            now[0] = 2.99999 if mode == 'late_zero' else 1.52
+            return b'{}', b''
+        process = SimpleNamespace(pid=123, args=['synthetic'], returncode=0,
+                                  poll=lambda: 0, communicate=communicate)
+        def observe(owner):
+            if mode == 'late_zero':
+                now[0] = 3.00001  # Query entered before3, returned empty just after3.
+                item = {'no_running_members': True, 'active_processes': 0}
+            elif mode == 'query_denied' and observations:
+                item = {'no_running_members': False, 'error': 'job_query_denied'}
+            elif mode == 'unknown_posix':
+                item = {'no_running_members': False, 'error': 'process_group_state_unknown'}
+            else:
+                empty = mode == 'within' and now[0] >= 1.62
+                item = {'no_running_members': empty, 'active_processes': 0 if empty else 1}
+            observations.append(dict(item))
+            return item
+        def close(timeout):
+            closes.append({'time': now[0], 'last': dict(observations[-1])})
+            now[0] += 0.02  # Recovery must not enter the business elapsed field.
+            return {'owned_process_exited': True, 'owned_tree_no_running_members': True,
+                    'process_group_cleanup_error': None}
+        owner = SimpleNamespace(process=process, close=close)
+        with patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+             patch.object(self.driver, 'observe_natural_completion', side_effect=observe), \
+             patch.object(self.driver.time, 'perf_counter', side_effect=clock), \
+             patch.object(self.driver.time, 'monotonic', side_effect=clock), \
+             patch.object(self.driver.time, 'sleep', side_effect=sleep):
+            try:
+                timing = self.driver.run_event('synthetic', REPO_ROOT, self.work, b'{}', 3.0)
+            except KeyboardInterrupt as exc:
+                return exc, observations, sleeps, closes
+        return timing, observations, sleeps, closes
+
+    def test_known_active_becomes_empty_within_original_deadline(self):
+        timing, observations, sleeps, closes = self.fixture('within')
+        self.assertIsNone(timing['error'])
+        self.assertAlmostEqual(timing['elapsed_raw'], 1.62)
+        self.assertTrue(sleeps)
+        self.assertEqual(closes[0]['last']['active_processes'], 0, 'close preceded natural empty')
+        natural = timing['process_lifetime']['natural_completion']
+        self.assertEqual(natural['first_observation']['active_processes'], 1)
+        self.assertEqual(natural['last_observation']['active_processes'], 0)
+        self.assertEqual(natural['observations'], len(observations))
+        self.assertGreaterEqual(natural['wait_elapsed'], 0.1 - 1e-10)
+        self.assertTrue(natural['proof_within_deadline'])
+        self.assertTrue(timing['process_lifetime']['recovery_complete'])
+        self.assertFalse(timing['retain_home'])
+
+    def test_active_at_deadline_cannot_use_recovery_empty_as_success(self):
+        timing, _, sleeps, closes = self.fixture('active')
+        self.assertTrue(timing['error'].startswith('TimeoutExpired'))
+        self.assertAlmostEqual(timing['elapsed_raw'], 3.0)
+        self.assertAlmostEqual(closes[0]['time'], 3.0)
+        self.assertTrue(sleeps)
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+        self.assertFalse(timing['process_lifetime']['recovery_complete'])
+
+    def test_empty_query_returning_after_deadline_is_unrounded_failure(self):
+        timing, observations, _, _ = self.fixture('late_zero')
+        self.assertEqual(timing['elapsed'], 3.0)
+        self.assertEqual(timing['elapsed_raw'], 3.00001)
+        self.assertTrue(timing['error'].startswith('TimeoutExpired'))
+        self.assertEqual(len(observations), 1)
+        self.assertFalse(timing['process_lifetime']['natural_completion']['proof_within_deadline'])
+
+    def test_query_denial_is_never_retried_to_success(self):
+        timing, observations, sleeps, _ = self.fixture('query_denied')
+        self.assertEqual(len(observations), 2)
+        self.assertEqual(len(sleeps), 1)
+        self.assertEqual(timing['process_lifetime']['natural_completion']['error'], 'job_query_denied')
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+
+    def test_unknown_posix_state_is_not_a_known_active_count(self):
+        timing, observations, sleeps, _ = self.fixture('unknown_posix')
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(sleeps, [])
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+
+    def test_wait_interrupt_keeps_lifetime_and_home_protection(self):
+        interrupt, observations, sleeps, closes = self.fixture('interrupt')
+        self.assertIsInstance(interrupt, KeyboardInterrupt)
+        timing = interrupt.perf_event_timing
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(len(sleeps), 1)
+        self.assertEqual(len(closes), 1)
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+        self.assertFalse(timing['process_lifetime']['recovery_complete'])
+
+    def test_shared_wait_uses_caller_clock_and_readonly_observer(self):
+        now, record = [1000.0], {"no_running_members": False}
+        def clock():
+            return now[0]
+        def observe(owner):
+            empty = now[0] >= 1000.02
+            return {'no_running_members': empty, 'active_processes': 0 if empty else 1}
+        def sleep(seconds):
+            now[0] += seconds
+        with patch.object(self.driver.time, 'perf_counter', side_effect=AssertionError('wrong clock domain')), \
+             patch.object(self.driver, 'observe_natural_completion', side_effect=AssertionError('wrong observer')), \
+             patch.object(self.driver.time, 'sleep', side_effect=sleep):
+            ready = self.driver.observe_natural_until_deadline(
+                object(), 1000.03, record, observe=observe, clock=clock)
+        self.assertTrue(ready)
+        self.assertTrue(record['proof_within_deadline'])
+        self.assertAlmostEqual(record['wait_elapsed'], 0.02)
+
+    def test_shared_wait_rejects_expired_stale_success_record(self):
+        record = {'no_running_members': True, 'proof_within_deadline': True}
+        observe = unittest.mock.Mock(side_effect=AssertionError('expired query'))
+        ready = self.driver.observe_natural_until_deadline(
+            object(), 3.0, record, observe=observe, clock=lambda: 3.00001)
+        self.assertFalse(ready)
+        observe.assert_not_called()
+        self.assertFalse(record['no_running_members'])
+        self.assertFalse(record['proof_within_deadline'])
+        self.assertTrue(record['deadline_exhausted'])
+        self.assertEqual(record['observations'], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
