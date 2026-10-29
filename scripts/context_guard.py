@@ -9974,18 +9974,24 @@ def visual_mutation_requested(text: str) -> bool:
     return False
 
 
-def visual_reference_source_text(text: str) -> str:
+def visual_reference_source_text(
+    text: str, *, keep_image_locators: bool = True, keep_quoted_prose: bool = False,
+) -> str:
     """Remove ordinary locator bytes before reading visual source language.
 
     A pathname or URL component named ``images`` or ``visualizations`` is a
     typed object, not an instruction to inspect an attached image. Keep actual
     image-file locators visible, and keep words outside each locator intact.
-    The caller first selects directly governed clauses so reported commands
+    UI readback callers can mask image locators too while retaining quoted
+    UI nouns in directly governed instructions; default visual behavior stays
+    unchanged. The caller first selects directly governed clauses so reported commands
     cannot supply visual authority through this lexical step.
     """
     hidden = [False] * len(text)
 
     def ordinary_locator(value: str) -> bool:
+        if not keep_image_locators:
+            return True
         candidate = value.rstrip(")]}>.,;，；。!?！？")
         if candidate.lower().startswith(("https://", "http://")):
             candidate = urlparse(candidate).path
@@ -9999,7 +10005,7 @@ def visual_reference_source_text(text: str) -> str:
         candidate = match.group(0)[1:-1]
         is_locator = (candidate.startswith(("/", "./", "../", "https://", "http://"))
                       or WINDOWS_ABSOLUTE_PATH_RE.match(candidate))
-        if not is_locator:
+        if not is_locator and not keep_quoted_prose:
             mask(*match.span())
 
     # A quoted absolute locator may contain spaces or punctuation. Its whole
@@ -10240,7 +10246,15 @@ def verification_contract(
                 readback_subjects.extend(named)
         readback_subjects = list({item["id"]: item for item in readback_subjects}.values())
     if readback_subjects:
-        readback_surface = "ui" if UI_SURFACE_RE.search(positive_text) else "artifact"
+        # UI words inside typed locators are object bytes, not a requested
+        # surface. Reuse the same source-object masks, retaining the existing
+        # UI vocabulary and quoted UI nouns outside each governed object.
+        ui_source = visual_reference_source_text(
+            "\n".join(clause for clause in role_clauses
+                      if instruction_text(clause).strip(" \t\r\n.!?。！？;；")),
+            keep_image_locators=False, keep_quoted_prose=True,
+        )
+        readback_surface = "ui" if UI_SURFACE_RE.search(ui_source) else "artifact"
         readback = {
             "id": f"O-{item_id}-{len(obligations) + 1:03d}",
             "kind": "subject_readback",
