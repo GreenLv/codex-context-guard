@@ -38,6 +38,10 @@ import tracemalloc
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+from scripts import cg_process_tree as process_tree  # noqa: E402
+from scripts.cg_process_tree import OwnedProcess  # noqa: E402
+
 DEFAULT_EVENT_TIMEOUT = 10.0
 LIFECYCLE_PAIRS = 50  # planned 100-event matched cell
 
@@ -99,41 +103,166 @@ def nearest_rank(values, percentile: float):
 
 def classify_outcome(elapsed: float, returncode: int | None, error: str | None,
                      timeout: float) -> str:
-    del timeout  # censoring bound is applied by the caller's budget
     if error is not None:
         return "timeout" if error.startswith("TimeoutExpired") else "driver_error"
+    if elapsed > timeout:
+        return "timeout"
     if returncode != 0:
         return "failed"
     return "completed"
 
 
+def observe_natural_completion(owned) -> dict:
+    """Read BEFORE close: terminating a survivor never proves natural success."""
+    if owned.process.poll() is None:
+        return {"no_running_members": False, "error": "leader_still_running"}
+    if owned.job is not None:
+        import ctypes
+        accounting = owned.accounting_type()
+        if not owned.api.QueryInformationJobObject(
+                owned.job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+            return {"no_running_members": False, "error": "job_query_denied"}
+        return {"no_running_members": accounting.ActiveProcesses == 0,
+                "active_processes": accounting.ActiveProcesses}
+    try:
+        os.killpg(owned.process.pid, 0)
+    except ProcessLookupError:
+        return {"no_running_members": True}
+    except OSError as exc:
+        return {"no_running_members": False, "error": type(exc).__name__}
+    if sys.platform == "darwin":
+        return {"no_running_members": process_tree._darwin_group_no_running_members(
+            owned.process.pid)}
+    return {"no_running_members": False, "error": "process_group_state_unknown"}
+
+
+# On uncertain pipe recovery keep references until terminal export. Do not close
+# a buffered reader that a Windows communicate thread may still hold. A host
+# supervisor may need to end a stalled interpreter after the failed raw export.
+_RETAINED_EVENT_OWNERS = []
+EVENT_RECOVERY_SECONDS = 5.0
+
+
 def run_event(wrapper: str, tree: Path, data_dir: Path, payload: bytes,
               timeout: float) -> dict:
     started = time.perf_counter()
-    error = None
+    deadline = started + timeout
+    owner = None
+    error, interrupt = None, None
     returncode, stdout, stderr = None, b"", b""
+    communicated = False
+    event_ended = None
+    natural = None
+    lifetime = {"event_budget": timeout, "recovery_budget": EVENT_RECOVERY_SECONDS}
     try:
-        completed = subprocess.run(
+        owner = OwnedProcess.spawn(
             ["sh", "-c", wrapper] if sys.platform != "win32"
             else ["powershell", "-NoProfile", "-Command", wrapper],
-            input=payload, capture_output=True, env=dict(
-                os.environ,
-                PLUGIN_ROOT=str(tree),
-                CODEX_HOME=str(data_dir.parent),
-                CONTEXT_GUARD_DATA_DIR=str(data_dir),
-            ), timeout=timeout)
-        returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=dict(os.environ, PLUGIN_ROOT=str(tree), CODEX_HOME=str(data_dir.parent),
+                     CONTEXT_GUARD_DATA_DIR=str(data_dir)))
+        lifetime["leader_pid"] = owner.process.pid
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(owner.process.args, timeout)
+        stdout, stderr = owner.process.communicate(payload, timeout=remaining)
+        communicated = True
+        returncode = owner.process.returncode
+        event_ended = time.perf_counter()
+        elapsed = event_ended - started
+        if elapsed > timeout:
+            error = "TimeoutExpired:whole_command_deadline"
+        else:
+            natural = {"no_running_members": False, "error": "query_incomplete"}
+            natural = observe_natural_completion(owner)
+            if not natural.get("no_running_members"):
+                error = "ProcessTreeError:natural_completion_unverified"
     except subprocess.TimeoutExpired as exc:
         error = f"TimeoutExpired:{exc}"
         stdout, stderr = exc.stdout or b"", exc.stderr or b""
-    elapsed = time.perf_counter() - started
-    return {"elapsed": round(elapsed, 4), "returncode": returncode,
-            "error": error, "_stdout": stdout, "_stderr": stderr}
+    except BaseException as exc:
+        error = f"{type(exc).__name__}: {exc}"[:400]
+        if not isinstance(exc, Exception):
+            interrupt = exc
+    # Freeze the business clock before recovery. Natural-completion inspection
+    # is control evidence; it must not grant the command a second deadline.
+    elapsed = (event_ended if event_ended is not None else time.perf_counter()) - started
+    if elapsed > timeout and error is None:
+        error = "TimeoutExpired:whole_command_deadline"
+    lifetime["natural_completion"] = natural
+    recovery_started = time.monotonic()
+    recovery_deadline = recovery_started + EVENT_RECOVERY_SECONDS
+    cleanup, drained = {}, communicated
+    observation_ok = True
+    if owner is not None:
+        try:
+            lifetime["leader_rc_before_cleanup"] = owner.process.poll()
+        except BaseException as exc:
+            observation_ok = False
+            lifetime["leader_rc_before_cleanup_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            if not isinstance(exc, Exception) and interrupt is None:
+                interrupt = exc
+        try:
+            remaining = recovery_deadline - time.monotonic()
+            if remaining > 0:
+                cleanup = owner.close(min(3.0, remaining))
+            else:
+                cleanup = {"process_group_cleanup_error": "recovery_deadline_exhausted"}
+        except BaseException as exc:
+            cleanup = {"process_group_cleanup_error": f"{type(exc).__name__}: {exc}"[:200]}
+            if not isinstance(exc, Exception) and interrupt is None:
+                interrupt = exc
+        tree_stopped = (cleanup.get("owned_process_exited") is True
+                        and cleanup.get("owned_tree_no_running_members") is True
+                        and not cleanup.get("process_group_cleanup_error"))
+        if not communicated and tree_stopped:
+            remaining = recovery_deadline - time.monotonic()
+            if remaining > 0:
+                try:
+                    stdout, stderr = owner.process.communicate(timeout=min(2.0, remaining))
+                    drained = True
+                except BaseException as exc:
+                    lifetime["drain_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                    if not isinstance(exc, Exception) and interrupt is None:
+                        interrupt = exc
+            else:
+                lifetime["drain_error"] = "recovery_deadline_exhausted"
+        try:
+            lifetime["leader_rc_after_cleanup"] = owner.process.poll()
+        except BaseException as exc:
+            observation_ok = False
+            lifetime["leader_rc_after_cleanup_error"] = f"{type(exc).__name__}: {exc}"[:200]
+            if not isinstance(exc, Exception) and interrupt is None:
+                interrupt = exc
+    else:
+        tree_stopped = False
+        cleanup = {"process_group_cleanup_error": "owner_unavailable"}
+    lifetime.update(cleanup=cleanup, drain_complete=drained,
+                    recovery_elapsed=time.monotonic() - recovery_started)
+    query_known = natural is None or natural.get("no_running_members") is True
+    within_recovery = time.monotonic() <= recovery_deadline
+    recovered = tree_stopped and drained and query_known and observation_ok and within_recovery
+    if not within_recovery:
+        lifetime["recovery_error"] = "recovery_deadline_exceeded"
+    lifetime["recovery_complete"] = recovered
+    if not recovered:
+        error = error or "ProcessTreeError:recovery_incomplete"
+        if owner is not None:
+            _RETAINED_EVENT_OWNERS.append(owner)
+    result = {"elapsed": round(elapsed, 4), "elapsed_raw": elapsed,
+            "returncode": returncode, "error": error,
+            "_stdout": stdout, "_stderr": stderr, "process_lifetime": lifetime,
+            "retain_home": not recovered, "stop_batch": not recovered}
+    if interrupt is not None:
+        interrupt.perf_event_timing = result
+        raise interrupt
+    return result
 
 
 def report_row(timing: dict) -> dict:
     return {
         "elapsed": timing["elapsed"],
+        **{key: timing[key] for key in ("elapsed_raw", "process_lifetime", "retain_home", "stop_batch") if key in timing},
         "returncode": timing["returncode"],
         "error": timing["error"],
         "stdout_sha256": sha256_bytes(timing["_stdout"]) if timing["_stdout"] else None,
@@ -355,7 +484,7 @@ def run_standard_attempt(wrapper: str, tree: Path, cell: str, spec: dict,
     timing = run_event(wrapper, tree, data_dir, payload, timeout)
     row = {"event": cell, "payload_sha256": sha256_bytes(payload),
            "returncode": timing["returncode"], "error": timing["error"],
-           "outcome_class": classify_outcome(timing["elapsed"],
+           "outcome_class": classify_outcome(timing.get("elapsed_raw", timing["elapsed"]),
                                              timing["returncode"],
                                              timing["error"], timeout)}
     check_semantics(cell, row, data_dir, timing["_stdout"],
@@ -407,6 +536,8 @@ def run_lifecycle_attempt(wrapper: str, tree: Path, data_dir: Path,
     bad = [e for e in events if e.get("assertion") != "ok"]
     return {"elapsed": elapsed, "events": events,
             "pairs_completed": len(events) // 2,
+            "retain_home": any(e.get("retain_home") for e in events),
+            "stop_batch": any(e.get("stop_batch") for e in events),
             "outcome_class": "completed" if not failure else "failed",
             "error": failure,
             "assertion": "ok" if not bad else f"{len(bad)}_event_assertions_failed"}
@@ -518,6 +649,49 @@ def write_report(path: Path, report: dict) -> None:
                 raise
 
 
+class ReportPublicationError(RuntimeError):
+    pass
+
+
+def row_failed(row: dict) -> bool:
+    return (row.get("outcome_class") != "completed" or row.get("assertion") != "ok"
+            or row.get("home_cleanup", {}).get("status") in {"error", "retained"}
+            or row.get("stop_batch", False))
+
+
+def finalize_report(report: dict, selected: list[str], attempts: int) -> None:
+    failures = sum(row_failed(row) for cell in report["cells"].values()
+                   for side in cell["sides"].values() for row in side["raw_rows"])
+    coverage = set(report["cells"]) == set(selected)
+    for cell, celldata in report["cells"].items():
+        for side, data in celldata["sides"].items():
+            rows = data["raw_rows"]
+            exact = ([r["index"] for r in rows] == list(range(attempts))
+                     and all(r["side"] == side and r["outcome_class"] != "started" for r in rows))
+            coverage = coverage and exact
+            good = sorted((r["stop_wall"] if cell == "stop_s1" else r["elapsed"])
+                          for r in rows if r.get("outcome_class") == "completed"
+                          and r.get("assertion") == "ok")
+            data["summary"] = {
+                "attempts": len(rows), "completed_and_asserted": len(good),
+                "failed": sum(r.get("outcome_class") == "failed" for r in rows),
+                "timeouts": sum(r.get("outcome_class") == "timeout" for r in rows),
+                "driver_errors": sum(r.get("outcome_class") == "driver_error" for r in rows),
+                "seed_failures": sum(r.get("outcome_class") == "seed_failed" for r in rows),
+                "assertion_failures": sum(r.get("assertion") not in (None, "ok") for r in rows),
+                "success_median": round(statistics.median(good), 4) if good else None,
+                "success_p95": round(nearest_rank(good, 95), 4) if good else None,
+                "success_max": round(good[-1], 4) if good else None,
+                "peak_bytes": [r["peak_bytes"] for r in rows if "peak_bytes" in r],
+                "note": "success-conditioned latency; all failed/censored rows retained",
+            }
+    report["coverage_complete"] = coverage
+    control_failure = bool(report.get("driver_failure") or report.get("publication_failure"))
+    report["accepted"] = coverage and failures == 0 and not control_failure
+    report["full_profile"] = set(selected) == set(cell_specs())
+    report["blocking_failures"] = failures + int(not coverage) + int(control_failure)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", type=Path, required=True)
@@ -528,6 +702,8 @@ def main() -> int:
                         "subagent_start,subagent_events,session_end,lifecycle_matched,memory_stop,"
                         "stop_s1")
     parser.add_argument("--formal", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true",
+                        help="stop after first failed attempt; partial coverage always blocks acceptance")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=None,
                         help="optional tighter timeout; declared event deadlines remain upper bounds")
@@ -554,6 +730,7 @@ def main() -> int:
         "baseline_sources": source_identities(args.baseline),
         "candidate_sources": source_identities(args.candidate),
         "driver_sha256": sha256_bytes(Path(__file__).read_bytes()),
+        "process_owner_sha256": sha256_bytes((REPO / "scripts/cg_process_tree.py").read_bytes()),
         "wrapper_note": "exact hooks/hooks.json command per event via sh -c, "
                         "PLUGIN_ROOT bound per tree",
         "cell_union": "perf_ab event/lifecycle/memory cells + benchmark_stop Stop cells",
@@ -571,20 +748,27 @@ def main() -> int:
         parser.error("formal batches require the full registered cell profile")
 
     report = {"mode": "formal" if args.formal else "diagnostic",
-              "predeclared_attempts_per_cell": args.attempts,
-              "identities": identities, "accepted": None, "cells": {},
+              "predeclared_attempts_per_cell": args.attempts, "fail_fast": args.fail_fast,
+              "identities": identities, "accepted": False, "cells": {},
+              "planned_cells": selected, "coverage_complete": False,
+              "full_profile": set(selected) == set(cell_specs()), "blocking_failures": 1,
+              "execution_state": "running", "stop_reason": None,
+              "measurement_policy": "whole-command absolute deadline before owned spawn; unrounded completion; recovery excluded; same candidate owner on both sides",
+              "control_scope": "event wrappers only; seed, Stop runner and memory retain independent timeout routes",
               "acceptance_scope": "cell execution and semantic oracles; comparison targets and host/model acceptance are separate"}
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    write_report(args.out, report)
 
     def persist() -> None:
-        write_report(args.out, report)
+        try:
+            write_report(args.out, report)
+        except Exception as exc:
+            raise ReportPublicationError(f"{type(exc).__name__}: {exc}") from exc
 
-    failures = 0
     try:
+        persist()
         cells = {name: cell_specs()[name] for name in selected}
         schedule = ["baseline", "candidate"] * args.attempts
-        report["planned_cells"] = list(cells)
+        stop = False
         for cell, spec in cells.items():
             report["cells"][cell] = {
                 "sides": {"baseline": {"raw_rows": []}, "candidate": {"raw_rows": []}},
@@ -599,7 +783,7 @@ def main() -> int:
                 row = {"index": index, "side": side, "outcome_class": "started",
                        "error": None, "assertion": None}
                 sides[side]["raw_rows"].append(row)
-                persist()  # before wrapper loading, directory creation, seeding or execution
+                persist()
                 home = None
                 try:
                     home = Path(tempfile.mkdtemp(prefix=f"cg-perf-{cell}-{side}-"))
@@ -607,6 +791,7 @@ def main() -> int:
                     data_dir.mkdir()
                     budget = spec["timeout"] if args.timeout is None else min(args.timeout, spec["timeout"])
                     wrapper = args.wrapper_override or load_wrapper(tree, spec["event"])
+                    seeded = True
                     if spec.get("seed"):
                         try:
                             seed_active_session(tree, data_dir, spec["seed"])
@@ -616,63 +801,96 @@ def main() -> int:
                                 timing = run_event(seed_wrapper, tree, data_dir,
                                                    json.dumps(pre, ensure_ascii=False).encode(), budget)
                                 if timing["error"] or timing["returncode"] != 0:
+                                    row.update(retain_home=timing.get("retain_home", False),
+                                               stop_batch=timing.get("stop_batch", False),
+                                               process_lifetime=timing.get("process_lifetime"))
                                     raise RuntimeError("seed event failed")
                         except Exception as exc:  # noqa: BLE001 - retain seed failure
                             row.update(outcome_class="seed_failed", error=str(exc)[:200])
-                            continue
-                    if cell == "lifecycle_matched":
-                        result = run_lifecycle_attempt(wrapper, tree, data_dir,
-                                                       min(budget, 10.0),
-                                                       wrapper_override=bool(args.wrapper_override))
-                    elif cell == "memory_stop":
-                        result = run_memory_attempt(tree, data_dir)
-                    elif cell == "stop_s1":
-                        result = run_stop_cell(tree, 1, home)
+                            if not (row.get("process_lifetime") or {}).get("recovery_complete"):
+                                row.update(retain_home=True, stop_batch=True,
+                                           process_scope="seed exception without verified event lifetime")
+                            seeded = False
+                    if seeded:
+                        if cell == "lifecycle_matched":
+                            result = run_lifecycle_attempt(wrapper, tree, data_dir,
+                                                           min(budget, 10.0),
+                                                           wrapper_override=bool(args.wrapper_override))
+                        elif cell == "memory_stop":
+                            result = run_memory_attempt(tree, data_dir)
+                        elif cell == "stop_s1":
+                            result = run_stop_cell(tree, 1, home)
+                        else:
+                            result = run_standard_attempt(wrapper, tree, cell, spec, data_dir, budget)
+                        row.update(result)
+                        row["host_deadline"] = budget
+                except BaseException as exc:  # preserve event ownership on interruption
+                    timing = getattr(exc, "perf_event_timing", None)
+                    if timing is not None:
+                        row.update(report_row(timing))
                     else:
-                        result = run_standard_attempt(wrapper, tree, cell, spec, data_dir, budget)
-                    row.update(result)
-                    row["host_deadline"] = budget
-                except Exception as exc:  # noqa: BLE001 - record, continue
+                        row.update(retain_home=True, stop_batch=True,
+                                   process_lifetime={"recovery_complete": False,
+                                                     "error": "exception_without_owned_event_evidence"})
+                    if not isinstance(exc, Exception):
+                        raise
                     row.update(outcome_class="driver_error", error=f"{type(exc).__name__}: {exc}"[:200])
                 finally:
+                    # Actual event bytes reach disk BEFORE potentially failing
+                    # HOME deletion. A publisher failure leaves HOME untouched.
                     if home is not None:
-                        shutil.rmtree(home)
-                    if row.get("outcome_class") != "completed" or row.get("assertion") != "ok":
-                        failures += 1
+                        row["home_cleanup"] = {"status": "pending", "path": str(home)}
                     persist()
-        coverage = set(report["cells"]) == set(selected)
-        for cell, celldata in report["cells"].items():
-            for side, data in celldata["sides"].items():
-                rows = data["raw_rows"]
-                exact = ([r["index"] for r in rows] == list(range(args.attempts))
-                         and all(r["side"] == side and r["outcome_class"] != "started" for r in rows))
-                coverage = coverage and exact
-                good = sorted((r["stop_wall"] if cell == "stop_s1" else r["elapsed"])
-                              for r in rows if r.get("outcome_class") == "completed"
-                              and r.get("assertion") == "ok")
-                data["summary"] = {
-                    "attempts": len(rows), "completed_and_asserted": len(good),
-                    "failed": sum(r.get("outcome_class") == "failed" for r in rows),
-                    "timeouts": sum(r.get("outcome_class") == "timeout" for r in rows),
-                    "driver_errors": sum(r.get("outcome_class") == "driver_error" for r in rows),
-                    "seed_failures": sum(r.get("outcome_class") == "seed_failed" for r in rows),
-                    "assertion_failures": sum(r.get("assertion") not in (None, "ok") for r in rows),
-                    "success_median": round(statistics.median(good), 4) if good else None,
-                    "success_p95": round(nearest_rank(good, 95), 4) if good else None,
-                    "success_max": round(good[-1], 4) if good else None,
-                    "peak_bytes": [r["peak_bytes"] for r in rows if "peak_bytes" in r],
-                    "note": "success-conditioned latency; all failed/censored rows retained",
-                }
-        report["coverage_complete"] = coverage
-        report["accepted"] = coverage and failures == 0
-        report["full_profile"] = set(selected) == set(cell_specs())
-        report["blocking_failures"] = failures + int(not coverage)
+                    if home is not None:
+                        if row.get("retain_home"):
+                            row["home_cleanup"] = {"status": "retained", "path": str(home)}
+                        else:
+                            try:
+                                shutil.rmtree(home)
+                                row["home_cleanup"] = {"status": "removed"}
+                            except Exception as exc:
+                                row["home_cleanup"] = {"status": "error", "path": str(home),
+                                                       "error": f"{type(exc).__name__}: {exc}"[:200]}
+                                row["stop_batch"] = True
+                    persist()
+                bad = row_failed(row)
+                if row.get("stop_batch") or (args.fail_fast and bad):
+                    stop = True
+                    report["execution_state"] = "stopped"
+                    report["stop_reason"] = "control_failure" if row.get("stop_batch") else "fail_fast"
+                    break
+            if stop:
+                break
+        if not stop:
+            report["execution_state"] = "completed"
+        finalize_report(report, selected, args.attempts)
         persist()
-    except BaseException as exc:  # preserve interrupted started rows
+    except ReportPublicationError as exc:
+        # Do not recursively call the publisher that just failed. Keep raw and
+        # .partial unchanged; one exclusive sidecar preserves in-memory rows.
+        report["publication_failure"] = str(exc)[:400]
+        report["execution_state"] = "publication_failed"
+        finalize_report(report, selected, args.attempts)
         report["accepted"] = False
-        report["blocking_failures"] = failures + 1
+        report["blocking_failures"] = max(1, report["blocking_failures"])
+        try:
+            with args.out.with_name(args.out.name + ".failure.json").open(
+                    "x", encoding="utf-8") as stream:
+                json.dump(report, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+        except Exception as fallback:
+            print(f"performance report sidecar failed: {type(fallback).__name__}", file=sys.stderr)
+        print(f"performance report publication failed: {exc}", file=sys.stderr)
+        return 1
+    except BaseException as exc:
         report["driver_failure"] = f"{type(exc).__name__}: {exc}"[:400]
-        persist()
+        report["execution_state"] = "interrupted"
+        finalize_report(report, selected, args.attempts)
+        try:
+            persist()
+        except ReportPublicationError as publication:
+            # No recursive terminal rewrite after this second, distinct failure.
+            print(f"performance terminal publication failed: {publication}", file=sys.stderr)
         return 1
     print(json.dumps({"accepted": report["accepted"]}))
     return 0 if report["accepted"] else 1

@@ -204,7 +204,7 @@ class PerfDriverNegativeTests(unittest.TestCase):
                 self.assertEqual(proc.returncode, 2)
                 self.assertFalse((self.work / "invalid.json").exists())
 
-    def test_r3_real_interruption_persists_started_attempt_and_cleans_home(self):
+    def test_r3_unwitnessed_interruption_persists_started_attempt_and_retains_home(self):
         sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
         import perf_ab
         out = self.work / "interrupted.json"
@@ -221,7 +221,10 @@ class PerfDriverNegativeTests(unittest.TestCase):
             self.assertEqual(perf_ab.main(), 1)
         self.assertFalse(json.loads(out.read_text())["accepted"])
         self.assertTrue(homes)
-        self.assertTrue(all(not home.exists() for home in homes))
+        # A mocked seed interruption has no owned-process cleanup witness.
+        self.assertTrue(all(home.exists() for home in homes))
+        self.assertTrue(json.loads(out.read_text())["cells"]["posttool_active"]
+                        ["sides"]["baseline"]["raw_rows"][0]["retain_home"])
 
     def test_r3_wrong_command_evidence_cannot_satisfy_lifecycle_count(self):
         sys.path.insert(0, str(REPO_ROOT / "tools/validation"))
@@ -460,6 +463,402 @@ class PerfReportPublicationTests(unittest.TestCase):
                     self.assertEqual(replace.call_count, 1)
                     self.assertEqual(sleep.call_count, 1 if during == "sleep" else 0)
                     self.assertEqual(self.partial.read_text(encoding="utf-8"), self.expected)
+
+
+class PerfDriverLifecycleTests(unittest.TestCase):
+    """Whole-command deadlines and control failures never manufacture samples."""
+
+    def setUp(self):
+        sys.path.insert(0, str(REPO_ROOT / 'tools/validation'))
+        import perf_ab
+        self.driver = perf_ab
+        self.tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def clock_event(self, creation, execution):
+        now, communications = [0.0], []
+        driver = self.driver
+
+        class Process:
+            args = ['synthetic']
+            returncode = 0
+            pid = 123456
+            stdin = stdout = stderr = None
+
+            def __init__(self, *args, **kwargs):
+                now[0] += creation
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def communicate(self, input=None, timeout=None):
+                communications.append(timeout)
+                if len(communications) > 1:
+                    return b'{}', b''
+                if timeout is not None and execution > timeout + 1e-12:
+                    now[0] += timeout
+                    raise subprocess.TimeoutExpired(self.args, timeout, output=b'{}')
+                now[0] += execution
+                return b'{}', b''
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        class Owner:
+            def __init__(self):
+                self.process = Process()
+
+            def close(self, timeout):
+                return {'owned_process_exited': True, 'owned_tree_no_running_members': True,
+                        'process_group_cleanup_error': None}
+
+        with patch.object(driver.subprocess, 'Popen', Process), \
+             patch.object(driver, 'OwnedProcess', create=True) as owned, \
+             patch.object(driver, 'observe_natural_completion', return_value={'no_running_members': True}, create=True), \
+             patch.object(driver.time, 'perf_counter', side_effect=lambda: now[0]):
+            owned.spawn.side_effect = lambda *a, **kw: Owner()
+            timing = driver.run_event('synthetic', REPO_ROOT, self.work, b'{}', 3.0)
+        outcome = driver.classify_outcome(timing.get('elapsed_raw', timing['elapsed']),
+                                          timing['returncode'], timing['error'], 3.0)
+        return timing, outcome, communications
+
+    def test_whole_command_startup_is_in_budget(self):
+        timing, outcome, calls = self.clock_event(2.8, 0.4)
+        self.assertEqual(outcome, 'timeout')
+        self.assertLessEqual(calls[0], 0.2 + 1e-10)
+        self.assertTrue(timing['process_lifetime']['recovery_complete'])
+
+    def test_whole_command_boundary_controls(self):
+        for startup, expected in [(2.59, 'completed'), (2.6, 'completed')]:
+            with self.subTest(startup=startup):
+                _, outcome, _ = self.clock_event(startup, 0.4)
+                self.assertEqual(outcome, expected)
+
+    def test_unrounded_late_return_is_timeout(self):
+        timing, _, _ = self.clock_event(0.0, 0.1)
+        self.assertEqual(self.driver.classify_outcome(3.00001, 0, None, 3.0), 'timeout')
+        self.assertIn('elapsed_raw', timing)
+
+    def test_spawn_exhaustion_does_not_grant_fresh_budget(self):
+        _, outcome, calls = self.clock_event(3.1, 0.4)
+        self.assertEqual(outcome, 'timeout')
+        self.assertTrue(not calls or calls[0] <= 2.0)  # recovery drain only
+
+    def main_run(self, *, attempts=1, fail_fast=False, result=None, cleanup=None, publisher=None,
+                 runner=None, cells="pretool_safe", name="driver"):
+        out = self.work / (name + ".json")
+        argv = ['perf_ab', '--baseline', str(REPO_ROOT), '--candidate', str(REPO_ROOT),
+                '--attempts', str(attempts), '--cells', cells, '--out', str(out)]
+        if fail_fast:
+            argv.append('--fail-fast')
+        actual_result = result or {'elapsed': 0.1, 'returncode': 0, 'error': None,
+                                  'outcome_class': 'completed', 'assertion': 'ok'}
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(sys, 'argv', argv))
+            stack.enter_context(patch.object(self.driver, 'load_hasher', return_value=object()))
+            stack.enter_context(patch.object(self.driver, 'tree_digest', return_value='fixture'))
+            stack.enter_context(patch.object(self.driver, 'source_identities', return_value={}))
+            run = stack.enter_context(patch.object(self.driver, 'run_standard_attempt', return_value=actual_result, side_effect=runner))
+            if cleanup:
+                stack.enter_context(patch.object(self.driver.shutil, 'rmtree', side_effect=cleanup))
+            if publisher:
+                stack.enter_context(patch.object(self.driver, 'write_report', side_effect=publisher))
+            code = self.driver.main()
+        return code, json.loads(out.read_text()), run.call_count, out
+
+    def test_fail_fast_keeps_predeclared_40_and_partial_coverage(self):
+        bad = {'elapsed': 0.1, 'returncode': 7, 'error': None,
+               'outcome_class': 'failed', 'assertion': 'skipped_event_failed'}
+        code, report, calls, _ = self.main_run(attempts=40, fail_fast=True, result=bad)
+        self.assertEqual((code, calls), (1, 1))
+        self.assertEqual(report['predeclared_attempts_per_cell'], 40)
+        self.assertEqual(len(report['cells']['pretool_safe']['interleaved_schedule']), 80)
+        self.assertFalse(report['coverage_complete'])
+        self.assertFalse(report['accepted'])
+        self.assertEqual(report['execution_state'], 'stopped')
+
+    def test_cleanup_error_keeps_actual_row_published_before_delete(self):
+        observed = []
+        def cleanup(home):
+            report = json.loads((self.work / 'driver.json').read_text())
+            observed.append(report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]['outcome_class'])
+            raise PermissionError('fixture cleanup failure')
+        code, report, calls, _ = self.main_run(cleanup=cleanup)
+        self.assertEqual((code, calls), (1, 1))
+        self.assertEqual(observed, ['completed'])
+        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+        self.assertEqual(row['outcome_class'], 'completed')
+        self.assertIn('PermissionError', row['home_cleanup']['error'])
+        self.assertFalse(report['accepted'])
+        self.assertIn('coverage_complete', report)
+
+    def test_unknown_lifetime_preserves_home_and_stops(self):
+        result = {'elapsed': 0.1, 'returncode': 0, 'error': 'query_unknown',
+                  'outcome_class': 'driver_error', 'assertion': 'skipped_event_failed',
+                  'process_lifetime': {'recovery_complete': False}, 'retain_home': True,
+                  'stop_batch': True}
+        with patch.object(self.driver.shutil, 'rmtree') as cleanup:
+            code, report, calls, _ = self.main_run(result=result)
+        self.assertEqual((code, calls), (1, 1))
+        cleanup.assert_not_called()
+        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+        self.assertEqual(row['home_cleanup']['status'], 'retained')
+        self.assertFalse(report['accepted'])
+
+    def test_publication_failure_is_not_recursive_and_retains_result_sidecar(self):
+        actual = self.driver.write_report
+        writes = []
+        def publish(path, report):
+            writes.append(json.loads(json.dumps(report)))
+            if len(writes) == 3:
+                raise OSError('fixture publication denied')
+            return actual(path, report)
+        code, _, calls, out = self.main_run(publisher=publish)
+        self.assertEqual((code, calls), (1, 1))
+        self.assertEqual(len(writes), 3)
+        failed = json.loads(out.with_name(out.name + '.failure.json').read_text())
+        row = failed['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+        self.assertEqual(row['outcome_class'], 'completed')
+        self.assertFalse(failed['accepted'])
+        self.assertIn('publication_failure', failed)
+
+    def test_windows_preclose_query_is_read_only_and_denial_fails(self):
+        import ctypes
+        from types import SimpleNamespace
+        class Accounting(ctypes.Structure):
+            _fields_ = [('ActiveProcesses', ctypes.c_uint32)]
+        for active, denied in [(0, False), (1, False), (0, True)]:
+            with self.subTest(active=active, denied=denied):
+                def query(job, kind, pointer, size, unused):
+                    ctypes.cast(pointer, ctypes.POINTER(Accounting)).contents.ActiveProcesses = active
+                    return not denied
+                api = SimpleNamespace(QueryInformationJobObject=query)
+                owner = SimpleNamespace(process=SimpleNamespace(poll=lambda: 0), job=1,
+                                        accounting_type=Accounting, api=api)
+                result = self.driver.observe_natural_completion(owner)
+                self.assertEqual(result['no_running_members'], not denied and active == 0)
+
+    def test_recovery_has_one_five_second_deadline_and_never_closes_locked_pipes(self):
+        from types import SimpleNamespace
+        now, close_budgets, drain_budgets = [0.0], [], []
+        pipe = unittest.mock.Mock()
+        calls = []
+        class Process:
+            pid = 123
+            args = ['fixture']
+            returncode = None
+            stdin = stdout = stderr = pipe
+            def poll(self):
+                return self.returncode
+            def communicate(self, input=None, timeout=None):
+                calls.append(timeout)
+                if len(calls) == 1:
+                    raise subprocess.TimeoutExpired(self.args, timeout, output=b'{}')
+                drain_budgets.append(timeout)
+                now[0] += timeout
+                raise subprocess.TimeoutExpired(self.args, timeout)
+        process = Process()
+        def close(timeout):
+            close_budgets.append(timeout)
+            now[0] += timeout + 0.25  # adversarial close overruns its own allowance
+            process.returncode = 1
+            return {'owned_process_exited': True, 'owned_tree_no_running_members': True}
+        owner = SimpleNamespace(process=process, close=close)
+        with patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+             patch.object(self.driver.time, 'monotonic', side_effect=lambda: now[0]), \
+             patch.object(self.driver.time, 'perf_counter', return_value=0.0):
+            timing = self.driver.run_event('fixture', REPO_ROOT, self.work, b'{}', 3.0)
+        self.assertEqual(close_budgets, [3.0])
+        self.assertEqual(drain_budgets, [1.75])
+        self.assertEqual(now[0], 5.0)
+        self.assertFalse(timing['process_lifetime']['recovery_complete'])
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+        self.assertTrue(timing['error'].startswith('TimeoutExpired'))
+        pipe.close.assert_not_called()
+        self.driver._RETAINED_EVENT_OWNERS.remove(owner)
+
+    def test_query_exception_retains_home_even_after_successful_kill(self):
+        from types import SimpleNamespace
+        process = SimpleNamespace(pid=123, args=['fixture'], returncode=0,
+                                  poll=lambda: 0, communicate=lambda *a, **kw: (b'{}', b''))
+        owner = SimpleNamespace(process=process, close=lambda timeout: {
+            'owned_process_exited': True, 'owned_tree_no_running_members': True})
+        with patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+             patch.object(self.driver, 'observe_natural_completion', side_effect=OSError('query denied')):
+            timing = self.driver.run_event('fixture', REPO_ROOT, self.work, b'{}', 3.0)
+        self.assertIn('query denied', timing['error'])
+        self.assertTrue(timing['retain_home'])
+        self.assertTrue(timing['stop_batch'])
+        self.driver._RETAINED_EVENT_OWNERS.remove(owner)
+
+    def test_cleanup_error_does_not_replace_event_timeout(self):
+        bad = {'elapsed': 3.0, 'returncode': None, 'error': 'TimeoutExpired:original',
+               'outcome_class': 'timeout', 'assertion': 'skipped_event_failed'}
+        def cleanup(home):
+            raise PermissionError('cleanup denied')
+        code, report, calls, _ = self.main_run(result=bad, cleanup=cleanup)
+        row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+        self.assertEqual((code, calls), (1, 1))
+        self.assertEqual(row['error'], 'TimeoutExpired:original')
+        self.assertIn('cleanup denied', row['home_cleanup']['error'])
+
+    @unittest.skipUnless(os.name == 'posix', 'real POSIX group fixture, not Windows proof')
+    def test_real_timeout_with_inherited_output_is_reaped_before_home_cleanup(self):
+        self.real_descendant(hold_stdout=True, parent_wait=True)
+
+    @unittest.skipUnless(os.name == 'posix', 'real POSIX group fixture, not Windows proof')
+    def test_real_exited_leader_with_live_descendant_cannot_pass_after_kill(self):
+        self.real_descendant(hold_stdout=False, parent_wait=False)
+
+    def real_descendant(self, *, hold_stdout, parent_wait):
+        child = self.work / 'child.py'
+        parent = self.work / 'parent.py'
+        marker = self.work / 'child-pid'
+        child.write_text('import time\ntime.sleep(20)\n')
+        stdout_arg = '' if hold_stdout else ', stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL'
+        parent.write_text('import subprocess,sys,time\nfrom pathlib import Path\n'
+                          f'p=subprocess.Popen([sys.executable,{str(child)!r}]{stdout_arg})\n'
+                          f'Path({str(marker)!r}).write_text(str(p.pid))\n'
+                          "print('{}',flush=True)\n" + ('time.sleep(20)\n' if parent_wait else ''))
+        wrapper = 'exec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(parent))
+        timing = self.driver.run_event(wrapper, REPO_ROOT, self.work, b'{}', 0.5)
+        self.assertTrue(marker.exists(), 'fixture child never reached')
+        self.assertNotEqual(self.driver.classify_outcome(timing['elapsed_raw'], timing['returncode'],
+                                                        timing['error'], 0.5), 'completed')
+        self.assertTrue(timing['process_lifetime']['cleanup']['owned_tree_no_running_members'])
+        if parent_wait:
+            self.assertTrue(timing['error'].startswith('TimeoutExpired'))
+            self.assertTrue(timing['process_lifetime']['drain_complete'])
+        else:
+            self.assertIn('natural_completion_unverified', timing['error'])
+            self.assertTrue(timing['retain_home'])
+            self.driver._RETAINED_EVENT_OWNERS.pop()
+
+    def test_main_interrupt_and_poll_failures_respect_owned_lifetime(self):
+        from types import SimpleNamespace
+        original = self.driver.run_standard_attempt
+        actual_remove = self.driver.shutil.rmtree
+        for stage in ('communicate', 'close', 'drain', 'pre_poll', 'post_poll'):
+            with self.subTest(stage=stage):
+                polls, communications, close_calls = [], [], []
+                class Process:
+                    pid = 123
+                    args = ['fixture']
+                    returncode = None
+                    def poll(process):
+                        polls.append(1)
+                        if (stage == 'pre_poll' and len(polls) == 1
+                                or stage == 'post_poll' and len(polls) == 2):
+                            raise OSError('poll unavailable')
+                        return process.returncode
+                    def communicate(process, input=None, timeout=None):
+                        communications.append(timeout)
+                        if len(communications) == 1:
+                            if stage == 'communicate':
+                                raise KeyboardInterrupt('event interrupted')
+                            raise subprocess.TimeoutExpired(process.args, timeout, output=b'{}')
+                        if stage == 'drain':
+                            raise KeyboardInterrupt('drain interrupted')
+                        return b'{}', b''
+                process = Process()
+                def close(timeout):
+                    close_calls.append(timeout)
+                    if stage == 'close':
+                        raise KeyboardInterrupt('close interrupted')
+                    process.returncode = -9
+                    return {'owned_process_exited': True, 'owned_tree_no_running_members': True}
+                owner = SimpleNamespace(process=process, close=close)
+                before_retained = len(self.driver._RETAINED_EVENT_OWNERS)
+                with patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+                     patch.object(self.driver.shutil, 'rmtree', wraps=actual_remove) as remove:
+                    code, report, calls, _ = self.main_run(
+                        runner=original, name='interrupt-' + stage)
+                row = report['cells']['pretool_safe']['sides']['baseline']['raw_rows'][0]
+                self.assertEqual((code, calls), (1, 1))
+                self.assertEqual(len(close_calls), 1, 'poll failure skipped best-effort close')
+                safe = stage == 'communicate'
+                if not safe:
+                    remove.assert_not_called()
+                self.assertIn('process_lifetime', row)
+                self.assertEqual(row['process_lifetime']['recovery_complete'], safe)
+                if safe:
+                    remove.assert_called_once()
+                    self.assertEqual(row['home_cleanup']['status'], 'removed')
+                    self.assertFalse(Path(remove.call_args.args[0]).exists())
+                else:
+                    remove.assert_not_called()
+                    self.assertEqual(row['home_cleanup']['status'], 'retained')
+                    self.assertTrue(row['stop_batch'])
+                self.assertFalse(report['accepted'])
+                if stage in ('communicate', 'close', 'drain'):
+                    self.assertIn('KeyboardInterrupt', report['driver_failure'])
+                if stage.endswith('poll'):
+                    key = 'leader_rc_before_cleanup_error' if stage == 'pre_poll' else 'leader_rc_after_cleanup_error'
+                    self.assertIn('OSError', row['process_lifetime'][key])
+                del self.driver._RETAINED_EVENT_OWNERS[before_retained:]
+
+    def test_interrupted_lifecycle_and_seed_extra_carry_lifetime_to_main(self):
+        from types import SimpleNamespace
+        for cell in ('lifecycle_matched', 'subagent_events'):
+            with self.subTest(cell=cell):
+                class Process:
+                    pid = 123
+                    args = ['fixture']
+                    returncode = None
+                    def poll(self):
+                        return None
+                    def communicate(self, input=None, timeout=None):
+                        raise KeyboardInterrupt('event interrupted')
+                owner = SimpleNamespace(process=Process(), close=lambda timeout: {
+                    'owned_process_exited': False, 'owned_tree_no_running_members': False,
+                    'process_group_cleanup_error': 'fixture denial'})
+                before_retained = len(self.driver._RETAINED_EVENT_OWNERS)
+                with patch.object(self.driver.OwnedProcess, 'spawn', return_value=owner), \
+                     patch.object(self.driver, 'seed_active_session'), \
+                     patch.object(self.driver.shutil, 'rmtree') as remove:
+                    code, report, _, _ = self.main_run(cells=cell, name='interrupt-' + cell)
+                row = report['cells'][cell]['sides']['baseline']['raw_rows'][0]
+                self.assertEqual(code, 1)
+                remove.assert_not_called()
+                self.assertTrue(row['retain_home'])
+                self.assertFalse(row['process_lifetime']['recovery_complete'])
+                self.assertEqual(row['home_cleanup']['status'], 'retained')
+                self.assertIn('KeyboardInterrupt', report['driver_failure'])
+                del self.driver._RETAINED_EVENT_OWNERS[before_retained:]
+
+    def test_unwitnessed_standard_stop_memory_exceptions_retain_home(self):
+        original = self.driver.run_standard_attempt
+        for cell, method in [('pretool_safe', 'run_standard_attempt'),
+                             ('stop_s1', 'run_stop_cell'), ('memory_stop', 'run_memory_attempt')]:
+            with self.subTest(cell=cell):
+                def unknown(*args, **kwargs):
+                    raise OSError('unwitnessed fixture failure')
+                with patch.object(self.driver, method, side_effect=unknown), \
+                     patch.object(self.driver.shutil, 'rmtree') as remove:
+                    # main_run's standard runner patch is intentionally the same
+                    # unknown function for the standard route.
+                    code, report, _, _ = self.main_run(cells=cell, name='unknown-' + cell,
+                                                       runner=unknown if cell == 'pretool_safe' else original)
+                row = report['cells'][cell]['sides']['baseline']['raw_rows'][0]
+                self.assertEqual(code, 1)
+                remove.assert_not_called()
+                self.assertEqual(row['home_cleanup']['status'], 'retained')
+                self.assertTrue(row['stop_batch'])
+                self.assertFalse(report['accepted'])
 
 
 if __name__ == "__main__":
