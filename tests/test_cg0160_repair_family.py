@@ -458,6 +458,179 @@ class F03PrivatePermissionBoundary(IsolatedEnvironment):
         apply_mock.assert_called_once()
 
 
+@unittest.skipUnless(os.name == "posix", "POSIX private-mode idempotence")
+class F03PosixPrivateModeIdempotence(IsolatedEnvironment):
+    """Verify current facts on every call, without rewriting correct modes.
+
+    The existing F03 loose-mode/denied-chmod/read-back oracles still apply.
+    Shortcut exclusions preserve the previous hardening path, including its
+    existing support domain; they do not introduce new path authority.
+    """
+
+    def test_private_directory_does_not_attempt_mkdir_or_chmod(self) -> None:
+        target = self.root / "private-directory"
+        target.mkdir(mode=0o700)
+        read = Path.lstat
+        with mock.patch.object(Path, "mkdir", side_effect=AssertionError("mkdir")), \
+                mock.patch.object(cg.os, "chmod", side_effect=PermissionError("denied")), \
+                mock.patch.object(Path, "lstat", autospec=True, side_effect=read) as observed:
+            cg.secure_directory(target)
+            cg.secure_directory(target)
+        self.assertEqual(observed.call_args_list, [mock.call(target), mock.call(target)])
+        self.assertEqual(stat.S_IMODE(target.lstat().st_mode), 0o700)
+
+    def test_private_file_does_not_attempt_chmod(self) -> None:
+        target = self.root / "private-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o600)
+        read = Path.lstat
+        with mock.patch.object(cg.os, "chmod", side_effect=PermissionError("denied")), \
+                mock.patch.object(Path, "lstat", autospec=True, side_effect=read) as observed:
+            cg.secure_file(target)
+            cg.secure_file(target)
+        self.assertEqual(observed.call_args_list, [mock.call(target), mock.call(target)])
+        self.assertEqual(target.read_text(encoding="utf-8"), "synthetic")
+
+    def test_changed_modes_are_rechecked_and_hardened(self) -> None:
+        directory = self.root / "private-directory"
+        directory.mkdir(mode=0o700)
+        target = directory / "private-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o600)
+        cg.secure_directory(directory)
+        cg.secure_file(target)
+        directory.chmod(0o755)
+        target.chmod(0o644)
+        with mock.patch.object(cg.os, "chmod", wraps=os.chmod) as harden:
+            cg.secure_directory(directory)
+            cg.secure_file(target)
+        self.assertEqual(harden.call_args_list, [
+            mock.call(directory, 0o700), mock.call(target, 0o600)])
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_missing_directory_is_created_and_verified(self) -> None:
+        target = self.root / "new" / "private-directory"
+        cg.secure_directory(target)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
+
+    def test_loose_file_denied_hardening_still_fails_closed(self) -> None:
+        target = self.root / "loose-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o644)
+        with mock.patch.object(cg.os, "chmod", side_effect=PermissionError("denied")):
+            with self.assertRaises(cg.PrivateBoundaryError):
+                cg.secure_file(target)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+
+    def test_file_hardening_is_read_back_and_mismatch_refused(self) -> None:
+        target = self.root / "loose-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o644)
+        with mock.patch.object(cg.os, "chmod") as harden:
+            with self.assertRaises(cg.PrivateBoundaryError):
+                cg.secure_file(target)
+        harden.assert_called_once_with(target, 0o600)
+
+    def test_shortcut_refuses_foreign_owner_and_wrong_object_types(self) -> None:
+        from types import SimpleNamespace
+
+        for directory, mode, kind in (
+            (True, 0o700, stat.S_IFDIR), (False, 0o600, stat.S_IFREG),
+        ):
+            with self.subTest(directory=directory):
+                target = self.root / "mock-object"
+                observed = SimpleNamespace(st_mode=kind | mode,
+                                           st_uid=os.geteuid() + 1)
+                with mock.patch.object(Path, "lstat", return_value=observed):
+                    self.assertFalse(cg._posix_private_mode_matches(
+                        target, mode, directory=directory))
+                for other_type in (stat.S_IFLNK, stat.S_IFIFO,
+                                   stat.S_IFREG if directory else stat.S_IFDIR):
+                    observed = SimpleNamespace(st_mode=other_type | mode,
+                                               st_uid=os.geteuid())
+                    with mock.patch.object(Path, "lstat", return_value=observed):
+                        self.assertFalse(cg._posix_private_mode_matches(
+                            target, mode, directory=directory))
+
+    def test_shortcut_refuses_extra_special_permission_bits(self) -> None:
+        from types import SimpleNamespace
+
+        for directory, mode, kind in (
+            (True, 0o700, stat.S_IFDIR), (False, 0o600, stat.S_IFREG),
+        ):
+            for extra in (stat.S_ISUID, stat.S_ISGID, stat.S_ISVTX):
+                with self.subTest(directory=directory, extra=extra):
+                    observed = SimpleNamespace(st_mode=kind | mode | extra,
+                                               st_uid=os.geteuid())
+                    with mock.patch.object(Path, "lstat", return_value=observed):
+                        self.assertFalse(cg._posix_private_mode_matches(
+                            self.root / "mock-object", mode, directory=directory))
+
+    def test_excluded_owner_and_type_facts_use_the_existing_hardening_path(self) -> None:
+        from types import SimpleNamespace
+
+        directory = self.root / "private-directory"
+        directory.mkdir(mode=0o700)
+        target = directory / "private-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o600)
+        for secure, path, mode, kind, wrong_kind in (
+            (cg.secure_directory, directory, 0o700, stat.S_IFDIR, stat.S_IFREG),
+            (cg.secure_file, target, 0o600, stat.S_IFREG, stat.S_IFDIR),
+        ):
+            for observed_kind, observed_uid in (
+                (kind, os.geteuid() + 1), (wrong_kind, os.geteuid()),
+            ):
+                with self.subTest(path=path.name, kind=observed_kind, uid=observed_uid):
+                    observed = SimpleNamespace(st_mode=observed_kind | mode,
+                                               st_uid=observed_uid)
+                    with mock.patch.object(Path, "lstat", return_value=observed), \
+                            mock.patch.object(cg.os, "chmod", wraps=os.chmod) as harden:
+                        secure(path)
+                    harden.assert_called_once_with(path, mode)
+
+    def test_symlinks_use_the_existing_hardening_path(self) -> None:
+        directory = self.root / "private-directory"
+        directory.mkdir(mode=0o700)
+        target = directory / "private-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o600)
+        for secure, original, mode in (
+            (cg.secure_directory, directory, 0o700), (cg.secure_file, target, 0o600),
+        ):
+            with self.subTest(path=original.name):
+                link = self.root / (original.name + "-link")
+                symlink_or_skip(self, link, original)
+                with mock.patch.object(cg.os, "chmod", wraps=os.chmod) as harden:
+                    secure(link)
+                harden.assert_called_once_with(link, mode)
+
+    def test_windows_paths_do_not_consult_posix_shortcut(self) -> None:
+        target = self.root / "windows-directory"
+        with mock.patch.object(cg.os, "name", "nt"), \
+                mock.patch.object(cg, "_posix_private_mode_matches",
+                                  side_effect=AssertionError("POSIX read")), \
+                mock.patch.object(cg, "_harden_private_directory_windows") as harden:
+            cg.secure_directory(target)
+            cg.secure_file(target / "file")
+        harden.assert_called_once_with(target)
+
+    def test_failed_initial_read_cannot_skip_hardening(self) -> None:
+        directory = self.root / "private-directory"
+        directory.mkdir(mode=0o700)
+        target = directory / "private-file"
+        target.write_text("synthetic", encoding="utf-8")
+        target.chmod(0o600)
+        with mock.patch.object(Path, "lstat", side_effect=PermissionError("denied")), \
+                mock.patch.object(cg.os, "chmod", side_effect=PermissionError("denied")):
+            for secure, path in ((cg.secure_directory, directory), (cg.secure_file, target)):
+                with self.subTest(path=path.name):
+                    with self.assertRaises(cg.PrivateBoundaryError):
+                        secure(path)
+
+
 class F03WindowsAbiLayout(IsolatedEnvironment):
     """API-shaped Windows ABI checks on macOS: layout and flag contracts the
     implementation must satisfy before any native run. These are source

@@ -270,8 +270,10 @@ every export before sharing or committing it.
 ## Private permission boundary
 
 Private directories and files under the data root are restricted and verified:
-POSIX objects are tightened to `0700`/`0600` and re-read; when that cannot be
-established the write fails closed with a visible, content-free error. On
+POSIX objects are checked on each use. An owned directory or regular file
+already at the exact `0700`/`0600` mode avoids a redundant permission rewrite;
+other cases retain the existing hardening and read-back path. When the boundary
+cannot be established the write fails closed with a visible, content-free error. On
 Windows, private directories receive a protected three-entry DACL (current
 user, `SYSTEM`, Administrators) applied and read-back verified through native
 APIs, without starting PowerShell on the Hook path. Read-back verifies the

@@ -2306,6 +2306,22 @@ def _harden_private_directory_windows(path: Path) -> None:
         )
 
 
+def _posix_private_mode_matches(path: Path, mode: int, *, directory: bool) -> bool:
+    """Recognize an already-private object from a fresh, non-following read.
+
+    This is only a shortcut around redundant hardening, not a filesystem
+    cache or a replacement for the caller's path and parent-chain checks.
+    Other objects retain the existing hardening and read-back path.
+    """
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    return (expected_type(info.st_mode) and stat.S_IMODE(info.st_mode) == mode
+            and info.st_uid == os.geteuid())
+
+
 def secure_directory(path: Path) -> None:
     """Create/tighten a product-owned private directory and verify the result.
 
@@ -2313,6 +2329,8 @@ def secure_directory(path: Path) -> None:
     verification mismatch, unsupported ACL operation) the error propagates and
     callers must not write private data through this path.
     """
+    if os.name != "nt" and _posix_private_mode_matches(path, 0o700, directory=True):
+        return
     path.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
         _harden_private_directory_windows(path)
@@ -2339,6 +2357,8 @@ def secure_file(path: Path) -> None:
     so no per-file ACL mutation runs here (see docs/PRIVACY.md).
     """
     if os.name == "nt":
+        return
+    if _posix_private_mode_matches(path, 0o600, directory=False):
         return
     try:
         os.chmod(path, 0o600)
