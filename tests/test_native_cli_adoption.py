@@ -42,10 +42,28 @@ def schema_fixture():
         return {'oneOf': [{'properties': {'method': {'enum': [method]}, 'params': obj(names)}}
                           for method, names in values.items()]}
     request, notification = methods(requests), methods(notifications)
+    # Schema-shaped synthetic projection of the official generated startup family.
+    # No retained native identity values or native acceptance claim.
+    notification['definitions'] = {
+        'RemoteControlStatusChangedNotification': {
+            'type': 'object', 'properties': {
+                'environmentId': {'type': ['string', 'null']},
+                'installationId': {'type': 'string'}, 'serverName': {'type': 'string'},
+                'status': {'$ref': '#/definitions/RemoteControlConnectionStatus'}},
+            'required': ['installationId', 'serverName', 'status']},
+        'RemoteControlConnectionStatus': {'type': 'string',
+                                         'enum': ['disabled', 'connecting', 'connected', 'errored']}}
+    notification['oneOf'].append({
+        'type': 'object', 'properties': {
+            'method': {'enum': [a.STARTUP_METHOD], 'type': 'string'},
+            'params': {'$ref': '#/definitions/RemoteControlStatusChangedNotification'}},
+        'required': ['method', 'params']})
     turn = next(x for x in request['oneOf'] if x['properties']['method']['enum'] == ['turn/start'])
     turn['properties']['params']['properties']['effort'] = {'anyOf': [{'type': 'string', 'minLength': 1}, {'type': 'null'}]}
     for row in notification['oneOf']:
         method = row['properties']['method']['enum'][0]
+        if method == a.STARTUP_METHOD:
+            continue
         props = row['properties']['params']['properties']
         if method.startswith('hook/'):
             props['run'] = obj(('id', 'eventName', 'sourcePath', 'source', 'handlerType',
@@ -63,7 +81,12 @@ def schema_fixture():
     command['properties']['handlerType'] = {'enum': ['command']}
     metadata['oneOf'] = [command]
     schemas = {'ClientRequest.json': request, 'ServerNotification.json': notification,
-               'v1/InitializeResponse.json': obj(('userAgent', 'platformFamily', 'platformOs')),
+               'v1/InitializeResponse.json': {
+                   'type': 'object', 'properties': {
+                       'codexHome': {'allOf': [{'$ref': '#/definitions/AbsolutePathBuf'}]},
+                       **{k: {'type': 'string'} for k in ('userAgent', 'platformFamily', 'platformOs')}},
+                   'required': ['codexHome', 'platformFamily', 'platformOs', 'userAgent'],
+                   'definitions': {'AbsolutePathBuf': {'type': 'string'}}},
                'v2/HooksListResponse.json': {**obj(('data',)), 'definitions': {'HookMetadata': metadata}},
                'v2/EnvironmentInfoResponse.json': {'properties': {'shell': obj(('name', 'path'))}}}
     for name in ('ThreadStartResponse', 'ThreadResumeResponse'):
@@ -78,7 +101,8 @@ def receipt_fixture(plan, inventory):
     rpc = []
     for sequence, (method, params, result) in enumerate((
             ('initialize', {'clientInfo': {'name': 'stop-host-acceptance', 'version': '1'},
-                            'capabilities': {'experimentalApi': True}}, {'userAgent': 'synthetic-cli'}),
+                            'capabilities': {'experimentalApi': True}}, {'userAgent': 'synthetic-cli', 'codexHome': plan['home'],
+                             'platformFamily': 'synthetic', 'platformOs': 'synthetic'}),
             ('hooks/list', {'cwds': [plan['cwd']]}, {'data': [{'hooks': hooks, 'errors': [], 'warnings': []}]})), 1):
         rpc.extend([{'direction': 'request', 'message': {'id': sequence, 'method': method, 'params': params}},
                     {'direction': 'response', 'message': {'id': sequence, 'result': result}}])
@@ -117,12 +141,81 @@ def receipt_fixture(plan, inventory):
         'generator': {'argv': [plan['codex'], 'app-server', 'generate-json-schema', '--experimental', '--out', str(directory / 'protocol')],
                       'returncode': 0, 'stdout_sha256': a.sha(directory / 'generator.stdout'), 'stderr_sha256': a.sha(directory / 'generator.stderr')},
         'app_server': {'argv': [plan['codex'], 'app-server'], 'returncode': -15}}))
+    (directory / 'notification-projections.json').write_text(a.canonical({**a.PROJECTION_SCOPE, 'observations': []}))
     catalog = {p.relative_to(directory).as_posix(): a.sha(p) for p in directory.rglob('*') if p.is_file()}
     (directory / 'artifacts.json').write_text(a.canonical(catalog))
     receipt.update(capability_directory=str(directory), catalog_sha256=a.sha(directory / 'artifacts.json'),
                    stderr_sha256=a.sha(directory / 'stderr.txt'))
     (directory / 'receipt.json').write_text(a.canonical(receipt))
     return receipt
+
+
+class StartupFamilyTests(unittest.TestCase):
+    def test_schema_shaped_optional_fields_statuses_and_key_order(self):
+        document = a.validate_schemas(schema_fixture())['ServerNotification.json']
+        for status in ('disabled', 'connecting', 'connected', 'errored'):
+            for optional in (False, True):
+                params = {'status': status, 'serverName': 'synthetic', 'installationId': 'synthetic'}
+                if optional:
+                    params['environmentId'] = None
+                message = {'params': params, 'method': a.STARTUP_METHOD}
+                for stamped in (False, True):
+                    if stamped:
+                        message['emittedAtMs'] = 1
+                    header = a.startup_projection(message, document, 1)
+                    a.validate_projections({**a.PROJECTION_SCOPE, 'observations': [header]}, 2)
+                    reversed_message = dict(reversed(list(message.items())))
+                    reversed_message['params'] = dict(reversed(list(params.items())))
+                    self.assertEqual(a.startup_projection(reversed_message, document, 1), header)
+        for timestamp in (True, -1, '1', None, 1.2):
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
+                a.startup_projection(dict(message, emittedAtMs=timestamp), document, 1)
+
+    def test_waiting_id_and_projection_count_reject_boolean_and_numeric_coercion(self):
+        document = a.validate_schemas(schema_fixture())['ServerNotification.json']
+        message = {'method': a.STARTUP_METHOD,
+                   'params': {'installationId': 'synthetic', 'serverName': 'synthetic', 'status': 'disabled'}}
+        for invalid in (True, False, 1.0, '1', None, 0, 4):
+            with self.subTest(waiting_id=invalid), self.assertRaises(ValueError):
+                a.startup_projection(message, document, invalid)
+        for sequence in (1, 2, 3):
+            self.assertEqual(a.startup_projection(message, document, sequence)['before_response_id'], sequence)
+        for invalid in (True, False, 2.0, '2', None, 0, 4):
+            with self.subTest(count=invalid), self.assertRaises(ValueError):
+                a.validate_projections({**a.PROJECTION_SCOPE, 'observations': []}, invalid)
+        for count in (2, 3):
+            a.validate_projections({**a.PROJECTION_SCOPE, 'observations': []}, count)
+
+    def test_initialize_field_family_and_foreign_home_fail_closed(self):
+        document = a.validate_schemas(schema_fixture())['v1/InitializeResponse.json']
+        result = {'userAgent': 'synthetic', 'codexHome': '/synthetic/home',
+                  'platformFamily': 'synthetic', 'platformOs': 'synthetic'}
+        a.validate_initialize(dict(reversed(list(result.items()))), document, '/synthetic/home')
+        for field in result:
+            for wrong in (None, 1, []):
+                with self.subTest(field=field, wrong=wrong), self.assertRaises(ValueError):
+                    a.validate_initialize(dict(result, **{field: wrong}), document, '/synthetic/home')
+            changed = dict(result)
+            del changed[field]
+            with self.assertRaises(ValueError):
+                a.validate_initialize(changed, document, '/synthetic/home')
+        for changed in (dict(result, unknown='synthetic'), dict(result, codexHome='relative'),
+                        dict(result, codexHome='/synthetic/other')):
+            with self.assertRaises(ValueError):
+                a.validate_initialize(changed, document, '/synthetic/home')
+
+    def test_header_projection_rejects_payload_values_and_invalid_order(self):
+        header = {'method': a.STARTUP_METHOD, 'top_level_keys': ['method', 'params'],
+                  'params_fields': ['installationId', 'serverName', 'status'], 'before_response_id': 1}
+        for changed in (dict(header, params={'installationId': 'synthetic'}),
+                        dict(header, before_response_id=True), dict(header, before_response_id=3),
+                        dict(header, params_fields=['unknown'])):
+            with self.assertRaises(ValueError):
+                a.validate_projections({**a.PROJECTION_SCOPE, 'observations': [changed]}, 2)
+        with self.assertRaises(ValueError):
+            a.validate_projections({**a.PROJECTION_SCOPE, 'observations': [header] * (a.STARTUP_LIMIT + 1)}, 2)
+        with self.assertRaises(ValueError):
+            a.validate_projections({**a.PROJECTION_SCOPE, 'observations': [dict(header, before_response_id=2), header]}, 2)
 
 
 class AdoptionConsumerTests(P0Harness):
@@ -172,6 +265,33 @@ class AdoptionConsumerTests(P0Harness):
             with self.subTest(mutate=mutate), self.assertRaises(ValueError):
                 h.profile_for_plan(plan)
 
+    def test_all_rpc_ids_require_integer_types_with_consistent_originals(self):
+        self.ready()
+        self.adopt()
+        original = receipt_fixture(self.plan, self.inventory)
+        a.validate_receipt(original, self.plan)
+        for index, row in enumerate(original['rpc']):
+            if 'id' not in row['message']:
+                self.assertEqual(row['message'], {'method': 'initialized', 'params': {}})
+                continue
+            sequence = row['message']['id']
+            for bad_id in (True, False, float(sequence), str(sequence), None):
+                with self.subTest(direction=row['direction'], id=sequence, bad_id=bad_id):
+                    receipt = receipt_fixture(self.plan, self.inventory)
+                    receipt['rpc'][index]['message']['id'] = bad_id
+                    directory = Path(receipt['capability_directory'])
+                    (directory / 'rpc.jsonl').write_text(''.join(a.canonical(x) + '\n' for x in receipt['rpc']))
+                    receipt['rpc_sha256'] = a.digest(receipt['rpc'])
+                    catalog = {p.relative_to(directory).as_posix(): a.sha(p) for p in directory.rglob('*')
+                               if p.is_file() and p.name not in ('artifacts.json', 'receipt.json')}
+                    (directory / 'artifacts.json').write_text(a.canonical(catalog))
+                    receipt['catalog_sha256'] = a.sha(directory / 'artifacts.json')
+                    (directory / 'receipt.json').write_text(a.canonical(receipt))
+                    # Originals, hashes and embedded receipt agree: rejection must be semantic.
+                    a.validate_artifacts(receipt)
+                    with self.assertRaisesRegex(ValueError, 'capability (request|response) differs'):
+                        a.validate_receipt(receipt, self.plan)
+
     def test_duplicate_adoption_and_schema_fields_rejected(self):
         self.ready()
         self.adopt()
@@ -212,6 +332,8 @@ class AdoptionConsumerTests(P0Harness):
             'missing catalog': lambda r: path(r, 'artifacts.json').unlink(),
             'missing cleanup': lambda r: path(r, 'cleanup.json').unlink(),
             'missing producer': lambda r: path(r, 'producer.py').unlink(),
+            'missing projection': lambda r: path(r, 'notification-projections.json').unlink(),
+            'tampered projection': lambda r: path(r, 'notification-projections.json').write_text('{}'),
             'embedded RPC rehashed without original': embedded_rpc,
             'embedded cleanup without original': embedded_cleanup,
             'schema original replaced': lambda r: path(r, 'protocol/ClientRequest.json').write_text('{}'),
@@ -275,13 +397,30 @@ class AdoptionConsumerTests(P0Harness):
             client.assert_not_called()
 
     def test_probe_real_client_rpc_path_never_requests_thread_or_turn(self):
+        self.probe_rpc_path()
+
+    def test_probe_startup_notification_order_and_privacy(self):
+        for position in (0, 1):
+            with self.subTest(position=position):
+                self.probe_rpc_path(position=position)
+        self.probe_rpc_path(position=1, notification_count=a.STARTUP_LIMIT)
+
+    def test_probe_rejects_unadopted_messages_without_extra_requests(self):
+        for mutation in ('unknown-method', 'extra-param', 'extra-envelope', 'missing-param', 'bad-status',
+                         'bad-type', 'server-request', 'wrong-id', 'boolean-id', 'duplicate', 'limit', 'home', 'deadline'):
+            with self.subTest(mutation=mutation):
+                self.probe_rpc_path(position=1, mutation=mutation)
+
+    def probe_rpc_path(self, position=None, mutation=None, notification_count=1):
         self.ready()
-        home = self.root / 'capability-home'
+        case = self.root / ('probe-' + uuid.uuid4().hex)
+        case.mkdir()
+        home = case / 'capability-home'
         plugin = home / 'plugin'
-        cwd = self.root / 'capability-workspace'
+        cwd = case / 'capability-workspace'
         plugin.mkdir(parents=True)
         cwd.mkdir()
-        cli = self.root / 'fake-cli'
+        cli = case / 'fake-cli'
         cli.write_bytes(b'synthetic CLI; never executed')
         self.plan.update(home=str(home), cwd=str(cwd), plugin_root=str(plugin), codex=str(cli),
                          cli_sha256=a.sha(cli), cli_version=a.VERSION, platform=platform.system(),
@@ -291,15 +430,42 @@ class AdoptionConsumerTests(P0Harness):
             hook['sourcePath'] = str(plugin / 'hooks/hooks.json')
         fixture = receipt_fixture(self.plan, self.inventory)
         responses = [row['message'] for row in fixture['rpc'] if row['direction'] == 'response']
+        notification = {'emittedAtMs': 12345, 'method': a.STARTUP_METHOD,
+                        'params': {'environmentId': 'PRIVATE_ENV_718', 'installationId': 'PRIVATE_INSTALL_718',
+                                   'serverName': 'PRIVATE_SERVER_718', 'status': 'disabled'}}
+        if mutation == 'unknown-method':
+            notification['method'] = 'unknown/startup'
+        elif mutation == 'extra-param':
+            notification['params']['secret'] = 'PRIVATE_UNKNOWN_718'
+        elif mutation == 'extra-envelope':
+            notification['unknown'] = 'PRIVATE_UNKNOWN_718'
+        elif mutation == 'missing-param':
+            del notification['params']['installationId']
+        elif mutation == 'bad-status':
+            notification['params']['status'] = 'PRIVATE_BAD_STATUS_718'
+        elif mutation == 'bad-type':
+            notification['params']['environmentId'] = 718
+        elif mutation == 'duplicate':
+            notification = '{"method":"' + a.STARTUP_METHOD + '","method":"unknown","params":{}}'
+        elif mutation == 'server-request':
+            notification['id'] = 991
+        elif mutation == 'wrong-id':
+            notification = {'id': 991, 'result': {}}
+        elif mutation == 'boolean-id':
+            notification = {'id': True, 'result': {}}
+        elif mutation == 'home':
+            responses[0]['result']['codexHome'] = str(case / 'foreign-home')
+        if position is not None:
+            responses[position:position] = [notification] * (a.STARTUP_LIMIT + 1 if mutation == 'limit' else notification_count)
         stdin = io.StringIO()
-        owned = SimpleNamespace(process=SimpleNamespace(stdout=iter(json.dumps(x) + '\n' for x in responses), stdin=stdin,
+        owned = SimpleNamespace(process=SimpleNamespace(stdout=iter((x if isinstance(x, str) else json.dumps(x)) + '\n' for x in responses), stdin=stdin,
                                                         poll=lambda: -15),
                                 close=lambda seconds: fixture['cleanup'])
         def generate(argv, **kwargs):
             if argv == [str(cli), '--version']:
                 return subprocess.CompletedProcess(argv, 0, (a.VERSION + '\n').encode(), b'')
             expected = [str(cli), 'app-server', 'generate-json-schema', '--experimental', '--out',
-                        str(self.root / 'capability-output' / 'protocol')]
+                        str(case / 'capability-output' / 'protocol')]
             if argv != expected:
                 raise AssertionError('unexpected fake CLI argv')
             directory = Path(argv[-1])
@@ -340,18 +506,47 @@ class AdoptionConsumerTests(P0Harness):
             self.assertEqual(actual_identity(h.ROOT), before_identity)
             subject = {key: self.plan.get(key) for key in a.IDENTITY_KEYS}
             subject.update(schema=a.SUBJECT, repo=str(h.ROOT))
-            receipt = a.probe(subject, self.root / 'capability-output')
-            self.plan.update(schema='incident-host-plan/v1', repo=str(h.ROOT), output=str(self.root / 'native-output'),
+            if mutation:
+                if mutation == 'deadline':
+                    with mock.patch.object(a, 'time', SimpleNamespace(monotonic=lambda: 10**20)):
+                        with self.assertRaisesRegex(ValueError, 'deadline'):
+                            a.probe(subject, case / 'capability-output')
+                    self.assertEqual([json.loads(line)['method'] for line in stdin.getvalue().splitlines()], ['initialize'])
+                    return
+                with self.assertRaises(ValueError):
+                    a.probe(subject, case / 'capability-output')
+                sent = [json.loads(line)['method'] for line in stdin.getvalue().splitlines()]
+                self.assertEqual(sent, ['initialize'] if mutation == 'home' else
+                                 ['initialize', 'initialized', 'hooks/list'])
+                retained = ''.join(p.read_text() for p in (case / 'capability-output').rglob('*') if p.is_file())
+                self.assertNotIn('PRIVATE_', retained)
+                self.assertTrue((case / 'capability-output' / 'cleanup.json').is_file())
+                return
+            receipt = a.probe(subject, case / 'capability-output')
+            projections = json.loads((case / 'capability-output' / 'notification-projections.json').read_text())
+            a.validate_projections(projections, 3 if self.plan['platform'] == 'Windows' else 2)
+            self.assertEqual(len(projections['observations']), notification_count if position is not None else 0)
+            if position is not None:
+                self.assertEqual(projections['observations'][0]['before_response_id'], position + 1)
+                retained = ''.join(p.read_text() for p in (case / 'capability-output').rglob('*') if p.is_file())
+                self.assertNotIn(a.digest(notification['params']), retained)
+                self.assertNotIn(a.digest(notification), retained)
+                for private in notification['params'].values():
+                    # status enum words also occur in the generated schemas.
+                    if private != 'disabled':
+                        self.assertNotIn(private, retained)
+                        self.assertNotIn(hashlib.sha256(private.encode()).hexdigest(), retained)
+            self.plan.update(schema='incident-host-plan/v1', repo=str(h.ROOT), output=str(case / 'native-output'),
                              model='gpt-6.1-sol', effort='medium', manifest_sha256=base.sha(h.MANIFEST),
                              data_root=str(home / 'data'), cli_adoption=a.adoption(receipt))
             (home / 'data').mkdir()
-            path = self.root / 'actual-consumer-plan.json'
+            path = case / 'actual-consumer-plan.json'
             path.write_text(json.dumps(self.plan))
             self.assertEqual(h.preflight(path, Path(self.plan['output'])), self.plan)
-            shared = json.loads((self.root / 'native-output.preflight-plan.json').read_text())
+            shared = json.loads((case / 'native-output.preflight-plan.json').read_text())
             self.assertEqual(shared['cli_adoption'], self.plan['cli_adoption'])
             with mock.patch.object(base, 'Client', side_effect=RuntimeError('synthetic test; no model')):
-                result = base.collect(shared, self.root / 'stop-consumer')
+                result = base.collect(shared, case / 'stop-consumer')
             self.assertEqual(result['cli_adoption'], a.identity(self.plan))
             self.assertEqual(actual_identity(h.ROOT), before_identity)
         self.assertEqual({p.name for p in h.ROOT.iterdir()}, before_names)

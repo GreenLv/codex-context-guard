@@ -3,6 +3,7 @@
 Only tools consume this contract. Old plans without adoption keep their old
 version rules. A receipt retains generated protocol and accepted read-only RPC
 bytes so consumers recompute capability instead of trusting a passed boolean.
+Startup notifications retain header projections only, never payload values or hashes.
 """
 from __future__ import annotations
 
@@ -34,6 +35,15 @@ REQUESTS = {
     'thread/resume': ('threadId', 'cwd', 'sandbox', 'approvalPolicy'),
     'turn/start': ('threadId', 'input', 'effort'),
     'thread/compact/start': ('threadId',),
+}
+STARTUP_METHOD = 'remoteControl/status/changed'
+STARTUP_FIELDS = ('environmentId', 'installationId', 'serverName', 'status')
+STARTUP_LIMIT = 8
+PROJECTION_SCOPE = {
+    'schema': 'capability-startup-header-projections/v1',
+    'scope': 'validated_headers_only_not_raw_rpc',
+    'payload_values_and_hashes': 'discarded_not_retained',
+    'hook_or_model_evidence': False,
 }
 NOTIFICATIONS = {
     'hook/started': ('threadId', 'turnId', 'run'),
@@ -91,11 +101,15 @@ def fields(node, document, names):
     return node
 
 
-def variant(document, method):
+def method_schema(document, method):
     candidates = [node for node in document.get('oneOf', [])
                   if node.get('properties', {}).get('method', {}).get('enum') == [method]]
     require(len(candidates) == 1, 'consumed protocol method unavailable: ' + method)
-    return candidates[0]['properties']['params']
+    return candidates[0]
+
+
+def variant(document, method):
+    return method_schema(document, method)['properties']['params']
 
 
 def accepts(value, node, document):
@@ -137,6 +151,58 @@ def accepts(value, node, document):
     return True
 
 
+def startup_projection(message, document, sequence):
+    """Validate the one adopted startup family, then discard all parameter values.
+
+    emittedAtMs is observed transport metadata, not a generated payload field.
+    Neither it nor any remote identity/status value enters retained evidence.
+    """
+    require(type(sequence) is int and 1 <= sequence <= 3, 'capability waiting id differs')
+    require(isinstance(message, dict) and set(message) in
+            ({'method', 'params'}, {'method', 'params', 'emittedAtMs'})
+            and message.get('method') == STARTUP_METHOD,
+            'unexpected capability notification envelope')
+    if 'emittedAtMs' in message:
+        require(type(message['emittedAtMs']) is int and message['emittedAtMs'] >= 0,
+                'invalid capability notification timestamp')
+    params = message['params']
+    require(isinstance(params, dict) and set(params) <= set(STARTUP_FIELDS)
+            and accepts(message, method_schema(document, STARTUP_METHOD), document),
+            'unsupported capability startup notification')
+    return {'method': STARTUP_METHOD, 'top_level_keys': sorted(message),
+            'params_fields': sorted(params), 'before_response_id': sequence}
+
+
+def validate_projections(value, response_count):
+    require(type(response_count) is int and response_count in (2, 3), 'capability response count differs')
+    require(isinstance(value, dict) and set(value) == set(PROJECTION_SCOPE) | {'observations'}
+            and all(value.get(k) == v for k, v in PROJECTION_SCOPE.items())
+            and value['hook_or_model_evidence'] is False,
+            'capability projection scope differs')
+    rows = value['observations']
+    require(isinstance(rows, list) and len(rows) <= STARTUP_LIMIT, 'capability notification limit')
+    previous = 1
+    for row in rows:
+        require(isinstance(row, dict) and set(row) ==
+                {'method', 'top_level_keys', 'params_fields', 'before_response_id'}
+                and row['method'] == STARTUP_METHOD
+                and row['top_level_keys'] in (['method', 'params'], ['emittedAtMs', 'method', 'params'])
+                and row['params_fields'] in (['installationId', 'serverName', 'status'], list(STARTUP_FIELDS))
+                and type(row['before_response_id']) is int
+                and previous <= row['before_response_id'] <= response_count,
+                'capability projection headers differ')
+        previous = row['before_response_id']
+
+
+def validate_initialize(result, document, home):
+    require(isinstance(result, dict) and set(result) ==
+            {'codexHome', 'userAgent', 'platformFamily', 'platformOs'}
+            and accepts(result, document, document), 'initialize capability unavailable')
+    require(isinstance(result['codexHome'], str) and Path(result['codexHome']).is_absolute()
+            and Path(result['codexHome']).resolve() == Path(home).resolve(),
+            'initialize capability HOME differs')
+
+
 def validate_schemas(bundle):
     require(isinstance(bundle, dict) and set(bundle) == set(SCHEMAS)
             and all(isinstance(raw, str) for raw in bundle.values())
@@ -169,6 +235,13 @@ def validate_schemas(bundle):
                 and resolve(x, request).get('minLength', 0) <= len('medium') for x in options),
             'medium effort capability unavailable')
     notification = documents['ServerNotification.json']
+    startup = fields(variant(notification, STARTUP_METHOD), notification, STARTUP_FIELDS)
+    require(set(startup.get('properties', {})) == set(STARTUP_FIELDS)
+            and set(startup.get('required', [])) == {'installationId', 'serverName', 'status'},
+            'startup notification schema differs')
+    init = documents['v1/InitializeResponse.json']
+    require(set(init.get('properties', {})) == {'codexHome', 'userAgent', 'platformFamily', 'platformOs'}
+            and set(init.get('required', [])) == set(init['properties']), 'initialize schema differs')
     run = resolve(variant(notification, 'hook/completed'), notification)['properties']['run']
     run = fields(run, notification, ('id', 'eventName', 'sourcePath', 'source', 'handlerType',
                                     'displayOrder', 'executionMode', 'status', 'durationMs', 'entries'))
@@ -233,19 +306,21 @@ def validate_receipt(receipt, subject):
         expected.append(('environment/info', {'environmentId': 'local'}))
     cursor = 0
     for sequence, (method, params) in enumerate(expected, 1):
-        require(rpc[cursor] == {'direction': 'request', 'message': {'id': sequence, 'method': method, 'params': params}},
+        request = rpc[cursor]
+        require(isinstance(request, dict) and isinstance(request.get('message'), dict)
+                and type(request['message'].get('id')) is int
+                and request == {'direction': 'request', 'message': {'id': sequence, 'method': method, 'params': params}},
                 'capability request differs or invokes a thread/turn')
         response = rpc[cursor + 1]
         require(response.get('direction') == 'response'
                 and set(response.get('message', {})) == {'id', 'result'}
-                and response['message']['id'] == sequence, 'capability response differs')
+                and type(response['message']['id']) is int and response['message']['id'] == sequence, 'capability response differs')
         result = response['message']['result']
         filename = {'initialize': 'v1/InitializeResponse.json', 'hooks/list': 'v2/HooksListResponse.json',
                     'environment/info': 'v2/EnvironmentInfoResponse.json'}[method]
         require(accepts(result, documents[filename], documents[filename]), 'read-only capability response shape unsupported')
         if method == 'initialize':
-            require(isinstance(result, dict) and set(result) <= {'userAgent', 'platformFamily', 'platformOs'}
-                    and isinstance(result.get('userAgent'), str), 'initialize capability unavailable')
+            validate_initialize(result, documents[filename], subject['home'])
         elif method == 'hooks/list':
             from tools.validation import stop_host_acceptance as base
             require(isinstance(result, dict) and set(result) == {'data'} and len(result['data']) == 1,
@@ -310,7 +385,7 @@ def validate_artifacts(receipt):
             'capability artifact budget')
     required = {'rpc.jsonl', 'cleanup.json', 'commands.json', 'producer.py', 'version.stdout',
                 'version.stderr', 'generator.stdout', 'generator.stderr', 'stderr.txt',
-                'receipt.json', 'artifacts.json'} | {'protocol/' + name for name in SCHEMAS}
+                'receipt.json', 'artifacts.json', 'notification-projections.json'} | {'protocol/' + name for name in SCHEMAS}
     require(required <= set(files) and all(name in required or name.startswith('protocol/')
             and name.endswith('.json') for name in files), 'capability artifact inventory differs')
     require(sha(files['artifacts.json']) == receipt['catalog_sha256'], 'capability catalog changed')
@@ -318,6 +393,8 @@ def validate_artifacts(receipt):
     require(isinstance(catalog, dict) and set(catalog) == set(files) - {'artifacts.json', 'receipt.json'}
             and all(sha(files[name]) == value for name, value in catalog.items()),
             'capability artifact hash mismatch')
+    validate_projections(strict_json(files['notification-projections.json'].read_text(encoding='utf-8')),
+                         3 if receipt['identity']['platform'] == 'Windows' else 2)
     require(strict_json(files['receipt.json'].read_text(encoding='utf-8')) == receipt,
             'embedded capability receipt differs from original')
     require({name: files['protocol/' + name].read_text(encoding='utf-8') for name in SCHEMAS}
@@ -460,6 +537,10 @@ def probe(plan, output):
     documents = validate_schemas(bundle)
 
     cleanup, app_server_returncode = None, None
+    projections = {**PROJECTION_SCOPE, 'observations': []}
+    def retain_projection_headers():
+        (output / 'notification-projections.json').write_text(canonical(projections) + '\n', encoding='utf-8')
+    retain_projection_headers()
 
     class InventoryClient(base.Client):
         def validate_inventory(self, product, expected_path):
@@ -470,20 +551,54 @@ def probe(plan, output):
         def rpc(self, method, params):
             require(method in ('initialize', 'hooks/list', 'environment/info'),
                     'capability cannot start/resume a thread or turn')
+            require(type(self.sequence) is int and self.sequence >= 0, 'capability sequence differs')
             self.capability_method = method
             return super().rpc(method, params)
 
+        def send(self, message):
+            require(type(self.sequence) is int and self.sequence >= 1, 'capability waiting id differs')
+            if 'id' in message:
+                require(type(message['id']) is int and message['id'] == self.sequence,
+                        'capability outgoing id differs')
+            else:
+                require(message == {'method': 'initialized', 'params': {}},
+                        'capability outgoing notification differs')
+            return super().send(message)
+
+        def reader(self):
+            # Preserve duplicate-field rejection before projection or persistence.
+            try:
+                for line in self.owned.process.stdout:
+                    require(len(line) <= 2 * 1024 * 1024, 'oversized RPC line')
+                    self.q.put(strict_json(line), timeout=1)
+            except Exception as exc:
+                self.q.put({'reader_error': type(exc).__name__})
+
         def receive(self, deadline):
-            message = self.q.get(timeout=max(.01, deadline - time.monotonic()))
+            require(type(self.sequence) is int and self.sequence >= 1, 'capability waiting id differs')
+            while True:
+                require(time.monotonic() < deadline, 'capability response deadline')
+                message = self.q.get(timeout=max(.01, deadline - time.monotonic()))
+                require(time.monotonic() < deadline, 'capability response deadline')
+                if isinstance(message, dict) and 'method' in message:
+                    require(len(projections['observations']) < STARTUP_LIMIT, 'capability notification limit')
+                    header = startup_projection(message, documents['ServerNotification.json'], self.sequence)
+                    projections['observations'].append(header)
+                    retain_projection_headers()
+                    del message
+                    continue
+                break
             require(isinstance(message, dict) and set(message) == {'id', 'result'}
-                    and message['id'] == self.sequence, 'unexpected capability message')
+                    and type(message['id']) is int and message['id'] == self.sequence, 'unexpected capability message')
             method = self.capability_method
             filename = {'initialize': 'v1/InitializeResponse.json', 'hooks/list': 'v2/HooksListResponse.json',
                         'environment/info': 'v2/EnvironmentInfoResponse.json'}[method]
             result = message['result']
             require(isinstance(result, dict) and set(result) <= set(documents[filename].get('properties', {})),
                     'unknown capability response fields')
-            if method == 'environment/info':
+            if method == 'initialize':
+                validate_initialize(result, documents[filename], plan['home'])
+            elif method == 'environment/info':
                 require(isinstance(result.get('shell'), dict) and set(result['shell']) == {'name', 'path'},
                         'unknown shell capability fields')
                 message = {'id': message['id'], 'result': {'shell': result['shell']}}
