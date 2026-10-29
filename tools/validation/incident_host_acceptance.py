@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts import context_guard as cg  # noqa: E402
 from tools.validation import incident_readonly_child as child  # noqa: E402
+from tools.validation import native_cli_adoption as cli_adoption  # noqa: E402
 from tools.validation import stop_host_acceptance as base  # noqa: E402
 from tools.validation.acceptance_identity import prepared_source_identity  # noqa: E402
 
@@ -39,7 +40,8 @@ MANIFEST_V2 = Path(__file__).with_name('incident-host-scenarios-v2.json')
 MANIFEST_FULL = Path(__file__).with_name('incident-host-scenarios-v2-full.json')
 TOOLKIT = ('incident_host_acceptance.py', 'incident_readonly_child.py',
            'stop_host_acceptance.py', 'acceptance_identity.py', 'incident-host-scenarios.json',
-           'incident-host-scenarios-v2.json', 'incident-host-scenarios-v2-full.json')
+           'incident-host-scenarios-v2.json', 'incident-host-scenarios-v2-full.json',
+           'native_cli_adoption.py')
 GATES = ('hook_trust', 'pause_same_unit', 'resume_provenance_pending',
          'typed_wait_retained', 'status_cli_posttool', 'status_negative_controls',
          'restricted_child_readonly', 'positive_negative_stop',
@@ -77,7 +79,7 @@ def read_subject(path, *, strict=False):
     def inspect(items):
         nonlocal full
         for key, item in items:
-            if ((key == 'gate_scope' and item == 'full') or
+            if (key == 'cli_adoption' or (key == 'gate_scope' and item == 'full') or
                 (key == 'gate_profile' and item == PROFILE_FULL) or
                 (key == 'schema' and isinstance(item, str) and item.endswith('/v2-full'))):
                 full = True
@@ -110,6 +112,8 @@ def plan_identity(plan):
 
 def profile_for_plan(plan):
     base.require(isinstance(plan, dict), 'plan object required')
+    if 'cli_version' in plan or 'cli_adoption' in plan:
+        cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'})
     full = plan.get('schema') == 'incident-host-plan/v2-full'
     if full:
         full_scope(plan)
@@ -124,7 +128,8 @@ def profile_for_plan(plan):
                  and plan.get('gate_profile') == (PROFILE_FULL if full else PROFILE_V2)
                  and plan.get('observation_contracts') == OBSERVATION_CONTRACTS
                  and plan.get('platform') == 'Windows'
-                 and plan.get('cli_version') == 'codex-cli 0.160.0', 'unknown observation adoption')
+                 and plan.get('cli_version') in ('codex-cli 0.160.0', cli_adoption.VERSION),
+                 'unknown observation adoption')
     reference = plan.get('negative_parser_reference')
     base.require(isinstance(reference, dict) and set(reference) ==
                  {'schema', 'python_sha256', 'script_sha256', 'runtime_sha256', 'cases'}
@@ -226,7 +231,7 @@ def preflight(plan_path, output):
         base.require(plan['negative_parser_reference'] == derive_parser_reference(plan),
                      'parser reference differs from pinned source')
     base.require(output.resolve() == Path(plan['output']).resolve(), 'output differs from plan')
-    base.require(plan.get('cli_version') == 'codex-cli 0.160.0', 'CLI 0.160.0 plan required')
+    cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=True)
     base.require(plan.get('toolkit') == toolkit(), 'toolkit bytes changed')
     base.require(plan.get('manifest_sha256') == base.sha(manifest_for_plan(plan)), 'manifest changed')
     base.require(isinstance(plan.get('model'), str) and plan['model'].strip(), 'explicit model required')
@@ -891,7 +896,7 @@ def pause_oracle(before, paused, resumed, typed, typed_before=None):
 
 
 def verify_stop_capture(directory, plan, receipt):
-    if profile_for_plan(plan) == PROFILE_FULL:
+    if profile_for_plan(plan) == PROFILE_FULL or 'cli_adoption' in plan:
         base.require(read_subject(directory / 'plan.json') == dict(plan, schema='stop-host-plan/v1'),
                      'full Stop execution plan differs')
     def responses(name):
@@ -935,6 +940,10 @@ def verify_stop_capture(directory, plan, receipt):
     base.verdict(positive, negative, *states, receipt['cleanups'])
     base.require(base.read_json(directory / 'result.json') == receipt, 'base receipt differs')
     base.require(receipt['cli_sha256'] == plan['cli_sha256'], 'base CLI differs')
+    if 'cli_adoption' in plan or 'cli_adoption' in receipt:
+        base.require(receipt.get('cli_version') == plan.get('cli_version')
+                     and receipt.get('cli_adoption') == cli_adoption.identity(plan),
+                     'base CLI adoption differs')
 
 
 def public_source(identity):
@@ -951,6 +960,7 @@ def map_capture(capture, *, mapper_identity=None):
     base.require(capture.get('schema') == 'incident-host-capture/' + version, 'wrong capture')
     base.require(capture.get('origin') in ('native', 'synthetic'), 'unknown execution origin')
     plan = capture['plan']
+    cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=capture['origin'] == 'native')
     if profile == PROFILE_FULL:
         full_scope(capture)
         base.require(plan.get('manifest_sha256') == base.sha(MANIFEST_FULL), 'full manifest adoption differs')
@@ -1122,6 +1132,8 @@ def map_capture(capture, *, mapper_identity=None):
     if profile == PROFILE_FULL:
         result['gate_scope'] = 'full'
         result['execution_identity'].update(gate_scope='full', required_gates=list(GATES))
+    if 'cli_adoption' in plan:
+        result['execution_identity']['cli_adoption'] = cli_adoption.identity(plan)
     return result
 
 
@@ -1130,6 +1142,14 @@ def validate_result(result):
     base.require(profile in (PROFILE, PROFILE_V2, PROFILE_FULL)
                  and result.get('schema') == 'incident-host-acceptance/' +
                  profile_version(profile), 'wrong result profile')
+    execution = result.get('execution_identity', {})
+    base.require(isinstance(execution, dict), 'invalid execution identity')
+    if ('cli_adoption' in execution or execution.get('cli_version') == cli_adoption.VERSION
+            or profile == PROFILE_FULL):
+        cli_adoption.validate_export(execution)
+        base.require(result.get('evidence_scope') != 'native'
+                     or execution.get('cli_adoption', {}).get('capability_evidence_scope', 'native_zero_turn') == 'native_zero_turn',
+                     'synthetic capability cannot certify native result')
     if is_v2(profile):
         observations = result.get('rejection_observations', {})
         base.require(isinstance(observations, dict) and set(observations) <= {'unknown', 'missing'},
@@ -1171,8 +1191,7 @@ def validate_result(result):
         identity = result['execution_identity']
         base.require(isinstance(identity.get('plan_sha256'), str)
                      and re.fullmatch(r'[0-9a-f]{64}', identity['plan_sha256'])
-                     and identity.get('platform') == 'Windows'
-                     and identity.get('cli_version') == 'codex-cli 0.160.0', 'full execution identity differs')
+                     and identity.get('platform') == 'Windows', 'full execution identity differs')
     else:
         base.require('gate_scope' not in result and not any(k in result.get('execution_identity', {})
                      for k in ('gate_scope', 'required_gates')), 'legacy result cannot adopt full scope')
@@ -1189,6 +1208,7 @@ def validate_result(result):
 
 def collect(plan, output, *, supplemental=False):
     profile = profile_for_plan(plan)
+    cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=True)
     base.require(not (profile == PROFILE_FULL and supplemental), 'full profile cannot supplement')
     output.mkdir(mode=0o700)
     capture = {'schema': 'incident-host-capture/' + profile_version(profile), 'origin': 'native',
@@ -1361,9 +1381,13 @@ def main():
     make.add_argument('--negative-observation')
     make.add_argument('--fixture-policy')
     make.add_argument('--plan-file', type=Path, required=True)
+    make.add_argument('--cli-adoption', choices=(cli_adoption.CONTRACT,))
+    make.add_argument('--cli-capability-receipt', type=Path)
     args = parser.parse_args()
     try:
         if args.action == 'plan':
+            base.require(bool(args.cli_adoption) == bool(args.cli_capability_receipt),
+                         'CLI adoption requires an independently prepared capability receipt')
             v2 = args.profile == PROFILE_V2
             full = args.gate_scope == 'full'
             base.require(not full or v2, 'full scope requires explicit v2 adoption')
@@ -1373,7 +1397,8 @@ def main():
                          'observation contract adoption must be explicit and complete')
             plan = {'schema': 'incident-host-plan/' + ('v2-full' if full else 'v2' if v2 else 'v1'), 'repo': str(ROOT),
                     'source': prepared_source_identity(ROOT), 'runtime_sha256': base.runtime(ROOT),
-                    'cli_version': 'codex-cli 0.160.0', 'platform': platform.system(),
+                    'cli_version': cli_adoption.VERSION if args.cli_adoption else 'codex-cli 0.160.0',
+                    'platform': platform.system(),
                     'model': args.model, 'effort': 'medium', 'fresh_data_root': True, 'output': str(args.output.resolve()), 'toolkit': toolkit(), 'manifest_sha256': base.sha(MANIFEST_FULL if full else MANIFEST_V2 if v2 else MANIFEST)}
             if v2:
                 base.require(platform.system() == 'Windows', 'v2 observation requires Windows')
@@ -1393,6 +1418,11 @@ def main():
             plan['cli_sha256'] = base.sha(Path(plan['codex']))
             plan['python_sha256'] = base.sha(Path(plan['python']))
             plan['python_version'] = subprocess.check_output([plan['python'], '--version'], text=True).strip()
+            if args.cli_adoption:
+                receipt = read_subject(args.cli_capability_receipt, strict=True)
+                cli_adoption.validate_receipt(receipt, plan)
+                base.require(receipt['evidence_scope'] == 'native_zero_turn', 'synthetic capability cannot enter native plan')
+                plan['cli_adoption'] = cli_adoption.adoption(receipt)
             if v2:
                 plan['negative_parser_reference'] = derive_parser_reference(plan)
             args.plan_file.parent.mkdir(parents=True, exist_ok=True)

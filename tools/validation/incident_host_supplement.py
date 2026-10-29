@@ -82,7 +82,7 @@ def contract(base_capture, base_result, new_plan):
                    'original stage set differs')
     for key in ('runtime_sha256', 'plugin_root', 'home', 'cwd', 'data_root', 'python',
                 'python_sha256', 'python_version', 'codex', 'cli_sha256', 'cli_version',
-                'platform', 'model', 'effort', 'shell', 'manifest_sha256'):
+                'platform', 'model', 'effort', 'shell', 'cli_adoption', 'manifest_sha256'):
         h.base.require(old.get(key) == new_plan.get(key), 'supplement execution binding differs: ' + key)
     h.base.require(new_plan['schema'] == old['schema'] == 'incident-host-plan/v1'
                    and new_plan['output'] != old['output'], 'supplement plan scope differs')
@@ -101,7 +101,7 @@ def contract_v2(original, prior, plan):
     old = original['plan']
     for key in ('runtime_sha256', 'plugin_root', 'home', 'cwd', 'data_root', 'python',
                 'python_sha256', 'python_version', 'codex', 'cli_sha256', 'cli_version',
-                'platform', 'model', 'effort', 'shell'):
+                'platform', 'model', 'effort', 'shell', 'cli_adoption'):
         h.base.require(old.get(key) == plan.get(key), 'v2 input binding differs: ' + key)
     h.base.require(plan['output'] != old['output']
                    and old['manifest_sha256'] == h.base.sha(h.MANIFEST)
@@ -117,7 +117,7 @@ def retained_components(capture, plan):
                    and old['manifest_sha256'] == h.base.sha(h.MANIFEST), 'retained component profile differs')
     for key in ('runtime_sha256', 'plugin_root', 'home', 'cwd', 'data_root', 'python',
                 'python_sha256', 'python_version', 'codex', 'cli_sha256', 'cli_version',
-                'platform', 'model', 'effort', 'shell'):
+                'platform', 'model', 'effort', 'shell', 'cli_adoption'):
         h.base.require(old.get(key) == plan.get(key), 'retained component input differs: ' + key)
     try:
         whole = h.map_capture(capture)

@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts.cg_process_tree import OwnedProcess  # noqa: E402
 from scripts.manage_plugin import tree_manifest  # noqa: E402
+from tools.validation import native_cli_adoption as cli_adoption  # noqa: E402
 from tools.validation.acceptance_identity import prepared_source_identity  # noqa: E402
 
 
@@ -69,6 +70,8 @@ def read_json(path):
 
 def preflight(plan_path, output):
     p = read_json(plan_path)
+    if 'cli_adoption' in p:
+        p = cli_adoption.strict_json(plan_path.read_text(encoding='utf-8'))
     require(p.get('schema') == 'stop-host-plan/v1', 'wrong plan schema')
     for k in ('repo', 'codex', 'home', 'cwd', 'plugin_root', 'data_root'):
         v = Path(p[k])
@@ -85,9 +88,9 @@ def preflight(plan_path, output):
             and not output.exists(), 'fresh output outside repository required')
     require(sha(Path(p['codex'])) == p['cli_sha256'], 'CLI bytes changed')
     version = subprocess.check_output([p['codex'], '--version'], text=True).strip()
+    cli_adoption.validate(p, legacy_versions={'codex-cli 0.158.0', 'codex-cli 0.160.0'},
+                          default='codex-cli 0.158.0', require_native=True)
     expected = p.get('cli_version', 'codex-cli 0.158.0')
-    require(expected in {'codex-cli 0.158.0', 'codex-cli 0.160.0'},
-            'unsupported planned CLI version')
     require(version == expected, 'CLI version differs from plan')
     require(prepared_source_identity(repo) == p['source'], 'source identity changed')
     require(runtime(repo) == runtime(plugin) == p['runtime_sha256'], 'runtime mismatch')
@@ -129,15 +132,18 @@ class Client:
                     and not rows[0].get('warnings'), 'Hook inventory errors')
             product = rows[0]['hooks']
             expected_path = (Path(plan['plugin_root']) / 'hooks/hooks.json').resolve()
-            require(len(product) == 9 and {h['eventName'] for h in product} == EVENTS
-                    and all(h['trustStatus'] == 'trusted' and h['enabled'] is True
-                            and h.get('currentHash') and h.get('source') == 'plugin'
-                            and Path(h['sourcePath']).resolve() == expected_path
-                            for h in product), 'exact trusted product Hooks required')
+            self.validate_inventory(product, expected_path)
             self.inventory = {h['eventName']: h for h in product}
         except BaseException:
             self.close()
             raise
+
+    def validate_inventory(self, product, expected_path):
+        require(len(product) == 9 and {h['eventName'] for h in product} == EVENTS
+                and all(h['trustStatus'] == 'trusted' and h['enabled'] is True
+                        and h.get('currentHash') and h.get('source') == 'plugin'
+                        and Path(h['sourcePath']).resolve() == expected_path
+                        for h in product), 'exact trusted product Hooks required')
 
     def reader(self):
         try:
@@ -304,6 +310,8 @@ def verdict(positive, negative, before, after, negative_state, cleanups):
 
 
 def collect(plan, output):
+    if 'cli_adoption' in plan:
+        cli_adoption.validate(plan, legacy_versions={'codex-cli 0.158.0', 'codex-cli 0.160.0'}, require_native=True)
     output.mkdir(mode=0o700)
     (output / 'plan.json').write_text(json.dumps(plan, indent=2), encoding='utf-8')
     result = {'schema': 'stop-host-acceptance/v1', 'gate_profile': PROFILE,
@@ -314,6 +322,8 @@ def collect(plan, output):
                               'Hook status and duration are official observations, not OS exit codes.',
                               '113 numbered prompt entries are not 113 extracted requirements.',
                               'No whole-task or universal host-behavior certification.']}
+    if 'cli_adoption' in plan:
+        result.update(cli_version=plan['cli_version'], cli_adoption=cli_adoption.identity(plan))
     client = None
     try:
         for n in ('first', 'cold'):
