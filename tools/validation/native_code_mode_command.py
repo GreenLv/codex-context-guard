@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,18 @@ from tools.validation import native_cli_adoption as cli
 from tools.validation import stop_host_acceptance as base
 
 CONTRACT = "transparent-code-mode-command/v1"
+WINDOWS_CONTRACT = "transparent-code-mode-command/windows-full-v1"
+WINDOWS_SCHEMA = "incident-host-plan/v2-full-code-mode"
+COMMAND_STAGES = (
+    "status",
+    "principal",
+    "baseline_original",
+    "baseline_granted",
+    "baseline_denied",
+    "unknown",
+    "missing",
+    "readonly",
+)
 MAX_OUTPUT_TOKENS = 6000
 TOOLKIT = (
     "incident_host_acceptance.py",
@@ -48,7 +61,7 @@ def fixture(command, cwd):
 
 def pins(plan, command):
     return {
-        "schema": CONTRACT,
+        "schema": contract(plan),
         "plan_sha256": cli.digest(plan),
         "toolkit": {n: base.sha(Path(__file__).with_name(n)) for n in TOOLKIT},
         "fixture_sha256": hashlib.sha256(
@@ -100,7 +113,18 @@ def observe(
     """
     base.require(subject == pins(plan, command), "explicit subject/toolkit differs")
     base.require(
-        plan.get("cli_version") == cli.VERSION and plan.get("platform") == "Darwin",
+        plan.get("cli_version") == cli.VERSION
+        and (
+            (
+                plan.get("schema") == WINDOWS_SCHEMA
+                and plan.get("platform") == "Windows"
+                and plan.get("command_observation_contract") == adoption(windows=True)
+            )
+            or (
+                plan.get("schema") != WINDOWS_SCHEMA
+                and plan.get("platform") == "Darwin"
+            )
+        ),
         "candidate requires pinned macOS CLI",
     )
     source = plan.get("source")
@@ -298,7 +322,12 @@ def observe(
             "original_token_count",
         }
         and type(result.get("exit_code")) is int
-        and (result["exit_code"] == 2 if rejection else result["exit_code"] == 0)
+        and (
+            result["exit_code"]
+            in ((1, 2) if contract(plan) == WINDOWS_CONTRACT else (2,))
+            if rejection
+            else result["exit_code"] == 0
+        )
         and isinstance(result.get("output"), str)
         and result["output"],
         "successful complete result required",
@@ -314,13 +343,6 @@ def observe(
             count <= MAX_OUTPUT_TOKENS, "nested result exceeds fixture token budget"
         )
 
-    base.require(
-        not any(
-            r.get("params", {}).get("item", {}).get("type") == "commandExecution"
-            for r in selected
-        ),
-        "mixed command domain",
-    )
     terminal = [r for r in selected if r.get("method") == "turn/completed"]
     base.require(
         len(terminal) == 1
@@ -373,8 +395,9 @@ def observe(
         and [low, *times, high] == sorted([low, *times, high]),
         "call/Hook timestamp fence differs",
     )
+    verify_dual_view(stage, plan, inventory, command, result, low, high)
     return {
-        "schema": CONTRACT + "-observation",
+        "schema": contract(plan) + "-observation",
         "scope": "bound_command_observation",
         "subject": subject,
         "call_id": a["call_id"],
@@ -388,21 +411,216 @@ def observe(
     }
 
 
-def adoption():
+def verify_dual_view(stage, plan, inventory, command, result, low, high):
+    """Optional unique official command view of the same one nested operation.
+
+    Mac supports only the observed one zsh -lc display wrapper (or exact literal
+    requested command). Windows supports the requested canonical inner wrapper
+    itself; an additional unobserved API outer wrapper remains unsupported.
+    """
+    from tools.validation import incident_host_acceptance as host
+
+    rows, thread, turn = stage["rows"], stage["thread"], stage["turn"]
+    items = [
+        (i, r)
+        for i, r in enumerate(rows)
+        if r.get("method") in ("item/started", "item/completed")
+        and r.get("params", {}).get("item", {}).get("type") == "commandExecution"
+    ]
+    if not items:
+        return
+    base.require(
+        len(items) == 2
+        and all(
+            r["params"].get("threadId") == thread and r["params"].get("turnId") == turn
+            for _, r in items
+        ),
+        "unique same-turn dual command pair required",
+    )
+    (si, start), (ei, end) = items
+    a, b = start["params"]["item"], end["params"]["item"]
+    base.require(
+        start["method"] == "item/started"
+        and end["method"] == "item/completed"
+        and si < ei
+        and type(a.get("id")) is str
+        and a["id"]
+        and a["id"] == b.get("id")
+        and a.get("command") == b.get("command")
+        and type(b.get("command")) is str
+        and a.get("cwd") == b.get("cwd") == plan["cwd"]
+        and a.get("source") == b.get("source")
+        and b.get("source") in ("agent", "unifiedExecStartup")
+        and a.get("status") == "inProgress"
+        and b.get("status") in ("completed", "failed")
+        and type(b.get("exitCode")) is int
+        and b["exitCode"] == result["exit_code"]
+        and type(b.get("aggregatedOutput")) is str
+        and b["aggregatedOutput"] == result["output"],
+        "dual command identity/result differs",
+    )
+    if "processId" in a or "processId" in b:
+        base.require(
+            type(a.get("processId")) is str
+            and a["processId"]
+            and a["processId"] == b.get("processId"),
+            "dual process identity differs",
+        )
+    displayed = b["command"]
+    if contract(plan) != WINDOWS_CONTRACT and displayed != command:
+        try:
+            outer = shlex.split(displayed)
+        except ValueError as exc:
+            raise ValueError("unsupported dual shell wrapper") from exc
+        base.require(
+            len(outer) == 3
+            and outer[:2] == ["/bin/zsh", "-lc"]
+            and host.literal_shell_body(outer[2], windows=False),
+            "unsupported dual shell wrapper",
+        )
+        displayed = outer[2]
+    elif contract(plan) == WINDOWS_CONTRACT:
+        # The canonical pinned inner wrapper must itself be present in the
+        # official display. Do not recursively strip hypothetical outer shells.
+        base.require(
+            displayed.startswith("& "), "Windows dual canonical wrapper missing"
+        )
+        actual_outer = host.windows_display_tokens(displayed[2:])
+        expected_outer = host.windows_display_tokens(command[2:])
+        base.require(
+            actual_outer
+            and expected_outer
+            and len(actual_outer) == len(expected_outer) == 3
+            and actual_outer[:2] == expected_outer[:2],
+            "Windows dual wrapper differs",
+        )
+
+    def token_projection(argv):
+        rest, tokens, i = [], [], 0
+        while i < len(argv):
+            arg = argv[i]
+            if arg == "--token":
+                base.require(i + 1 < len(argv), "dual token value missing")
+                tokens.append(argv[i + 1])
+                i += 2
+            elif arg.startswith("--token="):
+                tokens.append(arg[len("--token=") :])
+                i += 1
+            else:
+                rest.append(arg)
+                i += 1
+        base.require(len(tokens) <= 1 and all(tokens), "ambiguous dual token")
+        return rest, tokens
+
+    actual_argv = host.ordinary_command_argv(
+        displayed,
+        windows=plan["platform"] == "Windows",
+        shell_identity=plan.get("shell"),
+    )
+    expected_argv = host.ordinary_command_argv(
+        command, windows=plan["platform"] == "Windows", shell_identity=plan.get("shell")
+    )
+    base.require(actual_argv and expected_argv, "dual command argv unavailable")
+    rest, token = token_projection(actual_argv)
+    wanted, real_token = token_projection(expected_argv)
+    base.require(rest == wanted, "dual command argv differs")
+    if token == ["[REDACTED_SECRET]"]:
+        base.require(
+            stage.get("name") in ("status", "unknown", "missing")
+            and len(real_token) == 1
+            and real_token[0] != "[REDACTED_SECRET]",
+            "dual redaction has no trusted control binding",
+        )
+        trusted = host.hook_control_token(stage, inventory, plan, host.state_for(stage))
+        base.require(real_token == [trusted], "dual redaction control differs")
+    else:
+        base.require(
+            token == real_token and "[REDACTED_SECRET]" not in command,
+            "dual command token differs",
+        )
+    boundaries = []
+    for event, label in (
+        ("preToolUse", "pre-tool-use"),
+        ("postToolUse", "post-tool-use"),
+    ):
+        for method in ("hook/started", "hook/completed"):
+            selected = [
+                (i, r)
+                for i, r in enumerate(rows)
+                if r.get("method") == method
+                and r.get("params", {}).get("threadId") == thread
+                and r["params"].get("turnId") == turn
+                and r["params"].get("run", {}).get("eventName") == event
+            ]
+            base.require(len(selected) == 1, "unique dual Hook boundary required")
+            i, row = selected[0]
+            run = row["params"]["run"]
+            expected_id = (
+                label
+                + ":"
+                + str(run["displayOrder"])
+                + ":"
+                + run["sourcePath"]
+                + ":"
+                + a["id"]
+            )
+            base.require(
+                run.get("id") == expected_id, "dual exec/Hook identity differs"
+            )
+            boundaries.append((i, row.get("emittedAtMs")))
+    indices = [
+        boundaries[0][0],
+        boundaries[1][0],
+        si,
+        ei,
+        boundaries[2][0],
+        boundaries[3][0],
+    ]
+    stamps = [
+        low,
+        boundaries[0][1],
+        boundaries[1][1],
+        start.get("emittedAtMs"),
+        end.get("emittedAtMs"),
+        boundaries[2][1],
+        boundaries[3][1],
+        high,
+    ]
+    base.require(
+        indices == sorted(indices)
+        and len(set(indices)) == len(indices)
+        and all(type(t) is int for t in stamps)
+        and stamps == sorted(stamps),
+        "dual operation interval/order differs",
+    )
+
+
+def contract(plan):
+    return WINDOWS_CONTRACT if plan.get("schema") == WINDOWS_SCHEMA else CONTRACT
+
+
+def adoption(*, windows=False):
     return {
-        "schema": CONTRACT,
+        "schema": WINDOWS_CONTRACT if windows else CONTRACT,
         "toolkit": {n: base.sha(Path(__file__).with_name(n)) for n in TOOLKIT},
-        "fixture": "one-exec-command-explicit-cwd-text-result/v1",
+        "fixture": (
+            "one-pinned-powershell-wrapper-exec-text-result/v1"
+            if windows
+            else "one-exec-command-explicit-cwd-text-result/v1"
+        ),
     }
 
 
 def validate_plan(plan):
     base.require(
-        plan.get("command_observation_contract") == adoption(),
+        plan.get("command_observation_contract")
+        == adoption(windows=contract(plan) == WINDOWS_CONTRACT),
         "explicit code-mode adoption differs",
     )
     base.require(
-        plan.get("platform") == "Darwin" and plan.get("cli_version") == cli.VERSION,
+        plan.get("platform")
+        == ("Windows" if contract(plan) == WINDOWS_CONTRACT else "Darwin")
+        and plan.get("cli_version") == cli.VERSION,
         "code-mode host domain differs",
     )
     cli.validate(plan, legacy_versions=set())
@@ -422,7 +640,14 @@ def capture(plan, stage, thread_record, rpc_path, command):
         "exact isolated rollout required",
     )
     for part in (path, *path.parents):
-        base.require(not part.is_symlink(), "rollout symlink refused")
+        base.require(
+            not part.is_symlink()
+            and not (
+                contract(plan) == WINDOWS_CONTRACT
+                and getattr(part.lstat(), "st_file_attributes", 0) & 0x400
+            ),
+            "rollout reparse/symlink refused",
+        )
     base.require(
         path.is_file() and path.stat().st_size <= 16 * 1024 * 1024,
         "bounded rollout file required",
@@ -448,7 +673,7 @@ def capture(plan, stage, thread_record, rpc_path, command):
         "rollout changed while reading",
     )
     return {
-        "schema": CONTRACT,
+        "schema": contract(plan),
         "pins": pins(plan, command),
         "command": command,
         "rpc": rpc_path.read_text(encoding="utf-8"),
@@ -462,7 +687,7 @@ def consume(evidence, plan, stage, inventory, command, *, rejection=False):
         isinstance(evidence, dict)
         and set(evidence)
         == {"schema", "pins", "command", "rpc", "rollout", "rollout_path"}
-        and evidence["schema"] == CONTRACT
+        and evidence["schema"] == contract(plan)
         and evidence["command"] == command,
         "closed code-mode evidence required",
     )
@@ -482,13 +707,28 @@ def consume(evidence, plan, stage, inventory, command, *, rejection=False):
 def verify_bundle_sources(directory, capture):
     journal = (directory / "rpc/rpc.jsonl").read_bytes()
     for name, stage in capture.get("stages", {}).items():
-        if name not in ("status", "unknown", "missing", "readonly"):
+        if name not in (
+            COMMAND_STAGES
+            if contract(capture["plan"]) == WINDOWS_CONTRACT
+            else ("status", "unknown", "missing", "readonly")
+        ):
             continue
         evidence = stage.get("code_mode_evidence")
         base.require(
             isinstance(evidence, dict) and stage.get("name") == name,
             "named code-mode stage evidence required",
         )
+        if contract(capture["plan"]) == WINDOWS_CONTRACT:
+            for target in (
+                directory / "rpc/rpc.jsonl",
+                directory / ("rollout-" + name + ".jsonl"),
+            ):
+                for part in (target, *target.parents):
+                    base.require(
+                        not part.is_symlink()
+                        and not getattr(part.lstat(), "st_file_attributes", 0) & 0x400,
+                        "cataloged source reparse/symlink refused",
+                    )
         raw_rpc = evidence["rpc"].encode()
         archive = directory / ("rollout-" + name + ".jsonl")
         base.require(
