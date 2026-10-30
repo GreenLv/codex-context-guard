@@ -9933,12 +9933,67 @@ def discovered_subject_ids(value: Any, include_threads: bool = True) -> list[str
     return list(dict.fromkeys(result))
 
 
+def scope_intent_source_text(text: str) -> str:
+    """Hide literal locator bytes only for scope quantities/negation/counts.
+
+    Original clauses, target subjects and immutable prompt records keep their
+    full bytes. Quoted prose and command text remain visible; only recognizable
+    locator spans become equal-length spaces. A bare numeric ratio is prose
+    cardinality, not a relative pathname without another locator signal.
+    """
+    hidden = [False] * len(text)
+
+    def mask(start: int, end: int) -> None:
+        hidden[start:end] = [True] * (end - start)
+
+    def relative_locator(value: str) -> bool:
+        if re.fullmatch(r"[0-9]+/[0-9]+", value):
+            return False
+        parts = re.split(r"[\\/]", value)
+        # Slash-separated quantifier alternatives remain prose, not paths.
+        # Spaces in an implicit relative locator need a filename signal;
+        # explicit absolute/./../ locators are handled independently.
+        if (all(FULL_SCOPE_RE.search(part) for part in parts) and "." not in parts[-1]
+                or any(" " in part for part in parts) and "." not in parts[-1]):
+            return False
+        return len(parts) > 1 and all(
+            part and part == part.strip() and re.fullmatch(r"[\w .@+~()\-]+", part)
+            for part in parts
+        )
+
+    def locator(value: str) -> bool:
+        return bool(value.startswith(("/", "./", "../", "\\\\", "https://", "http://", "codex://"))
+                    or WINDOWS_ABSOLUTE_PATH_RE.match(value) or relative_locator(value)
+                    or re.fullmatch(r"[\w .@+~()\-]+\.[\w\-]+", value))
+
+    # Include inner shell literal quotes inside a backticked command object;
+    # never blank the whole command or ordinary quoted natural language.
+    for pattern in (_QUOTED_SPAN_RE, re.compile(r"([\"'])([^\r\n]*?)\1")):
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if locator(text[start + 1:end - 1]):
+                mask(start + 1, end - 1)
+    for match in re.finditer(r"<([^<>\r\n]+)>", text):
+        if locator(match.group(1)):
+            mask(*match.span(1))
+    for pattern in (URL_RE, WINDOWS_UNC_PATH_RE, WINDOWS_DRIVE_PATH_RE, ABSOLUTE_PATH_RE):
+        for match in pattern.finditer(text):
+            mask(*match.span())
+    for match in re.finditer(r"(?<![\w:/\\])(?:[\w.@+~()\-]+[\\/])+[\w.@+~()\-]+", text):
+        if relative_locator(match.group(0)):
+            mask(*match.span())
+    for match in re.finditer(r"(?<![\w:/\\])[\w@+~\-]+\.[\w.\-]+", text):
+        mask(*match.span())
+    return "".join(" " if hidden[i] else char for i, char in enumerate(text))
+
+
 def deterministic_scope_spec(
     text: str,
     subjects: list[dict[str, str]],
     assets: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Return prompt-derived scope facts, never a caller-asserted count."""
+    """Return prose-derived scope facts; locator bytes never supply counts."""
+    text = scope_intent_source_text(text)
     counts: set[int] = set()
     for pattern in SCOPE_CARDINALITY_PATTERNS:
         counts.update(
@@ -10172,9 +10227,10 @@ def verification_contract(
                       "", clause, count=1, flags=re.I)
 
     scope_text = "\n".join(without_readback_quantity(c) for c in role_clauses)
+    scope_intent = scope_intent_source_text(scope_text)
     full_scope_requested = bool(
-        FULL_SCOPE_RE.search(scope_text)
-        and not FULL_SCOPE_NEGATION_RE.search(scope_text)
+        FULL_SCOPE_RE.search(scope_intent)
+        and not FULL_SCOPE_NEGATION_RE.search(scope_intent)
     )
     scope_spec = (
         deterministic_scope_spec(scope_text, subjects, assets)
@@ -10474,6 +10530,40 @@ def _item_contract_source_text(
     elif item.get("parent_id") is not None:
         return None
     return text if bounded(text, 900) == item.get("text") else None
+
+
+
+def refresh_locator_scope_contracts(state: dict[str, Any], session_dir: Path) -> None:
+    """Re-derive only pending locator-tainted fallback caches from bound source.
+
+    No summary, transcript supplement, schema migration or historical closure
+    supplies authority. Source loss/change keeps the original fallback intact.
+    """
+    prompts = {row.get("id"): row for row in state.get("prompts", [])}
+    for collection in ("requirements", "acceptance_items"):
+        for item in state.get(collection, []):
+            contract = item.get("verification_contract")
+            if (item.get("status") in TERMINAL_ITEM_STATUSES
+                    or not isinstance(contract, dict)
+                    or contract.get("mode") != "legacy_fallback"
+                    or contract.get("reason") != "scope_not_constructible"):
+                continue
+            metadata = prompts.get(item.get("prompt_id"))
+            if not metadata or not metadata.get("record_sha256"):
+                continue
+            record = read_prompt_record(session_dir, metadata)
+            if record is None or record.get("record_sha256") != metadata["record_sha256"]:
+                continue
+            source = _item_contract_source_text(
+                item, record, acceptance=collection == "acceptance_items")
+            if source is None or scope_intent_source_text(source) == source:
+                continue
+            assets = [row["id"] for row in state.get("assets", [])
+                      if item.get("prompt_id") in row.get("prompt_ids", [])]
+            upgraded = verification_contract(item["id"], source, state, assets)
+            if (upgraded.get("mode") == "enforced"
+                    and read_prompt_record(session_dir, metadata) == record):
+                item["verification_contract"] = upgraded
 
 
 def reconcile_transcript_assets(
@@ -14625,7 +14715,7 @@ def _semantic_clause_metadata(text: str) -> dict[str, Any]:
         lowered = visual_reference_source_text(clause).casefold()
         if re.search(r"视觉|图片|图像|image|visual|截图|ui|界面|页面", lowered):
             surface = "visual" if re.search(r"视觉|图片|图像|image|visual|截图", lowered) else "ui"
-        elif re.search(r"全部|所有|范围|scope|each|every", lowered):
+        elif re.search(r"全部|所有|范围|scope|each|every", scope_intent_source_text(clause), re.I):
             surface = "scope"
         else:
             surface = "artifact"
@@ -23729,6 +23819,7 @@ def dispatch(
             - SESSION_END_CLEANUP_RESERVE_SECONDS - time.monotonic()))
     with session_lock(session_dir, timeout=lock_timeout):
         state = load_state(session_dir, payload)
+        refresh_locator_scope_contracts(state, session_dir)
         if event != "SessionEnd":
             # An ended session may resume. Successful v2 writes retire the
             # old retention marker; it must not delete an active task later.

@@ -31,6 +31,18 @@ Native Windows DACL facts and real host re-delivery behavior are separate
 gates from these source-level checks. Changed runtime bytes require a fresh isolated HOME for installation
 evidence; consumed 0.15.1 caches stay immutable.
 
+The unpublished 0.16.0 candidate also separates literal locator bytes from
+scope intent. Full-scope words, negation and counts are derived from the
+non-locator prose; subjects, readback targets and immutable source records
+retain the original bytes. Explicit prose scope still uses the same coverage
+contract. Normal locked Hook writes may re-derive an affected pending
+`scope_not_constructible` fallback only from its verified immutable source;
+read-only committed snapshots, terminal history and unavailable sources are
+not rewritten. This adds no fields or migration and leaves Schema 13, Stop 5.0.0
+and the nine Hooks unchanged. Candidate revisions retain distinct full-source
+and runtime digests; installation and native evidence for earlier bytes do
+not transfer to this repair, which requires a fresh isolated HOME.
+
 ## 0.15.1 — 2026-10-05
 
 This compatible patch repairs the two reproduced 0.15.0 incidents
