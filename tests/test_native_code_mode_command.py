@@ -549,6 +549,155 @@ class CodeModeFamilyTests(P0Harness):
     stage = owning.IncidentHostTests.stage
     hook = owning.IncidentHostTests.hook
 
+    def retained_fixture(self):
+        from tests.test_acceptance_identity import TempRepo
+
+        self.adopted()
+        execution = TempRepo()
+        self.addCleanup(execution.temp.cleanup)
+        tools = execution.root / "tools/validation"
+        tools.mkdir(parents=True)
+        for name in original.toolkit(self.plan):
+            (tools / name).write_bytes(Path(original.__file__).with_name(name).read_bytes())
+        # Old tools are retained as bytes, never imported or executed.
+        with (tools / "native_code_mode_command.py").open("a") as stream:
+            stream.write("\n# synthetic retained execution revision\n")
+        execution.git("add", "-A")
+        execution.git("commit", "-qm", "retained synthetic tools")
+        self.plan.update(source=execution.identity(), runtime_sha256=original.base.runtime(execution.root),
+                         repo=str(execution.root))
+        self.plan["toolkit"] = {name: original.base.sha(tools / name)
+                                for name in original.toolkit(self.plan)}
+        self.plan["command_observation_contract"]["toolkit"] = {
+            name: original.base.sha(tools / name) for name in candidate.TOOLKIT
+        }
+        schemas = adoption_tests.schema_fixture()
+        doc = json.loads(schemas["v2/ThreadStartResponse.json"])
+        doc["properties"]["thread"]["properties"]["path"] = {"type": ["string", "null"]}
+        schemas["v2/ThreadStartResponse.json"] = json.dumps(doc)
+        with mock.patch.object(adoption_tests, "schema_fixture", return_value=schemas):
+            self.plan["cli_adoption"] = cli.adoption(
+                adoption_tests.receipt_fixture(self.plan, self.inventory)
+            )
+        self.capture["plan_sha256"] = original.plan_identity(self.plan)
+        with original.retained_execution_source(self.plan, execution.root):
+            stage = self.transparent("status", ["--commands"])
+        evidence = stage["code_mode_evidence"]
+        (self.root / "rpc").mkdir()
+        (self.root / "rpc/rpc.jsonl").write_text(evidence["rpc"])
+        (self.root / "rollout-status.jsonl").write_text(evidence["rollout"])
+        original.write_new(self.root / "capture.json", self.capture)
+        catalog = {p.relative_to(self.root).as_posix(): original.base.sha(p)
+                   for p in self.root.rglob("*") if p.is_file()}
+        original.write_new(self.root / "artifacts.json", catalog)
+        return execution
+
+    def test_retained_catalog_mapping_preserves_execution_and_new_consumer_identities(self):
+        execution = self.retained_fixture()
+        plan_before = copy.deepcopy(self.plan)
+        capture_before = (self.root / "capture.json").read_bytes()
+        with self.assertRaises(ValueError):
+            original.map_bundle(self.root, self.root / "ordinary-result.json")
+        result = original.map_bundle(self.root, self.root / "derived-result.json",
+                                     execution_source=execution.root)
+        original.validate_result(result)
+        self.assertEqual(result["gates"]["status_cli_posttool"], "passed")
+        self.assertEqual(result["native_acceptance"], "not_run")
+        self.assertEqual(result["execution_identity"]["source"], original.public_source(plan_before["source"]))
+        self.assertEqual(result["execution_identity"]["toolkit"], plan_before["toolkit"])
+        self.assertEqual(result["mapping_identity"]["toolkit"], original.toolkit(self.plan))
+        self.assertNotEqual(result["execution_identity"]["toolkit"], result["mapping_identity"]["toolkit"])
+        self.assertEqual(result["mapping_identity"]["retained_capture"]["execution_plan_sha256"],
+                         self.capture["plan_sha256"])
+        self.assertEqual(self.plan, plan_before)
+        self.assertEqual((self.root / "capture.json").read_bytes(), capture_before)
+        self.assertIsNone(candidate._retained_tools.get())
+        for value in (None, True, False, "", "g" * 64, "a" * 63, "a" * 65, "missing"):
+            for side in ("execution", "retained", "both"):
+                with self.subTest(value=value, side=side):
+                    bad = copy.deepcopy(result)
+                    targets = []
+                    if side in ("execution", "both"):
+                        targets.append((bad["execution_identity"], "plan_sha256"))
+                    if side in ("retained", "both"):
+                        targets.append((bad["mapping_identity"]["retained_capture"], "execution_plan_sha256"))
+                    for target, key in targets:
+                        if value == "missing":
+                            target.pop(key)
+                        else:
+                            target[key] = value
+                    with self.assertRaises(ValueError):
+                        original.validate_result(bad)
+        for malformed in (None, True, [], "invalid"):
+            bad = copy.deepcopy(result)
+            bad["mapping_identity"] = malformed
+            with self.assertRaises(ValueError):
+                original.validate_result(bad)
+        for malformed in (None, True, {}, {"schema": "other", "execution_plan_sha256": "a" * 64}):
+            bad = copy.deepcopy(result)
+            bad["mapping_identity"]["retained_capture"] = malformed
+            with self.assertRaises(ValueError):
+                original.validate_result(bad)
+        bad = copy.deepcopy(result)
+        bad["mapping_identity"]["retained_capture"]["execution_plan_sha256"] = "0" * 64
+        with self.assertRaises(ValueError):
+            original.validate_result(bad)
+
+    def test_retained_source_dirty_foreign_runtime_and_toolkit_refused(self):
+        execution = self.retained_fixture()
+        for case in ("dirty", "foreign", "runtime", "toolkit"):
+            with self.subTest(case=case):
+                plan = copy.deepcopy(self.plan)
+                if case == "dirty":
+                    (execution.root / "unrelated.txt").write_text("changed")
+                elif case == "foreign":
+                    plan["source"]["head"] = "0" * 40
+                elif case == "runtime":
+                    plan["runtime_sha256"] = "0" * 64
+                else:
+                    plan["toolkit"]["native_code_mode_command.py"] = "0" * 64
+                try:
+                    with self.assertRaises(ValueError):
+                        with original.retained_execution_source(plan, execution.root):
+                            self.fail("invalid retained source was accepted")
+                finally:
+                    (execution.root / "unrelated.txt").unlink(missing_ok=True)
+                self.assertIsNone(candidate._retained_tools.get())
+
+    def test_retained_source_changes_before_export_refuse_publication_and_reset_scope(self):
+        execution = self.retained_fixture()
+        real_mapper = original.map_capture
+        output = self.root / "not-published.json"
+
+        def map_then_change(*args, **kwargs):
+            result = real_mapper(*args, **kwargs)
+            self.assertEqual(result["gates"]["status_cli_posttool"], "passed")
+            with (execution.root / "tools/validation/native_code_mode_command.py").open("a") as stream:
+                stream.write("\n# changed after mapping\n")
+            return result
+
+        with mock.patch.object(original, "map_capture", side_effect=map_then_change):
+            with self.assertRaisesRegex(ValueError, "retained execution source identity"):
+                original.map_bundle(self.root, output, execution_source=execution.root)
+        self.assertFalse(output.exists())
+        self.assertIsNone(candidate._retained_tools.get())
+
+    def test_retained_readonly_helper_binds_execution_path_not_consumer_path(self):
+        execution = self.retained_fixture()
+        helper = execution.root / "tools/validation/incident_readonly_child.py"
+        expected = [self.plan["python"], str(helper), "--request", str(self.root / "request.json")]
+        item = {"command": original.cg.shell_join(expected)}
+        with original.retained_execution_source(self.plan, execution.root):
+            self.assertEqual(original.readonly_helper_argv(item, expected, self.plan), expected)
+            foreign = list(expected)
+            foreign[1] = str(Path(original.__file__).with_name("incident_readonly_child.py"))
+            with self.assertRaisesRegex(ValueError, "readonly tool argv"):
+                original.readonly_helper_argv({"command": original.cg.shell_join(foreign)}, foreign, self.plan)
+        self.assertEqual(original.readonly_helper_argv(item, expected, self.plan), expected)
+        changed = dict(self.plan, repo=str(original.ROOT))
+        with self.assertRaisesRegex(ValueError, "readonly tool argv|execution helper"):
+            original.readonly_helper_argv(item, expected, changed)
+
     def adopted(self):
         self.ready()
         self.plan.update(

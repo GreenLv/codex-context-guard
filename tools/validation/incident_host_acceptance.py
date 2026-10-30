@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -115,7 +116,7 @@ def write_new(path, value):
         path.chmod(0o600)
 
 
-def toolkit(plan=None):
+def toolkit(plan=None, *, execution=False):
     profile = (plan or {}).get('gate_profile')
     names = TOOLKIT
     if is_code(profile):
@@ -124,7 +125,8 @@ def toolkit(plan=None):
                   else 'incident-host-scenarios-code-mode.json')
     if profile == PROFILE_FULL_CODE:
         names += ('incident_code_mode_preflight.py',)
-    return {name: base.sha(Path(__file__).with_name(name)) for name in names}
+    return {name: base.sha(code_mode.execution_tool(name) if execution else
+                           Path(__file__).with_name(name)) for name in names}
 
 
 def plan_identity(plan):
@@ -140,13 +142,13 @@ def profile_for_plan(plan):
                      ('gate_scope', 'required_gates', 'observation_contracts', 'negative_parser_reference')),
                      'code-mode profile scope differs')
         code_mode.validate_plan(plan)
-        base.require(plan.get('toolkit') == toolkit(plan)
+        base.require(plan.get('toolkit') == toolkit(plan, execution=True)
                      and plan.get('manifest_sha256') == base.sha(MANIFEST_CODE), 'code-mode fixture pin differs')
         return PROFILE_CODE
     full_code = plan.get('schema') == 'incident-host-plan/v2-full-code-mode'
     if full_code:
         code_mode.validate_plan(plan)
-        base.require(plan.get('toolkit') == toolkit(plan)
+        base.require(plan.get('toolkit') == toolkit(plan, execution=True)
                      and plan.get('manifest_sha256') == base.sha(MANIFEST_FULL_CODE), 'Windows code-mode fixture pin differs')
     else:
         base.require('command_observation_contract' not in plan, 'code-mode contract requires explicit profile')
@@ -931,8 +933,10 @@ def readonly_helper_argv(item, expected, plan):
         matches = (same_helper_path(expected[0], plan['python'], windows=True)
                    and same_helper_path(expected[1], execution_helper_path(plan), windows=True))
     elif matches:
+        helper = (Path(execution_helper_path(plan)) if 'repo' in plan else
+                  code_mode.execution_tool('incident_readonly_child.py'))
         matches = (Path(argv[0]).resolve() == Path(plan['python']).resolve()
-                   and Path(argv[1]).resolve() == ROOT / 'tools/validation/incident_readonly_child.py')
+                   and Path(argv[1]).resolve() == helper.resolve())
     if matches and windows and plan.get('schema') in ('incident-host-plan/v1', 'incident-host-plan/v2', 'incident-host-plan/v2-full', 'incident-host-plan/v2-full-code-mode'):
         request_path = Path(plan['cwd']) / ('incident-request-' + Path(plan['output']).name + '.json')
         matches = same_helper_path(expected[3], str(request_path), windows=True)
@@ -1275,8 +1279,27 @@ def validate_result(result):
                  profile_version(profile), 'wrong result profile')
     execution = result.get('execution_identity', {})
     base.require(isinstance(execution, dict), 'invalid execution identity')
+    mapping = result.get('mapping_identity')
+    base.require(isinstance(mapping, dict), 'invalid mapping identity')
     if is_code(profile):
-        base.require(execution.get('command_observation_contract') == code_mode.adoption(windows=profile == PROFILE_FULL_CODE),
+        expected = code_mode.adoption(windows=profile == PROFILE_FULL_CODE)
+        retained = mapping.get('retained_capture')
+        if 'retained_capture' in mapping:
+            base.require(isinstance(retained, dict) and set(retained) ==
+                         {'schema', 'execution_plan_sha256'}
+                         and retained['schema'] == 'retained-code-mode-capture/v1'
+                         and isinstance(retained['execution_plan_sha256'], str)
+                         and re.fullmatch(r'[0-9a-f]{64}', retained['execution_plan_sha256'])
+                         and isinstance(execution.get('plan_sha256'), str)
+                         and re.fullmatch(r'[0-9a-f]{64}', execution['plan_sha256'])
+                         and retained['execution_plan_sha256'] == execution.get('plan_sha256'),
+                         'retained capture identity differs')
+            original_tools = execution.get('toolkit', {})
+            expected['toolkit'] = {name: original_tools.get(name) for name in code_mode.TOOLKIT}
+            base.require(all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
+                             for value in expected['toolkit'].values()),
+                         'retained execution toolkit unavailable')
+        base.require(execution.get('command_observation_contract') == expected,
                      'code-mode result contract differs')
     else:
         base.require('command_observation_contract' not in execution, 'code-mode export requires profile')
@@ -1488,7 +1511,48 @@ def collect(plan, output, *, supplemental=False):
     return capture
 
 
-def map_bundle(directory, output):
+@contextmanager
+def retained_execution_source(plan, source):
+    """Pin the original execution tools without loading or executing old code.
+
+    Only offline mapping adopts this scope. New collection and default mapping
+    keep current-toolkit equality. The original plan/capture remain untouched.
+    """
+    source = Path(source)
+    base.require(source.is_absolute() and not source.is_symlink()
+                 and source.resolve() != ROOT.resolve()
+                 and code_mode._retained_tools.get() is None,
+                 'distinct retained execution source required')
+    def verify():
+        base.require(prepared_source_identity(source) == plan.get('source')
+                     and plan['source'].get('dirty_paths') == []
+                     and plan['source'].get('renamed_away') == [],
+                     'retained execution source identity differs')
+        base.require(base.runtime(source) == plan.get('runtime_sha256'),
+                     'retained execution runtime differs')
+        base.require(toolkit(plan, execution=True) == plan.get('toolkit'),
+                     'retained execution toolkit differs')
+    tools = source / 'tools/validation'
+    base.require(tools.is_dir() and not tools.is_symlink(), 'retained tools unavailable')
+    token = code_mode._retained_tools.set(tools)
+    try:
+        verify()
+        profile_for_plan(plan)
+        yield verify
+    finally:
+        code_mode._retained_tools.reset(token)
+
+
+def map_bundle(directory, output, *, execution_source=None):
+    if execution_source is None:
+        return _map_bundle(directory, output)
+    plan = read_subject(directory / 'capture.json', strict=True).get('plan', {})
+    base.require(is_code(plan.get('gate_profile')), 'retained mapping requires code-mode capture')
+    with retained_execution_source(plan, execution_source) as verify:
+        return _map_bundle(directory, output, retained_verify=verify)
+
+
+def _map_bundle(directory, output, *, retained_verify=None):
     base.require(not output.exists() and output.resolve() != ROOT and ROOT not in output.resolve().parents
                  and directory.resolve() != ROOT
                  and ROOT not in directory.resolve().parents, 'private capture outside source required')
@@ -1518,6 +1582,12 @@ def map_bundle(directory, output):
         minimal.pop('pending_class', None)
         result = map_capture(minimal)
         result['failure_class'] = type(exc).__name__
+    if retained_verify is not None:
+        retained_verify()
+        result['mapping_identity']['retained_capture'] = {
+            'schema': 'retained-code-mode-capture/v1',
+            'execution_plan_sha256': capture['plan_sha256'],
+        }
     validate_result(result)
     result['capture_catalog_sha256'] = base.sha(directory / 'artifacts.json')
     write_new(output, result)
@@ -1534,6 +1604,8 @@ def main():
     mapping = sub.add_parser('map')
     mapping.add_argument('--capture-dir', type=Path, required=True)
     mapping.add_argument('--output', type=Path, required=True)
+    mapping.add_argument('--execution-source', type=Path,
+                         help='Read-only original clean execution checkout for retained code-mode captures')
     make = sub.add_parser('plan')
     for name in ('codex', 'python', 'home', 'cwd', 'plugin-root', 'data-root', 'output'):
         make.add_argument('--' + name, type=Path, required=True)
@@ -1604,7 +1676,7 @@ def main():
                              '--plan', str(args.plan_file.resolve()), '--output', str(args.output.resolve())]}))
             return 0
         if args.action == 'map':
-            result = map_bundle(args.capture_dir, args.output)
+            result = map_bundle(args.capture_dir, args.output, execution_source=args.execution_source)
         else:
             plan = preflight(args.plan, args.output)
             if args.preflight:

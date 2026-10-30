@@ -79,6 +79,131 @@ from tools.validation import native_code_mode_command as cm  # noqa: E402
 
 
 class SharedDualViewTests(unittest.TestCase):
+    def replacement(self, name="unknown", *, redacted=False):
+        o = mac_controls.CodeModeObservationTests()
+        o.setUp()
+        o.stage["name"] = name
+        o.command = "python /synthetic/context_guard.py checkpoint-status " + (
+            "--unknown-status-option" if name == "unknown" else "--item --commands"
+        )
+        if redacted:
+            o.command += " --token synthetic-token"
+        o.trace[3]["payload"]["input"] = cm.fixture(o.command, o.plan["cwd"])
+        error = {
+            "unknown": "context_guard.py: error: unrecognized arguments: --unknown-status-option",
+            "missing": "context_guard.py checkpoint-status: error: argument --item: expected one argument",
+        }[name]
+        o.trace[4]["payload"]["output"] = (
+            "Script completed\nWall time 0.7 seconds\nOutput:\n"
+            + json.dumps({"exit_code": 2, "output": "usage: context_guard.py [-h]\n" + error + "\n"})
+        )
+        self.attach(o, redacted=redacted)
+        o.stage["rows"][5]["params"]["item"]["status"] = "failed"
+        for r in o.stage["rows"]:
+            run = r.get("params", {}).get("run", {})
+            if run.get("eventName") == "postToolUse":
+                run.update(status="blocked", entries=[{"kind": "feedback", "text": cm.REPLACEMENT_FEEDBACK}])
+        o.trace[4]["payload"]["output"] = [
+            {"type": "input_text", "text": "Script failed\nWall time 0.7 seconds\nOutput:\n"},
+            {"type": "input_text", "text": "Script error:\n" + cm.REPLACEMENT_FEEDBACK},
+        ]
+        self.sync(o)
+        return o
+
+    def observe_replacement(self, o, *, rejection=True):
+        return cm.observe(
+            subject=cm.pins(o.plan, o.command), plan=o.plan, stage=o.stage,
+            inventory=o.inventory, rpc_bytes=o.encoded(o.rpc),
+            rollout_bytes=o.encoded(o.trace), rollout_path=o.path,
+            command=o.command, rejection=rejection,
+        )
+
+    def test_hook_replacement_negative_controls_use_real_official_terminal(self):
+        for name in ("unknown", "missing"):
+            o = self.replacement(name)
+            result = self.observe_replacement(o)
+            self.assertEqual(result["exit_code"], 2)
+            self.assertEqual(result["result_source"], "official_command_execution_hook_replacement")
+            with self.assertRaises(ValueError):
+                self.observe_replacement(o, rejection=False)
+
+    def test_hook_replacement_bound_redaction_and_windows_wrapper_source_controls(self):
+        o = self.replacement(redacted=True)
+        with (mock.patch.object(h, "state_for", return_value={}),
+              mock.patch.object(h, "hook_control_token", return_value="synthetic-token")):
+            self.assertEqual(self.observe_replacement(o)["exit_code"], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            shell = Path(directory) / "pwsh.exe"
+            shell.write_bytes(b"inert; never executed")
+            o = self.replacement()
+            o.plan.update(schema=cm.WINDOWS_SCHEMA, platform="Windows",
+                          shell=dict(name="powershell", path=str(shell), sha256=h.base.sha(shell)),
+                          command_observation_contract=cm.adoption(windows=True))
+            o.command = h.canonical_shell_command(o.command, o.plan)
+            o.trace[3]["payload"]["input"] = cm.fixture(o.command, o.plan["cwd"])
+            for row in o.stage["rows"]:
+                if row.get("method") in ("item/started", "item/completed"):
+                    row["params"]["item"]["command"] = o.command
+            self.sync(o)
+            self.assertEqual(self.observe_replacement(o)["exit_code"], 2)
+
+    def test_hook_replacement_rejects_incomplete_foreign_and_generic_error_family(self):
+        for case in ("code-only", "missing-start", "missing-end", "extra-command",
+                     "cross-turn", "bad-id", "cwd", "argv", "exit", "exit71", "bool-exit",
+                     "not-failed", "stdout", "generic-error", "different-feedback",
+                     "extra-feedback", "fake-hook", "timestamp", "missing-terminal",
+                     "extra-call", "bad-stage", "bad-token", "rpc-terminal"):
+            with self.subTest(case=case):
+                o = self.replacement(redacted=case == "bad-token")
+                rows = o.stage["rows"]
+                item = rows[5]["params"]["item"]
+                post = rows[7]["params"]["run"]
+                if case == "code-only":
+                    rows[4:6] = []
+                elif case == "missing-start":
+                    rows.pop(4)
+                elif case == "missing-end":
+                    rows.pop(5)
+                elif case == "extra-command":
+                    rows[6:6] = copy.deepcopy(rows[4:6])
+                elif case == "cross-turn":
+                    rows[5]["params"]["turnId"] = "foreign"
+                elif case == "bad-id":
+                    item["id"] = "foreign"
+                elif case == "cwd":
+                    item["cwd"] = "/foreign"
+                elif case == "argv":
+                    item["command"] += " --other"
+                elif case in ("exit", "exit71", "bool-exit"):
+                    item["exitCode"] = {"exit": 1, "exit71": 71, "bool-exit": True}[case]
+                elif case == "not-failed":
+                    item["status"] = "completed"
+                elif case == "stdout":
+                    item["aggregatedOutput"] = "ordinary failure"
+                elif case == "generic-error":
+                    o.trace[4]["payload"]["output"][1]["text"] = "Script error:\nordinary failure"
+                elif case == "different-feedback":
+                    post["entries"][0]["text"] = "ordinary failure"
+                elif case == "extra-feedback":
+                    post["entries"].append(dict(post["entries"][0]))
+                elif case == "fake-hook":
+                    post["sourcePath"] = "/foreign/hooks.json"
+                elif case == "timestamp":
+                    rows[5]["emittedAtMs"] = 1793328376999
+                elif case == "missing-terminal":
+                    o.trace.pop()
+                elif case == "extra-call":
+                    o.trace.insert(4, copy.deepcopy(o.trace[3]))
+                elif case == "bad-stage":
+                    o.stage["name"] = "status"
+                elif case == "rpc-terminal":
+                    rows.pop()
+                self.sync(o)
+                with (mock.patch.object(h, "hook_control_token", return_value="foreign-token"),
+                      mock.patch.object(h, "state_for", return_value={})):
+                    with self.assertRaises(ValueError):
+                        self.observe_replacement(o)
+
     def case(self, *, redacted=False):
         o = mac_controls.CodeModeObservationTests()
         o.setUp()
@@ -615,6 +740,78 @@ class WindowsCodeModeFullTests(P0Harness):
                     },
                     {1 if host1 else 2},
                 )
+
+    def replacement_capture(self, *, host1):
+        capture = self.full_code(host1=host1)
+        for name in ("unknown", "missing"):
+            stage = capture["stages"][name]
+            evidence = stage["code_mode_evidence"]
+            trace = [json.loads(row) for row in evidence["rollout"].splitlines()]
+            output = next(row["payload"] for row in trace
+                          if row.get("type") == "response_item"
+                          and row["payload"].get("type") == "custom_tool_call_output"
+                          and row["payload"].get("call_id") == "call-" + name)
+            terminal = json.loads(output["output"][1]["text"])
+            output["output"] = [
+                {"type": "input_text", "text": "Script failed\nWall time 0.7 seconds\nOutput:\n"},
+                {"type": "input_text", "text": "Script error:\n" + cm.REPLACEMENT_FEEDBACK},
+            ]
+            rows = stage["rows"]
+            pre = next(row for row in rows if row.get("method") == "hook/completed"
+                       and row["params"]["run"]["eventName"] == "preToolUse")
+            post_index = next(i for i, row in enumerate(rows)
+                              if row.get("method") == "hook/started"
+                              and row["params"]["run"]["eventName"] == "postToolUse")
+            item = dict(type="commandExecution", id="exec-replacement-" + name,
+                        command=evidence["command"], cwd=self.plan["cwd"],
+                        source="unifiedExecStartup", status="inProgress", processId="42")
+            start = dict(method="item/started", emittedAtMs=pre["emittedAtMs"],
+                         params=dict(threadId=stage["thread"], turnId=stage["turn"], item=item))
+            end = dict(method="item/completed", emittedAtMs=rows[post_index]["emittedAtMs"],
+                       params=dict(threadId=stage["thread"], turnId=stage["turn"],
+                                   item=dict(item, status="failed", exitCode=terminal["exit_code"],
+                                             aggregatedOutput=terminal["output"])))
+            rows[post_index:post_index] = [start, end]
+            for row in rows:
+                run = row.get("params", {}).get("run", {})
+                if run.get("eventName") in ("preToolUse", "postToolUse"):
+                    label = "pre-tool-use" if run["eventName"] == "preToolUse" else "post-tool-use"
+                    run["id"] = f"{label}:{run['displayOrder']}:{run['sourcePath']}:{item['id']}"
+                    if run["eventName"] == "postToolUse":
+                        run["entries"] = [{"kind": "feedback", "text": cm.REPLACEMENT_FEEDBACK}]
+            rpc = [json.loads(row) for row in evidence["rpc"].splitlines()][:2]
+            rpc += [dict(direction="response", message=row) for row in rows]
+            evidence.update(rpc=mac_controls.CodeModeObservationTests.encoded(rpc).decode(),
+                            rollout=mac_controls.CodeModeObservationTests.encoded(trace).decode())
+        return capture
+
+    def test_windows_hook_replacement_host1_keeps_full_original_oracles(self):
+        capture = self.replacement_capture(host1=True)
+        result = h.validate_result(h.map_capture(capture))
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["native_acceptance"], "not_run")
+        self.assertEqual({r["branch"] for r in result["rejection_observations"].values()},
+                         {"powershell_host1_parser_post_blocked"})
+        stage = capture["stages"]["unknown"]
+        for case in ("source-reference", "pre-feedback", "wrong-parser"):
+            with self.subTest(case=case):
+                plan, bad = copy.deepcopy(self.plan), copy.deepcopy(stage)
+                if case == "source-reference":
+                    plan["negative_parser_reference"]["cases"]["unknown"]["error_line"] = "foreign"
+                    bad["code_mode_evidence"]["pins"] = cm.pins(plan, bad["code_mode_evidence"]["command"])
+                else:
+                    for row in bad["rows"]:
+                        run = row.get("params", {}).get("run", {})
+                        if case == "pre-feedback" and run.get("eventName") == "preToolUse":
+                            run["entries"] = [{"kind": "feedback", "text": "diagnostic"}]
+                        if case == "wrong-parser" and row.get("method") == "item/completed":
+                            row["params"]["item"]["aggregatedOutput"] = "usage: unrelated\nwrong parser\n"
+                    rpc = [json.loads(row) for row in bad["code_mode_evidence"]["rpc"].splitlines()][:2]
+                    rpc += [dict(direction="response", message=row) for row in bad["rows"]]
+                    bad["code_mode_evidence"]["rpc"] = mac_controls.CodeModeObservationTests.encoded(rpc).decode()
+                evidence = bad["code_mode_evidence"]
+                with self.assertRaises(ValueError):
+                    cm.consume(evidence, plan, bad, self.inventory, evidence["command"], rejection=True)
 
     def test_full_missing_stage_foreign_request_and_host1_feedback_controls(self):
         c = self.full_code(host1=True)

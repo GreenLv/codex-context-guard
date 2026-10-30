@@ -12,6 +12,7 @@ import json
 import math
 import re
 import shlex
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -32,12 +33,22 @@ COMMAND_STAGES = (
     "readonly",
 )
 MAX_OUTPUT_TOKENS = 6000
+REPLACEMENT_FEEDBACK = (
+    "[Context Guard continuation] Malformed private control command rejected; "
+    "it was not recorded as evidence."
+)
 TOOLKIT = (
     "incident_host_acceptance.py",
     "native_code_mode_command.py",
     "native_cli_adoption.py",
     "stop_host_acceptance.py",
 )
+_retained_tools = ContextVar("retained_code_mode_execution_tools", default=None)
+
+
+def execution_tool(name):
+    """Execution pins may refer to an explicitly verified retained source."""
+    return (_retained_tools.get() or Path(__file__).parent) / name
 
 
 def fixture(command, cwd):
@@ -63,7 +74,7 @@ def pins(plan, command):
     return {
         "schema": contract(plan),
         "plan_sha256": cli.digest(plan),
-        "toolkit": {n: base.sha(Path(__file__).with_name(n)) for n in TOOLKIT},
+        "toolkit": {n: base.sha(execution_tool(n)) for n in TOOLKIT},
         "fixture_sha256": hashlib.sha256(
             fixture(command, plan["cwd"]).encode()
         ).hexdigest(),
@@ -285,7 +296,18 @@ def observe(
     )
     raw = b.get("output")
     header = r"Script completed\nWall time [0-9]+(?:\.[0-9]+)? seconds\nOutput:\n"
-    if type(raw) is str:
+    replacement = (
+        type(raw) is list
+        and len(raw) == 2
+        and all(type(x) is dict and set(x) == {"type", "text"}
+                and x["type"] == "input_text" and type(x["text"]) is str
+                for x in raw)
+        and re.fullmatch(header.replace("completed", "failed"), raw[0]["text"])
+        is not None
+    )
+    if replacement:
+        result = hook_replacement_result(raw, stage, plan, rejection)
+    elif type(raw) is str:
         match = re.fullmatch(header + r"(.+)", raw, re.S)
         base.require(match is not None, "nested terminal result unavailable")
         payload = match[1]
@@ -310,7 +332,8 @@ def observe(
             "empty completed header block required",
         )
         payload = raw[1]["text"]
-    result = cli.strict_json(payload)
+    if not replacement:
+        result = cli.strict_json(payload)
     base.require(
         isinstance(result, dict)
         and set(result)
@@ -408,7 +431,59 @@ def observe(
         "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
         "exit_code": result["exit_code"],
         "output": result["output"],
+        "result_source": (
+            "official_command_execution_hook_replacement" if replacement
+            else "nested_terminal_json"
+        ),
     }
+
+
+def hook_replacement_result(raw, stage, plan, rejection):
+    """Use the real official command terminal, never invent nested tool JSON.
+
+    The remaining observer verifies its unique command pair, trusted Hook IDs,
+    command/token projection, completed turn and complete timestamp enclosure.
+    """
+    from tools.validation import incident_host_acceptance as host
+
+    base.require(rejection and stage.get("name") in ("unknown", "missing"),
+                 "Hook replacement requires a named parser negative control")
+    base.require(raw[1]["text"] == "Script error:\n" + REPLACEMENT_FEEDBACK,
+                 "Hook replacement error differs")
+    post = [r["params"]["run"] for r in stage["rows"]
+            if r.get("method") == "hook/completed"
+            and r.get("params", {}).get("threadId") == stage["thread"]
+            and r["params"].get("turnId") == stage["turn"]
+            and r["params"].get("run", {}).get("eventName") == "postToolUse"]
+    base.require(len(post) == 1 and post[0].get("status") == "blocked"
+                 and post[0].get("entries") == [
+                     {"kind": "feedback", "text": REPLACEMENT_FEEDBACK}],
+                 "exact blocked Hook replacement feedback required")
+    commands = [r["params"]["item"] for r in stage["rows"]
+                if r.get("method") == "item/completed"
+                and r.get("params", {}).get("item", {}).get("type") == "commandExecution"]
+    base.require(len(commands) == 1 and commands[0].get("status") == "failed"
+                 and type(commands[0].get("exitCode")) is int
+                 and commands[0]["exitCode"] in (
+                     (1, 2) if contract(plan) == WINDOWS_CONTRACT else (2,)),
+                 "failed official parser command terminal required")
+    output = commands[0].get("aggregatedOutput")
+    if commands[0]["exitCode"] == 1:
+        # Keep the existing Windows host1 domain: the source-bound parser
+        # signature and silent Pre are required in addition to the canonical
+        # pinned wrapper and real Hook/command binding checked by dual view.
+        pre = [r["params"]["run"] for r in stage["rows"]
+               if r.get("method") == "hook/completed"
+               and r.get("params", {}).get("threadId") == stage["thread"]
+               and r["params"].get("turnId") == stage["turn"]
+               and r["params"].get("run", {}).get("eventName") == "preToolUse"]
+        base.require(len(pre) == 1 and pre[0].get("status") == "completed"
+                     and pre[0].get("entries") == [],
+                     "Windows host1 requires silent real Pre")
+        host.host_parser_signature(plan, output, stage["name"])
+    else:
+        host.parser_envelope(output, stage["name"])
+    return {"exit_code": commands[0]["exitCode"], "output": output}
 
 
 def verify_dual_view(stage, plan, inventory, command, result, low, high):
@@ -602,7 +677,7 @@ def contract(plan):
 def adoption(*, windows=False):
     return {
         "schema": WINDOWS_CONTRACT if windows else CONTRACT,
-        "toolkit": {n: base.sha(Path(__file__).with_name(n)) for n in TOOLKIT},
+        "toolkit": {n: base.sha(execution_tool(n)) for n in TOOLKIT},
         "fixture": (
             "one-pinned-powershell-wrapper-exec-text-result/v1"
             if windows
