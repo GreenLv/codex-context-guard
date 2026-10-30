@@ -145,6 +145,128 @@ class CodeModeObservationTests(unittest.TestCase):
     def encoded(rows):
         return "".join(json.dumps(r) + "\n" for r in rows).encode()
 
+    def two_block_output(self):
+        header, payload = self.trace[4]["payload"]["output"].split("Output:\n", 1)
+        return [
+            {"type": "input_text", "text": header + "Output:\n"},
+            {"type": "input_text", "text": payload},
+        ]
+
+    def test_ascii_js_edges_and_exact_two_text_block_positive_family(self):
+        for edge in ("", "\n", "\r\n", " \t\r\n"):
+            for blocks in (False, True):
+                with self.subTest(edge=repr(edge), blocks=blocks):
+                    self.setUp()
+                    self.trace[3]["payload"]["input"] = (
+                        edge + self.trace[3]["payload"]["input"] + edge
+                    )
+                    if blocks:
+                        self.trace[4]["payload"]["output"] = self.two_block_output()
+                    self.assertEqual(self.observe()["exit_code"], 0)
+
+    def test_two_block_and_edge_negative_shape_family(self):
+        for case in (
+            "unicode-space",
+            "unicode-zero-width",
+            "unicode-bom",
+            "vertical-tab",
+            "form-feed",
+            "NUL",
+            "extra-statement",
+            "internal-js-space",
+            "extra-call",
+            "wrong-block-type",
+            "unknown-key",
+            "nonstring-text",
+            "empty-second",
+            "empty-first",
+            "one-block",
+            "three-blocks",
+            "object",
+            "header-has-result",
+            "header-running",
+            "second-header",
+            "duplicate-JSON",
+            "prose-prefix",
+            "unknown-result-key",
+            "session-running",
+            "over-budget",
+            "exit71",
+            "nonzero",
+            "truncation",
+        ):
+            with self.subTest(case=case):
+                self.setUp()
+                blocks = self.two_block_output()
+                js = self.trace[3]["payload"]
+                invalid_edges = {
+                    "unicode-space": "\u00a0",
+                    "unicode-zero-width": "\u200b",
+                    "unicode-bom": "\ufeff",
+                    "vertical-tab": "\v",
+                    "form-feed": "\f",
+                    "NUL": "\0",
+                }
+                if case in invalid_edges:
+                    js["input"] += invalid_edges[case]
+                elif case == "extra-statement":
+                    js["input"] += "\ntext(0);\n"
+                elif case == "internal-js-space":
+                    js["input"] = js["input"].replace("const r", "const  r")
+                elif case == "extra-call":
+                    self.trace.insert(4, copy.deepcopy(self.trace[3]))
+                elif case == "wrong-block-type":
+                    blocks[1]["type"] = "output_text"
+                elif case == "unknown-key":
+                    blocks[0]["role"] = "assistant"
+                elif case == "nonstring-text":
+                    blocks[1]["text"] = {"exit_code": 0}
+                elif case == "empty-second":
+                    blocks[1]["text"] = ""
+                elif case == "empty-first":
+                    blocks[0]["text"] = ""
+                elif case == "one-block":
+                    blocks.pop()
+                elif case == "three-blocks":
+                    blocks.append(copy.deepcopy(blocks[1]))
+                elif case == "object":
+                    blocks = {"blocks": blocks}
+                elif case == "header-has-result":
+                    blocks[0]["text"] += blocks[1]["text"]
+                elif case == "header-running":
+                    blocks[0]["text"] = (
+                        "Script running\nWall time 0.7 seconds\nOutput:\n"
+                    )
+                elif case == "second-header":
+                    blocks[1]["text"] = blocks[0]["text"] + blocks[1]["text"]
+                elif case == "duplicate-JSON":
+                    blocks[1]["text"] += blocks[1]["text"]
+                elif case == "prose-prefix":
+                    blocks[1]["text"] = "Result: " + blocks[1]["text"]
+                else:
+                    result = json.loads(blocks[1]["text"])
+                    if case == "unknown-result-key":
+                        result["unknown"] = 1
+                    elif case == "session-running":
+                        result["session_id"] = 42
+                    elif case == "over-budget":
+                        result["original_token_count"] = 6001
+                    elif case == "exit71":
+                        result.update(
+                            exit_code=71,
+                            original_token_count=14,
+                            output="sandbox-exec: sandbox_apply: Operation not permitted\n",
+                        )
+                    elif case == "nonzero":
+                        result["exit_code"] = 1
+                    elif case == "truncation":
+                        result["original_token_count"] = 20000
+                    blocks[1]["text"] = json.dumps(result)
+                output_index = 5 if case == "extra-call" else 4
+                self.trace[output_index]["payload"]["output"] = blocks
+                with self.assertRaises(ValueError):
+                    self.observe()
+
     def test_absolute_synthetic_paths_and_windows_path_projection(self):
         self.assertTrue(Path(self.plan["cwd"]).is_absolute())
         self.assertTrue(Path(self.plan["home"]).is_absolute())
@@ -692,6 +814,38 @@ class CodeModeFamilyTests(P0Harness):
         self.assertEqual(result["gate_profile"], original.PROFILE_CODE)
         self.assertEqual(result["gates"]["status_cli_posttool"], "passed")
         self.assertEqual(result["native_acceptance"], "not_run")
+
+    def test_two_blocks_and_edge_LF_keep_full_status_oracle_and_exit71_failure(self):
+        self.adopted()
+        stage = self.transparent("status", ["--commands"])
+        evidence = stage["code_mode_evidence"]
+        trace = [json.loads(row) for row in evidence["rollout"].splitlines()]
+        trace[3]["payload"]["input"] += "\n"
+        header, terminal = trace[4]["payload"]["output"].split("Output:\n", 1)
+        blocks = [
+            {"type": "input_text", "text": header + "Output:\n"},
+            {"type": "input_text", "text": terminal},
+        ]
+        trace[4]["payload"]["output"] = blocks
+        evidence["rollout"] = CodeModeObservationTests.encoded(trace).decode()
+        result = original.map_capture(self.capture)
+        original.validate_result(result)
+        self.assertEqual(result["gates"]["status_cli_posttool"], "passed")
+        self.assertEqual(result["native_acceptance"], "not_run")
+        # The actual observed host-failure shape reaches the real nonzero
+        # oracle after both legal format surfaces are recognized.
+        blocks[1]["text"] = json.dumps(
+            dict(
+                chunk_id="synthetic",
+                wall_time_seconds=0,
+                exit_code=71,
+                original_token_count=14,
+                output="sandbox-exec: sandbox_apply: Operation not permitted\n",
+            )
+        )
+        evidence["rollout"] = CodeModeObservationTests.encoded(trace).decode()
+        with self.assertRaisesRegex(ValueError, "successful complete result required"):
+            original.map_capture(self.capture)
 
     def test_optional_metadata_does_not_relax_complete_status_json(self):
         self.adopted()

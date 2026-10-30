@@ -250,7 +250,8 @@ def observe(
         a.get("type") == "custom_tool_call"
         and a.get("name") == "exec"
         and a.get("status") == "completed"
-        and a.get("input") == fixture(command, plan["cwd"])
+        and type(a.get("input")) is str
+        and a["input"].strip(" \t\r\n") == fixture(command, plan["cwd"])
         and isinstance(a.get("call_id"), str)
         and a["call_id"]
         and b.get("type") == "custom_tool_call_output"
@@ -259,17 +260,33 @@ def observe(
         "fixture/call binding differs",
     )
     raw = b.get("output")
-    match = (
-        re.fullmatch(
-            r"Script completed\nWall time [0-9]+(?:\.[0-9]+)? seconds\nOutput:\n(.+)",
-            raw,
-            re.S,
+    header = r"Script completed\nWall time [0-9]+(?:\.[0-9]+)? seconds\nOutput:\n"
+    if type(raw) is str:
+        match = re.fullmatch(header + r"(.+)", raw, re.S)
+        base.require(match is not None, "nested terminal result unavailable")
+        payload = match[1]
+    else:
+        # The observed official representation is exactly one empty completed
+        # header block followed by one complete terminal JSON text block.
+        base.require(
+            type(raw) is list
+            and len(raw) == 2
+            and all(
+                type(block) is dict
+                and set(block) == {"type", "text"}
+                and block["type"] == "input_text"
+                and type(block["text"]) is str
+                and block["text"]
+                for block in raw
+            ),
+            "exact two input_text blocks required",
         )
-        if isinstance(raw, str)
-        else None
-    )
-    base.require(match is not None, "nested terminal result unavailable")
-    result = cli.strict_json(match[1])
+        base.require(
+            re.fullmatch(header, raw[0]["text"]) is not None,
+            "empty completed header block required",
+        )
+        payload = raw[1]["text"]
+    result = cli.strict_json(payload)
     base.require(
         isinstance(result, dict)
         and set(result)
