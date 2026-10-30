@@ -27,15 +27,18 @@ if str(ROOT) not in sys.path:
 from scripts import context_guard as cg  # noqa: E402
 from tools.validation import incident_readonly_child as child  # noqa: E402
 from tools.validation import native_cli_adoption as cli_adoption  # noqa: E402
+from tools.validation import native_code_mode_command as code_mode  # noqa: E402
 from tools.validation import stop_host_acceptance as base  # noqa: E402
 from tools.validation.acceptance_identity import prepared_source_identity  # noqa: E402
 
 PROFILE = 'incident_host/v1'
+PROFILE_CODE = 'incident_host/v1-code-mode'
 PROFILE_V2 = 'incident_host/v2'
 PROFILE_FULL = 'incident_host/v2-full'
 OBSERVATION_CONTRACTS = {'negative': 'powershell-host-rejection/v1',
                          'readonly_fixture': 'read-baseline-specific-write-deny/v3'}
 MANIFEST = Path(__file__).with_name('incident-host-scenarios.json')
+MANIFEST_CODE = Path(__file__).with_name('incident-host-scenarios-code-mode.json')
 MANIFEST_V2 = Path(__file__).with_name('incident-host-scenarios-v2.json')
 MANIFEST_FULL = Path(__file__).with_name('incident-host-scenarios-v2-full.json')
 TOOLKIT = ('incident_host_acceptance.py', 'incident_readonly_child.py',
@@ -53,7 +56,7 @@ def is_v2(profile):
 
 
 def profile_version(profile):
-    return {PROFILE: 'v1', PROFILE_V2: 'v2', PROFILE_FULL: 'v2-full'}[profile]
+    return {PROFILE_CODE: 'v1-code-mode', PROFILE: 'v1', PROFILE_V2: 'v2', PROFILE_FULL: 'v2-full'}[profile]
 
 
 def full_scope(value):
@@ -102,8 +105,10 @@ def write_new(path, value):
         path.chmod(0o600)
 
 
-def toolkit():
-    return {name: base.sha(Path(__file__).with_name(name)) for name in TOOLKIT}
+def toolkit(plan=None):
+    names = TOOLKIT + (('native_code_mode_command.py', 'incident-host-scenarios-code-mode.json')
+                       if plan and plan.get('gate_profile') == PROFILE_CODE else ())
+    return {name: base.sha(Path(__file__).with_name(name)) for name in names}
 
 
 def plan_identity(plan):
@@ -114,6 +119,15 @@ def profile_for_plan(plan):
     base.require(isinstance(plan, dict), 'plan object required')
     if 'cli_version' in plan or 'cli_adoption' in plan:
         cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'})
+    if plan.get('schema') == 'incident-host-plan/v1-code-mode':
+        base.require(plan.get('gate_profile') == PROFILE_CODE and not any(k in plan for k in
+                     ('gate_scope', 'required_gates', 'observation_contracts', 'negative_parser_reference')),
+                     'code-mode profile scope differs')
+        code_mode.validate_plan(plan)
+        base.require(plan.get('toolkit') == toolkit(plan)
+                     and plan.get('manifest_sha256') == base.sha(MANIFEST_CODE), 'code-mode fixture pin differs')
+        return PROFILE_CODE
+    base.require('command_observation_contract' not in plan, 'code-mode contract requires explicit profile')
     full = plan.get('schema') == 'incident-host-plan/v2-full'
     if full:
         full_scope(plan)
@@ -187,7 +201,7 @@ def host_parser_signature(plan, output, kind):
 
 
 def manifest_for_plan(plan):
-    return {PROFILE: MANIFEST, PROFILE_V2: MANIFEST_V2, PROFILE_FULL: MANIFEST_FULL}[profile_for_plan(plan)]
+    return {PROFILE_CODE: MANIFEST_CODE, PROFILE: MANIFEST, PROFILE_V2: MANIFEST_V2, PROFILE_FULL: MANIFEST_FULL}[profile_for_plan(plan)]
 
 
 def helper_prompt(plan, argv, stage):
@@ -232,7 +246,7 @@ def preflight(plan_path, output):
                      'parser reference differs from pinned source')
     base.require(output.resolve() == Path(plan['output']).resolve(), 'output differs from plan')
     cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=True)
-    base.require(plan.get('toolkit') == toolkit(), 'toolkit bytes changed')
+    base.require(plan.get('toolkit') == toolkit(plan), 'toolkit bytes changed')
     base.require(plan.get('manifest_sha256') == base.sha(manifest_for_plan(plan)), 'manifest changed')
     base.require(isinstance(plan.get('model'), str) and plan['model'].strip(), 'explicit model required')
     base.require(plan.get('effort') == 'medium', 'explicit medium effort required')
@@ -317,6 +331,10 @@ class Client(base.Client):
         base.require(result.get('model') == self.plan['model'], 'model configuration drift')
         base.require(result.get('approvalPolicy') == 'on-request', 'approval policy drift')
         base.require(result.get('sandbox', {}).get('type') == 'workspaceWrite', 'sandbox drift')
+        if profile_for_plan(self.plan) == PROFILE_CODE:
+            if not hasattr(self, 'thread_records'):
+                self.thread_records = {}
+            self.thread_records[result['thread']['id']] = result['thread']
         return result['thread']['id']
 
     def observed_turn(self, thread, prompt):
@@ -336,7 +354,46 @@ class Client(base.Client):
         raise TimeoutError('incident turn')
 
 
+def code_command(stage, inventory, plan, *, rejection=False):
+    evidence = stage.get('code_mode_evidence')
+    base.require(isinstance(evidence, dict), 'code-mode evidence unavailable')
+    name = stage.get('name')
+    if name in ('status', 'unknown', 'missing'):
+        suffix = {'status': ' --commands', 'unknown': ' --unknown-status-option',
+                  'missing': ' --item --commands'}[name]
+        command = discovery_command(stage, inventory, plan) + suffix
+    else:
+        base.require(name == 'readonly', 'unknown code-mode command stage')
+        command = evidence.get('command')
+        base.require(stage['prompt_sha256'] == hashlib.sha256(
+                     ('Run this exact ordinary tool command once: ' + command).encode()).hexdigest(),
+                     'readonly command prompt differs')
+    observed = code_mode.consume(evidence, plan, stage, inventory, command, rejection=rejection)
+    return {'command': command, 'cwd': plan['cwd'], 'exitCode': observed['exit_code'],
+            'aggregatedOutput': observed['output'], 'observation_contract': code_mode.CONTRACT}
+
+
+def discovery_command(stage, inventory, plan):
+    hooks = base.paired_hooks(stage['rows'], stage['thread'], stage['turn'], inventory)
+    prompts = [h for h in hooks if h['eventName'] == 'userPromptSubmit' and h['status'] == 'completed']
+    base.require(len(prompts) == 1, 'trusted prompt discovery required')
+    commands = []
+    for entry in prompts[0].get('entries', []):
+        if isinstance(entry, dict) and entry.get('kind') == 'context' and isinstance(entry.get('text'), str):
+            for line in entry['text'].splitlines():
+                try:
+                    status_argv({'command': line + ' --commands'}, stage, plan)
+                except ValueError:
+                    continue
+                commands.append(line)
+    base.require(len(commands) == 1, 'unique exact discovery command required')
+    hook_control_token(stage, inventory, plan, state_for(stage))
+    return commands[0]
+
+
 def command_observation(stage, inventory, plan):
+    if profile_for_plan(plan) == PROFILE_CODE:
+        return code_command(stage, inventory, plan)
     rows, thread, turn = stage['rows'], stage['thread'], stage['turn']
     for row in rows:
         if row.get('method') in ('hook/started', 'hook/completed'):
@@ -408,6 +465,15 @@ def rejection_observation(stage, inventory, plan, kind):
         base.require(len(selected) == 1 and selected[0]['status'] == 'completed', 'rejection boundary incomplete')
     pre = [h for h in hooks if h['eventName'] == 'preToolUse']
     post = [h for h in hooks if h['eventName'] == 'postToolUse']
+    if profile == PROFILE_CODE:
+        item = code_command(stage, inventory, plan, rejection=True)
+        argv = status_argv(item, stage, plan, legal=False, inventory=inventory)
+        expected = '--unknown-status-option' if kind == 'unknown' else '--item --commands'
+        base.require(' '.join(argv[-1:] if kind == 'unknown' else argv[-2:]) == expected
+                     and item['exitCode'] == 2 and len(post) == 1 and post[0]['status'] == 'blocked'
+                     and type(post[0].get('entries')) is list, 'malformed CLI must fail and real Post must block')
+        return finish({'status': 'passed', 'branch': 'cli2_post_blocked',
+                       'cli': 'observed', 'posttool': 'blocked'}, 2)
     attempted = [r for r in rows if r.get('method') == 'item/started'
                  and r.get('params', {}).get('threadId') == thread
                  and r['params'].get('turnId') == turn
@@ -662,9 +728,12 @@ def status_argv(item, stage, plan, *, legal=True, inventory=None):
     return argv
 
 
-def status_output(item, stage, plan):
+def status_output(item, stage, plan, *, inventory=None):
     """Bind the observed successful query output, not a later Stop revision."""
-    terminal, _, _ = command_pair(stage, plan)
+    if profile_for_plan(plan) == PROFILE_CODE:
+        terminal = code_command(stage, inventory, plan)
+    else:
+        terminal, _, _ = command_pair(stage, plan)
     base.require(terminal == item, 'status item differs from captured command')
     status_argv(item, stage, plan)
     base.require(item['exitCode'] == 0, 'legal status CLI failed')
@@ -831,7 +900,7 @@ def make_fixture(plan, stage, item, root, *, inventory, principal=None, ownershi
     argv = status_argv(item, stage, plan)
     binding = cg.parse_checkpoint_status_option_bindings(argv[3:])
     command_observation(stage, inventory, plan)
-    status_output(item, stage, plan)
+    status_output(item, stage, plan, inventory=inventory)
     target = root / 'sessions-v2' / stage['thread']
     target.parent.mkdir(parents=True)
     copied = copy_session(plan, stage['thread'], target)
@@ -1008,7 +1077,7 @@ def map_capture(capture, *, mapper_identity=None):
     if 'status' in stages:
         s = stages['status']
         item = command_observation(s, inventory, plan)
-        status_output(item, s, plan)
+        status_output(item, s, plan, inventory=inventory)
         gates['status_cli_posttool'] = 'passed'
     if all(n in stages for n in ('status', 'unknown', 'missing')):
         base.require(len({stages[n]['thread'] for n in ('status', 'unknown', 'missing')}) == 1
@@ -1115,7 +1184,7 @@ def map_capture(capture, *, mapper_identity=None):
                                    'toolkit': plan['toolkit'], 'plan_sha256': capture['plan_sha256'],
                                    'platform': plan['platform'], 'model': plan.get('model'), 'effort': plan.get('effort')},
             'mapping_identity': {'source': public_source((mapper_identity or {}).get('source', prepared_source_identity(ROOT))),
-                                 'toolkit': (mapper_identity or {}).get('toolkit', toolkit())},
+                                 'toolkit': (mapper_identity or {}).get('toolkit', toolkit(plan))},
             'native_acceptance': status if capture['origin'] == 'native' else 'not_run',
             'limitations': ['Bounded live scenarios, not original incident state.',
                             'Read-only witness queries an exact session copy in a collector-owned fixture.',
@@ -1132,6 +1201,8 @@ def map_capture(capture, *, mapper_identity=None):
     if profile == PROFILE_FULL:
         result['gate_scope'] = 'full'
         result['execution_identity'].update(gate_scope='full', required_gates=list(GATES))
+    if profile == PROFILE_CODE:
+        result['execution_identity']['command_observation_contract'] = plan['command_observation_contract']
     if 'cli_adoption' in plan:
         result['execution_identity']['cli_adoption'] = cli_adoption.identity(plan)
     return result
@@ -1139,11 +1210,16 @@ def map_capture(capture, *, mapper_identity=None):
 
 def validate_result(result):
     profile = result.get('gate_profile')
-    base.require(profile in (PROFILE, PROFILE_V2, PROFILE_FULL)
+    base.require(profile in (PROFILE, PROFILE_CODE, PROFILE_V2, PROFILE_FULL)
                  and result.get('schema') == 'incident-host-acceptance/' +
                  profile_version(profile), 'wrong result profile')
     execution = result.get('execution_identity', {})
     base.require(isinstance(execution, dict), 'invalid execution identity')
+    if profile == PROFILE_CODE:
+        base.require(execution.get('command_observation_contract') == code_mode.adoption(),
+                     'code-mode result contract differs')
+    else:
+        base.require('command_observation_contract' not in execution, 'code-mode export requires profile')
     if ('cli_adoption' in execution or execution.get('cli_version') == cli_adoption.VERSION
             or profile == PROFILE_FULL):
         cli_adoption.validate_export(execution)
@@ -1230,9 +1306,22 @@ def collect(plan, output, *, supplemental=False):
             dest = output / ('snapshot-' + name)
             copy_session(plan, thread, dest)
             stage['snapshot'] = str(dest)
+            if profile == PROFILE_CODE:
+                stage['name'] = name
+                if name in ('status', 'unknown', 'missing', 'readonly'):
+                    command = (discovery_command(stage, client.inventory, plan) +
+                               {'status': ' --commands', 'unknown': ' --unknown-status-option',
+                                'missing': ' --item --commands'}[name] if name != 'readonly' else spelling)
+                    stage['code_mode_evidence'] = code_mode.capture(plan, stage, client.thread_records[thread],
+                                                                   output / 'rpc/rpc.jsonl', command)
+                    archive = output / ('rollout-' + name + '.jsonl')
+                    with archive.open('xb') as stream:
+                        stream.write(stage['code_mode_evidence']['rollout'].encode())
+                    if os.name != 'nt':
+                        archive.chmod(0o600)
             capture['stages'][name] = stage
             return stage
-        if not supplemental and profile in (PROFILE, PROFILE_FULL):
+        if not supplemental and profile in (PROFILE, PROFILE_CODE, PROFILE_FULL):
             thread = client.start()
             for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
                 turn(name, thread)
@@ -1240,12 +1329,19 @@ def collect(plan, output, *, supplemental=False):
                         'Use the exact latest Context Guard checkpoint-status binding from its recovery packet. '
                         'Run the specified query as a standalone command, no helper or shell chain. '
                         'Keep all diagnostic output private. Final answer: 诊断结束，验收仍等待。')
+        if profile == PROFILE_CODE:
+            instructions += base.read_json(MANIFEST_CODE)['transparent_fixture_instructions'].format(
+                cwd=json.dumps(plan['cwd'], ensure_ascii=True))
         status_thread = client.start(instructions)
         s = turn('status', status_thread)
         item = command_observation(s, client.inventory, plan)
-        probe_thread = client.start('Execute exactly the requested standalone ordinary shell command. '
+        probe_instructions = ('Execute exactly the requested standalone ordinary shell command. '
                                     'Do not escalate permissions. Keep output private. '
                                     'Final answer: 只读探针结束，验收仍等待。')
+        if profile == PROFILE_CODE:
+            probe_instructions += base.read_json(MANIFEST_CODE)['transparent_fixture_instructions'].format(
+                cwd=json.dumps(plan['cwd'], ensure_ascii=True))
+        probe_thread = client.start(probe_instructions)
         principal = None
         if plan['platform'] == 'Windows':
             identity_argv = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
@@ -1292,7 +1388,7 @@ def collect(plan, output, *, supplemental=False):
              if is_v2(profile) else 'Run this exact ordinary tool command once: ' + spelling)
         capture['cleanups'].append(client.close())
         client = None
-        if profile in (PROFILE, PROFILE_FULL):
+        if profile in (PROFILE, PROFILE_CODE, PROFILE_FULL):
             shared = dict(plan, schema='stop-host-plan/v1')
             capture['stop_directory'] = str(output / 'stop')
             capture['stop_result'] = base.collect(shared, output / 'stop')
@@ -1344,6 +1440,8 @@ def map_bundle(directory, output):
     base.require(catalog.get('capture.json') == base.sha(directory / 'capture.json'), 'capture not catalogued')
     if capture.get('stop_directory'):
         base.require(Path(capture['stop_directory']).resolve() == directory.resolve() / 'stop', 'base capture escaped')
+    if profile_for_plan(capture['plan']) == PROFILE_CODE:
+        code_mode.verify_bundle_sources(directory, capture)
     for s in capture.get('stages', {}).values():
         p = Path(s['snapshot']).resolve()
         base.require(p.is_relative_to(directory.resolve()), 'snapshot outside bundle')
@@ -1376,7 +1474,7 @@ def main():
         make.add_argument('--' + name, type=Path, required=True)
     make.add_argument('--shell', type=Path)
     make.add_argument('--model', required=True)
-    make.add_argument('--profile', choices=(PROFILE, PROFILE_V2), default=PROFILE)
+    make.add_argument('--profile', choices=(PROFILE, PROFILE_CODE, PROFILE_V2), default=PROFILE)
     make.add_argument('--gate-scope', choices=('full',))
     make.add_argument('--negative-observation')
     make.add_argument('--fixture-policy')
@@ -1389,17 +1487,22 @@ def main():
             base.require(bool(args.cli_adoption) == bool(args.cli_capability_receipt),
                          'CLI adoption requires an independently prepared capability receipt')
             v2 = args.profile == PROFILE_V2
+            codemode = args.profile == PROFILE_CODE
+            base.require(not codemode or args.cli_adoption == cli_adoption.CONTRACT, 'code-mode requires CLI adoption')
             full = args.gate_scope == 'full'
             base.require(not full or v2, 'full scope requires explicit v2 adoption')
             base.require((v2 and args.negative_observation == OBSERVATION_CONTRACTS['negative']
                           and args.fixture_policy == OBSERVATION_CONTRACTS['readonly_fixture'])
                          or (not v2 and args.negative_observation is None and args.fixture_policy is None),
                          'observation contract adoption must be explicit and complete')
-            plan = {'schema': 'incident-host-plan/' + ('v2-full' if full else 'v2' if v2 else 'v1'), 'repo': str(ROOT),
+            plan = {'schema': 'incident-host-plan/' + ('v2-full' if full else 'v2' if v2 else 'v1-code-mode' if codemode else 'v1'), 'repo': str(ROOT),
                     'source': prepared_source_identity(ROOT), 'runtime_sha256': base.runtime(ROOT),
                     'cli_version': cli_adoption.VERSION if args.cli_adoption else 'codex-cli 0.160.0',
                     'platform': platform.system(),
                     'model': args.model, 'effort': 'medium', 'fresh_data_root': True, 'output': str(args.output.resolve()), 'toolkit': toolkit(), 'manifest_sha256': base.sha(MANIFEST_FULL if full else MANIFEST_V2 if v2 else MANIFEST)}
+            if codemode:
+                plan.update(gate_profile=PROFILE_CODE, command_observation_contract=code_mode.adoption())
+                plan.update(toolkit=toolkit(plan), manifest_sha256=base.sha(MANIFEST_CODE))
             if v2:
                 base.require(platform.system() == 'Windows', 'v2 observation requires Windows')
                 plan.update(gate_profile=PROFILE_FULL if full else PROFILE_V2, observation_contracts=dict(OBSERVATION_CONTRACTS))
