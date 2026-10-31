@@ -17,9 +17,10 @@ from pathlib import Path
 
 import host_powershell_probe as host
 
-CASES = ("utility_control", "utility_trace")
+CASES = ("utility_modules_trace",)
 PHASES = {"entry", "utility_import_begin", "utility_import_end", "invocation_begin",
-          "invocation_end", "target_begin", "target_end"}
+          "invocation_end", "target_begin", "target_end", "modules_source_check_begin",
+          "modules_source_confirmed", "modules_source_unknown"}
 MODULE_IDS = {"microsoft.powershell.core": "core", "microsoft.powershell.utility": "utility",
               "microsoft.powershell.management": "management", "microsoft.powershell.security": "security",
               "microsoft.powershell.diagnostics": "diagnostics", "microsoft.wsman.management": "wsman"}
@@ -34,6 +35,18 @@ $cgUtility = [IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\M
 Write-CgHostStage 'utility_import_begin'
 Microsoft.PowerShell.Core\Import-Module -Name $cgUtility -ErrorAction Stop
 Write-CgHostStage 'utility_import_end'
+Write-CgHostStage 'modules_source_check_begin'
+try {
+    $cgSources = @(Microsoft.PowerShell.Utility\Get-TraceSource -Name Modules -ErrorAction Stop)
+} catch {
+    Write-CgHostStage 'modules_source_unknown'
+    exit 93
+}
+if ($cgSources.Count -ne 1 -or $cgSources[0].Name -cne 'Modules') {
+    Write-CgHostStage 'modules_source_unknown'
+    exit 93
+}
+Write-CgHostStage 'modules_source_confirmed'
 $cgExpression = {
     Write-CgHostStage 'target_begin'
     $cgResult = Join-Path $PSScriptRoot 'probe-child'
@@ -42,9 +55,8 @@ $cgExpression = {
 }
 Write-CgHostStage 'invocation_begin'
 '''
-    source += ("& $cgExpression\n" if case == CASES[0] else
-        "Microsoft.PowerShell.Utility\\Trace-Command -Name CommandDiscovery -Option All "
-        "-ListenerOption DateTime -FilePath $env:CG_HOST_RAW_TRACE -Expression $cgExpression\n")
+    source += ("Microsoft.PowerShell.Utility\\Trace-Command -Name CommandDiscovery,Modules -Option All "
+               "-ListenerOption DateTime -FilePath $env:CG_HOST_RAW_TRACE -Expression $cgExpression\n")
     return (source + "Write-CgHostStage 'invocation_end'\n"
             "[Console]::Out.Write('{\"host_probe_completed\":true}')\n").encode("ascii")
 
@@ -113,6 +125,30 @@ def event(message, pshome):
     return None
 
 
+def modules_event(message, pshome):
+    for prefix, kind in (("Started analysis: ", "modules_analysis_start"),
+                         ("Finished analysis: ", "modules_analysis_end"),
+                         ("Requested caching for ", "modules_cache_request")):
+        if message.startswith(prefix):
+            token = message[len(prefix):]
+            identifier = module_id(token, pshome)
+            return ({"type": kind, "module_id": identifier,
+                     "location_type": "name_only" if token.strip("\'\"").lower() in MODULE_IDS else "pshome"}
+                    if identifier else None)
+    if message == "Existing cached info up-to-date. Skipping.":
+        return {"type": "modules_cache_current"}
+    match = re.fullmatch(r"Returning ([0-9]{1,6}) exported commands\.", message)
+    if match:
+        return {"type": "modules_exports_returned", "export_count": int(match[1])}
+    if message == "Returning NULL for exported commands.":
+        return {"type": "modules_exports_unavailable"}
+    if message.startswith(("Exception checking module analysis cache", "Exception writing module analysis cache")):
+        return {"type": "modules_cache_error"}
+    if message.startswith("Module analysis generated an exception: "):
+        return {"type": "modules_analysis_error"}
+    return None
+
+
 def trace_summary(path, pshome):
     result = {"state": "unknown", "total_bytes": None, "window_bytes": 0,
         "window_complete": False, "discarded_first_fragment": False, "unknown_count": None,
@@ -169,8 +205,9 @@ def trace_summary(path, pshome):
                         pending["timestamp_utc"] = timestamp[1]
                 pending = None
                 continue
-            match = re.fullmatch(r"(?:DEBUG:\s*)?CommandDiscovery Information:\s*\d+\s*:\s*(.*)", line.strip())
-            pending = event(match[1], pshome) if match else None
+            match = re.fullmatch(r"(?:DEBUG:\s*)?(CommandDiscovery|Modules) Information:\s*\d+\s*:\s*(.*)", line.strip())
+            pending = ((event if match[1] == "CommandDiscovery" else modules_event)(match[2], pshome)
+                       if match else None)
             if pending is None:
                 result["unknown_count"] += 1
             else:
@@ -242,21 +279,20 @@ def run_case(subject, outer, case, shell, owned_process, payload):
         row["stages"] = stage_records(outer / "stages.jsonl")
     except (OSError, ValueError, UnicodeError) as error:
         row["stages"] = {"state": "unknown", "error_kind": host.common.kind(error)}
-    row["trace"] = trace_summary(outer / "raw-command-discovery.log", Path(shell).parent) if case == CASES[1] else {"state": "not_requested"}
+    row["modules_trace_source"] = ("confirmed" if any(
+        record["phase"] == "modules_source_confirmed" for record in row["stages"].get("records", [])) else "unknown")
+    row["trace"] = trace_summary(outer / "raw-command-discovery.log", Path(shell).parent)
     row["fixture_cleanup"] = "retained"
     if (all(row["cleanup"].values()) and row.get("pipes_drained") is True and row["stages"]["state"] != "unknown"
-            and row["trace"]["state"] != "unknown"):
-        if case == CASES[0]:
-            shutil.rmtree(outer)
-            row["fixture_cleanup"] = "removed"
-        else:
-            row["fixture_cleanup"] = "retained_runner_local_raw_trace"
+            and row["trace"]["state"] != "unknown" and row["modules_trace_source"] == "confirmed"):
+        row["fixture_cleanup"] = "retained_runner_local_raw_trace"
     return row
 
 
 def collection_complete(observations):
-    return len(observations) == 2 and all(
+    return len(observations) == 1 and all(
         row["fixture_cleanup"] != "retained" and row["result"] != "driver_error"
+        and row.get("modules_trace_source") == "confirmed"
         and row.get("before_cleanup", {}).get("active_processes") is not None
         for row in observations)
 
@@ -265,7 +301,7 @@ def main():
     report = {"schema": "host-discovery-trace/v1", "product_executed": False,
         "native_acceptance": False, "release_gate": False, "subject_for_helper_and_cwd": host.SUBJECT,
         "driver_sha256": host.common.sha(Path(__file__).read_bytes()), "order": list(CASES),
-        "utility_preloaded_in_both": True, "cold_state_comparison": False,
+        "utility_preimport_requested": True, "trace_sources": ["CommandDiscovery", "Modules"], "cold_state_comparison": False,
         "raw_trace_uploaded": False, "observations": [], "status": "diagnostic_error"}
     output = None
     try:
@@ -296,14 +332,12 @@ def main():
         payload = json.dumps({"hook_event_name": "UserPromptSubmit", "session_id": "synthetic-bytecode",
             "cwd": str(outer / "project"), "prompt": "hello", "trigger": "manual",
             "last_assistant_message": "waiting"}).encode()
-        for index, case in enumerate(CASES):
+        for case in CASES:
             row = run_case(subject, outer, case, shell, OwnedProcess, payload)
             report["observations"].append(row)
             if (row["result"] == "driver_error" or row["fixture_cleanup"] == "retained"
                     or row.get("before_cleanup", {}).get("active_processes") is None):
                 break
-            if index == 0:
-                outer.mkdir()
         if collection_complete(report["observations"]):
             report["status"] = "observations_recorded_not_acceptance"
     except Exception as error:

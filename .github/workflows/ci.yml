@@ -1,11 +1,11 @@
-name: Windows Utility-controlled discovery trace (diagnosis only)
+name: Windows CommandDiscovery and Modules trace (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: Utility control and discovery trace / Windows Python 3.12
+    name: One dual-source discovery trace / Windows Python 3.12
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -22,18 +22,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: Two Utility-controlled host cases, no product execution
+      - name: One Utility-preloaded dual-source host trace, no product execution
         working-directory: subject
         shell: pwsh
         run: |
           uv run --locked --only-group test --python python python -B `
             ../diagnostic/tools/validation/host_discovery_trace.py `
-            --subject-root . --output "$env:RUNNER_TEMP/host-discovery-trace.json" 2>$null
+            --subject-root . --output "$env:RUNNER_TEMP/host-modules-trace.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: host-discovery-trace
+          name: host-modules-trace
           path: |
-            ${{ runner.temp }}/host-discovery-trace.json
+            ${{ runner.temp }}/host-modules-trace.json
           if-no-files-found: warn
           retention-days: 7
