@@ -1,11 +1,11 @@
-name: Windows host command probe (diagnosis only)
+name: Windows Utility-controlled discovery trace (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: Three host-only commands / Windows Python 3.12
+    name: Utility control and discovery trace / Windows Python 3.12
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -22,19 +22,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: Three bounded host commands, no product execution
+      - name: Two Utility-controlled host cases, no product execution
         working-directory: subject
         shell: pwsh
         run: |
           uv run --locked --only-group test --python python python -B `
-            ../diagnostic/tools/validation/host_powershell_probe.py `
-            --subject-root . --output "$env:RUNNER_TEMP/host-command-probe.json" 2>$null
+            ../diagnostic/tools/validation/host_discovery_trace.py `
+            --subject-root . --output "$env:RUNNER_TEMP/host-discovery-trace.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: host-command-probe
+          name: host-discovery-trace
           path: |
-            ${{ runner.temp }}/host-command-probe.json
-            ${{ runner.temp }}/cg-host-command-probe-*/stages.jsonl
+            ${{ runner.temp }}/host-discovery-trace.json
           if-no-files-found: warn
           retention-days: 7
