@@ -1,13 +1,17 @@
-name: Windows candidate configuration stages (diagnosis only)
+name: Windows launcher pair (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: Fixed 1178 candidate configuration stages / Python 3.12
+    name: Fixed 1178 launcher ${{ matrix.variant }} / Python 3.12
     runs-on: windows-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [original, candidate]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -22,20 +26,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: One instrumented candidate, original trace off, not acceptance
+      - name: One no-trace no-config observation, not acceptance
         working-directory: subject
         shell: pwsh
+        env:
+          VARIANT: ${{ matrix.variant }}
         run: |
           uv run --locked --only-group test --python python python -B `
-            ../diagnostic/tools/validation/hook_stage_ci_diagnostic.py `
-            --subject-root . --original-trace off `
-            --output "$env:RUNNER_TEMP/candidate-config-stages.json" 2>$null
+            ../diagnostic/tools/validation/launcher_pair_ci_diagnostic.py `
+            --subject-root . --variant "$env:VARIANT" `
+            --output "$env:RUNNER_TEMP/launcher-pair-$env:VARIANT.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: candidate-config-stages
-          path: |
-            ${{ runner.temp }}/candidate-config-stages.json
-            ${{ runner.temp }}/cg-hook-stage-diagnostic-*/stages.jsonl
+          name: launcher-pair-${{ matrix.variant }}
+          path: ${{ runner.temp }}/launcher-pair-${{ matrix.variant }}.json
           if-no-files-found: warn
           retention-days: 7

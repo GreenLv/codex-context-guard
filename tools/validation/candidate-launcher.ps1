@@ -57,10 +57,75 @@ if ($isHook) {
 # and the configured path is invoked directly; an explicit configured path
 # that is missing or not executable is an error distinct from "nothing
 # configured" and never silently falls back to PATH probing.
+# Configuration primitives avoid general cmdlet discovery only for ordinary
+# local filesystem paths. Other providers, PSDrives and links keep the cmdlets.
+function Get-ContextGuardLocalPathKind([string]$Path) {
+    # -1: use provider cmdlet; 0: missing; 1: file; 2: directory.
+    if ($Path.Length -ge 240 -or $Path -notmatch '^[A-Za-z]:\\' -or $Path -match '[/"<>|?*\x00-\x1f]' -or
+        $Path.Substring(2) -match ':') { return -1 }
+    $parts = $Path.Substring(3).Split([char]'\')
+    for ($index = 0; $index -lt $parts.Length; $index++) {
+        $part = $parts[$index]
+        # Device basenames (also with extensions) are provider-only inputs.
+        if ($part -match '^(?:CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM[0-9\u00b9\u00b2\u00b3]*|LPT[0-9\u00b9\u00b2\u00b3]*)(?:[ .]|$)') { return -1 }
+        if (($part.Length -eq 0 -and $index -ne $parts.Length - 1) -or
+            $part -in @('.', '..') -or $part -ne $part.Trim() -or $part -ne $part.TrimEnd([char[]]@(' ', '.'))) { return -1 }
+    }
+    $root = $Path.Substring(0, 3)
+    $drive = $ExecutionContext.SessionState.Drive.Get($Path.Substring(0, 1))
+    if ($drive.Provider.ImplementingType.FullName -ne 'Microsoft.PowerShell.Commands.FileSystemProvider' -or
+        -not [string]::Equals($drive.Root, $root, [System.StringComparison]::OrdinalIgnoreCase)) { return -1 }
+    # The drive root must be available. Only missing descendants mean no file;
+    # permission, malformed-path and unknown I/O failures remain terminating.
+    $attributes = [System.IO.File]::GetAttributes($root)
+    if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return -1 }
+    $cursor = $root
+    foreach ($part in $parts) {
+        if ($part.Length -eq 0) { continue }
+        $cursor = [System.IO.Path]::Combine($cursor, $part)
+        try {
+            $attributes = [System.IO.File]::GetAttributes($cursor)
+        } catch {
+            $filesystemError = $_.Exception
+            while ($filesystemError.InnerException) { $filesystemError = $filesystemError.InnerException }
+            if ($filesystemError -is [System.IO.FileNotFoundException] -or
+                $filesystemError -is [System.IO.DirectoryNotFoundException]) { return 0 }
+            throw
+        }
+        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return -1 }
+    }
+    if (($attributes -band [System.IO.FileAttributes]::Directory) -ne 0) { return 2 }
+    return 1
+}
+
+function Test-ContextGuardConfigOverride([string]$Name) {
+    return ($ExecutionContext.SessionState.InvokeProvider.Item.Exists("Alias:$Name", $false, $true) -or
+            $ExecutionContext.SessionState.InvokeProvider.Item.Exists("Function:$Name", $false, $true))
+}
+
+function Join-ContextGuardConfigPath([string]$Parent, [string]$Child) {
+    if (-not (Test-ContextGuardConfigOverride 'Join-Path')) {
+        $kind = Get-ContextGuardLocalPathKind $Parent
+        if ($kind -eq 0 -or $kind -eq 2) {
+            $joined = [System.IO.Path]::Combine($Parent, $Child)
+            if ($joined.Length -lt 240) { return $joined }
+        }
+    }
+    return (Join-Path $Parent $Child)
+}
+
+function Test-ContextGuardConfigLeaf([string]$Path) {
+    if (-not (Test-ContextGuardConfigOverride 'Test-Path')) {
+        $kind = Get-ContextGuardLocalPathKind $Path
+        if ($kind -ge 0) { return ($kind -eq 1) }
+    }
+    return (Test-Path -LiteralPath $Path -PathType Leaf)
+}
+
 $configuredInterpreter = $null
-$configRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }
-$configFile = Join-Path $configRoot "context-guard\interpreter.conf"
-if (Test-Path -LiteralPath $configFile -PathType Leaf) {
+$configRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-ContextGuardConfigPath $env:USERPROFILE ".codex" }
+$configFile = Join-ContextGuardConfigPath $configRoot "context-guard\interpreter.conf"
+if (Test-ContextGuardConfigLeaf $configFile) {
     try {
         # Existing bindings use BOM-less UTF-8, including non-ASCII paths.
         # PS5.1 Get-Content otherwise guesses the system ANSI code page.
@@ -89,7 +154,7 @@ if (Test-Path -LiteralPath $configFile -PathType Leaf) {
     }
 }
 if ($configuredInterpreter) {
-    if (-not (Test-Path -LiteralPath $configuredInterpreter -PathType Leaf)) {
+    if (-not (Test-ContextGuardConfigLeaf $configuredInterpreter)) {
         [Console]::Error.WriteLine("Context Guard interpreter configuration is missing or not executable: $configuredInterpreter. Please review the Context Guard installation in Codex Plugins and the supported Python on PATH, or correct $configFile.")
         Write-HookTraceEnd 2
         exit 2
