@@ -403,8 +403,9 @@ class RouterFastPathTests(_RouterHarness):
         self.assertEqual(stderr2.getvalue(), b"HEAVY-STDERR")
         self.assertEqual(len(fake.calls), 1)
         args, kwargs = fake.calls[0]
-        self.assertEqual(os.path.basename(args[0][1]), "context_guard.py")
-        self.assertEqual(args[0][-1], "hook")
+        self.assertEqual(args[0], [sys.executable, "-B", str(ENTRY), "hook"])
+        self.assertEqual(args[0][1], "-B")
+        self.assertTrue(kwargs.get("capture_output"))
         self.assertEqual(kwargs.get("input"), raw)
 
 

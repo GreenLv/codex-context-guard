@@ -6534,7 +6534,22 @@ class ContextGuardTests(unittest.TestCase):
         """Generic `python3`/`python` names say nothing about the version, so
         the launcher must still capability-probe them and fail closed when no
         supported interpreter exists."""
-        launcher = MODULE_PATH.parent / "run_context_guard.sh"
+        source = (MODULE_PATH.parent / "run_context_guard.sh").read_text(encoding="utf-8")
+        global_loop = 'for candidate in \\\n'
+        self.assertEqual(source.count(global_loop), 1)
+        start = source.index(global_loop)
+        end = source.index("\ndo\n", start)
+        global_candidates = source[start:end]
+        self.assertIn("/opt/anaconda3/bin/python", global_candidates)
+        missing_global = self.root / "missing-global" / "python3"
+        self.assertFalse(missing_global.exists())
+        replacement = f"for candidate in '{missing_global}'"
+        self.assertEqual(source.count(global_candidates), 1)
+        source = source.replace(global_candidates, replacement, 1)
+        self.assertNotIn(global_candidates, source)
+        self.assertIn(replacement + "\ndo\n", source)
+        launcher = self.root / "run_context_guard-no-python.sh"
+        launcher.write_text(source, encoding="utf-8")
         fake_bin = self.root / "fake-bin-generic-only"
         fake_bin.mkdir()
         probed = self.root / "generic-probed-fallback"
@@ -6547,8 +6562,11 @@ class ContextGuardTests(unittest.TestCase):
         )
         old_python3.chmod(0o755)
         (fake_bin / "dirname").symlink_to(shutil.which("dirname"))
-        environment = os.environ.copy()
-        environment["PATH"] = str(fake_bin)
+        environment = {
+            "PATH": str(fake_bin),
+            "HOME": str(self.root / "os-home"),
+            "CODEX_HOME": str(self.root / "codex-home"),
+        }
         result = subprocess.run(
             ["/bin/sh", str(launcher), "self-test"],
             text=True,

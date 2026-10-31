@@ -562,6 +562,13 @@ class CodeModeFamilyTests(P0Harness):
         # Old tools are retained as bytes, never imported or executed.
         with (tools / "native_code_mode_command.py").open("a") as stream:
             stream.write("\n# synthetic retained execution revision\n")
+        # The retained identity includes a nonempty synthetic runtime; these
+        # bytes are measured only, never imported or executed.
+        scripts = execution.root / "scripts"
+        scripts.mkdir()
+        (scripts / "context_guard.py").write_text(
+            "# synthetic retained runtime identity fixture\n", encoding="utf-8"
+        )
         execution.git("add", "-A")
         execution.git("commit", "-qm", "retained synthetic tools")
         self.plan.update(source=execution.identity(), runtime_sha256=original.base.runtime(execution.root),
