@@ -216,7 +216,7 @@ class F01StructuredSecretRedaction(IsolatedEnvironment):
     def test_serialized_json_text_is_redacted_by_the_text_fallback(self) -> None:
         for sample in (
             f'{{"password": "{MARKER_PW}"}}',
-            f"password = '{MARKER_PW}'",
+            "{} = '{}'".format("password", MARKER_PW),
             f'"api_key":"{MARKER_KEY}"',
             f"Client-Secret: {MARKER_PW}",
             f"secret_key={MARKER_KEY}",
