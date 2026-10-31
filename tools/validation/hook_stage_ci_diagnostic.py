@@ -13,12 +13,15 @@ import time
 from pathlib import Path
 
 import hook_timeout_ci_diagnostic as base
+import launcher_pair_ci_diagnostic as pair
 
 LAUNCHER = "scripts/run-context-guard.ps1"
-LAUNCHER_SHA = "420fbc7706a0cdb2b6f152af0beba146f700b51f4bab6b3eabf885817c46f60b"
+ORIGINAL_LAUNCHER_SHA = "420fbc7706a0cdb2b6f152af0beba146f700b51f4bab6b3eabf885817c46f60b"
+LAUNCHER_SHA = "bbad778aac22ebb94e8c6917c1b662c2a79e1eb80b45fe85c104b03639446452"
 PHASES = {"script_entry", "original_trace_complete", "config_start", "config_end",
           "resolver_setup_end", "resolve_start", "resolve_end", "probe_start", "probe_end",
-          "runtime_start", "runtime_end"}
+          "runtime_start", "runtime_end", "config_root_start", "config_root_end",
+          "config_file_join_start", "config_file_join_end", "config_test_start", "config_test_end"}
 PRELUDE = r'''try {
     [System.IO.File]::AppendAllText($env:CG_DIAGNOSTIC_STAGE_FILE, '{"phase":"script_entry","candidate":-1,"elapsed_ms":0,"value":0}' + "`n")
 } catch {}
@@ -41,6 +44,20 @@ def instrument(original):
     insertions = [
         ("function Write-HookTraceEnd([int]$code) {", "Write-CgDiagnosticStage 'original_trace_complete'\n", False),
         ("$configuredInterpreter = $null\n$configRoot", "Write-CgDiagnosticStage 'config_start'\n", False),
+        ('$configRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }',
+         "Write-CgDiagnosticStage 'config_root_start'\n", False),
+        ('$configRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USERPROFILE ".codex" }',
+         "\nWrite-CgDiagnosticStage 'config_root_end' -1 ([int][bool]$env:CODEX_HOME)", True),
+        ('$configFile = Join-Path $configRoot "context-guard\\interpreter.conf"',
+         "Write-CgDiagnosticStage 'config_file_join_start'\n", False),
+        ('$configFile = Join-Path $configRoot "context-guard\\interpreter.conf"',
+         "\nWrite-CgDiagnosticStage 'config_file_join_end'", True),
+        ('if (Test-Path -LiteralPath $configFile -PathType Leaf) {',
+         "Write-CgDiagnosticStage 'config_test_start'\n", False),
+        ('if (Test-Path -LiteralPath $configFile -PathType Leaf) {',
+         "\n    Write-CgDiagnosticStage 'config_test_end' -1 1", True),
+        ('\nif ($configuredInterpreter) {',
+         "\nelse {\n    Write-CgDiagnosticStage 'config_test_end' -1 0\n}\n", False),
         ("# Avoid PowerShell's general command discovery for ordinary local PATHs.",
          "Write-CgDiagnosticStage 'config_end'\n", False),
         ("$candidates = @(", "Write-CgDiagnosticStage 'resolver_setup_end'\n", False),
@@ -120,7 +137,10 @@ def observe(subject, outer, trace_enabled, shell, identity, owned_process):
             target.write_bytes((subject / relative).read_bytes())
         identity.compare_artifact(subject, installed)
         row["original_artifact_verified"] = True
-        patched = instrument((installed / LAUNCHER).read_bytes())
+        if hashlib.sha256((installed / LAUNCHER).read_bytes()).hexdigest() != ORIGINAL_LAUNCHER_SHA:
+            raise ValueError("original_launcher_identity_differs")
+        candidate = pair.candidate_bytes(Path(__file__).with_name("candidate-launcher.ps1"))
+        patched = instrument(candidate)
         (installed / LAUNCHER).write_bytes(patched)
         row["instrumented_launcher_sha256"] = hashlib.sha256(patched).hexdigest()
         for name in ("home", "project", "trace"):
@@ -190,7 +210,8 @@ def observe(subject, outer, trace_enabled, shell, identity, owned_process):
 def main():
     report = {"schema": "hook-stage-ci-diagnostic/v1", "native_acceptance": False,
               "release_gate": False, "instrumented_copy": True, "subject_commit": base.SUBJECT,
-              "runtime_tree_sha256": base.RUNTIME, "original_launcher_sha256": LAUNCHER_SHA,
+              "runtime_tree_sha256": base.RUNTIME, "original_launcher_sha256": ORIGINAL_LAUNCHER_SHA,
+              "candidate_launcher_sha256": LAUNCHER_SHA,
               "driver_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "stage_semantics": "PowerShell boundaries; runtime_start does not prove Python entry",
               "status": "diagnostic_error"}

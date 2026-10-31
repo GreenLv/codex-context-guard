@@ -22,7 +22,8 @@ try:
     SPEC.loader.exec_module(d)
 finally:
     sys.path.pop(0)
-ORIGINAL = (ROOT / d.LAUNCHER).read_bytes()
+BASE_ORIGINAL = (ROOT / d.LAUNCHER).read_bytes()
+ORIGINAL = (DIRECTORY / "candidate-launcher.ps1").read_bytes()
 
 
 class StageControls(unittest.TestCase):
@@ -34,7 +35,8 @@ class StageControls(unittest.TestCase):
         self.assertTrue(text.startswith("try {\n    [System.IO.File]::AppendAllText"))
         self.assertNotIn("New-Object", d.PRELUDE)
         for phase in d.PHASES - {"script_entry"}:
-            self.assertEqual(text.count("Write-CgDiagnosticStage '" + phase + "'"), 1)
+            self.assertEqual(text.count("Write-CgDiagnosticStage '" + phase + "'"),
+                             2 if phase == "config_test_end" else 1)
         self.assertEqual(hashlib.sha256(ORIGINAL).hexdigest(), d.LAUNCHER_SHA)
 
     def test_drift_and_ambiguous_anchors_are_refused(self):
@@ -65,7 +67,7 @@ class StageControls(unittest.TestCase):
             root = Path(temporary)
             subject = root / "subject"
             (subject / "scripts").mkdir(parents=True)
-            (subject / d.LAUNCHER).write_bytes(ORIGINAL)
+            (subject / d.LAUNCHER).write_bytes(BASE_ORIGINAL)
             outer = root / "fixture"
             outer.mkdir()
             class Accounting(ctypes.Structure):
