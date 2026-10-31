@@ -1,12 +1,12 @@
-name: Windows CommandDiscovery and Modules trace (diagnosis only)
+name: Original fixture on Windows 2022 (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: One dual-source discovery trace / Windows Python 3.12
-    runs-on: windows-latest
+    name: Original four-Hook fixture / Windows 2022 Python 3.12
+    runs-on: windows-2022
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -22,18 +22,18 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: One Utility-preloaded dual-source host trace, no product execution
+      - name: Unmodified original four-Hook fixture, no warmup
         working-directory: subject
         shell: pwsh
         run: |
-          uv run --locked --only-group test --python python python -B `
-            ../diagnostic/tools/validation/host_discovery_trace.py `
-            --subject-root . --output "$env:RUNNER_TEMP/host-modules-trace.json" 2>$null
+          uv run --locked --only-group test --python python python -B -m pytest -q `
+            tests/test_marketplace_artifact.py::MarketplaceArtifactTests::test_real_hook_does_not_generate_bytecode_or_break_full_parity `
+            --junitxml="$env:RUNNER_TEMP/original-fixture-windows2022.xml"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: host-modules-trace
+          name: original-fixture-windows2022
           path: |
-            ${{ runner.temp }}/host-modules-trace.json
+            ${{ runner.temp }}/original-fixture-windows2022.xml
           if-no-files-found: warn
           retention-days: 7
