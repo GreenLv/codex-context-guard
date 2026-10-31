@@ -4,7 +4,7 @@
 
 以下版本从新到旧排列。公开可用状态以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 的读回为准，与发布线源码分别核验。较早的 `0.12.1` 正式版本 tag 指向提交 `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`。Schema 和协议的完整历史见[版本策略](docs/VERSIONING.md)，测试过程与平台边界见[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 0.16.0 — 2026-10-30
+## 0.16.0 — 2026-10-31
 
 ### 亮点
 
@@ -16,6 +16,8 @@
 
 ### 变更
 
+- Windows 独立答案审读与验收子进程在临时进程句柄无法关闭时停止。启动失败保留可用的原生错误码；清理结果以脱敏状态报告，不暴露命令参数；未加入 Job 的暂停子进程会单独等待退出，不凭 Job 关闭推断退出；线程可能已运行时则有界收束 Job 进程树。退出或关闭未获确认时仍保持未知；本次源码修复需要重新开展 Windows 验收。
+- 沿用自 0.15.1 的已知限制：文件路径中的 `test` 等词语可能被计为额外验收项；多项误识别可能使 Context Guard 提前激活。
 - 字段感知的证据清理会在序列化前替换文档化敏感键（`password`、`api_key`、`client_secret`、`authorization`、`credentials` 及近变体，忽略大小写与分隔符）下的值；JSON 编码的工具响应字符串也会先解码再结构化清理。可分享导出会从 handoff 与 successor pack 两个表面的全部自由文本（含状态、下一步与授权字段）抹除私有路径域——数据根、插件根、Codex home 与运行账户的操作系统主目录。同形状的普通业务字段（如 `password_policy`）不受影响。原始 prompt 记录保持权威原始字节。
 - `context-guard export` 以基于原子 link 的独占发布创建目标；已存在的文件、目录或符号链接目标会得到明确错误且原字节不变。父目录身份在导出路径解析时捕获，并在目录打开与每个发布边界复核：链上任一点的父目录替换都会使导出失败，经被替换路径落地的发布对象按其自身对象身份撤回。successor pack 拒绝已存在的输出目录。导出路径拒绝符号链接；导出写入器不 chmod 项目目录；新导出文件在 POSIX 上保持仅属主可读。
 - 私有权限失败显式可见：`PrivateBoundaryError` 向上传播而非被吞掉，未通过验证的边界不再写入敏感数据，错误文本不含私有内容。Windows 上目录隔离使用受保护三条目 DACL（当前用户、`SYSTEM`、Administrators），通过可审查的 ctypes 结构与 API 访问器建立——`TOKEN_USER` SID 解引用、自相对描述符字节 16 的 DACL 偏移、`GetSecurityDescriptorDacl`、`0x80000004` 受保护 DACL 信息标志——以 API 形状替身与纯 SID 格式化测试验证；读回核验比较受保护标志和确切的三条 ACE 权限结构，允许 Windows 保留独立的 AI 自动继承元数据；缺少保护或存在额外权限仍拒绝。文件级隔离来自已验证父目录加继承，写路径不做逐文件 ACL 调用。真实 Windows DACL、继承与非授权读取行为仍是独立原生验收门。

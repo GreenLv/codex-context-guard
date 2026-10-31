@@ -1,6 +1,6 @@
 # Versioning policy
 
-## 0.16.0 — 2026-10-30
+## 0.16.0 — 2026-10-31
 
 This is the local release-line source. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).

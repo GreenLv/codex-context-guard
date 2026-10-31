@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **发布线源码：0.16.0 — 2026-10-30。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并让安装以事务方式完成。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 清理使用有界工作预算。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **发布线源码：0.16.0 — 2026-10-31。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并让安装以事务方式完成。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 清理使用有界工作预算。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 从源码安装
 

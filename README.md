@@ -12,7 +12,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **Release-line source: 0.16.0 — 2026-10-30.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and makes installation transactional. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
+> **Release-line source: 0.16.0 — 2026-10-31.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and makes installation transactional. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
 
 ## Install from source
 

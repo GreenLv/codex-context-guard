@@ -91,8 +91,11 @@ class ProcessTreeTest(unittest.TestCase):
                     tree.OwnedProcess.spawn(["fixture"])
                 if deny == "limit":
                     launch.assert_not_called()
-                else:
+                elif deny == "assign":
                     self.assertTrue(process.killed)
+                else:
+                    self.assertGreater(api.terminated, 0)
+                    self.assertTrue(process.waited)
                 self.assertIn(111, api.closed)
                 return
             owned = tree.OwnedProcess.spawn(["fixture"])
@@ -119,7 +122,8 @@ class ProcessTreeTest(unittest.TestCase):
     def test_windows_cleanup_denial_never_claims_empty_tree(self):
         for failure in ("terminate", "query", "close"):
             with self.subTest(failure=failure):
-                owned, _api = self.windows_spawn(failure)
+                owned, api = self.windows_spawn()
+                api.deny = failure
                 result = owned.close(1)
                 self.assertFalse(result["owned_tree_empty"])
                 self.assertIsNotNone(result["process_group_cleanup_error"])

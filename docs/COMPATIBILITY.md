@@ -1,6 +1,6 @@
 # Compatibility and Verification Status
 
-## 0.16.0 — 2026-10-30
+## 0.16.0 — 2026-10-31
 
 This is the local release-line source. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
@@ -10,6 +10,10 @@ Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
 without execution approval are unchanged. Upgrade boundaries relative to
 published 0.15.1:
 
+- A known limitation carried over from 0.15.1 remains: acceptance keywords
+  inside a file path can be counted as extra acceptance items. Multiple such
+  items can activate Context Guard earlier than expected. A path name does
+  not itself authorize an action.
 - Exports create their target exclusively. Re-exporting to an existing path
   now fails with an actionable error instead of replacing the file; choose a
   new file name. Export paths reject symbolic links, and exports no longer

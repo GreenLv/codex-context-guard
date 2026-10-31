@@ -416,8 +416,10 @@ def invoke(command, prompt, *, timeout=60, codex_home=None):
                 if (cleanup["process_group_cleanup_error"] is not None
                         or not cleanup["owned_process_exited"]
                         or not cleanup["owned_tree_no_running_members"]):
-                    raise ValueError("review_cleanup_timeout")
-            except (OSError, ValueError, TypeError, KeyError) as cleanup_error:
+                    failure = ValueError("review_cleanup_timeout")
+                    failure.cleanup = cleanup
+                    raise failure
+            except BaseException as cleanup_error:
                 if primary_error is not None:
                     raise primary_error from cleanup_error
                 raise
