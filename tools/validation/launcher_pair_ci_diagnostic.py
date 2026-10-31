@@ -42,15 +42,18 @@ def candidate_bytes(path):
     return raw
 
 
-def environment_for(outer, interpreter, inherit_psmodulepath=False):
+def environment_for(outer, interpreter, combined_environment=False):
     environment = {"PATH": str(Path(interpreter).parent) + os.pathsep + os.defpath,
         "HOME": str(outer / "os-home"), "USERPROFILE": str(outer / "os-home"),
         "CODEX_HOME": str(outer / "home"), "PLUGIN_DATA": str(outer / "data"),
         "TMPDIR": str(outer)}
     environment.update({key: os.environ[key] for key in
         ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT") if key in os.environ})
-    if inherit_psmodulepath:
-        environment["PSModulePath"] = os.environ["PSModulePath"]
+    if combined_environment:
+        environment.update(PSModulePath=os.environ["PSModulePath"],
+            TMP=str(outer / "tmp"), TEMP=str(outer / "tmp"),
+            APPDATA=str(outer / "appdata"), LOCALAPPDATA=str(outer / "localappdata"),
+            PSModuleAnalysisCachePath=str(outer / "module-cache/ModuleAnalysisCache"))
     return environment
 
 
@@ -87,10 +90,11 @@ def tree_observation(owner):
     return result
 
 
-def run_case(subject, outer, variant, shell, identity, owned_process, candidate, inherit_psmodulepath=False):
+def run_case(subject, outer, variant, shell, identity, owned_process, candidate, combined_environment=False):
     row = {"variant": variant, "event": "UserPromptSubmit", "configured": False,
         "trace_enabled": False, "timeout_seconds": 30, "result": "driver_error",
-        "inherited_psmodulepath": inherit_psmodulepath}
+        "inherited_psmodulepath": combined_environment,
+        "requested_private_environment": combined_environment}
     owner = None
     cleanup = {}
     stdout = stderr = b""
@@ -114,10 +118,13 @@ def run_case(subject, outer, variant, shell, identity, owned_process, candidate,
             raise ValueError("unknown_variant")
         verify_variant(installed, expected)
         row["launcher_sha256"] = expected[LAUNCHER]
-        # Preserve the original no-config fixture, including absent os-home.
+        # A is unchanged; B adds only isolated directories plus the declared variables.
         for leaf in ("home", "project"):
             (outer / leaf).mkdir()
-        environment = environment_for(outer, sys.executable, inherit_psmodulepath)
+        if combined_environment:
+            for leaf in ("os-home", "tmp", "appdata", "localappdata", "module-cache"):
+                (outer / leaf).mkdir()
+        environment = environment_for(outer, sys.executable, combined_environment)
         row["path_has_exact_dot"] = "." in environment["PATH"].split(os.pathsep)
         if not row["path_has_exact_dot"]:
             raise ValueError("original_dot_path_unavailable")
@@ -187,10 +194,10 @@ def run_case(subject, outer, variant, shell, identity, owned_process, candidate,
     return row
 
 
-def psmodulepath_pair(subject, temp_root, shell, identity, owned_process, candidate, output):
-    result = {"experiment": "inherit_parent_PSModulePath_only", "observations": [],
+def combined_environment_pair(subject, temp_root, shell, identity, owned_process, candidate, output):
+    result = {"experiment": "private_environment_plus_parent_PSModulePath", "observations": [],
         "parent_psmodulepath_present": "PSModulePath" in os.environ,
-        "cold_state_comparison": False, "order": ["original_environment", "inherit_parent_psmodulepath"],
+        "cold_state_comparison": False, "order": ["original_environment", "private_environment_plus_parent_psmodulepath"],
         "status": "diagnostic_error"}
     if not result["parent_psmodulepath_present"]:
         result["status"] = "parent_psmodulepath_absent_not_executed"
@@ -198,7 +205,7 @@ def psmodulepath_pair(subject, temp_root, shell, identity, owned_process, candid
     outputs = [output.with_name(output.stem + "-" + str(index) + ".json") for index in range(2)]
     if any(path.exists() or path.is_symlink() for path in outputs):
         raise ValueError("existing_side_output")
-    outer = Path(tempfile.mkdtemp(prefix="cg-psmodulepath-control-", dir=temp_root))
+    outer = Path(tempfile.mkdtemp(prefix="cg-combined-environment-", dir=temp_root))
     for index, inherit in enumerate((False, True)):
         row = run_case(subject, outer, "original", shell, identity, owned_process, candidate, inherit)
         row["ordinal"] = index + 1
@@ -231,10 +238,10 @@ def main():
         parser.add_argument("--subject-root", type=Path, required=True)
         parser.add_argument("--variant", choices=("original", "candidate"), required=True)
         parser.add_argument("--output", type=Path, required=True)
-        parser.add_argument("--psmodulepath-pair", action="store_true")
+        parser.add_argument("--combined-environment-pair", action="store_true")
         args = parser.parse_args()
         output = args.output
-        if args.psmodulepath_pair and args.variant != "original":
+        if args.combined_environment_pair and args.variant != "original":
             raise ValueError("control_requires_original_1178")
         if (sys.platform != "win32" or os.environ.get("GITHUB_ACTIONS") != "true"
                 or os.environ.get("RUNNER_OS") != "Windows"):
@@ -262,9 +269,9 @@ def main():
             raise ValueError("shell_unavailable")
         report.update(python=list(sys.version_info[:3]), variant=args.variant,
             shell="powershell" if Path(shell).stem.lower() == "powershell" else "pwsh")
-        if args.psmodulepath_pair:
+        if args.combined_environment_pair:
             report.pop("candidate_launcher_sha256", None)
-            report.update(psmodulepath_pair(subject, temp_root, shell, identity, OwnedProcess, candidate, output))
+            report.update(combined_environment_pair(subject, temp_root, shell, identity, OwnedProcess, candidate, output))
         else:
             outer = Path(tempfile.mkdtemp(prefix="cg-launcher-pair-", dir=temp_root))
             row = run_case(subject, outer, args.variant, shell, identity, OwnedProcess, candidate)

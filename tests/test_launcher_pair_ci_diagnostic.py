@@ -25,11 +25,15 @@ class PairControls(unittest.TestCase):
         self.assertEqual(set(env), {"PATH", "HOME", "USERPROFILE", "CODEX_HOME", "PLUGIN_DATA", "TMPDIR", "SYSTEMROOT"})
         self.assertNotIn("secret", json.dumps(env))
 
-    def test_inheriting_parent_psmodulepath_changes_exactly_one_environment_entry(self):
+    def test_combined_environment_changes_only_the_declared_entries(self):
         with mock.patch.dict(os.environ, {"PSModulePath": "synthetic-private-module-path"}, clear=True):
             original = d.environment_for(Path("/synthetic"), "/synthetic/python.exe")
             inherited = d.environment_for(Path("/synthetic"), "/synthetic/python.exe", True)
             self.assertEqual(inherited.pop("PSModulePath"), "synthetic-private-module-path")
+            for key, relative in (("TMP", "tmp"), ("TEMP", "tmp"), ("APPDATA", "appdata"),
+                                  ("LOCALAPPDATA", "localappdata"),
+                                  ("PSModuleAnalysisCachePath", "module-cache/ModuleAnalysisCache")):
+                self.assertEqual(inherited.pop(key), str(Path("/synthetic") / relative))
             self.assertEqual(original, inherited)
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(KeyError):
@@ -37,7 +41,7 @@ class PairControls(unittest.TestCase):
 
     def test_missing_parent_variable_executes_neither_side(self):
         with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(d, "run_case") as run:
-            result = d.psmodulepath_pair(None, None, None, None, None, None, None)
+            result = d.combined_environment_pair(None, None, None, None, None, None, None)
             run.assert_not_called()
             self.assertEqual(result["status"], "parent_psmodulepath_absent_not_executed")
             self.assertEqual(result["observations"], [])
@@ -59,7 +63,7 @@ class PairControls(unittest.TestCase):
                 return {"fixture_cleanup": "removed", "result": "timeout", "no_bytecode": True,
                         "controlled_variant_bytes_unchanged": True}
             with mock.patch.dict(os.environ, {"PSModulePath": "synthetic-private-value"}, clear=True), mock.patch.object(d, "run_case", side_effect=run):
-                result = d.psmodulepath_pair(None, root, None, None, None, None, output)
+                result = d.combined_environment_pair(None, root, None, None, None, None, output)
             self.assertEqual(len(paths), 2)
             self.assertEqual(len(result["observations"]), 2)
             self.assertEqual(result["status"], "observation_recorded_not_acceptance")
@@ -70,7 +74,7 @@ class PairControls(unittest.TestCase):
             row = {"fixture_cleanup": "retained", "result": "timeout", "no_bytecode": True,
                    "controlled_variant_bytes_unchanged": True}
             with mock.patch.object(d, "run_case", return_value=row) as run:
-                result = d.psmodulepath_pair(None, Path(temporary), None, None, None, None,
+                result = d.combined_environment_pair(None, Path(temporary), None, None, None, None,
                                             Path(temporary) / "result.json")
             self.assertEqual(run.call_count, 1)
             self.assertEqual(result["status"], "diagnostic_error")
@@ -105,7 +109,7 @@ class PairControls(unittest.TestCase):
             with self.assertRaises(ValueError):
                 d.verify_variant(root, expected)
 
-    def case(self, variant="original", timeout=False, cleanup=True, corrupt=False):
+    def case(self, variant="original", timeout=False, cleanup=True, corrupt=False, combined=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             subject = root / "subject"
@@ -143,7 +147,8 @@ class PairControls(unittest.TestCase):
                 close=mock.Mock(return_value={"cleanup_complete": cleanup, "owned_process_exited": True, "owned_tree_no_running_members": cleanup}))
             def spawn(command, **kwargs):
                 self.assertEqual(command, ["synthetic-powershell", "-NoProfile", "-NonInteractive", "-File", str(outer / "installed" / d.LAUNCHER), "hook"])
-                self.assertFalse((outer / "os-home").exists())
+                for leaf in ("os-home", "tmp", "appdata", "localappdata", "module-cache"):
+                    self.assertEqual((outer / leaf).is_dir(), combined)
                 self.assertFalse((outer / "home/context-guard/interpreter.conf").exists())
                 self.assertEqual((outer / "installed" / d.LAUNCHER).read_bytes(), candidate if variant == "candidate" else original)
                 self.assertEqual(kwargs["cwd"], subject)
@@ -152,13 +157,21 @@ class PairControls(unittest.TestCase):
             owned = types.SimpleNamespace(spawn=mock.Mock(side_effect=spawn))
             identity = types.SimpleNamespace(distribution_manifest=lambda root: files,
                 compare_artifact=lambda root, installed: d.verify_variant(installed, files))
-            with mock.patch.object(d, "ORIGINAL_SHA256", d.sha(original)), mock.patch.object(d, "CANDIDATE_SHA256", d.sha(candidate)), mock.patch.object(os, "defpath", "." + os.pathsep + "/synthetic/bin"):
-                row = d.run_case(subject, outer, variant, "synthetic-powershell", identity, owned, candidate)
+            with mock.patch.dict(os.environ, {"PSModulePath": "secret-parent-module-path"}), mock.patch.object(d, "ORIGINAL_SHA256", d.sha(original)), mock.patch.object(d, "CANDIDATE_SHA256", d.sha(candidate)), mock.patch.object(os, "defpath", "." + os.pathsep + "/synthetic/bin"):
+                row = d.run_case(subject, outer, variant, "synthetic-powershell", identity, owned, candidate, combined)
             owner.close.assert_called_once_with(timeout=5)
             self.assertEqual(outer.exists(), not cleanup)
             self.assertNotIn("secret", json.dumps(row))
             self.assertNotIn(str(root), json.dumps(row))
             return row
+
+    def test_combined_directories_exist_before_spawn_without_binding_or_trace(self):
+        row = self.case(combined=True)
+        self.assertTrue(row["requested_private_environment"])
+        self.assertTrue(row["inherited_psmodulepath"])
+        self.assertFalse(row["configured"])
+        self.assertFalse(row["trace_enabled"])
+        self.assertEqual(row["timeout_seconds"], 30)
 
     def test_original_and_candidate_share_input_environment_and_exact_other_bytes(self):
         for variant in ("original", "candidate"):

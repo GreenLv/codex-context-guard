@@ -1,11 +1,11 @@
-name: Windows PSModulePath control (diagnosis only)
+name: Windows combined environment control (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: Fixed 1178 PSModulePath control / Python 3.12
+    name: Fixed 1178 combined environment control / Python 3.12
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -22,21 +22,21 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: One single-variable pair, no trace or binding, not acceptance
+      - name: One declared-combination pair, no trace or binding, not acceptance
         working-directory: subject
         shell: pwsh
         run: |
           uv run --locked --only-group test --python python python -B `
             ../diagnostic/tools/validation/launcher_pair_ci_diagnostic.py `
-            --subject-root . --variant original --psmodulepath-pair `
-            --output "$env:RUNNER_TEMP/psmodulepath-control.json" 2>$null
+            --subject-root . --variant original --combined-environment-pair `
+            --output "$env:RUNNER_TEMP/combined-environment-control.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: psmodulepath-control
+          name: combined-environment-control
           path: |
-            ${{ runner.temp }}/psmodulepath-control.json
-            ${{ runner.temp }}/psmodulepath-control-0.json
-            ${{ runner.temp }}/psmodulepath-control-1.json
+            ${{ runner.temp }}/combined-environment-control.json
+            ${{ runner.temp }}/combined-environment-control-0.json
+            ${{ runner.temp }}/combined-environment-control-1.json
           if-no-files-found: warn
           retention-days: 7
