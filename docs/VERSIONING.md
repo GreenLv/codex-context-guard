@@ -1,11 +1,11 @@
 # Versioning policy
 
-## 0.16.0 — Unreleased
+## 0.16.0 — 2026-10-31
 
-This is the local release-line source. Public availability is determined
+This is the 0.16.0 release line. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 
-This minor release-line source addresses the 2026-10 engineering review (F01–F10, D01).
+This minor release addresses the 2026-10 engineering review (F01–F10, D01).
 Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the
 default business-tool path without execution approval are unchanged; no state
 migration runs. Observable runtime changes relative to published 0.15.1:
@@ -34,7 +34,7 @@ Native Windows DACL facts and real host re-delivery behavior are separate
 gates from these source-level checks. Changed runtime bytes require a fresh isolated HOME for installation
 evidence; consumed 0.15.1 caches stay immutable.
 
-The unpublished 0.16.0 candidate also separates literal locator bytes from
+Version 0.16.0 also separates literal locator bytes from
 scope intent. Full-scope words, negation and counts are derived from the
 non-locator prose; subjects, readback targets and immutable source records
 retain the original bytes. Explicit prose scope still uses the same coverage

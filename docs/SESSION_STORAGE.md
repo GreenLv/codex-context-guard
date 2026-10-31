@@ -7,12 +7,12 @@ legacy cleanup in this version.
 
 Here, HOME means the Codex configuration and task-data directory selected by
 `CODEX_HOME`, not the operating system user directory. Since the 0.16.0
-release-line source, direct commands without an explicit data root resolve their private
+release line, direct commands without an explicit data root resolve their private
 state under the active `CODEX_HOME` (`<home>/context-guard`), so isolated
 homes never share state; with `CODEX_HOME` unset the historical default is
 unchanged. The same directory also carries the optional existing
 `interpreter.conf` (one absolute interpreter path) that the Hook launchers
-consult on GUI hosts whose PATH lacks the installed Python; the launchers re-verify it on every start. The marketplace-only candidate
+consult on GUI hosts whose PATH lacks the installed Python; the launchers re-verify it on every start. The marketplace-only version
 does not create this file; GUI Python discovery still needs verification.
 
 Session identities are validated before any directory is used: a missing or
@@ -40,12 +40,12 @@ newly selected runtime does not import its ledger.
 See [compatibility](COMPATIBILITY.md) for the supported boundary and
 [local acceptance](LOCAL_ACCEPTANCE.md) for observed host routes.
 
-The marketplace-only candidate proposes a distinct market identity for new
+The marketplace-only version proposes a distinct market identity for new
 work. It has not established old-task continuation, independent enable/disable
 or strict no-op preservation through official installation. A second HOME is
 not proof of task or trust transfer. Keep old objects and daily configuration
 unchanged until the relevant native acceptance is complete. See
-[the candidate removal record](INSTALLER_REMOVAL.md).
+[the installer removal record](INSTALLER_REMOVAL.md).
 
 The new runtime resolves existing v2 state first, then legacy state; only a
 new session creates a v2 directory. Its legacy access is strictly read-only:

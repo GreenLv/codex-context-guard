@@ -12,20 +12,19 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **尚未发布的源码候选：0.16.0。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 清理使用有界工作预算。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **0.16.0 — 2026-10-31。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 清理使用有界工作预算。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-## 用 Codex 安装源码候选
+## 用 Codex 安装
 
-**0.16.0 是尚未发布（Unreleased）的源码候选。** 实验性市场名为
+**0.16.0 — 2026-10-31。** 实验性市场名为
 `codex-context-guard-v016`，与已发布的 0.15.1 市场不同。真实旧任务续接、
 两个版本独立启停和 GUI 启动尚未验证。
 
-发布后请使用明确命名的发行制品 `context-guard-0.16.0.zip`；本候选目前没有
-已发布的下载地址。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
+请下载明确命名的发行制品 [context-guard-0.16.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.0/context-guard-0.16.0.zip)。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
 它们带有仓库维护文件。把发行 ZIP 解压到自己控制的稳定目录并一直保留，
 官方市场后续读取和刷新仍依赖此来源，不要在安装后删除。
 
-候选维护者可从本检出构建 ZIP，输出到检出目录外的新路径，需要 Python 3.10+：
+维护者可从本检出构建 ZIP，输出到检出目录外的新路径，需要 Python 3.10+：
 
 ```shell
 python3 scripts/build_release_artifact.py --output ../context-guard-0.16.0.zip
@@ -40,7 +39,7 @@ codex plugin list --json
 
 如果原 `context-guard@codex-context-guard` 仍已启用，且未完成任务依赖它，
 请先停在这里，等这些任务完成。暂不接受切换时保持原设置，或另行配置独立
-HOME；本候选不能证明旧任务会自动续接。
+HOME；本版本不能证明旧任务会自动续接。
 
 只有当 `context-guard@codex-context-guard-v016` 不存在时，才注册并安装：
 
@@ -67,7 +66,7 @@ python3 scripts/artifact_identity.py --compare-to "/path/from/installedPath"
 原生门比较整个 HOME 最终的路径、模式与文件字节，不证明期间从未写入；
 合成旧缓存额外核对对象身份。
 
-本候选删除项目自有安装器、事务回滚、归档修复和自动解释器绑定，由 Codex
+本版本删除项目自有安装器、事务回滚、归档修复和自动解释器绑定，由 Codex
 负责安装。相应原生门完成前，请保留既有 0.15.1 对象和日常配置。新市场名
 本身不能证明缓存保护或旧任务续接。信任新版 Hook 前，再检查原
 `context-guard@codex-context-guard` 标识；若它仍已启用，先结束所有依赖旧版的
@@ -84,7 +83,7 @@ macOS/Windows 切换及旧任务续接仍须独立原生验收。
 ### Python 与升级
 
 既有 `<CODEX_HOME>/context-guard/interpreter.conf` 仍可读取并运行时验证，
-但本候选不创建绑定，错误绑定仍明确失败。PATH 发现失败后，POSIX 启动器
+但本版本不创建绑定，错误绑定仍明确失败。PATH 发现失败后，POSIX 启动器
 只探测固定的全局安装位置：Homebrew（`/opt/homebrew/bin` 或 `/usr/local/bin`，
 含 Python 3.10–3.14 的版本名）、`/opt/anaconda3/bin` 和 Python.framework。
 每个候选都必须通过隔离的 Python 3.10+ 探针并返回唯一标识；不会搜索个人
@@ -93,8 +92,8 @@ macOS/Windows 切换及旧任务续接仍须独立原生验收。
 重启验收。
 
 更改所选插件前，应先在原运行时完成旧任务；旧缓存本身不能固定旧任务 Hook。
-本候选不迁移会话或信任数据，独立 HOME 与旧任务续接仍待原生验收。
-详见[升级边界](docs/SESSION_STORAGE.md)和[候选变更](docs/INSTALLER_REMOVAL.md)。
+本版本不迁移会话或信任数据，独立 HOME 与旧任务续接仍待原生验收。
+详见[升级边界](docs/SESSION_STORAGE.md)和[安装变更](docs/INSTALLER_REMOVAL.md)。
 
 ## 试用
 
@@ -240,10 +239,11 @@ flowchart TB
 
 发行制品解压目录中不要运行 `git pull`。后续版本请另存明确命名的已发布制品，
 完成依赖当前版本的任务后，再按该版本的升级说明操作。不要覆盖已消费缓存，
-也不要在安装本候选时刷新旧市场。
+也不要在安装本版本时刷新旧市场。
 
 移除插件会删除所选插件的缓存。活动任务仍可能依赖它时不要移除。
-这些任务结束后，下列命令只针对实验候选，不操作原 0.15.1 市场：
+这些任务结束后，下列命令仅指定新的 0.16.0 标识；真实 0.15.1 缓存对象是否
+保持不变仍未验证：
 
 ```shell
 codex plugin remove context-guard@codex-context-guard-v016

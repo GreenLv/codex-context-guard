@@ -57,7 +57,7 @@ also refresh the project entry in `uv.lock`. CI uses `--locked` so stale locks
 fail instead of being silently accepted. The Hook runtime needs no dependency
 installation.
 
-The marketplace-only candidate has no project installer or namespace installer.
+The marketplace-only product has no project installer or namespace installer.
 Use official Codex marketplace commands only in an explicitly authorized isolated
 HOME. The default versioned portable native entrypoint uses only an internally created
 fresh HOME and official Codex commands. Its optional `--release-zip` consumes a

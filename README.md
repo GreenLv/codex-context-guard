@@ -12,22 +12,21 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **Unreleased source candidate: 0.16.0.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
+> **0.16.0 — 2026-10-31.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
 
-## Install the source candidate with Codex
+## Install with Codex
 
-**0.16.0 is an Unreleased source candidate.** Its experimental marketplace name
+**0.16.0 — 2026-10-31.** Its experimental marketplace name
 is `codex-context-guard-v016`; it is separate from published 0.15.1. Coexistence
 with real old tasks, independent enable/disable and GUI startup remain unverified.
 
-Use the specifically named release artifact `context-guard-0.16.0.zip` once it
-is published. This candidate has no published download URL yet. Do not register
+Download the named release artifact [context-guard-0.16.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.0/context-guard-0.16.0.zip). Do not register
 a Git checkout or GitHub's automatic source ZIP as the marketplace: they carry
 repository-only files. Extract the release artifact into a stable directory you
 control and keep it there; that directory remains the official marketplace
 source for future reads and refreshes. Do not delete it after installation.
 
-For candidate maintainers, build the artifact from this source checkout at a
+For maintainers, build the artifact from this source checkout at a
 new path outside the checkout (Python 3.10+ is required):
 
 ```shell
@@ -44,7 +43,7 @@ codex plugin list --json
 
 If the original `context-guard@codex-context-guard` is enabled and unfinished
 tasks depend on it, stop here until those tasks finish. If you cannot switch now,
-keep the current setup, or arrange a separately configured HOME; this candidate
+keep the current setup, or arrange a separately configured HOME; this version
 does not establish automatic old-task continuation.
 
 Only when `context-guard@codex-context-guard-v016` is absent, register and install:
@@ -98,7 +97,7 @@ native acceptance.
 ### Python and upgrades
 
 Existing `<CODEX_HOME>/context-guard/interpreter.conf` bindings are still read
-and runtime-validated, but this candidate does not create them. A bad binding
+and runtime-validated, but this version does not create them. A bad binding
 fails visibly. After PATH discovery fails, the POSIX launcher probes fixed global
 locations: Homebrew (`/opt/homebrew/bin` or `/usr/local/bin`, including Python
 3.10–3.14 version names), `/opt/anaconda3/bin`, and Python.framework. Each fallback
@@ -111,7 +110,7 @@ actual GUI restart behavior on either platform.
 Finish old work under its original runtime before changing its selected plugin.
 An old cache alone does not pin old task Hooks. No session or trust data is
 migrated; separate-HOME and old-task continuity remain native acceptance gaps.
-See [upgrade boundaries](docs/SESSION_STORAGE.md) and [candidate changes](docs/INSTALLER_REMOVAL.md).
+See [upgrade boundaries](docs/SESSION_STORAGE.md) and [installation changes](docs/INSTALLER_REMOVAL.md).
 
 ## Try it
 
@@ -258,11 +257,12 @@ Ended v2 sessions with no resumed activity are eligible for cleanup after 30 day
 Do not run `git pull` in the extracted release directory. Obtain a separately
 named published artifact for a later version and follow that version's upgrade
 instructions after finishing dependent tasks. Never overwrite a consumed cache
-or refresh an old marketplace as part of installing this candidate.
+or refresh an old marketplace as part of installing this version.
 
 Removal deletes the selected plugin's cache. Do not remove it while any active
 task may depend on it. After those tasks finish, the commands below target only
-the experimental candidate, leaving the original 0.15.1 marketplace untouched:
+the new 0.16.0 identity. Preservation of real 0.15.1 cache objects remains
+unverified:
 
 ```shell
 codex plugin remove context-guard@codex-context-guard-v016

@@ -1,13 +1,31 @@
 # Local Release Acceptance
 
-## 0.16.0 marketplace-only source candidate — Unreleased
+## 0.16.0 marketplace-only release — 2026-10-31
 
-The custom installer and namespace transaction are removed in this candidate.
-Earlier installed/native results below remain historical and do not establish
-this candidate's new marketplace identity or installation behavior. Official
-installation, strict second-operation no-op, old-cache object preservation,
-GUI Python discovery, normal trust and old-task continuity remain pending.
+The custom installer and namespace transaction are removed in 0.16.0.
+CI/HOL, installation and native evidence must be checked separately for each
+exact source commit, artifact and platform. Earlier results retain their
+original subjects and do not transfer to later source or ZIP bytes.
 See [the removal record](INSTALLER_REMOVAL.md) for retired tests and replacements.
+
+- At `67985d7`, macOS and Windows each completed all eight isolated exact-ZIP
+  portable gates and cleanup. Old-cache protection covered synthetic fixtures
+  only. HOL passed for `67985d7`; this does not establish CI, native acceptance
+  or installation for a later release commit or artifact.
+- At `96769d0`, the local suite ran 2,784 tests with zero failures/errors,
+  one expected failure, zero unexpected successes and 55 skips. HOL passed;
+  that subject's full CI did not pass because of hosted Windows DACL failures.
+- The Windows isolated portable run on `96769d0` passed eight gates;
+  old-cache protection covered synthetic fixtures only. The macOS
+  install/no-op/parity/smoke result belongs to `b0300cc`, using the same
+  runtime/ZIP as `96769d0`; it is not an exact-`96769d0` source result.
+  These observations predate the `67985d7` DACL repair and are not relabeled
+  onto its changed runtime.
+
+These isolated results do not establish actual daily installation, GUI restart,
+normal user trust, real old-cache protection or old-task continuation. Check
+the CI/HOL and native records for the exact publication subject rather than
+inferring them from earlier-subject results.
 
 ## 0.15.1 — 2026-10-05
 

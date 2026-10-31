@@ -1,6 +1,6 @@
-# Marketplace-only source candidate (Unreleased)
+# Marketplace-only installation (0.16.0)
 
-This candidate removes the project installer from tracked source and runtime
+Version 0.16.0 removes the project installer from tracked source and runtime
 artifacts. No installer implementation is renamed or moved. Codex owns plugin
 installation. The distinct `codex-context-guard-v016` marketplace identity is
 experimental; the released marketplace and consumed 0.15.1 objects are not
@@ -46,7 +46,7 @@ Long-term refresh, GUI discovery, normal trust, real old-cache preservation and
 old task continuity remain separate native gates.
 
 Existing `interpreter.conf` readers and runtime validation remain. No code in
-this candidate creates the binding. GUI hosts must discover supported Python
+this version creates the binding. GUI hosts must discover supported Python
 or already have a valid binding; no GUI PATH repair is claimed.
 
 The removed installer no longer provides archive restore, transaction rollback,
@@ -55,7 +55,7 @@ marketplace identity does not prove host independence, continued old task Hooks,
 or enable/disable behavior. Preserve old objects and daily configuration until
 those exact native gates have been observed. No old HOME is migrated.
 
-Cold reader review and final native installation acceptance are pending.
+Cold reader review and native installation acceptance must bind the exact published bytes.
 The release ZIP includes the enumerated Markdown documentation so its README
 links remain usable; no Git metadata, tests or acceptance data are packaged.
 
@@ -63,7 +63,7 @@ links remain usable; no Git metadata, tests or acceptance data are packaged.
 
 | Removed module | Retired implementation families | Still required |
 | --- | --- | --- |
-| test_manage_plugin | custom archive indexing/repair, staging migration, lock/bootstrap, Codex subprocess HOME routing and binding publication | Official-marketplace old-object protection and no-op remain pending; release ZIP excludes Git metadata and unreviewed private inputs; launcher binding reads retain runtime tests |
+| test_manage_plugin | custom archive indexing/repair, staging migration, lock/bootstrap, Codex subprocess HOME routing and binding publication | Require exact-artifact official-marketplace old-object/no-op evidence; synthetic fixtures do not establish real-cache preservation; release ZIP excludes Git metadata and unreviewed private inputs; launcher binding reads retain runtime tests |
 | test_cg0160_installer_transaction | custom registration/staging rollback, trusted archive repair and transaction cleanup | Independent manifest tests retain missing/corrupt/linked/drift refusal and exact tracked release set; official failure preservation is pending |
 | test_candidate_namespace | private operator scope record, authenticated-home idle scan, namespace lock/config rollback | Removed tool cannot touch any HOME; official install preservation, unrelated-config isolation and exact returned identity remain pending |
 
@@ -74,6 +74,6 @@ file-type, ancestor, replacement and redacted snapshot-error controls remain.
 
 The product historical-case locator now points to synthetic official identity/source
 positive and negative controls as an analogue only. Canonical historical verdicts
-are unchanged; earlier installed/native executions are not rebound to this candidate.
+are unchanged; earlier installed/native executions are not rebound to this version.
 The strict second-operation no-op requirement is not satisfied by an ordinary
 repeat `codex plugin add`; do not infer idempotence from a successful exit.

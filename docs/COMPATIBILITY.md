@@ -1,8 +1,8 @@
 # Compatibility and Verification Status
 
-## 0.16.0 — Unreleased
+## 0.16.0 — 2026-10-31
 
-This is the local release-line source. Public availability is determined
+This is the 0.16.0 release line. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 
 Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
@@ -40,9 +40,11 @@ published 0.15.1:
   Existing explicit data roots keep their meaning, and nothing is migrated,
   merged, or deleted.
 - Official Codex marketplace installation replaces the project installer.
-  `codex-context-guard-v016` is an experimental identity; actual installation,
-  strict second-operation no-op, old-cache object preservation, normal trust,
-  old-task continuity and independent enable/disable behavior remain pending.
+  `codex-context-guard-v016` is an experimental identity; installation and
+  strict second-operation no-op evidence must bind the exact artifact and host.
+  Isolated portable old-cache checks cover synthetic fixtures only; real
+  old-cache preservation, normal trust, old-task continuity and independent
+  enable/disable behavior remain unverified.
   Existing interpreter.conf bindings are read and verified, but no automatic
   binding is created. POSIX discovery additionally probes fixed global Homebrew, Anaconda and
   Python.framework locations with isolated version/marker checks after PATH
