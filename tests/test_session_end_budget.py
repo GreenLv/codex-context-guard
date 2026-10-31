@@ -349,9 +349,9 @@ class SessionEndBudgetTests(unittest.TestCase):
             return result
 
         @contextlib.contextmanager
-        def recorded_lock(path, timeout):
-            waits.append(timeout)
-            with lock(path, timeout=timeout) as guard:
+        def recorded_lock(path, timeout, *, create_directory=True):
+            waits.append((timeout, create_directory))
+            with lock(path, timeout=timeout, create_directory=create_directory) as guard:
                 yield guard
 
         with mock.patch.object(cg.time, "monotonic", clock), \
@@ -362,7 +362,8 @@ class SessionEndBudgetTests(unittest.TestCase):
         self.assertLess(len(list(bulk.iterdir())), 30)
         self.assertGreater(len(list(bulk.iterdir())), 0)
         self.assertIn("expired", cg._read_cleanup_state(self.data)[1])
-        self.assertTrue(waits and all(wait == 0.0 for wait in waits))
+        self.assertTrue(waits and all(wait == 0.0 and create is False
+                                     for wait, create in waits))
         cg.cleanup_old_sessions(self.data, deadline=cg.time.monotonic() + 1.0)
         self.assertFalse(candidate.exists())
 
