@@ -11,17 +11,26 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 from typing import Any
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 HOST_BEHAVIOR_MODULE = "host_behavior"
+
+POSIX_SNAPSHOT_CAPABLE = (
+    all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW"))
+    and os.listdir in os.supports_fd and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+)
 
 
 class NativeRunError(RuntimeError):
@@ -121,6 +130,197 @@ def verify_exact_source(root: Path, source_commit: str) -> None:
         )
 
 
+def load_snapshot_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise NativeRunError("strict no-op snapshot reader unavailable")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+@cache
+def load_snapshot_runtime():
+    """Reuse the unchanged cross-platform no-follow opener, without running CLI."""
+    return load_snapshot_module("native_snapshot_runtime",
+        Path(__file__).resolve().parents[2] / "scripts" / "context_guard.py")
+
+
+def open_snapshot_file(path: Path, *, dir_fd: int | None = None) -> int:
+    if os.name == "nt":
+        # CreateFileW OPEN_REPARSE_POINT plus handle attribute rejection.
+        return load_snapshot_runtime()._open_windows_committed_state(path)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise NativeRunError("strict no-op snapshot no-follow reader unavailable")
+    return os.open(path if dir_fd is None else path.name,
+                   os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+                   dir_fd=dir_fd)
+
+
+@cache
+def load_snapshot_windows():
+    return load_snapshot_module("native_snapshot_windows",
+        Path(__file__).resolve().with_name("incident_readonly_child.py"))
+
+
+@contextmanager
+def pinned_windows_directory(path: Path):
+    """Retain the reviewed READ|WRITE (no DELETE sharing) directory handle."""
+    backend = load_snapshot_windows()
+    api, handle = backend.open_windows_handle(path, 0x20080)
+    try:
+        bound = backend.windows_handle_identity(api, handle)
+        if (bound["kind"] != "directory" or bound["reparse_tag"]
+                or bound != backend.windows_object_identity(path)):
+            raise NativeRunError("strict no-op snapshot directory identity changed")
+        yield
+    finally:
+        if not backend.close_windows_handle(api, handle)["return_value"]:
+            raise NativeRunError("strict no-op snapshot directory close failed")
+
+
+def windows_snapshot_ancestors(path: Path):
+    # No guessed semantics for UNC, device namespaces, drive-relative or dot paths.
+    if (len(path.drive) != 2 or not path.drive[0].isascii()
+            or not path.drive[0].isalpha() or path.drive[1] != ":"
+            or path.anchor != path.drive + "\\" or ".." in path.parts):
+        raise NativeRunError("strict no-op snapshot root capability unavailable")
+    return tuple(reversed(path.parents))
+
+
+def installed_object_snapshot(codex_home: Path) -> dict[str, tuple[Any, ...]]:
+    """Anchored full HOME-13 final-state equivalence, not absence of writes."""
+    objects: dict[str, tuple[Any, ...]] = {}
+    posix_bindings: list[tuple[int, str, int]] = []
+
+    def identity(info):
+        # Common path/handle fields; ctime is checked only within each provider.
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                info.st_size, info.st_mtime_ns)
+
+    def validate(info):
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+            raise NativeRunError("strict no-op snapshot refuses links and reparse objects")
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise NativeRunError("strict no-op snapshot refuses special objects")
+        if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+            raise NativeRunError("strict no-op snapshot refuses hard links")
+
+    def read_file(path, before, parent_fd):
+        descriptor = open_snapshot_file(path, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(descriptor)
+            validate(opened)
+            if not stat.S_ISREG(opened.st_mode) or identity(before) != identity(opened):
+                raise NativeRunError("strict no-op snapshot file identity changed")
+            digest, size = hashlib.sha256(), 0
+            while chunk := os.read(descriptor, 1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+            finished = os.fstat(descriptor)
+            if (identity(opened) != identity(finished)
+                    or opened.st_ctime_ns != finished.st_ctime_ns
+                    or size != finished.st_size):
+                raise NativeRunError("strict no-op snapshot file changed during read")
+        finally:
+            os.close(descriptor)
+        return ("file", before.st_mode, before.st_size, digest.hexdigest())
+
+    def observe(path, parent_fd=None):
+        name = path.name
+        private_name = name.casefold()
+        if (private_name in {
+                "auth.json", ".auth.json", "auth.toml", "credentials", "credentials.json",
+                "credentials.toml", "credentials.yaml", "credentials.yml", "credentials.ini", "token.json",
+                "tokens.json", "oauth-token.json", "secrets.json", "secrets.toml",
+                "secrets.yaml", "secrets.yml", ".netrc", "_netrc", ".env",
+                "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".ssh", ".aws", ".azure",
+                ".git-credentials", ".npmrc", ".pypirc", ".docker", ".kube",
+            } or private_name.startswith(("auth.json.", ".env."))
+                or private_name.endswith((".pem", ".p12", ".pfx", ".key"))):
+            # This is refusal of the whole witness, never a hidden file exclusion.
+            raise NativeRunError("strict no-op snapshot refuses credential material")
+        before = (path.lstat() if parent_fd is None else
+                  os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        validate(before)
+        relative = path.relative_to(codex_home).as_posix()
+        if stat.S_ISDIR(before.st_mode):
+            objects[relative] = ("directory", before.st_mode)
+            with ExitStack() as held:
+                if os.name == "nt":
+                    held.enter_context(pinned_windows_directory(path))
+                    if identity(before) != identity(path.lstat()):
+                        raise NativeRunError("strict no-op snapshot directory identity changed")
+                    children = sorted(path.iterdir())
+                    directory_fd = None
+                else:
+                    directory_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                           dir_fd=parent_fd)
+                    if path == codex_home:
+                        # Retain HOME alongside its ancestors through final name revalidation.
+                        ancestors.callback(os.close, directory_fd)
+                        posix_bindings.append((parent_fd, name, directory_fd))
+                    else:
+                        held.callback(os.close, directory_fd)
+                    if identity(before) != identity(os.fstat(directory_fd)):
+                        raise NativeRunError("strict no-op snapshot directory identity changed")
+                    children = [path / child for child in sorted(os.listdir(directory_fd))]
+                for child in children:
+                    if child.name in {".", ".."}:
+                        raise NativeRunError("strict no-op snapshot child name invalid")
+                    observe(child, directory_fd)
+        else:
+            objects[relative] = read_file(path, before, parent_fd)
+        after = (path.lstat() if parent_fd is None else
+                 os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+        if (identity(before) != identity(after)
+                or before.st_ctime_ns != after.st_ctime_ns
+                or getattr(after, "st_reparse_tag", 0)):
+            raise NativeRunError("installed objects changed during strict no-op snapshot")
+
+    try:
+        with ExitStack() as ancestors:
+            if os.name == "nt":
+                for path in windows_snapshot_ancestors(codex_home):
+                    ancestors.enter_context(pinned_windows_directory(path))
+                observe(codex_home)
+            else:
+                if (not codex_home.is_absolute() or ".." in codex_home.parts
+                        or not POSIX_SNAPSHOT_CAPABLE):
+                    raise NativeRunError("strict no-op snapshot root capability unavailable")
+                parent_fd = os.open(codex_home.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                ancestors.callback(os.close, parent_fd)
+                for part in codex_home.parts[1:-1]:
+                    before = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                    validate(before)
+                    child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=parent_fd)
+                    ancestors.callback(os.close, child_fd)
+                    if identity(before) != identity(os.fstat(child_fd)):
+                        raise NativeRunError("strict no-op snapshot ancestor identity changed")
+                    posix_bindings.append((parent_fd, part, child_fd))
+                    parent_fd = child_fd
+                observe(codex_home, parent_fd)
+                # An anchored fd may outlive its original pathname. Prove the
+                # entire currently named chain still selects those exact objects.
+                for held_parent, name, held_child in posix_bindings:
+                    current = os.stat(name, dir_fd=held_parent, follow_symlinks=False)
+                    validate(current)
+                    if (not stat.S_ISDIR(current.st_mode)
+                            or identity(current) != identity(os.fstat(held_child))):
+                        raise NativeRunError("strict no-op snapshot ancestor pathname changed")
+    except (OSError, UnicodeError, ValueError):
+        raise NativeRunError("strict no-op snapshot object unreadable") from None
+    if not any(value[0] == "file" for value in objects.values()):
+        raise NativeRunError("strict no-op snapshot contains no installed files")
+    return objects
+
+
 def portable_acceptance(
     root: Path, source_commit: str, codex: str, run_url: str | None
 ) -> dict[str, Any]:
@@ -128,7 +328,7 @@ def portable_acceptance(
     digest = runtime_digest(manager, root)
     started = timestamp()
     gates: list[dict[str, Any]] = []
-    temporary = Path(tempfile.mkdtemp(prefix="codex-context-guard-native-"))
+    temporary = Path(tempfile.mkdtemp(prefix="codex-context-guard-native-")).resolve()
     codex_home = temporary / "codex-home"
     codex_home.mkdir(parents=True)
     cleanup_status = "passed"
@@ -153,7 +353,10 @@ def portable_acceptance(
         )
         run(root, *manager_command, "--apply", env=environment)
         gates.append(gate("isolated_install", digest, passed=True))
-        run(root, *manager_command, env=environment)
+        before_second_apply = installed_object_snapshot(codex_home)
+        run(root, *manager_command, "--apply", env=environment)
+        if installed_object_snapshot(codex_home) != before_second_apply:
+            raise NativeRunError("second apply changed installed objects; strict no-op failed")
         gates.append(gate("strict_second_noop", digest, passed=True))
         version = manager.source_plugin_version(root)
         installed = manager.plugin_cache_root(codex_home) / version
