@@ -388,6 +388,156 @@ class ContinuityMappingTests(unittest.TestCase):
             with self.assertRaisesRegex(MAPPING.ContinuityMappingError, "trusted"):
                 fixture.adapt()
 
+    def preservation_fixture(self, temp):
+        fixture = self.fixture(temp)
+        before = json.loads(fixture.paths["cleanup_before"].read_text(encoding="utf-8"))["facts"]
+        for name in ("cleanup_before", "cleanup_after"):
+            def upgrade(value, name=name):
+                facts = value["facts"]
+                value["schema"] = STATE.INVENTORY_SCHEMA
+                if name == "cleanup_after":
+                    facts["session_ids"].append(fixture.expired)
+                    facts["session_ids"].sort()
+                    for field in ("state_sha256", "ended_at"):
+                        facts[field][fixture.expired] = before[field][fixture.expired]
+                for field in ("session_object_sha256", "session_tree_sha256"):
+                    facts[field] = {item: hashlib.sha256((field + item).encode()).hexdigest()
+                                    for item in facts["session_ids"]}
+            fixture.mutate_snapshot(name, upgrade)
+        fixture.mutate_manifest(lambda value: value["cleanup"].update(retention_policy="disabled"))
+        return fixture
+
+    def test_disabled_retention_proves_preservation_without_deletion(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = self.preservation_fixture(temp)
+            bundle, receipt = fixture.adapt()
+            cleanup = json.loads(bundle["events"][-1])
+            self.assertEqual(cleanup["remaining_ids"], [fixture.expired])
+            self.assertEqual(cleanup["retention_policy"], "disabled")
+            validator = BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"])
+            result = validator.validate(bundle, reviewed_mapping=receipt)
+            gate = next(item for item in result["gates"] if item["id"] == "cleanup")
+            self.assertEqual(gate["status"], "passed")
+            self.assertIn("preservation", gate["note"])
+            # A handwritten/serialized flag cannot waive the original remaining-id failure.
+            result = validator.validate(json.loads(json.dumps(bundle)))
+            self.assertEqual(next(item for item in result["gates"]
+                                  if item["id"] == "cleanup")["status"], "failed")
+
+    def test_disabled_retention_flag_requires_its_exact_preservation_receipt(self):
+        for preservation in (False, True):
+            with self.subTest(preservation=preservation), tempfile.TemporaryDirectory() as temp:
+                fixture = self.preservation_fixture(temp) if preservation else self.fixture(temp)
+                bundle, receipt = fixture.adapt()
+                event = json.loads(bundle["events"][-1])
+                event.update(retention_policy="disabled", remaining_ids=["foreign-leftover"])
+                bundle["events"][-1] = json.dumps(event)
+                validator = BEHAVIOR.Validator(bundle["subject"], bundle["plugin_version"])
+                if preservation:
+                    with self.assertRaisesRegex(ValueError, "preservation event binding"):
+                        validator.validate(bundle, reviewed_mapping=receipt)
+                else:
+                    result = validator.validate(bundle, reviewed_mapping=receipt)
+                    self.assertEqual(next(item for item in result["gates"]
+                                          if item["id"] == "cleanup")["status"], "failed")
+
+    def test_disabled_retention_rejects_missing_changed_or_replaced_sessions(self):
+        cases = ("removed", "object", "content", "state", "ended", "missing_proof", "policy")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                fixture = self.preservation_fixture(temp)
+                def mutate(value):
+                    facts = value["facts"]
+                    if case == "removed":
+                        facts["session_ids"].remove(fixture.expired)
+                        for field in ("state_sha256", "ended_at", "session_object_sha256", "session_tree_sha256"):
+                            facts[field].pop(fixture.expired)
+                    elif case == "missing_proof":
+                        value["schema"] = STATE.SCHEMA
+                        facts.pop("session_object_sha256")
+                        facts.pop("session_tree_sha256")
+                    else:
+                        field = {"object":"session_object_sha256", "content":"session_tree_sha256",
+                                 "state":"state_sha256", "ended":"ended_at"}[case]
+                        facts[field][fixture.expired] = ("2026-08-02T00:00:00+00:00"
+                                                        if case == "ended" else "f" * 64)
+                if case == "policy":
+                    fixture.mutate_manifest(lambda value: value["cleanup"].update(retention_policy="delete_anyway"))
+                else:
+                    fixture.mutate_snapshot("cleanup_after", mutate)
+                with self.assertRaises(MAPPING.ContinuityMappingError):
+                    fixture.adapt()
+
+    def test_inventory_refuses_unaccounted_root_objects_instead_of_omitting_them(self):
+        for case in ("file", "link", "reparse", "locks_reparse"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                sessions = root / "sessions-v2"
+                sessions.mkdir()
+                output = root / "witness.json"
+                entry = sessions / (".locks" if case == "locks_reparse" else "unaccounted")
+                if case == "file":
+                    entry.write_bytes(b"synthetic-preserved-root-object")
+                elif case == "link":
+                    target = root / "real"
+                    target.mkdir()
+                    try:
+                        entry.symlink_to(target, target_is_directory=True)
+                    except OSError:
+                        self.skipTest("directory symlinks unavailable on this host")
+                else:
+                    entry.mkdir()
+                original_lstat = Path.lstat
+                def lstat(path, *args, **kwargs):
+                    info = original_lstat(path, *args, **kwargs)
+                    if path == entry and case in ("reparse", "locks_reparse"):
+                        return mock.Mock(st_mode=info.st_mode, st_file_attributes=0x400)
+                    return info
+                with mock.patch.object(Path, "lstat", lstat), mock.patch.object(
+                        STATE, "_runtime", return_value=(mock.Mock(), "a" * 64, "0.16.0")):
+                    with self.assertRaisesRegex(STATE.WitnessError, "root object|lock directory"):
+                        STATE.capture_inventory(sessions, output, ROOT, "b" * 64)
+                self.assertFalse(output.exists())
+                self.assertTrue(entry.is_symlink() if case == "link" else entry.exists())
+
+    def test_inventory_refuses_root_membership_changed_during_collection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            sessions = root / "sessions-v2"
+            session = sessions / "synthetic-session"
+            session.mkdir(parents=True)
+            (session / "state.json").write_text('{"session":{"ended_at":null}}', encoding="utf-8")
+            output = root / "witness.json"
+            def mutate(_directory):
+                (sessions / "late-session").mkdir()
+                return "a" * 64, "b" * 64
+            with mock.patch.object(STATE, "_runtime", return_value=(mock.Mock(), "a" * 64, "0.16.0")), \
+                    mock.patch.object(STATE, "_session_tree", side_effect=mutate):
+                with self.assertRaisesRegex(STATE.WitnessError, "root changed"):
+                    STATE.capture_inventory(sessions, output, ROOT, "b" * 64)
+            self.assertFalse(output.exists())
+            self.assertTrue((sessions / "late-session").is_dir())
+
+    def test_inventory_tree_witness_binds_objects_bytes_and_refuses_unknown_identity(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            child = root / "nested"
+            child.mkdir()
+            item = child / "payload"
+            item.write_bytes(b"synthetic-content")
+            original = STATE._session_tree(root)
+            self.assertEqual(STATE._session_tree(root), original)
+            replacement = child / "replacement"
+            replacement.write_bytes(item.read_bytes())
+            replacement.replace(item)
+            self.assertNotEqual(STATE._session_tree(root)[1], original[1])
+            replaced = STATE._session_tree(root)
+            item.write_bytes(b"changed-content")
+            self.assertNotEqual(STATE._session_tree(root)[1], replaced[1])
+            with mock.patch.object(Path, "lstat", return_value=mock.Mock(st_ino=0)):
+                with self.assertRaisesRegex(STATE.WitnessError, "identity"):
+                    STATE._session_tree(root)
+
     def test_cleanup_remaining_target_or_lost_protected_id_is_rejected(self) -> None:
         for ids in (["expired-session-hash", "synthetic-continuity-session"], []):
             with self.subTest(ids=ids), tempfile.TemporaryDirectory() as temp:
@@ -543,6 +693,9 @@ class ContinuityMappingTests(unittest.TestCase):
             expired = guard.new_state({"session_id": fixture.expired, "cwd": str(workspace)})
             expired["session"]["ended_at"] = "2026-07-01T00:00:00+00:00"
             guard.save_state(expired_dir, expired)
+            (expired_dir / "preserved-extra").mkdir()
+            (expired_dir / "preserved-extra" / "payload.bin").write_bytes(b"synthetic\x00\xff")
+            preserved_before = STATE._session_tree(expired_dir)
             sequence = 0
 
             def event(name: str, **extra: object) -> tuple[int, dict[str, object]]:
@@ -629,6 +782,8 @@ class ContinuityMappingTests(unittest.TestCase):
             fixture.report.write_text(json.dumps(report, sort_keys=True))
             manifest = json.loads(fixture.manifest.read_text(encoding="utf-8"))
             manifest["capture"]["report_sha256"] = sha(fixture.report)
+            manifest["cleanup"]["retention_policy"] = "disabled"
+            self.assertEqual(STATE._session_tree(expired_dir), preserved_before)
             manifest["snapshots"] = {name: {"path": str(path), "sha256": sha(path)}
                                      for name, path in fixture.paths.items()}
             manifest["sequences"] = {

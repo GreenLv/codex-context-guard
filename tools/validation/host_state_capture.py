@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 SCHEMA = "context-guard-private-state-witness/v1"
+INVENTORY_SCHEMA = "context-guard-private-state-inventory/v2"
 HEX64 = __import__("re").compile(r"^[0-9a-f]{64}$")
 
 
@@ -159,23 +160,76 @@ def capture_state(state_path: Path, recovery_path: Path | None, output: Path,
     return value
 
 
+def _session_tree(directory: Path) -> tuple[str, str]:
+    """Hash non-followed object identities and all bytes; never export filenames."""
+    rows = []
+    size = 0
+
+    def identity(info):
+        if not info.st_ino:
+            raise WitnessError("session object identity is unavailable")
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                info.st_mtime_ns, info.st_ctime_ns)
+
+    def visit(path: Path, relative: str, depth: int):
+        nonlocal size
+        if len(rows) >= 4096 or depth > 32:
+            raise WitnessError("session tree exceeds witness bounds")
+        before = path.lstat()
+        binding = identity(before)
+        if stat.S_ISLNK(before.st_mode) or getattr(before, "st_file_attributes", 0) & 0x400:
+            raise WitnessError("session tree contains a link or reparse point")
+        if stat.S_ISDIR(before.st_mode):
+            rows.append([relative, binding, None])
+            for child in sorted(path.iterdir()):
+                visit(child, child.relative_to(directory).as_posix(), depth + 1)
+        elif stat.S_ISREG(before.st_mode):
+            size += before.st_size
+            if size > 64 * 1024 * 1024:
+                raise WitnessError("session tree exceeds witness byte bound")
+            rows.append([relative, binding, _sha(_regular(path, "session file"))])
+        else:
+            raise WitnessError("session tree contains a non-regular object")
+        if identity(path.lstat()) != binding:
+            raise WitnessError("session tree changed during capture")
+
+    root = directory.lstat()
+    identity(root)
+    visit(directory, ".", 0)
+    if (directory.lstat().st_dev, directory.lstat().st_ino) != (root.st_dev, root.st_ino):
+        raise WitnessError("session directory changed during capture")
+    object_hash = _sha(json.dumps([root.st_dev, root.st_ino]).encode())
+    return object_hash, _sha(json.dumps(rows, ensure_ascii=True, separators=(",", ":")).encode())
+
+
 def capture_inventory(sessions: Path, output: Path, runtime_root: Path,
                       capture_setup_sha256: str) -> dict[str, Any]:
     if not HEX64.fullmatch(capture_setup_sha256):
         raise WitnessError("capture report SHA-256 is invalid")
-    if sessions.is_symlink() or not sessions.resolve(strict=True).is_dir():
+    root_info = sessions.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode)
+            or getattr(root_info, "st_file_attributes", 0) & 0x400):
         raise WitnessError("sessions root must be a real directory")
+    root_binding = (root_info.st_dev, root_info.st_ino, root_info.st_mtime_ns, root_info.st_ctime_ns)
+    if not root_info.st_ino:
+        raise WitnessError("sessions root identity is unavailable")
+    entries = sorted(sessions.iterdir())
     guard, runtime_digest, version = _runtime(runtime_root)
     ids: list[str] = []
     state_hashes: dict[str, str] = {}
     ended_at: dict[str, str | None] = {}
-    for directory in sorted(sessions.iterdir()):
+    objects: dict[str, str] = {}
+    trees: dict[str, str] = {}
+    for directory in entries:
+        info = directory.lstat()
+        unsafe = (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+                  or getattr(info, "st_file_attributes", 0) & 0x400)
         if directory.name == ".locks" and sessions.name == "sessions-v2":
-            if directory.is_symlink() or not directory.is_dir():
+            if unsafe:
                 raise WitnessError("invalid lifecycle lock directory")
             continue
-        if directory.is_symlink() or not directory.is_dir():
-            continue
+        if unsafe:
+            raise WitnessError("session inventory contains an unaccounted root object")
         path = directory / "state.json"
         try:
             raw = _regular(path, "session state")
@@ -189,13 +243,21 @@ def capture_inventory(sessions: Path, output: Path, runtime_root: Path,
         if ended is not None and not isinstance(ended, str):
             raise WitnessError(f"invalid ended_at in {directory.name}")
         ended_at[directory.name] = ended
+        objects[directory.name], trees[directory.name] = _session_tree(directory)
+        if _regular(path, "session state") != raw:
+            raise WitnessError("session state changed during inventory")
+    after = sessions.lstat()
+    if ((after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns) != root_binding
+            or sorted(item.name for item in sessions.iterdir()) != [item.name for item in entries]):
+        raise WitnessError("sessions root changed during inventory")
     value = {
-        "schema": SCHEMA, "kind": "inventory", "observed_at": _now(),
+        "schema": INVENTORY_SCHEMA, "kind": "inventory", "observed_at": _now(),
         "collector_sha256": _sha(Path(__file__).read_bytes()),
         "runtime_tree_sha256": runtime_digest, "plugin_version": version,
         "capture_setup_sha256": capture_setup_sha256,
         "facts": {"session_ids": ids, "state_sha256": state_hashes,
-                  "ended_at": ended_at},
+                  "ended_at": ended_at, "session_object_sha256": objects,
+                  "session_tree_sha256": trees},
     }
     _write(output, value)
     return value

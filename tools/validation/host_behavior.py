@@ -101,6 +101,7 @@ _EVENT_OPTIONAL = {
     "pair_id",
     "pair_role",
     "remaining_ids",
+    "retention_policy",
     "synthetic",
 }
 _PRODUCER_REQUIRED = {"kind", "runtime_tree_sha256", "plugin_version"}
@@ -279,6 +280,10 @@ class Collector:
             (raw_record.get("pair_id") is None) != (pair_role is None),
             f"event {index} must bind pair_id and pair_role together",
         )
+        if "retention_policy" in raw_record:
+            _reject(raw_record["event_type"] != "cleanup_observed"
+                    or raw_record["retention_policy"] != "disabled",
+                    f"event {index} retention_policy requires disabled cleanup facts")
         if "remaining_ids" in raw_record:
             _reject(
                 raw_record["event_type"] != "cleanup_observed",
@@ -384,6 +389,8 @@ class Validator:
             chain, chain_note, pend, gate_synthetic = self._chain_verdict(
                 gate_id, records, contradictions, pend_reasons,
                 origin_synthetic, origin,
+                gate_id in mapped_gates and reviewed_mapping is not None
+                and "preservation_event_sha256" in reviewed_mapping,
             )
             if chain == "contradicted":
                 status = "failed"
@@ -509,6 +516,16 @@ class Validator:
             "capture_report_sha256", "trust_review_sha256", "raw_sha256",
             "snapshot_sha256",
         }
+        if "preservation_event_sha256" in receipt:
+            required.add("preservation_event_sha256")
+            digest = receipt["preservation_event_sha256"]
+            _reject(not isinstance(digest, str) or not HEX64.fullmatch(digest),
+                    "continuity preservation event hash is invalid")
+            matches = [json.loads(raw) for raw in capture["events"]
+                       if hashlib.sha256(raw.encode()).hexdigest() == digest]
+            _reject(len(matches) != 1 or matches[0].get("event_type") != "cleanup_observed"
+                    or matches[0].get("retention_policy") != "disabled",
+                    "continuity preservation event binding differs")
         _reject(set(receipt) != required, "continuity mapping receipt shape mismatch")
         for field in (
             "manifest_sha256", "adapter_sha256", "collector_sha256",
@@ -690,11 +707,12 @@ class Validator:
         pend_reasons: dict[str, str],
         origin_synthetic: bool,
         origin: str,
+        reviewed_preservation: bool = False,
     ) -> tuple[str, str, str | None, bool]:
         """Return (chain state, note, pending reason override, synthetic).
 
         Contradictory observed facts - role/pair violations, order violations,
-        reference conflicts, non-empty observed cleanup facts - always win
+        reference conflicts, unexpected remaining cleanup facts - always win
         over pending reasons such as missing bindings, unverified producers,
         or unrun prefixes.
         """
@@ -758,7 +776,10 @@ class Validator:
                 for record in scoped
                 for item in record.get("remaining_ids", [])
             ]
-            if remaining:
+            preservation = (reviewed_preservation and origin == ORIGIN_REVIEWED
+                            and all(record.get("retention_policy") == "disabled"
+                                    for record in scoped))
+            if remaining and not preservation:
                 return (
                     "contradicted",
                     f"observed cleanup facts report remaining ids: {remaining}",
@@ -812,7 +833,9 @@ class Validator:
             )
         return (
             "valid",
-            "causal chain and fact bindings verified by the parser",
+            ("retention disabled: session object/content preservation verified by reviewed mapping"
+             if gate_id == "cleanup" and scoped[0].get("retention_policy") == "disabled"
+             and reviewed_preservation else "causal chain and fact bindings verified by the parser"),
             None,
             synthetic,
         )

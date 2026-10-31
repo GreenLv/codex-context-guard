@@ -205,7 +205,8 @@ def _inventory(spec: dict[str, Any], tools: dict[str, str], subject: dict[str, A
     _exact(value, {"schema", "kind", "observed_at", "collector_sha256",
                    "runtime_tree_sha256", "plugin_version",
                    "capture_setup_sha256", "facts"}, "inventory witness")
-    if (value["schema"] != "context-guard-private-state-witness/v1"
+    if (value["schema"] not in {"context-guard-private-state-witness/v1",
+                                "context-guard-private-state-inventory/v2"}
             or value["kind"] != "inventory"
             or value["collector_sha256"] != tools["state_collector_sha256"]
             or value["runtime_tree_sha256"] != subject["runtime_tree_sha256"]
@@ -213,7 +214,15 @@ def _inventory(spec: dict[str, Any], tools: dict[str, str], subject: dict[str, A
             or value["capture_setup_sha256"] != setup_hash):
         raise ContinuityMappingError("inventory witness provenance differs")
     _time(value["observed_at"], "inventory witness time")
-    facts = _exact(value["facts"], {"session_ids", "state_sha256", "ended_at"}, "inventory facts")
+    keys = {"session_ids", "state_sha256", "ended_at"}
+    if value["schema"] == "context-guard-private-state-inventory/v2":
+        keys |= {"session_object_sha256", "session_tree_sha256"}
+    facts = _exact(value["facts"], keys, "inventory facts")
+    for field in keys - {"session_ids", "state_sha256", "ended_at"}:
+        if (not isinstance(facts[field], dict) or set(facts[field]) != set(facts["session_ids"])
+                or any(not isinstance(item, str) or not HEX64.fullmatch(item)
+                       for item in facts[field].values())):
+            raise ContinuityMappingError("inventory preservation hashes differ")
     if (not isinstance(facts["session_ids"], list)
             or len(facts["session_ids"]) != len(set(facts["session_ids"]))
             or facts["session_ids"] != sorted(facts["session_ids"])
@@ -234,7 +243,8 @@ def _inventory(spec: dict[str, Any], tools: dict[str, str], subject: dict[str, A
 
 
 def _event(sequence: int, at: str, session: str, scenario: str, kind: str,
-           subject_id: str, producer: dict[str, Any], remaining: list[str] | None = None) -> str:
+           subject_id: str, producer: dict[str, Any], remaining: list[str] | None = None,
+           retention_policy: str | None = None) -> str:
     value: dict[str, Any] = {
         "schema": EVENT_SCHEMA, "event_id": f"continuity-{sequence:04d}-" +
         _sha((scenario + kind + subject_id).encode())[:16], "observed_at": at,
@@ -243,6 +253,8 @@ def _event(sequence: int, at: str, session: str, scenario: str, kind: str,
     }
     if remaining is not None:
         value["remaining_ids"] = remaining
+    if retention_policy is not None:
+        value["retention_policy"] = retention_policy
     return _canonical(value).decode()
 
 
@@ -492,7 +504,13 @@ def adapt(manifest_path: Path, runtime_root: Path,
     if not (raw_times[4] <= _time(compact_resumed["observed_at"], "compact witness")
             <= raw_times[5]):
         raise ContinuityMappingError("compact witness falls outside resume/end interval")
-    cleanup_spec = _exact(manifest["cleanup"], {"expired_ids", "protected_ids"}, "cleanup")
+    cleanup_keys = {"expired_ids", "protected_ids"}
+    policy = manifest["cleanup"].get("retention_policy") if isinstance(manifest["cleanup"], dict) else None
+    if policy is not None:
+        if policy != "disabled":
+            raise ContinuityMappingError("cleanup retention policy is unsupported")
+        cleanup_keys.add("retention_policy")
+    cleanup_spec = _exact(manifest["cleanup"], cleanup_keys, "cleanup")
     expired = cleanup_spec["expired_ids"]
     protected = cleanup_spec["protected_ids"]
     if (not isinstance(expired, list) or not expired or len(expired) != len(set(expired))
@@ -510,11 +528,24 @@ def adapt(manifest_path: Path, runtime_root: Path,
     if after_ids - before_ids:
         raise ContinuityMappingError("cleanup after inventory contains unexpected session ids")
     removed_ids = before_ids - after_ids
-    if removed_ids != expired_ids:
+    if policy is None and removed_ids != expired_ids:
         raise ContinuityMappingError("cleanup removed ids differ from the declared expired set")
-    retained_ids = before_ids - expired_ids
-    if protected_ids != retained_ids or not protected_ids <= after_ids:
+    retained_ids = before_ids if policy == "disabled" else before_ids - expired_ids
+    if protected_ids != before_ids - expired_ids or not protected_ids <= after_ids:
         raise ContinuityMappingError("cleanup protected set does not cover every retained session")
+    if policy == "disabled":
+        if before_ids != after_ids:
+            raise ContinuityMappingError("disabled cleanup did not preserve every session")
+        if any(value["schema"] != "context-guard-private-state-inventory/v2"
+               for value in (inv_before, inv_after)):
+            raise ContinuityMappingError("disabled cleanup requires object/content preservation witnesses")
+        for item in before_ids:
+            if (inv_before["facts"]["session_object_sha256"][item]
+                    != inv_after["facts"]["session_object_sha256"][item]):
+                raise ContinuityMappingError("disabled cleanup replaced a session directory object")
+            if item != session_id and (inv_before["facts"]["session_tree_sha256"][item]
+                    != inv_after["facts"]["session_tree_sha256"][item]):
+                raise ContinuityMappingError("disabled cleanup changed retained session objects/content")
     before_ended = inv_before["facts"]["ended_at"]
     after_ended = inv_after["facts"]["ended_at"]
     cutoff_seconds = 30 * 24 * 60 * 60
@@ -552,7 +583,7 @@ def adapt(manifest_path: Path, runtime_root: Path,
         _event(4, compact_meta["captured_at"], session_id, "compact_resume", "compact_started", compact_subject, producer),
         _event(5, resume_meta["captured_at"], session_id, "compact_resume", "session_resumed", compact_subject, producer),
         _event(6, compact_resumed["observed_at"], session_id, "compact_resume", "recovery_page_shown", compact_subject, producer),
-        _event(7, inv_after["observed_at"], session_id, "cleanup", "cleanup_observed", cleanup_subject, producer, remaining),
+        _event(7, inv_after["observed_at"], session_id, "cleanup", "cleanup_observed", cleanup_subject, producer, remaining, policy),
     ]
     bundle = {"schema": CAPTURE_SCHEMA, "origin": ORIGIN,
               "subject": {k: subject[k] for k in ("source_commit", "prepared_source_sha256", "runtime_tree_sha256")},
@@ -572,4 +603,6 @@ def adapt(manifest_path: Path, runtime_root: Path,
                "capture_report_sha256": report_hash,
                "trust_review_sha256": _sha(trust_raw), "raw_sha256": raw_hashes,
                "snapshot_sha256": snapshot_hashes}
+    if policy == "disabled":
+        receipt["preservation_event_sha256"] = _sha(events[-1].encode())
     return bundle, receipt
