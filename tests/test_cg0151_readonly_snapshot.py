@@ -15,6 +15,7 @@ import stat
 import sys
 import threading
 import time
+import types
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,6 +39,19 @@ def tree_inventory(root: Path) -> dict[str, list]:
         ]
     return result
 
+
+
+def snapshot_fdopen_only(effect):
+    """Inject at the binary committed-snapshot seam, never identity discovery."""
+    real_fdopen = os.fdopen
+
+    def opened(descriptor, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if mode != "rb":
+            return real_fdopen(descriptor, *args, **kwargs)
+        return effect(descriptor, *args, **kwargs)
+
+    return opened
 
 def retired_publication_sample(sample, receipt):
     """Classify only a real single-link publication's retired regular inode."""
@@ -224,9 +238,28 @@ class ReadOnlySnapshotTests(P0Harness):
             # replaced-identity rejection then stays covered by the
             # platform-capable lanes and the native gates.
             self.skipTest("symlink creation unavailable for this principal")
-        with self.assertRaisesRegex(RuntimeError,
-                                    "state_file_not_a_regular_file"):
-            self.query()
+        before = tree_inventory(self.root / "private")
+        contents = {p.relative_to(self.root): p.read_bytes()
+                    for p in (self.root / "private").rglob("*")
+                    if not p.is_symlink() and p.is_file()}
+        # The original exact oracle belongs to the committed snapshot reader.
+        with self.assertRaisesRegex(RuntimeError, "state_file_not_a_regular_file"):
+            cg.read_only_committed_state(self.session_dir)
+        if os.name == "nt":
+            # Identity discovery now uses the native no-follow/share-delete
+            # reader and rejects this reparse object before snapshot entry.
+            with mock.patch.object(cg, "read_only_committed_state") as snapshot:
+                with self.assertRaisesRegex(cg.SessionIdentityReadError,
+                        "^state_file_unreadable: persisted session identity could not be read; refusing to guess$"):
+                    self.query()
+                snapshot.assert_not_called()
+        else:
+            with self.assertRaisesRegex(RuntimeError, "state_file_not_a_regular_file"):
+                self.query()
+        self.assertEqual(tree_inventory(self.root / "private"), before)
+        self.assertEqual({p.relative_to(self.root): p.read_bytes()
+                          for p in (self.root / "private").rglob("*")
+                          if not p.is_symlink() and p.is_file()}, contents)
 
     # -- R05: concurrent publication returns one consistent revision -----
     def test_r05_writer_publication_yields_whole_revisions(self):
@@ -452,24 +485,51 @@ class ReadOnlySnapshotTests(P0Harness):
                 publications.append((old, new))
                 yield reader
 
-        with mock.patch.object(cg.os, "fdopen", side_effect=publish_while_open):
+        with mock.patch.object(cg.os, "fdopen", side_effect=snapshot_fdopen_only(publish_while_open)):
             with self.assertRaisesRegex(RuntimeError, "state_changed_during_read"):
                 self.query()
         self.assertEqual(len(publications), cg.READ_ONLY_STATE_READ_ATTEMPTS)
         self.assertEqual(self.query()["revision"], self.state()["content_hash"])
 
+    def test_snapshot_injection_does_not_consume_identity_text_open(self):
+        self.ready()
+        path = self.session_dir / "state.json"
+        calls = []
+        def snapshot_only(descriptor, *args, **kwargs):
+            calls.append(descriptor)
+            raise AssertionError("identity consumed snapshot injection")
+        # Model only the Windows identity function's fdopen control flow on a
+        # real private file; this does not emulate native Windows sharing APIs.
+        def identity_read(fdopen):
+            identity_os = types.SimpleNamespace(name="nt", fdopen=fdopen, close=os.close)
+            with mock.patch.object(cg, "os", identity_os), mock.patch.object(
+                    cg, "_open_committed_state", side_effect=lambda p: os.open(p, os.O_RDONLY)):
+                return cg._read_v2_identity_state(path)
+        # The old unscoped seam really intercepts the earlier identity read.
+        with self.assertRaisesRegex(AssertionError, "identity consumed"):
+            identity_read(snapshot_only)
+        self.assertEqual(len(calls), 1)
+        calls.clear()
+        self.assertEqual(identity_read(snapshot_fdopen_only(snapshot_only)), json.loads(path.read_bytes()))
+        self.assertEqual(calls, [])
+        # The same filter must still reach the binary snapshot descriptor.
+        descriptor = cg._open_committed_state(path)
+        try:
+            with self.assertRaisesRegex(AssertionError, "identity consumed"):
+                snapshot_fdopen_only(snapshot_only)(descriptor, "rb")
+        finally:
+            os.close(descriptor)
+        self.assertEqual(len(calls), 1)
+
     def test_r05_descriptor_conversion_failure_closes_reader(self):
         self.ready()
-        real_open = cg._open_committed_state
         descriptors = []
 
-        def capture(path):
-            descriptor = real_open(path)
+        def fail_snapshot_fdopen(descriptor, *args, **kwargs):
             descriptors.append(descriptor)
-            return descriptor
+            raise OSError("fdopen failure")
 
-        with mock.patch.object(cg, "_open_committed_state", capture), \
-                mock.patch.object(cg.os, "fdopen", side_effect=OSError("fdopen failure")):
+        with mock.patch.object(cg.os, "fdopen", side_effect=snapshot_fdopen_only(fail_snapshot_fdopen)):
             with self.assertRaisesRegex(RuntimeError, "state_file_unreadable"):
                 self.query()
         self.assertEqual(len(descriptors), 1)
@@ -539,18 +599,21 @@ class ReadOnlySnapshotTests(P0Harness):
         @contextmanager
         def read_then_replace(descriptor: int, *args: object,
                               **keywords: object):
-            # Windows denies atomic replacement while this fd is open. Perform
-            # the real replacement after close and before the reader's final
-            # path identity check; both platforms must retry that same race.
+            # Publish after snapshot close and before its final path identity
+            # check. The identity reader's earlier text open must not consume
+            # this bounded binary-snapshot retry schedule.
             with real_fdopen(descriptor, *args, **keywords) as handle:
                 yield handle
             if replacements["count"] < cg.READ_ONLY_STATE_READ_ATTEMPTS:
                 replacements["count"] += 1
                 payload["wait_condition_sequence"] = 100 + replacements["count"]
+                payload["content_hash"] = cg.state_content_hash(payload)
+                cg.validate_state_integrity(payload)
                 cg.atomic_write_json(state_path, payload)
+                cg.validate_state_integrity(json.loads(state_path.read_bytes()))
 
         try:
-            with mock.patch.object(cg.os, "fdopen", side_effect=read_then_replace):
+            with mock.patch.object(cg.os, "fdopen", side_effect=snapshot_fdopen_only(read_then_replace)):
                 with self.assertRaisesRegex(
                     RuntimeError, "state_changed_during_read"
                 ):
