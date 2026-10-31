@@ -12,15 +12,15 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **0.16.0 — 2026-10-31.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
+> **0.16.0 — Unreleased.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
 
 ## Install with Codex
 
-**0.16.0 — 2026-10-31.** Its experimental marketplace name
+**0.16.0 — Unreleased.** Its experimental marketplace name
 is `codex-context-guard-v016`; it is separate from published 0.15.1. Coexistence
 with real old tasks, independent enable/disable and GUI startup remain unverified.
 
-Download the named release artifact [context-guard-0.16.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.0/context-guard-0.16.0.zip). Do not register
+After publication, download the named release artifact `context-guard-0.16.0.zip`. Until then, use the candidate build below. Do not register
 a Git checkout or GitHub's automatic source ZIP as the marketplace: they carry
 repository-only files. Extract the release artifact into a stable directory you
 control and keep it there; that directory remains the official marketplace
@@ -103,8 +103,8 @@ locations: Homebrew (`/opt/homebrew/bin` or `/usr/local/bin`, including Python
 3.10–3.14 version names), `/opt/anaconda3/bin`, and Python.framework. Each fallback
 must pass an isolated Python 3.10+ probe with an exact response. It never searches
 personal directories or writes a binding; other locations still need PATH or a
-valid explicit binding. Windows discovery is unchanged and still requires its
-existing PATH/launcher route or binding. Restricted-PATH tests do not establish
+valid explicit binding. Windows still uses its PATH/launcher route or binding;
+startup and missing-interpreter discovery avoid scanning unrelated PowerShell modules. Restricted-PATH tests do not establish
 actual GUI restart behavior on either platform.
 
 Finish old work under its original runtime before changing its selected plugin.

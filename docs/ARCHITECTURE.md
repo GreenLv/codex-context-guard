@@ -242,7 +242,7 @@ edit/readback/report or run/report closure persists its bounded Host and
 delivery references so resume does not restore a completed business item.
 Enforced proof, Goal, and adopted release contracts retain their own gates.
 
-For the 0.16.0 release-line source, SessionEnd uses the lightweight Hook entry
+For the 0.16.0 source candidate, SessionEnd uses the lightweight Hook entry
 and loads the stateful core in that same Python process. A fresh monotonic
 anchor precedes stdin parsing and the heavy import; the core does not reset
 it after loading or locking. Current state and recovery remain first. Cleanup

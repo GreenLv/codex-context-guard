@@ -1,9 +1,16 @@
 # Versioning policy
 
-## 0.16.0 — 2026-10-31
+## 0.16.0 — Unreleased
 
-This is the 0.16.0 release line. Public availability is determined
+This is the unpublished 0.16.0 source candidate. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
+
+The Windows launcher loads its required system PowerShell modules explicitly.
+Its Python lookup suppresses unrelated module auto-discovery only during the
+lookup and restores the caller's global preference, including its absence.
+Loaded aliases/functions, PATH/PATHEXT ordering, interpreter checks and the
+original 30-second Hook acceptance limit remain unchanged. These candidate
+runtime bytes require a new artifact identity and affected native evidence.
 
 This minor release addresses the 2026-10 engineering review (F01–F10, D01).
 Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the

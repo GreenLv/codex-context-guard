@@ -1,6 +1,6 @@
 # Local Release Acceptance
 
-## 0.16.0 marketplace-only release — 2026-10-31
+## 0.16.0 marketplace-only source candidate — Unreleased
 
 The custom installer and namespace transaction are removed in 0.16.0.
 CI/HOL, installation and native evidence must be checked separately for each

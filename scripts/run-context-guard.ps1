@@ -1,5 +1,13 @@
 $ErrorActionPreference = "Stop"
 
+# Load only the system cmdlets used below. Unqualified first-use discovery can
+# analyze every available third-party module before finding Join-Path or
+# New-Object, even though none of those modules is a launcher dependency.
+foreach ($cgModule in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility')) {
+    $cgModuleManifest = [System.IO.Path]::Combine($PSHOME, "Modules\$cgModule\$cgModule.psd1")
+    Microsoft.PowerShell.Core\Import-Module -Name $cgModuleManifest -ErrorAction Stop
+}
+
 # Optional native-acceptance trace.  It records only phase, elapsed time and
 # exit code in a caller-owned private directory.  Hook stdin, paths, and
 # credentials are never written.  An unfinished start record identifies a
@@ -218,21 +226,44 @@ foreach ($extension in $pythonPathExtensions) {
 }
 $pythonLegacyExtensions = @($pythonPathExtensions | Where-Object { $_ -notmatch '^\.(exe|com|cmd|bat)$' })
 
+function Get-ContextGuardAvailablePythonCommand([string]$Name) {
+    # Windows PowerShell 5.1 command discovery reads the global preference,
+    # even when Get-Command is called from a function with a local override.
+    # Preserve both its value and absence; never leave a caller policy changed.
+    $savedPreference = Get-Variable -Name PSModuleAutoLoadingPreference -Scope Global -ErrorAction SilentlyContinue
+    $preferenceExisted = $null -ne $savedPreference
+    $savedPreferenceValue = if ($preferenceExisted) { $savedPreference.Value } else { $null }
+    $preferenceChanged = $false
+    try {
+        $global:PSModuleAutoLoadingPreference = 'None'
+        $preferenceChanged = $true
+        return (Get-Command $Name -ErrorAction SilentlyContinue)
+    } finally {
+        if ($preferenceChanged) {
+            if ($preferenceExisted) {
+                $global:PSModuleAutoLoadingPreference = $savedPreferenceValue
+            } else {
+                Remove-Variable -Name PSModuleAutoLoadingPreference -Scope Global
+            }
+        }
+    }
+}
+
 function Resolve-ContextGuardPythonCommand([string]$Name) {
     if ($Name -match '[\\/:]' -or -not $ordinaryPythonPath -or
         (Test-Path -LiteralPath "Alias:$Name") -or (Test-Path -LiteralPath "Function:$Name")) {
-        return (Get-Command $Name -ErrorAction SilentlyContinue)
+        return (Get-ContextGuardAvailablePythonCommand $Name)
     }
     # Script and bare-file precedence stays with PowerShell, including .ps1
     # outside PATHEXT. Inspect all directories before choosing an application.
     foreach ($directory in $pythonPathDirectories) {
         if ([System.IO.File]::Exists([System.IO.Path]::Combine($directory, $Name)) -or
             [System.IO.File]::Exists([System.IO.Path]::Combine($directory, $Name + '.ps1'))) {
-            return (Get-Command $Name -ErrorAction SilentlyContinue)
+            return (Get-ContextGuardAvailablePythonCommand $Name)
         }
         foreach ($extension in $pythonLegacyExtensions) {
             if ([System.IO.File]::Exists([System.IO.Path]::Combine($directory, $Name + $extension))) {
-                return (Get-Command $Name -ErrorAction SilentlyContinue)
+                return (Get-ContextGuardAvailablePythonCommand $Name)
             }
         }
     }

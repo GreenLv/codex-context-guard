@@ -83,7 +83,7 @@ the lifecycle lock in place. Contention skips cleanup within the budget; a
 queued writer proceeds only after release. Resumed v2 activity clears the old
 retention timestamp. Legacy trees and their timestamps are unchanged.
 
-Since the 0.16.0 release-line source the sweep is bounded inside the SessionEnd host
+Since the 0.16.0 source candidate the sweep is bounded inside the SessionEnd host
 budget, with budget, persisted progress and fairness as separate mechanisms.
 The lightweight Python entry supplies a fresh same-process monotonic anchor
 before stdin parsing and the heavy import. After mandatory state and recovery

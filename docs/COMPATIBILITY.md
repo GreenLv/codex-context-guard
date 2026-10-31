@@ -1,8 +1,8 @@
 # Compatibility and Verification Status
 
-## 0.16.0 — 2026-10-31
+## 0.16.0 — Unreleased
 
-This is the 0.16.0 release line. Public availability is determined
+This is the unpublished 0.16.0 source candidate. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 
 Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
@@ -49,7 +49,7 @@ published 0.15.1:
   binding is created. POSIX discovery additionally probes fixed global Homebrew, Anaconda and
   Python.framework locations with isolated version/marker checks after PATH
   discovery fails; it does not search personal directories or create a binding.
-  Windows discovery is unchanged. Actual GUI restart acceptance remains pending. No archive repair or project installation rollback remains.
+  Windows retains PATH/launcher discovery and existing bindings, but loads its required system modules explicitly. Interpreter lookup does not auto-discover unloaded PowerShell modules; already loaded aliases/functions and existing path rules remain supported. The global auto-loading preference is restored after each lookup, including failure. Actual GUI restart acceptance remains pending. No archive repair or project installation rollback remains.
 - Re-delivered or repeated UserPromptSubmit events stay independent: the
   hook payload carries no stable per-message identity, so nothing collapses
   and no input is dropped. A repeated (session, turn, prompt-bytes) shape is
