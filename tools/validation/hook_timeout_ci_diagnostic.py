@@ -16,6 +16,9 @@ from pathlib import Path
 SUBJECT = "1178b1426254654cff4ab84d1dd2dff33c6de3d6"
 RUNTIME = "7b288ef2d82fb99da6a64ac8ca0a03647116d251665180d162cc409e9a9123c2"
 CASES = ("original", "trace_only", "configured_trace", "path_without_dot_trace")
+ORDERS = {"initial": CASES,
+          "ABA": ("trace_only", "path_without_dot_trace", "trace_only"),
+          "BAB": ("path_without_dot_trace", "trace_only", "path_without_dot_trace")}
 
 
 def kind(error):
@@ -179,8 +182,11 @@ def main():
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--subject-root", type=Path, required=True)
         parser.add_argument("--output", type=Path, required=True)
+        parser.add_argument("--order", choices=tuple(ORDERS), default="initial")
         args = parser.parse_args()
         output = args.output
+        cases = ORDERS[args.order]
+        report.update(case_order=args.order, planned_cases=list(cases))
         if output.exists() or output.is_symlink() or os.name != "nt":
             raise ValueError("unsupported_or_existing_output")
         subject = args.subject_root.resolve(strict=True)
@@ -200,14 +206,15 @@ def main():
             raise ValueError("shell_unavailable")
         report.update(python=list(sys.version_info[:3]), shell="powershell" if
                       Path(shell).stem.lower() == "powershell" else "pwsh")
-        for case in CASES:
+        for ordinal, case in enumerate(cases, start=1):
             outer = Path(tempfile.mkdtemp(prefix="cg-hook-timeout-diagnostic-"))
             row = run_case(subject, outer, case, shell, identity, OwnedProcess)
+            row["ordinal"] = ordinal
             report["observations"].append(row)
             if (row["fixture_cleanup"] != "removed" or row["result"] == "driver_error"
                     or not row["artifact_parity_unchanged"] or not row["no_bytecode"]):
                 break
-        if len(report["observations"]) == len(CASES) and all(
+        if len(report["observations"]) == len(cases) and all(
                 row["fixture_cleanup"] == "removed" and row["artifact_parity_unchanged"]
                 and row["no_bytecode"] and row["result"] != "driver_error"
                 for row in report["observations"]):

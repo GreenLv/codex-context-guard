@@ -17,6 +17,11 @@ SPEC.loader.exec_module(d)
 
 
 class DiagnosticControls(unittest.TestCase):
+    def test_orders_keep_the_original_control_and_reverse_the_pair(self):
+        self.assertEqual(d.ORDERS["initial"], d.CASES)
+        self.assertEqual(d.ORDERS["ABA"], ("trace_only", "path_without_dot_trace", "trace_only"))
+        self.assertEqual(d.ORDERS["BAB"], ("path_without_dot_trace", "trace_only", "path_without_dot_trace"))
+
     def test_environment_variants_change_only_declared_inputs(self):
         with mock.patch.object(os, "pathsep", ";"), mock.patch.object(os, "defpath", ".;C:\\bin"):
             cases = {name: d.environment_for(Path("C:/private"), name,
