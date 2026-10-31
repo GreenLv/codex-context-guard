@@ -1,8 +1,8 @@
 # Versioning policy
 
-## 0.16.0 — Unreleased
+## 0.16.0 — 2026-11-01
 
-This is the unpublished 0.16.0 source candidate. Public availability is determined
+This document describes version 0.16.0. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 
 The Windows launcher loads its required system PowerShell modules explicitly.

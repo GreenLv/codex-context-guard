@@ -242,14 +242,15 @@ edit/readback/report or run/report closure persists its bounded Host and
 delivery references so resume does not restore a completed business item.
 Enforced proof, Goal, and adopted release contracts retain their own gates.
 
-For the 0.16.0 source candidate, SessionEnd uses the lightweight Hook entry
-and loads the stateful core in that same Python process. A fresh monotonic
-anchor precedes stdin parsing and the heavy import; the core does not reset
-it after loading or locking. Current state and recovery remain first. Cleanup
-uses the smaller of its remaining allowance and a one-second cooperative
-work slice, with checkpoint and return work kept outside that slice. The
-complete installed command must separately pass the three-second native
-gate; this Python anchor does not measure prior shell or interpreter startup.
+In version 0.16.0, SessionEnd uses the lightweight Hook entry and loads the
+stateful core in that same Python process. A fresh monotonic anchor precedes
+stdin parsing and the heavy import; the core does not reset it after loading
+or locking. Current state and recovery remain mandatory. Retention deletion is
+disabled, so no cleanup sweep runs after persistence. The current-session lock
+budget remains bounded; mandatory writes and synchronous filesystem calls are
+not preemptible. The complete installed command must separately pass the
+three-second native gate; this Python anchor does not measure prior shell or
+interpreter startup.
 
 The earlier 0.13.8 source candidate retained the 0.13.6 reply delivery behavior
 and invoked the core directly for SessionEnd to avoid the then-separate

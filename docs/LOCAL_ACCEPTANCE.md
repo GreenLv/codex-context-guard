@@ -1,13 +1,13 @@
 # Local Release Acceptance
 
-## 0.16.0 marketplace-only source candidate — Unreleased
+## 0.16.0 marketplace installation — 2026-11-01
 
-The retention-disabled source candidate changes runtime bytes: SessionEnd keeps
+Version 0.16.0 changes retention behavior: SessionEnd keeps
 mandatory state/recovery writes, while automatic and explicit retention deletion
 are unavailable. Source controls, fresh exact-artifact installation, complete CI,
 HOL and native-platform acceptance for those changed bytes remain separate gates.
 Earlier deletion/cleanup evidence below retains its original source identity; it
-does not establish this candidate's acceptance. Explicitly retired deletion tests,
+does not establish this version's acceptance. Explicitly retired deletion tests,
 including the former unregistered-tail expected failure, are reported as retired
 and do not become passes.
 

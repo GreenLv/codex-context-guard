@@ -12,15 +12,15 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.16.0 — Unreleased。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 保存状态，既有会话继续保留。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **0.16.0 — 2026-11-01。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 保存状态，既有会话继续保留。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 用 Codex 安装
 
-**0.16.0 — Unreleased。** 实验性市场名为
+**0.16.0 — 2026-11-01。** 实验性市场名为
 `codex-context-guard-v016`，与已发布的 0.15.1 市场不同。真实旧任务续接、
-两个版本独立启停和 GUI 启动尚未验证。
+两个版本独立启停和 GUI 启动各自需要独立的原生证据。
 
-正式发布后，请下载明确命名的发行制品 `context-guard-0.16.0.zip`；此前请按下方命令构建候选制品。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
+请下载明确命名的发行制品 [context-guard-0.16.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.0/context-guard-0.16.0.zip)；源码验证可按下方命令构建。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
 它们带有仓库维护文件。把发行 ZIP 解压到自己控制的稳定目录并一直保留，
 官方市场后续读取和刷新仍依赖此来源，不要在安装后删除。
 
