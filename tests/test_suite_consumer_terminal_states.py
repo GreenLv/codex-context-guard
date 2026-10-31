@@ -31,6 +31,7 @@ def run_official_main(method, module_label):
     with mock.patch.dict(sys.modules, {synthetic.__name__: synthetic}), \
             mock.patch.object(runner, "discover_current_modules",
                               return_value=[module_label]), \
+            mock.patch.object(runner, "load_retired_retention_tests", return_value={}), \
             mock.patch.object(sys, "argv", ["run_current_behavior_suite.py"]), \
             contextlib.redirect_stdout(stdout), \
             contextlib.redirect_stderr(stderr):

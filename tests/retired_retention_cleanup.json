@@ -1,0 +1,246 @@
+{
+  "schema": "retired-retention-tests/v1",
+  "reason": "Session retention deletion is disabled in 0.16.0. Exact retired nodes remain explicit skips; baseline commit, method digests and prior xfail status are recorded here. Original method bodies remain in their test modules.",
+  "tests": [
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_disappeared_directory_is_not_recreated",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "9517f05083bd60a76165b4c6edf17d74185c4970c5a09bf6c5bd39e3a0dd57be",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_case_successor_is_untouched_and_does_not_raise",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "5050d24f12d1e515da175a417ca28268180d980cee160f3680e44d66f2b789cf",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_same_name_replacement_directory_is_not_hardened_or_deleted",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "4ab4f94e3b008972ad2ee9d236d1a07b2fae2fb20f54b865179d306b5129bc7a",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_same_name_replacement_file_is_untouched",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "f197f71c1256362de93b28b4c71d44c42bff5377f8e67e47c692e90979928961",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_same_name_replacement_link_is_untouched",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "684ec75078944dd64818e14bd74eaecf92184b342459b11d6f9e4b48787d2408",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_post_lock_reparse_or_zero_inode_cannot_authorize_cleanup",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "16726346fb57f79938616d50fbcf1ef0e4c7dd2b841b526be11e1ceaf110bf62",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_unavailable_initial_directory_identity_is_skipped_and_retried",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "7ceb8ae84446772f5aa32a96d10d1a77fe2f4a23b00757c8ae5117611ecdb2bc",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_normal_cleanup_uses_noncreating_lifecycle_lock",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "491b93f364402086e4629a672935597bbc3c5923124e95a44e1e706b7693fa37",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_matching_loose_object_is_hardened_before_reads_or_partial_deletion",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "8c9951c42da38f6116d4fa5243732fd3d01bced53b2da2d0ef2c5044c16b9e0c",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_permission_refusal_blocks_reads_and_deletion_with_or_without_marker",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "4720b9a6b6fef4a1e45adc0f9e0b9185e80535dbc2f8c4101d14f2a102599b94",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_identity_is_rechecked_after_private_boundary_hardening",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "8cb869c2adaaea571f1995f1a854c18f710b3da3f4f460484731529d75505af1",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.CleanupLifecycleIdentity.test_busy_lifecycle_lock_is_skipped_and_released_owner_can_be_cleaned",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "55a0cc8ea87f46265a9247b42ff0bef93d9e80126fa05a431821391b2484b34d",
+      "previous_expected_failure": false,
+      "reason": "Deletion executor disabled; writer identity controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08BoundedSessionEndCleanup.test_repeated_passes_complete_a_large_backlog",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "f45ea2429da2143d91949af698f7ce3f0e90a4ff5c6da089b19294e0630a2204",
+      "previous_expected_failure": false,
+      "reason": "Backlog and partial-deletion execution disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08BoundedSessionEndCleanup.test_interrupted_deletion_resumes_from_marker",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "12f2947297b8ca2fd25d30922bcdf31f13083193b8e076560e7e5063e19ab962",
+      "previous_expected_failure": false,
+      "reason": "Backlog and partial-deletion execution disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08CleanupResumeInvariants.test_retained_head_cannot_starve_the_tail",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "79dc24d0fbb757720286f7c2fa9746be4d9df33e82407d747f5c9845a3f3ca6d",
+      "previous_expected_failure": false,
+      "reason": "Deletion progress disabled; real-resume controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08CleanupResumeInvariants.test_cursor_advances_through_retained_and_busy_entries",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "f29c854f935f28f0dc4433f806d60bc57ea3f4fe83dd0bdd0f0e894e71fc6c6a",
+      "previous_expected_failure": false,
+      "reason": "Deletion progress disabled; real-resume controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08CleanupResumeInvariants.test_order_change_between_passes_still_reaches_every_entry",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "520d7c0646c7ec7a5a96816b8362a13c588842d947547481322125016722da89",
+      "previous_expected_failure": false,
+      "reason": "Deletion progress disabled; real-resume controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08CleanupResumeInvariants.test_directory_symlink_is_unlinked_without_following",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "3626b021db348df1cb4b23eddd558bb3a89a15cd556d52f5b0cd22bca6cb6f5f",
+      "previous_expected_failure": false,
+      "reason": "Deletion progress disabled; real-resume controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.F08CleanupResumeInvariants.test_cursor_resumes_exactly_at_the_interrupted_session",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "271d936b6b27d2b346a71268a10b77e58b17f566a9a90b9e89a8d978ca33ffaa",
+      "previous_expected_failure": false,
+      "reason": "Deletion progress disabled; real-resume controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_expired_deadline_requests_nothing",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "516cfb2a00839d606e44563d3baf2d1a3d94e1d4d9a934b7da81adee24d1f5f0",
+      "previous_expected_failure": false,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_deadline_during_enumeration_bounds_requests",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "a1fe690c9a12cec1bcfa49decb6c135381bcdd2e1ab633543d9bf84995ca26a8",
+      "previous_expected_failure": false,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_interrupted_scan_does_not_persist_a_skipping_cursor",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "4f5f2adc1345d66fca484e02131361b61bb0c7795e68d50c6a0ccb289ed14377",
+      "previous_expected_failure": false,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_repeated_interrupted_scans_still_reach_the_tail",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "0d24d43d7c4d1251b19642971a7c2563f57ea589bce3c4f646a865078050bb20",
+      "previous_expected_failure": false,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_pending_queue_persists_across_calls",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "2f1800c1c631f26f29f2e98ff5be114b87e369ac4018f89eb13eda39539036a9",
+      "previous_expected_failure": false,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_longer_decided_prefix_still_reaches_the_tail",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "0b724edf388cb3351f81c08deab78f1f4432538bb54cd690ade6d029a28ebd7f",
+      "previous_expected_failure": true,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03BoundedEnumeration.test_interrupted_passes_stay_bounded_and_queue_progress",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "d3947194dc5959936024df0a2b70ffec2a1f649ccaaedc686cef54a5586df7f0",
+      "previous_expected_failure": false,
+      "reason": "Retention enumeration and discovery fairness disabled.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03DiscoveryRegistryAndChunks.test_registered_eight_directory_model_reaches_the_tail",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "22cf9dc535022641837821ea73296397eb29c5ada20dc548dcced0798ec07388",
+      "previous_expected_failure": false,
+      "reason": "Retention discovery consumer disabled; registry boundary controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_cg0160_repair_family.RV03DiscoveryRegistryAndChunks.test_pending_chunks_carry_more_than_one_legacy_file",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "cbb653bdf7eb2cb712cc7a56d0ed3a539402022337ddbf147b97181d04ef1bbf",
+      "previous_expected_failure": false,
+      "reason": "Retention discovery consumer disabled; registry boundary controls remain active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_session_end_budget.SessionEndBudgetTests.test_expired_cleanup_does_not_read_or_rewrite_existing_pending",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "6da6f6e33283a6369971508f6795cd2e5c815d892256df441aba3988f9a2f07b",
+      "previous_expected_failure": false,
+      "reason": "Optional retention deletion disabled; current-session lock budget remains active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    },
+    {
+      "node": "tests.test_session_end_budget.SessionEndBudgetTests.test_registered_partial_directory_progress_and_candidate_locks_stay_nonblocking",
+      "source_commit": "1178b1426254654cff4ab84d1dd2dff33c6de3d6",
+      "original_source_sha256": "b4f7c9b6553ba683dfdf8af72417461a7c8a318ac8726f61caa2c8dc0802b9ba",
+      "previous_expected_failure": false,
+      "reason": "Optional retention deletion disabled; current-session lock budget remains active.",
+      "replacement": "tests.test_retention_disabled_candidate.RetentionDisabledCandidate"
+    }
+  ]
+}

@@ -978,21 +978,14 @@ class F07SessionIdentity(IsolatedEnvironment):
         with cg.session_lock(target, timeout=0.0):
             pass
 
-    def test_cleanup_retires_owner_before_case_variant_is_admitted(self) -> None:
+    def test_cleanup_retires_owner_before_case_variant_is_admitted(self):
         self._expire_session("ABC")
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1)
-        self.assertFalse(self.session_dir("ABC").exists())
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", "abc", prompt="new owner", turn_id="t1"))
-        state = json.loads((self.session_dir("abc") / "state.json").read_text())
-        self.assertEqual(state["session"]["id"], "abc")
-        refused = cg.safe_dispatch(self.payload(
-            "UserPromptSubmit", "ABC", prompt="retired owner", turn_id="t2"))
+        before = (self.session_dir("ABC") / "state.json").read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        refused = cg.safe_dispatch(self.payload("UserPromptSubmit", "abc", prompt="new owner", turn_id="t1"))
         self.assertNotEqual(refused, {})
-        self.assertEqual(len(json.loads(
-            (self.session_dir("abc") / "state.json").read_text())["prompts"]), 1)
+        self.assertEqual((self.session_dir("ABC") / "state.json").read_bytes(), before)
 
     def test_linked_admission_namespace_is_refused_without_outside_changes(self) -> None:
         target = self.session_dir("fresh")
@@ -1124,10 +1117,12 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
         self.assertEqual(removed, 0)
         return original
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_disappeared_directory_is_not_recreated(self):
         original = self._interleave_cleanup(shutil.rmtree)
         self.assertFalse(original.exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_case_successor_is_untouched_and_does_not_raise(self):
         expected = []
 
@@ -1147,6 +1142,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
         names = [p.name for p in state.parent.parent.iterdir() if p.name != ".locks"]
         self.assertEqual(names, ["abc"])
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_same_name_replacement_directory_is_not_hardened_or_deleted(self):
         retained = self.root / "retired-object"
 
@@ -1166,6 +1162,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
             self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o755)
         self.assertTrue((retained / "state.json").is_file())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_same_name_replacement_file_is_untouched(self):
         def replace(original):
             original.rename(self.root / "retired-object")
@@ -1174,6 +1171,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
         original = self._interleave_cleanup(replace)
         self.assertEqual(original.read_text(encoding="utf-8"), "replacement file")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_same_name_replacement_link_is_untouched(self):
         outside = self.root / "unrelated"
         outside.mkdir()
@@ -1188,6 +1186,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
         self.assertEqual([p.name for p in outside.iterdir()], ["keep.txt"])
         self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "outside")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_post_lock_reparse_or_zero_inode_cannot_authorize_cleanup(self):
         import types
 
@@ -1229,6 +1228,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
                     self.data_dir, deadline=time.monotonic() + 30), 1)
                 self.assertFalse(original.exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_unavailable_initial_directory_identity_is_skipped_and_retried(self):
         import types
 
@@ -1256,6 +1256,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
             self.data_dir, deadline=time.monotonic() + 30), 1)
         self.assertFalse(original.exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_normal_cleanup_uses_noncreating_lifecycle_lock(self):
         self._expire_session("expired")
         with mock.patch.object(cg, "_prepare_session_directory",
@@ -1265,6 +1266,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
         self.assertEqual(removed, 1)
         self.assertFalse(self.session_dir("expired").exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_matching_loose_object_is_hardened_before_reads_or_partial_deletion(self):
         for partial in (False, True):
@@ -1297,6 +1299,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
                 self.assertIn("_resume_retired_marker" if partial else "_session_expired", checks)
                 self.assertFalse(original.exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_permission_refusal_blocks_reads_and_deletion_with_or_without_marker(self):
         self._expire_session("expired")
@@ -1327,6 +1330,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
                 self.assertEqual((original / "state.json").read_bytes(), before)
                 self.assertEqual((original / cg.CLEANUP_PARTIAL_MARKER).exists(), partial)
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_identity_is_rechecked_after_private_boundary_hardening(self):
         self._expire_session("expired")
         original = self.session_dir("expired")
@@ -1356,6 +1360,7 @@ class CleanupLifecycleIdentity(IsolatedEnvironment):
         if os.name == "posix":
             self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o755)
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_busy_lifecycle_lock_is_skipped_and_released_owner_can_be_cleaned(self):
         self._expire_session("expired")
         original = self.session_dir("expired")
@@ -1460,6 +1465,7 @@ class F08BoundedSessionEndCleanup(IsolatedEnvironment):
             )["session"]["ended_at"]
         )
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_repeated_passes_complete_a_large_backlog(self) -> None:
         for index in range(40):
             self._make_session(f"old-{index:03d}", ended_days_ago=45)
@@ -1475,6 +1481,7 @@ class F08BoundedSessionEndCleanup(IsolatedEnvironment):
         ]
         self.assertEqual(remaining, [])
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_interrupted_deletion_resumes_from_marker(self) -> None:
         session_dir = self.data_dir / "sessions-v2" / "huge"
         self._make_session("huge", ended_days_ago=45)
@@ -1493,26 +1500,21 @@ class F08BoundedSessionEndCleanup(IsolatedEnvironment):
         self.assertEqual(removed, 1)
         self.assertFalse(session_dir.exists())
 
-    def test_active_and_current_sessions_are_never_deleted(self) -> None:
+    def test_active_and_current_sessions_are_never_deleted(self):
         self._make_session("active-recent", ended_days_ago=1)
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", "current-keep", prompt="live", turn_id="t1"))
-        removed = cg.cleanup_old_sessions(
-            self.data_dir,
-            current=self.session_dir("current-keep"),
-            deadline=time.monotonic() + 5.0,
-        )
-        self.assertEqual(removed, 0)
-        self.assertTrue(
-            (self.data_dir / "sessions-v2" / "active-recent").is_dir())
+        cg.dispatch(self.payload("UserPromptSubmit", "current-keep", prompt="live", turn_id="t1"))
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, current=self.session_dir("current-keep"))
+        self.assertTrue(self.session_dir("active-recent").is_dir())
         self.assertTrue(self.session_dir("current-keep").is_dir())
 
-    def test_legacy_sessions_are_never_touched(self) -> None:
+    def test_legacy_sessions_are_never_touched(self):
         legacy = self.data_dir / "sessions" / "legacy-old"
         legacy.mkdir(parents=True)
         (legacy / "state.json").write_text("{}", encoding="utf-8")
-        cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 5.0)
-        self.assertTrue((legacy / "state.json").exists())
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertEqual((legacy / "state.json").read_text(), "{}")
 
 
 class F10PromptReplayHandling(IsolatedEnvironment):
@@ -1638,59 +1640,46 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
     19a4cb5 candidate."""
 
 
-    def test_resumed_session_is_never_deleted_after_marker(self) -> None:
+    def test_resumed_session_is_never_deleted_after_marker(self):
         name = "resume-marker"
         self._expire_session(name)
         session = self.session_dir(name)
-        with mock.patch.object(cg, "_delete_session_tree_bounded",
-                               side_effect=cg._CleanupBudgetExhausted):
-            cg.cleanup_old_sessions(self.data_dir,
-                                    deadline=time.monotonic() + 3)
-        self.assertTrue((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        # A real resume retires the marker through the write path.
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", name, prompt="continue the task",
-            turn_id="t2"))
+        (session / cg.CLEANUP_PARTIAL_MARKER).write_text("synthetic old marker")
+        cg.dispatch(self.payload("UserPromptSubmit", name, prompt="continue the task", turn_id="t2"))
         self.assertFalse((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 3)
-        self.assertTrue(session.exists(), f"resumed session deleted ({removed})")
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertTrue(session.exists())
+        self.assertIsNone(self.load_state(name)["session"]["ended_at"])
 
-    def test_resume_after_partial_file_deletion_keeps_session(self) -> None:
+    def test_resume_after_partial_file_deletion_keeps_session(self):
         name = "resume-partial"
         self._expire_session(name)
         session = self.session_dir(name)
-        (session / cg.CLEANUP_PARTIAL_MARKER).write_text("x", encoding="utf-8")
+        (session / cg.CLEANUP_PARTIAL_MARKER).write_text("synthetic old marker")
         (session / "state.json").unlink()
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", name, prompt="task two", turn_id="t2"))
+        cg.dispatch(self.payload("UserPromptSubmit", name, prompt="task two", turn_id="t2"))
         self.assertFalse((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 3)
-        self.assertTrue(session.exists())
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
         self.assertTrue((session / "state.json").is_file())
+        self.assertIsNone(self.load_state(name)["session"]["ended_at"])
 
-    def test_failed_resume_keeps_eligibility(self) -> None:
+    def test_failed_resume_keeps_eligibility(self):
         name = "failed-resume"
         self._expire_session(name)
         session = self.session_dir(name)
-        with mock.patch.object(cg, "_delete_session_tree_bounded",
-                               side_effect=cg._CleanupBudgetExhausted):
-            cg.cleanup_old_sessions(self.data_dir,
-                                    deadline=time.monotonic() + 3)
-        self.assertTrue((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        # A failed resume (state write refused) keeps the marker and the
-        # session stays deletable on a later pass.
-        with mock.patch.object(cg, "atomic_write_json",
-                               side_effect=OSError("disk refused")):
+        marker = session / cg.CLEANUP_PARTIAL_MARKER
+        marker.write_text("synthetic old marker")
+        before = (session / "state.json").read_bytes()
+        with mock.patch.object(cg, "atomic_write_json", side_effect=OSError("disk refused")):
             with self.assertRaises(OSError):
-                cg.dispatch(self.payload(
-                    "UserPromptSubmit", name, prompt="resume attempt",
-                    turn_id="t2"))
-        self.assertTrue((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1)
-        self.assertFalse(session.exists())
+                cg.dispatch(self.payload("UserPromptSubmit", name, prompt="resume attempt", turn_id="t2"))
+        self.assertTrue(marker.exists())
+        self.assertEqual((session / "state.json").read_bytes(), before)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertTrue(marker.exists())
 
     def _patch_cleanup_scan(self, sessions, names_provider, arrivals):
         """Patch os.scandir for the cleanup namespace with an arrival check.
@@ -1739,6 +1728,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
 
         return mock.patch.object(cg.os, "scandir", side_effect=scanner)
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_retained_head_cannot_starve_the_tail(self) -> None:
         """Deterministic ordered enumeration: 512 retained head entries must
         not starve the expired tail (the APFS-order version of this test
@@ -1773,6 +1763,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
                          f"tail untouched after 3 passes; scans={len(visits)}, "
                          f"tail visits={visits.count('z-expired')}")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_cursor_advances_through_retained_and_busy_entries(self) -> None:
         """RR04 matrix: retained and lock-busy entries are decided for the
         generation cursor, so the tail is reached even when every head entry
@@ -1836,6 +1827,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         with cg.session_lock(busy, timeout=0.0):
             pass
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_order_change_between_passes_still_reaches_every_entry(self) -> None:
         """RR04 matrix: enumeration order changes between passes must not
         lose entries because the cursor is lexical over a lexical order."""
@@ -1865,6 +1857,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         self.assertFalse((sessions / "z-expired").exists(),
                          "reversed enumeration order lost the tail entry")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_directory_symlink_is_unlinked_without_following(self) -> None:
         external = self.root / "outside"
         (external / "keep").mkdir(parents=True)
@@ -1877,6 +1870,7 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         self.assertFalse(session.exists())
         self.assertTrue((external / "keep" / "data.txt").exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_cursor_resumes_exactly_at_the_interrupted_session(self) -> None:
         for name in ("a-first", "b-middle", "c-target"):
             self._expire_session(name)
@@ -2208,6 +2202,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
     model is a boundedness probe, not a real filesystem measurement."""
 
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_expired_deadline_requests_nothing(self) -> None:
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
@@ -2226,6 +2221,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          f"enumeration requested {len(visited)} entries "
                          "after the deadline had already passed")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_deadline_during_enumeration_bounds_requests(self) -> None:
         """Original RR04 contract, restored after the sixth review rejected
         the interim no-deadline design: every enumeration step starts only
@@ -2263,6 +2259,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
         self.assertFalse(set(pending) & set(pending2),
                          "the queued names were not adjudicated")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_interrupted_scan_does_not_persist_a_skipping_cursor(self) -> None:
         """The sixth review's soundness rule: a lexical watermark may only
         skip names that were actually read. A scan interrupted by the
@@ -2301,6 +2298,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "the unread lexically-smaller tail was never "
                          "adjudicated")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_repeated_interrupted_scans_still_reach_the_tail(self) -> None:
         """RV-03 (fifth-round reviewer model): every pass's enumeration is
         interrupted by a small shared budget, yet the pending queue carries
@@ -2334,6 +2332,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "tail survived eight budget-interrupted passes; "
                          f"eligibility visits={len(visited)}")
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_pending_queue_persists_across_calls(self) -> None:
         """Names enumerated but left undecided by an exhausted budget are
         persisted and adjudicated first on the next call, before any new
@@ -2374,6 +2373,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          "queue")
 
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     @unittest.expectedFailure
     def test_longer_decided_prefix_still_reaches_the_tail(self) -> None:
         """EXPECTED FAILURE — a documented, submitted contract conflict, not
@@ -2428,6 +2428,7 @@ class RV03BoundedEnumeration(IsolatedEnvironment):
                          f"passes; eligibility visits={len(visited)}")
         self.assertIn("z-expired", visited)
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_interrupted_passes_stay_bounded_and_queue_progress(self) -> None:
         """Documents the restored contract's actual behavior on the
         eight-directory shape: every pass reads at most
@@ -2497,12 +2498,7 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         path.chmod(0o600)
 
     def test_parent_relative_pending_cannot_reach_the_legacy_tree(self) -> None:
-        """The sixth-review counterexample: an expired session synthesized
-        into the legacy namespace (production dispatch/save, valid expiry)
-        stays untouched; the same fixture with a poisoned
-        '../<legacy>/<name>' pending entry must also stay untouched — the
-        name is dropped at load, nothing is locked, marked, or deleted
-        outside the v2 namespace, and no lock directory appears there."""
+        """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("v2-anchor")
         legacy_dir = self.data_dir / cg.LEGACY_NAMESPACE / "legacy-preserve"
         legacy_dir.mkdir(parents=True, exist_ok=True)
@@ -2517,15 +2513,11 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         parsed_cursor, parsed_pending = cg._read_cleanup_state(self.data_dir)
         self.assertEqual(parsed_pending, [],
                          "a parent-relative name must be dropped at load")
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
         after = sorted(str(p.relative_to(self.data_dir))
                        for p in self.data_dir.rglob("*")
                        if "legacy" in str(p.relative_to(self.data_dir)))
-        # The sweep stays active: the expired *v2* fixture is legitimately
-        # removed (removed == 1 proves cleanup ran), while the legacy tree
-        # the poisoned queue pointed at is untouched.
-        self.assertEqual(removed, 1)
         self.assertTrue(legacy_dir.exists())
         self.assertEqual(before, after, "the legacy tree changed")
         self.assertFalse(
@@ -2533,29 +2525,24 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
             "the legacy namespace must never gain a lock directory")
 
     def test_valid_v2_pending_still_adjudicates(self) -> None:
-        """Positive control: a legitimate encoded v2 name queued in valid
-        state still resolves, adjudicates and deletes."""
+        """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("queued-v2-control")
         self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1)
-        self.assertFalse(self.session_dir("queued-v2-control").exists())
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        self.assertTrue(self.session_dir("queued-v2-control").exists())
 
     def test_stale_pending_name_is_decided_without_action(self) -> None:
-        """A queued name whose directory vanished between passes is decided
-        (dropped) without error and without touching anything else."""
+        """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("still-here")
         self._write_state_file("", ["vanished-session", "still-here"])
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
         self.assertFalse(self.session_dir("vanished-session").exists())
-        self.assertFalse(self.session_dir("still-here").exists())
+        self.assertTrue(self.session_dir("still-here").exists())
 
     def test_pending_replaced_by_link_is_refused(self) -> None:
-        """A queued name whose directory was replaced by a symlink between
-        passes is decided without following the link."""
+        """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("queued-v2-control")
         outside = self.root / "outside-queue"
         (outside / "keep").mkdir(parents=True)
@@ -2564,23 +2551,19 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         shutil.rmtree(target)
         symlink_or_skip(self, target, outside / "keep", target_is_directory=True)
         self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 0)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
         self.assertTrue(target.is_symlink(), "the link must not be deleted")
         self.assertTrue((outside / "keep" / "data.txt").exists())
 
     def test_hostile_cursor_shape_is_ignored(self) -> None:
-        """A cursor that is not a plain component cannot suppress names via
-        lexical comparison; it is treated as empty."""
+        """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("queued-v2-control")
         self._write_state_file("../sessions/zzz", [])
         cursor, pending = cg._read_cleanup_state(self.data_dir)
         self.assertEqual(cursor, "")
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1,
-                         "a hostile cursor must not suppress adjudication")
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
 
 
 class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
@@ -2603,13 +2586,12 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
     def _register(self, names):
         cg._add_cleanup_registry_entries(self.data_dir, names)
 
-    def test_write_path_registers_sessions_for_discovery(self) -> None:
-        """Production save_state registers the encoded session name, so a
-        hook-created session is discoverable without any scan."""
+    def test_write_path_does_not_register_sessions_while_cleanup_is_disabled(self):
         self._expire_session("registered-session")
-        registry = cg._read_discovery_registry(self.data_dir)
-        self.assertIn(cg.safe_session_id("registered-session"), registry)
+        self.assertFalse(cg._cleanup_registry_path(self.data_dir).exists())
+        self.assertTrue((self.session_dir("registered-session") / "state.json").is_file())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_registered_eight_directory_model_reaches_the_tail(self) -> None:
         """The eighth-round design proof on the sixth-review toy model: the
         same eight directories, 1ms per read, 3ms per round — but the
@@ -2645,6 +2627,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                          "registered sessions were not fairly discovered")
         self.assertIn("z-expired", visited)
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_pending_chunks_carry_more_than_one_legacy_file(self) -> None:
         """The seventh-review capacity counterexample, as a repository
         regression: a budget-starved pass whose sweep reads more names than
@@ -2757,30 +2740,19 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         _, pending = cg._read_cleanup_state(self.data_dir)
         self.assertEqual(pending, ["a-one", "b-two", "c-three"])
 
-    def test_registry_corruption_and_loss_fall_back_to_backfill(self) -> None:
-        """A corrupted registry drops its invalid lines; a deleted registry
-        falls back to the deadline-bounded backfill sweep — expired sessions
-        are still adjudicated correctly in both cases."""
+    def test_registry_corruption_and_loss_fall_back_to_backfill(self):
         self._expire_session("registered-expired")
         registry = cg._cleanup_registry_path(self.data_dir)
-        registry.write_text("registered-expired\n../../evil\n.locks\n",
-                            encoding="utf-8")
-        loaded = cg._read_discovery_registry(self.data_dir)
-        self.assertEqual(loaded, {"registered-expired"},
-                         "invalid registry lines must be dropped")
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1)
-        self.assertFalse(self.session_dir("registered-expired").exists())
-        # Loss: with no registry at all, the backfill sweep still finds the
-        # expired session (bounded delay per pass under the deadline).
-        self._expire_session("backfill-expired")
-        cg._cleanup_registry_path(self.data_dir).unlink(missing_ok=True)
-        self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 1)
-        self.assertFalse(self.session_dir("backfill-expired").exists())
+        registry.write_text("registered-expired\n../../evil\n.locks\n", encoding="utf-8")
+        self.assertEqual(cg._read_discovery_registry(self.data_dir), {"registered-expired"})
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertTrue(self.session_dir("registered-expired").exists())
+        registry.unlink()
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertFalse(registry.exists())
+        self.assertTrue(self.session_dir("registered-expired").exists())
 
     def test_maintenance_boundary_refuses_linked_locks_root(self) -> None:
         """Ninth review (P1): the `.locks` maintenance root itself must be a
@@ -2808,9 +2780,8 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                         if p.is_file()}
         root_mode = outside.stat().st_mode & 0o777
         # Sweep entry: registration and any state writes must be skipped.
-        self.assertEqual(
-            cg.cleanup_old_sessions(self.data_dir,
-                                    deadline=time.monotonic() + 30), 0)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
         # Registry read: treats a linked registry as absent.
         self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
         # Reset/orphan deletion: refused.
@@ -2847,14 +2818,13 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
 
     def _assert_outside_untouched(self, outside: Path) -> None:
         before = self._tree_state(outside)
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
         self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
         cg._write_cleanup_state(self.data_dir, "", ["queued-name"])
         cg._reset_cleanup_state(self.data_dir)
         self.assertEqual(self._tree_state(outside), before,
                          "the external maintenance object changed")
-        self.assertEqual(removed, 0, "the sweep adjudicated through a link")
 
     def test_maintenance_boundary_refuses_linked_namespace(self) -> None:
         """Tenth review (P1): the gate must cover the whole chain — when the
@@ -2892,20 +2862,10 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
             cg._maintenance_boundary_ok(alias / "guard-data"))
 
     def test_add_registry_entries_windows_capability_profile(self) -> None:
-        """Ninth review P1 (capability model), rewritten after the
-        eleventh review's non-vacuity finding: a FRESH session (never
-        registered before, process cache empty, registry file absent) is
-        saved while the registry helper runs under the Windows capability
-        profile — ``os.name == "nt"`` with no ``os.fchmod`` on the
-        interpreter. The registry file must actually gain the session's
-        line during that modeled phase (real append, read back from the
-        file), which fails on the pre-fix bytes that called ``os.fchmod``
-        unconditionally (the AttributeError escaped the OSError handler)
-        and passes on the fixed bytes whose nt branch takes the file
-        boundary from the validated parent directory. The modeled phase
-        never mutates the POSIX test host beyond the session tree, and a
-        missing ``os.fchmod`` attribute is restored to its exact prior
-        presence state."""
+        """The independent helper still supports a Windows capability profile;
+        production save_state no longer calls it while cleanup is disabled.
+        This synthetic profile is not native Windows acceptance.
+        """
         sessions = self.data_dir / "sessions-v2"
         sessions.mkdir(parents=True)
         session = "win-capability-fresh"
@@ -2955,11 +2915,12 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                     elif hasattr(os, "fchmod"):
                         delattr(os, "fchmod")
 
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", session, prompt="capability model", turn_id="t1"))
+        self.assertFalse(registry_path.exists())
         with mock.patch.object(cg, "_add_cleanup_registry_entries",
                                side_effect=profile_add):
-            cg.dispatch(self.payload(
-                "UserPromptSubmit", session, prompt="capability model",
-                turn_id="t1"))
+            cg._add_cleanup_registry_entries(self.data_dir, [encoded])
         self.assertTrue(modeled["entered"], "the registry helper was never reached")
         # The modeled phase really appended: at least one registry append
         # open happened and the file now carries the fresh session's line.
@@ -2972,7 +2933,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                       "modeled phase")
         self.assertEqual(
             cg._read_discovery_registry(self.data_dir), {encoded})
-        # The session save itself completed under the modeled profile.
+        # State persistence remains independent of the modeled helper.
         self.assertTrue(self.session_dir(session).exists())
 
     @unittest.skipUnless(os.name == "posix" and hasattr(os, "fchmod"),
@@ -3003,6 +2964,8 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         old_mask = os.umask(0o022)
         try:
             self._expire_session("registry-mode-control")
+            cg._add_cleanup_registry_entries(
+                self.data_dir, [cg.safe_session_id("registry-mode-control")])
         finally:
             os.umask(old_mask)
         registry = cg._cleanup_registry_path(self.data_dir)
@@ -3028,7 +2991,7 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         outside_mode = outside.stat().st_mode & 0o777
         before = outside.read_bytes()
         symlink_or_skip(self, registry, outside)
-        # save-path registration: refused, external untouched
+        # Production save does not inspect or append the linked registry.
         self._expire_session("static-link-session")
         self.assertEqual(outside.read_bytes(), before,
                          "the save path appended through the link")
@@ -3046,41 +3009,26 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         # external file's lines as hints
         self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
 
-    def test_cleanup_prefixed_sid_is_a_supported_session(self) -> None:
-        """Eighth review (P2): the production encoder keeps every byte of
-        `[A-Za-z0-9._-]` raw, so `.cleanup-report` is a legitimate encoded
-        session id. The cleanup gate must accept the same support domain —
-        only exact maintenance-object collisions (`.locks` and `.`/`..`)
-        are reserved — and the expired session must be adjudicated and
-        removed like any other."""
+    def test_cleanup_prefixed_sid_is_a_supported_session(self):
         self._expire_session(".cleanup-report")
         self._expire_session("ordinary-report")
-        self.assertEqual(cg.safe_session_id(".cleanup-report"),
-                         ".cleanup-report")
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 2)
-        self.assertFalse(self.session_dir(".cleanup-report").exists())
-        self.assertFalse(self.session_dir("ordinary-report").exists())
+        self.assertEqual(cg.safe_session_id(".cleanup-report"), ".cleanup-report")
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertTrue(self.session_dir(".cleanup-report").exists())
+        self.assertTrue(self.session_dir("ordinary-report").exists())
 
-    def test_registry_hint_for_missing_live_object_decides_without_action(self) -> None:
-        """Registry names are hints, not authority: an entry whose live
-        object is missing (renamed away, e.g. into the legacy namespace by
-        the seventh-review poison fixture) is decided without action and
-        the legacy tree stays untouched."""
+    def test_registry_hint_for_missing_live_object_decides_without_action(self):
         self._expire_session("registered-session")
         legacy = self.data_dir / cg.LEGACY_NAMESPACE / "registered-session"
-        legacy.mkdir(parents=True, exist_ok=True)
-        (legacy / "KEEP.txt").write_text("SYNTHETIC-SENTINEL\n",
-                                         encoding="utf-8")
+        legacy.mkdir(parents=True)
+        (legacy / "KEEP.txt").write_text("sentinel")
         shutil.rmtree(self.session_dir("registered-session"))
         self._register([cg.safe_session_id("registered-session")])
-        removed = cg.cleanup_old_sessions(self.data_dir,
-                                          deadline=time.monotonic() + 30)
-        self.assertEqual(removed, 0)
-        self.assertTrue(legacy.exists())
-        self.assertFalse(
-            (self.data_dir / cg.LEGACY_NAMESPACE / ".locks").exists())
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.data_dir)
+        self.assertEqual((legacy / "KEEP.txt").read_text(), "sentinel")
+        self.assertFalse((legacy.parent / ".locks").exists())
 
 
 class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):

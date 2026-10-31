@@ -9629,17 +9629,8 @@ def save_state(session_dir: Path, state: dict[str, Any]) -> None:
     # and also retires eligibility for the cleanup-side re-read.
     with contextlib.suppress(OSError):
         (session_dir / CLEANUP_PARTIAL_MARKER).unlink(missing_ok=True)
-    # Durable discovery (registration): record the session's encoded name so
-    # the retention sweep adjudicates it without depending on readdir order.
-    # Content-free name only; best-effort — a failed registration costs
-    # timely discovery, the deadline-bounded backfill sweep still covers the
-    # session. Per-process bookkeeping keeps one append per session.
-    try:
-        if str(session_dir) not in _REGISTRY_ENTRIES_THIS_PROCESS:
-            _add_cleanup_registry_entries(session_dir.parent.parent,
-                                          [session_dir.name])
-    except OSError:
-        pass
+    # Retention cleanup is disabled. Keep historical discovery records
+    # untouched instead of appending entries with no maintenance consumer.
 
 
 def prompt_text(payload: dict[str, Any]) -> str:
@@ -18615,6 +18606,34 @@ def _legacy_session_identity(supplied: str) -> str | None:
     return supplied
 
 
+class SessionIdentityReadError(SessionIdentityError, RuntimeError):
+    """An unreadable identity is neither a missing id nor a writable alias."""
+
+
+def _read_v2_identity_state(path: Path) -> Any:
+    """Keep identity discovery's Windows reader compatible with publication."""
+    try:
+        if os.name == "nt":
+            descriptor = _open_committed_state(path)
+            try:
+                opened = os.fdopen(descriptor, "r", encoding="utf-8")
+            except BaseException:
+                os.close(descriptor)
+                raise
+        else:
+            opened = path.open("r", encoding="utf-8")
+        with opened as handle:
+            return json.load(handle)
+    except json.JSONDecodeError:
+        raise SessionIdentityReadError(
+            "state_file_not_valid_json: persisted session identity could not be read; refusing to guess"
+        ) from None
+    except OSError:
+        raise SessionIdentityReadError(
+            "state_file_unreadable: persisted session identity could not be read; refusing to guess"
+        ) from None
+
+
 def resolve_supplied_session(root: Path, supplied: str) -> tuple[str, Path] | None:
     """Resolve a user-supplied identifier to (raw_identity, directory).
 
@@ -18658,8 +18677,12 @@ def resolve_supplied_session(root: Path, supplied: str) -> tuple[str, Path] | No
         state_path = directory / "state.json"
         if directory.is_symlink() or not state_path.is_file():
             continue
-        state = read_json(state_path)
-        raw = state.get("session", {}).get("id") if isinstance(state, dict) else None
+        state = _read_v2_identity_state(state_path)
+        if not isinstance(state, dict):
+            raise SessionIdentityReadError(
+                "state_root_not_an_object: persisted session identity is not an object; refusing to guess"
+            )
+        raw = state.get("session", {}).get("id")
         if isinstance(raw, str) and raw and safe_session_id(raw) == name:
             return raw, directory
         if raw is None:
@@ -23447,260 +23470,8 @@ def cleanup_old_sessions(
     *,
     deadline: float | None = None,
 ) -> int:
-    """Sweep expired v2 sessions only; legacy trees are never touched.
-
-    Restated after the sixth review (which restored the original
-    deadline-bounded-enumeration contract and proved the interim
-    "no-deadline full sweep" design unsound for non-lexical readdir orders):
-
-    - Enumeration is deadline-bounded per read, as the original RR04
-      contract requires: every readdir step starts only while budget
-      remains, an already-expired budget requests nothing, and an
-      interrupted pass has read at most the budget allows. There is no
-      queue-cap truncation: the batch is bounded by the deadline alone, so
-      a pass with ample budget reads the whole namespace and the collected
-      batch is sorted ONLY after the read phase ends — a lexical watermark
-      can then represent actually-read work. Under adopted option C,
-      registered-session fairness follows the registered maintenance-chain
-      contract. Unregistered old directories remain supported through this
-      fallback sweep, but a tiny budget can repeatedly expire before an
-      unseen tail is discovered; bounded discovery latency is not promised.
-      The retained expected-failure discovery case is an explicit limitation,
-      not passing evidence.
-    - Persisted progress and its soundness: names read but left undecided
-      are kept in the pending queue inside the cursor state file and
-      survive the call boundary. The lexical cursor is persisted ONLY when
-      its scan reached the end of the namespace — then every name at or
-      below it was actually read and decided, so skipping them later is
-      sound even when readdir order is not lexical. An interrupted scan
-      persists the pending queue with an empty cursor, and the next pass
-      re-reads the namespace without skipping anything (re-adjudicating
-      decided names costs bounded work, never correctness). The queue is
-      progress data, not a scope grant: every entry must pass the
-      namespace-component gate at load and is re-verified against the live
-      v2 namespace object (real directory, not a link, still present)
-      before any lock or deletion, so a hostile or corrupted state file can
-      never point adjudication outside the v2 namespace.
-    - Fairness: the pending queue drains before any new sweep, so
-      interrupted work is adjudicated before fresh enumeration queues more
-      names behind it; names the drain decided in this pass are not
-      re-queued by this pass's own sweep.
-
-    The cursor names the lexical-max entry whose decision is FINAL for a
-    COMPLETED namespace scan: retained, retired-marker, lock-busy and
-    deleted entries all advance it. The current session and non-directory
-    entries are decided per pass without moving the generation cursor. A
-    pass that drains the queue and reads the namespace to its end completes
-    the generation and resets the state so the next sweep re-decides
-    everything (order changes and recreated names included).
-
-    Candidate locks are attempted without blocking. A session already
-    judged eligible is marked before deletion starts; a partial deletion
-    leaves the marker, and any later successful state write for that
-    session (a real resume) retires the marker inside the lifecycle lock,
-    so historical eligibility never authorizes deleting a live session.
-    """
-    if deadline is not None and time.monotonic() >= deadline:
-        return 0
-    sessions = root / V2_NAMESPACE
-    if not sessions.is_dir():
-        return 0
-    if not _maintenance_boundary_ok(root):
-        # A static link at any tier of the root -> namespace -> `.locks`
-        # chain would redirect every sweep lock, registration and state
-        # write onto an outside object; the sweep refuses entirely before
-        # any side effect (the lifecycle lock path on the save side
-        # already enforces the same rejection conditions).
-        return 0
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)
-    cursor, pending = _read_cleanup_state(root)
-    if deadline is not None and time.monotonic() >= deadline:
-        # No decisions were made: retain the entire existing queue/index.
-        return 0
-
-    def budget_left() -> bool:
-        return deadline is None or time.monotonic() < deadline
-
-    removed = 0
-    scanned = 0
-    last_completed = cursor
-    pending = sorted(set(pending))
-
-    def live_v2_directory(name: str) -> tuple[Path, tuple[int, int]] | None:
-        """The candidate path only when `name` still names a real v2
-        namespace object: a plain encoded component that resolves to a real
-        directory directly under the v2 root, not a link. Anything else —
-        stale, missing, replaced by a link — is decided (dropped) without
-        touching anything."""
-        if not _is_session_component(name):
-            return None
-        candidate = sessions / name
-        try:
-            info = candidate.lstat()
-        except OSError:
-            return None
-        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
-                or getattr(info, "st_file_attributes", 0) & 0x400
-                or info.st_ino == 0):
-            return None
-        return candidate, (info.st_dev, info.st_ino)
-
-    def adjudicate(batch: list[str]) -> list[str]:
-        """Decide a lexically sorted batch; return the undecided remainder."""
-        nonlocal removed, scanned, last_completed
-        survivors: list[str] = []
-        for index, name in enumerate(batch):
-            if cursor and name <= cursor:
-                continue  # finally decided in an earlier completed scan
-            if not budget_left():
-                survivors.extend(batch[index:])
-                return survivors
-            initial = live_v2_directory(name)
-            if initial is None:
-                continue  # stale, missing, or not a real v2 directory
-            candidate, identity = initial
-            if current is not None and candidate.resolve() == current.resolve():
-                continue
-            scanned += 1
-            decided = True
-            deleted = False
-            try:
-                with session_lock(candidate, timeout=0.0, create_directory=False):
-                    locked = live_v2_directory(name)
-                    if locked is None or locked[1] != identity:
-                        pass  # disappeared/replaced: decide without touching the leaf
-                    else:
-                        # Identity is bound before any chmod/ACL operation.
-                        # Preserve the existing private-boundary requirement,
-                        # including resumable deletion with an existing marker.
-                        secure_directory(candidate)
-                        hardened = live_v2_directory(name)
-                        if hardened is None or hardened[1] != identity:
-                            decided_now.add(name)
-                            last_completed = name
-                            continue
-                        resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
-                        if resumable and _resume_retired_marker(candidate):
-                            with contextlib.suppress(OSError):
-                                (candidate / CLEANUP_PARTIAL_MARKER).unlink()
-                        elif not resumable and not _session_expired(candidate, cutoff):
-                            pass  # retained: decided for this generation
-                        else:
-                            if not resumable:
-                                atomic_write_text(
-                                    candidate / CLEANUP_PARTIAL_MARKER,
-                                    "eligible cleanup marker (content-free)\n",
-                                )
-                            _delete_session_tree_bounded(candidate, budget_left)
-                            deleted = True
-            except _CleanupBudgetExhausted:
-                decided = False
-                survivors.append(name)
-                survivors.extend(batch[index + 1:])
-                return survivors
-            except (TimeoutError, OSError):
-                pass  # lock busy: decided for this generation
-            if decided:
-                last_completed = name
-                decided_now.add(name)
-            if deleted:
-                removed += 1
-        return survivors
-
-    # Phase P — drain the persisted queue first (fairness: interrupted work
-    # is adjudicated before fresh enumeration queues more).
-    decided_now: set[str] = set()
-    pending = adjudicate(pending)
-    # Phase E — deadline-bounded enumeration (original RR04 contract): every
-    # readdir step starts only within the remaining budget, an expired
-    # budget requests nothing, and there is no queue-cap truncation — the
-    # batch is bounded by the deadline and sorted only after the read phase,
-    # so the lexical cursor derived from a COMPLETED scan represents
-    # actually-read work even when readdir order is not lexical. Discovery
-    # has a second, order-free source: the durable discovered-session set
-    # (write-path registrations plus every name this sweep has ever read),
-    # whose entries are adjudicated whether or not this pass's scan reaches
-    # them; sweep-discovered names are added to it, so discovery persists
-    # across interrupted passes without depending on stream position.
-    registry = _read_discovery_registry(root) if budget_left() else set()
-    candidates: list[str] = []
-    scan_done = False
-    queued = set(pending)
-    scanned_dirs: list[str] = []
-    if budget_left():
-        try:
-            scanner = os.scandir(sessions)
-            try:
-                while True:
-                    if deadline is not None and time.monotonic() > deadline:
-                        break
-                    try:
-                        entry = next(scanner)
-                    except StopIteration:
-                        scan_done = True
-                        break
-                    name = entry.name
-                    if name == ".locks":
-                        continue  # the only maintenance object at this level
-                    # A non-empty cursor was persisted only after a scan
-                    # that read the namespace to its end, so every name at
-                    # or below it was actually read and decided: skipping
-                    # them is sound regardless of readdir order.
-                    if cursor and name <= cursor:
-                        continue
-                    if name in queued or name in decided_now:
-                        continue
-                    if entry.is_symlink() or not entry.is_dir():
-                        continue
-                    if current is not None and Path(entry.path).resolve() == current.resolve():
-                        continue
-                    scanned_dirs.append(name)
-            except OSError:
-                pass
-            finally:
-                scanner.close()
-        except OSError:
-            pass
-    # Persist this pass's discoveries durably (order-free, survives the
-    # call boundary) and union them with the registry into one candidate
-    # batch; every entry is still live-verified before any adjudication.
-    if budget_left():
-        _add_cleanup_registry_entries(root, scanned_dirs)
-    registry.update(scanned_dirs)
-    for name in sorted(registry):
-        if name in queued or name in decided_now:
-            continue
-        if cursor and name <= cursor:
-            continue
-        candidates.append(name)
-    candidates.sort()
-
-    # Phase P' — adjudicate the candidate batch; whatever the budget leaves
-    # undecided joins the persisted queue for the next pass. The lexical
-    # cursor is persisted only when this pass's scan reached the namespace
-    # end; an interrupted scan persists the queue with an empty cursor so
-    # no unread name can ever be skipped by a watermark.
-    if candidates:
-        pending = adjudicate(candidates)
-    if not pending and scan_done:
-        # Generation complete: reset so the next sweep re-decides the
-        # namespace from scratch (picks up order changes and recreations),
-        # and compact the registry to the live namespace (folds duplicates,
-        # drops entries for deleted sessions).
-        if (cursor or last_completed) and budget_left():
-            _reset_cleanup_state(root, deadline=deadline)
-            live = set()
-            for name in registry:
-                if not budget_left():
-                    break
-                if (sessions / name).is_dir():
-                    live.add(name)
-            else:
-                if budget_left():
-                    _compact_discovery_registry(root, live)
-        return removed
-    _write_cleanup_state(root, last_completed if scan_done else "", pending, deadline=deadline)
-    return removed
+    """Retention deletion is unavailable pending a crash-safe protocol."""
+    raise RuntimeError("Session retention cleanup is disabled; no sessions were deleted.")
 
 
 def _resume_retired_marker(candidate: Path) -> bool:
@@ -23733,28 +23504,8 @@ def _resume_retired_marker(candidate: Path) -> bool:
 
 
 def _delete_session_tree_bounded(candidate: Path, budget_left) -> None:
-    """Delete one session subtree bottom-up under the remaining budget.
-
-    Symbolic links anywhere in the tree are unlinked as links; external
-    targets are never followed or removed.
-    """
-    for dirpath, dirnames, filenames in os.walk(candidate, topdown=False):
-        for name in filenames:
-            if not budget_left():
-                raise _CleanupBudgetExhausted
-            path = Path(dirpath) / name
-            path.unlink()
-        for name in dirnames:
-            if not budget_left():
-                raise _CleanupBudgetExhausted
-            path = Path(dirpath) / name
-            if path.is_symlink():
-                path.unlink()
-            else:
-                path.rmdir()
-    if not budget_left():
-        raise _CleanupBudgetExhausted
-    candidate.rmdir()
+    """Defense in depth: retired deletion machinery cannot be invoked."""
+    raise RuntimeError("Session retention cleanup is disabled; no sessions were deleted.")
 
 
 def _session_expired(candidate: Path, cutoff: dt.datetime) -> bool:
@@ -23806,30 +23557,13 @@ def handle_session_end(
     budget_started_at: float | None = None,
 ) -> dict[str, Any]:
     del payload
-    # Freeze validity at this entry. A future value must not become usable
-    # merely because mandatory persistence later advances the clock.
-    started = (None if budget_started_at is _SESSION_END_BUDGET_UNSET
-               else _session_end_budget_start(budget_started_at, time.monotonic()))
-    # This session's durable persistence always runs first; only the sweep
-    # afterwards is budget-limited.
+    # Persist this session even though retention deletion is unavailable.
     state["session"]["ended_at"] = utc_now()
     save_state(session_dir, state)
     if state["mode"]["active"]:
         write_recovery(session_dir, state, "SessionEnd")
-    now = time.monotonic()
-    if started is None:
-        return {}
-    cleanup_deadline = min(
-        started + SESSION_END_HOST_BUDGET_SECONDS - SESSION_END_CLEANUP_RESERVE_SECONDS,
-        now + SESSION_END_MAINTENANCE_QUANTUM_SECONDS,
-    )
-    if cleanup_deadline <= now:
-        # Out of budget: skip this sweep round; a later SessionEnd continues
-        # it under the fair rescan rules.
-        return {}
-    cleanup_old_sessions(
-        data_root(), current=session_dir, deadline=cleanup_deadline
-    )
+    # Retention deletion is disabled. State, recovery and their private
+    # permission checks remain mandatory; no cleanup path is entered.
     return {}
 
 
@@ -24532,7 +24266,7 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
     )
     recovery_page.add_argument("--limit", type=int, default=8)
     recovery_page.add_argument("--session-id", required=True)
-    subparsers.add_parser("cleanup", help="Delete ended sessions older than 30 days")
+    subparsers.add_parser("cleanup", help="Unavailable: session retention deletion is disabled")
     subparsers.add_parser("self-test", help="Validate the runtime and hook bundle")
     pending_review = subparsers.add_parser("review-pending", help="One review at the task-agent commentary delivery boundary")
     pending_review.add_argument("--data-dir", type=Path, required=True)
@@ -24621,8 +24355,8 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
     if args.command == "diagnose":
         return command_diagnose(args)
     if args.command == "cleanup":
-        print(f"Removed {cleanup_old_sessions(data_root())} expired session(s).")
-        return 0
+        print("Session retention cleanup is disabled; no sessions were deleted.", file=sys.stderr)
+        return 2
     if args.command == "review-pending":
         return command_review_pending(args)
     if args.command == "review-answer":

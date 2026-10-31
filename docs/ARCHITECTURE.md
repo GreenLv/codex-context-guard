@@ -145,25 +145,25 @@ One Stop event evaluates through a single private, explicitly passed
 
 ## Session ownership and bounded storage (since 0.15.0)
 
-New sessions use `sessions-v2`. Every stateful writer and cleanup operation
-acquires the same kernel lifecycle lock under `sessions-v2/.locks`, outside
-the deletable session subtree. First directory creation then takes a casefolded
-admission lock under `.locks/.identity`, checks for case-only siblings, and
-creates the directory before releasing admission. Lifecycle always precedes
-admission; both share the caller deadline. Existing directories use the
-unchanged lifecycle lock alone. This prevents concurrent first writers from
-creating case-only siblings on case-sensitive filesystems without renaming
-existing session identities or lifecycle locks. Cleanup takes the lifecycle lock
-without preparing the session leaf, then uses a non-following read to recheck
-the original directory identity, type and
-reparse status. A matching object receives the existing private-permission
-verification and necessary hardening, followed by another identity check before
-eligibility, marker reads or deletion. A vanished or replaced object is skipped;
-resumed activity clears the retention timestamp. If the filesystem cannot supply
-a nonzero directory object identity, cleanup conservatively leaves the object
-untouched and retries on a later sweep; it does not report the object as removed.
-Process-local queuing and kernel acquisition share one deadline. Elapsed lock
-age is never proof that a writer has exited.
+New sessions use `sessions-v2`. Every stateful writer acquires the same
+kernel lifecycle lock under `sessions-v2/.locks`, outside the session subtree.
+First directory creation then takes a casefolded admission lock under
+`.locks/.identity`, checks for case-only siblings, and creates the directory
+before releasing admission. Lifecycle always precedes admission; both share the
+caller deadline. Existing directories use the unchanged lifecycle lock alone.
+Descriptor/path identity, nonzero object identity and private-permission checks
+remain mandatory. No elapsed lock age authorizes displacing a writer.
+
+Session retention deletion is disabled. SessionEnd saves current state and
+active recovery content without entering a sweep. The CLI reports unavailable
+with exit 2; direct deletion APIs reject before reading or modifying a supplied
+path. Existing cleanup records and old sessions remain untouched by retention
+work, with no automatic 30-day deletion or storage cap. State saves no longer
+append discovery entries; existing registry bytes and objects remain intact.
+After each successful state write, the writer still attempts to retire its own
+old in-session partial marker under the lifecycle lock.
+See [session storage](SESSION_STORAGE.md) for the storage-growth and upgrade
+boundary. No tombstone or new persistent deletion authority is introduced.
 
 Legacy `sessions` remain read-only to this runtime. There is no migration or
 legacy cleanup: continue an existing task with its original loaded runtime.
@@ -728,7 +728,7 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
 | `SubagentStop` | record bounded result envelope | warnings only when needed |
 | `Stop` | apply work-unit completion truthfulness, waiting-owner facts, integrity, and one-visible-interruption priority | correction only for verified hard gates, at most once per turn |
-| `SessionEnd` | mark session ended, write final recovery, run retention cleanup | none |
+| `SessionEnd` | mark session ended, write final recovery; retention deletion disabled | none |
 
 Normal success paths are invisible: the nine Hook definitions carry no
 persistent `statusMessage`, every allow path returns the plain empty object

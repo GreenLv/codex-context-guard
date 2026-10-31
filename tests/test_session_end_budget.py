@@ -94,21 +94,12 @@ class SessionEndBudgetTests(unittest.TestCase):
             cg.handle_session_end(self.session, self.state, self.payload, budget_started_at=start)
         return clock, order, cleanup
 
-    def test_quantum_is_at_most_one_second_after_state_and_recovery(self):
-        clock, order, cleanup = self.handler(100.0, .1, .2)
-        self.assertEqual(order, ["save", "recovery", "cleanup"])
-        self.assertLessEqual(cleanup.call_args.kwargs["deadline"] - clock.now, 1.0)
-        self.assertAlmostEqual(cleanup.call_args.kwargs["deadline"], 101.3)
-
-    def test_state_recovery_elapsed_reduces_shared_three_second_cap(self):
-        for save_cost, recovery_cost in ((0, 0), (1.5, 1.0), (2, 1)):
-            with self.subTest(save=save_cost, recovery=recovery_cost):
-                clock, order, cleanup = self.handler(100.0, save_cost, recovery_cost)
-                self.assertEqual(order[:2], ["save", "recovery"])
-                if clock.now >= 102.65:
-                    cleanup.assert_not_called()
-                else:
-                    self.assertAlmostEqual(cleanup.call_args.kwargs["deadline"], min(clock.now + 1, 102.65))
+    def test_session_end_saves_and_recovers_without_optional_deletion(self):
+        for costs in ((.1, .2), (1.5, 1.0), (2, 1)):
+            with self.subTest(costs=costs):
+                _, order, cleanup = self.handler(100.0, *costs)
+                self.assertEqual(order, ["save", "recovery"])
+                cleanup.assert_not_called()
 
     def test_none_invalid_and_expired_handler_budget_never_means_unlimited(self):
         for start in (None, True, False, "100", object(), -1, float("nan"), float("inf"), 101.0, 97.0):
@@ -232,7 +223,7 @@ class SessionEndBudgetTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 0)
         self.assertEqual(json.loads(stdout.buffer.getvalue()), {})
         self.assertAlmostEqual(clock.now, 102.6)
-        self.assertAlmostEqual(cleanup.call_args.kwargs["deadline"], 102.65)
+        cleanup.assert_not_called()
 
     def test_session_end_import_fallback_explicitly_disables_child_maintenance(self):
         raw = json.dumps(self.payload).encode()
@@ -301,6 +292,7 @@ class SessionEndBudgetTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout), {})
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_expired_cleanup_does_not_read_or_rewrite_existing_pending(self):
         names = [f"queued-{i:04d}" for i in range(4097)]
         cg._write_cleanup_state(self.data, "", names)
@@ -324,6 +316,7 @@ class SessionEndBudgetTests(unittest.TestCase):
         cg._write_cleanup_state(self.data, "", names)
         self.assertFalse(orphan.exists())
 
+    @unittest.skip("Retired retention deletion; listed in tests/retired_retention_cleanup.json")
     def test_registered_partial_directory_progress_and_candidate_locks_stay_nonblocking(self):
         payload = {"hook_event_name": "UserPromptSubmit", "session_id": "expired", "cwd": str(self.root), "prompt": "fixture"}
         cg.dispatch(payload)

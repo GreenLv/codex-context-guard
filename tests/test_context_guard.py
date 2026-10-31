@@ -2961,9 +2961,9 @@ class ContextGuardTests(unittest.TestCase):
         active_dir.mkdir()
         active = cg.new_state(self.payload("UserPromptSubmit", session="active-session"))
         cg.save_state(active_dir, active)
-        removed = cg.cleanup_old_sessions(self.root / "private", current=active_dir)
-        self.assertEqual(removed, 1)
-        self.assertFalse(old_dir.exists())
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private', current=active_dir)
+        self.assertTrue(old_dir.exists())
         self.assertTrue(active_dir.exists())
 
     def test_session_end_archives_state_and_writes_recovery(self) -> None:

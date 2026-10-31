@@ -62,99 +62,48 @@ field is saved. File age, lock absence, an old marker or time between Hooks
 therefore cannot establish a safe migration window. A future migration needs
 an enforceable quiescence and immutable-source contract.
 
-## One writer and safe cleanup
+## One writer and retained session data
 
-All v2 writers and cleanup acquire the same per-session kernel lock before
-creating, loading or changing state. The lock is stored at
-`sessions-v2/.locks/<id>.lock`, outside the deletable session directory. It is
-never unlinked by release or cleanup. POSIX uses `fcntl`; Windows uses
-`msvcrt`, with no third-party runtime dependency.
-
+All v2 writers acquire the same per-session kernel lock before creating,
+loading or changing state. The lock stays at
+`sessions-v2/.locks/<id>.lock`, outside the session directory. POSIX uses
+`fcntl`; Windows uses `msvcrt`, with no third-party runtime dependency.
 The lock covers the entire transaction. Process-local queuing and kernel
 acquisition share one monotonic deadline; SessionEnd waits at most 1.2 seconds
-for its current-session lock, further limited by a valid remaining Hook
-budget. Descriptor/path identity checks
-harden commits, and a zero inode fails closed. Identity checks do not replace
-kernel exclusion or provide a sandbox against arbitrary same-user mutation.
+for its current-session lock, further limited by a valid remaining Hook budget.
+Descriptor/path identity checks harden commits, and a zero inode fails closed.
+Identity checks do not provide a sandbox against arbitrary same-user mutation.
 
-Cleanup scans only v2, acquires that same lock without blocking, then rereads
-state and retention eligibility before deleting the session subtree. It leaves
-the lifecycle lock in place. Contention skips cleanup within the budget; a
-queued writer proceeds only after release. Resumed v2 activity clears the old
-retention timestamp. Legacy trees and their timestamps are unchanged.
+SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact.
 
-Since the 0.16.0 source candidate the sweep is bounded inside the SessionEnd host
-budget, with budget, persisted progress and fairness as separate mechanisms.
-The lightweight Python entry supplies a fresh same-process monotonic anchor
-before stdin parsing and the heavy import. After mandatory state and recovery
-writes, the cleanup work deadline is the smaller of that anchor plus 3 seconds
-minus a 0.35-second return reserve, and the current time plus 1 second.
-This is a cooperative work deadline: mandatory writes, checkpoint publication
-and synchronous filesystem operations are not claimed to be preemptible.
-Prior shell/interpreter startup and the complete return path still need the
-separate full-command native timing gate.
+The private permission boundary remains mandatory for state and recovery
+writes. A permission failure is still an error. Disabling retention work does
+not make mandatory writes or synchronous filesystem calls preemptible, and the
+complete installed command still needs its separate three-second native timing
+gate. The lightweight entry's monotonic anchor and current-session lock budget
+remain; no retention sweep runs after persistence.
 
-An omitted private timing argument on a direct API call starts a local bound;
-it does not claim to include earlier imports. An explicitly disabled, invalid
-or expired budget never becomes unlimited cleanup. State and recovery remain
-mandatory, and the router's import-failure child explicitly disables optional
-maintenance. No budget field is added to payloads or persisted state.
+The `cleanup` command rejects the request before resolving or creating a data
+root. `cleanup_old_sessions` and the internal deletion helper also report
+unavailability before accessing the supplied path. There is no environment
+switch or fallback that re-enables deletion. Existing cursor, pending chunks and registry stay on disk, as do partial
+markers for sessions without a later state write. State saves no longer append new
+discovery entries while retention cleanup is disabled; existing registry bytes
+and objects are preserved. After each successful state write, the writer still
+attempts to retire its own old partial marker under the lifecycle lock. A real
+successful resume also clears `ended_at`. Old plugin caches are immutable and keep their original behavior; this
+source change does not update a running task's loaded runtime.
 
-The registry design is adopted with the unregistered-directory limitation
-stated below. Enumeration is deadline-bounded per read, as
-originally required: every readdir step starts only within the remaining
-budget, an already-expired budget requests nothing, and there is no
-queue-cap truncation — the batch is bounded by the deadline and sorted only
-after the read phase ends, so a pass with ample budget reads the whole
-namespace regardless of readdir order. The lexical resumption cursor is
-persisted only when its scan reached the end of the namespace (every name
-at or below it was then actually read and decided, so skipping them later is
-sound even when readdir order is not lexical); an interrupted scan persists
-the pending queue with an empty cursor and the next pass re-reads the
-namespace without skipping anything, re-adjudicating decided names at
-bounded cost rather than risking an unread name.
+Do not use an older runtime's cleanup command, remove lifecycle locks, or delete
+an active session as a substitute. A separately requested data-removal operation
+needs its own scope and recovery review; this version supplies no safe bulk
+reclamation procedure.
 
-Discovery has a second, order-free source: a durable discovered-session
-registry of content-free encoded names, written by the session save path
-when a v2 session is created and extended by every name the sweep reads
-(so even a deadline-interrupted scan persists its discoveries
-position-free). The registry is a hint, never an authority: entries are
-component-gated on read, re-verified against the live namespace object at
-adjudication (real directory, not a link, still present), and compacted to
-the live namespace when a generation completes. A missing, truncated or
-corrupted registry falls back to the deadline-bounded backfill sweep at
-bounded cost. Names read but left undecided are persisted in a content-free
-pending queue as fixed-size chunk files with an index — the producer's
-write domain equals the reader's read domain, so a legitimate queue can
-never be refused by its own reader, and each chunk is validated
-independently so one corrupted chunk costs only its own names. The queue
-drains before any new sweep and the drain's decisions are not re-queued by
-the same pass's own sweep. The queue and the registry are progress data,
-not a scope grant: the legacy namespace stays read-only. A pass that drains
-the queue and reads the namespace to its end resets the generation so order
-changes and recreated names are re-decided. An interrupted deletion leaves
-a content-free marker so the next pass finishes it without re-deriving
-eligibility, and running out of budget returns safely with the remaining
-backlog in the queue for later passes. Directory links are unlinked without
-following them. A successful later write for a marked session — a real
-resume — retires the marker inside the same lifecycle lock, so historical
-cleanup eligibility can never delete a live session. Current-session
-persistence always runs before the sweep.
-
-The registry design is accepted for registered-session discovery. Existing,
-never-registered directories remain supported, but repeated small budgets and
-adversarial directory order can leave tail entries undiscovered indefinitely.
-There is no bounded discovery-delay guarantee for that shape, including after
-registry loss until backfill actually discovers the entries. The known model
-counterexample remains an expected failure, not a passed original assertion.
-Registered sessions make fair progress in the finite model; real platform and
-host observations retain their own evidence boundaries. UserPromptSubmit events are never collapsed: repeated
-(session, turn, prompt-bytes) shapes are recorded only as a bounded,
-text-free diagnostic observation, because the hook payload carries no
-per-message identity.
-
-`test_session_namespace` covers routing, read-only legacy access, ordinary-tool
-and release boundaries, cleanup and resumed activity. `test_session_lock_protocol`
-uses real processes and barriers for contention, aged live locks, process death,
-commit ownership and old/new namespace isolation. Native platform and actual
-loaded-host results are recorded separately from those source tests.
+Tests for deletion execution, interrupted progress and discovery fairness are
+explicitly marked retired, with exact nodes, original source digests and previous
+expected-failure status in `tests/retired_retention_cleanup.json`. The official
+runner reports those nodes separately from passes and ordinary platform skips;
+the old unregistered-tail expected failure is retained as a retired limitation,
+not relabeled as passing. Current state, recovery, writer locks, identity,
+private permissions, registry write boundaries and no-deletion controls remain
+in the current suite. No 40-session assertion or timing budget was relaxed.

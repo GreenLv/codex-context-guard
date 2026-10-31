@@ -30,8 +30,9 @@ refused, old underscore-merged directories no longer addressed; concurrent
 case-only first creations share a separate admission lock before directory
 creation, preserving existing lifecycle lock names and the caller deadline); the
 direct-command data root following `CODEX_HOME` (`<home>/context-guard`) when
-no explicit root is set; bounded SessionEnd retention cleanup (monotonic
-deadline, non-blocking locks, bounded batches, resumable partial deletions);
+no explicit root is set; disabled session retention deletion (SessionEnd still saves current state and
+recovery; the cleanup CLI exits 2 and direct deletion APIs reject the call;
+existing data remains, with no automatic 30-day deletion or storage cap);
 and observability-only handling of repeated inputs: UserPromptSubmit events
 are never collapsed (the hook payload carries no per-message identity), and
 a repeated (session, turn, prompt-bytes) shape is recorded only as a bounded

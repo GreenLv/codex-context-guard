@@ -187,9 +187,11 @@ class NamespaceResolutionTests(unittest.TestCase):
         old["session"]["ended_at"] = "2026-07-01T00:00:00+00:00"
         cg.save_state(legacy_dir, old)
 
-        removed = cg.cleanup_old_sessions(self.root / "private")
-        self.assertEqual(removed, 1)
-        self.assertFalse(expired_dir.exists())
+        with cg.session_lock(expired_dir):
+            pass
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private')
+        self.assertTrue(expired_dir.exists())
         self.assertTrue(active_dir.exists())
         self.assertTrue(legacy_dir.exists())
         # Lifecycle lock files live outside the subtrees and survive.
@@ -207,11 +209,11 @@ class NamespaceResolutionTests(unittest.TestCase):
         old = time_module.time() - 10_000_000
         os.utime(active_dir / "state.json", (old, old))
         with cg.session_lock(active_dir, timeout=1.0):
-            removed = cg.cleanup_old_sessions(self.root / "private")
-            self.assertEqual(removed, 0)
+            with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+                cg.cleanup_old_sessions(self.root / 'private')
             self.assertTrue(active_dir.exists())
-        removed = cg.cleanup_old_sessions(self.root / "private")
-        self.assertEqual(removed, 1)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private')
 
     def test_ended_at_is_not_a_terminal_barrier_in_the_product(self):
         """Coordinator probe legacy_ended_not_immutable, converted: a session
@@ -304,8 +306,14 @@ class NamespaceResolutionTests(unittest.TestCase):
         state = cg.new_state({"session_id": "expired"})
         state["session"]["ended_at"] = "2026-07-01T00:00:00+00:00"
         cg.save_state(directory, state)
-        cg.cleanup_old_sessions(self.root / "private")
-        cg.cleanup_old_sessions(self.root / "private")
+        with cg.session_lock(directory):
+            pass
+        registry = cg._cleanup_registry_path(self.root / "private")
+        registry.write_text("expired\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private')
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private')
         self.assertEqual(sorted(p.name for p in directory.parent.joinpath(".locks").iterdir()),
                          [".session-registry", "expired.lock"])
 
@@ -348,7 +356,8 @@ class NamespaceResolutionTests(unittest.TestCase):
         cg.save_state(directory, state)
         self._dispatch("UserPromptSubmit", session="resumed",
                        prompt="继续未完成需求，必须运行验证。")
-        self.assertEqual(cg.cleanup_old_sessions(self.root / "private"), 0)
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private')
         self.assertTrue(directory.is_dir())
         self.assertTrue(cg.load_state(directory, {"session_id": "resumed"})["requirements"])
 

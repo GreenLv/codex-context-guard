@@ -10,6 +10,8 @@ Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
 without execution approval are unchanged. Upgrade boundaries relative to
 published 0.15.1:
 
+- SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact. Direct calls to the retention deletion API also reject before accessing a path. Previously consumed caches retain their original behavior and are never overwritten.
+
 - A known limitation carried over from 0.15.1 remains: acceptance keywords
   inside a file path can be counted as extra acceptance items. Multiple such
   items can activate Context Guard earlier than expected. A path name does

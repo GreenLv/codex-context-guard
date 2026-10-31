@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.16.0 — Unreleased。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 清理使用有界工作预算。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **0.16.0 — Unreleased。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 保存状态，既有会话继续保留。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；修改安装前，请阅读[发布说明](docs/releases/v0.16.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ## 用 Codex 安装
 
@@ -233,7 +233,9 @@ flowchart TB
 
 运行时数据写入 Codex 管理的 `PLUGIN_DATA`。提示正文、任务状态、证据摘要和恢复文件都属于本地运行时数据，不属于本仓库。
 
-已结束且未恢复活动的 v2 会话在 30 天后可以清理；legacy 会话树继续保留，保留清理保持在 SessionEnd 三秒预算之内。脱敏导出只在显式请求时创建，绝不覆盖既有文件，并省略原始提示、会话正文、凭据、认证头、URL 查询参数、URL userinfo 和插件私有路径；文档化脱敏域见[隐私说明](docs/PRIVACY.md)。未提供插件数据目录时，直接 CLI 回退状态存放在当前生效的 `CODEX_HOME` 之下。
+SessionEnd 保存当前状态，并在启用时保存恢复内容。本版停用会话保留删除：不运行自动扫描，`cleanup` 命令明确报告不可用、退出码为 2，且不删除数据。既有 v2 和 legacy 会话继续保存在磁盘上，因此存储可能增长；不提供30天自动删除或存储上限。本版没有受支持的人工回收工具。请保留活动任务、会话数据、生命周期锁和既有插件缓存。
+
+脱敏导出只在显式请求时创建，绝不覆盖既有文件，并省略原始提示、会话正文、凭据、认证头、URL 查询参数、URL userinfo 和插件私有路径；文档化脱敏域见[隐私说明](docs/PRIVACY.md)。未提供插件数据目录时，直接 CLI 回退状态存放在当前生效的 `CODEX_HOME` 之下。
 
 ## 更新与卸载
 

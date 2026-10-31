@@ -12,7 +12,7 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **0.16.0 — Unreleased.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and bounds SessionEnd cleanup work. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
+> **0.16.0 — Unreleased.** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and saves SessionEnd state while retaining existing sessions. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Read the [release notes](docs/releases/v0.16.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
 
 ## Install with Codex
 
@@ -250,7 +250,9 @@ Read [Successor Pack Input](skills/context-guard/references/successor-pack.md) b
 
 Runtime data is stored under Codex-managed `PLUGIN_DATA`. Prompt bodies, task state, evidence summaries, and recovery files remain local runtime data and are not part of this repository.
 
-Ended v2 sessions with no resumed activity are eligible for cleanup after 30 days; legacy session trees are retained, and the retention sweep stays inside the three-second SessionEnd budget. Redacted exports are created only when requested, never overwrite an existing file, and omit raw prompts, transcripts, credentials, authorization headers, URL query values, URL userinfo, and plugin-private paths; the documented redaction domain is listed in [Privacy](docs/PRIVACY.md). Direct CLI fallback state lives under the active `CODEX_HOME` when no plugin data directory is provided.
+SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact.
+
+ Redacted exports are created only when requested, never overwrite an existing file, and omit raw prompts, transcripts, credentials, authorization headers, URL query values, URL userinfo, and plugin-private paths; the documented redaction domain is listed in [Privacy](docs/PRIVACY.md). Direct CLI fallback state lives under the active `CODEX_HOME` when no plugin data directory is provided.
 
 ## Update and uninstall
 

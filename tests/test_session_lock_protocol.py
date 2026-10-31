@@ -279,9 +279,11 @@ class SessionLockProtocolTests(unittest.TestCase):
         legacy_dir = self.root / "private" / "sessions" / "lock-proto"
         legacy_dir.mkdir(parents=True)
         (legacy_dir / "state.json").write_text("{}", encoding="utf-8")
-        removed = cg.cleanup_old_sessions(self.root / "private")
-        self.assertEqual(removed, 1)
-        self.assertFalse(self.session_dir.exists())
+        with cg.session_lock(self.session_dir):
+            pass
+        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+            cg.cleanup_old_sessions(self.root / 'private')
+        self.assertTrue(self.session_dir.exists())
         # The lifecycle lock file survives cleanup (stable, outside the tree).
         self.assertTrue(cg.lifecycle_lock_path(self.session_dir).exists())
         # Legacy trees are never swept by this runtime's cleanup.
