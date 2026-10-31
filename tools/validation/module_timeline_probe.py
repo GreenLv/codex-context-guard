@@ -33,19 +33,26 @@ def file_reference(value, pshome):
 
 def classify(message, pshome):
     message = message.strip()
+    original_message = message
+    # PS5.1 Modules emits the trace operation before its actual message.
+    # CommandDiscovery does not consistently include this prefix.
+    message = re.sub(r"^WriteLine\s+", "", message)
     known = original.event(message, pshome) or original.modules_event(message, pshome)
     row = dict(known) if known else {"type": "unclassified"}
     for prefix, kind in (("Started analysis: ", "analysis_start"),
                          ("Finished analysis: ", "analysis_end"),
                          ("Requested caching for ", "cache_request"),
+                         ("Analyzing path: ", "analyzing_path"),
                          ("Attempting to load module: ", "module_load_attempt"),
                          ("Found in module: ", "command_found_in_module")):
         if message.startswith(prefix):
             row = {"type": kind, **file_reference(message[len(prefix):], pshome)}
             break
     # Unknown text is never exported. Classify its vocabulary and keep a hash.
-    row["message_sha256"] = digest(message)
-    row["message_length"] = len(message)
+    if message.startswith("Caching command: "):
+        row = {"type": "caching_command"}
+    row["message_sha256"] = digest(original_message)
+    row["message_length"] = len(original_message)
     row["terms"] = sorted(set(re.findall(
         r"\b(?:analysis|analyzing|cache|cached|module|manifest|import|export|loading|loaded|script|exception|error)\b",
         message.lower())))

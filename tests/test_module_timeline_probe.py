@@ -10,7 +10,7 @@ import module_timeline_probe as probe  # noqa: E402
 
 class TimelineControls(unittest.TestCase):
     def test_other_system_module_and_unfinished_interval_are_retained(self):
-        text = ("Modules Information: 0 : Started analysis: C:\\Program Files\\WindowsPowerShell\\Modules\\AzureRM\\1.0\\AzureRM.psd1\n"
+        text = ("Modules Information: 0 :  WriteLine   Started analysis: C:\\Program Files\\WindowsPowerShell\\Modules\\AzureRM\\1.0\\AzureRM.psd1\n"
                 "DateTime=2026-11-01T00:00:00Z\n"
                 "Modules Information: 0 : unknown private-message\n"
                 "DateTime=2026-11-01T00:00:12Z\n")
@@ -41,6 +41,14 @@ class TimelineControls(unittest.TestCase):
         result = probe.summarize(b"private-unknown-format\n", "system")
         self.assertEqual(result["state"], "unrecognized")
         self.assertNotIn("private-unknown-format", str(result))
+
+    def test_native_writeline_prefix_is_normalized_without_losing_original_hash(self):
+        line = "WriteLine   Analyzing path: C:\\Windows\\PS\\Modules\\Example\\Example.psm1"
+        result = probe.classify(line, r"C:\Windows\PS")
+        self.assertEqual(result["type"], "analyzing_path")
+        self.assertEqual(result["system_relative_file"], "pshome_modules/example/example.psm1")
+        self.assertEqual(result["message_sha256"], probe.digest(line))
+        self.assertEqual(probe.classify("WriteLine   Caching command: PrivateName", "system")["type"], "caching_command")
 
 
 if __name__ == "__main__":
