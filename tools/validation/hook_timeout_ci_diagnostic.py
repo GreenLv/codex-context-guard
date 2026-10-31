@@ -15,10 +15,9 @@ from pathlib import Path
 
 SUBJECT = "1178b1426254654cff4ab84d1dd2dff33c6de3d6"
 RUNTIME = "7b288ef2d82fb99da6a64ac8ca0a03647116d251665180d162cc409e9a9123c2"
-CASES = ("original", "trace_only", "configured_trace", "path_without_dot_trace")
-ORDERS = {"initial": CASES,
-          "ABA": ("trace_only", "path_without_dot_trace", "trace_only"),
-          "BAB": ("path_without_dot_trace", "trace_only", "path_without_dot_trace")}
+CASES = ("trace_only", "private_environment_trace")
+ORDERS = {"ABA": (CASES[0], CASES[1], CASES[0]),
+          "BAB": (CASES[1], CASES[0], CASES[1])}
 
 
 def kind(error):
@@ -43,11 +42,11 @@ def environment_for(outer, case, interpreter):
         "TMPDIR": str(outer)}
     environment.update({key: os.environ[key] for key in
                        ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT") if key in os.environ})
-    if case != "original":
-        environment["CONTEXT_GUARD_HOOK_TRACE_DIR"] = str(outer / "trace")
-    if case == "path_without_dot_trace":
-        environment["PATH"] = os.pathsep.join(
-            entry for entry in environment["PATH"].split(os.pathsep) if entry != ".")
+    environment["CONTEXT_GUARD_HOOK_TRACE_DIR"] = str(outer / "trace")
+    if case == "private_environment_trace":
+        environment.update(TMP=str(outer / "tmp"), TEMP=str(outer / "tmp"),
+            APPDATA=str(outer / "appdata"), LOCALAPPDATA=str(outer / "localappdata"),
+            PSModuleAnalysisCachePath=str(outer / "module-cache/ModuleAnalysisCache"))
     return environment
 
 
@@ -91,7 +90,7 @@ def tree_observation(owner):
 
 def run_case(subject, outer, case, shell, identity, owned_process):
     row = {"case": case, "timeout_seconds": 30, "event": "UserPromptSubmit",
-           "configured": case == "configured_trace", "result": "driver_error"}
+           "configured": False, "result": "driver_error"}
     owner = None
     stdout = stderr = b""
     cleanup = {}
@@ -105,11 +104,12 @@ def run_case(subject, outer, case, shell, identity, owned_process):
         identity.compare_artifact(subject, installed)
         for name in ("home", "project", "trace"):
             (outer / name).mkdir()
-        if row["configured"]:
-            config = outer / "home/context-guard"
-            config.mkdir()
-            (config / "interpreter.conf").write_text(str(Path(sys.executable).resolve()) + "\n")
+        if case == "private_environment_trace":
+            for name in ("os-home", "tmp", "appdata", "localappdata", "module-cache"):
+                (outer / name).mkdir()
         environment = environment_for(outer, case, sys.executable)
+        row["path_has_exact_dot"] = "." in environment["PATH"].split(os.pathsep)
+        row["os_home_present_before_spawn"] = (outer / "os-home").is_dir()
         command = [shell, "-NoProfile", "-NonInteractive", "-File",
                    str(installed / "scripts/run-context-guard.ps1"), "hook"]
         payload = {"hook_event_name": "UserPromptSubmit", "session_id": "synthetic-bytecode",
@@ -174,7 +174,7 @@ def run_case(subject, outer, case, shell, identity, owned_process):
 
 def main():
     report = {"schema": "hook-timeout-ci-diagnostic/v1", "native_acceptance": False,
-              "release_gate": False, "subject_commit": SUBJECT, "runtime_tree_sha256": RUNTIME,
+              "release_gate": False, "experiment": "private_environment", "subject_commit": SUBJECT, "runtime_tree_sha256": RUNTIME,
               "diagnostic_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               "observations": [], "status": "diagnostic_error"}
     output = None
@@ -182,7 +182,7 @@ def main():
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument("--subject-root", type=Path, required=True)
         parser.add_argument("--output", type=Path, required=True)
-        parser.add_argument("--order", choices=tuple(ORDERS), default="initial")
+        parser.add_argument("--order", choices=tuple(ORDERS), default="ABA")
         args = parser.parse_args()
         output = args.output
         cases = ORDERS[args.order]

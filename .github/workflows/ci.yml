@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   observe:
-    name: Fixed 1178 Hook ${{ matrix.order }} / Python 3.12
+    name: Fixed 1178 Hook environment ${{ matrix.order }} / Python 3.12
     runs-on: windows-latest
     timeout-minutes: 8
     strategy:
@@ -39,54 +39,11 @@ jobs:
             ../diagnostic/tools/validation/hook_timeout_ci_diagnostic.py `
             --subject-root . `
             --order "$env:DIAGNOSTIC_ORDER" `
-            --output "$env:RUNNER_TEMP/hook-timeout-$env:DIAGNOSTIC_ORDER.json" 2>$null
+            --output "$env:RUNNER_TEMP/hook-environment-$env:DIAGNOSTIC_ORDER.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: hook-timeout-observations-${{ matrix.order }}
-          path: ${{ runner.temp }}/hook-timeout-${{ matrix.order }}.json
-          if-no-files-found: warn
-          retention-days: 7
-
-  r05_barrier:
-    name: Fixed 1178 R05 resolver barrier / Python ${{ matrix.python }}
-    runs-on: windows-latest
-    timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.10", "3.11"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          path: diagnostic
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 1178b1426254654cff4ab84d1dd2dff33c6de3d6
-          path: subject
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: ${{ matrix.python }}
-      - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: Collect unchanged R05 resolver barrier observations
-        working-directory: subject
-        shell: pwsh
-        env:
-          DIAGNOSTIC_PYTHON: ${{ matrix.python }}
-        run: |
-          uv run --locked --only-group test --python python python -B `
-            ../diagnostic/tools/validation/r05_resolver_barrier_1178.py `
-            --repo . `
-            --output "$env:RUNNER_TEMP/r05-resolver-barrier-$env:DIAGNOSTIC_PYTHON.json" 2>$null
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        if: always()
-        with:
-          name: r05-resolver-barrier-${{ matrix.python }}
-          path: |
-            ${{ runner.temp }}/r05-resolver-barrier-${{ matrix.python }}.json
-            ${{ runner.temp }}/cg-resolver-barrier-1178-*/crt.json
-            ${{ runner.temp }}/cg-resolver-barrier-1178-*/share7.json
+          name: hook-environment-observations-${{ matrix.order }}
+          path: ${{ runner.temp }}/hook-environment-${{ matrix.order }}.json
           if-no-files-found: warn
           retention-days: 7

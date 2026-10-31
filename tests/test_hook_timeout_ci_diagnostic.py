@@ -18,23 +18,27 @@ SPEC.loader.exec_module(d)
 
 class DiagnosticControls(unittest.TestCase):
     def test_orders_keep_the_original_control_and_reverse_the_pair(self):
-        self.assertEqual(d.ORDERS["initial"], d.CASES)
-        self.assertEqual(d.ORDERS["ABA"], ("trace_only", "path_without_dot_trace", "trace_only"))
-        self.assertEqual(d.ORDERS["BAB"], ("path_without_dot_trace", "trace_only", "path_without_dot_trace"))
+        self.assertEqual(d.CASES, ("trace_only", "private_environment_trace"))
+        self.assertEqual(d.ORDERS, {
+            "ABA": ("trace_only", "private_environment_trace", "trace_only"),
+            "BAB": ("private_environment_trace", "trace_only", "private_environment_trace")})
 
     def test_environment_variants_change_only_declared_inputs(self):
         with mock.patch.object(os, "pathsep", ";"), mock.patch.object(os, "defpath", ".;C:\\bin"):
             cases = {name: d.environment_for(Path("C:/private"), name,
                      "C:/Python/python.exe") for name in d.CASES}
-        original, traced = cases["original"], dict(cases["trace_only"])
-        traced.pop("CONTEXT_GUARD_HOOK_TRACE_DIR")
-        self.assertEqual(original, traced)
-        self.assertEqual(cases["trace_only"], cases["configured_trace"])
-        changed = dict(cases["path_without_dot_trace"])
-        self.assertEqual(changed.pop("PATH"), "C:/Python;C:\\bin")
-        expected = dict(cases["trace_only"])
-        expected.pop("PATH")
-        self.assertEqual(changed, expected)
+        original = cases["trace_only"]
+        complete = dict(cases["private_environment_trace"])
+        additions = {"TMP", "TEMP", "APPDATA", "LOCALAPPDATA", "PSModuleAnalysisCachePath"}
+        self.assertEqual(set(complete) - set(original), additions)
+        self.assertEqual(complete.pop("TMP"), str(Path("C:/private") / "tmp"))
+        self.assertEqual(complete.pop("TEMP"), str(Path("C:/private") / "tmp"))
+        self.assertEqual(complete.pop("APPDATA"), str(Path("C:/private") / "appdata"))
+        self.assertEqual(complete.pop("LOCALAPPDATA"), str(Path("C:/private") / "localappdata"))
+        self.assertEqual(complete.pop("PSModuleAnalysisCachePath"),
+                         str(Path("C:/private") / "module-cache/ModuleAnalysisCache"))
+        self.assertEqual(complete, original)
+        self.assertEqual(original["PATH"], str(Path("C:/Python")) + ";.;C:\\bin")
         self.assertNotIn("PYTHONDONTWRITEBYTECODE", original)
 
     def test_trace_is_bounded_and_never_echoes_unknown_fields(self):
@@ -47,7 +51,7 @@ class DiagnosticControls(unittest.TestCase):
             self.assertNotIn("secret-path", json.dumps(d.trace_shape(root)))
             self.assertEqual(d.trace_shape(root)["state"], "unavailable")
 
-    def case(self, *, timed_out=False, cleanup=True):
+    def case(self, *, timed_out=False, cleanup=True, private_environment=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             subject = root / "source"
@@ -76,10 +80,16 @@ class DiagnosticControls(unittest.TestCase):
                 close=mock.Mock(return_value={"cleanup_complete": cleanup,
                     "owned_process_exited": True, "owned_tree_no_running_members": cleanup}))
             owned = mock.Mock()
-            owned.spawn.return_value = owner
+            def spawn(*args, **kwargs):
+                self.assertEqual((outer / "os-home").is_dir(), private_environment)
+                for name in ("tmp", "appdata", "localappdata", "module-cache"):
+                    self.assertEqual((outer / name).is_dir(), private_environment)
+                return owner
+            owned.spawn.side_effect = spawn
             identity = types.SimpleNamespace(distribution_manifest=lambda root:
                 {"scripts/run-context-guard.ps1": "synthetic"}, compare_artifact=lambda *args: None)
-            row = d.run_case(subject, outer, "original", "inert-powershell", identity, owned)
+            case = "private_environment_trace" if private_environment else "trace_only"
+            row = d.run_case(subject, outer, case, "inert-powershell", identity, owned)
             self.assertEqual(owned.spawn.call_args.kwargs["stdin"], subprocess.PIPE)
             owner.close.assert_called_once_with(timeout=5)
             self.assertEqual(row["fixture_cleanup"], "removed" if cleanup else "retained")
@@ -96,6 +106,12 @@ class DiagnosticControls(unittest.TestCase):
         self.assertTrue(row["stdout_json_object"])
         self.assertTrue(row["artifact_parity_unchanged"])
         self.assertTrue(row["no_bytecode"])
+
+    def test_private_environment_directories_exist_before_spawn(self):
+        row = self.case(private_environment=True)
+        self.assertTrue(row["os_home_present_before_spawn"])
+        self.assertFalse(row["configured"])
+        self.assertEqual(row["timeout_seconds"], 30)
 
     def test_timeout_with_exited_leader_is_not_called_a_live_process(self):
         row = self.case(timed_out=True)
