@@ -196,6 +196,9 @@ class MarketplaceArtifactTests(unittest.TestCase):
         shutil.copytree(ROOT / "assets", runtime.parent / "assets")
         code = "import importlib.util,sys; assert not sys.dont_write_bytecode; p=sys.argv[1]; spec=importlib.util.spec_from_file_location('context_guard',p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); assert not sys.dont_write_bytecode; print('policy-preserved')"
         env = {"PATH":os.defpath,"HOME":str(Path(self.tmp.name) / "os-home")}
+        if os.name == "nt":
+            env.update({key: os.environ[key] for key in
+                        ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT") if key in os.environ})
         result = subprocess.run([sys.executable,"-c",code,str(runtime / "context_guard.py")], env=env, text=True, capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "policy-preserved")

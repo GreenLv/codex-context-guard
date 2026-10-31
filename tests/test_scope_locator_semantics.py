@@ -246,7 +246,8 @@ class ScopeLocatorPersistence(unittest.TestCase):
                 self.assertEqual(requirement["subjectId"], [expected])
                 self.assertEqual(requirement["verification_contract"]["mode"], "enforced")
                 prompts = list((session / "prompts").glob("P*.json"))
-                self.assertTrue(any(text in json.loads(p.read_text())["text"] for p in prompts))
+                self.assertTrue(any(text in json.loads(p.read_text(encoding="utf-8"))["text"]
+                                    for p in prompts))
                 cg.dispatch({**payload, "hook_event_name": "PreCompact", "trigger": "manual"})
                 cg.dispatch({**payload, "hook_event_name": "SessionStart", "source": "compact"})
                 recovered = cg.load_state(session, payload)

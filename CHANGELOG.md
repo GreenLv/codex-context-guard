@@ -15,6 +15,7 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 ### Changes
 
+- Public-tree audits accept an optional private identity list outside the audited tree and apply semantic-boundary matching without embedding personal identities in distributed source. Missing, unreadable or in-tree private input fails closed; existing `--forbid` substring matching is unchanged.
 - Windows private-directory readback accepts the first trustee as `LA` only when `ConvertStringSidToSidW` and `EqualSid` prove equality to the complete expected current-user SID. A different local account or machine SID, unresolved alias, or any permission mismatch still fails closed. Windows evidence remains bound to its exact source, artifact and host.
 
 - Configured Windows Hook launches create the temporary UTF-8 capture file through .NET directly, so a missing `New-TemporaryFile` command no longer prevents the configured interpreter from starting. Wire verification, native exit codes and temporary-file cleanup are unchanged.

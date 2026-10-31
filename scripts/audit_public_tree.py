@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -13,18 +15,16 @@ SKIP_DIRS = {".git", ".venv", "venv", "build", "dist", ".ruff_cache"}
 GENERATED_NAMES = {".DS_Store", "Thumbs.db", "__pycache__", ".pytest_cache"}
 SELF = "scripts/audit_public_tree.py"
 FORBIDDEN_LITERALS = (
-    "codex-sync",
-    "@126.com",
-    "GreenLv@users.noreply.github.com",
+    '@126.com',
 )
 # Identity literals match on semantic boundaries instead of raw substrings:
 # a standalone name, a ``user=<name>`` binding, an email local part, or a
 # local user path must still fail, while a longer public account slug that
 # merely shares the prefix (for example the HOL badge affiliate URL) must
 # not fire. Local user paths stay covered by the dedicated PATTERNS below.
-IDENTITY_LITERALS = (
-    "lgr59",
-)
+# Personal identities belong in an explicitly supplied private file, never
+# in distributed source. Keep the tuple for callers that inject test literals.
+IDENTITY_LITERALS: tuple[str, ...] = ()
 PATTERNS = {
     "macOS user-specific path": re.compile(r"/Users/[A-Za-z0-9._-]+/"),
     "Windows user-specific path": re.compile(
@@ -72,9 +72,50 @@ def identity_literal_hits(text: str, literal: str) -> bool:
     )
 
 
-def findings(root: Path, extra_forbidden: list[str] | None = None) -> list[str]:
+def load_identity_file(root: Path, identity_file: Path) -> tuple[str, ...]:
+    """Read one UTF-8 identity per line from outside the audited tree.
+
+    Empty, unreadable, non-regular or in-tree input fails closed. Every path
+    component must be free of symbolic links and Windows reparse points.
+    Diagnostics contain neither private values nor the private input path.
+    """
+    try:
+        public = Path(os.path.abspath(root.expanduser()))
+        root = root.resolve(strict=True)
+        unresolved = identity_file.expanduser().absolute()
+        # Inspect every supplied path component before resolving it. A link
+        # remains disallowed even when it points to another external file.
+        for component in (*reversed(unresolved.parents), unresolved):
+            info = component.lstat()
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                raise ValueError("private identity input must not traverse links or reparse points")
+            if component == unresolved:
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("private identity input must be a regular file")
+            elif not stat.S_ISDIR(info.st_mode):
+                raise ValueError("private identity input parents must be directories")
+        supplied = Path(os.path.abspath(unresolved))
+        canonical_parent = supplied.parent.resolve(strict=True) / supplied.name
+        private = supplied.resolve(strict=True)
+        if (supplied.is_relative_to(public) or canonical_parent.is_relative_to(root)
+                or private.is_relative_to(root)):
+            raise ValueError("identity file must be outside the audited tree")
+        text = private.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, RuntimeError):
+        raise ValueError("private identity file could not be read") from None
+    identities = tuple(line.strip() for line in text.splitlines() if line.strip())
+    if not identities or any("\x00" in literal for literal in identities):
+        raise ValueError("private identity file must contain non-empty identity lines")
+    return identities
+
+
+def findings(root: Path, extra_forbidden: list[str] | None = None, *,
+             identity_file: Path | None = None) -> list[str]:
     issues: list[str] = []
     literals = FORBIDDEN_LITERALS + tuple(extra_forbidden or [])
+    identities = IDENTITY_LITERALS + (
+        load_identity_file(root, identity_file) if identity_file is not None else ())
     for path in candidate_files(root):
         relative = path.relative_to(root)
         if any(part in SKIP_DIRS for part in relative.parts):
@@ -95,7 +136,7 @@ def findings(root: Path, extra_forbidden: list[str] | None = None) -> list[str]:
         for literal in literals:
             if literal and literal.casefold() in text.casefold():
                 issues.append(f"{relative}: forbidden private literal")
-        for literal in IDENTITY_LITERALS:
+        for literal in identities:
             if identity_literal_hits(text, literal):
                 issues.append(f"{relative}: forbidden private literal")
         for label, pattern in PATTERNS.items():
@@ -108,9 +149,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, nargs="?", default=Path.cwd())
     parser.add_argument("--forbid", action="append", default=[])
+    parser.add_argument("--identity-file", type=Path,
+                        help="private UTF-8 identity lines outside the audited tree; "
+                             "uses semantic boundaries, unlike --forbid substrings")
     args = parser.parse_args()
     root = args.root.expanduser().resolve()
-    issues = findings(root, args.forbid)
+    try:
+        issues = findings(root, args.forbid, identity_file=args.identity_file)
+    except ValueError as exc:
+        print(f"Public-tree audit failed: {exc}", file=sys.stderr)
+        return 2
     if issues:
         print("Public-tree audit failed:", file=sys.stderr)
         for issue in issues:

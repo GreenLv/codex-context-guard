@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools" / "validation"))
@@ -102,11 +103,26 @@ class WindowsEntryContractTests(unittest.TestCase):
     """The PS entry must not self-sign a manifest: a missing
     driver-manifest.json exits 2 and no fallback generation exists."""
 
+    PACKAGE_ROOT_ENV = "CONTEXT_GUARD_WINDOWS_DRIVER_PACKAGE_ROOT"
+
+    def driver_package_root(self):
+        configured = os.environ.get(self.PACKAGE_ROOT_ENV)
+        if configured is None:
+            self.skipTest("external Windows driver package root is not configured")
+        if not configured.strip():
+            self.fail("configured external Windows driver package root is empty")
+        root = Path(configured).expanduser().resolve()
+        if root.is_relative_to(REPO_ROOT.resolve()):
+            self.fail("configured Windows driver package must be outside the source tree")
+        required = (*pbf.REQUIRED_DRIVER_PATHS, "driver-manifest.json")
+        missing = [name for name in required if not (root / name).is_file()]
+        if missing:
+            self.fail("configured external Windows driver package is incomplete: "
+                      + ", ".join(missing))
+        return root
+
     def test_no_manifest_self_signing_fallback(self):
-        script = Path("/tmp/stop-perf-work/windows-acceptance/"
-                      "run-windows-acceptance.ps1")
-        if not script.is_file():
-            self.skipTest("windows package not staged on this host")
+        script = self.driver_package_root() / "run-windows-acceptance.ps1"
         text = script.read_text(encoding="utf-8")
         self.assertIn("driver manifest missing", text)
         self.assertIn("exit 2", text)
@@ -120,13 +136,8 @@ class WindowsEntryContractTests(unittest.TestCase):
                       text)
 
     def test_staged_manifest_is_frozen_and_complete(self):
-
-        script = Path("/tmp/stop-perf-work/windows-acceptance/"
-                      "run-windows-acceptance.ps1")
-        manifest = Path("/tmp/stop-perf-work/windows-acceptance/"
-                        "driver-manifest.json")
-        if not (script.is_file() and manifest.is_file()):
-            self.skipTest("windows package not staged on this host")
+        root = self.driver_package_root()
+        manifest = root / "driver-manifest.json"
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         self.assertEqual(payload["schema"], "prepared-batch-drivers/v1")
         paths = [d["path"] for d in payload["drivers"]]
@@ -134,10 +145,50 @@ class WindowsEntryContractTests(unittest.TestCase):
                          sorted(pbf.REQUIRED_DRIVER_PATHS))
         self.assertEqual(set(paths), set(pbf.REQUIRED_DRIVER_PATHS))
         for driver in payload["drivers"]:
-            target = Path("/tmp/stop-perf-work/windows-acceptance")
+
             digest = hashlib.sha256(
-                (target / driver["path"]).read_bytes()).hexdigest()
+                (root / driver["path"]).read_bytes()).hexdigest()
             self.assertEqual(digest, driver["sha256"], driver["path"])
+
+
+class WindowsPackageSelectionTests(unittest.TestCase):
+    """Synthetic controls for input selection, never native package acceptance."""
+
+    def test_unconfigured_selection_skips_without_filesystem_reads(self):
+        case = WindowsEntryContractTests()
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(Path, "is_file", side_effect=AssertionError(
+                    "unconfigured package must not probe a historical root")):
+            with self.assertRaises(unittest.SkipTest):
+                case.driver_package_root()
+
+    def test_explicit_missing_or_empty_selection_fails_instead_of_skipping(self):
+        case = WindowsEntryContractTests()
+        with tempfile.TemporaryDirectory() as directory:
+            for configured in ("", str(Path(directory) / "missing")):
+                with self.subTest(empty=not configured), mock.patch.dict(
+                        os.environ, {case.PACKAGE_ROOT_ENV: configured}):
+                    with self.assertRaises(AssertionError):
+                        case.driver_package_root()
+
+    def test_explicit_source_tree_selection_is_rejected(self):
+        case = WindowsEntryContractTests()
+        with mock.patch.dict(os.environ, {case.PACKAGE_ROOT_ENV: str(REPO_ROOT)}):
+            with self.assertRaises(AssertionError):
+                case.driver_package_root()
+
+    def test_selection_uses_only_explicit_complete_external_root(self):
+        case = WindowsEntryContractTests()
+        builder = PackageMigrationTests()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "synthetic-selection-control"
+            builder.build_package(root)
+            builder.write_manifest(root)
+            with mock.patch.dict(os.environ, {case.PACKAGE_ROOT_ENV: str(root)}):
+                self.assertEqual(case.driver_package_root(), root.resolve())
+                (root / pbf.REQUIRED_DRIVER_PATHS[-1]).unlink()
+                with self.assertRaises(AssertionError):
+                    case.driver_package_root()
 
 
 class PreparedBatchPreflightTests(unittest.TestCase):

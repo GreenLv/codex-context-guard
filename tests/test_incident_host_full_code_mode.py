@@ -866,8 +866,8 @@ class WindowsCodeModeFullTests(P0Harness):
         (root / "rpc").mkdir()
         (root / "rpc/rpc.jsonl").write_bytes(self.final_rpc)
         for name in cm.COMMAND_STAGES:
-            (root / ("rollout-" + name + ".jsonl")).write_text(
-                c["stages"][name]["code_mode_evidence"]["rollout"]
+            (root / ("rollout-" + name + ".jsonl")).write_bytes(
+                c["stages"][name]["code_mode_evidence"]["rollout"].encode("utf-8")
             )
         h.write_new(root / "plan.json", c["plan"])
         h.write_new(root / "capture.json", c)

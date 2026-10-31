@@ -234,13 +234,8 @@ class PublicContractTests(unittest.TestCase):
             self.assertTrue(any("generated/private" in item for item in issues))
 
     def test_identity_literals_match_on_semantic_boundaries_only(self) -> None:
-        """The built-in local-username literal fires on standalone names,
-        ``user=<name>`` bindings, email local parts, and local user paths,
-        but a longer public account slug that merely shares the prefix is not
-        a private literal.
-        The real literal is constructed at runtime so this test's own bytes
-        never carry it."""
-        name = "lgr" + "59"
+        """Private identity inputs preserve the semantic matching boundary."""
+        name = "fixture_person"
         slug = name + "45"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -255,7 +250,8 @@ class PublicContractTests(unittest.TestCase):
             }
             for filename, text in sources.items():
                 (root / filename).write_text(text, encoding="utf-8")
-            issues = audit.findings(root)
+            with mock.patch.object(audit, "IDENTITY_LITERALS", (name,)):
+                issues = audit.findings(root)
             flagged = {item.split(":")[0] for item in issues}
             for filename in (
                 "standalone.md",
@@ -271,6 +267,183 @@ class PublicContractTests(unittest.TestCase):
                 )
             self.assertNotIn("public_slug.md", flagged, str(issues))
             self.assertNotIn("public_slug_param.md", flagged, str(issues))
+
+    def test_private_identity_file_keeps_semantic_boundaries(self) -> None:
+        name = "fixture_person"
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            private = base / "identities.txt"
+            private.write_text(name + "\n", encoding="utf-8")
+            sources = {
+                "standalone.md": f"owner {name}\n",
+                "user_param.md": f"user={name.upper()}\n",
+                "email.md": f"{name}@example.invalid\n",
+                "mac_path.md": "/Users" + f"/{name}/notes\n",
+                "windows_path.txt": "C:" + "\\Users\\" + name + "\\notes\n",
+                "public_slug.md": f"https://example.invalid/{name}public\n",
+                "public_slug_param.md": f"promo {name.upper()}PUBLIC\n",
+            }
+            for filename, text in sources.items():
+                (root / filename).write_text(text, encoding="utf-8")
+            flagged = {item.split(":")[0] for item in audit.findings(
+                root, identity_file=private)}
+            self.assertEqual(flagged, set(sources) - {
+                "public_slug.md", "public_slug_param.md"})
+
+    def test_private_identity_file_errors_are_closed_and_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            inside = root / "identities.txt"
+            inside.write_text("fixture_person\n", encoding="utf-8")
+            empty = base / "empty.txt"
+            empty.write_text("\n", encoding="utf-8")
+            invalid = base / "invalid.txt"
+            invalid.write_bytes(b"\xff")
+            for private in (base / "missing-private.txt", inside, empty, invalid):
+                with self.subTest(case=private.name):
+                    with self.assertRaises(ValueError):
+                        audit.findings(root, identity_file=private)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "scripts/audit_public_tree.py"),
+                         str(root), "--identity-file", str(private)],
+                        capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertNotIn(str(private), result.stdout + result.stderr)
+                    self.assertNotIn("fixture_person", result.stdout + result.stderr)
+
+    def test_relative_sibling_identity_file_is_outside_public_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            private = base / "identities.txt"
+            private.write_text("fixture_person\n", encoding="utf-8")
+            (root / "owner.md").write_text("fixture_person\n", encoding="utf-8")
+            supplied = root / ".." / private.name
+            self.assertEqual(audit.findings(root, identity_file=supplied),
+                             ["owner.md: forbidden private literal"])
+
+    def test_identity_file_path_inside_tree_cannot_link_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            private = base / "identities.txt"
+            private.write_text("fixture_person\n", encoding="utf-8")
+            link = root / "identities.txt"
+            try:
+                link.symlink_to(private)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {type(exc).__name__}")
+            with self.assertRaises(ValueError):
+                audit.findings(root, identity_file=link)
+
+    def test_identity_file_symlink_into_public_tree_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            inside = root / "identities.txt"
+            inside.write_text("fixture_person\n", encoding="utf-8")
+            link = base / "outside.txt"
+            try:
+                link.symlink_to(inside)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {type(exc).__name__}")
+            with self.assertRaises(ValueError):
+                audit.findings(root, identity_file=link)
+
+    def test_external_identity_leaf_and_parent_links_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            outside = base / "external"
+            outside.mkdir()
+            private = outside / "identities.txt"
+            private.write_text("fixture_person\n", encoding="utf-8")
+            leaf_link = base / "linked-identity.txt"
+            parent_link = base / "linked-parent"
+            try:
+                leaf_link.symlink_to(private)
+                parent_link.symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {type(exc).__name__}")
+            for supplied in (leaf_link, parent_link / private.name):
+                with self.subTest(parent=supplied.parent == parent_link):
+                    with mock.patch.object(Path, "read_text", side_effect=AssertionError(
+                            "identity data must not be read through links")):
+                        with self.assertRaises(ValueError):
+                            audit.load_identity_file(root, supplied)
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "scripts/audit_public_tree.py"),
+                         str(root), "--identity-file", str(supplied)],
+                        capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertNotIn(str(supplied), result.stdout + result.stderr)
+                    self.assertNotIn("fixture_person", result.stdout + result.stderr)
+
+    def test_identity_file_reparse_leaf_and_parent_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            outside = base / "external"
+            outside.mkdir()
+            private = outside / "identities.txt"
+            private.write_text("fixture_person\n", encoding="utf-8")
+            original_lstat = Path.lstat
+            for reparse in (private, outside):
+                def lstat(path):
+                    info = original_lstat(path)
+                    if path == reparse:
+                        return mock.Mock(st_mode=info.st_mode, st_file_attributes=0x400)
+                    return info
+                with self.subTest(parent=reparse == outside), \
+                        mock.patch.object(Path, "lstat", lstat), \
+                        mock.patch.object(Path, "read_text", side_effect=AssertionError(
+                            "identity data must not be read through reparse points")):
+                    with self.assertRaises(ValueError):
+                        audit.load_identity_file(root, private)
+
+    def test_identity_file_non_regular_leaf_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            root = base / "public"
+            root.mkdir()
+            directory = base / "not-a-file"
+            directory.mkdir()
+            with self.assertRaises(ValueError):
+                audit.load_identity_file(root, directory)
+            if hasattr(os, "mkfifo"):
+                fifo = base / "identity-fifo"
+                os.mkfifo(fifo)
+                with self.assertRaises(ValueError):
+                    audit.load_identity_file(root, fifo)
+
+    def test_private_identity_release_notes_stay_in_matching_version_changes(self) -> None:
+        cases = (
+            ("CHANGELOG.md", "Public-tree audits accept", "### Changes"),
+            ("CHANGELOG.zh-CN.md", "公开树审计支持显式传入", "### 变更"),
+        )
+        for filename, marker, heading in cases:
+            with self.subTest(filename=filename):
+                text = (ROOT / filename).read_text(encoding="utf-8")
+                versions = re.split(r"(?m)^## ", text)[1:]
+                current = next(part for part in versions if part.startswith("0.16.0 —"))
+                changes = current.split(heading + "\n", 1)[1].split("\n### ", 1)[0]
+                self.assertIn(marker, changes)
+                self.assertEqual(text.count(marker), 1)
+        release = (ROOT / "docs/releases/v0.16.0.md").read_text(encoding="utf-8")
+        for section, marker in (("## English", "Public-tree audits accept"),
+                                ("## 简体中文", "公开树审计支持显式传入")):
+            language = release.split(section + "\n", 1)[1].split("\n## ", 1)[0]
+            changes = language.split("### Changes\n", 1)[1].split("\n### ", 1)[0]
+            self.assertIn(marker, changes)
 
     def test_extra_forbidden_literals_stay_exact_substrings(self) -> None:
         """The --forbid extension point keeps its flat substring semantics."""
