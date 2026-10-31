@@ -375,6 +375,8 @@ class F03PrivatePermissionBoundary(IsolatedEnvironment):
     def test_chmod_failure_is_visible_and_fail_closed(self) -> None:
         loose = self.root / "loose"
         loose.mkdir(mode=0o755)
+        loose.chmod(0o755)
+        self.assertEqual(stat.S_IMODE(loose.stat().st_mode), 0o755)
         with mock.patch.object(
             cg.os, "chmod", side_effect=PermissionError("denied")
         ):
@@ -398,6 +400,8 @@ class F03PrivatePermissionBoundary(IsolatedEnvironment):
     def test_existing_loose_private_directory_is_tightened(self) -> None:
         loose = self.data_dir / "sessions-v2" / "late"
         loose.mkdir(parents=True, mode=0o755)
+        loose.chmod(0o755)
+        self.assertEqual(stat.S_IMODE(loose.stat().st_mode), 0o755)
         cg.secure_directory(loose)
         self.assertEqual(stat.S_IMODE(loose.stat().st_mode), 0o700)
 
