@@ -254,12 +254,17 @@ jobs:
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" `
             --preflight
       - name: Run versioned portable acceptance entrypoint
+        id: portable_acceptance
         shell: pwsh
         run: |
           python tools/validation/native_acceptance.py `
             --source-commit "${{ github.sha }}" `
             --output "$env:RUNNER_TEMP/native-acceptance-windows.json" `
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Diagnose private DACL after portable acceptance failure
+        if: failure() && steps.portable_acceptance.outcome == 'failure'
+        shell: pwsh
+        run: python tools/validation/diagnose_windows_private_dacl.py 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-acceptance-windows-${{ github.sha }}
