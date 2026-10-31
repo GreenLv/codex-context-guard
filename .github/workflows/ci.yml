@@ -8,13 +8,13 @@ permissions:
 
 jobs:
   observe:
-    name: Fixed 1178 Hook environment ${{ matrix.order }} / Python 3.12
+    name: Fixed 1178 Hook stages / trace ${{ matrix.trace }} / Python 3.12
     runs-on: windows-latest
     timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
-        order: ["ABA", "BAB"]
+        trace: ["on", "off"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -33,17 +33,19 @@ jobs:
         working-directory: subject
         shell: pwsh
         env:
-          DIAGNOSTIC_ORDER: ${{ matrix.order }}
+          DIAGNOSTIC_TRACE: ${{ matrix.trace }}
         run: |
           uv run --locked --only-group test --python python python -B `
-            ../diagnostic/tools/validation/hook_timeout_ci_diagnostic.py `
+            ../diagnostic/tools/validation/hook_stage_ci_diagnostic.py `
             --subject-root . `
-            --order "$env:DIAGNOSTIC_ORDER" `
-            --output "$env:RUNNER_TEMP/hook-environment-$env:DIAGNOSTIC_ORDER.json" 2>$null
+            --original-trace "$env:DIAGNOSTIC_TRACE" `
+            --output "$env:RUNNER_TEMP/hook-stages-$env:DIAGNOSTIC_TRACE.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: hook-environment-observations-${{ matrix.order }}
-          path: ${{ runner.temp }}/hook-environment-${{ matrix.order }}.json
+          name: hook-stage-observations-${{ matrix.trace }}
+          path: |
+            ${{ runner.temp }}/hook-stages-${{ matrix.trace }}.json
+            ${{ runner.temp }}/cg-hook-stage-diagnostic-*/stages.jsonl
           if-no-files-found: warn
           retention-days: 7
