@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import types
@@ -129,13 +130,53 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                 with zipfile.ZipFile(explicit_zip, "w") as archive:
                     for name in files:
                         archive.writestr(name, b"drift" if failure == "wrong_zip" and name == "scripts/core.py" else (root / name).read_bytes())
+            real_mkdtemp = tempfile.mkdtemp
+            owned_roots = []
+
+            def make_owned_root(*args, **kwargs):
+                self.assertEqual(args, ())
+                self.assertEqual(kwargs, {"prefix": "ccg-official-marketplace-"})
+                created = Path(real_mkdtemp(dir=directory, **kwargs)).resolve()
+                owned_roots.append(created)
+                return str(created)
+
+            # The Windows mode negative deliberately makes a file read-only.
+            # Keep its fixture in this test's own temporary tree so a reported
+            # cleanup failure can be verified and then cleaned by the test.
+            root_guard = (mock.patch.object(native.tempfile, "mkdtemp", side_effect=make_owned_root)
+                          if failure == "mode" and os.name == "nt" else contextlib.nullcontext())
             with mock.patch.object(native, "load_artifacts", return_value=identity), \
                     mock.patch.object(native, "verify_exact_source"), \
                     mock.patch.object(native, "run", side_effect=run), \
-                    contextlib.redirect_stderr(io.StringIO()):
+                    root_guard, contextlib.redirect_stderr(io.StringIO()) as stderr:
                 result = native.portable_acceptance(root, "a" * 40, "synthetic-codex", None, release_zip=explicit_zip)
             schema = json.loads((ROOT / "tools/validation/native-acceptance-v2.schema.json").read_text())
             jsonschema.Draft202012Validator(schema).validate(result)
+            if failure == "mode" and os.name == "nt" and result["cleanup"]["status"] == "failed":
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["cleanup"]["remaining_ids"], ["official_temporary_root"])
+                self.assertIn("second documented workflow changed final HOME paths, modes or file bytes",
+                              stderr.getvalue())
+                self.assertTrue(any(g["id"] == "official_marketplace_workflow" and g["status"] == "failed"
+                                    for g in result["gates"]))
+                self.assertFalse(any(g["id"] == "strict_second_noop" and g["status"] == "passed"
+                                     for g in result["gates"]))
+                self.assertEqual(len(owned_roots), 1)
+                owned = owned_roots[0]
+                self.assertEqual(owned.parent, Path(directory).resolve())
+                self.assertEqual(self.homes, [owned / "home"])
+                config = owned / "home" / "config.toml"
+                for path in (owned, owned / "home", config):
+                    info = path.lstat()
+                    self.assertFalse(stat.S_ISLNK(info.st_mode))
+                    self.assertFalse(getattr(info, "st_file_attributes", 0) & 0x400)
+                    if path != config:
+                        self.assertTrue(stat.S_ISDIR(info.st_mode))
+                self.assertTrue(stat.S_ISREG(config.lstat().st_mode))
+                self.assertEqual(config.read_bytes(), b"synthetic-config\n")
+                config.chmod(0o600)
+                shutil.rmtree(owned)
+                self.assertFalse(os.path.lexists(owned))
             self.assertTrue(all(not home.exists() for home in self.homes))
             return result
 

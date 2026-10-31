@@ -169,6 +169,16 @@ class BenchmarkOracleTests(unittest.TestCase):
                 raise
             self.assertTrue(target.is_symlink())
             self.assertFalse(target.exists())
+            original_link = target.readlink()
+            if os.name == "nt":
+                # Windows can expose a local absolute symlink target with the
+                # extended-path prefix even when it was created without it.
+                self.assertEqual(
+                    os.path.normcase(str(original_link).removeprefix("\\\\?\\")),
+                    os.path.normcase(str(missing)),
+                )
+            else:
+                self.assertEqual(original_link, missing)
             with mock.patch.object(sys, "argv", ["benchmark_stop.py", "--mode",
                     "count", "--shape", "S0", "--json", str(target)]), \
                     mock.patch.object(benchmark, "run_count_mode",
@@ -178,7 +188,7 @@ class BenchmarkOracleTests(unittest.TestCase):
             run.assert_not_called()
             self.assertIn("refusing to overwrite", stderr.getvalue())
             self.assertTrue(target.is_symlink())
-            self.assertEqual(target.readlink(), missing)
+            self.assertEqual(target.readlink(), original_link)
             self.assertFalse(missing.exists())
 
 

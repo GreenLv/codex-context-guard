@@ -15,6 +15,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 ### Changes
 
+- Windows private-directory readback accepts the first trustee as `LA` only when `ConvertStringSidToSidW` and `EqualSid` prove equality to the complete expected current-user SID. A different local account or machine SID, unresolved alias, or any permission mismatch still fails closed. Native Windows verification of this candidate remains required.
+
 - Configured Windows Hook launches create the temporary UTF-8 capture file through .NET directly, so a missing `New-TemporaryFile` command no longer prevents the configured interpreter from starting. Wire verification, native exit codes and temporary-file cleanup are unchanged.
 
 - Windows independent answer review and validation workers now stop when a temporary process handle cannot be closed. Startup failures retain available native error codes; cleanup reports redacted status without exposing command arguments, waits for an unassigned suspended child independently of Job closure, and attempts bounded Job-tree cleanup if the thread may already have run. Unknown exit or closure stays unknown; this source repair requires fresh Windows acceptance.

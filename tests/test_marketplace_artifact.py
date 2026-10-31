@@ -205,7 +205,7 @@ class MarketplaceArtifactTests(unittest.TestCase):
         self.assertFalse((ROOT / "scripts" / (removed + ".py")).exists())
         for area in ("scripts", "tools"):
             for path in (ROOT / area).rglob("*.py"):
-                body = path.read_text()
+                body = path.read_text(encoding="utf-8")
                 self.assertNotIn("from scripts." + removed, body)
                 self.assertNotIn('"scripts/' + removed + '.py"', body)
 

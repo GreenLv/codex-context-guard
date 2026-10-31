@@ -22,6 +22,15 @@ def physical_tempdir(*, prefix: str):
         yield str(Path(raw).resolve(strict=True)) if os.name == "nt" else raw
 
 
+@contextmanager
+def exact_control_tempdir(*, prefix: str):
+    """Keep random suffixes from changing the exact-control fixture's scope."""
+    with mock.patch.object(tempfile._RandomNameSequence, "characters", "0123456789"):
+        temporary = tempfile.TemporaryDirectory(prefix=prefix)
+    with temporary as raw:
+        yield str(Path(raw).resolve(strict=True)) if os.name == "nt" else raw
+
+
 def root_locator(path: Path) -> str:
     """Give Windows root speech one complete drive-path token."""
     return f'"{path}"' if os.name == "nt" else str(path)
@@ -921,7 +930,7 @@ class StopV5Tests(unittest.TestCase):
 
     def test_exact_cancel_uses_sourced_target_and_wrong_target_stays_pending(self):
         for matching in (True, False):
-            with self.subTest(matching=matching), physical_tempdir(
+            with self.subTest(matching=matching), exact_control_tempdir(
                 prefix="stop-v5-exact-control-"
             ) as tmp:
                 previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")

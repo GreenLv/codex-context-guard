@@ -2245,6 +2245,46 @@ def _windows_apply_protected_dacl(path: Path, expected_sddl: str) -> None:
         kernel32.LocalFree(ctypes.cast(descriptor, wintypes.HLOCAL))
 
 
+def _windows_local_admin_sid_matches(expected_sid: str) -> bool:
+    """Resolve LA through Windows, then compare complete binary SIDs.
+
+    LA names the local Administrator account, not necessarily the token user.
+    Neither a RID suffix nor a guessed machine/domain prefix proves identity.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    load = getattr(ctypes, "WinDLL", None)
+    if load is None:
+        return False
+    advapi32 = load("advapi32", use_last_error=True)
+    kernel32 = load("kernel32", use_last_error=True)
+    convert = advapi32.ConvertStringSidToSidW
+    convert.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.LPVOID)]
+    convert.restype = wintypes.BOOL
+    equal = advapi32.EqualSid
+    equal.argtypes = [wintypes.LPVOID, wintypes.LPVOID]
+    equal.restype = wintypes.BOOL
+    free = kernel32.LocalFree
+    free.argtypes = [wintypes.HLOCAL]
+    free.restype = wintypes.HLOCAL
+    local_admin = wintypes.LPVOID()
+    expected = wintypes.LPVOID()
+    try:
+        if not convert("LA", ctypes.byref(local_admin)) or not local_admin:
+            return False
+        if not convert(expected_sid, ctypes.byref(expected)) or not expected:
+            return False
+        return bool(equal(local_admin, expected))
+    finally:
+        try:
+            if expected:
+                free(expected)
+        finally:
+            if local_admin:
+                free(local_admin)
+
+
 def _windows_private_directory_dacl_matches(
     current: str | None, expected: str,
 ) -> bool:
@@ -2257,7 +2297,8 @@ def _windows_private_directory_dacl_matches(
     OI+CI propagation, exact file-full-control mask and trustee identities.
     This intentionally does not parse arbitrary SDDL or conditional ACEs.
     """
-    def parse(sddl: str | None) -> tuple[tuple[int, str], ...] | None:
+    def parse(sddl: str | None, *, local_admin_sid: str | None = None
+              ) -> tuple[tuple[int, str], ...] | None:
         if not isinstance(sddl, str):
             return None
         descriptor = re.fullmatch(r"D:(?:P|PAI|AIP)((?:\([^()]*\)){3})", sddl)
@@ -2278,6 +2319,15 @@ def _windows_private_directory_dacl_matches(
                 mask = int(rights, 16)
             else:
                 return None
+            if trustee == "LA" and not entries and local_admin_sid is not None:
+                # Only the observed first-trustee alias is supported, and only
+                # when Windows proves equality to the complete expected SID.
+                try:
+                    if not _windows_local_admin_sid_matches(local_admin_sid):
+                        return None
+                except (OSError, AttributeError):
+                    return None
+                trustee = local_admin_sid
             if not re.fullmatch(r"S-1-[0-9]+(?:-[0-9]+)+|SY|BA", trustee):
                 return None
             sid = {"SY": "S-1-5-18", "BA": "S-1-5-32-544"}.get(trustee, trustee)
@@ -2287,7 +2337,9 @@ def _windows_private_directory_dacl_matches(
         return tuple(entries)
 
     expected_entries = parse(expected)
-    return expected_entries is not None and parse(current) == expected_entries
+    return expected_entries is not None and parse(
+        current, local_admin_sid=expected_entries[0][1]
+    ) == expected_entries
 
 
 def _harden_private_directory_windows(path: Path) -> None:

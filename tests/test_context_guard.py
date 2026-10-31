@@ -3087,18 +3087,23 @@ class ContextGuardTests(unittest.TestCase):
     def test_session_lock_rejects_unrelated_posix_permission_error(self) -> None:
         session_dir = self.root / "private" / "sessions-v2" / "lock-error-session"
         session_dir.mkdir(parents=True)
+        denied = PermissionError(13, "simulated permission failure")
 
         with (
             mock.patch.object(cg.os, "name", "posix"),
+            mock.patch.object(cg, "secure_directory") as prepare,
             mock.patch.object(
                 cg.os,
                 "open",
-                side_effect=PermissionError(13, "simulated permission failure"),
-            ),
-            self.assertRaises(PermissionError),
+                side_effect=denied,
+            ) as open_lock,
+            self.assertRaises(PermissionError) as failure,
         ):
             with cg.session_lock(session_dir):
                 self.fail("unrelated POSIX permission errors must not be retried")
+        prepare.assert_called_once_with(cg.lifecycle_lock_path(session_dir).parent)
+        open_lock.assert_called_once()
+        self.assertIs(failure.exception, denied)
 
     def test_v1_state_migrates_without_trusting_legacy_evidence(self) -> None:
         self.prompt(

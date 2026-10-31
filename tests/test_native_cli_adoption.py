@@ -188,21 +188,23 @@ class StartupFamilyTests(unittest.TestCase):
 
     def test_initialize_field_family_and_foreign_home_fail_closed(self):
         document = a.validate_schemas(schema_fixture())['v1/InitializeResponse.json']
-        result = {'userAgent': 'synthetic', 'codexHome': '/synthetic/home',
+        home = str(Path.cwd() / 'synthetic' / 'home')
+        other = str(Path.cwd() / 'synthetic' / 'other')
+        result = {'userAgent': 'synthetic', 'codexHome': home,
                   'platformFamily': 'synthetic', 'platformOs': 'synthetic'}
-        a.validate_initialize(dict(reversed(list(result.items()))), document, '/synthetic/home')
+        a.validate_initialize(dict(reversed(list(result.items()))), document, home)
         for field in result:
             for wrong in (None, 1, []):
                 with self.subTest(field=field, wrong=wrong), self.assertRaises(ValueError):
-                    a.validate_initialize(dict(result, **{field: wrong}), document, '/synthetic/home')
+                    a.validate_initialize(dict(result, **{field: wrong}), document, home)
             changed = dict(result)
             del changed[field]
             with self.assertRaises(ValueError):
-                a.validate_initialize(changed, document, '/synthetic/home')
+                a.validate_initialize(changed, document, home)
         for changed in (dict(result, unknown='synthetic'), dict(result, codexHome='relative'),
-                        dict(result, codexHome='/synthetic/other')):
+                        dict(result, codexHome=other)):
             with self.assertRaises(ValueError):
-                a.validate_initialize(changed, document, '/synthetic/home')
+                a.validate_initialize(changed, document, home)
 
     def test_header_projection_rejects_payload_values_and_invalid_order(self):
         header = {'method': a.STARTUP_METHOD, 'top_level_keys': ['method', 'params'],
