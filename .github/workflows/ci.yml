@@ -1,11 +1,11 @@
-name: Published 0.15.1 versus 1178 (diagnosis only)
+name: Windows PSModulePath control (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: Ordered public release comparison / Windows Python 3.12
+    name: Fixed 1178 PSModulePath control / Python 3.12
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -15,33 +15,28 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 111fe03b98803c6b06e8a70c010d27ca04d81af3
-          path: released
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
           ref: 1178b1426254654cff4ab84d1dd2dff33c6de3d6
-          path: candidate
+          path: subject
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: One ordered comparison, original inputs, not acceptance
-        working-directory: candidate
+      - name: One single-variable pair, no trace or binding, not acceptance
+        working-directory: subject
         shell: pwsh
         run: |
           uv run --locked --only-group test --python python python -B `
-            ../diagnostic/tools/validation/published_baseline_ci_diagnostic.py `
-            --release-root ../released --candidate-root . `
-            --output "$env:RUNNER_TEMP/published-baseline.json" 2>$null
+            ../diagnostic/tools/validation/launcher_pair_ci_diagnostic.py `
+            --subject-root . --variant original --psmodulepath-pair `
+            --output "$env:RUNNER_TEMP/psmodulepath-control.json" 2>$null
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: published-baseline-observations
+          name: psmodulepath-control
           path: |
-            ${{ runner.temp }}/published-baseline.json
-            ${{ runner.temp }}/published-baseline-0.json
-            ${{ runner.temp }}/published-baseline-1.json
+            ${{ runner.temp }}/psmodulepath-control.json
+            ${{ runner.temp }}/psmodulepath-control-0.json
+            ${{ runner.temp }}/psmodulepath-control-1.json
           if-no-files-found: warn
           retention-days: 7

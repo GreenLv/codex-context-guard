@@ -6,19 +6,19 @@ import ctypes
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 SUBJECT = "1178b1426254654cff4ab84d1dd2dff33c6de3d6"
 RUNTIME = "7b288ef2d82fb99da6a64ac8ca0a03647116d251665180d162cc409e9a9123c2"
 LAUNCHER = "scripts/run-context-guard.ps1"
 ORIGINAL_SHA256 = "420fbc7706a0cdb2b6f152af0beba146f700b51f4bab6b3eabf885817c46f60b"
-CANDIDATE_SHA256 = "d514e162f8b7e0deda5b56b6413f01b691e98fa171a4af48d5842e9f37225b55"
+CANDIDATE_SHA256 = "bbad778aac22ebb94e8c6917c1b662c2a79e1eb80b45fe85c104b03639446452"
 
 
 def sha(raw):
@@ -42,13 +42,15 @@ def candidate_bytes(path):
     return raw
 
 
-def environment_for(outer, interpreter):
+def environment_for(outer, interpreter, inherit_psmodulepath=False):
     environment = {"PATH": str(Path(interpreter).parent) + os.pathsep + os.defpath,
         "HOME": str(outer / "os-home"), "USERPROFILE": str(outer / "os-home"),
         "CODEX_HOME": str(outer / "home"), "PLUGIN_DATA": str(outer / "data"),
         "TMPDIR": str(outer)}
     environment.update({key: os.environ[key] for key in
         ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT") if key in os.environ})
+    if inherit_psmodulepath:
+        environment["PSModulePath"] = os.environ["PSModulePath"]
     return environment
 
 
@@ -85,9 +87,10 @@ def tree_observation(owner):
     return result
 
 
-def run_case(subject, outer, variant, shell, identity, owned_process, candidate):
+def run_case(subject, outer, variant, shell, identity, owned_process, candidate, inherit_psmodulepath=False):
     row = {"variant": variant, "event": "UserPromptSubmit", "configured": False,
-        "trace_enabled": False, "timeout_seconds": 30, "result": "driver_error"}
+        "trace_enabled": False, "timeout_seconds": 30, "result": "driver_error",
+        "inherited_psmodulepath": inherit_psmodulepath}
     owner = None
     cleanup = {}
     stdout = stderr = b""
@@ -114,7 +117,7 @@ def run_case(subject, outer, variant, shell, identity, owned_process, candidate)
         # Preserve the original no-config fixture, including absent os-home.
         for leaf in ("home", "project"):
             (outer / leaf).mkdir()
-        environment = environment_for(outer, sys.executable)
+        environment = environment_for(outer, sys.executable, inherit_psmodulepath)
         row["path_has_exact_dot"] = "." in environment["PATH"].split(os.pathsep)
         if not row["path_has_exact_dot"]:
             raise ValueError("original_dot_path_unavailable")
@@ -184,6 +187,37 @@ def run_case(subject, outer, variant, shell, identity, owned_process, candidate)
     return row
 
 
+def psmodulepath_pair(subject, temp_root, shell, identity, owned_process, candidate, output):
+    result = {"experiment": "inherit_parent_PSModulePath_only", "observations": [],
+        "parent_psmodulepath_present": "PSModulePath" in os.environ,
+        "cold_state_comparison": False, "order": ["original_environment", "inherit_parent_psmodulepath"],
+        "status": "diagnostic_error"}
+    if not result["parent_psmodulepath_present"]:
+        result["status"] = "parent_psmodulepath_absent_not_executed"
+        return result
+    outputs = [output.with_name(output.stem + "-" + str(index) + ".json") for index in range(2)]
+    if any(path.exists() or path.is_symlink() for path in outputs):
+        raise ValueError("existing_side_output")
+    outer = Path(tempfile.mkdtemp(prefix="cg-psmodulepath-control-", dir=temp_root))
+    for index, inherit in enumerate((False, True)):
+        row = run_case(subject, outer, "original", shell, identity, owned_process, candidate, inherit)
+        row["ordinal"] = index + 1
+        result["observations"].append(row)
+        with outputs[index].open("x", encoding="utf-8") as stream:
+            json.dump(row, stream, sort_keys=True)
+        if (row["fixture_cleanup"] != "removed" or row["result"] == "driver_error"
+                or not row["controlled_variant_bytes_unchanged"] or not row["no_bytecode"]):
+            break
+        if index == 0:
+            outer.mkdir()  # Same HOME/data/runtime/cwd strings, after owned-confirmed removal.
+    if len(result["observations"]) == 2 and all(
+            row["fixture_cleanup"] == "removed" and row["result"] != "driver_error"
+            and row["controlled_variant_bytes_unchanged"] and row["no_bytecode"]
+            for row in result["observations"]):
+        result["status"] = "observation_recorded_not_acceptance"
+    return result
+
+
 def main():
     report = {"schema": "launcher-pair-diagnostic/v1", "native_acceptance": False,
         "release_gate": False, "subject_commit": SUBJECT, "base_runtime_sha256": RUNTIME,
@@ -197,8 +231,11 @@ def main():
         parser.add_argument("--subject-root", type=Path, required=True)
         parser.add_argument("--variant", choices=("original", "candidate"), required=True)
         parser.add_argument("--output", type=Path, required=True)
+        parser.add_argument("--psmodulepath-pair", action="store_true")
         args = parser.parse_args()
         output = args.output
+        if args.psmodulepath_pair and args.variant != "original":
+            raise ValueError("control_requires_original_1178")
         if (sys.platform != "win32" or os.environ.get("GITHUB_ACTIONS") != "true"
                 or os.environ.get("RUNNER_OS") != "Windows"):
             raise ValueError("unsupported_environment")
@@ -225,12 +262,16 @@ def main():
             raise ValueError("shell_unavailable")
         report.update(python=list(sys.version_info[:3]), variant=args.variant,
             shell="powershell" if Path(shell).stem.lower() == "powershell" else "pwsh")
-        outer = Path(tempfile.mkdtemp(prefix="cg-launcher-pair-", dir=temp_root))
-        row = run_case(subject, outer, args.variant, shell, identity, OwnedProcess, candidate)
-        report["observation"] = row
-        if (row["fixture_cleanup"] == "removed" and row["result"] != "driver_error"
-                and row["controlled_variant_bytes_unchanged"] and row["no_bytecode"]):
-            report["status"] = "observation_recorded_not_acceptance"
+        if args.psmodulepath_pair:
+            report.pop("candidate_launcher_sha256", None)
+            report.update(psmodulepath_pair(subject, temp_root, shell, identity, OwnedProcess, candidate, output))
+        else:
+            outer = Path(tempfile.mkdtemp(prefix="cg-launcher-pair-", dir=temp_root))
+            row = run_case(subject, outer, args.variant, shell, identity, OwnedProcess, candidate)
+            report["observation"] = row
+            if (row["fixture_cleanup"] == "removed" and row["result"] != "driver_error"
+                    and row["controlled_variant_bytes_unchanged"] and row["no_bytecode"]):
+                report["status"] = "observation_recorded_not_acceptance"
     except Exception as error:
         report["exception_kind"] = kind(error)
     print(json.dumps(report, sort_keys=True))
@@ -240,7 +281,8 @@ def main():
                 json.dump(report, stream, sort_keys=True)
         except Exception:
             return 2
-    return 0 if report["status"] == "observation_recorded_not_acceptance" else 2
+    return 0 if report["status"] in {"observation_recorded_not_acceptance",
+                                   "parent_psmodulepath_absent_not_executed"} else 2
 
 
 if __name__ == "__main__":

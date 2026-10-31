@@ -3,11 +3,12 @@ import ctypes
 import importlib.util
 import json
 import os
-from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,56 @@ class PairControls(unittest.TestCase):
         self.assertEqual(env["PATH"], "/synthetic/python;.;/synthetic/bin")
         self.assertEqual(set(env), {"PATH", "HOME", "USERPROFILE", "CODEX_HOME", "PLUGIN_DATA", "TMPDIR", "SYSTEMROOT"})
         self.assertNotIn("secret", json.dumps(env))
+
+    def test_inheriting_parent_psmodulepath_changes_exactly_one_environment_entry(self):
+        with mock.patch.dict(os.environ, {"PSModulePath": "synthetic-private-module-path"}, clear=True):
+            original = d.environment_for(Path("/synthetic"), "/synthetic/python.exe")
+            inherited = d.environment_for(Path("/synthetic"), "/synthetic/python.exe", True)
+            self.assertEqual(inherited.pop("PSModulePath"), "synthetic-private-module-path")
+            self.assertEqual(original, inherited)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(KeyError):
+                d.environment_for(Path("/synthetic"), "/synthetic/python.exe", True)
+
+    def test_missing_parent_variable_executes_neither_side(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(d, "run_case") as run:
+            result = d.psmodulepath_pair(None, None, None, None, None, None, None)
+            run.assert_not_called()
+            self.assertEqual(result["status"], "parent_psmodulepath_absent_not_executed")
+            self.assertEqual(result["observations"], [])
+
+    def test_pair_reuses_paths_after_confirmed_cleanup_and_keeps_each_observation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "result.json"
+            paths = []
+            def run(subject, outer, variant, shell, identity, owner, candidate, inherit):
+                self.assertEqual(variant, "original")
+                self.assertEqual(inherit, bool(paths))
+                self.assertTrue(outer.is_dir())
+                if paths:
+                    self.assertTrue((root / "result-0.json").is_file())
+                    self.assertEqual(paths[0], outer)
+                paths.append(outer)
+                shutil.rmtree(outer)  # Simulate only an owned-confirmed run_case cleanup.
+                return {"fixture_cleanup": "removed", "result": "timeout", "no_bytecode": True,
+                        "controlled_variant_bytes_unchanged": True}
+            with mock.patch.dict(os.environ, {"PSModulePath": "synthetic-private-value"}, clear=True), mock.patch.object(d, "run_case", side_effect=run):
+                result = d.psmodulepath_pair(None, root, None, None, None, None, output)
+            self.assertEqual(len(paths), 2)
+            self.assertEqual(len(result["observations"]), 2)
+            self.assertEqual(result["status"], "observation_recorded_not_acceptance")
+            self.assertNotIn("synthetic-private-value", json.dumps(result))
+
+    def test_pair_does_not_advance_when_owned_cleanup_is_unconfirmed(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, {"PSModulePath": "synthetic"}, clear=True):
+            row = {"fixture_cleanup": "retained", "result": "timeout", "no_bytecode": True,
+                   "controlled_variant_bytes_unchanged": True}
+            with mock.patch.object(d, "run_case", return_value=row) as run:
+                result = d.psmodulepath_pair(None, Path(temporary), None, None, None, None,
+                                            Path(temporary) / "result.json")
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(result["status"], "diagnostic_error")
 
     def test_bound_candidate_bytes_and_tampering_fail_before_execution(self):
         path = ROOT / "tools/validation/candidate-launcher.ps1"
