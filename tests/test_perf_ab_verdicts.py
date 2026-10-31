@@ -79,7 +79,8 @@ class PerfVerdictEncodingTests(unittest.TestCase):
         raw["identities"]["label"] = "证据 路径"
         original = json.dumps(raw, ensure_ascii=False).encode("utf-8")
         expected = (json.dumps(verdicts.verdicts_from_raw(raw), indent=1) + "\n").replace("\n", os.linesep).encode("utf-8")
-        actual_open = io.open
+        # Patch Path.open: Python 3.10 caches io.open in its path accessor.
+        actual_open = Path.open
         opened = []
         def cp1252_open(file, mode="r", buffering=-1, encoding=None, *args, **kwargs):
             if "b" not in mode and encoding in (None, "locale"):
@@ -92,7 +93,7 @@ class PerfVerdictEncodingTests(unittest.TestCase):
             raw_path.write_bytes(original)
             with patch.object(io, "text_encoding", side_effect=lambda encoding, *_: (
                         "locale" if encoding is None else encoding)), \
-                 patch.object(io, "open", side_effect=cp1252_open), \
+                 patch.object(Path, "open", new=cp1252_open), \
                  patch("sys.stdout", new_callable=io.StringIO):
                 with self.assertRaises(UnicodeDecodeError):
                     raw_path.read_text()

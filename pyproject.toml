@@ -15,7 +15,7 @@ classifiers = [
 dependencies = []
 
 [dependency-groups]
-test = ["pytest==8.4.2"]
+test = ["jsonschema==4.26.0", "pytest==8.4.2"]
 validation = [
   {include-group = "test"},
   "ruff==0.16.1",

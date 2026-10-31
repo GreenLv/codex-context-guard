@@ -349,9 +349,11 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 test = [
+    { name = "jsonschema" },
     { name = "pytest" },
 ]
 validation = [
+    { name = "jsonschema" },
     { name = "plugin-scanner" },
     { name = "pytest" },
     { name = "ruff" },
@@ -360,8 +362,12 @@ validation = [
 [package.metadata]
 
 [package.metadata.requires-dev]
-test = [{ name = "pytest", specifier = "==8.4.2" }]
+test = [
+    { name = "jsonschema", specifier = "==4.26.0" },
+    { name = "pytest", specifier = "==8.4.2" },
+]
 validation = [
+    { name = "jsonschema", specifier = "==4.26.0" },
     { name = "plugin-scanner", specifier = "==3.51.0" },
     { name = "pytest", specifier = "==8.4.2" },
     { name = "ruff", specifier = "==0.16.1" },

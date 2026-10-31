@@ -58,7 +58,7 @@
     "docs/releases/v0.15.1.md": "72236cca882e11cfe65c92cde6e2f2f3cee3ff5adb1017dd0a2b804da95bbc27",
     "docs/releases/v0.16.0.md": "0657aa9aabcc51d85ba3e7a4e67b29b5110a94d6b21aae2f2225219a385754e2",
     "hooks/hooks.json": "9105803265e8d02d6c775e96f4c77fe72a92eaee8a56a0d85ed7e6a44ad2e985",
-    "pyproject.toml": "06cf402dcd6a28c018ba1435b478260a0cc9d7993494ac84edcbc578daf5ecec",
+    "pyproject.toml": "8f60badbc254a413bb6a3af8a0df62c9a18f1aab998ffa9fa099dbf32b7302e1",
     "scripts/artifact_identity.py": "3cf43491a68675fcdfdbf68bb77b53764c58693d4ac4137c6a0775d593197bbe",
     "scripts/audit_commit_identity.py": "ed94110ae091f7c45e66f2ac7f84fd9c25e591d9034db6b86d579e86a1d437ec",
     "scripts/audit_public_tree.py": "86c0e5f6734fd466a57b21a591783f9c51ed856a6ec9d8ecb8e1e597e8d78813",

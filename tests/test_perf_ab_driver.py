@@ -314,14 +314,15 @@ class PerfReportPublicationTests(unittest.TestCase):
                 self.assertFalse(self.partial.exists())
 
     def test_cp1252_default_control_fails_but_publisher_emits_utf8_bytes(self):
-        actual_open = io.open
+        # Patch Path.open: Python 3.10 caches io.open in its path accessor.
+        actual_open = Path.open
         def cp1252_open(file, mode="r", buffering=-1, encoding=None, *args, **kwargs):
             if "b" not in mode and encoding in (None, "locale"):
                 encoding = "cp1252"
             return actual_open(file, mode, buffering, encoding, *args, **kwargs)
         with patch.object(io, "text_encoding", side_effect=lambda encoding, *_: (
                     "locale" if encoding is None else encoding)), \
-             patch.object(io, "open", side_effect=cp1252_open):
+             patch.object(Path, "open", new=cp1252_open):
             # Exercise real encoding/bytes, not a mock that merely records kwargs.
             with self.assertRaises(UnicodeEncodeError):
                 self.partial.write_text(self.expected)
