@@ -6,6 +6,10 @@ counterexample family (fail-closed JSON, blocked JSON, missing counters,
 pretool decision, no-overwrite) and proves the runner rejects it.
 """
 
+import contextlib
+import errno
+import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -113,6 +117,69 @@ class BenchmarkOracleTests(unittest.TestCase):
             self.assertIn("refusing to overwrite", completed.stderr)
             self.assertEqual(target.read_text(encoding="utf-8"),
                              "existing result")
+
+    def test_existing_report_is_rejected_before_fixture_construction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out.json"
+            target.write_text("existing result", encoding="utf-8")
+            with mock.patch.object(sys, "argv", ["benchmark_stop.py", "--mode",
+                    "count", "--shape", "S0", "--json", str(target)]), \
+                    mock.patch.object(benchmark, "run_count_mode",
+                        side_effect=AssertionError("fixture must not run")) as run, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(benchmark.main(), 3)
+            run.assert_not_called()
+            self.assertIn("refusing to overwrite", stderr.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), "existing result")
+
+    def test_report_created_after_precheck_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out.json"
+
+            original_open = Path.open
+
+            def competing_writer(path, mode="r", *args, **kwargs):
+                if path == target and mode in {"w", "x"}:
+                    with original_open(target, "w", encoding="utf-8") as stream:
+                        stream.write("competing result")
+                return original_open(path, mode, *args, **kwargs)
+
+            with mock.patch.object(sys, "argv", ["benchmark_stop.py", "--mode",
+                    "count", "--shape", "S0", "--json", str(target)]), \
+                    mock.patch.object(benchmark, "run_count_mode", return_value={"verdict": "passed"}), \
+                    mock.patch.object(Path, "open", new=competing_writer), \
+                    contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(benchmark.main(), 3)
+            self.assertIn("refusing to overwrite", stderr.getvalue())
+            self.assertEqual(target.read_text(encoding="utf-8"), "competing result")
+
+    def test_dangling_report_symlink_is_rejected_before_fixture_construction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out.json"
+            missing = Path(directory) / "missing-result.json"
+            try:
+                target.symlink_to(missing)
+            except OSError as exc:
+                if os.name == "nt" and (
+                    getattr(exc, "winerror", None) == 1314
+                    or exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}
+                ):
+                    self.skipTest("Windows fixture cannot create symbolic links")
+                raise
+            self.assertTrue(target.is_symlink())
+            self.assertFalse(target.exists())
+            with mock.patch.object(sys, "argv", ["benchmark_stop.py", "--mode",
+                    "count", "--shape", "S0", "--json", str(target)]), \
+                    mock.patch.object(benchmark, "run_count_mode",
+                        side_effect=AssertionError("fixture must not run")) as run, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(benchmark.main(), 3)
+            run.assert_not_called()
+            self.assertIn("refusing to overwrite", stderr.getvalue())
+            self.assertTrue(target.is_symlink())
+            self.assertEqual(target.readlink(), missing)
+            self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

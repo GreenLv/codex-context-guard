@@ -6587,11 +6587,17 @@ class ContextGuardTests(unittest.TestCase):
         fake_bin = self.root / "fake-windows-python-bin"
         fake_bin.mkdir()
         python_path = str(Path(sys.executable).resolve())
+        forwarded = fake_bin / "runtime-arguments.txt"
         (fake_bin / "py.cmd").write_text(
             "@echo off\r\n"
             "if not \"%~1\"==\"-3.12\" exit /b 1\r\n"
             "if \"%~2\"==\"-c\" exit /b 0\r\n"
-            f'"{python_path}" "%~2" %3\r\n'
+            f'> "{forwarded}" echo %~2\r\n'
+            f'>> "{forwarded}" echo %~3\r\n'
+            f'>> "{forwarded}" echo %~4\r\n'
+            # Forward -B, the quoted runtime path and self-test. The version
+            # selector is consumed above; failed earlier selectors still fail.
+            f'"{python_path}" "%~2" %3 %4\r\n'
             "exit /b %ERRORLEVEL%\r\n",
             encoding="utf-8",
         )
@@ -6616,6 +6622,10 @@ class ContextGuardTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("PASS context-guard self-test", result.stdout)
+        forwarded_args = forwarded.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(forwarded_args[0], "-B")
+        self.assertEqual(Path(forwarded_args[1]).resolve(), MODULE_PATH.resolve())
+        self.assertEqual(forwarded_args[2], "self-test")
 
     @unittest.skipUnless(os.name == "nt", "Windows Hook trace check")
     def test_windows_session_end_trace_marks_product_return_without_input(self) -> None:

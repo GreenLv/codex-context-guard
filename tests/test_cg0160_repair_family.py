@@ -16,6 +16,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -125,9 +127,12 @@ class IsolatedEnvironment(unittest.TestCase):
 
         class Scan:
             def __init__(self):
-                self.items = iter(
-                    name for name in sorted(p.name for p in sessions.iterdir())
-                    if name not in {".locks"})
+                # Path.iterdir uses os.scandir on Python 3.13+, which is the
+                # very function patched below. Read names via the saved real
+                # implementation; only mocked __next__ reads advance the clock.
+                with real_scandir(sessions) as source:
+                    names = sorted(entry.name for entry in source)
+                self.items = iter(name for name in names if name != ".locks")
 
             def __iter__(self):
                 return self
@@ -387,14 +392,22 @@ class F03PrivatePermissionBoundary(IsolatedEnvironment):
     @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_mode_verification_failure_is_visible(self) -> None:
         target = self.root / "sneaky"
-        target.mkdir(mode=0o700)
+        target.mkdir(mode=0o755)
+        target.chmod(0o755)
+        self.assertFalse(cg._posix_private_mode_matches(
+            target, 0o700, directory=True))
 
         class FakeStat:
             st_mode = 0o40755  # directory with a loose mode
 
-        with mock.patch.object(Path, "stat", return_value=FakeStat()):
+        real_chmod = os.chmod
+        with (mock.patch.object(Path, "stat", return_value=FakeStat()) as readback,
+              mock.patch.object(cg.os, "chmod", wraps=real_chmod) as harden):
             with self.assertRaises(cg.PrivateBoundaryError):
                 cg.secure_directory(target)
+        harden.assert_called_once_with(target, 0o700)
+        self.assertTrue(readback.called)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o700)
 
     @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
     def test_existing_loose_private_directory_is_tightened(self) -> None:
@@ -866,9 +879,498 @@ class F07SessionIdentity(IsolatedEnvironment):
         )
         self.assertEqual(names, ["abc"])
 
+    def test_uppercase_identity_standalone_remains_supported(self) -> None:
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "ABC", prompt="owner", turn_id="t1"))
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "ABC", prompt="continue", turn_id="t2"))
+        state = json.loads((self.session_dir("ABC") / "state.json").read_text())
+        self.assertEqual(state["session"]["id"], "ABC")
+        self.assertEqual(len(state["prompts"]), 2)
+
+    def test_identity_admission_is_casefolded_without_moving_lifecycle_lock(self) -> None:
+        lower, upper = self.session_dir("abc"), self.session_dir("ABC")
+        self.assertEqual(cg._identity_admission_lock_path(lower),
+                         cg._identity_admission_lock_path(upper))
+        self.assertEqual(cg.lifecycle_lock_path(upper),
+                         upper.parent / ".locks" / "ABC.lock")
+        self.assertNotEqual(cg._identity_admission_lock_path(upper),
+                            cg.lifecycle_lock_path(upper))
+
+    def test_collision_is_checked_before_directory_creation(self) -> None:
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "abc", prompt="owner", turn_id="t1"))
+        target = self.session_dir("ABC")
+        real_exists = Path.exists
+
+        def exists(path):
+            # Exercise a case-sensitive missing leaf even on default APFS.
+            return False if str(path) == str(target) else real_exists(path)
+
+        with (mock.patch.object(Path, "exists", exists),
+              mock.patch.object(cg, "secure_directory",
+                                wraps=cg.secure_directory) as secure):
+            with self.assertRaises(cg.SessionIdentityError):
+                with cg.session_lock(target):
+                    self.fail("collision entered the writer transaction")
+        self.assertNotIn(mock.call(target), secure.call_args_list)
+
+    def test_admission_lock_order_and_existing_session_fast_path(self) -> None:
+        target = self.session_dir("FreshUpper")
+        observed = []
+        real_lock = cg.filesystem_session_lock
+
+        @contextlib.contextmanager
+        def lock(path, timeout):
+            observed.append(path)
+            with real_lock(path, timeout) as guard:
+                yield guard
+
+        with mock.patch.object(cg, "filesystem_session_lock", lock):
+            with cg.session_lock(target):
+                pass
+            self.assertEqual(observed, [cg.lifecycle_lock_path(target),
+                                       cg._identity_admission_lock_path(target)])
+            observed.clear()
+            with cg.session_lock(target):
+                pass
+            self.assertEqual(observed, [cg.lifecycle_lock_path(target)])
+
+    def test_busy_admission_and_creation_failure_release_lifecycle_lock(self) -> None:
+        target = self.session_dir("new-session")
+        admission = cg.process_session_lock(cg._identity_admission_lock_path(target))
+        admission.acquire()
+        try:
+            with self.assertRaises(TimeoutError):
+                with cg.session_lock(target, timeout=0.0):
+                    self.fail("busy admission entered the writer transaction")
+            self.assertFalse(target.exists())
+        finally:
+            admission.release()
+        real_secure = cg.secure_directory
+
+        def fail_creation(path):
+            if path == target:
+                raise cg.PrivateBoundaryError("synthetic creation failure")
+            return real_secure(path)
+
+        with mock.patch.object(cg, "secure_directory", fail_creation):
+            with self.assertRaises(cg.PrivateBoundaryError):
+                with cg.session_lock(target, timeout=0.0):
+                    pass
+        self.assertFalse(target.exists())
+        with cg.session_lock(target, timeout=0.0):
+            pass
+        self.assertTrue(target.is_dir())
+
+    def test_kernel_admission_contention_is_nonblocking(self) -> None:
+        target = self.session_dir("kernel-busy")
+        admission = cg._identity_admission_lock_path(target)
+        admission.parent.mkdir(parents=True)
+        held = acquire_exclusive_lock(admission)
+        try:
+            with self.assertRaises(TimeoutError):
+                with cg.session_lock(target, timeout=0.0):
+                    pass
+            self.assertFalse(target.exists())
+        finally:
+            release_exclusive_lock(held)
+        with cg.session_lock(target, timeout=0.0):
+            pass
+
+    def test_cleanup_retires_owner_before_case_variant_is_admitted(self) -> None:
+        self._expire_session("ABC")
+        removed = cg.cleanup_old_sessions(self.data_dir,
+                                          deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir("ABC").exists())
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "abc", prompt="new owner", turn_id="t1"))
+        state = json.loads((self.session_dir("abc") / "state.json").read_text())
+        self.assertEqual(state["session"]["id"], "abc")
+        refused = cg.safe_dispatch(self.payload(
+            "UserPromptSubmit", "ABC", prompt="retired owner", turn_id="t2"))
+        self.assertNotEqual(refused, {})
+        self.assertEqual(len(json.loads(
+            (self.session_dir("abc") / "state.json").read_text())["prompts"]), 1)
+
+    def test_linked_admission_namespace_is_refused_without_outside_changes(self) -> None:
+        target = self.session_dir("fresh")
+        admission = cg._identity_admission_lock_path(target)
+        admission.parent.parent.mkdir(parents=True)
+        outside = self.root / "unrelated"
+        outside.mkdir()
+        sentinel = outside / "keep.txt"
+        sentinel.write_text("unchanged", encoding="utf-8")
+        symlink_or_skip(self, admission.parent, outside, target_is_directory=True)
+        with self.assertRaises(cg.StateIntegrityError):
+            with cg.session_lock(target):
+                pass
+        self.assertFalse(target.exists())
+        self.assertEqual([p.name for p in outside.iterdir()], ["keep.txt"])
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "unchanged")
+
+    def test_concurrent_casefold_creation_has_one_owner(self) -> None:
+        start = threading.Barrier(2)
+        outcomes = []
+
+        def create(name):
+            start.wait(timeout=5)
+            try:
+                cg.dispatch(self.payload(
+                    "UserPromptSubmit", name, prompt="owner", turn_id="t1"))
+                outcomes.append((name, "created"))
+            except cg.SessionIdentityError:
+                outcomes.append((name, "refused"))
+
+        workers = [threading.Thread(target=create, args=(name,))
+                   for name in ("abc", "ABC")]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(sorted(status for _, status in outcomes),
+                         ["created", "refused"])
+        names = [p.name for p in self.session_dir("abc").parent.iterdir()
+                 if p.name != ".locks"]
+        self.assertEqual(names, [name for name, status in outcomes
+                                 if status == "created"])
+
+    def test_cross_process_casefold_creation_has_one_owner(self) -> None:
+        ready = self.root / "start"
+        source = str(MODULE_PATH)
+        worker = """import importlib.util, pathlib, sys, time
+spec = importlib.util.spec_from_file_location('guard', sys.argv[1])
+cg = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cg)
+ready = pathlib.Path(sys.argv[2])
+limit = time.monotonic() + 10
+while not ready.exists():
+    if time.monotonic() > limit:
+        raise TimeoutError('synthetic start barrier')
+    time.sleep(0.005)
+try:
+    cg.dispatch(dict(hook_event_name='UserPromptSubmit', session_id=sys.argv[3],
+                     cwd=sys.argv[4], prompt='owner', turn_id='t1'))
+    print('created')
+except cg.SessionIdentityError:
+    print('refused')
+"""
+        processes = []
+        try:
+            for name in ("abc", "ABC"):
+                processes.append(subprocess.Popen(
+                    [sys.executable, "-c", worker, source, str(ready), name,
+                     str(self.project)], stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True))
+            ready.touch()
+            outcomes = []
+            for process in processes:
+                out, err = process.communicate(timeout=20)
+                self.assertEqual(process.returncode, 0, err)
+                outcomes.append(out.strip())
+            self.assertEqual(sorted(outcomes), ["created", "refused"])
+            names = [p.name for p in self.session_dir("abc").parent.iterdir()
+                     if p.name != ".locks"]
+            self.assertEqual(len(names), 1)
+            state = json.loads((self.session_dir(names[0]) / "state.json").read_text())
+            self.assertEqual(state["session"]["id"], names[0])
+            self.assertEqual(len(state["prompts"]), 1)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
+
     def test_uuid_shaped_ids_keep_their_exact_mapping(self) -> None:
         uuid_like = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
         self.assertEqual(cg.safe_session_id(uuid_like), uuid_like)
+
+
+class CleanupLifecycleIdentity(IsolatedEnvironment):
+    def _interleave_cleanup(self, replace, *, sensitive_lookup=False):
+        self._expire_session("ABC")
+        original = self.session_dir("ABC")
+        real_lock = cg.session_lock
+        real_exists = Path.exists
+        switched = []
+
+        @contextlib.contextmanager
+        def interleave(path, *args, **kwargs):
+            if path == original and not switched:
+                switched.append(True)
+                # A completed writer/cleanup transaction wins before this
+                # sweep obtains the same original lifecycle lock.
+                with real_lock(original):
+                    after_release = replace(original)
+                if after_release is not None:
+                    after_release()
+            with real_lock(path, *args, **kwargs) as guard:
+                yield guard
+
+        def exists(path):
+            # Only the old spelling lookup is modeled as case-sensitive.
+            # On APFS lstat still observes the real successor's different inode.
+            if sensitive_lookup and switched and str(path) == str(original):
+                return False
+            return real_exists(path)
+
+        with (mock.patch.object(cg, "session_lock", interleave),
+              mock.patch.object(Path, "exists", exists)):
+            removed = cg.cleanup_old_sessions(
+                self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(switched, [True], "interleaving was never exercised")
+        self.assertEqual(removed, 0)
+        return original
+
+    def test_disappeared_directory_is_not_recreated(self):
+        original = self._interleave_cleanup(shutil.rmtree)
+        self.assertFalse(original.exists())
+
+    def test_case_successor_is_untouched_and_does_not_raise(self):
+        expected = []
+
+        def replace(original):
+            shutil.rmtree(original)
+
+            def create_successor():
+                cg.dispatch(self.payload(
+                    "UserPromptSubmit", "abc", prompt="new owner", turn_id="t1"))
+                expected.append((self.session_dir("abc") / "state.json").read_bytes())
+            return create_successor
+
+        self._interleave_cleanup(replace, sensitive_lookup=True)
+        state = self.session_dir("abc") / "state.json"
+        self.assertEqual(state.read_bytes(), expected[0])
+        self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["session"]["id"], "abc")
+        names = [p.name for p in state.parent.parent.iterdir() if p.name != ".locks"]
+        self.assertEqual(names, ["abc"])
+
+    def test_same_name_replacement_directory_is_not_hardened_or_deleted(self):
+        retained = self.root / "retired-object"
+
+        def replace(original):
+            original.rename(retained)  # hold the original inode live
+            original.mkdir(mode=0o755)
+            if os.name == "posix":
+                original.chmod(0o755)
+            (original / "keep.txt").write_text("new object", encoding="utf-8")
+
+        with mock.patch.object(cg, "_session_expired", return_value=True) as eligible:
+            original = self._interleave_cleanup(replace)
+        eligible.assert_not_called()
+        self.assertEqual((original / "keep.txt").read_text(encoding="utf-8"), "new object")
+        self.assertEqual([p.name for p in original.iterdir()], ["keep.txt"])
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o755)
+        self.assertTrue((retained / "state.json").is_file())
+
+    def test_same_name_replacement_file_is_untouched(self):
+        def replace(original):
+            original.rename(self.root / "retired-object")
+            original.write_text("replacement file", encoding="utf-8")
+
+        original = self._interleave_cleanup(replace)
+        self.assertEqual(original.read_text(encoding="utf-8"), "replacement file")
+
+    def test_same_name_replacement_link_is_untouched(self):
+        outside = self.root / "unrelated"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("outside", encoding="utf-8")
+
+        def replace(original):
+            original.rename(self.root / "retired-object")
+            symlink_or_skip(self, original, outside, target_is_directory=True)
+
+        original = self._interleave_cleanup(replace)
+        self.assertTrue(original.is_symlink())
+        self.assertEqual([p.name for p in outside.iterdir()], ["keep.txt"])
+        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "outside")
+
+    def test_post_lock_reparse_or_zero_inode_cannot_authorize_cleanup(self):
+        import types
+
+        for attribute, replacement in (("st_file_attributes", 0x400), ("st_ino", 0)):
+            with self.subTest(attribute=attribute):
+                self._expire_session("ABC")
+                original = self.session_dir("ABC")
+                before = (original / "state.json").read_bytes()
+                real_lstat = Path.lstat
+                real_lock = cg.session_lock
+                locked = []
+
+                @contextlib.contextmanager
+                def lock(path, *args, **kwargs):
+                    with real_lock(path, *args, **kwargs) as guard:
+                        if path == original:
+                            locked.append(True)
+                        yield guard
+
+                def lstat(path, **kwargs):
+                    info = real_lstat(path, **kwargs)
+                    if path != original or not locked:
+                        return info
+                    fields = {name: getattr(info, name) for name in dir(info)
+                              if name.startswith("st_")}
+                    fields[attribute] = replacement
+                    return types.SimpleNamespace(**fields)
+
+                with (mock.patch.object(cg, "session_lock", lock),
+                      mock.patch.object(Path, "lstat", lstat),
+                      mock.patch.object(cg, "_session_expired", return_value=True) as eligible):
+                    removed = cg.cleanup_old_sessions(
+                        self.data_dir, deadline=time.monotonic() + 30)
+                self.assertTrue(locked)
+                self.assertEqual(removed, 0)
+                eligible.assert_not_called()
+                self.assertEqual((original / "state.json").read_bytes(), before)
+                self.assertEqual(cg.cleanup_old_sessions(
+                    self.data_dir, deadline=time.monotonic() + 30), 1)
+                self.assertFalse(original.exists())
+
+    def test_unavailable_initial_directory_identity_is_skipped_and_retried(self):
+        import types
+
+        self._expire_session("expired")
+        original = self.session_dir("expired")
+        before = (original / "state.json").read_bytes()
+        real_lstat = Path.lstat
+
+        def lstat(path, **kwargs):
+            info = real_lstat(path, **kwargs)
+            if path != original:
+                return info
+            fields = {name: getattr(info, name) for name in dir(info)
+                      if name.startswith("st_")}
+            fields["st_ino"] = 0
+            return types.SimpleNamespace(**fields)
+
+        with (mock.patch.object(Path, "lstat", lstat),
+              mock.patch.object(cg, "_session_expired") as eligible):
+            removed = cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 0)
+        eligible.assert_not_called()
+        self.assertEqual((original / "state.json").read_bytes(), before)
+        self.assertEqual(cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30), 1)
+        self.assertFalse(original.exists())
+
+    def test_normal_cleanup_uses_noncreating_lifecycle_lock(self):
+        self._expire_session("expired")
+        with mock.patch.object(cg, "_prepare_session_directory",
+                               side_effect=AssertionError("cleanup tried to create/harden")):
+            removed = cg.cleanup_old_sessions(
+                self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(removed, 1)
+        self.assertFalse(self.session_dir("expired").exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
+    def test_matching_loose_object_is_hardened_before_reads_or_partial_deletion(self):
+        for partial in (False, True):
+            with self.subTest(partial=partial):
+                self._expire_session("expired")
+                original = self.session_dir("expired")
+                if partial:
+                    (original / cg.CLEANUP_PARTIAL_MARKER).write_text("synthetic marker")
+                original.chmod(0o755)
+                real_expired = cg._session_expired
+                real_resume = cg._resume_retired_marker
+                real_delete = cg._delete_session_tree_bounded
+                checks = []
+
+                def verify(function, *args):
+                    self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o700)
+                    checks.append(function.__name__)
+                    return function(*args)
+
+                with (mock.patch.object(cg, "_session_expired",
+                                        side_effect=lambda *a: verify(real_expired, *a)),
+                      mock.patch.object(cg, "_resume_retired_marker",
+                                        side_effect=lambda *a: verify(real_resume, *a)),
+                      mock.patch.object(cg, "_delete_session_tree_bounded",
+                                        side_effect=lambda *a: verify(real_delete, *a))):
+                    removed = cg.cleanup_old_sessions(
+                        self.data_dir, deadline=time.monotonic() + 30)
+                self.assertEqual(removed, 1)
+                self.assertIn("_delete_session_tree_bounded", checks)
+                self.assertIn("_resume_retired_marker" if partial else "_session_expired", checks)
+                self.assertFalse(original.exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission-mode contract")
+    def test_permission_refusal_blocks_reads_and_deletion_with_or_without_marker(self):
+        self._expire_session("expired")
+        original = self.session_dir("expired")
+        before = (original / "state.json").read_bytes()
+        real_chmod = os.chmod
+
+        def chmod(path, mode, *args, **kwargs):
+            if Path(path) == original:
+                raise PermissionError("synthetic boundary refusal")
+            return real_chmod(path, mode, *args, **kwargs)
+
+        for partial in (False, True):
+            with self.subTest(partial=partial):
+                if partial:
+                    (original / cg.CLEANUP_PARTIAL_MARKER).write_text("synthetic marker")
+                original.chmod(0o755)
+                with (mock.patch.object(cg.os, "chmod", side_effect=chmod),
+                      mock.patch.object(cg, "_session_expired") as eligible,
+                      mock.patch.object(cg, "_resume_retired_marker") as marker,
+                      mock.patch.object(cg, "_delete_session_tree_bounded") as delete):
+                    with self.assertRaises(cg.PrivateBoundaryError):
+                        cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+                eligible.assert_not_called()
+                marker.assert_not_called()
+                delete.assert_not_called()
+                self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o755)
+                self.assertEqual((original / "state.json").read_bytes(), before)
+                self.assertEqual((original / cg.CLEANUP_PARTIAL_MARKER).exists(), partial)
+
+    def test_identity_is_rechecked_after_private_boundary_hardening(self):
+        self._expire_session("expired")
+        original = self.session_dir("expired")
+        retired = self.root / "retired-after-harden"
+        real_secure = cg.secure_directory
+        replaced = []
+
+        def secure(path):
+            real_secure(path)
+            if path == original and not replaced:
+                original.rename(retired)
+                original.mkdir(mode=0o755)
+                if os.name == "posix":
+                    original.chmod(0o755)
+                (original / "keep.txt").write_text("replacement", encoding="utf-8")
+                replaced.append(True)
+
+        with (mock.patch.object(cg, "secure_directory", secure),
+              mock.patch.object(cg, "_session_expired") as eligible,
+              mock.patch.object(cg, "_delete_session_tree_bounded") as delete):
+            removed = cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(replaced, [True])
+        self.assertEqual(removed, 0)
+        eligible.assert_not_called()
+        delete.assert_not_called()
+        self.assertEqual((original / "keep.txt").read_text(encoding="utf-8"), "replacement")
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(original.stat().st_mode), 0o755)
+
+    def test_busy_lifecycle_lock_is_skipped_and_released_owner_can_be_cleaned(self):
+        self._expire_session("expired")
+        original = self.session_dir("expired")
+        before = (original / "state.json").read_bytes()
+        held = acquire_exclusive_lock(cg.lifecycle_lock_path(original))
+        try:
+            removed = cg.cleanup_old_sessions(
+                self.data_dir, deadline=time.monotonic() + 30)
+            self.assertEqual(removed, 0)
+            self.assertEqual((original / "state.json").read_bytes(), before)
+        finally:
+            release_exclusive_lock(held)
+        self.assertEqual(cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30), 1)
+        self.assertFalse(original.exists())
 
 
 class F09DataRootPriority(IsolatedEnvironment):

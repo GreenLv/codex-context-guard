@@ -8400,7 +8400,7 @@ V2_NAMESPACE = "sessions-v2"
 LEGACY_NAMESPACE = "sessions"
 
 
-def _reject_linked_session_path(path: Path) -> None:
+def _reject_linked_session_path(path: Path, *, include_leaf: bool = True) -> None:
     """Reject product-directory links and Windows reparse paths before I/O.
 
     Ancestors above the caller's configured root may be platform aliases
@@ -8408,6 +8408,8 @@ def _reject_linked_session_path(path: Path) -> None:
     It is path hardening, not a hostile same-user race sandbox.
     """
     candidates = (path, path.parent, path.parent.parent)
+    if not include_leaf:
+        candidates = candidates[1:]
     for candidate in candidates:
         try:
             info = candidate.lstat()
@@ -8428,10 +8430,44 @@ def lifecycle_lock_path(session_dir: Path) -> Path:
     return session_dir.parent / ".locks" / f"{session_dir.name}.lock"
 
 
+def _identity_admission_lock_path(session_dir: Path) -> Path:
+    # Separate namespace: no legal session leaf can collide with this lock.
+    # Keep the existing exact-name lifecycle locks stable for loaded runtimes.
+    return (session_dir.parent / ".locks" / ".identity"
+            / f"{session_dir.name.casefold()}.lock")
+
+
+def _prepare_session_directory(session_dir: Path, deadline: float) -> None:
+    if session_dir.exists():
+        secure_directory(session_dir)
+        return
+    # Lifecycle lock is always acquired first. Admission protects only initial
+    # directory creation, never a state transaction or cleanup deletion. Both
+    # queues consume the original caller deadline, including nonblocking cleanup.
+    admission = _identity_admission_lock_path(session_dir)
+    _reject_linked_session_path(admission)
+    secure_directory(admission.parent)
+    process_lock = process_session_lock(admission)
+    if not process_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise TimeoutError("timed out waiting for session identity admission")
+    try:
+        with filesystem_session_lock(
+            admission, max(0.0, deadline - time.monotonic())
+        ):
+            _reject_casefold_sibling(session_dir)
+            secure_directory(session_dir)
+    finally:
+        process_lock.release()
+
+
 @contextlib.contextmanager
-def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[SessionLockGuard]:
+def session_lock(
+    session_dir: Path, timeout: float = 5.0, *, create_directory: bool = True,
+) -> Iterator[SessionLockGuard]:
     deadline = time.monotonic() + max(timeout, 0.0)
-    _reject_linked_session_path(session_dir)
+    # Cleanup locks the original name without preparing its leaf. It binds
+    # the original object before private-boundary hardening after acquisition.
+    _reject_linked_session_path(session_dir, include_leaf=create_directory)
     lock_path = lifecycle_lock_path(session_dir)
     _reject_linked_session_path(lock_path)
     secure_directory(lock_path.parent)
@@ -8441,7 +8477,8 @@ def session_lock(session_dir: Path, timeout: float = 5.0) -> Iterator[SessionLoc
         raise TimeoutError(f"timed out waiting for process lock {lock_path}")
     try:
         with filesystem_session_lock(lock_path, max(0.0, deadline - time.monotonic())) as guard:
-            secure_directory(session_dir)
+            if create_directory:
+                _prepare_session_directory(session_dir, deadline)
             stack = getattr(_LOCK_GUARD_STACK, "stack", None)
             if stack is None:
                 stack = []
@@ -23437,7 +23474,7 @@ def cleanup_old_sessions(
     last_completed = cursor
     pending = sorted(set(pending))
 
-    def live_v2_directory(name: str) -> Path | None:
+    def live_v2_directory(name: str) -> tuple[Path, tuple[int, int]] | None:
         """The candidate path only when `name` still names a real v2
         namespace object: a plain encoded component that resolves to a real
         directory directly under the v2 root, not a link. Anything else —
@@ -23450,11 +23487,11 @@ def cleanup_old_sessions(
             info = candidate.lstat()
         except OSError:
             return None
-        if not stat.S_ISDIR(info.st_mode):
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & 0x400
+                or info.st_ino == 0):
             return None
-        if candidate.is_symlink():
-            return None
-        return candidate
+        return candidate, (info.st_dev, info.st_ino)
 
     def adjudicate(batch: list[str]) -> list[str]:
         """Decide a lexically sorted batch; return the undecided remainder."""
@@ -23466,30 +23503,44 @@ def cleanup_old_sessions(
             if not budget_left():
                 survivors.extend(batch[index:])
                 return survivors
-            candidate = live_v2_directory(name)
-            if candidate is None:
+            initial = live_v2_directory(name)
+            if initial is None:
                 continue  # stale, missing, or not a real v2 directory
+            candidate, identity = initial
             if current is not None and candidate.resolve() == current.resolve():
                 continue
             scanned += 1
             decided = True
             deleted = False
             try:
-                with session_lock(candidate, timeout=0.0):
-                    resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
-                    if resumable and _resume_retired_marker(candidate):
-                        with contextlib.suppress(OSError):
-                            (candidate / CLEANUP_PARTIAL_MARKER).unlink()
-                    elif not resumable and not _session_expired(candidate, cutoff):
-                        pass  # retained: decided for this generation
+                with session_lock(candidate, timeout=0.0, create_directory=False):
+                    locked = live_v2_directory(name)
+                    if locked is None or locked[1] != identity:
+                        pass  # disappeared/replaced: decide without touching the leaf
                     else:
-                        if not resumable:
-                            atomic_write_text(
-                                candidate / CLEANUP_PARTIAL_MARKER,
-                                "eligible cleanup marker (content-free)\n",
-                            )
-                        _delete_session_tree_bounded(candidate, budget_left)
-                        deleted = True
+                        # Identity is bound before any chmod/ACL operation.
+                        # Preserve the existing private-boundary requirement,
+                        # including resumable deletion with an existing marker.
+                        secure_directory(candidate)
+                        hardened = live_v2_directory(name)
+                        if hardened is None or hardened[1] != identity:
+                            decided_now.add(name)
+                            last_completed = name
+                            continue
+                        resumable = (candidate / CLEANUP_PARTIAL_MARKER).exists()
+                        if resumable and _resume_retired_marker(candidate):
+                            with contextlib.suppress(OSError):
+                                (candidate / CLEANUP_PARTIAL_MARKER).unlink()
+                        elif not resumable and not _session_expired(candidate, cutoff):
+                            pass  # retained: decided for this generation
+                        else:
+                            if not resumable:
+                                atomic_write_text(
+                                    candidate / CLEANUP_PARTIAL_MARKER,
+                                    "eligible cleanup marker (content-free)\n",
+                                )
+                            _delete_session_tree_bounded(candidate, budget_left)
+                            deleted = True
             except _CleanupBudgetExhausted:
                 decided = False
                 survivors.append(name)

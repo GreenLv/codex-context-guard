@@ -274,7 +274,8 @@ class NamespaceResolutionTests(unittest.TestCase):
         with mock.patch.object(cg, "filesystem_session_lock", check):
             with cg.session_lock(directory):
                 self.assertTrue(directory.is_dir())
-        self.assertEqual(observed, [cg.lifecycle_lock_path(directory)])
+        self.assertEqual(observed, [cg.lifecycle_lock_path(directory),
+                                    cg._identity_admission_lock_path(directory)])
 
     def test_every_private_write_api_refuses_legacy_before_loading(self):
         legacy = self.root / "private/sessions/old"

@@ -355,6 +355,14 @@ def main() -> int:
     if args.list_gates:
         print(json.dumps({"count": COUNT_GATES, "wall": WALL_GATES}, indent=2))
         return 0
+    # Fail fast before constructing benchmark fixtures; publication below still
+    # uses exclusive creation because this advisory precheck cannot stop races.
+    if args.json_out and (
+        Path(args.json_out).is_symlink() or Path(args.json_out).exists()
+    ):
+        print(f"refusing to overwrite existing result file {Path(args.json_out)}; "
+              "pass a new timestamped path", file=sys.stderr)
+        return 3
     workdir = Path(tempfile.mkdtemp(prefix="cg-benchmark-"))
     try:
         if args.mode == "count":
@@ -377,11 +385,13 @@ def main() -> int:
     print(text)
     if args.json_out:
         target = Path(args.json_out)
-        if target.exists():
+        try:
+            with target.open("x", encoding="utf-8") as stream:
+                stream.write(text)
+        except FileExistsError:
             print(f"refusing to overwrite existing result file {target}; "
                   "pass a new timestamped path", file=sys.stderr)
             return 3
-        target.write_text(text, encoding="utf-8")
     verdicts = ([value["verdict"] for value in report.values()
                  if isinstance(value, dict) and "verdict" in value]
                 if args.mode == "process" and not isinstance(

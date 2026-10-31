@@ -99,7 +99,9 @@ if ($configuredInterpreter) {
         # empty output, which would silently skip the Hook. Run the real
         # runtime with stdout captured to a file and verify it produced a
         # Hook wire result before re-emitting it; otherwise fail visibly.
-        $hookOut = New-TemporaryFile
+        # Avoid module command discovery in a configured-interpreter launch.
+        # GetTempFileName creates the same empty filesystem file atomically.
+        $hookOut = [System.IO.FileInfo]([System.IO.Path]::GetTempFileName())
         $savedErrorActionPreference = $ErrorActionPreference
         $savedConsoleInputEncoding = [Console]::InputEncoding
         $savedConsoleOutputEncoding = [Console]::OutputEncoding

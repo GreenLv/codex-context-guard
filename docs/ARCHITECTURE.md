@@ -143,14 +143,27 @@ One Stop event evaluates through a single private, explicitly passed
   nothing is truncated, dropped or fabricated. Nothing is written to product
   state, no module-level cache exists, and no memo crosses events.
 
-## Session ownership and bounded storage (0.15.0)
+## Session ownership and bounded storage (since 0.15.0)
 
 New sessions use `sessions-v2`. Every stateful writer and cleanup operation
 acquires the same kernel lifecycle lock under `sessions-v2/.locks`, outside
-the deletable session subtree. Cleanup rechecks eligibility while holding
-that lock; resumed activity clears the retention timestamp. Process-local
-queuing and kernel acquisition share one deadline. Elapsed lock age is never
-proof that a writer has exited.
+the deletable session subtree. First directory creation then takes a casefolded
+admission lock under `.locks/.identity`, checks for case-only siblings, and
+creates the directory before releasing admission. Lifecycle always precedes
+admission; both share the caller deadline. Existing directories use the
+unchanged lifecycle lock alone. This prevents concurrent first writers from
+creating case-only siblings on case-sensitive filesystems without renaming
+existing session identities or lifecycle locks. Cleanup takes the lifecycle lock
+without preparing the session leaf, then uses a non-following read to recheck
+the original directory identity, type and
+reparse status. A matching object receives the existing private-permission
+verification and necessary hardening, followed by another identity check before
+eligibility, marker reads or deletion. A vanished or replaced object is skipped;
+resumed activity clears the retention timestamp. If the filesystem cannot supply
+a nonzero directory object identity, cleanup conservatively leaves the object
+untouched and retries on a later sweep; it does not report the object as removed.
+Process-local queuing and kernel acquisition share one deadline. Elapsed lock
+age is never proof that a writer has exited.
 
 Legacy `sessions` remain read-only to this runtime. There is no migration or
 legacy cleanup: continue an existing task with its original loaded runtime.

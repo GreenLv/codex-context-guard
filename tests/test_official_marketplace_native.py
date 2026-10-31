@@ -12,7 +12,7 @@ import tempfile
 import types
 import unittest
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 import jsonschema
@@ -222,3 +222,267 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
             (root / "extra").write_bytes(b"private synthetic")
             with self.assertRaisesRegex(native.NativeRunError, "full release-file"):
                 native.exact_artifact_parity(root, {"public":hashlib.sha256(b"abc").hexdigest()})
+
+
+class OfficialWindowsPathIdentityTests(unittest.TestCase):
+    """Windows syntax simulations only; the fixture performs no Windows I/O."""
+
+    def setUp(self):
+        self.observed = []
+        self.linked = False
+        owner = self
+
+        class TrustedWindowsPath(PureWindowsPath):
+            def is_symlink(self):
+                owner.observed.append(str(self))
+                return owner.linked
+
+        self.source = TrustedWindowsPath(r"C:\Isolated Run\source")
+        self.home = TrustedWindowsPath(r"C:\Isolated Run\home")
+        self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
+        self.installed = self.cache / "0.16.0"
+        self.added = dict(pluginId=native.OFFICIAL_PLUGIN, name="context-guard",
+                          marketplaceName="codex-context-guard-v016", version="0.16.0",
+                          installedPath=str(self.installed))
+        self.entry = {key: self.added[key] for key in
+                      ("pluginId", "name", "marketplaceName", "version")}
+        self.entry.update(installed=True, enabled=True,
+                          source={"source": "local", "path": str(self.source)},
+                          marketplaceSource={"sourceType": "local", "source": str(self.source)})
+
+    def identity(self):
+        with (mock.patch.object(native.platform, "system", return_value="Windows"),
+              mock.patch.object(native, "Path",
+                                side_effect=AssertionError("untrusted JSON reached Path"))):
+            return native.official_identity({"installed": [self.entry]}, self.added,
+                                            self.source, self.home, "0.16.0")
+
+    def test_source_spellings_keep_both_exact_local_record_shapes(self):
+        variants = [str(self.source), "c:/isolated run/source", r"C:\ISOLATED RUN/source",
+                    r"\\?\C:\Isolated Run\source", "//?/c:/isolated run/source/"]
+        for record, field in (("source", "path"), ("marketplaceSource", "source")):
+            for value in variants:
+                with self.subTest(record=record, value=value):
+                    self.entry[record][field] = value
+                    self.observed.clear()
+                    self.assertEqual(self.identity(), self.installed)
+                    self.assertEqual(self.observed, [str(self.installed)])
+            self.entry[record][field] = str(self.source)
+
+    def test_cache_spellings_return_only_trusted_version_or_local_path(self):
+        for name in ("0.16.0", "local"):
+            expected = self.cache / name
+            for value in (str(expected), str(expected).upper().replace("\\", "/"),
+                          "\\\\?\\" + str(expected), "//?/" + str(expected).replace("\\", "/")):
+                with self.subTest(name=name, value=value):
+                    self.added["installedPath"] = value
+                    self.observed.clear()
+                    self.assertEqual(self.identity(), expected)
+                    self.assertEqual(self.observed, [str(expected)])
+
+    def test_unsafe_or_different_source_domains_are_rejected_before_filesystem_use(self):
+        bad = [None, True, {}, [], "", "source", r"C:source", r"\Isolated Run\source",
+               r"\\server\share\source", r"\\?\UNC\server\share\source",
+               r"\\.\C:\Isolated Run\source", r"\\?\GLOBALROOT\Device\source",
+               r"\??\C:\Isolated Run\source", r"D:\Isolated Run\source",
+               r"C:\Isolated Run\other", r"C:\Isolated Run\.\source",
+               r"C:\Isolated Run\other\..\source", r"C:\Isolated Run\source:stream",
+               r"C:\Isolated Run\NUL", r"C:\Isolated Run\COM1.txt",
+               r"C:\Isolated Run\source.", "C:/Isolated Run/source ",
+               "C:/Isolated Run/source\0", "C:/Isolated Run/sour?ce"]
+        for record, field in (("source", "path"), ("marketplaceSource", "source")):
+            for value in bad:
+                with self.subTest(record=record, value=value):
+                    self.entry[record][field] = value
+                    self.observed.clear()
+                    with self.assertRaises(native.NativeRunError):
+                        self.identity()
+                    self.assertEqual(self.observed, [])
+            self.entry[record][field] = str(self.source)
+
+    def test_extra_fields_wrong_tags_and_wrong_objects_keep_original_oracle(self):
+        for record, tag in (("source", "source"), ("marketplaceSource", "sourceType")):
+            original = dict(self.entry[record])
+            for value in (None, [], {**original, "extra": True},
+                          {**original, tag: "git"}, {tag: "local"}):
+                with self.subTest(record=record, value=value):
+                    self.entry[record] = value
+                    self.observed.clear()
+                    with self.assertRaises(native.NativeRunError):
+                        self.identity()
+                    self.assertEqual(self.observed, [])
+            self.entry[record] = original
+        # CLI envelope metadata retains its existing additive contract.
+        self.entry["metadata"] = {"synthetic": True}
+        self.added["metadata"] = {"synthetic": True}
+        self.assertEqual(self.identity(), self.installed)
+
+    def test_untrusted_installed_path_is_never_dereferenced(self):
+        good = str(self.installed)
+        bad = [None, {}, [], "", "0.16.0", r"C:relative", r"\home\0.16.0",
+               r"\\server\share\0.16.0", "\\\\?\\UNC\\server\\share\\0.16.0",
+               "\\\\.\\" + good, "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
+               good.replace("home", "another-home"), str(self.cache), str(self.cache / "0.15.1"),
+               good + r"\child", good + ":stream", good + ".", good + " ",
+               str(self.cache) + r"\other\..\0.16.0", str(self.cache) + r"\.\0.16.0",
+               str(self.cache / "CON"), str(self.cache / "LPT1.txt")]
+        for value in bad:
+            with self.subTest(value=value):
+                self.added["installedPath"] = value
+                self.observed.clear()
+                with self.assertRaises(native.NativeRunError):
+                    self.identity()
+                self.assertEqual(self.observed, [])
+
+    def test_trusted_cache_symlink_still_refused(self):
+        self.linked = True
+        self.added["installedPath"] = "\\\\?\\" + str(self.installed)
+        with self.assertRaises(native.NativeRunError):
+            self.identity()
+        self.assertEqual(self.observed, [str(self.installed)])
+
+    def test_flow_passes_trusted_cache_to_unchanged_parity_and_reparse_checks(self):
+        self.added["installedPath"] = "\\\\?\\" + str(self.installed).upper()
+        result = subprocess.CompletedProcess([], 0, json.dumps({"installed": [self.entry]}), "")
+        for reject in (False, True):
+            with self.subTest(reject=reject):
+                with (mock.patch.object(native.platform, "system", return_value="Windows"),
+                      mock.patch.object(native, "Path", side_effect=AssertionError("JSON reached Path")),
+                      mock.patch.object(native, "run", return_value=result),
+                      mock.patch.object(native, "exact_artifact_parity",
+                                        side_effect=native.NativeRunError("synthetic reparse rejection")
+                                        if reject else None) as parity):
+                    if reject:
+                        with self.assertRaisesRegex(native.NativeRunError, "reparse rejection"):
+                            native.documented_official_flow(self.source, "synthetic-codex", self.home,
+                                self.source, {}, {}, "0.16.0", self.added)
+                    else:
+                        _, installed = native.documented_official_flow(self.source, "synthetic-codex", self.home,
+                            self.source, {}, {}, "0.16.0", self.added)
+                        self.assertEqual(installed, self.installed)
+                    parity.assert_called_once_with(self.installed, {})
+
+    def test_unsafe_trusted_path_domain_cannot_be_used_as_equality_authority(self):
+        for value in (r"\\server\share\..\source", r"\\?\UNC\server\share:stream\source",
+                      r"C:\CON\source", r"C:\NUL .txt\source", r"C:\COM¹\source",
+                      r"C:\source:stream", r"C:\other\..\source"):
+            with self.subTest(value=value):
+                self.assertFalse(native._official_path_matches(value, value, windows=True))
+
+
+class OfficialControlledUncIdentityTests(unittest.TestCase):
+    """Exact UNC compatibility only; all filesystem operations are synthetic."""
+
+    setUp = OfficialWindowsPathIdentityTests.setUp
+    identity = OfficialWindowsPathIdentityTests.identity
+    roots = (r"\\server\share\Isolated Run", r"\\?\UNC\server\share\Isolated Run")
+
+    def bind(self, root, name="0.16.0"):
+        concrete = type(self.source)
+        self.source = concrete(root) / "source"
+        self.home = concrete(root) / "home"
+        self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
+        self.installed = self.cache / name
+        self.added["installedPath"] = str(self.installed)
+        self.entry["source"]["path"] = str(self.source)
+        self.entry["marketplaceSource"]["source"] = str(self.source)
+        self.observed.clear()
+
+    def test_exact_controlled_unc_and_extended_unc_keep_old_acceptance(self):
+        for root in self.roots:
+            for name in ("0.16.0", "local"):
+                with self.subTest(root=root, name=name):
+                    self.bind(root, name)
+                    self.assertEqual(self.identity(), self.installed)
+                    self.assertEqual(self.observed, [str(self.installed)])
+
+    @staticmethod
+    def aliases(value):
+        # All these are nonliteral or cross-source spellings, even if some
+        # could name the same Windows object. No such identity is inferred.
+        alternate = (value[8:] if value.startswith("\\\\?\\UNC\\") else value[2:])
+        prefix_alias = ("\\\\" + alternate if value.startswith("\\\\?\\UNC\\")
+                        else "\\\\?\\UNC\\" + alternate)
+        return (value.lower(), value.upper(), value.replace("\\", "/"), prefix_alias,
+                value + "\\", value.replace("server", "other-server", 1),
+                value.replace("share", "other-share", 1), value + ":stream",
+                chr(92).join((value.rpartition(chr(92))[0], "other", "..",
+                              value.rpartition(chr(92))[2])))
+
+    def test_unc_source_aliases_or_other_sources_fail_without_path_io(self):
+        for root in self.roots:
+            for record, field in (("source", "path"), ("marketplaceSource", "source")):
+                for index in range(9):
+                    self.bind(root)
+                    value = self.aliases(str(self.source))[index]
+                    with self.subTest(root=root, record=record, value=value):
+                        self.entry[record][field] = value
+                        with self.assertRaises(native.NativeRunError):
+                            self.identity()
+                        self.assertEqual(self.observed, [])
+
+    def test_unc_installed_aliases_or_other_caches_fail_without_path_io(self):
+        for root in self.roots:
+            self.bind(root)
+            values = self.aliases(str(self.installed)) + (str(self.cache / "0.15.1"),
+                       str(self.installed / "child"), str(self.cache),
+                       str(self.installed).replace("home", "other-home", 1))
+            for value in values:
+                with self.subTest(root=root, value=value):
+                    self.added["installedPath"] = value
+                    self.observed.clear()
+                    with self.assertRaises(native.NativeRunError):
+                        self.identity()
+                    self.assertEqual(self.observed, [])
+
+    def test_exact_but_unsafe_unc_cannot_be_trusted_authority(self):
+        values = [r"\\server", r"\\server" + chr(92), r"\\server\share\..\source",
+                  r"\\server\share\.\source", r"\\server\share\source:stream",
+                  r"\\server\NUL\source", r"\\server\share\COM1.txt",
+                  r"\\.\share\source", r"\\?\GLOBALROOT\Device\source",
+                  r"\\?\UNC\server", r"\\?\UNC\server\share\..\source",
+                  r"\\?\UNC\server\share:stream\source", r"\\server\share\source.",
+                  "\\\\server\\share\\source\0"]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertFalse(native._official_path_matches(value, value, windows=True))
+
+    def test_unc_exact_match_keeps_nested_fields_and_trusted_symlink_checks(self):
+        for root in self.roots:
+            self.bind(root)
+            self.entry["marketplaceSource"]["extra"] = True
+            with self.assertRaises(native.NativeRunError):
+                self.identity()
+            self.assertEqual(self.observed, [])
+            self.entry["marketplaceSource"].pop("extra")
+            self.linked = True
+            with self.assertRaises(native.NativeRunError):
+                self.identity()
+            self.assertEqual(self.observed, [str(self.installed)])
+            self.linked = False
+
+
+class OfficialPosixPathIdentityTests(unittest.TestCase):
+    def test_posix_source_text_contract_and_cache_symlink_rejection_are_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, home = Path(directory) / "source", Path(directory) / "home"
+            cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
+            installed = cache / "0.16.0"
+            installed.mkdir(parents=True)
+            added = dict(pluginId=native.OFFICIAL_PLUGIN, name="context-guard",
+                         marketplaceName="codex-context-guard-v016", version="0.16.0",
+                         installedPath=str(installed))
+            entry = {key: added[key] for key in ("pluginId", "name", "marketplaceName", "version")}
+            entry.update(installed=True, enabled=True, source={"source":"local", "path":str(source)},
+                         marketplaceSource={"sourceType":"local", "source":str(source)})
+            with mock.patch.object(native.platform, "system", return_value="Darwin"):
+                self.assertEqual(native.official_identity({"installed":[entry]}, added, source, home,
+                                                          "0.16.0"), installed)
+                for value in (str(source).upper(), str(source) + "/", "//?/C:/source"):
+                    entry["marketplaceSource"]["source"] = value
+                    with self.assertRaises(native.NativeRunError):
+                        native.official_identity({"installed":[entry]}, added, source, home, "0.16.0")
+                entry["marketplaceSource"]["source"] = str(source)
+                with mock.patch.object(Path, "is_symlink", return_value=True):
+                    with self.assertRaises(native.NativeRunError):
+                        native.official_identity({"installed":[entry]}, added, source, home, "0.16.0")

@@ -13,7 +13,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 from tools.validation import incident_code_mode_preflight as verification_bootstrap
@@ -137,7 +137,8 @@ class SharedDualViewTests(unittest.TestCase):
             shell.write_bytes(b"inert; never executed")
             o = self.replacement()
             o.plan.update(schema=cm.WINDOWS_SCHEMA, platform="Windows",
-                          shell=dict(name="powershell", path=str(shell), sha256=h.base.sha(shell)),
+                          shell=dict(name="powershell", path=(str(shell) if os.name == "nt" else "/" + str(shell)),
+                                     sha256=h.base.sha(shell)),
                           command_observation_contract=cm.adoption(windows=True))
             o.command = h.canonical_shell_command(o.command, o.plan)
             o.trace[3]["payload"]["input"] = cm.fixture(o.command, o.plan["cwd"])
@@ -365,10 +366,14 @@ class WindowsCodeModePureTests(unittest.TestCase):
         shell = Path(self.tmp.name) / "Pinned Shell" / "pwsh.exe"
         shell.parent.mkdir()
         shell.write_bytes(b"inert synthetic shell; never executed")
+        # Single-rooted POSIX paths ceased being ntpath-absolute in 3.13.
+        # Use a UNC-shaped spelling for synthetic Windows identities; it
+        # still names this same inert local file on the POSIX fixture host.
         self.o.plan.update(
             schema=cm.WINDOWS_SCHEMA,
             platform="Windows",
-            shell=dict(name="powershell", path=str(shell), sha256=h.base.sha(shell)),
+            shell=dict(name="powershell", path=(str(shell) if os.name == "nt" else "/" + str(shell)),
+                                     sha256=h.base.sha(shell)),
             command_observation_contract=cm.adoption(windows=True),
         )
         self.body = self.o.command
@@ -378,6 +383,7 @@ class WindowsCodeModePureTests(unittest.TestCase):
         )
 
     def test_visible_actual_wrapper_and_both_terminal_forms(self):
+        self.assertTrue(PureWindowsPath(self.o.plan["shell"]["path"]).is_absolute())
         self.assertTrue(self.o.command.startswith('& "'))
         self.assertEqual(
             h.windows_display_tokens(self.o.command[2:]),

@@ -197,6 +197,17 @@ exit $code
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout.decode("utf-8")), PAYLOAD)
 
+    def test_configured_capture_does_not_require_temporary_file_cmdlet(self):
+        # Command discovery can lack this Utility-module command even though
+        # the configured Python and the .NET filesystem APIs are available.
+        prelude = "function New-TemporaryFile { throw 'temporary-file cmdlet unavailable' }"
+        for event in ("PreToolUse", "SessionEnd"):
+            with self.subTest(event=event):
+                proc = self.invoke(event=event, prelude=prelude)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(json.loads(proc.stdout.decode("utf-8")), PAYLOAD)
+                self.assertEqual(proc.stderr, b"")
+
     def test_utf8_bom_absolute_config_executes_bound_interpreter(self):
         self.conf.write_text(str(self.interpreter) + "\n", encoding="utf-8-sig")
         self.runtime.write_text(

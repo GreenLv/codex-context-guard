@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import ntpath
 import os
 import platform
 import re
@@ -358,6 +359,69 @@ def inspect_installed_artifact(root: Path, source_commit: str, codex: str,
 OFFICIAL_PLUGIN = "context-guard@codex-context-guard-v016"
 
 
+def _windows_safe_path_component(part: str) -> bool:
+    if (not part or part in {".", ".."} or part != part.rstrip(" .")
+            or any(ord(char) < 32 or ord(char) == 127
+                   or 0xD800 <= ord(char) <= 0xDFFF
+                   or char in '<>:"|?*' for char in part)):
+        return False
+    device = part.split(".", 1)[0].rstrip(" ").upper()
+    return (device not in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"}
+            and re.fullmatch(r"(?:COM|LPT)[1-9¹²³]", device) is None)
+
+
+def _windows_safe_absolute_unc(raw: Any) -> bool:
+    """Validate only; UNC aliases are never normalized into an authority."""
+    if not isinstance(raw, str) or not raw or len(raw) > 32767 or "/" in raw:
+        return False
+    if raw[:8].lower() == "\\\\?\\unc\\":
+        tail = raw[8:]
+    elif raw.startswith("\\\\") and not raw.startswith(("\\\\?\\", "\\\\.\\")):
+        tail = raw[2:]
+    else:
+        return False
+    parts = tail.split("\\")
+    if parts[-1] == "":
+        parts.pop()
+    return len(parts) >= 2 and all(_windows_safe_path_component(part) for part in parts)
+
+
+def _windows_local_absolute_key(raw: Any) -> str | None:
+    """Lexical local-drive identity only; never query a JSON-supplied path.
+
+    The supported spelling differences are separators, Windows case and one
+    ordinary extended drive prefix. Controlled UNC uses a separate exact-match
+    domain; device namespaces, traversal, ADS, reserved devices and ambiguous
+    Win32 component spellings stay unsupported.
+    This key is not samefile evidence or an object-identity claim.
+    """
+    if not isinstance(raw, str) or not raw or len(raw) > 32767:
+        return None
+    value = raw.replace("/", "\\")
+    if value.startswith("\\\\?\\"):
+        value = value[4:]
+    if re.match(r"^[A-Za-z]:\\", value) is None:
+        return None
+    parts = value[3:].split("\\")
+    if parts[-1] == "":
+        parts.pop()  # a trailing separator does not change the directory
+    if not all(_windows_safe_path_component(part) for part in parts):
+        return None
+    return ntpath.normcase(ntpath.normpath(value))
+
+
+def _official_path_matches(raw: Any, expected: Path, *, windows: bool) -> bool:
+    if not windows:
+        return isinstance(raw, str) and raw == str(expected)
+    # Preserve the old exact controlled UNC domain, including extended UNC.
+    # Do not accept case/separator/prefix aliases even when Windows might.
+    if isinstance(raw, str) and raw == str(expected) and _windows_safe_absolute_unc(raw):
+        return True
+    actual = _windows_local_absolute_key(raw)
+    wanted = _windows_local_absolute_key(str(expected))
+    return actual is not None and wanted is not None and actual == wanted
+
+
 def official_identity(listed: dict[str, Any], added: dict[str, Any],
                       source: Path, home: Path, version: str) -> Path:
     """Bind one real list record to this run's saved official add response."""
@@ -379,17 +443,33 @@ def official_identity(listed: dict[str, Any], added: dict[str, Any],
         raise NativeRunError("official installed identity differs")
     if entry.get("installed") is not True or entry.get("enabled") is not True:
         raise NativeRunError("official installed plugin is not enabled")
-    if (entry.get("source") != {"source": "local", "path": str(source)}
-            or entry.get("marketplaceSource") != {"sourceType": "local", "source": str(source)}):
+    windows = platform.system() == "Windows"
+    source_record = entry.get("source")
+    marketplace = entry.get("marketplaceSource")
+    if (not isinstance(source_record, dict) or set(source_record) != {"source", "path"}
+            or source_record["source"] != "local"
+            or not _official_path_matches(source_record["path"], source, windows=windows)
+            or not isinstance(marketplace, dict) or set(marketplace) != {"sourceType", "source"}
+            or marketplace["sourceType"] != "local"
+            or not _official_path_matches(marketplace["source"], source, windows=windows)):
         raise NativeRunError("official marketplace source differs")
     raw = added.get("installedPath")
     if not isinstance(raw, str):
         raise NativeRunError("official add has no installed path")
-    installed = Path(raw)
     cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
-    if (not installed.is_absolute() or installed.parent != cache
-            or installed.name not in {version, "local"} or installed.is_symlink()):
-        raise NativeRunError("official installed path is outside the isolated cache")
+    if windows:
+        # Check untrusted JSON lexically, then return only a path constructed
+        # from this run's trusted HOME. Existing parity/reparse checks consume
+        # that trusted path, never the JSON spelling or a resolved alias.
+        installed = next((cache / name for name in (version, "local")
+                          if _official_path_matches(raw, cache / name, windows=True)), None)
+        if installed is None or installed.is_symlink():
+            raise NativeRunError("official installed path is outside the isolated cache")
+    else:
+        installed = Path(raw)
+        if (not installed.is_absolute() or installed.parent != cache
+                or installed.name not in {version, "local"} or installed.is_symlink()):
+            raise NativeRunError("official installed path is outside the isolated cache")
     return installed
 
 

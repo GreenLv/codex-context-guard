@@ -19,7 +19,9 @@ PowerShell in the Hook hot path); official Codex marketplace installation under 
 repair and rollback removed; existing interpreter binding reads remain but
 automatic creation is removed; validated injective
 session-identity encoding with load-time identity verification (missing ids
-refused, old underscore-merged directories no longer addressed); the
+refused, old underscore-merged directories no longer addressed; concurrent
+case-only first creations share a separate admission lock before directory
+creation, preserving existing lifecycle lock names and the caller deadline); the
 direct-command data root following `CODEX_HOME` (`<home>/context-guard`) when
 no explicit root is set; bounded SessionEnd retention cleanup (monotonic
 deadline, non-blocking locks, bounded batches, resumable partial deletions);
