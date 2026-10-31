@@ -28,6 +28,23 @@ spec.loader.exec_module(builder)
 sys.path.pop(0)
 
 
+def hook_timeout_context(error, *, configured, event, state_present):
+    """Retain timeout failure without echoing commands, paths or wire contents."""
+    try:
+        wire_object = isinstance(json.loads(error.output), dict)
+    except (ValueError, TypeError):
+        wire_object = False
+    diagnostic = {
+        "configured": bool(configured), "event": event,
+        "stdout_length": len(error.output or b""),
+        "stderr_length": len(error.stderr or b""),
+        "stdout_json_object": wire_object, "state_present": state_present,
+    }
+    # Existing state may belong to an earlier event: presence proves no
+    # progress in this invocation. Keep the original timeout and error type.
+    return subprocess.TimeoutExpired(diagnostic, error.timeout)
+
+
 class MarketplaceArtifactTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -279,8 +296,17 @@ class MarketplaceArtifactTests(unittest.TestCase):
                     command = ["/bin/sh", str(installed / "scripts/run_context_guard.sh"), "hook"]
                 self.assertNotIn("PYTHONDONTWRITEBYTECODE", environment)
                 for event in ("UserPromptSubmit", "PreCompact", "Stop", "SessionEnd"):
-                    result = subprocess.run(command, input=json.dumps({"hook_event_name":event, "session_id":"synthetic-bytecode", "cwd":str(project), "prompt":"hello", "trigger":"manual", "last_assistant_message":"waiting"}),
-                        env=environment, text=True, capture_output=True, timeout=30, check=False)
+                    try:
+                        result = subprocess.run(command, input=json.dumps({"hook_event_name":event, "session_id":"synthetic-bytecode", "cwd":str(project), "prompt":"hello", "trigger":"manual", "last_assistant_message":"waiting"}),
+                            env=environment, text=True, capture_output=True, timeout=30, check=False)
+                    except subprocess.TimeoutExpired as error:
+                        state = Path(environment["PLUGIN_DATA"]) / "sessions-v2/synthetic-bytecode/state.json"
+                        try:
+                            state_present = state.is_file()
+                        except OSError:
+                            state_present = None
+                        raise hook_timeout_context(error, configured=configured, event=event,
+                                                   state_present=state_present) from None
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIsInstance(json.loads(result.stdout), dict)
                     self.assertFalse(list(installed.rglob("*.pyc")))
@@ -299,6 +325,22 @@ class MarketplaceArtifactTests(unittest.TestCase):
                     self.assertEqual(delegated.returncode, 0, delegated.stderr)
                     self.assertFalse(list(installed.rglob("*.pyc")))
                     identity.compare_artifact(ROOT, installed)
+
+    def test_hook_timeout_context_preserves_failure_and_redacts_private_values(self):
+        marker = "synthetic-private-command-path-input-and-output"
+        for output, wire in ((None, False), (b"not-json", False),
+                             (json.dumps({"private": marker}).encode(), True)):
+            with self.subTest(wire=wire):
+                original = subprocess.TimeoutExpired([marker], 30, output=output,
+                                                     stderr=marker.encode())
+                error = hook_timeout_context(original, configured=False,
+                    event="UserPromptSubmit", state_present=None)
+                self.assertIsInstance(error, subprocess.TimeoutExpired)
+                self.assertEqual(error.timeout, 30)
+                self.assertEqual(error.cmd["stdout_json_object"], wire)
+                self.assertNotIn(marker, str(error))
+                self.assertIsNone(error.output)
+                self.assertIsNone(error.stderr)
 
     def test_reparse_attributes_reject_roots_and_leaf_before_reads(self):
         original = Path.lstat
