@@ -21,8 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from scripts.artifact_identity import tree_manifest  # noqa: E402
 from scripts.cg_process_tree import OwnedProcess  # noqa: E402
-from scripts.manage_plugin import tree_manifest  # noqa: E402
 from tools.validation import native_cli_adoption as cli_adoption  # noqa: E402
 from tools.validation.acceptance_identity import prepared_source_identity  # noqa: E402
 

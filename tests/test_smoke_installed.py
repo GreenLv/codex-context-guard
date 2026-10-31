@@ -38,6 +38,24 @@ REQUIRED_MODULES = [
 
 
 class InstalledSmokeTests(unittest.TestCase):
+    def test_plugin_root_is_required_without_touching_old_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            old = root / "home/plugins/cache/codex-context-guard/context-guard/0.15.1/control"
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"synthetic old cache sentinel")
+            before = old.stat()
+            environment = {"PATH":os.defpath,"HOME":str(root / "os-home"),
+                           "USERPROFILE":str(root / "os-home"),"CODEX_HOME":str(root / "home")}
+            environment.update({key:os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT") if key in os.environ})
+            result = subprocess.run([sys.executable, "-B", str(SMOKE)], env=environment,
+                                    text=True,capture_output=True,check=False)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--plugin-root", result.stderr)
+            self.assertIn("required", result.stderr)
+            self.assertEqual(old.read_bytes(), b"synthetic old cache sentinel")
+            self.assertEqual(old.stat().st_ino, before.st_ino)
+
     def test_smoke_does_not_write_bytecode_into_plugin_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             plugin_root = Path(temporary) / "plugin"

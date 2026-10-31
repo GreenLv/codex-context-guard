@@ -1235,19 +1235,19 @@
       "runtime": "dsh",
       "platform": "macos",
       "family": "desktop-profile-admission",
-      "current_contract": "Narrow Codex provider-source binding analogue only: a registered marketplace is accepted when its sanitized source is bound; a copied manifest at an unrelated source is not identity authority. Codex has no DSH Desktop bundle/profile admission implementation.",
-      "trigger": "Existing Codex safe-installer source-binding positive and negative fixtures; no DSH bundle/profile execution",
-      "positive": "A sanitized bound Codex marketplace validates without writes",
-      "negative": "A same-name/same-manifest unrelated checkout cannot bind the provider source",
-      "test_locator": "tests/test_manage_plugin.py::SafePluginInstallTests::test_ensure_marketplace_non_apply_validates_staging_without_writing and ::test_ensure_marketplace_rejects_unrelated_same_identity_checkout",
+      "current_contract": "Narrow Codex provider-source binding analogue only: official installed identity must match the saved add response and exact retained release-directory source, and all release-file bytes must match. This replaces the removed custom installer source check; it is not DSH Desktop bundle/profile admission.",
+      "trigger": "Synthetic official list/add source-binding controls; no DSH bundle/profile execution",
+      "positive": "One exact official installed identity and retained release source pass full release-file parity",
+      "negative": "A wrong marketplace source, duplicate identity, disabled record or file drift fails",
+      "test_locator": "tests/test_official_marketplace_native.py::OfficialMarketplaceNativeTests::test_full_documented_workflow_only_installs_once_and_second_reads and ::test_wrong_identity_ambiguity_source_or_state_cannot_pass",
       "deeper_authority": "Canonical DSH native_verified status and host evidence belong to the historical library; this source analogue neither reproduces nor recertifies Desktop-market coexistence.",
       "final_verdict": "analogue_only",
       "source_result": "passed",
-      "macos_result": "passed",
+      "macos_result": "not_run",
       "windows_result": "not_run",
       "owner": "coordinator",
       "missing_evidence": [
-        "DSH Desktop bundle/profile admission is outside this standalone Codex product. Existing Codex provider-binding source tests supply only the named narrow analogue, not DSH native acceptance."
+        "Canonical DSH native_verified status belongs to the historical library. New candidate controls are synthetic Codex source-binding analogues only; earlier installed/native receipts do not bind these changed inputs."
       ],
       "windows_evidence_note": "No new Windows source analogue execution claimed; DSH native evidence remains library-owned."
     },

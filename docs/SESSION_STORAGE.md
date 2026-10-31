@@ -10,10 +10,10 @@ Here, HOME means the Codex configuration and task-data directory selected by
 release-line source, direct commands without an explicit data root resolve their private
 state under the active `CODEX_HOME` (`<home>/context-guard`), so isolated
 homes never share state; with `CODEX_HOME` unset the historical default is
-unchanged. The same directory also carries the installer-written
+unchanged. The same directory also carries the optional existing
 `interpreter.conf` (one absolute interpreter path) that the Hook launchers
-consult on GUI hosts whose PATH lacks the installed Python; each HOME binds
-its own interpreter and the launchers re-verify it on every start.
+consult on GUI hosts whose PATH lacks the installed Python; the launchers re-verify it on every start. The marketplace-only candidate
+does not create this file; GUI Python discovery still needs verification.
 
 Session identities are validated before any directory is used: a missing or
 empty id is refused rather than merged into one shared directory, and ids are
@@ -40,12 +40,12 @@ newly selected runtime does not import its ledger.
 See [compatibility](COMPATIBILITY.md) for the supported boundary and
 [local acceptance](LOCAL_ACCEPTANCE.md) for observed host routes.
 
-For concurrent old and new work, install from the new source checkout with
-`python scripts/manage_plugin.py --codex-home <new-home> --apply`, replacing
-`<new-home>` with a fresh private directory. Start that Codex process with
-`CODEX_HOME` set to the same directory. Keep the old task in its original HOME
-with the old plugin selected. Each HOME has its own login and normal Hook trust
-setup; selecting a different HOME does not transfer tasks or their ledgers.
+The marketplace-only candidate proposes a distinct market identity for new
+work. It has not established old-task continuation, independent enable/disable
+or strict no-op preservation through official installation. A second HOME is
+not proof of task or trust transfer. Keep old objects and daily configuration
+unchanged until the relevant native acceptance is complete. See
+[the candidate removal record](INSTALLER_REMOVAL.md).
 
 The new runtime resolves existing v2 state first, then legacy state; only a
 new session creates a v2 directory. Its legacy access is strictly read-only:

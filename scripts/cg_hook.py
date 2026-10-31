@@ -32,6 +32,9 @@ import os
 import sys
 import time
 
+if __name__ == "__main__":
+    sys.dont_write_bytecode = True
+
 _BUDGET_UNSET = object()
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,7 +54,7 @@ def _delegate_subprocess(raw_stdin: bytes, *, disable_maintenance: bool = False)
     import subprocess  # lazy: the SAFE fast path never delegates
     env = os.environ.copy()
     env["PYTHONPATH"] = _SCRIPT_DIR
-    command = [sys.executable, heavy, "hook"]
+    command = [sys.executable, "-B", heavy, "hook"]
     if disable_maintenance:
         # A new process cannot inherit this invocation's raw clock anchor.
         # Explicit None is essential: omission would start a fresh allowance.
@@ -61,7 +64,7 @@ def _delegate_subprocess(raw_stdin: bytes, *, disable_maintenance: bool = False)
             "import context_guard; sys.argv = [sys.argv[1], 'hook']; "
             "raise SystemExit(context_guard.main(budget_started_at=None))"
         )
-        command = [sys.executable, "-c", code, heavy]
+        command = [sys.executable, "-B", "-c", code, heavy]
     result = subprocess.run(
         command,
         input=raw_stdin,

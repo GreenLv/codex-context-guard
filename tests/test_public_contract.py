@@ -36,7 +36,7 @@ workflow = load(
 identity = load(
     "audit_commit_identity", ROOT / "scripts" / "audit_commit_identity.py"
 )
-plugin_manager = load("manage_plugin", ROOT / "scripts" / "manage_plugin.py")
+plugin_manager = load("artifact_identity", ROOT / "scripts" / "artifact_identity.py")
 
 
 class PublicContractTests(unittest.TestCase):

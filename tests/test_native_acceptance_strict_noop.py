@@ -1,8 +1,6 @@
 """Controlled real-entrypoint regressions; no CLI, user HOME or network access."""
 from __future__ import annotations
 
-import contextlib
-import io
 import os
 import shutil
 import subprocess
@@ -17,82 +15,9 @@ from tools.validation import native_acceptance as native
 
 
 class PortableStrictNoopTests(unittest.TestCase):
-    def exercise(self, module=native, mutation="none"):
-        calls = []
-        manager = mock.Mock()
-        manager.tree_manifest.return_value = {"scripts/example.py": "a" * 64}
-        manager.source_plugin_version.return_value = "0.16.0"
-        manager.plugin_cache_root.side_effect = lambda home: home / "plugins/cache"
 
-        def runner(root, *args, env=None):
-            del root
-            if "scripts/manage_plugin.py" in args:
-                apply = "--apply" in args
-                calls.append(apply)
-                home = Path(env["CODEX_HOME"])
-                target = home / "context-guard/interpreter.conf"
-                registry = home / "plugins/installed_plugins.json"
-                staging = home / "upstreams/context-guard/staging/LICENSE"
-                if len(calls) == 1:
-                    for path in (target, registry, staging):
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(b"installed")
-                elif apply:
-                    if mutation == "content":
-                        target.write_bytes(b"damaged")
-                    elif mutation == "rewrite":
-                        temporary = target.with_suffix(".tmp")
-                        temporary.write_bytes(target.read_bytes())
-                        temporary.replace(target)
-                    elif mutation == "mode":
-                        target.chmod(0o400)
-                    elif mutation == "registry":
-                        registry.write_bytes(b"changed")
-                    elif mutation == "staging":
-                        staging.write_bytes(b"changed")
-                    elif mutation == "add":
-                        (home / "unexpected").write_bytes(b"new")
-                    elif mutation == "delete":
-                        registry.unlink()
-                    elif mutation == "directory":
-                        (home / "unexpected-empty").mkdir()
-                    elif mutation == "error":
-                        raise module.NativeRunError("controlled apply failure")
-            out = "https://github.com/example/context-guard.git" if args[:2] == ("git", "remote") else "fixture"
-            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
 
-        stderr = io.StringIO()
-        with mock.patch.object(module, "load_manager", return_value=manager), \
-                mock.patch.object(module, "verify_exact_source"), \
-                mock.patch.object(module, "run", side_effect=runner), \
-                contextlib.redirect_stderr(stderr):
-            result = module.portable_acceptance(Path("/controlled-source"), "a" * 40,
-                                                "controlled-codex", None)
-        self.last_stderr = stderr.getvalue()
-        return result, calls
 
-    def test_second_call_is_apply_and_unchanged_nonempty_domain_passes(self):
-        result, calls = self.exercise()
-        self.assertEqual(calls, [True, True])
-        self.assertEqual(result["status"], "passed")
-        self.assertIn("strict_second_noop", [g["id"] for g in result["gates"]])
-
-    def test_same_byte_rewrite_preserves_the_historical_state_contract(self):
-        result, calls = self.exercise(mutation="rewrite")
-        self.assertEqual(calls, [True, True])
-        self.assertEqual(result["status"], "passed")
-
-    def test_changed_state_and_object_set_changes_cannot_pass(self):
-        for mutation in ("content", "mode", "registry", "staging", "add",
-                         "delete", "directory", "error"):
-            with self.subTest(mutation=mutation):
-                if mutation == "mode" and os.name == "nt":
-                    self.skipTest("Windows read-only mode changes alter cleanup semantics")
-                result, calls = self.exercise(mutation=mutation)
-                self.assertEqual(calls, [True, True])
-                self.assertEqual(result["status"], "failed")
-                self.assertNotIn("strict_second_noop", [g["id"] for g in result["gates"]])
-                self.assertEqual(result["cleanup"]["status"], "passed")
 
     def test_empty_domain_rejected(self):
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
@@ -178,6 +103,7 @@ class PortableStrictNoopTests(unittest.TestCase):
                     native.installed_object_snapshot(home)
                 opener.assert_not_called()
 
+
     def test_oserror_is_redacted_without_exception_context(self):
         with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
             home = Path(directory)
@@ -190,12 +116,6 @@ class PortableStrictNoopTests(unittest.TestCase):
             self.assertTrue(caught.exception.__suppress_context__)
             self.assertNotIn("private-home", str(caught.exception))
 
-        with mock.patch.object(native, "open_snapshot_file",
-                               side_effect=PermissionError(13, "denied", "/private-home/secret")):
-            result, _ = self.exercise()
-        self.assertEqual(result["status"], "failed")
-        self.assertNotIn("private-home", self.last_stderr)
-        self.assertIn("snapshot object unreadable", self.last_stderr)
 
     def test_windows_opener_route_and_cross_provider_ctime(self):
         target = Path("controlled")
@@ -452,79 +372,7 @@ assert not list(root.rglob('__pycache__'))
             self.assertIs(sys.dont_write_bytecode, before)
             self.assertEqual(list(Path(temporary).rglob("__pycache__")), [])
 
-    @unittest.skipUnless(os.name == "posix", "POSIX detached-ancestor regression")
-    def test_portable_rejects_detached_holder_with_empty_replacement_home(self):
-        snapshot, opener = native.installed_object_snapshot, native.open_snapshot_file
-        snapshots, displaced, empty = [], [], []
 
-        def observing(home):
-            snapshots.append(home)
-            if len(snapshots) != 2:
-                return snapshot(home)
-
-            def swapping(path, **kwargs):
-                if not displaced:
-                    holder = home.parent
-                    saved = holder.with_name(holder.name + "-regression-displaced")
-                    holder.rename(saved)
-                    displaced.append(saved)
-                    home.mkdir(parents=True)
-                return opener(path, **kwargs)
-
-            try:
-                with mock.patch.object(native, "open_snapshot_file", side_effect=swapping):
-                    return snapshot(home)
-            finally:
-                empty.append(not any(home.iterdir()))
-
-        try:
-            with mock.patch.object(native, "installed_object_snapshot", side_effect=observing):
-                result, calls = self.exercise()
-            self.assertEqual(calls, [True, True])
-            self.assertEqual(empty, [True])
-            self.assertEqual(result["status"], "failed")
-            self.assertFalse(any(g["id"] == "strict_second_noop" and g["status"] == "passed"
-                                 for g in result["gates"]))
-            self.assertIn("ancestor pathname changed", self.last_stderr)
-        finally:
-            for saved in displaced:
-                shutil.rmtree(saved)
-
-    def test_real_manager_dry_run_skips_transaction_and_binding_apply_rewrites(self):
-        manager = native.load_manager(Path(__file__).parents[1])
-        with tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve()) as directory:
-            home = Path(directory) / "codex-home"
-            home.mkdir()
-            argv = ["manager", "--repo-root", str(Path(__file__).parents[1]),
-                    "--codex-home", str(home), "--codex", "controlled-codex"]
-            with mock.patch.object(sys, "argv", argv), \
-                    mock.patch.dict(os.environ), \
-                    mock.patch.object(manager, "codex_version", return_value=(999, 0, 0)), \
-                    mock.patch.object(manager, "same_version_drift_preflight"), \
-                    mock.patch.object(manager, "ensure_marketplace") as marketplace, \
-                    mock.patch.object(manager, "ensure_plugin") as plugin, \
-                    mock.patch.object(manager, "_run_install_transaction") as transaction, \
-                    mock.patch.object(manager, "prepare_gui_interpreter_binding", wraps=manager.prepare_gui_interpreter_binding) as prepare, \
-                    mock.patch.object(manager, "write_gui_interpreter_binding", wraps=manager.write_gui_interpreter_binding) as write, \
-                    contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(manager.main(), 0)
-                transaction.assert_not_called()
-                prepare.assert_not_called()
-                write.assert_not_called()
-                self.assertFalse(marketplace.call_args.args[-1])
-                self.assertFalse(plugin.call_args.args[-1])
-                argv.append("--apply")
-                self.assertEqual(manager.main(), 0)
-                before = native.installed_object_snapshot(home)
-                self.assertEqual(manager.main(), 0)
-                after = native.installed_object_snapshot(home)
-                self.assertEqual(transaction.call_count, 2)
-                self.assertEqual(prepare.call_count, 2)
-                self.assertEqual(write.call_count, 2)
-                # The writer ran twice, but HOME-13 compares final state only.
-                self.assertEqual(before, after)
-                self.assertEqual((home / "context-guard/interpreter.conf").read_bytes(),
-                                 (str(Path(sys.executable).resolve()) + os.linesep).encode())
 
 
 if __name__ == "__main__":

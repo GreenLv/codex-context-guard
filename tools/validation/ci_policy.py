@@ -22,7 +22,7 @@ DAILY_FOCUSED = ("windows_platform_py310", "windows_platform_py314")
 # These inputs can alter interpreter support, packaging or CI coverage itself.
 FULL_PATHS = (
     ".github/**", ".codex-plugin/**", ".gitattributes", "pyproject.toml",
-    "uv.lock", "requirements-lock.txt", "hooks/**", "scripts/manage_plugin.py",
+    "uv.lock", "requirements-lock.txt", "hooks/**", "scripts/artifact_identity.py", "scripts/build_release_artifact.py",
     "scripts/run_context_guard.sh", "scripts/run-context-guard.ps1",
     "scripts/smoke_installed.py", "tools/validation/ci_policy.py",
     "tools/validation/run_windows_platform_suite.py", "tools/validation/validate_workflows.py",

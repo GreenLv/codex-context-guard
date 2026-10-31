@@ -97,25 +97,9 @@ def load_runtime_module(runtime: Path) -> Any:
 
 
 def main() -> int:
-    repo_root = Path(__file__).resolve().parents[1]
-    source_manifest = json.loads(
-        (repo_root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
-    )
-    version = str(source_manifest["version"])
-    configured_home = os.environ.get("CODEX_HOME")
-    codex_home = (
-        Path(configured_home).expanduser() if configured_home else Path.home() / ".codex"
-    )
-    default_root = (
-        codex_home
-        / "plugins"
-        / "cache"
-        / "codex-context-guard"
-        / "context-guard"
-        / version
-    )
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plugin-root", type=Path, default=default_root)
+    parser.add_argument("--plugin-root", type=Path, required=True,
+                        help="Exact installed path returned by official plugin add --json; never guessed")
     args = parser.parse_args()
     plugin_root = args.plugin_root.expanduser().resolve()
     runtime = plugin_root / "scripts" / "context_guard.py"

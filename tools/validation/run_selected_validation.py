@@ -149,7 +149,9 @@ def commands_for(value: Any) -> list[list[str]]:
         if "install_lifecycle" in gates:
             commands.append([
                 sys.executable, "-m", "unittest",
-                "tests.test_manage_plugin", "tests.test_smoke_installed",
+                "tests.test_marketplace_artifact", "tests.test_official_marketplace_native",
+                "tests.test_posix_interpreter_discovery",
+                "tests.test_smoke_installed",
             ])
         if "self_test" in gates:
             commands.append([sys.executable, "scripts/context_guard.py", "self-test"])

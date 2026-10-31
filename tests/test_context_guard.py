@@ -6445,13 +6445,13 @@ class ContextGuardTests(unittest.TestCase):
                     # prefer the pinned PLUGIN_ROOT, else resolve the managed
                     # cache root, and always report the actionable repair hint.
                     for command in (hook["command"], hook["commandWindows"]):
-                        self.assertIn("manage_plugin.py --apply", command)
+                        self.assertIn("review the Context Guard installation in Codex Plugins and the supported Python on PATH", command)
                     self.assertIn(
-                        "plugins/cache/codex-context-guard/context-guard",
+                        "plugins/cache/codex-context-guard-v016/context-guard",
                         hook["command"],
                     )
                     self.assertIn(
-                        "plugins\\cache\\codex-context-guard\\context-guard",
+                        "plugins\\cache\\codex-context-guard-v016\\context-guard",
                         hook["commandWindows"],
                     )
                     if hook is hooks["SessionEnd"][0]["hooks"][0]:
@@ -6680,7 +6680,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard"
+            / "codex-context-guard-v016"
             / "context-guard"
         )
         self._write_stub_cache_tree(cache, "0.8.9", "OLD")
@@ -6739,7 +6739,7 @@ class ContextGuardTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(failed.returncode, 2)
-        self.assertIn("manage_plugin.py --apply", failed.stderr)
+        self.assertIn("review the Context Guard installation in Codex Plugins and the supported Python on PATH", failed.stderr)
 
     @unittest.skipIf(os.name == "nt", "POSIX resolver check")
     def test_posix_hook_command_selects_lone_zero_version(self) -> None:
@@ -6749,7 +6749,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard"
+            / "codex-context-guard-v016"
             / "context-guard"
         )
         self._write_stub_cache_tree(cache, "0.0.0", "ZERO")
@@ -6775,7 +6775,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard"
+            / "codex-context-guard-v016"
             / "context-guard"
         )
         for invalid in (
@@ -6800,7 +6800,7 @@ class ContextGuardTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 2)
-                self.assertIn("manage_plugin.py --apply", result.stderr)
+                self.assertIn("review the Context Guard installation in Codex Plugins and the supported Python on PATH", result.stderr)
                 shutil.rmtree(cache / invalid, ignore_errors=True)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
@@ -6815,7 +6815,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard"
+            / "codex-context-guard-v016"
             / "context-guard"
         )
         for version, marker in (
@@ -6860,7 +6860,7 @@ class ContextGuardTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(failed.returncode, 2)
-        self.assertIn("manage_plugin.py --apply", failed.stderr)
+        self.assertIn("review the Context Guard installation in Codex Plugins and the supported Python on PATH", failed.stderr)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell resolver check is Windows-only")
     def test_windows_hook_command_selects_lone_zero_version(self) -> None:
@@ -6870,7 +6870,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard"
+            / "codex-context-guard-v016"
             / "context-guard"
         )
         self._write_stub_ps_tree(cache, "0.0.0", "ZERO")
@@ -6897,7 +6897,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard"
+            / "codex-context-guard-v016"
             / "context-guard"
         )
         for invalid in (
@@ -6929,7 +6929,7 @@ class ContextGuardTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 2)
-                self.assertIn("manage_plugin.py --apply", result.stderr)
+                self.assertIn("review the Context Guard installation in Codex Plugins and the supported Python on PATH", result.stderr)
                 shutil.rmtree(cache / invalid, ignore_errors=True)
 
     def test_self_test_requires_python_310_or_newer(self) -> None:

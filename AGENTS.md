@@ -73,7 +73,7 @@ authoritative.
 - Installed versioned plugin caches are immutable. Never refresh or repair an
   already consumed cache from new source bytes. Preserve old caches for open
   tasks; same-version candidate revisions use separate isolated homes.
-- Use the safe installer for cache and archive operations. Do not hand-copy into
+- Use official Codex marketplace operations for installation; the candidate supplies no cache or archive repair. Do not hand-copy into
   a live cache, delete historical caches automatically, or treat an unindexed or
   hash-mismatched archive as repair authority.
 - Keep public author and committer identities on GitHub-provided noreply
@@ -169,7 +169,7 @@ authoritative.
   invalidates exact-artifact, install, native artifact, and release-identity
   evidence.
 - The plugin runtime-tree digest covers only `.codex-plugin/`, `assets/`,
-  `hooks/`, `scripts/`, and `skills/` as defined by `scripts/manage_plugin.py`.
+  `hooks/`, `scripts/`, and `skills/` as defined by read-only `scripts/artifact_identity.py`.
   Changes under `.github/`, `tools/validation/`, `tests/`, `AGENTS.md`, or
   `validation-map.json` are repository/CI changes and do not by themselves
   invalidate installed-runtime evidence. A changed file under a covered root,
@@ -188,7 +188,7 @@ git diff --check
 ```
 
 - Installer, cache, archive, or lifecycle changes also require an isolated
-  `--codex-home` install, a strict second no-op, source/cache parity, and
+  official-marketplace install, a strict second no-op, source/cache parity, and
   `scripts/smoke_installed.py` against the installed plugin root. Use a fresh
   Codex task without trust bypass when the observable trusted-Hook lifecycle is
   in scope.

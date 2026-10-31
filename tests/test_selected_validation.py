@@ -87,12 +87,25 @@ class SelectedValidationTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Ran 1 test", result.stderr)
 
-    def test_docs_do_not_run_runtime_or_install_gates(self) -> None:
-        commands = RUNNER.commands_for(plan(["docs_contract"], ["README.md"]))
+    def test_nonpackaged_docs_do_not_run_runtime_or_install_gates(self) -> None:
+        commands = RUNNER.commands_for(plan(["docs_contract"], ["AGENTS.md"]))
         joined = [" ".join(command) for command in commands]
         self.assertTrue(any("validate_public_repo.py" in item for item in joined))
         self.assertTrue(any("tests.test_public_contract" in item for item in joined))
         self.assertFalse(any("test_context_guard" in item or "test_manage_plugin" in item for item in joined))
+
+    def test_install_gate_executes_new_release_artifact_and_native_owners(self) -> None:
+        commands = RUNNER.commands_for(plan(["artifact_identity", "install_lifecycle"], ["scripts/build_release_artifact.py"]))
+        modules = {module for command in commands if command[1:3] == ["-m", "unittest"] for module in command[3:]}
+        self.assertTrue({"tests.test_marketplace_artifact", "tests.test_official_marketplace_native", "tests.test_posix_interpreter_discovery", "tests.test_smoke_installed"} <= modules)
+
+    def test_posix_launcher_selection_executes_its_discovery_owner(self) -> None:
+        from tools.validation import select_validation
+        mapping, digest = select_validation.load_map(SCRIPT.parents[2] / "validation-map.json")
+        selected = select_validation.classify(mapping, ["scripts/run_context_guard.sh"], map_sha256=digest, base="a" * 40, head="b" * 40)
+        commands = RUNNER.commands_for(selected)
+        modules = {module for command in commands if command[1:3] == ["-m", "unittest"] for module in command[3:]}
+        self.assertIn("tests.test_posix_interpreter_discovery", modules)
 
     def test_runtime_commands_are_deduplicated(self) -> None:
         commands = RUNNER.commands_for(
@@ -125,8 +138,8 @@ class SelectedValidationTests(unittest.TestCase):
         joined = "\n".join(" ".join(command) for command in commands)
         for module in ("tests.test_context_guard", "tests.test_context_guard_v095",
                        "tests.test_conformance_fixtures", "tests.test_reference_digest_encoder",
-                       "tests.test_public_contract", "tests.test_manage_plugin",
-                       "tests.test_smoke_installed"):
+                       "tests.test_public_contract", "tests.test_marketplace_artifact",
+                       "tests.test_official_marketplace_native", "tests.test_smoke_installed"):
             self.assertIn(module, joined)
         self.assertNotIn("run_current_behavior_suite.py", joined)
 

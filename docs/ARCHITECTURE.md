@@ -786,6 +786,16 @@ retroactive proof obligations. Migration
 deliberately discards any in-flight completion attempt, token, or staged control
 so a stale turn cannot authorize the new protocol.
 
+## Marketplace-only candidate boundary
+
+The Unreleased 0.16.0 candidate removes the custom installer. Official Codex
+marketplace operations own registration and installation. Read-only artifact
+identities remain, but no project staging, rollback, archive repair or automatic
+interpreter binding remains. Existing bindings are still read and validated.
+Old-cache object preservation, strict second-operation no-op, normal Hook trust,
+GUI discovery and old task continuity require separate native acceptance.
+The historical description below records earlier versions only.
+
 ## Historical Hook cache lifecycle
 
 The installer archives immutable version trees under

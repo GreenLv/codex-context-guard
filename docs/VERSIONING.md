@@ -1,6 +1,6 @@
 # Versioning policy
 
-## 0.16.0 — 2026-10-31
+## 0.16.0 — Unreleased
 
 This is the local release-line source. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
@@ -14,9 +14,10 @@ derived evidence and exports; exclusive never-overwriting exports that never
 change project directory permissions; fail-closed private permission
 establishment (POSIX mode verify; Windows protected DACL set plus read-back on
 directories through native APIs, no per-file ACL on the write path, no
-PowerShell in the Hook hot path); an allowlisted distribution staging set and
-a single installation transaction with same-version preflight, staged-byte
-backup, rollback, and explicit incomplete reporting; validated injective
+PowerShell in the Hook hot path); official Codex marketplace installation under experimental identity
+`codex-context-guard-v016`, with the custom installer and its staging, archive
+repair and rollback removed; existing interpreter binding reads remain but
+automatic creation is removed; validated injective
 session-identity encoding with load-time identity verification (missing ids
 refused, old underscore-merged directories no longer addressed); the
 direct-command data root following `CODEX_HOME` (`<home>/context-guard`) when

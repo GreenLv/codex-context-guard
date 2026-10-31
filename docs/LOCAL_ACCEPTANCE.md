@@ -1,5 +1,14 @@
 # Local Release Acceptance
 
+## 0.16.0 marketplace-only source candidate — Unreleased
+
+The custom installer and namespace transaction are removed in this candidate.
+Earlier installed/native results below remain historical and do not establish
+this candidate's new marketplace identity or installation behavior. Official
+installation, strict second-operation no-op, old-cache object preservation,
+GUI Python discovery, normal trust and old-task continuity remain pending.
+See [the removal record](INSTALLER_REMOVAL.md) for retired tests and replacements.
+
 ## 0.15.1 — 2026-10-05
 
 The current reviewed tooling source is `66e90790c1ef972cd2cc8b084025f736ffe1b6a6`; its complete source, canonical-history and strict native-remapping results are recorded below. Its 43-file runtime-tree SHA-256 is

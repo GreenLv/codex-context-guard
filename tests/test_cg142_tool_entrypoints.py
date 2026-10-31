@@ -70,7 +70,7 @@ class ToolEntrypointTests(unittest.TestCase):
         commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
         artifact=self.root/'input.txt'
         artifact.write_bytes(b'preflight input')
-        digest=native_acceptance.runtime_digest(native_acceptance.load_manager(repo),repo)
+        digest=native_acceptance.runtime_digest(native_acceptance.load_artifacts(repo),repo)
         manifest={'schema':batch_preflight.SCHEMA,'source_commit':commit,
                   'runtime_tree_sha256':digest,'plan_sha256':'a'*64,
                   'fixtures':[{'repo':str(repo),'initial_head':commit,'changed_paths':['module.py']}],

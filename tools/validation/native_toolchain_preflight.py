@@ -19,15 +19,12 @@ ROOT = Path(__file__).resolve().parents[2]
 # Classes, not modules: avoid collecting TestCase helpers imported by a module.
 CHECKS = (
     "tests.test_cg142_batch_preflight.BatchPreflightTests",
-    "tests.test_candidate_namespace.NamespaceTests",
-    "tests.test_commentary_runner_protocol.CausalTests",
+        "tests.test_commentary_runner_protocol.CausalTests",
     "tests.test_commentary_control_live.C2ControllerTests",
     "tests.test_commentary_native_profile.CommentaryNativeProfileTests",
     "tests.test_commentary_control_native_profile.CommentaryControlNativeProfileTests",
 )
 WINDOWS_ONLY = frozenset({
-    "tests.test_candidate_namespace.NamespaceTests.test_windows_real_idle_rejects_other_held_file_before_manager_lock",
-    "tests.test_candidate_namespace.NamespaceTests.test_windows_real_idle_scan_with_manager_lock_sequence",
 })
 EXIT_CODES = {"synthetic_checks_passed": 0, "failed": 1, "coverage_incomplete": 3}
 UNKNOWN = ("authentication", "live_hook_trust", "effective_child_permissions",

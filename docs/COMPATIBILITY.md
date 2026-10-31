@@ -1,6 +1,6 @@
 # Compatibility and Verification Status
 
-## 0.16.0 — 2026-10-31
+## 0.16.0 — Unreleased
 
 This is the local release-line source. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
@@ -39,14 +39,15 @@ published 0.15.1:
   `~/.codex/context-guard`; with `CODEX_HOME` unset the default is unchanged.
   Existing explicit data roots keep their meaning, and nothing is migrated,
   merged, or deleted.
-- GUI hosts whose PATH lacks an installed supported Python now work when the
-  installer could bind one: `manage_plugin.py --apply` verifies and records
-  the interpreter in `<home>/context-guard/interpreter.conf` for that HOME,
-  and the launchers consult it before PATH probing. A configured path that
-  disappears fails with its own message (never a silent PATH fallback);
-  unconfigured hosts keep the previous discovery. Old 0.15.x installs keep
-  their consumed caches unchanged and gain the binding only through a new
-  0.16.0 install into the same HOME.
+- Official Codex marketplace installation replaces the project installer.
+  `codex-context-guard-v016` is an experimental identity; actual installation,
+  strict second-operation no-op, old-cache object preservation, normal trust,
+  old-task continuity and independent enable/disable behavior remain pending.
+  Existing interpreter.conf bindings are read and verified, but no automatic
+  binding is created. POSIX discovery additionally probes fixed global Homebrew, Anaconda and
+  Python.framework locations with isolated version/marker checks after PATH
+  discovery fails; it does not search personal directories or create a binding.
+  Windows discovery is unchanged. Actual GUI restart acceptance remains pending. No archive repair or project installation rollback remains.
 - Re-delivered or repeated UserPromptSubmit events stay independent: the
   hook payload carries no stable per-message identity, so nothing collapses
   and no input is dropped. A repeated (session, turn, prompt-bytes) shape is

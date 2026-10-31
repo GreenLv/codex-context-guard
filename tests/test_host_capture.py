@@ -123,7 +123,7 @@ class CaptureRecordTests(unittest.TestCase):
 
     def test_runtime_root_without_manager_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            with self.assertRaisesRegex(HC.CaptureError, "manage_plugin"):
+            with self.assertRaisesRegex(HC.CaptureError, "artifact_identity"):
                 HC.record_payload(
                     payload(), total_bytes=len(payload()), truncated=False,
                     expected_event="PreToolUse", capture_dir=Path(temp) / "capture",

@@ -57,17 +57,14 @@ also refresh the project entry in `uv.lock`. CI uses `--locked` so stale locks
 fail instead of being silently accepted. The Hook runtime needs no dependency
 installation.
 
-`tools/validation/candidate_namespace.py --help` describes the restricted,
-zero-model candidate installer (Python 3.11+). It defaults to an existing
-unauthenticated isolated HOME, a fresh namespace, and pinned source and CLI
-identities. An existing authenticated private acceptance HOME additionally
-requires an explicitly authorized, expiring operator scope record and its
-digest, bound to that exact HOME, namespace, source, runtime, CLI and installer.
-The record is an input constraint, not a grant of permission. The macOS route
-rejects observed active HOME users; other platforms remain unsupported for
-this authenticated route. It restores only attributable configuration changes;
-unknown edits leave an incomplete transaction for inspection. It does not
-establish Hook trust or native acceptance, and never removes consumed caches.
+The marketplace-only candidate has no project installer or namespace installer.
+Use official Codex marketplace commands only in an explicitly authorized isolated
+HOME. The default versioned portable native entrypoint uses only an internally created
+fresh HOME and official Codex commands. Its optional `--release-zip` consumes a
+prebuilt exact artifact without rebuilding it. `--installed-plugin-root` instead
+performs artifact parity and lifecycle inspection only; official installation, strict second-operation no-op,
+old-cache object preservation, normal trust and real-task continuation remain
+separate required gates. See `docs/INSTALLER_REMOVAL.md`.
 
 ```shell
 python scripts/validate_public_repo.py .
@@ -78,8 +75,8 @@ python scripts/check_phase3_transition.py
 ruff check .
 ```
 
-Installed lifecycle changes also require `python scripts/smoke_installed.py`
-against an isolated installed cache and a fresh Codex task without trust
+Installed lifecycle changes also require `python scripts/smoke_installed.py --plugin-root "<installed-path>"`
+against the explicit isolated installed path returned by official installation and a fresh Codex task without trust
 bypass.
 
 On each clone, including Windows, configure identity at repository scope before

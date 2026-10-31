@@ -221,60 +221,7 @@ def load_plan(path):
 
 
 def preflight(plan):
-    from tools.validation.candidate_namespace import safe_path, source_manifest
-    from tools.validation.host_capture import measure_runtime
-
-    root = Path(__file__).resolve().parents[2]
-    if os.name not in {"posix", "nt"}:
-        raise ValueError("bounded_process_tree_route_unavailable")
-    if os.environ.get("CONTEXT_GUARD_DATA_DIR"):
-        raise ValueError("foreign_product_data_override")
-    for name in ("codex", "codex_home", "cwd", "runtime_root", "hook_source",
-                 "trace_root", "capture_dir", "run_dir", "source_manifest_path",
-                 "harness_root"):
-        path = safe_path(plan[name])
-        if name != "run_dir" and not path.exists():
-            raise ValueError(name + "_unavailable")
-    home = Path(plan["codex_home"])
-    if home == Path.home() / ".codex" or home == Path(os.environ.get("CODEX_HOME", "")):
-        raise ValueError("daily_or_active_home_forbidden")
-    expected_runtime = home / "plugins/cache" / plan["namespace"] / "context-guard/0.14.2"
-    if Path(plan["runtime_root"]) != expected_runtime:
-        raise ValueError("installed_namespace_mismatch")
-    if Path(plan["hook_source"]) != expected_runtime / "hooks/hooks.json":
-        raise ValueError("hook_source_mismatch")
-    if digest(Path(plan["codex"]).read_bytes()) != plan["binary_sha256"]:
-        raise ValueError("official_binary_changed")
-    if measure_runtime(Path(plan["runtime_root"]))[0] != plan["runtime_tree_sha256"]:
-        raise ValueError("installed_runtime_changed")
-    source_manifest(root, Path(plan["source_manifest_path"]),
-                    plan["source_tree_sha256"], plan["runtime_tree_sha256"])
-    if "suite_oracle" in plan:
-        suite_oracle.validate_suite_plan(plan)
-    if Path(plan["harness_root"]) != root:
-        raise ValueError("external_harness_root_mismatch")
-    helper = root / "tools/validation/commentary_fixture.py"
-    if digest(helper.read_bytes()) != plan["cold_helper_sha256"]:
-        raise ValueError("external_cold_helper_changed")
-    if not Path(plan["hook_source"]).is_relative_to(Path(plan["runtime_root"])):
-        raise ValueError("foreign_hook_source")
-    if (Path(plan["run_dir"]).exists() or Path(plan["run_dir"]).is_symlink()
-            or Path(plan["run_dir"]).is_relative_to(root)
-            or Path(plan["run_dir"]).is_relative_to(Path(plan["cwd"]))
-            or Path(plan["run_dir"]).is_relative_to(Path(plan["runtime_root"]))):
-        raise ValueError("unsafe_result_directory")
-    config = plan["effective_config"]
-    if (config.get("model_auto_compact_token_limit") !=
-            plan["threshold_proposal"].get("limit")
-            or config.get("model_auto_compact_token_limit_scope") != "body_after_prefix"):
-        raise ValueError("unfrozen_auto_compact_config")
-    if (plan["overrides"].get("model_auto_compact_token_limit") != config["model_auto_compact_token_limit"]
-            or plan["overrides"].get("model_auto_compact_token_limit_scope") != "body_after_prefix"):
-        raise ValueError("process_override_mismatch")
-    return {"status": "inputs_checked_only", "model_calls": 0,
-            "source_tree_sha256": plan["source_tree_sha256"],
-            "runtime_tree_sha256": plan["runtime_tree_sha256"],
-            "threshold_calibrated": False, "native_acceptance": "not_established"}
+    raise ValueError("historical namespace installer retired; official-marketplace profile review required")
 
 
 class AppServer(legacy.StdioTransport):

@@ -184,8 +184,8 @@ def collect(root: Path, expected_sha: str, repository: str,
             raise EvidenceError("invalid_manifest_version")
         record["manifest"] = {"path": ".codex-plugin/plugin.json", "version": version,
                               "sha256": digest(raw)}
-        manager_path = safe_path(root, "scripts/manage_plugin.py")
-        snapshots["scripts/manage_plugin.py"] = read_bytes(root, "scripts/manage_plugin.py")
+        manager_path = safe_path(root, "scripts/artifact_identity.py")
+        snapshots["scripts/artifact_identity.py"] = read_bytes(root, "scripts/artifact_identity.py")
         spec = importlib.util.spec_from_file_location("hol_runtime_manager", manager_path)
         if spec is None or spec.loader is None:
             raise EvidenceError("runtime_manager_unavailable")
@@ -194,7 +194,7 @@ def collect(root: Path, expected_sha: str, repository: str,
         tree = manager.tree_manifest(root)
         if not tree or not set(tree).issubset(tracked):
             raise EvidenceError("runtime_contains_untracked_files")
-        record["runtime"] = {"algorithm": "manage_plugin.tree_manifest/canonical-json-sha256",
+        record["runtime"] = {"algorithm": "artifact_identity.tree_manifest/canonical-json-sha256",
                              "file_count": len(tree), "sha256": digest(json.dumps(
                                  tree, ensure_ascii=True, sort_keys=True,
                                  separators=(",", ":")).encode())}

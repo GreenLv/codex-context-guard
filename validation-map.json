@@ -14,7 +14,7 @@
   },
   "rules": [
     {
-      "id": "non_packaged_docs",
+      "id": "documentation",
       "paths": [
         "AGENTS.md",
         "CHANGELOG*.md",
@@ -28,6 +28,34 @@
       ],
       "invalidates": [
         "documentation"
+      ],
+      "contracts": [],
+      "peer_gates": {}
+    },
+    {
+      "id": "packaged_docs",
+      "paths": [
+        "README.md",
+        "README.zh-CN.md",
+        "CHANGELOG.md",
+        "CHANGELOG.zh-CN.md",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "docs/*.md",
+        "docs/**/*.md"
+      ],
+      "gates": [
+        "artifact_identity",
+        "docs_contract",
+        "install_lifecycle",
+        "repo_contract"
+      ],
+      "invalidates": [
+        "artifact",
+        "documentation",
+        "native_artifact",
+        "native_runtime",
+        "publication_identity"
       ],
       "contracts": [],
       "peer_gates": {}
@@ -154,7 +182,8 @@
         "assets/icon.svg",
         "pyproject.toml",
         "requirements-lock.txt",
-        "scripts/manage_plugin.py",
+        "scripts/artifact_identity.py",
+        "scripts/build_release_artifact.py",
         "scripts/run-context-guard.ps1",
         "scripts/run_context_guard.sh",
         "scripts/smoke_installed.py"

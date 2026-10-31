@@ -101,7 +101,7 @@ def runtime_tree_digest(root: Path) -> str:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "manage_plugin", Path(root).resolve() / "scripts" / "manage_plugin.py")
+        "artifact_identity", Path(root).resolve() / "scripts" / "artifact_identity.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manifest = module.tree_manifest(Path(root).resolve())

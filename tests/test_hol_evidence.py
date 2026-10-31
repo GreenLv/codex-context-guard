@@ -28,8 +28,8 @@ class HolEvidenceTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         (self.root / "scripts").mkdir()
-        shutil.copyfile(ROOT / "scripts/manage_plugin.py",
-                        self.root / "scripts/manage_plugin.py")
+        shutil.copyfile(ROOT / "scripts/artifact_identity.py",
+                        self.root / "scripts/artifact_identity.py")
         (self.root / ".codex-plugin").mkdir()
         (self.root / ".codex-plugin/plugin.json").write_text(
             json.dumps({"version": "0.15.1", "private_unrequested": "DO_NOT_EXPORT"}))

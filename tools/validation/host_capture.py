@@ -99,9 +99,9 @@ def _read_bounded(stream: BinaryIO, limit: int) -> tuple[bytes, int, bool]:
 
 
 def _load_manager(runtime_root: Path) -> Any:
-    path = runtime_root / "scripts" / "manage_plugin.py"
+    path = runtime_root / "scripts" / "artifact_identity.py"
     if not path.is_file() or path.is_symlink():
-        raise CaptureError("runtime root lacks a regular manage_plugin.py")
+        raise CaptureError("runtime root lacks a regular artifact_identity.py")
     spec = importlib.util.spec_from_file_location("host_capture_manager", path)
     if spec is None or spec.loader is None:
         raise CaptureError("could not load runtime manifest implementation")

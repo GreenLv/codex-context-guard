@@ -106,10 +106,11 @@ class NativeToolchainPreflightTests(unittest.TestCase):
             raise unittest.SkipTest("Windows-only")
         for host in ("Darwin", "Windows"):
             skipped = unittest.FunctionTestCase(skip)
-            skipped.id = lambda: sorted(preflight.WINDOWS_ONLY)[0]
+            skipped.id = lambda: "synthetic.windows.only"
             suite = unittest.TestSuite([unittest.FunctionTestCase(lambda: None), skipped])
             with self.subTest(host=host), \
                     patch.object(preflight.platform, "system", return_value=host), \
+                    patch.object(preflight, "WINDOWS_ONLY", frozenset({"synthetic.windows.only"})), \
                     patch.object(preflight, "input_identity", return_value="a"), \
                     patch.object(unittest.TestLoader, "loadTestsFromNames", return_value=suite), \
                     redirect_stderr(io.StringIO()):

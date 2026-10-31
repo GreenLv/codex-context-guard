@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -18,7 +19,14 @@ SPEC = importlib.util.spec_from_file_location("native_acceptance", SCRIPT)
 assert SPEC and SPEC.loader
 NATIVE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(NATIVE)
-MANAGER = NATIVE.load_manager(SCRIPT.parents[2])
+MANAGER = NATIVE.load_artifacts(SCRIPT.parents[2])
+
+
+def write_fixture_manifest(root):
+    files = MANAGER.distribution_files(root)
+    target = root / MANAGER.DISTRIBUTION_MANIFEST_RELATIVE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"schema":"cg-distribution-manifest/v1", "file_count":len(files), "files":files}))
 
 
 class FakeManager:
@@ -41,7 +49,7 @@ class NativeAcceptanceEntrypointTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(body)
         # Explicit fixture construction; production preflight never regenerates.
-        MANAGER.write_distribution_manifest(root)
+        write_fixture_manifest(root)
 
     def test_existing_result_stops_before_portable_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -89,7 +97,7 @@ class NativeAcceptanceEntrypointTests(unittest.TestCase):
                        subprocess.CompletedProcess([], 0, "codex test-version\n", "")]
             with mock.patch.object(NATIVE, "resolve_executable", return_value="codex"), \
                     mock.patch.object(NATIVE, "verify_exact_source") as verify, \
-                    mock.patch.object(NATIVE, "load_manager", return_value=MANAGER), \
+                    mock.patch.object(NATIVE, "load_artifacts", return_value=MANAGER), \
                     mock.patch.object(NATIVE, "runtime_digest", return_value="b" * 64), \
                     mock.patch.object(NATIVE, "run", side_effect=replies), \
                     mock.patch.object(NATIVE, "portable_acceptance") as execute, \
@@ -101,6 +109,36 @@ class NativeAcceptanceEntrypointTests(unittest.TestCase):
             execute.assert_not_called()
             self.assertFalse(output.exists())
             self.assertIn("acceptance_not_run", stdout.getvalue())
+
+    def test_installed_root_preflight_checks_actual_full_artifact_without_execution(self) -> None:
+        for case in ("matching", "missing", "drift", "extra"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "repo"
+                self.write_distribution_fixture(root)
+                installed = Path(directory) / "installed"
+                if case != "missing":
+                    shutil.copytree(root, installed)
+                    if case == "drift":
+                        (installed / "scripts/example.py").write_bytes(b"drifted")
+                    elif case == "extra":
+                        (installed / "unexpected").write_bytes(b"synthetic extra")
+                output = Path(directory) / "result.json"
+                with mock.patch.object(NATIVE, "resolve_executable", return_value="codex"), \
+                        mock.patch.object(NATIVE, "verify_exact_source"), \
+                        mock.patch.object(NATIVE, "load_artifacts", return_value=MANAGER), \
+                        mock.patch.object(NATIVE, "run", return_value=subprocess.CompletedProcess([],0,"https://example.invalid/repo.git", "")), \
+                        mock.patch.object(NATIVE, "portable_acceptance") as execute, \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    arguments = ["--source-commit", "a" * 40, "--repo-root", str(root),
+                                 "--output", str(output), "--installed-plugin-root", str(installed), "--preflight"]
+                    if case == "matching":
+                        self.assertEqual(NATIVE.main(arguments), 0)
+                    else:
+                        with self.assertRaises(SystemExit) as caught:
+                            NATIVE.main(arguments)
+                        self.assertEqual(caught.exception.code, 2)
+                execute.assert_not_called()
+                self.assertFalse(output.exists())
 
     def test_preflight_rejects_distribution_drift_before_codex_or_install(self) -> None:
         for relative in (".codexignore", "LICENSE", "pyproject.toml", "scripts/example.py"):
@@ -119,7 +157,7 @@ class NativeAcceptanceEntrypointTests(unittest.TestCase):
                     output = Path(directory) / "result.json"
                     with mock.patch.object(NATIVE, "resolve_executable", return_value="codex"), \
                             mock.patch.object(NATIVE, "verify_exact_source"), \
-                            mock.patch.object(NATIVE, "load_manager", return_value=MANAGER), \
+                            mock.patch.object(NATIVE, "load_artifacts", return_value=MANAGER), \
                             mock.patch.object(NATIVE, "run", return_value=subprocess.CompletedProcess(
                                 [], 0, "https://example.invalid/repo.git\n", "")) as run, \
                             mock.patch.object(NATIVE, "portable_acceptance") as execute, \

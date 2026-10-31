@@ -40,11 +40,34 @@ class ValidationSelectionTests(unittest.TestCase):
     def classify(self, *paths: str) -> dict[str, object]:
         return SELECTOR.classify(self.mapping, list(paths), map_sha256=self.map_sha256, base="a" * 40, head="b" * 40)
 
-    def test_docs_only_preserves_runtime_and_artifact(self) -> None:
-        plan = self.classify("docs/ARCHITECTURE.md")
+    def test_nonpackaged_agents_preserves_runtime_and_artifact(self) -> None:
+        plan = self.classify("AGENTS.md")
         self.assertEqual(plan["gates"], ["docs_contract"])
         self.assertEqual(plan["invalidates"], ["documentation"])
         self.assertFalse(plan["full_required"])
+
+    def test_release_builder_alone_selects_artifact_and_install_checks(self) -> None:
+        plan = self.classify("scripts/build_release_artifact.py")
+        self.assertEqual(plan["unknown_paths"], [])
+        self.assertIn("installer_packaging", plan["matched_rules"])
+        for gate in ("artifact_identity", "install_lifecycle", "repo_contract"):
+            self.assertIn(gate, plan["gates"])
+        for evidence in ("artifact", "native_artifact", "native_runtime", "publication_identity"):
+            self.assertIn(evidence, plan["invalidates"])
+
+    def test_each_packaged_document_alone_invalidates_the_artifact(self) -> None:
+        for path in ("README.md", "README.zh-CN.md", "CHANGELOG.md", "CHANGELOG.zh-CN.md",
+                     "SECURITY.md", "CONTRIBUTING.md", "docs/ARCHITECTURE.md",
+                     "docs/new-topic.md", "docs/releases/v0.16.0.md", "docs/nested/new-topic.md"):
+            with self.subTest(path=path):
+                plan = self.classify(path)
+                self.assertEqual(plan["unknown_paths"], [])
+                self.assertIn("packaged_docs", plan["matched_rules"])
+                for gate in ("artifact_identity", "docs_contract", "install_lifecycle", "repo_contract"):
+                    self.assertIn(gate, plan["gates"])
+                for evidence in ("artifact", "documentation", "native_artifact", "native_runtime", "publication_identity"):
+                    self.assertIn(evidence, plan["invalidates"])
+                self.assertNotIn("runtime_tests", plan["gates"])
 
     def test_test_only_selects_focused_group(self) -> None:
         plan = self.classify("tests/test_context_guard.py")
@@ -153,7 +176,7 @@ class ValidationSelectionTests(unittest.TestCase):
 
     def test_overlapping_rules_are_additive(self) -> None:
         plan = self.classify("docs/SEMANTIC_COMPATIBILITY.md")
-        self.assertEqual(plan["gates"], ["contract_tests", "docs_contract", "focused_tests"])
+        self.assertEqual(plan["gates"], ["artifact_identity", "contract_tests", "docs_contract", "focused_tests", "install_lifecycle", "repo_contract"])
 
     def test_empty_diff_selects_nothing(self) -> None:
         plan = self.classify()

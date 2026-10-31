@@ -19,7 +19,7 @@ class CIPolicyTests(unittest.TestCase):
 
     def test_sensitive_paths_and_unknowns_expand_but_routine_changes_do_not(self):
         for path in ('pyproject.toml', 'uv.lock', '.github/workflows/ci.yml',
-                     '.codex-plugin/plugin.json', 'scripts/manage_plugin.py',
+                     '.codex-plugin/plugin.json', 'scripts/artifact_identity.py',
                      'scripts/run-context-guard.ps1', 'docs/COMPATIBILITY.md', 'unknown/new.file'):
             with self.subTest(path=path):
                 self.assertEqual(policy.select_profile('auto', [path]), 'full')
@@ -28,6 +28,9 @@ class CIPolicyTests(unittest.TestCase):
         self.assertEqual(policy.select_profile('daily', ['.github/workflows/ci.yml']), 'daily')
         with self.assertRaises(ValueError):
             policy.select_profile('typo', [])
+
+    def test_release_builder_alone_requires_full_profile(self):
+        self.assertEqual(policy.select_profile('auto', ['scripts/build_release_artifact.py']), 'full')
 
     def test_every_required_failure_cancel_skip_or_absence_rejected(self):
         for profile in ('daily', 'full'):

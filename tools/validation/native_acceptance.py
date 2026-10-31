@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import platform
@@ -15,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Sequence
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
@@ -47,9 +49,9 @@ def load_host_behavior():
     return module
 
 
-def load_manager(root: Path):
-    path = root / "scripts" / "manage_plugin.py"
-    spec = importlib.util.spec_from_file_location("native_acceptance_manage_plugin", path)
+def load_artifacts(root: Path):
+    path = root / "scripts" / "artifact_identity.py"
+    spec = importlib.util.spec_from_file_location("native_acceptance_artifact_identity", path)
     if spec is None or spec.loader is None:
         raise NativeRunError("could not load the repository plugin manager")
     module = importlib.util.module_from_spec(spec)
@@ -204,7 +206,8 @@ def installed_object_snapshot(codex_home: Path) -> dict[str, tuple[Any, ...]]:
                 info.st_size, info.st_mtime_ns)
 
     def validate(info):
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0)
+                or getattr(info, "st_file_attributes", 0) & 0x400):
             raise NativeRunError("strict no-op snapshot refuses links and reparse objects")
         if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
             raise NativeRunError("strict no-op snapshot refuses special objects")
@@ -321,82 +324,216 @@ def installed_object_snapshot(codex_home: Path) -> dict[str, tuple[Any, ...]]:
     return objects
 
 
-def portable_acceptance(
-    root: Path, source_commit: str, codex: str, run_url: str | None
-) -> dict[str, Any]:
-    manager = load_manager(root)
-    digest = runtime_digest(manager, root)
-    started = timestamp()
-    gates: list[dict[str, Any]] = []
-    temporary = Path(tempfile.mkdtemp(prefix="codex-context-guard-native-")).resolve()
-    codex_home = temporary / "codex-home"
-    codex_home.mkdir(parents=True)
-    cleanup_status = "passed"
-    remaining: list[str] = []
-    environment = os.environ.copy()
-    environment["CODEX_HOME"] = str(codex_home)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    try:
-        codex_version = run(root, codex, "--version", env=environment).stdout.strip()
-    except NativeRunError:
-        codex_version = "unavailable"
-    try:
-        verify_exact_source(root, source_commit)
-        gates.append(gate(
-            "source_identity", digest, passed=True,
-            note="exact clean commit checked before isolated runtime acceptance",
-        ))
+def inspect_installed_artifact(root: Path, source_commit: str, codex: str,
+                        run_url: str | None, installed: Path | None = None) -> dict[str, Any]:
+    """Inspect an explicitly supplied installed artifact; never install or repair it.
 
-        manager_command = (
-            sys.executable, "scripts/manage_plugin.py", "--repo-root", str(root),
-            "--codex-home", str(codex_home), "--codex", codex,
-        )
-        run(root, *manager_command, "--apply", env=environment)
-        gates.append(gate("isolated_install", digest, passed=True))
-        before_second_apply = installed_object_snapshot(codex_home)
-        run(root, *manager_command, "--apply", env=environment)
-        if installed_object_snapshot(codex_home) != before_second_apply:
-            raise NativeRunError("second apply changed installed objects; strict no-op failed")
-        gates.append(gate("strict_second_noop", digest, passed=True))
-        version = manager.source_plugin_version(root)
-        installed = manager.plugin_cache_root(codex_home) / version
-        if manager.tree_manifest(installed) != manager.tree_manifest(root):
-            raise NativeRunError("installed runtime tree differs from repository runtime bytes")
+    The native install, second-operation no-op, old-cache preservation and trust
+    gates remain pending. Artifact parity cannot close those obligations.
+    """
+    if installed is None:
+        raise NativeRunError("official marketplace installation required; pass --installed-plugin-root for artifact checks only")
+    artifacts = load_artifacts(root)
+    digest = runtime_digest(artifacts, root)
+    verify_exact_source(root, source_commit)
+    artifacts.compare_artifact(root, installed)
+    if artifacts.tree_manifest(installed) != artifacts.tree_manifest(root):
+        raise NativeRunError("installed runtime tree differs from source")
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    run(root, sys.executable, "scripts/smoke_installed.py", "--plugin-root", str(installed), env=environment)
+    return {
+        "schema": "marketplace-artifact-inspection/v1", "status": "pending",
+        "gate_profile": "installed_artifact_only", "source_commit": source_commit,
+        "runtime_tree_sha256": digest,
+        "gates": [gate("runtime_tree_parity", digest, passed=True),
+                  gate("installed_lifecycle_smoke", digest, passed=True)],
+        "pending_gates": ["official_marketplace_install", "strict_second_noop",
+                          "old_cache_object_preservation", "normal_hook_trust",
+                          "real_task_continuity", "gui_interpreter_discovery"],
+        "run_url": run_url,
+    }
+
+
+OFFICIAL_PLUGIN = "context-guard@codex-context-guard-v016"
+
+
+def official_identity(listed: dict[str, Any], added: dict[str, Any],
+                      source: Path, home: Path, version: str) -> Path:
+    """Bind one real list record to this run's saved official add response."""
+    if not isinstance(listed, dict):
+        raise NativeRunError("official list is not an object")
+    entries = listed.get("installed")
+    if not isinstance(entries, list):
+        raise NativeRunError("official list has no installed array")
+    matches = [entry for entry in entries if isinstance(entry, dict)
+               and entry.get("pluginId") == OFFICIAL_PLUGIN]
+    if len(matches) != 1:
+        raise NativeRunError("official installed identity is missing or ambiguous")
+    if not isinstance(added, dict):
+        raise NativeRunError("official add is not an object")
+    entry = matches[0]
+    expected = {"pluginId": OFFICIAL_PLUGIN, "name": "context-guard",
+                "marketplaceName": "codex-context-guard-v016", "version": version}
+    if any(entry.get(k) != v or added.get(k) != v for k, v in expected.items()):
+        raise NativeRunError("official installed identity differs")
+    if entry.get("installed") is not True or entry.get("enabled") is not True:
+        raise NativeRunError("official installed plugin is not enabled")
+    if (entry.get("source") != {"source": "local", "path": str(source)}
+            or entry.get("marketplaceSource") != {"sourceType": "local", "source": str(source)}):
+        raise NativeRunError("official marketplace source differs")
+    raw = added.get("installedPath")
+    if not isinstance(raw, str):
+        raise NativeRunError("official add has no installed path")
+    installed = Path(raw)
+    cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
+    if (not installed.is_absolute() or installed.parent != cache
+            or installed.name not in {version, "local"} or installed.is_symlink()):
+        raise NativeRunError("official installed path is outside the isolated cache")
+    return installed
+
+
+def exact_artifact_parity(installed: Path, files: dict[str, str]) -> None:
+    snapshot = installed_object_snapshot(installed)
+    actual = {path: value[3] for path, value in snapshot.items() if value[0] == "file"}
+    if actual != files:
+        raise NativeRunError("installed full release-file set or bytes differ")
+
+
+def strict_cache_objects(root: Path) -> dict[str, tuple[Any, ...]]:
+    """Extra object identity contract for the synthetic previous-cache fixture."""
+    contents = installed_object_snapshot(root)
+    objects = {}
+    for name, value in contents.items():
+        info = (root if name == "." else root / name).stat()
+        if info.st_ino <= 0 or info.st_dev < 0:
+            raise NativeRunError("previous-cache object identity capability unavailable")
+        objects[name] = (value, info.st_dev, info.st_ino, info.st_ctime_ns)
+    return objects
+
+
+def documented_official_flow(root: Path, codex: str, home: Path, source: Path,
+                              environment: dict[str, str], files: dict[str, str],
+                              version: str, added: dict[str, Any] | None) -> tuple[dict[str, Any], Path]:
+    listed = json.loads(run(root, codex, "plugin", "list", "--json", env=environment).stdout)
+    if not isinstance(listed, dict):
+        raise NativeRunError("official list is not an object")
+    entries = listed.get("installed")
+    if not isinstance(entries, list):
+        raise NativeRunError("official list has no installed array")
+    matches = [item for item in entries if isinstance(item, dict)
+               and item.get("pluginId") == OFFICIAL_PLUGIN]
+    if not matches:
+        if added is not None:
+            raise NativeRunError("previously installed plugin disappeared")
+        run(root, codex, "plugin", "marketplace", "add", str(source), env=environment)
+        added = json.loads(run(root, codex, "plugin", "add", OFFICIAL_PLUGIN,
+                               "--json", env=environment).stdout)
+        listed = json.loads(run(root, codex, "plugin", "list", "--json", env=environment).stdout)
+    elif added is None:
+        raise NativeRunError("unexpected preexisting plugin in fresh isolated HOME")
+    installed = official_identity(listed, added, source, home, version)
+    exact_artifact_parity(installed, files)
+    return added, installed
+
+
+def portable_acceptance(root: Path, source_commit: str, codex: str,
+                        run_url: str | None, installed: Path | None = None,
+                        release_zip: Path | None = None) -> dict[str, Any]:
+    if installed is not None:
+        return inspect_installed_artifact(root, source_commit, codex, run_url, installed)
+    # This profile never accepts an operator HOME. Its only installation target
+    # is created internally and discarded, with no old installer/cache repair.
+    artifacts = load_artifacts(root)
+    files = artifacts.distribution_manifest(root)
+    digest = runtime_digest(artifacts, root)
+    verify_exact_source(root, source_commit)
+    version = json.loads((root / ".codex-plugin/plugin.json").read_text())["version"]
+    started = timestamp()
+    gates = [gate("source_identity", digest, passed=True)]
+    status, cleanup = "failed", "passed"
+    codex_version = "unavailable"
+    artifact = None
+    temporary = Path(tempfile.mkdtemp(prefix="ccg-official-marketplace-")).resolve()
+    try:
+        names = ("home", "os-home", "userprofile", "host-temp", "xdg-config", "xdg-data", "xdg-cache", "xdg-state")
+        locations = {name: temporary / name for name in names}
+        for path in locations.values():
+            path.mkdir(mode=0o700)
+        home = locations["home"]
+        environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT") if key in os.environ}
+        search = [str(Path(codex).parent), str(Path(sys.executable).parent)]
+        node = shutil.which("node")
+        if node:
+            search.append(str(Path(node).parent))
+        environment.update(PATH=os.pathsep.join([*search, os.defpath]),
+            HOME=str(locations["os-home"]), CODEX_HOME=str(home), USERPROFILE=str(locations["userprofile"]),
+            TMPDIR=str(locations["host-temp"]), TMP=str(locations["host-temp"]), TEMP=str(locations["host-temp"]),
+            XDG_CONFIG_HOME=str(locations["xdg-config"]), XDG_DATA_HOME=str(locations["xdg-data"]),
+            XDG_CACHE_HOME=str(locations["xdg-cache"]), XDG_STATE_HOME=str(locations["xdg-state"]),
+            PYTHONDONTWRITEBYTECODE="1")
+        codex_version = run(root, codex, "--version", env=environment).stdout.strip()
+        archive_path = release_zip
+        if archive_path is None:
+            archive_path = temporary / "release.zip"
+            run(root, sys.executable, "scripts/build_release_artifact.py", "--output", str(archive_path), env=environment)
+        if archive_path.is_symlink() or not archive_path.is_file():
+            raise NativeRunError("release ZIP must be a regular file")
+        zip_bytes = archive_path.read_bytes()
+        artifact = {"kind": "release_zip", "sha256": hashlib.sha256(zip_bytes).hexdigest(),
+                    "size_bytes": len(zip_bytes), "file_count": len(files)}
+        source = temporary / "release"
+        source.mkdir()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            if len(archive.namelist()) != len(files) or set(archive.namelist()) != set(files) or any(
+                    hashlib.sha256(archive.read(name)).hexdigest() != files[name] for name in files):
+                raise NativeRunError("release ZIP differs from reviewed source")
+            archive.extractall(source)
+        gates.append(gate("exact_release_zip", digest, passed=True))
+        # A disclosed synthetic previous-version object fixture, never a daily
+        # cache or proof of a resumed real task. It is only preservation evidence.
+        old = home / "plugins/cache/codex-context-guard/context-guard/0.15.1"
+        old.mkdir(parents=True)
+        (old / "synthetic-preservation-control").write_bytes(b"synthetic previous cache object\n")
+        old_before = strict_cache_objects(old)
+        added, cache = documented_official_flow(root, codex, home, source, environment, files, version, None)
+        gates.append(gate("isolated_install", digest, passed=True, note="official marketplace commands in internally created fresh HOME"))
+        gates.append(gate("distribution_file_parity", digest, passed=True))
+        if artifacts.tree_manifest(cache) != artifacts.tree_manifest(root):
+            raise NativeRunError("installed runtime tree differs")
         gates.append(gate("runtime_tree_parity", digest, passed=True))
-        run(root, sys.executable, "scripts/smoke_installed.py", "--plugin-root", str(installed), env=environment)
+        run(root, sys.executable, "scripts/smoke_installed.py", "--plugin-root", str(cache), env=environment)
         gates.append(gate("installed_lifecycle_smoke", digest, passed=True))
-    except (OSError, UnicodeError, json.JSONDecodeError, NativeRunError, RuntimeError) as exc:
+        before = installed_object_snapshot(home)
+        documented_official_flow(root, codex, home, source, environment, files, version, added)
+        if installed_object_snapshot(home) != before:
+            raise NativeRunError("second documented workflow changed final HOME paths, modes or file bytes")
+        gates.append(gate("strict_second_noop", digest, passed=True,
+                          note="documented status/identity/full-parity flow; final HOME state equality, not absence of writes or direct-add idempotence"))
+        if strict_cache_objects(old) != old_before:
+            raise NativeRunError("synthetic previous cache objects changed")
+        gates.append(gate("old_cache_fixture_object_preservation", digest, passed=True,
+                          note="synthetic previous cache only; no daily cache or real old-task continuity claim"))
+        status = "passed"
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
-        gates.append(gate(
-            "portable_acceptance", digest, passed=False,
-            note="portable gate failed; inspect the platform-local log",
-        ))
+        gates.append(gate("official_marketplace_workflow", digest, passed=False,
+                          note="official command, identity, artifact, no-op or preservation check failed; inspect local diagnostics"))
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
         if temporary.exists():
-            cleanup_status = "failed"
-            remaining.append("portable_temporary_root")
-
-    repository_url = normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout)
-    passed = all(item["status"] == "passed" for item in gates) and cleanup_status == "passed"
-    return {
-        "schema": "native-acceptance/v2",
-        "status": "passed" if passed else "failed",
-        "product": "codex_context_guard",
-        "gate_profile": "portable_runtime",
-        "repository": {"url": repository_url, "commit": source_commit},
-        "runtime_tree_sha256": digest,
-        "artifact": None,
-        "platform": {
-            "os": {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux"),
-            "shell": "python-subprocess",
-            "toolchain": {"python": platform.python_version(), "codex": codex_version},
-        },
-        "gates": gates,
-        "cleanup": {"status": cleanup_status, "remaining_ids": remaining},
+            cleanup, status = "failed", "failed"
+    return {"schema": "native-acceptance/v2", "status": status,
+        "product": "codex_context_guard", "gate_profile": "portable_runtime",
+        "repository": {"url": normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout), "commit": source_commit},
+        "runtime_tree_sha256": digest, "artifact": artifact,
+        "platform": {"os": {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux"),
+                     "shell": "python-subprocess", "toolchain": {"python": platform.python_version(), "codex": codex_version}},
+        "gates": gates, "cleanup": {"status": cleanup, "remaining_ids": [] if cleanup == "passed" else ["official_temporary_root"]},
         "run": {"started_at": started, "finished_at": timestamp(), "run_url": run_url},
-        "unperformed_actions": ["commit", "push", "merge", "tag", "release", "public_promotion"],
-    }
+        "limitations": ["local marketplace source retained only during this isolated gate; no long-term refresh/startup claim",
+                        "direct repeated plugin add is not claimed idempotent", "no normal Hook trust or real old-task continuity established"],
+        "unperformed_actions": ["commit", "push", "merge", "tag", "release", "public_promotion"]}
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -411,6 +548,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="Immutable completed commentary run for zero-model replay")
     parser.add_argument("--commentary-control-replay-manifest", type=Path,
                         help="Immutable completed C2 control run for zero-model replay")
+    parser.add_argument("--installed-plugin-root", type=Path, help="Existing officially installed artifact; this tool never installs")
+    parser.add_argument("--release-zip", type=Path, help="Existing exact release ZIP; preserved without rebuild")
     args = parser.parse_args(argv)
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
@@ -433,7 +572,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise NativeRunError("batch inputs failed: " + ",".join(check["errors"]))
             if manifest["source_commit"] != args.source_commit:
                 raise NativeRunError("batch source identity mismatch")
-            actual = runtime_digest(load_manager(args.repo_root.resolve()), args.repo_root.resolve())
+            actual = runtime_digest(load_artifacts(args.repo_root.resolve()), args.repo_root.resolve())
             if manifest["runtime_tree_sha256"] != actual:
                 raise NativeRunError("batch runtime identity mismatch")
         except (OSError, ValueError, NativeRunError, RuntimeError) as exc:
@@ -498,24 +637,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         root = args.repo_root.resolve()
         verify_exact_source(root, args.source_commit)
         normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout)
-        manager = load_manager(root)
-        # Clean Git state and runtime identity do not cover checkout byte
-        # conversion in top-level distribution files. Reuse the installer's
-        # strict read-only validator before either preflight success or install.
-        manager.distribution_manifest(root)
+        manager = load_artifacts(root)
+        # Check reviewed source distribution bytes; this performs no installation.
+        reviewed = manager.distribution_manifest(root)
+        if args.installed_plugin_root is not None:
+            manager.compare_artifact(root, args.installed_plugin_root)
+        if args.release_zip is not None:
+            if args.release_zip.is_symlink() or not args.release_zip.is_file():
+                raise NativeRunError("release ZIP must be a regular file")
+            with zipfile.ZipFile(io.BytesIO(args.release_zip.read_bytes())) as archive:
+                if (len(archive.namelist()) != len(reviewed)
+                        or set(archive.namelist()) != set(reviewed)
+                        or any(hashlib.sha256(archive.read(name)).hexdigest() != reviewed[name] for name in reviewed)):
+                    raise NativeRunError("release ZIP differs from reviewed source")
         runtime_digest(manager, root)
-        run(root, codex, "--version")
+        # CLI execution belongs inside the internally isolated native HOME.
     except (NativeRunError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
     if args.preflight:
         print("native_preflight=passed; input_checks_only; acceptance_not_run")
         return 0
-    result = portable_acceptance(
-        args.repo_root.resolve(), args.source_commit, codex, args.run_url
-    )
+    try:
+        result = portable_acceptance(
+            args.repo_root.resolve(), args.source_commit, codex, args.run_url, args.installed_plugin_root, args.release_zip
+        )
+    except (NativeRunError, OSError, RuntimeError) as exc:
+        parser.error(str(exc))
     behavior.write_result(args.output, result)
     print(f"native_acceptance={result['status']}")
-    return 0 if result["status"] == "passed" else 1
+    return {"passed": 0, "failed": 1, "pending": 3}[result["status"]]
 
 
 if __name__ == "__main__":

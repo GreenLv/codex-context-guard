@@ -37,9 +37,9 @@ HOOK_EVENTS = {
     "Stop",
     "SessionEnd",
 }
-HOOK_CACHE_FRAGMENT_POSIX = "plugins/cache/codex-context-guard/context-guard"
-HOOK_CACHE_FRAGMENT_WINDOWS = "plugins\\cache\\codex-context-guard\\context-guard"
-HOOK_REPAIR_HINT = "manage_plugin.py --apply"
+HOOK_CACHE_FRAGMENT_POSIX = "plugins/cache/codex-context-guard-v016/context-guard"
+HOOK_CACHE_FRAGMENT_WINDOWS = "plugins\\cache\\codex-context-guard-v016\\context-guard"
+HOOK_REPAIR_HINT = "review the Context Guard installation in Codex Plugins and the supported Python on PATH"
 POSIX_STRICT_GATES = ("[ $# -eq 3 ]", "0?*)", '[ -z "$n" ]')
 WINDOWS_STRICT_RE = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 REQUIRED_FILES = {
@@ -79,7 +79,7 @@ REQUIRED_FILES = {
     "scripts/incident_corpus.py",
     "scripts/run_context_guard.sh",
     "scripts/run-context-guard.ps1",
-    "scripts/manage_plugin.py",
+    "scripts/artifact_identity.py",
     "scripts/smoke_installed.py",
     "tools/validation/native_acceptance.py",
     "tools/validation/run_selected_validation.py",
@@ -208,8 +208,8 @@ def validate(root: Path) -> list[str]:
                 encoding="utf-8"
             )
         )
-        if marketplace.get("name") != "codex-context-guard":
-            errors.append("marketplace name must be codex-context-guard")
+        if marketplace.get("name") != "codex-context-guard-v016":
+            errors.append("marketplace name must be codex-context-guard-v016")
         entries = marketplace.get("plugins")
         if not isinstance(entries, list) or len(entries) != 1:
             errors.append("marketplace must contain exactly one plugin")

@@ -7,6 +7,7 @@ set -eu
 # alone is enough and the Hook hot path starts Python exactly once; only the
 # generic `python3`/`python` fallback pays a capability probe. The launcher
 # exec-replaces itself so stdin/stdout/stderr retain the Hook wire contract.
+# Every runtime starts with -B to keep consumed caches free of bytecode.
 # The stdlib-only Hook router additionally runs with -S (skip site) to stay
 # under the p95 budget; the heavy core and every other CLI subcommand keep a
 # normal interpreter start.
@@ -24,7 +25,7 @@ elif [ "${1:-}" = "hook" ]; then
     target="$script_dir/cg_hook.py"
 fi
 
-# Installer-bound interpreter (RR08): manage_plugin.py records the verified
+# Optional interpreter binding: an existing configuration records the verified
 # interpreter absolute path in a plain single-line file under the selected
 # HOME, so a GUI host whose PATH lacks the installed Python still starts the
 # Hook. The file is read with shell builtins only — no eval, no sourcing —
@@ -54,7 +55,7 @@ if [ -f "$config_file" ] && [ -r "$config_file" ]; then
 fi
 if [ -n "$configured" ]; then
     if [ ! -x "$configured" ]; then
-        printf '%s\n' "Context Guard interpreter configuration is missing or not executable: $configured. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
+        printf '%s\n' "Context Guard interpreter configuration is missing or not executable: $configured. Please review the Context Guard installation in Codex Plugins and the supported Python on PATH, or correct $config_file." >&2
         exit 2
     fi
     if [ "${1:-}" = "hook" ]; then
@@ -69,9 +70,9 @@ if [ -n "$configured" ]; then
         }
         hook_exit=0
         if [ "$router" -eq 1 ]; then
-            "$configured" -S "$target" "$@" >"$hook_out" || hook_exit=$?
+            "$configured" -B -S "$target" "$@" >"$hook_out" || hook_exit=$?
         else
-            "$configured" "$target" "$@" >"$hook_out" || hook_exit=$?
+            "$configured" -B "$target" "$@" >"$hook_out" || hook_exit=$?
         fi
         if [ "$hook_exit" -eq 0 ]; then
             # Hook wire results are always JSON objects (at minimum "{}" for
@@ -97,7 +98,7 @@ if not isinstance(payload, dict):
 print("CG-HOOK-WIRE-VERIFIED")
 ' "$hook_out" 2>/dev/null) || wire_rc=$?
             if [ "$wire_rc" -ne 0 ] || [ "$wire_noise" != "CG-HOOK-WIRE-VERIFIED" ]; then
-                printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced output that is not a Hook wire result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $config_file." >&2
+                printf '%s\n' "Context Guard interpreter configuration is not a working Context Guard runtime: $configured produced output that is not a Hook wire result. Please review the Context Guard installation in Codex Plugins and the supported Python on PATH, or correct $config_file." >&2
                 rm -f "$hook_out"
                 exit 2
             fi
@@ -107,29 +108,74 @@ print("CG-HOOK-WIRE-VERIFIED")
         exit "$hook_exit"
     fi
     if [ "$router" -eq 1 ]; then
-        exec "$configured" -S "$target" "$@"
+        exec "$configured" -B -S "$target" "$@"
     fi
-    exec "$configured" "$target" "$@"
+    exec "$configured" -B "$target" "$@"
 fi
+
+probe_python_runtime() {
+    python_probe=""
+    python_probe=$("$1" -B -I -S -c '
+import sys
+if sys.version_info < (3, 10):
+    raise SystemExit(2)
+print("CG-PYTHON-3.10-RUNTIME-VERIFIED")
+' 2>/dev/null) || return 1
+    [ "$python_probe" = "CG-PYTHON-3.10-RUNTIME-VERIFIED" ]
+}
 
 for candidate in python3.14 python3.13 python3.12 python3.11 python3.10; do
     if command -v "$candidate" >/dev/null 2>&1; then
         if [ "$router" -eq 1 ]; then
-            exec "$candidate" -S "$target" "$@"
+            exec "$candidate" -B -S "$target" "$@"
         fi
-        exec "$candidate" "$target" "$@"
+        exec "$candidate" -B "$target" "$@"
     fi
 done
 
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1 \
-        && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+        && probe_python_runtime "$candidate"; then
         if [ "$router" -eq 1 ]; then
-            exec "$candidate" -S "$target" "$@"
+            exec "$candidate" -B -S "$target" "$@"
         fi
-        exec "$candidate" "$target" "$@"
+        exec "$candidate" -B "$target" "$@"
     fi
 done
 
-printf '%s\n' 'Context Guard requires Python 3.10 or newer, but no supported interpreter was found on PATH. If a supported Python is installed outside PATH, reinstall Context Guard with scripts/manage_plugin.py --apply so its location is bound for GUI launches.' >&2
+# GUI hosts may have a system-only PATH. Only after normal PATH discovery
+# fails, probe these explicit global installation locations. Never enumerate
+# personal directories or create an interpreter binding. A successful exit by
+# itself is insufficient: the isolated Python probe must emit its exact marker.
+for candidate in \
+    /opt/homebrew/bin/python3 \
+    /opt/homebrew/bin/python3.14 \
+    /opt/homebrew/bin/python3.13 \
+    /opt/homebrew/bin/python3.12 \
+    /opt/homebrew/bin/python3.11 \
+    /opt/homebrew/bin/python3.10 \
+    /usr/local/bin/python3 \
+    /usr/local/bin/python3.14 \
+    /usr/local/bin/python3.13 \
+    /usr/local/bin/python3.12 \
+    /usr/local/bin/python3.11 \
+    /usr/local/bin/python3.10 \
+    /opt/anaconda3/bin/python3 \
+    /opt/anaconda3/bin/python \
+    /Library/Frameworks/Python.framework/Versions/3.14/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 \
+    /Library/Frameworks/Python.framework/Versions/Current/bin/python3
+do
+    [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+    probe_python_runtime "$candidate" || continue
+    if [ "$router" -eq 1 ]; then
+        exec "$candidate" -B -S "$target" "$@"
+    fi
+    exec "$candidate" -B "$target" "$@"
+done
+
+printf '%s\n' 'Context Guard requires Python 3.10 or newer, but no supported interpreter was found on PATH or in the supported global installation locations. Make Python discoverable to the GUI host or configure interpreter.conf with its absolute path.' >&2
 exit 2

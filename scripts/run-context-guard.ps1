@@ -47,9 +47,10 @@ if ($isHook) {
 # starts Python exactly once. The `py` launcher takes its version from
 # arguments and the generic `python`/`python3` names say nothing about the
 # version, so those candidates keep a capability probe for equivalent safety.
+# Every runtime starts with -B so consumed caches do not gain bytecode.
 # The stdlib-only Hook router additionally runs with -S (skip site); the
 # heavy core and every other CLI subcommand do not.
-# Installer-bound interpreter (RR08): manage_plugin.py records the verified
+# Optional interpreter binding: an existing configuration records the verified
 # interpreter absolute path in a plain single-line file under the selected
 # HOME so a GUI host whose PATH lacks the installed Python still starts the
 # Hook. The file is read with plain content (no eval, no profile sourcing)
@@ -61,7 +62,7 @@ $configRoot = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $env:USE
 $configFile = Join-Path $configRoot "context-guard\interpreter.conf"
 if (Test-Path -LiteralPath $configFile -PathType Leaf) {
     try {
-        # The installer writes BOM-less UTF-8, including non-ASCII paths.
+        # Existing bindings use BOM-less UTF-8, including non-ASCII paths.
         # PS5.1 Get-Content otherwise guesses the system ANSI code page.
         $configUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
         $configReader = New-Object System.IO.StreamReader($configFile, $configUtf8, $false)
@@ -89,7 +90,7 @@ if (Test-Path -LiteralPath $configFile -PathType Leaf) {
 }
 if ($configuredInterpreter) {
     if (-not (Test-Path -LiteralPath $configuredInterpreter -PathType Leaf)) {
-        [Console]::Error.WriteLine("Context Guard interpreter configuration is missing or not executable: $configuredInterpreter. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
+        [Console]::Error.WriteLine("Context Guard interpreter configuration is missing or not executable: $configuredInterpreter. Please review the Context Guard installation in Codex Plugins and the supported Python on PATH, or correct $configFile.")
         Write-HookTraceEnd 2
         exit 2
     }
@@ -132,9 +133,9 @@ runpy.run_path(target, run_name='__main__')
             # The nonzero sentinel also refuses a command that never starts.
             $global:LASTEXITCODE = 2
             if (-not $isSessionEnd) {
-                $runtimeNoise = & $configuredInterpreter -S -c $captureCode $hookOut.FullName $runtime @runtimeArgs
+                $runtimeNoise = & $configuredInterpreter -B -S -c $captureCode $hookOut.FullName $runtime @runtimeArgs
             } else {
-                $runtimeNoise = & $configuredInterpreter -c $captureCode $hookOut.FullName $runtime @runtimeArgs
+                $runtimeNoise = & $configuredInterpreter -B -c $captureCode $hookOut.FullName $runtime @runtimeArgs
             }
             $hookExitCode = $global:LASTEXITCODE
             if ($hookExitCode -eq 0) {
@@ -168,7 +169,7 @@ print('CG-HOOK-WIRE-VERIFIED')
                     $ErrorActionPreference = $savedWirePreference
                 }
                 if ($runtimeNoise -or $wireExitCode -ne 0 -or ((-join $wireNoise) -ne "CG-HOOK-WIRE-VERIFIED")) {
-                    [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced output that is not a Hook wire result. Reinstall Context Guard with scripts/manage_plugin.py --apply, or correct $configFile.")
+                    [Console]::Error.WriteLine("Context Guard interpreter configuration is not a working Context Guard runtime: $configuredInterpreter produced output that is not a Hook wire result. Please review the Context Guard installation in Codex Plugins and the supported Python on PATH, or correct $configFile.")
                     Write-HookTraceEnd 2
                     exit 2
                 }
@@ -189,9 +190,9 @@ print('CG-HOOK-WIRE-VERIFIED')
     # output directly); hook events took the verified path above.
     $global:LASTEXITCODE = 2
     if (-not $isSessionEnd) {
-        & $configuredInterpreter -S $runtime @runtimeArgs
+        & $configuredInterpreter -B -S $runtime @runtimeArgs
     } else {
-        & $configuredInterpreter $runtime @runtimeArgs
+        & $configuredInterpreter -B $runtime @runtimeArgs
     }
     $hookExitCode = $global:LASTEXITCODE
     Write-HookTraceEnd $hookExitCode
@@ -292,16 +293,16 @@ foreach ($candidate in $candidates) {
     }
     $global:LASTEXITCODE = 2
     if ($isHook -and -not $isSessionEnd) {
-        & $resolved.Source @($candidate.Prefix) -S $runtime @runtimeArgs
+        & $resolved.Source @($candidate.Prefix) -B -S $runtime @runtimeArgs
     } else {
-        & $resolved.Source @($candidate.Prefix) $runtime @runtimeArgs
+        & $resolved.Source @($candidate.Prefix) -B $runtime @runtimeArgs
     }
     $hookExitCode = $global:LASTEXITCODE
     Write-HookTraceEnd $hookExitCode
     exit $hookExitCode
 }
 
-[Console]::Error.WriteLine("Context Guard requires Python 3.10 or newer, but no supported interpreter was found on PATH. If a supported Python is installed outside PATH, reinstall Context Guard with scripts/manage_plugin.py --apply so its location is bound for GUI launches.")
+[Console]::Error.WriteLine("Context Guard requires Python 3.10 or newer, but no supported interpreter was found on PATH. If a supported Python is installed outside PATH, make Python discoverable to the GUI host or configure interpreter.conf with its absolute path.")
 Write-HookTraceEnd 2
 exit 2
 } catch {

@@ -28,6 +28,11 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
 
+# Script entrypoints must not mutate consumed plugin caches. Library imports
+# retain the embedding process's existing bytecode policy.
+if __name__ == "__main__":
+    sys.dont_write_bytecode = True
+
 try:
     from cg_instruction import action_matches as lexical_action_matches
     from cg_instruction import fragments, governed_test_action, instruction_text
