@@ -1,12 +1,12 @@
-name: Original fixture on Windows 2022 (diagnosis only)
+name: Windows module timeline (diagnosis only)
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   observe:
-    name: Original four-Hook fixture / Windows 2022 Python 3.12
-    runs-on: windows-2022
+    name: Unchanged host expression / complete redacted timeline
+    runs-on: windows-2025
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -21,19 +21,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - run: python -m pip install --disable-pip-version-check "uv==0.12.18"
-      - name: Unmodified original four-Hook fixture, no warmup
-        working-directory: subject
+      - name: One 30-second observation with original environment and owned cleanup
         shell: pwsh
         run: |
-          uv run --locked --only-group test --python python python -B -m pytest -q `
-            tests/test_marketplace_artifact.py::MarketplaceArtifactTests::test_real_hook_does_not_generate_bytecode_or_break_full_parity `
-            --junitxml="$env:RUNNER_TEMP/original-fixture-windows2022.xml"
+          python -B diagnostic/tools/validation/module_timeline_probe.py --subject-root subject --output "$env:RUNNER_TEMP/module-timeline.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: original-fixture-windows2022
+          name: module-timeline
           path: |
-            ${{ runner.temp }}/original-fixture-windows2022.xml
-          if-no-files-found: warn
+            ${{ runner.temp }}/module-timeline.json
+          if-no-files-found: error
           retention-days: 7
