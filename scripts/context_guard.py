@@ -10,6 +10,7 @@ import datetime as dt
 import errno
 import hashlib
 import hmac
+import itertools
 import json
 import mimetypes
 import ntpath
@@ -2521,8 +2522,18 @@ def atomic_write_text(path: Path, content: str, *, committed_state: bool = False
         raise
 
 
+def _json_text_blocks(value: Any) -> Iterator[str]:
+    """Coalesce encoder fragments without retaining its full fragment list."""
+    fragments = json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(
+        value, _one_shot=True)
+    while block := list(itertools.islice(fragments, 256)):
+        yield "".join(block)
+    yield "\n"
+
+
 def atomic_write_json(path: Path, value: Any, *, committed_state: bool = False) -> None:
-    content = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    # Finish encoding before touching the filesystem, including on bad input.
+    content = "".join(_json_text_blocks(value))
     if committed_state:
         atomic_write_text(path, content, committed_state=True)
     else:

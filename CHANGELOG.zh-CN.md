@@ -42,6 +42,8 @@
 - `SECURITY.md` 改为陈述真实支持线与当前 schema/Stop 协议，替换过期的 `0.7.x`/schema-5/Stop-1.1.0 表述。Schema 13、Stop 协议 5.0.0、九个 Hook、matcher 与无执行审批的默认业务工具路径不变；可选重投台账不引入迁移。
 - 历史覆盖检查可以表达三个 Windows-only helper、ACL 与 snapshot 案例已冻结的 macOS 免验范围。它们仍须有通过的源码测试和真实 Windows 证据；提交的覆盖行不能自行免验，也不能免除适用平台的原生门。
 
+- 状态写入先分组合并 JSON 编码片段，再拼接输出，以减少临时分配。磁盘中的 JSON 格式和既有私有原子发布流程保持不变。
+
 ### 验证
 
 - 精确源码检查、隔离安装、历史回归、性能与原生证据分别记录于[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。Windows DACL/继承行为与真实宿主重投是独立原生事实，不由源码测试代替。

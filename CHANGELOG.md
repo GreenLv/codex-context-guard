@@ -42,6 +42,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - `SECURITY.md` now states the real support line and current schema/Stop protocol instead of the retired `0.7.x`/schema-5/Stop-1.1.0 wording. Schema 13, Stop protocol 5.0.0, the nine Hook events, matchers, and the default business-tool path without execution approval are unchanged; the optional replay ledger adds no migration.
 - Historical coverage can express the frozen macOS exemption for the three Windows-only helper, ACL and snapshot cases. Each still requires passing source and actual Windows evidence; a submitted row cannot exempt itself or waive an applicable native gate.
 
+- State writes group JSON encoder fragments before assembling the output to reduce temporary allocations. The persisted JSON format and existing private atomic publication path stay unchanged.
+
 ### Validation
 
 - Exact-source checks, isolated installation, historical regression, performance and native evidence are recorded separately in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md). Windows DACL/inheritance behavior and real host re-delivery remain native facts, not source-test conclusions.
