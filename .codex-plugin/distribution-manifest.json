@@ -83,7 +83,7 @@
     "scripts/cg_stop3.py": "c18e57fa154cfbc937fe4783ed473e88d53f1feb8bfd0d220c787e2a2fdff49d",
     "scripts/check_incident_coverage.py": "f1e450dbdeffb6ab729b96be15badbc77c0583e9a1d7d8efe31a0b95e5fa2315",
     "scripts/check_phase3_transition.py": "7698308d89d3bf2cdced8e738a7cbeb4913eddf623536bdbc0ff5a19a27eef93",
-    "scripts/context_guard.py": "46417aa92b9d05b56c2405829ccde17c9d5d70b5be22a841203e1e20126912f0",
+    "scripts/context_guard.py": "f30c1b2ab55da59914f2bd6ea46d8a7ee37cab47eac45cc7cc1a7a026ce9acb8",
     "scripts/incident_corpus.py": "d9f8d0176ddd6caf288bac557ca3868f796d02e54a131c8dca0ac757838e2b3f",
     "scripts/reference_digest_encoder.py": "454c18806618f9da09e7d95709fcd70bd08def724d24c438ee08952e7494267d",
     "scripts/run-context-guard.ps1": "e0e264a048c1e89f26a10d5ba1b02ec69c68db7bd2b5cd0e091b3127fb22d498",

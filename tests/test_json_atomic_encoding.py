@@ -1,6 +1,7 @@
 """Byte-preserving JSON fragment coalescing and unchanged atomic publication."""
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import stat
@@ -34,13 +35,34 @@ class JsonAtomicEncodingTests(unittest.TestCase):
                             for i in range(500)]}]
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / 'state.json'
+            reference = Path(tmp) / 'reference.json'
             for value in values:
                 with self.subTest(kind=type(value).__name__):
-                    expected = (json.dumps(value, ensure_ascii=False, indent=2) + '\n').encode()
+                    content = json.dumps(value, ensure_ascii=False, indent=2) + '\n'
+                    cg.atomic_write_text(reference, content)
+                    expected = reference.read_bytes()
                     cg.atomic_write_json(target, value)
                     self.assertEqual(target.read_bytes(), expected)
                     if os.name != 'nt':
                         self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_encoder_list_and_iterator_returns_finish_with_original_options(self):
+        value = {'values': list(range(300))}
+        expected = json.dumps(value, ensure_ascii=False, indent=2) + '\n'
+        pieces = list(json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(
+            value, _one_shot=True))
+        for returned in (pieces, tuple(pieces), iter(pieces)):
+            with self.subTest(returned=type(returned).__name__):
+                encoder = mock.Mock()
+                encoder.iterencode.return_value = returned
+                with mock.patch.object(cg.json, 'JSONEncoder', return_value=encoder) as factory:
+                    # A restarted list on old code yields forever. Bound the
+                    # negative control instead of allowing a hang or OOM.
+                    blocks = list(itertools.islice(cg._json_text_blocks(value), 4))
+                self.assertEqual(''.join(blocks), expected)
+                self.assertEqual(blocks[-1], '\n')
+                factory.assert_called_once_with(ensure_ascii=False, indent=2)
+                encoder.iterencode.assert_called_once_with(value, _one_shot=True)
 
     def test_encoding_failures_precede_any_filesystem_change(self):
         cyclic = []

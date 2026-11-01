@@ -2523,9 +2523,10 @@ def atomic_write_text(path: Path, content: str, *, committed_state: bool = False
 
 
 def _json_text_blocks(value: Any) -> Iterator[str]:
-    """Coalesce encoder fragments without retaining its full fragment list."""
-    fragments = json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(
-        value, _one_shot=True)
+    """Coalesce encoder fragments from an iterator or reusable iterable."""
+    # Keep one cursor even if the encoder returns a reusable iterable.
+    fragments = iter(json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(
+        value, _one_shot=True))
     while block := list(itertools.islice(fragments, 256)):
         yield "".join(block)
     yield "\n"
