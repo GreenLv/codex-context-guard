@@ -6,6 +6,8 @@ HEADs never share identity, and unknown file types are rejected rather than
 encoded as missing.
 """
 
+import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -169,6 +171,66 @@ class PreparedIdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(completed.stdout)
                          ["prepared_source_sha256"],
                          tool_identity["prepared_source_sha256"])
+
+
+class RuntimeIdentityTests(unittest.TestCase):
+    def expected(self, files):
+        return hashlib.sha256(json.dumps(
+            {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()},
+            ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def test_one_candidate_hasher_supports_legacy_without_executing_target_helpers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "scripts").mkdir()
+            files = {"scripts/manage_plugin.py": b"raise AssertionError('legacy must not execute')\n"}
+            for name, raw in files.items():
+                (root / name).write_bytes(raw)
+            self.assertFalse((root / "scripts/artifact_identity.py").exists())
+            self.assertEqual(ai.runtime_tree_digest(root), self.expected(files))
+            # Even a target-local helper is data, never the measuring authority.
+            files["scripts/artifact_identity.py"] = b"def tree_manifest(root): return {}\n"
+            (root / "scripts/artifact_identity.py").write_bytes(files["scripts/artifact_identity.py"])
+            self.assertEqual(ai.runtime_tree_digest(root), self.expected(files))
+            before = ai.runtime_tree_digest(root)
+            files["scripts/manage_plugin.py"] += b"# changed\n"
+            (root / "scripts/manage_plugin.py").write_bytes(files["scripts/manage_plugin.py"])
+            self.assertNotEqual(ai.runtime_tree_digest(root), before)
+            self.assertEqual(ai.runtime_tree_digest(root), self.expected(files))
+
+    def test_perf_driver_uses_same_candidate_hasher_on_legacy_tree(self):
+        spec = importlib.util.spec_from_file_location("identity_perf_control",
+            REPO_ROOT / "tools/validation/perf_ab.py")
+        driver = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(driver)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "assets").mkdir()
+            raw = b"synthetic legacy runtime bytes"
+            (root / "assets/fixture").write_bytes(raw)
+            hasher = driver.load_hasher(REPO_ROOT)
+            self.assertEqual(driver.tree_digest(root, hasher), self.expected({"assets/fixture":raw}))
+            self.assertEqual(driver.tree_digest(root, hasher), ai.runtime_tree_digest(root))
+            (root / "assets/fixture").unlink()
+            self.assertEqual(driver.tree_digest(root, hasher), "unavailable")
+
+    def test_missing_empty_and_linked_runtime_are_not_fabricated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises((OSError, RuntimeError)):
+                ai.runtime_tree_digest(root / "missing")
+            with self.assertRaisesRegex(RuntimeError, "empty"):
+                ai.runtime_tree_digest(root)
+            (root / "assets").mkdir()
+            (root / "payload").write_bytes(b"outside runtime roots")
+            try:
+                (root / "assets/link").symlink_to(root / "payload")
+            except OSError as exc:
+                if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+                    self.skipTest("Windows host lacks symlink creation privilege")
+                raise
+            with self.assertRaisesRegex(RuntimeError, "links|reparse"):
+                ai.runtime_tree_digest(root)
 
 
 if __name__ == "__main__":

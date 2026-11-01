@@ -98,10 +98,12 @@ def prepared_source_identity(root: Path) -> dict:
 
 
 def runtime_tree_digest(root: Path) -> str:
+    # Bind the measuring tool's one implementation, not code in the measured
+    # tree: older references need not contain this candidate's helper module.
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "artifact_identity", Path(root).resolve() / "scripts" / "artifact_identity.py")
+        "artifact_identity", Path(__file__).resolve().parents[2] / "scripts" / "artifact_identity.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     manifest = module.tree_manifest(Path(root).resolve())
