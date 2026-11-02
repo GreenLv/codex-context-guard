@@ -494,7 +494,7 @@ class PublicContractTests(unittest.TestCase):
              "safe in-plugin relative path"),
             ({"composerIcon": "./assets/icon.svg", "logo": "/etc/icon.svg"},
              "safe in-plugin relative path"),
-            ({"composerIcon": "./assets/icon.svg", "logo": "\\host\icon.svg"},
+            ({"composerIcon": "./assets/icon.svg", "logo": "\\\\host\\\\icon.svg"},
              "safe in-plugin relative path"),
             ({"composerIcon": "./assets/icon.svg", "logo": "./assets/icon.svg",
               "screenshots": ["./assets/icon.svg"]}, "screenshots must stay omitted"),

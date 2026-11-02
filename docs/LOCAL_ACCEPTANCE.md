@@ -23,6 +23,21 @@ Source-level results at the candidate (macOS, arm64, Python 3.12.2):
   historical release gate stays open on exactly the seven declared
   native-observation rows, tracked case by case and not waived.
 
+- Exact-artifact acceptance on macOS ran the portable official-marketplace
+  route for the candidate ZIP: source identity, exact release ZIP, isolated
+  install, distribution and runtime-tree parity, installed lifecycle smoke,
+  strict second no-op, and old-cache fixture preservation all passed.
+- A pre-registered scoped formal performance batch (perf-scoped/v1, 20
+  attempts per side, both sides zero failures) compared the candidate against
+  the exact published 0.16.0 artifact as baseline. `user_prompt_active` —
+  the cell the acceptance-classification change touches — is
+  WITHIN-DECLARED-BUDGET (median ratio 0.9687, 99% CI below 1). The
+  `posttool_active` p95 pair is INCONCLUSIVE (CI crosses 1; point estimate
+  0.9745); per the contract it is retained as inconclusive, not read as a
+  pass, and no samples were added. The full historical Windows W1/W2
+  comparison domain remains explicitly unfinished and is not covered by this
+  scoped batch.
+
 ### Plugin metadata: Skill license and listing logo
 
 GitHub Code scanning reported two fixable metadata notes against the 0.16.0
