@@ -84,6 +84,46 @@ def instruction_text(text: str, *, preserve_newlines: bool = True) -> str:
                    for part in fragments(text))
 
 
+_LOCATOR_PREFIX = re.compile(r"(?:https?://|codex://|[A-Za-z]:[\\/]|\\\\|/|\.{1,2}[\\/]|~/)", re.I)
+_QUOTE_EDGES = '"\x27`“”‘’「」『』'
+
+
+def _is_locator(part: Fragment) -> bool:
+    """Only a complete, unambiguous locator is masked for classification.
+
+    Quoted prose, block quotes and code stay visible, so a quoted duty keeps
+    its words. A quote wrapping one whole locator is that locator. An
+    unprefixed relative object needs a file extension or two separators;
+    "验证/测试" stays prose. Ambiguous CJK-adjacent objects stay visible.
+    """
+    if part.kind != "object":
+        return False
+    text = part.text
+    if text[:1] in _QUOTE_EDGES:
+        inner = text.strip(_QUOTE_EDGES)
+        return bool(inner) and "\n" not in inner and bool(
+            _LOCATOR_PREFIX.match(inner) or _bare_locator(inner))
+    return bool(_LOCATOR_PREFIX.match(text) or _bare_locator(text))
+
+
+def _bare_locator(text: str) -> bool:
+    if re.search(r"\s", text):
+        return False
+    segments = re.split(r"[\\/]", text)
+    return len(segments) >= 3 or bool(re.search(r"\.[A-Za-z0-9]{1,8}$", segments[-1]))
+
+
+def locator_masked_text(text: str) -> str:
+    """Position-preserving keyword view with complete locators blanked.
+
+    Classification only: callers keep the original text for item content,
+    hashes and spans. Newlines inside an object are retained.
+    """
+    return "".join("".join("\n" if char == "\n" else " " for char in part.text)
+                   if _is_locator(part) else part.text
+                   for part in fragments(text))
+
+
 def action_matches(pattern: re.Pattern[str], text: str) -> list[re.Match[str]]:
     """Return original-source matches whose action is outside opaque data.
 

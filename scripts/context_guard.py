@@ -36,7 +36,12 @@ if __name__ == "__main__":
 
 try:
     from cg_instruction import action_matches as lexical_action_matches
-    from cg_instruction import fragments, governed_test_action, instruction_text
+    from cg_instruction import (
+        fragments,
+        governed_test_action,
+        instruction_text,
+        locator_masked_text,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "cg_instruction":
         raise
@@ -54,6 +59,7 @@ except ModuleNotFoundError as exc:
     fragments = _instruction_module.fragments
     governed_test_action = _instruction_module.governed_test_action
     instruction_text = _instruction_module.instruction_text
+    locator_masked_text = _instruction_module.locator_masked_text
 
 PRODUCT_VERSION = "0.16.0"
 SCHEMA_VERSION = 13
@@ -14575,16 +14581,18 @@ def score_complexity(text: str) -> tuple[int, list[str]]:
     if bullets >= 4:
         score += 2
         reasons.append("checklist")
+    # Words inside a complete locator ("/work/测试/a.txt") state no work.
+    view = locator_masked_text(text)
     if re.search(
         r"(implement|build|refactor|migrate|install|deploy|测试|实现|构建|迁移|安装|部署)",
-        text,
+        view,
         re.I,
     ):
         score += 2
         reasons.append("implementation")
     if re.search(
         r"(verify|validate|acceptance|doctor|smoke test|验收|验证|不得|必须|不要|边界)",
-        text,
+        view,
         re.I,
     ):
         score += 2
@@ -14611,18 +14619,22 @@ def extract_acceptance(text: str) -> list[str]:
         line = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", raw_line).strip()
         if not line or len(line) < 6 or len(line) > 500:
             continue
+        # Classify the words outside complete locators; the item keeps the
+        # original line. A directory named test/验收 states no rule, while
+        # the governed "run test_*.py" form still names a requested run.
+        view = locator_masked_text(line)
         if not re.search(
             r"(must|should|verify|validate|test|accept|do not|不得|必须|确认|验证|测试|验收|门禁|不进入|不保存)",
-            line,
+            view,
             re.I,
-        ):
+        ) and governed_test_action(line) is None:
             continue
         # Politeness and question punctuation never erase an obligation.
         # Only a reply-only inquiry with no normative constraint is excluded.
         inquiry = _information_delivery_item({"text": line}) or bool(re.search(
             r"^(?:帮我|请)?确认一下.{0,80}(?:对不对|是否属实)$", line
         ))
-        if not ACCEPTANCE_NORMATIVE_RE.search(line) and inquiry:
+        if not ACCEPTANCE_NORMATIVE_RE.search(view) and inquiry:
             continue
         items.append(line)
     return list(dict.fromkeys(items))[:32]

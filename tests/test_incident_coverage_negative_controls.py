@@ -614,3 +614,90 @@ class DefaultCliAndIdentityControls(unittest.TestCase):
         self.assertEqual(ai.prepared_source_identity(REPO_ROOT)
                          ["prepared_source_sha256"],
                          identity["prepared_source_sha256"])
+
+
+class ReleaseGateConsumerControls(unittest.TestCase):
+    """rc 0 is not a release pass: the consumer must fail each closure gap.
+
+    Forged reports are used; the underlying data is never edited to make a
+    pending row pass.
+    """
+
+    def active_ids(self):
+        index, coverage = load_pair()
+        rows = coverage["cases"] + coverage["legacy"]
+        return [row["id"] for row in rows
+                if row.get("status") not in ("superseded", "legacy-superseded")]
+
+    def base_report(self):
+        return {"valid": True, "errors": [],
+                "candidate_binding": {"prepared_source_sha256": "a" * 64},
+                "release_gate": {"closes_release_gate": True,
+                                 "blocking_rows": []},
+                "execution_receipts": {}}
+
+    def test_clean_report_with_complete_passing_receipts_releases(self):
+        receipts = {rid: {"executed": True,
+                          "nodeids": ["tests/test_x.py::t"],
+                          "outcomes": {"tests/test_x.py::t": "passed"}}
+                    for rid in self.active_ids()}
+        report = self.base_report()
+        report["execution_receipts"] = receipts
+        self.assertEqual(cic.release_gate_failures(report, self.active_ids()), [])
+
+    def test_pending_blocking_row_keeps_gate_closed(self):
+        report = self.base_report()
+        report["release_gate"] = {"closes_release_gate": False,
+                                  "blocking_rows": ["CGI-1"]}
+        failures = cic.release_gate_failures(report, self.active_ids())
+        self.assertTrue(any("closes_release_gate is not true" in f
+                            and "CGI-1" in f for f in failures), failures)
+        self.assertTrue(any("no execution receipts" in f for f in failures))
+
+    def test_valid_report_without_receipts_is_rejected(self):
+        report = self.base_report()
+        report["execution_receipts"] = None
+        failures = cic.release_gate_failures(report, self.active_ids())
+        self.assertIn("no execution receipts (run with --execute)", failures)
+
+    def test_missing_row_receipt_and_skipped_node_are_rejected(self):
+        receipts = {rid: {"executed": True,
+                          "nodeids": ["tests/test_x.py::t"],
+                          "outcomes": {"tests/test_x.py::t": "passed"}}
+                    for rid in self.active_ids()}
+        del receipts[self.active_ids()[0]]
+        receipts[self.active_ids()[1]] = {
+            "executed": True, "nodeids": ["tests/test_x.py::t"],
+            "outcomes": {"tests/test_x.py::t": "skipped"}}
+        report = self.base_report()
+        report["execution_receipts"] = receipts
+        failures = cic.release_gate_failures(report, self.active_ids())
+        self.assertTrue(any(f"no receipt for active rows: {self.active_ids()[0]}"
+                            in f for f in failures), failures)
+        self.assertTrue(any(self.active_ids()[1] in f
+                            and "skipped" in f for f in failures), failures)
+
+    def test_partial_outcome_inventory_and_invalid_report_are_rejected(self):
+        receipts = {self.active_ids()[0]: {"executed": True,
+                                           "nodeids": ["tests/test_x.py::a",
+                                                       "tests/test_x.py::b"],
+                                           "outcomes": {
+                                               "tests/test_x.py::a": "passed"}}}
+        report = self.base_report()
+        report["valid"] = False
+        report["errors"] = ["forged digest"]
+        report["execution_receipts"] = receipts
+        failures = cic.release_gate_failures(report, self.active_ids())
+        self.assertIn("validation report is not valid", failures)
+        self.assertTrue(any("incomplete execution receipt" in f
+                            for f in failures), failures)
+
+    def test_cli_release_gate_exit_3_without_execute(self):
+        completed = subprocess.run(
+            [sys.executable, "scripts/check_incident_coverage.py", ".",
+             "--release-gate", "--report", "/dev/null"],
+            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=300)
+        self.assertEqual(completed.returncode, 3)
+        self.assertIn("no execution receipts", completed.stderr)
+        self.assertTrue(any("closes_release_gate is not true" in line
+                            for line in completed.stderr.splitlines()))

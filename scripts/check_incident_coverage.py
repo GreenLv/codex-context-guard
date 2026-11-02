@@ -6,8 +6,14 @@ runtime, status, successor lineage, record digest). Validation is record by
 record: a forged id, a swapped title, a fabricated successor or a mismatched
 lineage fails even when counts match. Test locators must resolve to a real
 file, a real class and a method that actually belongs to that class. With
-``--execute``, every active row's first locator runs through pytest and its
-exit status becomes an execution receipt that must pass.
+``--execute``, EVERY required nodeid of every active row runs through pytest
+(deduplicated across rows, never only the first) and each must pass.
+
+Exit code 0 means only that the data and any executed nodes are valid; the
+report's ``release_gate.closes_release_gate`` can still be false. A release
+consumer passes ``--release-gate`` (with ``--execute``): it exits 3 unless the
+gate closes, the receipt inventory covers every active row, and every
+required node passed. See ``release_gate_failures``.
 
 Import ``validate_coverage`` for adversarial self-checks (see
 tests/test_incident_coverage_negative_controls.py).
@@ -553,6 +559,43 @@ def _junit_node_passed(root, nodeid: str) -> bool:
             and not _junit_has_bad_child(root, nodeid))
 
 
+def release_gate_failures(summary: dict, active_ids: list) -> list[str]:
+    """Why a validation report cannot release; empty only when it can.
+
+    A valid report (rc 0) is necessary, not sufficient: pending rows, a
+    missing or partial receipt inventory, or any non-passed node (skip,
+    xfail, error, zero collection) keeps the historical gate closed.
+    """
+    failures: list[str] = []
+    if not summary.get("valid") or summary.get("errors"):
+        failures.append("validation report is not valid")
+    gate = summary.get("release_gate") or {}
+    if gate.get("closes_release_gate") is not True:
+        blocking = gate.get("blocking_rows") or []
+        failures.append(f"closes_release_gate is not true ({len(blocking)} "
+                        f"blocking rows: {', '.join(map(str, blocking))})")
+    if not (summary.get("candidate_binding") or {}).get("prepared_source_sha256"):
+        failures.append("report has no candidate binding")
+    receipts = summary.get("execution_receipts")
+    if not receipts:
+        return failures + ["no execution receipts (run with --execute)"]
+    missing = sorted(str(rid) for rid in active_ids if rid not in receipts)
+    if missing:
+        failures.append(f"no receipt for active rows: {', '.join(missing)}")
+    for rid, receipt in sorted(receipts.items()):
+        outcomes = receipt.get("outcomes") or {}
+        nodeids = receipt.get("nodeids") or []
+        if (not receipt.get("executed") or not nodeids
+                or set(outcomes) != set(nodeids)):
+            failures.append(f"{rid}: incomplete execution receipt")
+            continue
+        bad = sorted(f"{node}={outcome}" for node, outcome in outcomes.items()
+                     if outcome != "passed")
+        if bad:
+            failures.append(f"{rid}: required nodes did not pass: {', '.join(bad)}")
+    return failures
+
+
 def prepared_source_identity(root: Path) -> dict:
     """Canonical prepared-source identity; delegates to the ONE shared
     implementation in tools/validation/acceptance_identity.py (v2: HEAD
@@ -581,8 +624,12 @@ def main() -> int:
         help="reviewed incomplete-case exception entries; a coverage row "
              "citing incomplete-exception:<id> must match an entry here")
     parser.add_argument("--execute", action="store_true",
-                        help="run each active row's first in-repo locator and "
-                             "require a passing execution receipt")
+                        help="run every required in-repo nodeid of each active "
+                             "row and require a passing execution receipt")
+    parser.add_argument("--release-gate", action="store_true",
+                        help="release consumer: exit 3 unless --execute ran, "
+                             "the report is valid, closes_release_gate is true "
+                             "and every required node of every active row passed")
     parser.add_argument("--report")
     args = parser.parse_args()
     root = Path(args.root).resolve()
@@ -654,6 +701,14 @@ def main() -> int:
         "execution_receipts": receipts,
         "errors": errors, "valid": not errors,
     }
+    gate_failures: list[str] = []
+    if args.release_gate:
+        active_ids = [row.get("id") for row in rows
+                      if row.get("status") not in ("superseded", "legacy-superseded")]
+        gate_failures = release_gate_failures(summary, active_ids)
+        summary["release_gate"]["consumer"] = {
+            "mode": "release", "passed": not gate_failures,
+            "failures": gate_failures}
     print(json.dumps(summary, indent=2, default=str))
     if args.report:
         Path(args.report).write_text(
@@ -662,6 +717,10 @@ def main() -> int:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
+    if gate_failures:
+        for failure in gate_failures:
+            print(f"RELEASE GATE: {failure}", file=sys.stderr)
+        return 3
     return 0
 
 
