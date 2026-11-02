@@ -121,6 +121,33 @@ class HolEvidenceTests(unittest.TestCase):
         for name, raw in before.items():
             self.assertEqual((self.root / name).read_bytes(), raw)
 
+    def test_action_scanner_version_is_independent_of_local_validation_lock(self):
+        # The Action installs its own pinned scanner, separately from uv's
+        # local validation environment. Both identities must remain explicit.
+        action_version = "3.58.0"
+        self.payload["scannerVersion"] = action_version
+        self.sarif["runs"][0]["tool"]["driver"]["version"] = action_version
+        self.write_reports()
+        lock = (self.root / "requirements-lock.txt").read_bytes()
+        result = self.collect(version=action_version)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["scanner_version"], action_version)
+        self.assertEqual(next(row["sha256"] for row in result["locks"]
+                              if row["path"] == "requirements-lock.txt"),
+                         HE.digest(lock))
+        self.assertEqual((self.root / "requirements-lock.txt").read_bytes(), lock)
+
+    def test_local_scanner_reports_cannot_satisfy_the_new_action_identity(self):
+        before = {name: (self.root / name).read_bytes()
+                  for name in (HE.SARIF, HE.PAYLOAD)}
+        result = self.collect(version="3.58.0")
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("payload:payload_scanner_mismatch", result["diagnostics"])
+        self.assertIn("sarif:sarif_scanner_mismatch", result["diagnostics"])
+        self.assertEqual(result["upload_paths"], [HE.COMPANION])
+        for name, raw in before.items():
+            self.assertEqual((self.root / name).read_bytes(), raw)
+
     def test_scanner_failure_cannot_be_promoted_by_valid_reports(self):
         for outcome in ("failure", "cancelled", "skipped"):
             with self.subTest(outcome=outcome):
