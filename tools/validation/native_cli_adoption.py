@@ -352,9 +352,15 @@ def validate_receipt(receipt, subject):
             cursor += 1
     require(cursor == len(rpc), 'extra capability RPC')
     cleanup = receipt['cleanup']
-    require(isinstance(cleanup, dict) and set(cleanup) == {'owned_process_exited', 'process_group_kill_attempted',
+    cleanup_fields = {'owned_process_exited', 'process_group_kill_attempted',
             'process_group_cleanup_error', 'owned_tree_empty', 'owned_tree_no_running_members',
             'process_group_absent', 'process_group_signal_denied', 'process_group_query_denied', 'escaped_descendants'}
+    if subject['platform'] == 'Windows':
+        # OwnedProcess returns the complete Job lifecycle witness on Windows.
+        # Consume it intact; a POSIX-shaped substitute cannot prove Job cleanup.
+        cleanup_fields |= {'cleanup_complete', 'cleanup_errors', 'job_assignment_confirmed',
+                           'job_close_confirmed', 'process_created'}
+    require(isinstance(cleanup, dict) and set(cleanup) == cleanup_fields
             and cleanup.get('owned_process_exited') is True
             and cleanup.get('owned_tree_no_running_members') is True
             and cleanup.get('process_group_cleanup_error') is None
@@ -363,6 +369,15 @@ def validate_receipt(receipt, subject):
                     ('owned_tree_empty', 'process_group_signal_denied', 'process_group_query_denied'))
             and (cleanup['process_group_absent'] is None or type(cleanup['process_group_absent']) is bool)
             and cleanup['escaped_descendants'] == 'not_established', 'capability owned cleanup incomplete')
+    if subject['platform'] == 'Windows':
+        require(all(cleanup[key] is True for key in
+                    ('cleanup_complete', 'job_assignment_confirmed', 'job_close_confirmed',
+                     'process_created', 'owned_tree_empty'))
+                and type(cleanup['cleanup_errors']) is list and not cleanup['cleanup_errors']
+                and cleanup['process_group_absent'] is None
+                and cleanup['process_group_signal_denied'] is False
+                and cleanup['process_group_query_denied'] is False,
+                'capability Windows Job cleanup incomplete')
     require(type(receipt['app_server_returncode']) is int, 'capability process return code unavailable')
     validate_artifacts(receipt)
     return receipt

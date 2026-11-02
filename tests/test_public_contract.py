@@ -40,6 +40,17 @@ plugin_manager = load("artifact_identity", ROOT / "scripts" / "artifact_identity
 
 
 class PublicContractTests(unittest.TestCase):
+    def test_lock_project_version_matches_plugin(self) -> None:
+        """A version bump must not leave every locked CI lane unstartable."""
+        blocks = (ROOT / "uv.lock").read_text(encoding="utf-8").split("[[package]]")
+        project = [block for block in blocks if re.search(
+            r'^name = "codex-context-guard"$', block, re.M)]
+        self.assertEqual(len(project), 1, "one root project lock entry required")
+        version = re.search(r'^version = "([^\"]+)"$', project[0], re.M)
+        self.assertIsNotNone(version)
+        manifest = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+        self.assertEqual(version.group(1), manifest["version"])
+
     def test_public_tree_uses_synthetic_task_identifiers(self) -> None:
         """Cover timestamp-shaped task IDs in both URI and plain JSON fields."""
         pattern = re.compile(

@@ -123,6 +123,10 @@ def receipt_fixture(plan, inventory):
                         'escaped_descendants': 'not_established'},
             'producer_sha256': a.sha(Path(a.__file__)), 'generator_returncode': 0, 'stderr_sha256': '0' * 64,
             'app_server_returncode': -15, 'evidence_scope': 'synthetic'}
+    if plan['platform'] == 'Windows':
+        receipt['cleanup'].update(process_group_absent=None, cleanup_complete=True,
+                                  cleanup_errors=[], job_assignment_confirmed=True,
+                                  job_close_confirmed=True, process_created=True)
     directory = Path(plan['cwd']) / ('capability-fixture-' + uuid.uuid4().hex)
     directory.mkdir()
     for name, raw in bundle.items():
@@ -570,6 +574,49 @@ class AdoptionConsumerTests(P0Harness):
 class FullAdoptionTests(P0Harness):
     ready = host_tests.IncidentHostTests.ready
     full_host = full_tests.FullV2Tests.full_host
+
+    def test_windows_owned_job_cleanup_is_consumed_without_dropping_fields(self):
+        self.full_host()
+        self.plan.update(home=str(self.root / 'home'), codex=str(self.root / 'codex'), cli_version=a.VERSION)
+        receipt = receipt_fixture(self.plan, self.inventory)
+        self.assertEqual(len(receipt['cleanup']), 14)
+        a.validate_artifacts(receipt)
+        a.validate_receipt(receipt, self.plan)
+
+    def test_incomplete_windows_job_cleanup_fails_with_matching_originals(self):
+        self.full_host()
+        self.plan.update(home=str(self.root / 'home'), codex=str(self.root / 'codex'), cli_version=a.VERSION)
+        extra = ('cleanup_complete', 'cleanup_errors', 'job_assignment_confirmed',
+                 'job_close_confirmed', 'process_created')
+        mutations = [(f'missing {key}', lambda c, key=key: c.pop(key)) for key in extra]
+        for key in ('cleanup_complete', 'job_assignment_confirmed', 'job_close_confirmed', 'process_created'):
+            for value in (False, None, 1):
+                mutations.append((f'{key}={value}', lambda c, key=key, value=value: c.update({key: value})))
+        mutations.extend((
+            ('cleanup errors', lambda c: c.update(cleanup_errors=['job_close_denied'])),
+            ('non-list errors', lambda c: c.update(cleanup_errors=None)),
+            ('unconfirmed empty job', lambda c: c.update(owned_tree_empty=False)),
+            ('POSIX absence claim', lambda c: c.update(process_group_absent=True)),
+            ('denied signal', lambda c: c.update(process_group_signal_denied=True)),
+            ('denied query', lambda c: c.update(process_group_query_denied=True)),
+            ('unknown field', lambda c: c.update(unknown=True)),
+        ))
+        for name, mutate in mutations:
+            with self.subTest(case=name):
+                receipt = receipt_fixture(self.plan, self.inventory)
+                mutate(receipt['cleanup'])
+                directory = Path(receipt['capability_directory'])
+                (directory / 'cleanup.json').write_text(a.canonical(
+                    {'cleanup': receipt['cleanup'], 'app_server_returncode': -15}))
+                catalog = {p.relative_to(directory).as_posix(): a.sha(p) for p in directory.rglob('*')
+                           if p.is_file() and p.name not in ('artifacts.json', 'receipt.json')}
+                (directory / 'artifacts.json').write_text(a.canonical(catalog))
+                receipt['catalog_sha256'] = a.sha(directory / 'artifacts.json')
+                (directory / 'receipt.json').write_text(a.canonical(receipt))
+                a.validate_artifacts(receipt)
+                with self.assertRaisesRegex(ValueError, 'cleanup'):
+                    a.validate_receipt(receipt, self.plan)
+
     def test_full_profile_and_result_adopt_same_cli_without_changing_gates(self):
         self.full_host()
         self.plan.update(home=str(self.root / 'home'), codex=str(self.root / 'codex'), cli_version=a.VERSION)
