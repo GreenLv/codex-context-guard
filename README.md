@@ -12,26 +12,26 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **0.16.1 — Unreleased (source candidate).** This version fixes the misclassification of acceptance keywords inside file paths, adds an explicit historical-coverage release gate, completes plugin listing metadata (Skill license, listing logo), and keeps session retention cleanup disabled with a persistent public follow-up document. Public availability is determined independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases); no 0.16.1 artifact is published yet, so the install instructions below still reference the latest published release, 0.16.0. Read the [release notes](docs/releases/v0.16.1.md), [upgrade boundaries](docs/SESSION_STORAGE.md), and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
+> **0.16.1 — 2026-11-03.** File names and paths containing acceptance words no longer create extra duties. This version also adds an explicit historical-coverage release gate, completes plugin listing metadata and keeps session retention cleanup disabled. Read the [release notes](docs/releases/v0.16.1.md), [upgrade boundaries](docs/SESSION_STORAGE.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.
 
-> **0.16.0 — 2026-11-01 (latest published).** This version strengthens credential redaction, protects existing exports and project permissions, verifies private-state permissions, and removes the project installer in favor of official Codex marketplace commands. It also validates session identities, isolates data by `CODEX_HOME`, and saves SessionEnd state while retaining existing sessions. Read its [release notes](docs/releases/v0.16.0.md) for the 0.16.0 upgrade actions.
+> **0.16.0 — 2026-11-01.** The previous version strengthened credential redaction and private-state permissions and moved installation to the official Codex marketplace. Its [release notes](docs/releases/v0.16.0.md) describe that upgrade.
 
 ## Install with Codex
 
-**0.16.0 — 2026-11-01.** Its experimental marketplace name
+**0.16.1 — 2026-11-03.** Its experimental marketplace name
 is `codex-context-guard-v016`; it is separate from published 0.15.1. Coexistence
 with real old tasks, independent enable/disable and GUI startup require their separate native evidence.
 
-Download the named release artifact [context-guard-0.16.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.0/context-guard-0.16.0.zip). For source validation, use the build below. Do not register
+Download the named release artifact [context-guard-0.16.1.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.1/context-guard-0.16.1.zip). For source validation, use the build below. Do not register
 a Git checkout or GitHub's automatic source ZIP as the marketplace: they carry
 repository-only files. Extract the release artifact into a stable directory you
 control and keep it there; that directory remains the official marketplace
 source for future reads and refreshes. Do not delete it after installation.
 
-Maintainers validating this 0.16.1 source candidate can build it at a new path outside the checkout (Python 3.10+). The installation steps below use the published 0.16.0 ZIP linked above:
+Maintainers can build a source artifact at a new path outside the checkout (Python 3.10+). The installation steps below use the release ZIP linked above:
 
 ```shell
-python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1-candidate.zip
+python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1.zip
 ```
 
 On Windows use `py -3` in place of `python3` in the Python commands below.
@@ -47,6 +47,8 @@ tasks depend on it, stop here until those tasks finish. If you cannot switch now
 keep the current setup, or arrange a separately configured HOME; this version
 does not establish automatic old-task continuation.
 
+If 0.16.0 is already installed under the same marketplace identity, this first-install procedure does not switch it. Finish work that depends on the existing runtime or use a separately configured HOME for new work. Preserve its versioned cache and review the new HOME's Hooks normally.
+
 Only when `context-guard@codex-context-guard-v016` is absent, register and install:
 
 ```shell
@@ -58,7 +60,7 @@ codex plugin list --json
 Keep the first add response: its `installedPath` identifies the cache to inspect.
 `plugin list` reports identity, version, enabled/installed flags and marketplace
 source, but does not provide that path. Require exactly one matching record,
-version `0.16.0`, both flags true, and this stable extracted directory as source.
+version `0.16.1`, both flags true, and this stable extracted directory as source.
 Compare every release file by replacing the quoted example with the complete
 `installedPath` value, keeping the quotes for paths containing spaces:
 

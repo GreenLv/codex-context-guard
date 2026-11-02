@@ -1,6 +1,6 @@
 # Versioning policy
 
-## 0.16.1 — Unreleased (source candidate)
+## 0.16.1 — 2026-11-03
 
 This document describes version 0.16.1. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).

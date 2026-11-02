@@ -12,24 +12,24 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.16.1 — Unreleased（源候选）。** 本版修复文件路径中验收关键词的误判，新增显式历史覆盖发布门，补全插件上架元数据（Skill 许可证、listing logo），并继续停用会话保留清理、提供持久公开跟进文档。公开可用状态由 [GitHub Release 读回](https://github.com/GreenLv/codex-context-guard/releases)单独确定；0.16.1 尚无已发布制品，下方安装说明仍指向最近发布版本 0.16.0。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
+> **0.16.1 — 2026-11-03。** 文件名或路径中的验收词不再凭空增加义务。本版还新增显式历史覆盖发布门、补全插件上架元数据，并继续停用会话保留清理。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
-> **0.16.0 — 2026-11-01（最近发布）。** 本版加强凭据脱敏，保护既有导出文件与项目目录权限，验证私有状态权限，并改用 Codex 官方市场命令安装。会话身份会先验证，数据按 `CODEX_HOME` 隔离，SessionEnd 保存状态，既有会话继续保留。0.16.0 升级动作见其[发布说明](docs/releases/v0.16.0.md)。
+> **0.16.0 — 2026-11-01。** 上一版本加强凭据脱敏和私有状态权限保护，并改用 Codex 官方市场安装。升级动作见其[发布说明](docs/releases/v0.16.0.md)。
 
 ## 用 Codex 安装
 
-**0.16.0 — 2026-11-01。** 实验性市场名为
+**0.16.1 — 2026-11-03。** 实验性市场名为
 `codex-context-guard-v016`，与已发布的 0.15.1 市场不同。真实旧任务续接、
 两个版本独立启停和 GUI 启动各自需要独立的原生证据。
 
-请下载明确命名的发行制品 [context-guard-0.16.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.0/context-guard-0.16.0.zip)；源码验证可按下方命令构建。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
+请下载明确命名的发行制品 [context-guard-0.16.1.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.1/context-guard-0.16.1.zip)；源码验证可按下方命令构建。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
 它们带有仓库维护文件。把发行 ZIP 解压到自己控制的稳定目录并一直保留，
 官方市场后续读取和刷新仍依赖此来源，不要在安装后删除。
 
-维护者验证当前 0.16.1 源候选时，可把 ZIP 构建到检出目录外的新路径，需要 Python 3.10+。下方安装步骤使用上面链接的已发布 0.16.0 ZIP：
+维护者可以用 Python 3.10+ 将源码制品构建到检出目录外的新路径。下方安装步骤使用上面链接的发行 ZIP：
 
 ```shell
-python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1-candidate.zip
+python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1.zip
 ```
 
 Windows 的 Python 命令请把 `python3` 替换为 `py -3`。还需要支持插件的
@@ -43,6 +43,8 @@ codex plugin list --json
 请先停在这里，等这些任务完成。暂不接受切换时保持原设置，或另行配置独立
 HOME；本版本不能证明旧任务会自动续接。
 
+如果相同市场标识下已经安装 0.16.0，本首次安装流程不会切换已有版本。请先完成依赖现有运行时的任务，或为新任务另行配置独立 HOME；保留既有版本缓存，并在新 HOME 中正常审阅 Hook。
+
 只有当 `context-guard@codex-context-guard-v016` 不存在时，才注册并安装：
 
 ```shell
@@ -53,7 +55,7 @@ codex plugin list --json
 
 请保存首次 add 的返回结果，用其中的 `installedPath` 确认待核验缓存。
 `plugin list` 提供身份、版本、已安装/已启用状态及市场来源，不提供缓存路径。
-必须恰好有一条完整身份匹配的记录，版本为 `0.16.0`，两项状态均为 true，
+必须恰好有一条完整身份匹配的记录，版本为 `0.16.1`，两项状态均为 true，
 来源是该稳定解压目录。请把下例双引号内的占位路径替换为完整的
 `installedPath` 返回值，并保留双引号，以支持路径中的空格：
 

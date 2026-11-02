@@ -1,11 +1,14 @@
 # Local Release Acceptance
 
-## 0.16.1 — source candidate (2026-11-03)
+## 0.16.1 — acceptance history (2026-11-03)
 
-This section records the 0.16.1 source candidate results. It is not yet a
-release acceptance: exact-artifact installation, CI/HOL and the historical
-native observations are recorded here only after they run on the frozen
-candidate.
+This section records 0.16.1 acceptance observations on their named source
+and artifact identities. Exact-artifact installation, native observations,
+CI/HOL and public release readback have separate evidence; earlier candidate
+results do not establish the outcome for a later release artifact. The final
+acceptance annex is distributed with the
+[0.16.1 release assets](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.16.1);
+it does not rewrite these historical observations.
 
 Independent acceptance reopened the locator-classification family at developer
 candidate `435205d1ac26f7fa24f22f2a7f5ada066e244672`. Bare document/media
@@ -20,9 +23,9 @@ failures, zero errors and 92 skips (30 named retired retention nodes plus
 62 platform/capability skips), with identical prepared-source inputs before
 and after execution. Repository validation, tracked-tree privacy and commit
 identity audits, the phase-3 transition audit, runtime self-test, Ruff,
-compileall and whitespace checks passed. Successor artifact, performance,
-CI/HOL and native gates remain pending until their own results are recorded. Earlier installed caches and evidence
-remain unchanged.
+compileall and whitespace checks passed. Later portable, performance and native-readiness results are identified below;
+final release evidence keeps its own subject. Earlier installed caches and
+evidence remain unchanged.
 
 The authoritative library now includes the separate locator-classification
 case as `source_fixed`, backed by the old-candidate failures and repaired
@@ -31,8 +34,35 @@ source tests. Its immutable library commit is
 contains 71 canonical plus 16 legacy records, with 62 active cases. Every
 previous record pin and lineage is unchanged. The new row requires all 15
 locator-family test methods; it records synthetic source/Hook execution on
-macOS and makes no real-model or Windows-native claim. The seven existing
-native-observation rows remain pending.
+macOS and makes no real-model or Windows-native claim. At that execution,
+the seven existing native-observation rows remained pending.
+
+At library commit `d5602f80787118d26f4a477c1e9ba74439c586d2`, the
+projection contains 72 canonical plus 16 legacy records, with 63 active cases.
+The earlier `b18fd91` execution passed all required test nodes for the then
+62 active cases; it did not close the seven native-observation rows. The new
+Windows CLI cleanup case is separate. At source `6295d43`, Windows ran 35
+cleanup controls without skips and a real CLI 0.165 zero-turn capability
+probe; the unchanged 14-field cleanup original and its catalog passed the
+repaired strict consumer. This is readiness evidence, not a model or full
+Hook-lifecycle observation. The related source-tool family passed 147 tests.
+The original failed capability receipt remains a failed historical result.
+After that observation was projected, the pre-native release-gate execution
+was valid for all 63 active cases: all 121 case-node occurrences passed, with
+no missing or skipped nodes. The gate returned 3 because the seven original
+native-observation rows still required evidence. This describes that execution,
+not a later native or release result.
+
+For the earlier `b18fd91` candidate, the exact-artifact portable route passed
+on macOS and Windows, including isolated installation, parity, installed smoke,
+strict second no-op and old-cache fixture preservation. Its runtime digest was
+`b11163dd59b02cfff5a62c5b831b9597f64b02e9d2b77b39cf368f72a3025409`.
+A pre-registered macOS scoped performance comparison against the published
+0.16.0 runtime used 20 attempts per side with zero failures. Both
+`user_prompt_active` and `posttool_active` were WITHIN-DECLARED-BUDGET for
+that subject. The earlier developer-candidate posttool p95 inconclusive
+result below remains unchanged; the historical Windows W1/W2 full comparison
+is still unfinished.
 
 The following results belong to that earlier developer candidate (macOS,
 arm64, Python 3.12.2), not the repaired successor:
@@ -46,10 +76,10 @@ arm64, Python 3.12.2), not the repaired successor:
 - The zero-model native toolchain controls ran 56 tests with zero failures
   and zero model requests; this is a toolkit control, not native acceptance.
 - The historical error library was verified record by record at its frozen
-  commit (see the changelog): the full projection matches the product index,
-  and executing every required test node of all 61 active rows passed. The
-  historical release gate stays open on exactly the seven declared
-  native-observation rows, tracked case by case and not waived.
+  commit `4ed85ea11ff8ccd307e3c59be885161a265892c4`: the full projection matches the product index,
+  and executing every required test node of all 61 active rows passed. At that point the
+  historical release gate remained open on seven declared native-observation
+  rows, tracked case by case and not waived.
 
 - Exact-artifact acceptance on macOS ran the portable official-marketplace
   route for the candidate ZIP: source identity, exact release ZIP, isolated

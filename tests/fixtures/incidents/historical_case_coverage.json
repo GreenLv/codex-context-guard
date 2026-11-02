@@ -1490,14 +1490,12 @@
       "positive": "New consumer accepts all14 successful Windows fields and original hashes;147 owning/affected source tests pass; POSIX9 behavior remains strict.",
       "negative": "Each omitted Job field, false/None/integer success claim, cleanup errors, false empty tree, foreign absence claim, signal/query denial and unknown fields is rejected even with matching retained original bytes and rehashed catalogs.",
       "test_locator": "tests/test_native_cli_adoption.py::FullAdoptionTests::test_windows_owned_job_cleanup_is_consumed_without_dropping_fields and tests/test_native_cli_adoption.py::FullAdoptionTests::test_incomplete_windows_job_cleanup_fails_with_matching_originals and tests/test_native_cli_adoption.py::FullAdoptionTests::test_full_profile_and_result_adopt_same_cli_without_changing_gates",
-      "deeper_authority": "scripts/cg_process_tree.py::OwnedProcess.close; canonical Windows zero-turn failure and repaired source evidence; no normal-trust/model inference.",
-      "final_verdict": "pending",
+      "deeper_authority": "scripts/cg_process_tree.py::OwnedProcess.close; canonical Windows zero-turn failure and repaired source evidence. Fresh native Windows CLI0.165 observation at source 6295d4390ea235d9cee842a3db43b80e292afd21 passed the unchanged strict producer/consumer with all14 fields and matching originals: receipt SHA256 94c7b3aa2a42f7afa5c52ac436c88264784b04e266a117df5cd827a8d6564e93, catalog SHA256 c0f605bf4c7f806c7f9f5994cc8ce09664224ee0c9876f0a285986ee2e54fb84. The app-server exit code1 is accepted only by this zero-turn capability contract; no normal-trust, model, quota or whole-Hook inference.",
+      "final_verdict": "executed_pass",
       "source_result": "passed",
       "macos_result": "passed",
-      "windows_result": "pending",
-      "missing_evidence": [
-        "fresh Windows native zero-turn capability receipt on the repaired exact source/toolkit; original failed receipt remains retained; this observation does not replace the seven incident-host native rows"
-      ],
+      "windows_result": "passed",
+      "missing_evidence": [],
       "owner": "coordinator"
     }
   ],
