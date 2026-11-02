@@ -151,10 +151,12 @@ authoritative.
 - Use the required PR validation summary for mapped fast checks. Main CI uses
   daily coverage by default: full behavior on Linux Python 3.10/3.14 and
   macOS/Windows Python 3.12, plus Windows platform regressions on 3.10/3.14.
-  Compatibility, dependency, installer, version-metadata and CI-policy changes
-  automatically select full coverage (three OSes × Python 3.10–3.14).
-  Release candidates require a successful full-profile run on the exact commit;
-  dispatch `ci.yml` with `profile=full` if the automatic run selected daily.
+  Compatibility, dependency, installer, launcher, protocol, CI-policy and unknown
+  changes select full coverage (three OSes × Python 3.10–3.14). Version-only
+  metadata changes use daily only when their exact before/after comparison proves
+  every other field unchanged. Release candidates require the selected risk
+  profile on the exact commit; manual daily runs supply the actual prior baseline.
+  A daily request never overrides a selected full minimum.
   Tags do not rerun CI. See `docs/CI_POLICY.md` for triggers and evidence scope.
   Identity, repository, privacy, Ruff and compile checks run once per candidate.
 - During conformance, schema, or digest repair loops, first replay the focused

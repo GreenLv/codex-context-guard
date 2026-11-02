@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+COMMAND_TIMEOUT_SECONDS = 120
 
 HOST_BEHAVIOR_MODULE = "host_behavior"
 
@@ -38,6 +39,10 @@ POSIX_SNAPSHOT_CAPABLE = (
 
 class NativeRunError(RuntimeError):
     """Raised when portable native acceptance cannot establish its contract."""
+
+
+class ProcessCleanupUnknown(NativeRunError):
+    """Owned process cleanup was not established; retain its temporary HOME."""
 
 
 def load_host_behavior():
@@ -60,10 +65,65 @@ def load_artifacts(root: Path):
     return module
 
 
+def load_process_tree():
+    path = Path(__file__).resolve().parents[2] / 'scripts/cg_process_tree.py'
+    spec = importlib.util.spec_from_file_location('native_process_tree', path)
+    if spec is None or spec.loader is None:
+        raise NativeRunError('owned process helper unavailable')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_natural_observer():
+    path = Path(__file__).resolve().parent / 'perf_ab.py'
+    spec = importlib.util.spec_from_file_location('native_natural_observer', path)
+    if spec is None or spec.loader is None:
+        raise NativeRunError('natural completion observer unavailable')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.observe_natural_completion
+
+
 def run(root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        list(args), cwd=root, env=env, text=True, capture_output=True, check=False
-    )
+    module = load_process_tree()
+    try:
+        owner = module.OwnedProcess.spawn(list(args), cwd=root, env=env, text=True,
+                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except BaseException as exc:
+        cleanup = getattr(exc, 'cleanup', None)
+        if not isinstance(cleanup, dict) or cleanup.get('cleanup_complete') is not True:
+            raise ProcessCleanupUnknown('owned process startup cleanup not established') from exc
+        raise NativeRunError('owned process startup failed') from exc
+    error = None
+    output = ('', '')
+    try:
+        output = owner.process.communicate(timeout=COMMAND_TIMEOUT_SECONDS)
+    except BaseException as exc:
+        error = exc
+    natural = False
+    if error is None:
+        try:
+            natural = load_natural_observer()(owner).get('no_running_members') is True
+        except BaseException as exc:
+            error = exc
+    try:
+        cleanup = owner.close(5)
+    except BaseException as exc:
+        raise ProcessCleanupUnknown(f'owned process cleanup failed: {type(exc).__name__}') from exc
+    finally:
+        for stream in (owner.process.stdout, owner.process.stderr):
+            if stream is not None:
+                stream.close()
+    if (cleanup.get('owned_process_exited') is not True
+            or cleanup.get('owned_tree_no_running_members') is not True
+            or cleanup.get('process_group_cleanup_error') is not None):
+        raise ProcessCleanupUnknown('owned process cleanup not established')
+    if error:
+        raise NativeRunError(f'command did not finish: {type(error).__name__}') from error
+    if not natural:
+        raise NativeRunError('owned process natural completion not established')
+    result = subprocess.CompletedProcess(list(args), owner.process.returncode, *output)
     if result.returncode:
         detail = (result.stdout + result.stderr).strip()
         raise NativeRunError(f"command failed ({args[0]}): {detail[-1000:]}")
@@ -495,7 +555,17 @@ def strict_cache_objects(root: Path) -> dict[str, tuple[Any, ...]]:
 def documented_official_flow(root: Path, codex: str, home: Path, source: Path,
                               environment: dict[str, str], files: dict[str, str],
                               version: str, added: dict[str, Any] | None) -> tuple[dict[str, Any], Path]:
-    listed = json.loads(run(root, codex, "plugin", "list", "--json", env=environment).stdout)
+    if added is None:
+        # Caller owns a newly created HOME; the marketplace is not registered.
+        if (environment.get('CODEX_HOME') != str(home) or
+                any((home / path).exists() for path in ('config.toml', 'plugins/installed_plugins.json',
+                    'plugins/cache/codex-context-guard-v016'))):
+            raise NativeRunError('fresh isolated HOME precondition failed')
+        run(root, codex, "plugin", "marketplace", "add", str(source), env=environment)
+        added = json.loads(run(root, codex, "plugin", "add", OFFICIAL_PLUGIN,
+                               "--json", env=environment).stdout)
+    listed = json.loads(run(root, codex, "plugin", "list", "--marketplace",
+                            'codex-context-guard-v016', "--json", env=environment).stdout)
     if not isinstance(listed, dict):
         raise NativeRunError("official list is not an object")
     entries = listed.get("installed")
@@ -504,14 +574,7 @@ def documented_official_flow(root: Path, codex: str, home: Path, source: Path,
     matches = [item for item in entries if isinstance(item, dict)
                and item.get("pluginId") == OFFICIAL_PLUGIN]
     if not matches:
-        if added is not None:
-            raise NativeRunError("previously installed plugin disappeared")
-        run(root, codex, "plugin", "marketplace", "add", str(source), env=environment)
-        added = json.loads(run(root, codex, "plugin", "add", OFFICIAL_PLUGIN,
-                               "--json", env=environment).stdout)
-        listed = json.loads(run(root, codex, "plugin", "list", "--json", env=environment).stdout)
-    elif added is None:
-        raise NativeRunError("unexpected preexisting plugin in fresh isolated HOME")
+        raise NativeRunError("installed plugin disappeared")
     installed = official_identity(listed, added, source, home, version)
     exact_artifact_parity(installed, files)
     return added, installed
@@ -528,10 +591,12 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
     files = artifacts.distribution_manifest(root)
     digest = runtime_digest(artifacts, root)
     verify_exact_source(root, source_commit)
+    repository_url = normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout)
     version = json.loads((root / ".codex-plugin/plugin.json").read_text())["version"]
     started = timestamp()
     gates = [gate("source_identity", digest, passed=True)]
     status, cleanup = "failed", "passed"
+    retain_temporary = False
     codex_version = "unavailable"
     artifact = None
     temporary = Path(tempfile.mkdtemp(prefix="ccg-official-marketplace-")).resolve()
@@ -596,16 +661,18 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
                           note="synthetic previous cache only; no daily cache or real old-task continuity claim"))
         status = "passed"
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+        retain_temporary = isinstance(exc, ProcessCleanupUnknown)
         print(f"[FAIL] {exc}", file=sys.stderr)
         gates.append(gate("official_marketplace_workflow", digest, passed=False,
                           note="official command, identity, artifact, no-op or preservation check failed; inspect local diagnostics"))
     finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        if not retain_temporary:
+            shutil.rmtree(temporary, ignore_errors=True)
         if temporary.exists():
             cleanup, status = "failed", "failed"
     return {"schema": "native-acceptance/v2", "status": status,
         "product": "codex_context_guard", "gate_profile": "portable_runtime",
-        "repository": {"url": normalize_repository_url(run(root, "git", "remote", "get-url", "origin").stdout), "commit": source_commit},
+        "repository": {"url": repository_url, "commit": source_commit},
         "runtime_tree_sha256": digest, "artifact": artifact,
         "platform": {"os": {"Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux"),
                      "shell": "python-subprocess", "toolchain": {"python": platform.python_version(), "codex": codex_version}},

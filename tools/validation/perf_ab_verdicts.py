@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from pathlib import Path
 
@@ -53,11 +54,89 @@ def ratio_lo99(baseline: list[float], candidate: list[float],
     return ratios[max(0, int(0.01 * len(ratios)) - 1)]
 
 
-def cell_metrics(cell: str, rows_baseline: list[dict], rows_candidate: list[dict]):
+def ratio_hi99(baseline, candidate, statistic, rng):
+    ratios = []
+    for _ in range(RESAMPLES):
+        b = statistic(sorted(baseline[rng.randrange(len(baseline))] for _ in baseline))
+        a = statistic(sorted(candidate[rng.randrange(len(candidate))] for _ in candidate))
+        if b > 0:
+            ratios.append(a / b)
+    ratios.sort()
+    return ratios[min(len(ratios) - 1, math.ceil(0.99 * len(ratios)) - 1)]
+
+
+def delta_lo99(baseline, candidate, statistic, rng):
+    deltas = []
+    for _ in range(RESAMPLES):
+        b = statistic(sorted(baseline[rng.randrange(len(baseline))] for _ in baseline))
+        a = statistic(sorted(candidate[rng.randrange(len(candidate))] for _ in candidate))
+        deltas.append(a - b)
+    deltas.sort()
+    return deltas[max(0, int(0.01 * len(deltas)) - 1)]
+
+
+def delta_hi99(baseline, candidate, statistic, rng):
+    deltas = []
+    for _ in range(RESAMPLES):
+        b = statistic(sorted(baseline[rng.randrange(len(baseline))] for _ in baseline))
+        a = statistic(sorted(candidate[rng.randrange(len(candidate))] for _ in candidate))
+        deltas.append(a - b)
+    deltas.sort()
+    return deltas[min(len(deltas) - 1, math.ceil(0.99 * len(deltas)) - 1)]
+
+
+def validate_scoped(raw, scope):
+    """Reject partial/censored batches and identity or declaration drift."""
+    if (raw.get('mode') != 'scoped-formal' or raw.get('scope_manifest') != scope
+            or scope.get('schema') != 'perf-scoped/v1'
+            or raw.get('execution_state') != 'completed'
+            or raw.get('accepted') is not True or raw.get('coverage_complete') is not True
+            or raw.get('blocking_failures') != 0):
+        raise ValueError('scoped producer result is incomplete or differs from declaration')
+    cells, n = scope.get('cells'), scope.get('attempts')
+    if (not isinstance(cells, list) or not cells or len(set(cells)) != len(cells)
+            or type(n) is not int or n < 20 or raw.get('planned_cells') != cells
+            or raw.get('predeclared_attempts_per_cell') != n
+            or set(raw.get('cells', {})) != set(cells)):
+        raise ValueError('scoped coverage differs')
+    identities = raw.get('identities', {})
+    for side in ('baseline', 'candidate'):
+        expected = scope.get(f'{side}_runtime_digest')
+        if (not isinstance(expected, str) or len(expected) != 64
+                or any(c not in '0123456789abcdef' for c in expected)
+                or identities.get(f'{side}_runtime_digest') != expected):
+            raise ValueError('scoped identity differs')
+    budgets = scope.get('budgets')
+    if not isinstance(budgets, dict) or set(budgets) != ({'elapsed', 'peak_bytes'} if 'memory_stop' in cells else {'elapsed'}):
+        raise ValueError('missing metric budgets')
+    for budget in budgets.values():
+        if (not isinstance(budget, dict) or set(budget) != {'relative', 'absolute'}
+                or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in budget.values())):
+            raise ValueError('invalid metric budget')
+    for cell in cells:
+        sides = raw['cells'][cell]['sides']
+        if set(sides) != {'baseline', 'candidate'}:
+            raise ValueError('scoped sides differ')
+        for side, payload in sides.items():
+            rows = payload['raw_rows']
+            if len(rows) != n:
+                raise ValueError('scoped sample count differs')
+            for index, row in enumerate(rows):
+                metrics = ['stop_wall' if cell == 'stop_s1' else 'elapsed'] + (['peak_bytes'] if cell == 'memory_stop' else [])
+                if (row.get('index') != index or row.get('side') != side
+                        or row.get('outcome_class') != 'completed' or row.get('assertion') != 'ok'
+                        or row.get('home_cleanup', {}).get('status') != 'removed'
+                        or row.get('stop_batch', False)
+                        or any(type(row.get(k)) not in (int, float) or not math.isfinite(row[k]) or row[k] <= 0 for k in metrics)):
+                    raise ValueError('scoped sample failed or incomplete')
+
+
+def cell_metrics(cell: str, rows_baseline: list[dict], rows_candidate: list[dict], *, scoped=False):
     """The gated (metric, values) pairs for one cell."""
+    elapsed = 'stop_wall' if scoped and cell == 'stop_s1' else 'elapsed'
     metrics = {
-        "elapsed": ([r["elapsed"] for r in rows_baseline],
-                    [r["elapsed"] for r in rows_candidate]),
+        "elapsed": ([r[elapsed] for r in rows_baseline],
+                    [r[elapsed] for r in rows_candidate]),
     }
     if cell == "memory_stop":
         metrics["peak_bytes"] = ([r["peak_bytes"] for r in rows_baseline],
@@ -65,10 +144,15 @@ def cell_metrics(cell: str, rows_baseline: list[dict], rows_candidate: list[dict
     return metrics
 
 
-def verdicts_from_raw(raw: dict, seed: int = SEED) -> dict:
+def verdicts_from_raw(raw: dict, seed: int = SEED, scope: dict | None = None) -> dict:
+    if raw.get('mode') == 'scoped-formal' and scope is None:
+        raise ValueError('scoped-formal results require their scope manifest')
+    if scope is not None:
+        validate_scoped(raw, scope)
     rng = random.Random(seed)
     verdicts = {}
     declared = []
+    inconclusive = []
     for cell, payload in raw["cells"].items():
         sides = payload["sides"]
         rows_b = [r for r in sides["baseline"]["raw_rows"]
@@ -83,17 +167,31 @@ def verdicts_from_raw(raw: dict, seed: int = SEED) -> dict:
             "failures_candidate": len(sides["candidate"]["raw_rows"]) - len(rows_a),
         }
         slower_pairs = []
-        for metric, (values_b, values_a) in cell_metrics(cell, rows_b, rows_a).items():
+        uncertain_pairs = []
+        for metric, (values_b, values_a) in cell_metrics(cell, rows_b, rows_a, scoped=scope is not None).items():
             for statistic_name, statistic in (("median", median),
                                               ("p95", lambda s: nearest_rank(s, 95))):
                 point = statistic(sorted(values_a)) / statistic(sorted(values_b))
                 lo99 = ratio_lo99(values_b, values_a, statistic, rng)
+                delta = delta_lo99(values_b, values_a, statistic, rng) if scope else None
                 key = f"{statistic_name}_{metric}"
                 result[f"{key}_baseline"] = statistic(sorted(values_b))
                 result[f"{key}_candidate"] = statistic(sorted(values_a))
                 result[f"{key}_ratio_point"] = round(point, 4)
                 result[f"{key}_lo99"] = round(lo99, 4)
-                if lo99 > 1.0:
+                if scope:
+                    result[f'{key}_delta_lo99'] = delta
+                    budget = scope['budgets'][metric]
+                    upper_ratio = ratio_hi99(values_b, values_a, statistic, rng)
+                    upper_delta = delta_hi99(values_b, values_a, statistic, rng)
+                    result[f'{key}_hi99'] = upper_ratio
+                    result[f'{key}_delta_hi99'] = upper_delta
+                    slower = lo99 > 1.0 + budget['relative'] and delta > budget['absolute']
+                    if not slower and upper_ratio > 1.0 + budget['relative'] and upper_delta > budget['absolute']:
+                        uncertain_pairs.append({'cell': cell, 'metric': metric, 'statistic': statistic_name})
+                else:
+                    slower = lo99 > 1.0
+                if slower:
                     slower_pairs.append({"cell": cell, "metric": metric,
                                          "statistic": statistic_name,
                                          "ratio_point": round(point, 4),
@@ -104,11 +202,16 @@ def verdicts_from_raw(raw: dict, seed: int = SEED) -> dict:
                                                  for p in slower_pairs)
                 else "DECLARED-SLOWER(p95)")
             result["declared_pairs"] = slower_pairs
+        elif uncertain_pairs:
+            result['verdict'] = 'INCONCLUSIVE'
+            result['inconclusive_pairs'] = uncertain_pairs
         else:
-            result["verdict"] = "not-distinguishable-from-noise"
+            result["verdict"] = ("WITHIN-DECLARED-BUDGET" if scope
+                                 else "not-distinguishable-from-noise")
         verdicts[cell] = result
         declared.extend(slower_pairs)
-    return {
+        inconclusive.extend(uncertain_pairs)
+    result = {
         "verdicts": verdicts,
         "declared_regressions": declared,
         "method": {
@@ -121,6 +224,13 @@ def verdicts_from_raw(raw: dict, seed: int = SEED) -> dict:
         },
         "identities": raw.get("identities"),
     }
+    if scope:
+        result['scope_manifest'] = scope
+        result['inconclusive_pairs'] = inconclusive
+        result['accepted'] = not declared and not inconclusive
+        result['method']['gate'] = ('regression if both lower bounds exceed budgets; pass only if at least one '
+                                    'upper bound is within budget; otherwise inconclusive')
+    return result
 
 
 def synthetic_tail_only() -> dict:
@@ -145,6 +255,7 @@ def main(argv=None) -> int:
     parser.add_argument("raw", nargs="?", type=Path,
                         help="formal A/B raw JSON; omit with --check-tail-oracle")
     parser.add_argument("--out", type=Path)
+    parser.add_argument('--scope-manifest', type=Path)
     parser.add_argument("--check-tail-oracle", action="store_true",
                         help="run the synthetic tail-only negative control")
     args = parser.parse_args(argv)
@@ -162,7 +273,11 @@ def main(argv=None) -> int:
         return 0 if ok else 1
     if args.raw is None:
         parser.error("raw is required unless --check-tail-oracle is given")
-    report = verdicts_from_raw(json.loads(args.raw.read_text(encoding="utf-8")))
+    raw = json.loads(args.raw.read_text(encoding="utf-8"))
+    scope = json.loads(args.scope_manifest.read_text(encoding='utf-8')) if args.scope_manifest else None
+    if raw.get('mode') == 'scoped-formal' and scope is None:
+        parser.error('scoped-formal results require their scope manifest')
+    report = verdicts_from_raw(raw, scope=scope)
     target = args.out or args.raw.with_name(
         args.raw.name.replace(".json", "-verdicts.json"))
     target.write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
@@ -172,7 +287,7 @@ def main(argv=None) -> int:
               f"lo99 {result['median_elapsed_lo99']:.4f} "
               f"p95 lo99 {result['p95_elapsed_lo99']:.4f}")
     print("declared pairs:", len(report["declared_regressions"]))
-    return 0
+    return 1 if scope and not report['accepted'] else 0
 
 
 if __name__ == "__main__":

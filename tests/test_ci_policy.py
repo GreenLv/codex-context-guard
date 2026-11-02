@@ -1,4 +1,6 @@
 """Profile selection and summary fail-closed regressions."""
+import hashlib
+import json
 import unittest
 from unittest import mock
 
@@ -25,12 +27,48 @@ class CIPolicyTests(unittest.TestCase):
                 self.assertEqual(policy.select_profile('auto', [path]), 'full')
         self.assertEqual(policy.select_profile('auto', ['README.md', 'scripts/context_guard.py', 'tests/test_example.py']), 'daily')
         self.assertEqual(policy.select_profile('full', []), 'full')
-        self.assertEqual(policy.select_profile('daily', ['.github/workflows/ci.yml']), 'daily')
+        self.assertEqual(policy.select_profile('daily', ['.github/workflows/ci.yml']), 'full')
         with self.assertRaises(ValueError):
             policy.select_profile('typo', [])
 
-    def test_release_builder_alone_requires_full_profile(self):
+    def test_release_builder_changes_require_full_coverage(self):
         self.assertEqual(policy.select_profile('auto', ['scripts/build_release_artifact.py']), 'full')
+        self.assertEqual(policy.select_profile('daily', ['README.md', 'scripts/build_release_artifact.py']), 'full')
+
+    def test_only_version_changes_can_be_waived(self):
+        fixtures = {
+            'pyproject.toml': '[project]\nname = "x"\nversion = "0.1"\nrequires-python = ">=3.10"\n',
+            'uv.lock': '[[package]]\nname = "codex-context-guard"\nversion = "0.1"\nsource = { virtual = "." }\n',
+            '.codex-plugin/plugin.json': '{"version":"0.1","name":"context-guard"}',
+        }
+        for path, before in fixtures.items():
+            with self.subTest(path=path):
+                after = before.replace('0.1', '0.2')
+                if path.endswith(('.toml', '.lock')) and policy.tomllib is None:
+                    self.assertFalse(policy.version_only(path, before, after))
+                    continue
+                self.assertTrue(policy.version_only(path, before, after))
+                self.assertFalse(policy.version_only(path, before, after.replace('context-guard', 'other')) if path != 'pyproject.toml' else policy.version_only(path, before, after.replace('>=3.10', '>=3.11')))
+                self.assertEqual(policy.select_profile('auto', [path], {path}), 'daily')
+                self.assertEqual(policy.select_profile('auto', [path, 'unknown/new.file'], {path}), 'full')
+        self.assertFalse(policy.version_only('.codex-plugin/plugin.json',
+            '{"version":"0.1","name":"x","name":"y"}',
+            '{"version":"0.2","name":"x","name":"y"}'))
+
+    def test_manifest_waiver_requires_changed_blob_identity(self):
+        blob = {('base', 'docs/CI_POLICY.md'): b'old', ('head', 'docs/CI_POLICY.md'): b'new'}
+        def manifest(key):
+            files = {'docs/CI_POLICY.md': hashlib.sha256(blob[(key, 'docs/CI_POLICY.md')]).hexdigest()}
+            return json.dumps({'schema': 'cg-distribution-manifest/v1', 'file_count': 1, 'files': files})
+        old, new = manifest('base'), manifest('head')
+        def read(rev, path):
+            return blob[(rev, path)]
+        self.assertTrue(policy.manifest_only(old, new, ['docs/CI_POLICY.md'], set(), read))
+        self.assertFalse(policy.manifest_only(old, new, [], set(), read))
+        blob[('head', 'docs/CI_POLICY.md')] = b'bad'
+        self.assertFalse(policy.manifest_only(old, new, ['docs/CI_POLICY.md'], set(), read))
+        self.assertFalse(policy.manifest_only(old, new.replace('CI_POLICY.md', '../CI_POLICY.md'),
+                                              ['docs/CI_POLICY.md'], set(), read))
 
     def test_every_required_failure_cancel_skip_or_absence_rejected(self):
         for profile in ('daily', 'full'):

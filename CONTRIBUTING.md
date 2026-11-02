@@ -24,8 +24,8 @@ Thank you for helping improve Context Guard.
 ## Validation
 
 Routine main pushes run four full behavior lanes and two focused Windows lanes.
-Release candidates and compatibility-sensitive changes use the full portability
-screen. See [CI policy](docs/CI_POLICY.md) for the version table, automatic
+Release candidates use the risk-selected profile; compatibility-sensitive and
+unknown changes use the full portability screen. See [CI policy](docs/CI_POLICY.md) for the version table, automatic
 triggers, manual commands and required release evidence. PRs retain mapped
 checks; their green summary does not replace release-candidate CI.
 

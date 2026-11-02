@@ -743,11 +743,10 @@ def main() -> int:
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--attempts", type=int, default=20)
-    parser.add_argument("--cells", default="pretool_safe,posttool_active,"
-                        "user_prompt_active,precompact_active,session_start_resume,"
-                        "subagent_start,subagent_events,session_end,lifecycle_matched,memory_stop,"
-                        "stop_s1")
+    parser.add_argument("--cells", default=None)
     parser.add_argument("--formal", action="store_true")
+    parser.add_argument("--scope-manifest", type=Path,
+                        help="predeclared scoped-formal inputs, cells and budgets")
     parser.add_argument("--fail-fast", action="store_true",
                         help="stop after first failed attempt; partial coverage always blocks acceptance")
     parser.add_argument("--out", type=Path, required=True)
@@ -757,6 +756,29 @@ def main() -> int:
                         help="negative-testing only: replace every cell's wrapper; "
                              "refused together with --formal")
     args = parser.parse_args()
+    scope = None
+    if args.scope_manifest:
+        try:
+            scope = json.loads(args.scope_manifest.read_text(encoding="utf-8"))
+            if (not isinstance(scope, dict) or set(scope) != {'schema', 'cells', 'attempts',
+                    'baseline_runtime_digest', 'candidate_runtime_digest', 'budgets'}
+                    or scope['schema'] != 'perf-scoped/v1'
+                    or not isinstance(scope['cells'], list) or not scope['cells']
+                    or len(scope['cells']) != len(set(scope['cells']))
+                    or any(c not in cell_specs() for c in scope['cells'])
+                    or type(scope['attempts']) is not int or scope['attempts'] < 20
+                    or scope['attempts'] != args.attempts
+                    or set(scope['budgets']) != ({'elapsed', 'peak_bytes'} if 'memory_stop' in scope['cells'] else {'elapsed'})):
+                raise ValueError('invalid scope')
+            for budget in scope['budgets'].values():
+                if (not isinstance(budget, dict) or set(budget) != {'relative', 'absolute'}
+                        or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
+                               for v in budget.values())):
+                    raise ValueError('invalid budget')
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            parser.error(f'invalid scope manifest: {exc}')
+        if not args.formal or args.wrapper_override:
+            parser.error('scope manifest requires --formal and no wrapper override')
     if args.formal and args.attempts < 20:
         parser.error("formal batches require at least 20 predeclared attempts per cell")
     if args.formal and args.wrapper_override:
@@ -783,17 +805,24 @@ def main() -> int:
     }
     if args.formal and "unavailable" in (baseline_digest, candidate_digest):
         parser.error("formal batches require computable runtime identities for both trees")
+    if scope and (scope['baseline_runtime_digest'] != baseline_digest or
+                  scope['candidate_runtime_digest'] != candidate_digest):
+        parser.error('scope manifest runtime identities differ')
 
-    selected = args.cells.split(",")
+    selected = args.cells.split(",") if args.cells is not None else list(cell_specs())
+    if scope:
+        if args.cells is not None and selected != scope['cells']:
+            parser.error('cells differ from scope manifest')
+        selected = scope['cells']
     if args.attempts <= 0 or (args.timeout is not None and
                               (args.timeout <= 0 or not math.isfinite(args.timeout))):
         parser.error("attempts and timeout must be positive and finite")
     if not all(selected) or len(set(selected)) != len(selected) or set(selected) - set(cell_specs()):
         parser.error("unknown, empty or duplicate cell selection")
-    if args.formal and set(selected) != set(cell_specs()):
+    if args.formal and not scope and set(selected) != set(cell_specs()):
         parser.error("formal batches require the full registered cell profile")
 
-    report = {"mode": "formal" if args.formal else "diagnostic",
+    report = {"mode": "scoped-formal" if scope else ("formal" if args.formal else "diagnostic"),
               "predeclared_attempts_per_cell": args.attempts, "fail_fast": args.fail_fast,
               "identities": identities, "accepted": False, "cells": {},
               "planned_cells": selected, "coverage_complete": False,
@@ -802,6 +831,8 @@ def main() -> int:
               "measurement_policy": "whole-command absolute deadline before owned spawn; unrounded completion; recovery excluded; same candidate owner on both sides",
               "control_scope": "event wrappers only; seed, Stop runner and memory retain independent timeout routes",
               "acceptance_scope": "cell execution and semantic oracles; comparison targets and host/model acceptance are separate"}
+    if scope:
+        report['scope_manifest'] = scope
     args.out.parent.mkdir(parents=True, exist_ok=True)
 
     def persist() -> None:

@@ -46,6 +46,8 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                 if args[:3] == ("git", "remote", "get-url"):
                     stdout = "https://github.com/example/repo.git"
                 elif args[-1:] == ("--version",):
+                    if failure == 'cleanup_unknown':
+                        raise native.ProcessCleanupUnknown('synthetic uncertain process cleanup')
                     stdout = "codex synthetic"
                 elif "scripts/build_release_artifact.py" in args:
                     output = Path(args[-1])
@@ -75,6 +77,7 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                         "installedPath":str(cache)}
                     stdout = json.dumps(state["add"])
                 elif args[1:3] == ("plugin", "list"):
+                    self.assertEqual(args[3:], ('--marketplace', 'codex-context-guard-v016', '--json'))
                     self.lists += 1
                     entries = []
                     if "add" in state:
@@ -90,7 +93,7 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                         elif failure == "disabled":
                             entry["enabled"] = False
                         entries = [entry, entry] if failure == "duplicate" else [entry]
-                    if self.lists == 3:
+                    if self.lists == 2:
                         if failure == "drift":
                             (state["cache"] / "scripts/core.py").write_bytes(b"drifted")
                         elif failure == "home_change":
@@ -144,7 +147,8 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
             # Keep its fixture in this test's own temporary tree so a reported
             # cleanup failure can be verified and then cleaned by the test.
             root_guard = (mock.patch.object(native.tempfile, "mkdtemp", side_effect=make_owned_root)
-                          if failure == "mode" and os.name == "nt" else contextlib.nullcontext())
+                          if failure == 'cleanup_unknown' or (failure == "mode" and os.name == "nt")
+                          else contextlib.nullcontext())
             with mock.patch.object(native, "load_artifacts", return_value=identity), \
                     mock.patch.object(native, "verify_exact_source"), \
                     mock.patch.object(native, "run", side_effect=run), \
@@ -152,6 +156,12 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                 result = native.portable_acceptance(root, "a" * 40, "synthetic-codex", None, release_zip=explicit_zip)
             schema = json.loads((ROOT / "tools/validation/native-acceptance-v2.schema.json").read_text())
             jsonschema.Draft202012Validator(schema).validate(result)
+            if failure == 'cleanup_unknown':
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['cleanup']['status'], 'failed')
+                self.assertEqual(result['cleanup']['remaining_ids'], ['official_temporary_root'])
+                self.assertTrue(owned_roots[0].exists())
+                shutil.rmtree(owned_roots[0])
             if failure == "mode" and os.name == "nt" and result["cleanup"]["status"] == "failed":
                 self.assertEqual(result["status"], "failed")
                 self.assertEqual(result["cleanup"]["remaining_ids"], ["official_temporary_root"])
@@ -185,9 +195,13 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["gate_profile"], "portable_runtime")
         self.assertEqual(sum(args[1:3] == ("plugin", "add") for args in self.commands), 1)
-        self.assertEqual(self.lists, 3)
+        self.assertEqual(self.lists, 2)
         gate = next(g for g in result["gates"] if g["id"] == "strict_second_noop")
         self.assertIn("not absence of writes", gate["note"])
+
+    def test_unknown_child_cleanup_retains_owned_home(self):
+        result = self.exercise('cleanup_unknown')
+        self.assertEqual(result['status'], 'failed')
 
     def test_explicit_prebuilt_zip_is_not_rebuilt_and_is_bound(self):
         result = self.exercise("prebuilt")

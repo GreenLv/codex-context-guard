@@ -1,7 +1,7 @@
 # CI coverage policy
 
 Routine changes need quick feedback without repeating the entire test suite on
-every interpreter. Release candidates still receive a full portability screen.
+every interpreter. Release candidates receive a risk-selected portability screen.
 The runtime minimum remains Python 3.10; this policy changes where tests run,
 not which interpreters users must install.
 
@@ -35,32 +35,44 @@ fail the runner; capability-specific skips remain visible.
 
 ## Selection and release procedure
 
-Main pushes select daily coverage unless the diff includes interpreter/dependency
-metadata, installer or Hook launch definitions, plugin version metadata, CI
-workflows/policy, compatibility/versioning documentation, or an unknown path.
-Those changes automatically select full coverage. The exact path rules live in
-`tools/validation/ci_policy.py`; renamed and deleted paths are included.
-Changes to ordinary runtime logic, tests or reader prose normally use daily
-coverage. A change to Python-version-dependent runtime behavior must additionally
-receive a full run even if its filename does not trigger expansion.
+Main pushes select daily coverage for ordinary changes and full coverage for
+compatibility, dependencies, launchers, CI policy, shared identity or unknown
+inputs. The selector verifies version-only changes to supported metadata by
+comparing the actual before and after contents. A changed dependency or Python
+constraint remains full. Reader-document changes use daily plus separately
+selected artifact checks; packaging implementation changes require full.
+Renames and deletions include both sides, and unreadable metadata fails closed to
+full. A manually requested daily
+profile cannot downgrade the inferred minimum.
 
-Manual dispatch defaults to full. Run it on the candidate branch and verify the
-run's `headSha` equals the frozen release commit:
+A candidate must pass the selected profile and required summary on its exact
+commit. A manual daily dispatch requires `base_sha` as the complete actual
+baseline commit, a strict ancestor of the candidate; missing, equal or invalid
+baselines fail classification. The baseline must cover the whole release diff,
+not merely the last commit. If the earlier full run already passed on the exact
+commit, reuse it; tag creation does not require another run. Manual full remains
+available for compatibility campaigns. CI evidence does not establish live
+host behavior, trust or installation.
 
-```shell
-gh workflow run ci.yml --ref <candidate-branch> -f profile=full
-```
-
-If an automatic full run already passed for that exact commit, reuse it rather
-than dispatching again. A green daily run is insufficient for publication.
-Changing only a tag does not rerun the matrix. Existing release evidence is not
-retroactively relabeled with this policy.
-
-For an explicitly requested routine diagnostic run, select daily:
-
-```shell
-gh workflow run ci.yml --ref <candidate-branch> -f profile=daily
-```
+Formal performance comparison is required when performance-sensitive behavior
+changes or a task explicitly requires it; it is not a universal per-release
+campaign. Full legacy formal results retain their original semantics. A scoped
+formal run uses `perf_ab.py --formal --scope-manifest MANIFEST --attempts N`,
+where the manifest declares `perf-scoped/v1`, selected cells, N (at least 20),
+exact baseline/candidate runtime digests, and explicit relative and absolute
+budgets for each affected metric. The JSON keys are `schema`, `cells`,
+`attempts`, `baseline_runtime_digest`, `candidate_runtime_digest`, and
+`budgets`. Each metric budget has finite nonnegative `relative` and `absolute`
+numbers; `elapsed` is in seconds and `peak_bytes` is in bytes. The budget set
+must include `elapsed`, plus `peak_bytes` when `memory_stop` is selected.
+Pass that same manifest to
+`perf_ab_verdicts.py --scope-manifest MANIFEST RAW`; a partial, failed,
+censored, identity-drifted or budget-drifted batch is rejected. Both practical
+limits and the statistical lower bounds must be exceeded to report a material
+regression. A pass requires the upper bound to exclude exceeding at
+least one limit; intervals crossing the decision boundary are inconclusive and
+return nonzero. No default tolerance is invented and the tool never automatically
+retries or adds samples. Old failures remain unchanged.
 
 PR validation continues to use the change map and its blocking summary. All
 candidate lanes remain independent jobs. The final `Candidate CI required` job

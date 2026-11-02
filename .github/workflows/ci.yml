@@ -6,10 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: Full is required for release; daily is for routine coverage
+        description: Full or risk-selected daily coverage
         type: choice
         options: [full, daily]
         default: full
+      base_sha:
+        description: Full baseline commit SHA (required for daily dispatch)
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -41,9 +45,17 @@ jobs:
           EVENT_BASE_SHA: ${{ github.event.before }}
           EVENT_HEAD_SHA: ${{ github.sha }}
           REQUESTED_PROFILE: ${{ inputs.profile || 'auto' }}
+          DISPATCH_BASE_SHA: ${{ inputs.base_sha }}
         run: |
           set -euo pipefail
           base_sha="$EVENT_BASE_SHA"
+          if [[ "$REQUESTED_PROFILE" == daily ]]; then
+            [[ "$DISPATCH_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$(git rev-parse "$DISPATCH_BASE_SHA^{commit}")" == "$DISPATCH_BASE_SHA" ]]
+            git merge-base --is-ancestor "$DISPATCH_BASE_SHA" "$EVENT_HEAD_SHA"
+            [[ "$DISPATCH_BASE_SHA" != "$EVENT_HEAD_SHA" ]]
+            base_sha="$DISPATCH_BASE_SHA"
+          fi
           if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
             base_sha="$(git hash-object -t tree /dev/null)"
           fi
