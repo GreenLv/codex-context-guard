@@ -9,8 +9,10 @@ accept several of these forgeries.
 
 import copy
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -693,11 +695,28 @@ class ReleaseGateConsumerControls(unittest.TestCase):
                             for f in failures), failures)
 
     def test_cli_release_gate_exit_3_without_execute(self):
-        completed = subprocess.run(
-            [sys.executable, "scripts/check_incident_coverage.py", ".",
-             "--release-gate", "--report", "/dev/null"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT), timeout=300)
-        self.assertEqual(completed.returncode, 3)
-        self.assertIn("no execution receipts", completed.stderr)
-        self.assertTrue(any("closes_release_gate is not true" in line
-                            for line in completed.stderr.splitlines()))
+        with tempfile.TemporaryDirectory() as temporary:
+            coverage_path = Path(temporary) / "coverage.json"
+            report_path = Path(temporary) / "coverage-report.json"
+            _, coverage = load_pair()
+            pending_windows_case(coverage)
+            coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, "scripts/check_incident_coverage.py", ".",
+                 "--coverage", str(coverage_path), "--release-gate",
+                 "--report", str(report_path)], capture_output=True, text=True,
+                encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                cwd=str(REPO_ROOT), timeout=300)
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            self.assertIn("no execution receipts", completed.stderr)
+            self.assertIn("closes_release_gate is not true", completed.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertTrue(report["valid"], report["errors"])
+            self.assertIsNone(report["execution_receipts"])
+            consumer = report["release_gate"]["consumer"]
+            self.assertEqual(consumer["mode"], "release")
+            self.assertIs(consumer["passed"], False)
+            self.assertIn("no execution receipts (run with --execute)",
+                          consumer["failures"])
+            self.assertTrue(any("closes_release_gate is not true" in item
+                                for item in consumer["failures"]))

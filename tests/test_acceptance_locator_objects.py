@@ -214,9 +214,14 @@ class LocatorHookLifecycleTests(unittest.TestCase):
         def old_extract(text):
             items = legacy(text)
             for line in text.splitlines():
-                if "/test/" in line and line.strip() not in items:
+                if "/test/" in line.replace("\\", "/") and line.strip() not in items:
                     items.append(line.strip())
             return items
+
+        for path in ("/work/test/a.txt", r"C:\work\test\a.txt"):
+            with self.subTest(path=path):
+                line = f"打开 {path}"
+                self.assertEqual(old_extract(line), [line])
 
         prompt = f"$context-guard\n打开 {self.project / 'test' / 'a.txt'}"
         with mock.patch.object(cg, "extract_acceptance", old_extract):
