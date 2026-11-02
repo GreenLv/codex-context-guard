@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "5be939606a102a01ea49cf37abe1b26af8ddfe66",
+  "library_commit": "d5602f80787118d26f4a477c1e9ba74439c586d2",
   "denominator": {
     "case_registry": {
-      "records": 71,
-      "active": 54
+      "records": 72,
+      "active": 55
     },
     "legacy_source": {
       "records": 16,
@@ -1476,6 +1476,29 @@
       "windows_result": "not_required",
       "missing_evidence": [],
       "owner": "development"
+    },
+    {
+      "id": "CGI-20261103-codex-cli-0165-windows-cleanup-receipt",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "Windows 零回合能力收据被仅接受 POSIX 清理字段的消费器自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "native-cli-capability-platform-cleanup",
+      "current_contract": "CLI0.165 capability consumes the actual platform cleanup record intact: POSIX9 fields; Windows14 fields including confirmed created/assigned/closed/empty Job, no errors and exact retained originals. This is a zero-turn readiness invariant, not model or whole-Hook acceptance.",
+      "trigger": "Windows real zero-turn reader emits14-field successful cleanup while the old consumer demands9 fields; an intact matching-original synthetic receipt reproduces the same rejection.",
+      "positive": "New consumer accepts all14 successful Windows fields and original hashes;147 owning/affected source tests pass; POSIX9 behavior remains strict.",
+      "negative": "Each omitted Job field, false/None/integer success claim, cleanup errors, false empty tree, foreign absence claim, signal/query denial and unknown fields is rejected even with matching retained original bytes and rehashed catalogs.",
+      "test_locator": "tests/test_native_cli_adoption.py::FullAdoptionTests::test_windows_owned_job_cleanup_is_consumed_without_dropping_fields and tests/test_native_cli_adoption.py::FullAdoptionTests::test_incomplete_windows_job_cleanup_fails_with_matching_originals and tests/test_native_cli_adoption.py::FullAdoptionTests::test_full_profile_and_result_adopt_same_cli_without_changing_gates",
+      "deeper_authority": "scripts/cg_process_tree.py::OwnedProcess.close; canonical Windows zero-turn failure and repaired source evidence; no normal-trust/model inference.",
+      "final_verdict": "pending",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "pending",
+      "missing_evidence": [
+        "fresh Windows native zero-turn capability receipt on the repaired exact source/toolkit; original failed receipt remains retained; this observation does not replace the seven incident-host native rows"
+      ],
+      "owner": "coordinator"
     }
   ],
   "legacy": [
