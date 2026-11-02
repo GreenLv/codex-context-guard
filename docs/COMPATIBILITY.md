@@ -1,9 +1,29 @@
 # Compatibility and Verification Status
 
+## 0.16.1 — source candidate (2026-11-03)
+
+This document describes version 0.16.1. Public availability is determined
+independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
+The 0.16.0 storage and upgrade boundaries below remain in force, with these
+changes:
+
+- Fixed in this version: acceptance keywords inside a complete file path no
+  longer create extra acceptance items or raise the activation score. Item
+  text, prompt hashes and source spans keep the unchanged original line,
+  and real obligations stated in prose (including the governed
+  "run test_*.py" form) are still recognized.
+- Session retention cleanup stays disabled exactly as in 0.16.0. The gap,
+  its retained history and the restoration conditions are recorded in
+  [Retention cleanup follow-up](RETENTION_CLEANUP_FOLLOWUP.md).
+- Plugin listing metadata adds `interface.logo` (the bundled square SVG)
+  and the Skill frontmatter license declaration;
+  `interface.screenshots` stays omitted under the officially optional
+  contract (see [Local acceptance](LOCAL_ACCEPTANCE.md)).
+
 ## 0.16.0 — 2026-11-01
 
-This document describes version 0.16.0. Public availability is determined
-independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
+This document described version 0.16.0; the boundaries below remain current
+except where 0.16.1 changes them.
 
 Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
 13, Stop protocol 5.0.0, the nine Hooks, and the default business-tool path

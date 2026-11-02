@@ -4,6 +4,28 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.16.1 — Unreleased
+
+### Highlights
+
+- Acceptance keywords inside a complete file path no longer create extra acceptance items or activate Context Guard early. Previously, a request such as "open `/work/test/a.txt`" was misread as a verification duty while "open `/work/items/a.txt`" was not, so paths containing words like `test`, `verify`, `测试` or `验收` could add pending items and raise the activation score. The fix classifies words outside complete locators only; item text, prompt hashes and source spans keep the unchanged original line, and real obligations stated in prose — including the governed "run `test_*.py`" form — are still recognized.
+- Session retention cleanup remains disabled, exactly as in 0.16.0. SessionEnd saves current state and applicable recovery content; the `cleanup` command reports unavailability with exit code 2 and deletes nothing. Historical sessions stay on disk and storage can grow; there is no automatic retention cap or supported manual reclamation tool. The gap, its retained history and the conditions for restoring cleanup are now recorded in a persistent public document ([Retention cleanup follow-up](docs/RETENTION_CLEANUP_FOLLOWUP.md)) instead of only in chat history.
+- Plugin listing metadata is completed: the Skill frontmatter now declares the same Apache-2.0 license as the plugin manifest, and the plugin interface declares `logo` alongside `composerIcon`, reusing the existing bundled square SVG. `interface.screenshots` stays omitted under the officially optional contract; repository validation pins all three decisions.
+
+### Changes
+
+- The historical incident coverage checker gains an explicit release consumer: `check_incident_coverage.py --release-gate` (with `--execute`) exits 3 unless the report is valid, the coverage gate closes, and every required test node of every active row actually passed — exit code 0 alone never releases. Its documentation now states that execution runs every required node, not just the first. Negative controls cover pending blocking rows, missing receipts, skipped nodes and partial outcome inventories.
+- The HOL plugin scanner Action was upgraded (v1.2.795 → v1.2.811, scanner 3.51.0 → 3.58.0) and its report validation now binds to the upgraded scanner version, keeping the exact-checkout and report evidence boundary. `actions/setup-python` was bumped from 7.0.0 to 7.1.0. Native acceptance probes gained bounded timeouts and explicit error handling; CI coverage and scoped performance checks are now selected by the risk of the complete release diff. These maintainer-facing changes were merged to `main` after the 0.16.0 release and are folded into this version's history.
+- Repository validation pins the new listing metadata: the Skill frontmatter license, both icon fields as safe in-plugin relative paths naming the bundled icon, and `interface.screenshots` staying omitted. A local `plugin-scanner` 3.51.0 diagnostic (the repository-pinned version, not the CI scanner) reproduced the previous logo and screenshots findings and confirms only the screenshots note remains for this distribution contract; the CI 3.58.0 scan of the final candidate is a separate readback.
+- Documentation corrections: the documentation map now links the current version's release notes and the retention follow-up; the incident-host acceptance supplement names official Codex marketplace installation instead of the retired installer; the acceptance record notes that the coverage validator now supports the frozen macOS `not_required` waiver for exactly the three reviewed Windows-only successors.
+
+### Validation
+
+- Source candidate: this version is not published yet; validation entries below are bound to the exact candidate commit recorded in the acceptance record and are extended until freeze.
+- Focused regressions fail on the previous implementation (188 subtest failures across the path families, plus the three original long-temporary-path test failures replayed exactly) and pass on the fix, including a keyword-rich long `TMPDIR` replay of the three originally failing tests with their original assertions unchanged.
+- The full current-behavior suite ran 2,895 tests with zero failures, zero errors and 92 skips (30 named retired retention nodes plus 62 platform/capability skips); repository validation, the public-tree audit, the phase-3 transition audit, the runtime self-test, Ruff and compileall passed. See the acceptance record for the exact identities.
+- The historical error library was verified record by record at its frozen commit: the full 86-record projection (70 canonical + 16 legacy; 61 active) matches the product index digests, titles, families, runtimes, platforms and lineage. Execution of every required test node of all 61 active rows passed; the historical release gate stays open only on the seven declared native-observation rows, which are tracked case by case and not waived.
+
 ## 0.16.0 — 2026-11-01
 
 ### Highlights

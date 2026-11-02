@@ -6,7 +6,8 @@ portable installation gates. The runner is
 with the explicit `run` action without `--preflight`.
 
 Prepare a clean exact source checkout, a dedicated scenario workspace, and an
-isolated HOME installed through the safe installer. The coordinator establishes
+isolated HOME installed through the official Codex marketplace operations. The
+coordinator establishes
 login and reviews the nine Hooks through normal Codex trust. This runner never
 logs in, copies credentials or trust, installs a plugin, changes the sandbox,
 or answers an approval request. An official request interrupts observation and

@@ -3,7 +3,8 @@
 ## Supported version
 
 Security and correctness fixes are applied to the current supported
-release, `0.16.0`. Public
+release, `0.16.0`. The 0.16.1 source candidate is not yet published; reports
+against it are triaged at source before any release. Public
 availability is determined independently by
 [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 Reports against published builds are triaged first; source and artifact checks

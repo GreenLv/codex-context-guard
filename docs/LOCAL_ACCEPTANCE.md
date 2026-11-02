@@ -1,5 +1,84 @@
 # Local Release Acceptance
 
+## 0.16.1 — source candidate (2026-11-03)
+
+This section records the 0.16.1 source candidate results. It is not yet a
+release acceptance: exact-artifact installation, CI/HOL and the historical
+native observations are recorded here only after they run on the frozen
+candidate.
+
+Source-level results at the candidate (macOS, arm64, Python 3.12.2):
+
+- The full current-behavior suite ran 2,895 tests with zero failures, zero
+  errors and 92 skips: 30 named retired retention nodes plus 62
+  platform/capability skips. Repository validation, the public-tree audit,
+  the phase-3 transition audit (frozen baseline matches its manifest), the
+  runtime self-test, Ruff and compileall passed, and `git diff --check` was
+  clean.
+- The zero-model native toolchain controls ran 56 tests with zero failures
+  and zero model requests; this is a toolkit control, not native acceptance.
+- The historical error library was verified record by record at its frozen
+  commit (see the changelog): the full projection matches the product index,
+  and executing every required test node of all 61 active rows passed. The
+  historical release gate stays open on exactly the seven declared
+  native-observation rows, tracked case by case and not waived.
+
+### Plugin metadata: Skill license and listing logo
+
+GitHub Code scanning reported two fixable metadata notes against the 0.16.0
+runtime (scanner 3.58.0, category `ai-plugin-scanner`):
+`MANIFEST_MISSING_LICENSE` (#5) and `PLUGIN_JSON_INTERFACE_ASSET_LOGO` (#3).
+The candidate fixes both without changing any license terms or skill
+content:
+
+- `skills/context-guard/SKILL.md` now declares `license: Apache-2.0` in its
+  frontmatter, matching the plugin manifest and the root LICENSE.
+- `.codex-plugin/plugin.json` now declares `"logo": "./assets/icon.svg"` in
+  `interface`, reusing the existing bundled 512×512 square SVG. The official
+  submission contract lists `logo` as required for Codex and `composerIcon`
+  as required, so this also aligns the manifest with that contract.
+
+Repository validation now pins this metadata: the Skill frontmatter must
+declare the plugin's license, and the interface must declare both icons as
+safe in-plugin relative paths. Focused contract tests cover license
+mismatch, missing or escaping icon paths, and an icon file that is absent
+from the distribution manifest. The distribution manifest was regenerated
+for the changed bytes; the exact ZIP identity is produced at packaging time.
+
+A local diagnostic ran `plugin-scanner` 3.51.0 (the repository-pinned
+version, not the CI Action's 3.58.0) on staged runtime copies: the previous
+interface reported both asset findings, the candidate reports only the
+screenshots rule, and adding an empty `screenshots` list does not change
+that result. This diagnostic does not substitute for the CI scan of the
+final candidate on `main`.
+
+### Screenshots rule applicability (retained finding, accepted disposition)
+
+`PLUGIN_JSON_INTERFACE_ASSET_SCREENSHOTS` (#4) remains expected for this
+distribution contract, and the candidate deliberately keeps
+`interface.screenshots` omitted:
+
+- Rule and version: HOL `codex_plugin_scanner` manifest check at the CI
+  Action pin (scanner 3.58.0, Action v1.2.811). At
+  `src/codex_plugin_scanner/checks/manifest.py` in tag `v3.58.0`, a missing
+  or empty `screenshots` list produces the same finding as an invalid
+  screenshot path; there is no "field not provided" distinction.
+- Official contract: the OpenAI plugin submission documentation lists
+  `screenshots` as optional ("Optional relative paths to screenshots"), and
+  the ZIP upload errors page states that Skills-only ZIP uploads must not
+  include `interface.screenshots` (`screenshot_configuration_excluded`).
+- Candidate binding: the field is absent from `.codex-plugin/plugin.json`,
+  and repository validation rejects adding it while this distribution
+  contract holds.
+- Conclusion: the finding is a rule-strictness difference, not a defect of
+  this package. It is not dismissed, filtered, or suppressed; the scanner
+  action keeps `min_score: 80` and `fail_on_severity: high` unchanged. The
+  note may remain open in GitHub Code scanning for this candidate.
+- Revisit condition: if a distribution channel that this repository
+  actually adopts requires screenshots, real product screenshots are
+  produced and privacy-reviewed at that time. A logo, an unrelated image,
+  or a fabricated screenshot never substitutes for one.
+
 ## 0.16.0 marketplace installation — 2026-11-01
 
 Version 0.16.0 changes retention behavior: SessionEnd keeps
@@ -151,7 +230,7 @@ The reviewed registry contains 86 raw records and 61 active cases, with 25 super
 
 The frozen development plan requires all applicable source/shared-semantics regressions and native closure of the two current pause/resume and diagnostic incidents. Both current incidents have accepted macOS evidence at `67bdb7e` and Windows execution evidence at `329e594`, strictly mapped at `66e9079`. The returned four-command explicit-root inventory is also verified by the production status-output oracle. Those obligations pass. Same-platform Windows helper-path, ACL and durable-byte successors retain their observed platform; the new collector repair is source-fixed and is not relabeled as a fresh native collector run.
 
-The earlier official whole-history snapshot remains valid with 42 pending, 17 analogue-only and one excluded-incomplete row. It records missing per-case current native coverage, not 42 new failures or required model batches. The old checker always requires a macOS pass for `executed_pass`, so it cannot express a Windows-only native pass with macOS `not_required`. That bounded representation gap is recorded separately rather than changing runtime bytes or inventing a macOS observation. Existing macOS records are never superseded across platform lanes, and all original failures remain intact. This whole-history limitation does not reopen the accepted release-scoped obligations; no full historical native pass is claimed.
+The earlier official whole-history snapshot remains valid with 42 pending, 17 analogue-only and one excluded-incomplete row. It records missing per-case current native coverage, not 42 new failures or required model batches. The old checker always requires a macOS pass for `executed_pass`, so it cannot express a Windows-only native pass with macOS `not_required`. That bounded representation gap is recorded separately rather than changing runtime bytes or inventing a macOS observation. (Current-status note, 0.16.1 candidate: the coverage validator now supports the frozen macOS `not_required` waiver for exactly the three reviewed Windows-only successors named in its applicability set; other rows still cannot self-waive.) Existing macOS records are never superseded across platform lanes, and all original failures remain intact. This whole-history limitation does not reopen the accepted release-scoped obligations; no full historical native pass is claimed.
 
 Local source validation, this release’s source/history obligations and bounded two-platform host acceptance have passed within the identities above. Final reader acceptance, exact-final-release-commit full CI/HOL and publication readback remain with the coordinator. This is prepared release text; it does not establish a tag or public Release.
 ### HOL report evidence boundary

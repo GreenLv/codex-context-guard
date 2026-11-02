@@ -74,7 +74,7 @@ for its current-session lock, further limited by a valid remaining Hook budget.
 Descriptor/path identity checks harden commits, and a zero inode fails closed.
 Identity checks do not provide a sandbox against arbitrary same-user mutation.
 
-SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact.
+SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact. The disabled-cleanup gap, its retained history and the conditions for restoring cleanup are recorded in [Retention cleanup follow-up](RETENTION_CLEANUP_FOLLOWUP.md).
 
 The private permission boundary remains mandatory for state and recovery
 writes. A permission failure is still an error. Disabling retention work does

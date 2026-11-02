@@ -1,8 +1,34 @@
 # Versioning policy
 
+## 0.16.1 — Unreleased (source candidate)
+
+This document describes version 0.16.1. Public availability is determined
+independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
+
+This compatible patch release keeps Schema 13, Stop protocol 5.0.0, the nine
+Hook events, matchers, and the default business-tool path without execution
+approval unchanged; no state migration runs. Observable changes relative to
+published 0.16.0: acceptance classification now masks only complete locators
+(paths, quoted objects, code blocks, block quotes and URLs), so path keywords
+no longer create acceptance items or raise the activation score while item
+text, hashes and spans keep the original bytes; the historical incident
+coverage checker gains an explicit `--release-gate` consumer that fails
+closed (exit 3) unless the report is valid, the coverage gate closes and every
+required node of every active row passed; plugin listing metadata adds the
+Skill frontmatter license and the `interface.logo` field while
+`interface.screenshots` stays omitted under the officially optional contract;
+session retention cleanup remains disabled and the gap is documented in
+[Retention cleanup follow-up](RETENTION_CLEANUP_FOLLOWUP.md). Post-release
+maintainer changes already merged to `main` (HOL scanner Action upgrade with
+report-version binding, `actions/setup-python` bump, bounded acceptance
+probes, risk-selected CI coverage, scoped performance contract) are folded
+into this version's changelog. Changed runtime bytes (including
+`scripts/` and listing metadata) require a fresh artifact identity; consumed
+0.16.0 caches stay immutable.
+
 ## 0.16.0 — 2026-11-01
 
-This document describes version 0.16.0. Public availability is determined
+This document described version 0.16.0. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 
 The Windows launcher loads its required system PowerShell modules explicitly.

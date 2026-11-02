@@ -452,6 +452,61 @@ class PublicContractTests(unittest.TestCase):
             (root / "note.md").write_text("token abc123x\n", encoding="utf-8")
             self.assertEqual(audit.findings(root, ["abc123"]), ["note.md: forbidden private literal"])
 
+    def test_skill_frontmatter_license_matches_plugin_and_root_license(self) -> None:
+        """The Cisco skill-scanner finding (#5) stays fixed: the Skill
+        frontmatter declares the same Apache-2.0 license as the manifest."""
+        manifest = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+        self.assertEqual(manifest["license"], "Apache-2.0")
+        skill = (ROOT / "skills/context-guard/SKILL.md").read_text(encoding="utf-8")
+        self.assertIsNone(contract.skill_license_error(skill))
+        self.assertIn("Apache License", (ROOT / "LICENSE").read_text(encoding="utf-8"))
+
+    def test_skill_license_frontmatter_rejections(self) -> None:
+        for text, fragment in (
+            ("# no frontmatter\n", "frontmatter block"),
+            ("---\nname: x\n---\nbody\n", "must declare a license"),
+            ("---\nname: x\nlicense: MIT\n---\nbody\n", "must be Apache-2.0"),
+            ("lead\n---\nlicense: Apache-2.0\n---\n", "frontmatter block"),
+        ):
+            with self.subTest(text=text):
+                self.assertIn(fragment, contract.skill_license_error(text) or "")
+
+    def test_interface_logo_is_the_bundled_square_icon(self) -> None:
+        """HOL finding (#3) stays fixed: logo reuses the bundled icon."""
+        manifest = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+        interface = manifest["interface"]
+        self.assertEqual(interface["logo"], "./assets/icon.svg")
+        icon = ROOT / interface["logo"]
+        self.assertTrue(icon.is_file())
+        self.assertIn('viewBox="0 0 512 512"', icon.read_text(encoding="utf-8"))
+        distributed = json.loads(
+            (ROOT / ".codex-plugin/distribution-manifest.json").read_text())
+        self.assertIn("assets/icon.svg", distributed["files"])
+
+    def test_interface_asset_contract_rejections(self) -> None:
+        """Missing/escaping logo fields and a screenshots field are rejected."""
+        base = {"composerIcon": "./assets/icon.svg", "logo": "./assets/icon.svg"}
+        self.assertEqual(contract.interface_asset_errors(base), [])
+        for interface, fragment in (
+            ({}, "composer icon"),
+            ({"composerIcon": "./assets/icon.svg"}, "logo"),
+            ({"composerIcon": "./assets/icon.svg", "logo": "../icon.svg"},
+             "safe in-plugin relative path"),
+            ({"composerIcon": "./assets/icon.svg", "logo": "/etc/icon.svg"},
+             "safe in-plugin relative path"),
+            ({"composerIcon": "./assets/icon.svg", "logo": "\\host\icon.svg"},
+             "safe in-plugin relative path"),
+            ({"composerIcon": "./assets/icon.svg", "logo": "./assets/icon.svg",
+              "screenshots": ["./assets/icon.svg"]}, "screenshots must stay omitted"),
+            ({"composerIcon": "./assets/icon.svg", "logo": "./assets/icon.svg",
+              "screenshots": []}, "screenshots must stay omitted"),
+            ({"composerIcon": "../assets/icon.svg", "logo": "./assets/icon.svg"},
+             "safe in-plugin relative path"),
+        ):
+            with self.subTest(interface=interface):
+                errors = contract.interface_asset_errors(interface)
+                self.assertTrue(any(fragment in error for error in errors), errors)
+
     def test_marketplace_terms_link_existing_license(self) -> None:
         manifest = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
         self.assertEqual(

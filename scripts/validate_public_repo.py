@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.16.0"
+VERSION = "0.16.1"
 # Stop protocol 4.0 / schema 12 (0.13.2): the public contract pins the runtime
 # constants and the one-way safety contract fragments below.
 SCHEMA_VERSION = 13
@@ -156,6 +156,53 @@ def enum_sets(value: object) -> list[set[str]]:
     return found
 
 
+def interface_asset_errors(interface: dict) -> list[str]:
+    """Listing-asset metadata contract for one interface object.
+
+    ``logo`` must exist, be a safe in-plugin relative path, and name the same
+    bundled square SVG as ``composerIcon``. ``screenshots`` stays omitted:
+    the official submission contract lists screenshots as optional and the
+    Skills-only ZIP route rejects the field, while HOL manifest checks treat
+    an empty set as a finding (see docs/LOCAL_ACCEPTANCE.md).
+    """
+    errors: list[str] = []
+    if interface.get("composerIcon") != "./assets/icon.svg":
+        errors.append("plugin composer icon must be ./assets/icon.svg")
+    if interface.get("logo") != "./assets/icon.svg":
+        errors.append("plugin logo must be ./assets/icon.svg")
+    if "screenshots" in interface:
+        errors.append(
+            "plugin interface screenshots must stay omitted "
+            "(officially optional; see docs/LOCAL_ACCEPTANCE.md)"
+        )
+    for field in ("composerIcon", "logo"):
+        value = interface.get(field)
+        if not isinstance(value, str):
+            continue
+        pure = Path(value)
+        if (value.startswith(("/", "\\\\")) or pure.is_absolute()
+                or ".." in pure.parts or "\\" in value):
+            errors.append(f"plugin {field} must be a safe in-plugin relative path")
+    return errors
+
+
+def skill_license_error(skill_text: str) -> str | None:
+    """The Skill frontmatter must declare the plugin's Apache-2.0 license."""
+    frontmatter = skill_text.split("---\n", 2)
+    if len(frontmatter) != 3 or frontmatter[0]:
+        return "SKILL.md must start with a frontmatter block"
+    declared = None
+    for line in frontmatter[1].splitlines():
+        if line.startswith("license:"):
+            declared = line[len("license:"):].strip()
+            break
+    if declared is None:
+        return "SKILL.md frontmatter must declare a license"
+    if declared != "Apache-2.0":
+        return "SKILL.md license must be Apache-2.0"
+    return None
+
+
 def validate(root: Path) -> list[str]:
     errors: list[str] = []
     for relative in sorted(REQUIRED_FILES):
@@ -195,12 +242,23 @@ def validate(root: Path) -> list[str]:
             errors.append("plugin license must be Apache-2.0")
         if manifest.get("skills") != "./skills/":
             errors.append("plugin skills path must be ./skills/")
-        if manifest.get("interface", {}).get("composerIcon") != "./assets/icon.svg":
-            errors.append("plugin composer icon must be ./assets/icon.svg")
+        errors.extend(interface_asset_errors(manifest.get("interface", {})))
         if "hooks" in manifest:
             errors.append("manifest must rely on default hooks/hooks.json discovery")
     except (OSError, json.JSONDecodeError) as exc:
         errors.append(f"invalid plugin manifest: {exc}")
+
+    try:
+        skill_error = skill_license_error(
+            (root / "skills" / "context-guard" / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+        )
+        if skill_error:
+            errors.append(skill_error)
+    except OSError:
+        # Missing SKILL.md is already reported through the required-file check.
+        pass
 
     try:
         marketplace = json.loads(

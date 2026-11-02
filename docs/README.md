@@ -6,11 +6,13 @@ use [architecture](ARCHITECTURE.md), [session storage](SESSION_STORAGE.md),
 [versioning](VERSIONING.md). [Instruction routing](GPT6_INSTRUCTION_MAP.md)
 explains the short Skill and its advanced references. [Local acceptance](LOCAL_ACCEPTANCE.md)
 owns measured performance, historical coverage and platform evidence.
+[Session retention cleanup](RETENTION_CLEANUP_FOLLOWUP.md) records the
+disabled-cleanup gap, its user impact and the conditions for restoring it.
 
 Shared contracts are in [core alignment](CORE_ALIGNMENT_CONTRACT_V2.md),
 [wire semantics](CORE_V2_WIRE.md), [host capabilities](CORE_V2_HOST_CAPABILITIES.md)
 and [semantic compatibility](SEMANTIC_COMPATIBILITY.md). Maintainer validation
-follows [CI policy](CI_POLICY.md). [Release notes](releases/v0.15.0.md) explain
+follows [CI policy](CI_POLICY.md). [Release notes](releases/v0.16.1.md) explain
 the current version's changes and upgrade actions.
 
 Superseded development plans and intermediate reviews are retained in
