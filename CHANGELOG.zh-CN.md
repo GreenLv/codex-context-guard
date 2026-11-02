@@ -14,10 +14,10 @@
 
 ### 变更
 
-- 历史事故覆盖检查器新增显式发布消费模式：`check_incident_coverage.py --release-gate`（配合 `--execute`）在报告无效、覆盖门未关闭、或任一活动行的任一必需测试节点未实际通过时以退出码 3 失败——仅凭退出码 0 不再放行。文档同步改为“执行每个必需节点”，不再表述为首节点。负控覆盖 pending 阻塞行、缺失回执、skip 节点与不完整结果清单。
+- 历史事故覆盖检查器新增显式发布消费模式：`check_incident_coverage.py --release-gate`（配合 `--execute`）在报告无效、覆盖门未关闭、或任一活动行的任一必需测试节点未实际通过时以退出码 3 失败——仅凭退出码 0 不再放行。文档同步改为“执行每个必需节点”，不再表述为首节点。负控覆盖 pending 阻塞行、缺失回执、skip 节点与不完整结果清单。 定位符分类回归也已作为独立脱敏案例登记到权威历史错误库，并纳入完整覆盖投影。
 - HOL 插件扫描 Action 升级（v1.2.795 → v1.2.811，scanner 3.51.0 → 3.58.0），报告验证绑定升级后的 scanner 版本，保留 exact-checkout 与报告证据边界。`actions/setup-python` 从 7.0.0 升至 7.1.0。原生验收探针增加有界超时与显式错误处理；CI 覆盖与 scoped 性能检查按完整发布差异的风险选择。这些面向维护者的变更在 0.16.0 发布后合入 main，并入本版历史。
 - 仓库验证固定新的上架元数据：Skill frontmatter 许可证、两个图标字段均为指向打包图标的安全插件内相对路径、`interface.screenshots` 保持省略。本地 `plugin-scanner` 3.51.0 诊断（仓库锁定版本，非 CI scanner）复现了此前的 logo 与 screenshots 发现，并确认本分发合同下仅剩 screenshots 一条提示；最终候选的 CI 3.58.0 扫描读回是单独环节。
-- 文档修正：文档地图现在链接当前版本发布说明与保留清理跟进；incident host 验收补充改用 Codex 官方市场安装表述，替代已退役的安装器；验收记录注明覆盖验证器现支持恰好三条已评审 Windows-only 后继的冻结 macOS `not_required` 豁免。
+- 文档修正：文档地图现在链接当前版本发布说明与保留清理跟进；incident host 验收补充改用 Codex 官方市场安装表述，替代已退役的安装器；验收记录注明恰好三条已评审 Windows-only 后继的冻结 macOS `not_required` 豁免，并区分已发布 0.16.0 的双机日常信任与 parity、已观察的 macOS 加载和仍未执行的扩展验收。
 
 ### 验证
 

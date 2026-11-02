@@ -64,9 +64,11 @@ published 0.15.1:
 - Official Codex marketplace installation replaces the project installer.
   `codex-context-guard-v016` is an experimental identity; installation and
   strict second-operation no-op evidence must bind the exact artifact and host.
-  Isolated portable old-cache checks cover synthetic fixtures only; real
-  old-cache preservation, normal trust, old-task continuity and independent
-  enable/disable behavior remain unverified.
+  Isolated portable old-cache checks cover synthetic fixtures only. The
+  [later daily-adoption record](LOCAL_ACCEPTANCE.md#0160-daily-adoption--2026-11-02)
+  verifies the published 0.16.0 artifact, normal nine-Hook trust and real
+  old-cache preservation on both platforms. Old-task continuity, independent
+  enable/disable behavior and GUI restart remain separate unverified gates.
   Existing interpreter.conf bindings are read and verified, but no automatic
   binding is created. POSIX discovery additionally probes fixed global Homebrew, Anaconda and
   Python.framework locations with isolated version/marker checks after PATH

@@ -28,11 +28,10 @@ repository-only files. Extract the release artifact into a stable directory you
 control and keep it there; that directory remains the official marketplace
 source for future reads and refreshes. Do not delete it after installation.
 
-For maintainers, build the artifact from this source checkout at a
-new path outside the checkout (Python 3.10+ is required):
+Maintainers validating this 0.16.1 source candidate can build it at a new path outside the checkout (Python 3.10+). The installation steps below use the published 0.16.0 ZIP linked above:
 
 ```shell
-python3 scripts/build_release_artifact.py --output ../context-guard-0.16.0.zip
+python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1-candidate.zip
 ```
 
 On Windows use `py -3` in place of `python3` in the Python commands below.

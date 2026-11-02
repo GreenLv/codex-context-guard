@@ -26,10 +26,10 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 它们带有仓库维护文件。把发行 ZIP 解压到自己控制的稳定目录并一直保留，
 官方市场后续读取和刷新仍依赖此来源，不要在安装后删除。
 
-维护者可从本检出构建 ZIP，输出到检出目录外的新路径，需要 Python 3.10+：
+维护者验证当前 0.16.1 源候选时，可把 ZIP 构建到检出目录外的新路径，需要 Python 3.10+。下方安装步骤使用上面链接的已发布 0.16.0 ZIP：
 
 ```shell
-python3 scripts/build_release_artifact.py --output ../context-guard-0.16.0.zip
+python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1-candidate.zip
 ```
 
 Windows 的 Python 命令请把 `python3` 替换为 `py -3`。还需要支持插件的

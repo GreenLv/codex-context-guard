@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "4ed85ea11ff8ccd307e3c59be885161a265892c4",
-  "frozen_at": "2026-10-03",
+  "library_commit": "5be939606a102a01ea49cf37abe1b26af8ddfe66",
+  "frozen_at": "2026-11-03",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
-    "raw_record_count": 70,
-    "active_case_count": 53,
+    "raw_record_count": 71,
+    "active_case_count": 54,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -653,6 +653,15 @@
         "supersedes": "CGI-20261004-codex-windows-fixture-snapshot-newline-hash",
         "record_sha256": "1bca7119bae5a544908cf94349b64ae92a0f24f78b863971d49d65e037511e9d",
         "status": "active"
+      },
+      "CGI-20261103-codex-acceptance-locator-classification": {
+        "title": "定位符验收词污染要求提取，部分真实义务反被屏蔽",
+        "family": "instruction-object-boundary",
+        "runtime": "codex",
+        "platform": "macos",
+        "supersedes": null,
+        "record_sha256": "f33ddcac22fa2dfc1b6193dd01fd82f65d0b6c649be53008eda61ce25beda87f",
+        "status": "active"
       }
     }
   },
@@ -798,6 +807,7 @@
     "CGI-20260928-codex-archive-pretool-cold-start",
     "CGI-20260928-codex-stop-performance-timeout",
     "CGI-20260928-dsh-archive-ux10-target-pollution",
-    "CGI-20260928-dsh-archive-ux11-unreachable-remediation"
+    "CGI-20260928-dsh-archive-ux11-unreachable-remediation",
+    "CGI-20261103-codex-acceptance-locator-classification"
   ]
 }

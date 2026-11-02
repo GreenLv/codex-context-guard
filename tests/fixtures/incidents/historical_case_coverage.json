@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "4ed85ea11ff8ccd307e3c59be885161a265892c4",
+  "library_commit": "5be939606a102a01ea49cf37abe1b26af8ddfe66",
   "denominator": {
     "case_registry": {
-      "records": 60,
-      "active": 49
+      "records": 71,
+      "active": 54
     },
     "legacy_source": {
       "records": 16,
@@ -16,7 +16,8 @@
     "executed_fail",
     "not_applicable",
     "analogue_only",
-    "pending"
+    "pending",
+    "excluded_incomplete"
   ],
   "description": "Per-case mapping of the anonymized historical incident corpus (bound to the frozen library snapshot; refreshed for CG-0151-HOOK-REPAIR and its review R1 repair round (CGI-20261002/CGI-20261003 added, source results re-executed on the 0.15.1 candidate)) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit.",
   "cases": [
@@ -1454,6 +1455,27 @@
         "next owner: coordinator (final acceptance, integration, release)"
       ],
       "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261103-codex-acceptance-locator-classification",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "定位符验收词污染要求提取，部分真实义务反被屏蔽",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "instruction-object-boundary",
+      "current_contract": "0.16.1 acceptance-classification source invariant: complete locator names do not add duties; real prose, original hashes/spans, existing state and default authorization survive. This row records synthetic source/Hook execution on macOS; it requires no real-model or Windows-native observation.",
+      "trigger": "Keyword-only filename/path substitutions, document/media extensions, locator-first quotations, Markdown labels, slash-separated Chinese actions and keyword-rich long TMPDIR.",
+      "positive": "All fifteen locator-family test methods pass, including preserved real duties, position/hash invariants, existing-state retention and original three long-TMPDIR assertions.",
+      "negative": "The new four-method acceptance probe produced 448 failing assertions against 435205d; ambiguous prose must not be masked as a complete locator, and source bytes are never rewritten.",
+      "test_locator": "tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_minimal_counterexample_matches_its_neutral_twin and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_locator_word_families_never_create_items and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_multiple_and_long_locators_create_no_items and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_bare_document_and_media_filenames_are_objects and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_locator_first_quoted_prose_keeps_its_real_obligation and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_slash_separated_prose_is_not_a_complete_locator and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_file_wrappers_do_not_hide_labels_or_adjacent_prose and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_real_obligations_survive_with_the_complete_original_line and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_locator_words_cannot_turn_an_inquiry_into_a_duty and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_masked_view_preserves_every_position and tests/test_acceptance_locator_objects.py::ExtractAcceptanceLocatorTests::test_locator_words_do_not_raise_activation_score and tests/test_acceptance_locator_objects.py::LocatorHookLifecycleTests::test_path_words_do_not_add_items_or_activate and tests/test_acceptance_locator_objects.py::LocatorHookLifecycleTests::test_real_duty_with_long_path_is_kept_through_stop_and_resume and tests/test_acceptance_locator_objects.py::LocatorHookLifecycleTests::test_existing_path_derived_item_is_retained_not_rewritten and tests/test_acceptance_locator_objects.py::LongTemporaryDirectoryReplayTests::test_original_assertions_pass_under_long_keyword_tmpdir",
+      "deeper_authority": "tests/test_cg142_instruction_objects.py; immutable source evidence in the canonical case; native evidence remains separate.",
+      "final_verdict": "executed_pass",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "not_required",
+      "missing_evidence": [],
+      "owner": "development"
     }
   ],
   "legacy": [

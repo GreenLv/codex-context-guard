@@ -24,6 +24,16 @@ compileall and whitespace checks passed. Successor artifact, performance,
 CI/HOL and native gates remain pending until their own results are recorded. Earlier installed caches and evidence
 remain unchanged.
 
+The authoritative library now includes the separate locator-classification
+case as `source_fixed`, backed by the old-candidate failures and repaired
+source tests. Its immutable library commit is
+`5be939606a102a01ea49cf37abe1b26af8ddfe66`. The refreshed product projection
+contains 71 canonical plus 16 legacy records, with 62 active cases. Every
+previous record pin and lineage is unchanged. The new row requires all 15
+locator-family test methods; it records synthetic source/Hook execution on
+macOS and makes no real-model or Windows-native claim. The seven existing
+native-observation rows remain pending.
+
 The following results belong to that earlier developer candidate (macOS,
 arm64, Python 3.12.2), not the repaired successor:
 
@@ -111,6 +121,27 @@ distribution contract, and the candidate deliberately keeps
   actually adopts requires screenshots, real product screenshots are
   produced and privacy-reviewed at that time. A logo, an unrelated image,
   or a fabricated screenshot never substitutes for one.
+
+## 0.16.0 daily adoption — 2026-11-02
+
+Later daily adoption belongs to the published commit
+`154be2fd7f0012335e9f9dee978b27a6ff036f58`, not the 0.16.1 successor.
+The accepted 96-file release ZIP is 845,865 bytes, SHA-256
+`95ef46cd7593f9dab4c07f4849fa566ee2c7044bd45371ac26626bc44a5ccea8`.
+Official installation and full-file/runtime parity were verified on macOS and
+Windows. Independent official readbacks after the user's normal trust
+confirmed all nine exact Hooks enabled and trusted, unchanged plugin flags,
+and preservation of the original 314 macOS and 325 Windows old-cache objects.
+Those readbacks made zero model requests and zero trust writes.
+
+A subsequent macOS chat also received live Hook injections, establishing
+loading for that chat. Windows live loading was not established by its
+inventory. Neither observation proves execution of all nine business events,
+GUI restart, old-task cold continuation or the deferred extended-model and
+full Windows performance profiles. Earlier failed global listing timeouts and
+the Windows auxiliary shell-precondition failure remain failed; the later
+local-market inventory is a separate bounded observation. These results do
+not supply the seven current-candidate historical native observations.
 
 ## 0.16.0 marketplace installation — 2026-11-01
 
