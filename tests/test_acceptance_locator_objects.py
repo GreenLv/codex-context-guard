@@ -63,6 +63,49 @@ class ExtractAcceptanceLocatorTests(unittest.TestCase):
             with self.subTest(text=text[:60]):
                 self.assertEqual(cg.extract_acceptance(text), [])
 
+    def test_bare_document_and_media_filenames_are_objects(self):
+        # The authority lexer intentionally recognizes a narrower file domain.
+        # Acceptance classification must cover other ordinary file types too,
+        # without changing that lexer's authority or locator-verification scope.
+        for word in LOCATOR_WORDS:
+            for extension in ("pdf", "docx", "xlsx", "pptx", "png", "jpg",
+                              "csv", "log", "zip", "tar.gz"):
+                for wrapper in ("{}", "[说明]({})", "({})", "<{}>"):
+                    text = "打开 " + wrapper.format(f"{word}.{extension}")
+                    with self.subTest(text=text):
+                        self.assertEqual(cg.extract_acceptance(text), [])
+                        self.assertEqual(cg.score_complexity(text)[0],
+                                         cg.score_complexity(text.replace(word, "items"))[0])
+
+    def test_locator_first_quoted_prose_keeps_its_real_obligation(self):
+        for quoted in ('"/work/a.txt must verify output"',
+                       "“/work/a.txt 必须验证输出”",
+                       "`/work/a.txt must verify output`",
+                       "「C:\\work\\a.pdf 必须测试输出」"):
+            text = f"请保留 {quoted} 这一条要求"
+            with self.subTest(text=text):
+                self.assertEqual(cg.extract_acceptance(text), [text])
+
+    def test_slash_separated_prose_is_not_a_complete_locator(self):
+        for text in ("请验证/测试/实现这个模块", "必须验证/测试/验收",
+                     "请实现/安装/部署这个模块"):
+            with self.subTest(text=text):
+                if "验证" in text:
+                    self.assertEqual(cg.extract_acceptance(text), [text])
+                self.assertNotEqual(locator_masked_text(text).strip(), "")
+                self.assertGreater(cg.score_complexity(text)[0], 0)
+        for text in ("打开 ./验证/测试/实现", "打开 docs/verify/build",
+                     "打开 中文/测试/说明.pdf"):
+            with self.subTest(text=text):
+                self.assertEqual(cg.extract_acceptance(text), [])
+
+    def test_file_wrappers_do_not_hide_labels_or_adjacent_prose(self):
+        for text in ("打开 [必须验证](test.md)", "打开 [必须验证](test.pdf)",
+                     "打开 test.pdf后验证结果", "打开 test.csv 后验证结果",
+                     "必须验证 test.png 的输出", "运行 test_case.py"):
+            with self.subTest(text=text):
+                self.assertEqual(cg.extract_acceptance(text), [text])
+
     def test_real_obligations_survive_with_the_complete_original_line(self):
         for text in (
             "必须运行测试并验证输出 /work/test/a.txt",

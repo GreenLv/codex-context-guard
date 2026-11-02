@@ -7,7 +7,25 @@ release acceptance: exact-artifact installation, CI/HOL and the historical
 native observations are recorded here only after they run on the frozen
 candidate.
 
-Source-level results at the candidate (macOS, arm64, Python 3.12.2):
+Independent acceptance reopened the locator-classification family at developer
+candidate `435205d1ac26f7fa24f22f2a7f5ada066e244672`. Bare document/media
+filenames still created extra duties, while locator-first quoted prose,
+Markdown labels and slash-separated Chinese actions could lose real duties.
+Four added regression methods produced 448 failing assertions on that
+candidate. The classification-only repair passes the 95-test owning group,
+including the original long-TMPDIR replay; it does not expand the authority
+lexer or change source hashes, spans, persisted fields or Hook definitions.
+The successor full current-behavior suite then ran 2,899 tests with zero
+failures, zero errors and 92 skips (30 named retired retention nodes plus
+62 platform/capability skips), with identical prepared-source inputs before
+and after execution. Repository validation, tracked-tree privacy and commit
+identity audits, the phase-3 transition audit, runtime self-test, Ruff,
+compileall and whitespace checks passed. Successor artifact, performance,
+CI/HOL and native gates remain pending until their own results are recorded. Earlier installed caches and evidence
+remain unchanged.
+
+The following results belong to that earlier developer candidate (macOS,
+arm64, Python 3.12.2), not the repaired successor:
 
 - The full current-behavior suite ran 2,895 tests with zero failures, zero
   errors and 92 skips: 30 named retired retention nodes plus 62

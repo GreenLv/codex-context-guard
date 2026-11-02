@@ -9,7 +9,7 @@ This compatible patch release keeps Schema 13, Stop protocol 5.0.0, the nine
 Hook events, matchers, and the default business-tool path without execution
 approval unchanged; no state migration runs. Observable changes relative to
 published 0.16.0: acceptance classification now masks only complete locators
-(paths, quoted objects, code blocks, block quotes and URLs), so path keywords
+(paths, filenames and URLs, including complete locators inside quotes), so path keywords
 no longer create acceptance items or raise the activation score while item
 text, hashes and spans keep the original bytes; the historical incident
 coverage checker gains an explicit `--release-gate` consumer that fails

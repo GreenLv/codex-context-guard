@@ -86,6 +86,13 @@ def instruction_text(text: str, *, preserve_newlines: bool = True) -> str:
 
 _LOCATOR_PREFIX = re.compile(r"(?:https?://|codex://|[A-Za-z]:[\\/]|\\\\|/|\.{1,2}[\\/]|~/)", re.I)
 _QUOTE_EDGES = '"\x27`“”‘’「」『』'
+# Classification has a broader filename domain than the authority lexer.
+# Delimiters stay visible, especially Markdown labels containing a real duty.
+_CLASSIFICATION_FILE = re.compile(
+    r"(?<![\w.])[\w@+~-]+(?:[.][\w@+~-]+)*\.[A-Za-z0-9]{1,8}(?![\w.])",
+    re.UNICODE,
+)
+_FILE_THEN_PROSE = re.compile(r"\.[A-Za-z0-9]{1,8}\s+\S")
 
 
 def _is_locator(part: Fragment) -> bool:
@@ -93,24 +100,32 @@ def _is_locator(part: Fragment) -> bool:
 
     Quoted prose, block quotes and code stay visible, so a quoted duty keeps
     its words. A quote wrapping one whole locator is that locator. An
-    unprefixed relative object needs a file extension or two separators;
-    "验证/测试" stays prose. Ambiguous CJK-adjacent objects stay visible.
+    unprefixed relative object needs a file extension or two separators
+    without ambiguous CJK prose; "验证/测试/实现" stays prose. Ambiguous
+    CJK-adjacent objects stay visible.
     """
     if part.kind != "object":
         return False
     text = part.text
     if text[:1] in _QUOTE_EDGES:
         inner = text.strip(_QUOTE_EDGES)
+        # A locator at the start does not make the whole quotation a path.
+        # Keep ambiguous prose such as "/work/a.txt must verify output".
+        if _FILE_THEN_PROSE.search(inner):
+            return False
         return bool(inner) and "\n" not in inner and bool(
             _LOCATOR_PREFIX.match(inner) or _bare_locator(inner))
     return bool(_LOCATOR_PREFIX.match(text) or _bare_locator(text))
 
 
 def _bare_locator(text: str) -> bool:
-    if re.search(r"\s", text):
+    if re.search(r"[\s\[\]()<>]", text):
         return False
     segments = re.split(r"[\\/]", text)
-    return len(segments) >= 3 or bool(re.search(r"\.[A-Za-z0-9]{1,8}$", segments[-1]))
+    has_extension = bool(re.search(r"\.[A-Za-z0-9]{1,8}$", segments[-1]))
+    # Slash-joined CJK prose has no unambiguous relative-path boundary.
+    return has_extension or (len(segments) >= 3
+                             and not re.search(r"[\u3400-\u9fff]", text))
 
 
 def locator_masked_text(text: str) -> str:
@@ -120,7 +135,8 @@ def locator_masked_text(text: str) -> str:
     hashes and spans. Newlines inside an object are retained.
     """
     return "".join("".join("\n" if char == "\n" else " " for char in part.text)
-                   if _is_locator(part) else part.text
+                   if _is_locator(part) else _CLASSIFICATION_FILE.sub(
+                       lambda match: " " * len(match.group()), part.text)
                    for part in fragments(text))
 
 
