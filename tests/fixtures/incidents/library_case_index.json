@@ -1,11 +1,11 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "d5602f80787118d26f4a477c1e9ba74439c586d2",
+  "library_commit": "3add004535404dc62fb98b338fd1514e0206cc96",
   "frozen_at": "2026-11-03",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
-    "raw_record_count": 72,
-    "active_case_count": 55,
+    "raw_record_count": 73,
+    "active_case_count": 56,
     "records": {
       "CGI-20260913-codex-archive-009": {
         "title": "旧契约下缺少动作前授权判定",
@@ -670,6 +670,15 @@
         "platform": "windows",
         "supersedes": null,
         "record_sha256": "dbc93c50846ce0e09bbd26d82ae50f9773f25330e7a1d6fa006e0a9d8f8bbb56",
+        "status": "active"
+      },
+      "CGI-20261103-codex-windows-test-fixture-path-assumptions": {
+        "title": "跨平台验收测试的 POSIX 路径假设导致 Windows 用例自拒",
+        "family": "acceptance-test-fixture-portability",
+        "runtime": "codex",
+        "platform": "windows",
+        "supersedes": null,
+        "record_sha256": "0433aa43dbc74cebd3f4f61a460d1d830e1b0be788e82cd30ad509f5e8d59b72",
         "status": "active"
       }
     }

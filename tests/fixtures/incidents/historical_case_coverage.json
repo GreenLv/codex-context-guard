@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "d5602f80787118d26f4a477c1e9ba74439c586d2",
+  "library_commit": "3add004535404dc62fb98b338fd1514e0206cc96",
   "denominator": {
     "case_registry": {
-      "records": 72,
-      "active": 55
+      "records": 73,
+      "active": 56
     },
     "legacy_source": {
       "records": 16,
@@ -1491,6 +1491,27 @@
       "negative": "Each omitted Job field, false/None/integer success claim, cleanup errors, false empty tree, foreign absence claim, signal/query denial and unknown fields is rejected even with matching retained original bytes and rehashed catalogs.",
       "test_locator": "tests/test_native_cli_adoption.py::FullAdoptionTests::test_windows_owned_job_cleanup_is_consumed_without_dropping_fields and tests/test_native_cli_adoption.py::FullAdoptionTests::test_incomplete_windows_job_cleanup_fails_with_matching_originals and tests/test_native_cli_adoption.py::FullAdoptionTests::test_full_profile_and_result_adopt_same_cli_without_changing_gates",
       "deeper_authority": "scripts/cg_process_tree.py::OwnedProcess.close; canonical Windows zero-turn failure and repaired source evidence. Fresh native Windows CLI0.165 observation at source 6295d4390ea235d9cee842a3db43b80e292afd21 passed the unchanged strict producer/consumer with all14 fields and matching originals: receipt SHA256 94c7b3aa2a42f7afa5c52ac436c88264784b04e266a117df5cd827a8d6564e93, catalog SHA256 c0f605bf4c7f806c7f9f5994cc8ce09664224ee0c9876f0a285986ee2e54fb84. The app-server exit code1 is accepted only by this zero-turn capability contract; no normal-trust, model, quota or whole-Hook inference.",
+      "final_verdict": "executed_pass",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "passed",
+      "missing_evidence": [],
+      "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261103-codex-windows-test-fixture-path-assumptions",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "跨平台验收测试的 POSIX 路径假设导致 Windows 用例自拒",
+      "runtime": "codex",
+      "platform": "windows",
+      "family": "acceptance-test-fixture-portability",
+      "current_contract": "Cross-platform acceptance tests simulate existing locator-derived state without rewriting its original text and exercise the release consumer against a private ordinary report with independent synthetic pending data. Source/CI test invariant only: no model or whole-Hook native result is claimed.",
+      "trigger": "Windows separators prevent the old-extractor fixture from adding its intended item; a POSIX-only null-device report path prevents the CLI consumer negative control from reaching its expected release refusal.",
+      "positive": "The old extractor fixture recognizes POSIX and Windows separators while retaining exact text; the consumer reads a fresh temporary report and rejects both a synthetic pending row and missing execution receipts. The reviewed source patch passed 60 macOS and 66 Windows owning/control tests, no skips.",
+      "negative": "The unmodified Windows tests reproduce the missing item and unexpected exit 1. No existing release-gate check or runtime behavior is relaxed; pending and missing receipts remain independent blockers. An unrelated resolver timeout remains retained and unclassified.",
+      "test_locator": "tests/test_acceptance_locator_objects.py::LocatorHookLifecycleTests::test_existing_path_derived_item_is_retained_not_rewritten and tests/test_incident_coverage_negative_controls.py::ReleaseGateConsumerControls::test_cli_release_gate_exit_3_without_execute and tests/test_incident_coverage_negative_controls.py::ReleaseGateConsumerControls::test_pending_blocking_row_keeps_gate_closed",
+      "deeper_authority": "The immutable canonical case records Windows failures at 6295d4390ea235d9cee842a3db43b80e292afd21 and source repair committed at 9e021cd480c2f4e6da5b03de1fe2ed8d61dc7ad7. Windows success was observed on clean acd8b75cf853e5db4c176d300a8c46a5264ff58b plus the reviewed, byte-matching patch; it is not a claimed clean-commit Windows run or real-model Hook observation.",
       "final_verdict": "executed_pass",
       "source_result": "passed",
       "macos_result": "passed",
