@@ -1265,15 +1265,14 @@
       "positive": "polite-pause, polite-resume, replacement-with-negated-old-object, replacement-without-negation scenarios release the unique ordinary wait with recorded provenance and restore the unit to active; Stop stays silent",
       "negative": "negated-resume guard keeps waiting; quotes, questions, third-party continuation, ambiguous double waits, typed waits and external dependencies do not release; changed or missing source stays fail-closed; 0.15.0 misclassified v2 recovers only with re-verified source; a new root pause event with identical bytes re-raises the wait while same-event replay stays idempotent (review F1)",
       "test_locator": "tests/test_cg0151_pause_resume_family.py::PauseResumeFamilyTests::test_w02_polite_pause_suffix_does_not_create_named_object and ::test_w04_negated_old_object_does_not_block_current_resume and ::test_w12_changed_or_missing_source_stays_fail_closed and ::test_f1_new_root_event_with_identical_pause_bytes_rewaits and ::test_f1b_same_source_event_replay_stays_idempotent and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r2_source_snapshot_family_matrix and ::test_f3_source_change_between_passes_is_explicit_real_event and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r3_query_lifecycle_matrix and ::test_r3_final_projection_rechecks_authority_matrix and tests/test_cg0151_incident_toolkit.py::IncidentToolkitTests::test_r3_mapper_original_value_type_matrix and ::test_r3_mapper_valid_behavior_inversions",
-      "deeper_authority": "tests/test_cg122_p0_counterexamples.py P0Harness dispatch chain; canonical reproducer replay.py 6/6 in the incident library (unchanged driver/fixture bytes)",
+      "deeper_authority": "tests/test_cg122_p0_counterexamples.py P0Harness dispatch chain and canonical reproducer replay.py 6/6 in the incident library (unchanged driver/fixture bytes). The 0.16.1 macOS incident_host/v1-code-mode run on 954a53748198e3773c3e0f0bad15b523b4247a8d observed the same unit after pause and resume, preserved pending-work provenance and typed waits, and completed compaction and cold recovery. Independent result SHA-256 7f4e91174de094f514cce4580eec8a0fc449f006859e9eaeb6111bafd6cbdcf7.",
       "final_verdict": "pending",
       "source_result": "passed",
-      "macos_result": "pending",
-      "windows_result": "not_required",
+      "macos_result": "passed",
+      "windows_result": "pending",
       "missing_evidence": [
-        "accepted 0.15.1 macOS evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input macOS confirmation",
-        "current-candidate exact-source gates and native confirmation are coordinator-gated",
-        "next owner: coordinator (final acceptance, integration, release)"
+        "The 0.15.1 case-closure record contains separate Windows evidence. The 0.16.1 candidate still needs Windows observations bound to its runtime and host inputs.",
+        "next owner: coordinator (Windows native acceptance)"
       ],
       "owner": "coordinator"
     },
@@ -1290,15 +1289,14 @@
       "positive": "all four commands bind the explicit root and current private attempt; the returned status command executes successfully with unchanged private bytes and metadata",
       "negative": "wrong root, executable, script, subcommand, session, turn, token hash, sentinel inventory token, duplicate fields and extra/compound command shapes fail; no default-root directory is created",
       "test_locator": "tests/test_cg0151_status_command_contract.py::StatusCommandContractTests::test_c09_explicit_query_root_binds_all_commands_without_hook_environment and ::test_c10_encoder_explicit_space_root_and_hook_default_are_separate and tests/test_incident_host_acceptance.py::IncidentHostTests::test_cli0160_all_four_inventory_commands_require_exact_authority",
-      "deeper_authority": "scripts/context_guard.py checkpoint_status, advanced_command_context and shared command encoder; tools/validation/incident_host_acceptance.py status_output",
+      "deeper_authority": "scripts/context_guard.py checkpoint_status, advanced_command_context and the shared command encoder, with the status_output oracle in tools/validation/incident_host_acceptance.py. The 0.16.1 macOS incident_host/v1-code-mode run on 954a53748198e3773c3e0f0bad15b523b4247a8d returned four commands bound to the explicit root, interpreter, script, session, turn, and private attempt. Independent result SHA-256 7f4e91174de094f514cce4580eec8a0fc449f006859e9eaeb6111bafd6cbdcf7.",
       "final_verdict": "pending",
       "source_result": "passed",
-      "macos_result": "pending",
-      "windows_result": "not_required",
+      "macos_result": "passed",
+      "windows_result": "pending",
       "missing_evidence": [
-        "accepted 0.15.1 macOS evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input macOS confirmation",
-        "current-candidate exact-source gates and native confirmation are coordinator-gated",
-        "next owner: coordinator (final acceptance, integration, release)"
+        "The 0.15.1 case-closure record contains separate Windows evidence. The 0.16.1 candidate still needs Windows observations bound to its runtime and host inputs.",
+        "next owner: coordinator (Windows native acceptance)"
       ],
       "owner": "coordinator"
     },
@@ -1315,15 +1313,14 @@
       "positive": "real CLI subprocess success with documented options is recognized and the PostToolUse event stays silent; a failing diagnostic result grants no business evidence; the read-only snapshot serves queries with a byte-stable private tree",
       "negative": "unknown/abbreviated options, duplicate bindings, missing values, mode conflicts, shell chains, wrong session/turn/data-root/token or a different runtime/script stay rejected; damaged or replaced state fails explicitly without rebuild, backup or migration; a separated value must not consume a following option-like token (review F2); the read-only query also verifies still-authoritative external sources, companions, typed controls, newer roots and mid-query source changes with controlled reasons (review F3)",
       "test_locator": "tests/test_cg0151_status_command_contract.py::StatusCommandContractTests::test_c08_real_cli_success_then_post_chain_cold_read and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r01_all_modes_read_without_tree_changes and ::test_f3_typed_control_source_mutations_fail_explicitly and ::test_f3_ordinary_root_source_mutations_fail_explicitly and ::test_r2_source_snapshot_family_matrix and tests/test_cg0151_incident_toolkit.py::IncidentToolkitTests::test_r2_judge_oracle_matrix and ::test_r2_mapper_structural_matrix and ::test_r2_preflight_preserves_existing_output and tests/test_cg0151_readonly_snapshot.py::ReadOnlySnapshotTests::test_r3_query_lifecycle_matrix and ::test_r3_final_projection_rechecks_authority_matrix and tests/test_cg0151_incident_toolkit.py::IncidentToolkitTests::test_r3_mapper_original_value_type_matrix and ::test_r3_mapper_valid_behavior_inversions",
-      "deeper_authority": "tests/test_session_lock_protocol.py writer kernel-lock contract; tools/validation/incident_toolkit.py zero-model scenario toolchain; canonical reproducer replay.py 8/8 in the incident library (unchanged driver/fixture bytes)",
+      "deeper_authority": "tests/test_session_lock_protocol.py writer kernel-lock contract, tools/validation/incident_toolkit.py zero-model scenario toolchain, and canonical reproducer replay.py 8/8 in the incident library (unchanged driver/fixture bytes). The 0.16.1 macOS incident_host/v1-code-mode run on 954a53748198e3773c3e0f0bad15b523b4247a8d observed successful status with silent PostToolUse, rejection of an unknown option and a missing value, and successful read-only access to a restricted session copy. Independent result SHA-256 7f4e91174de094f514cce4580eec8a0fc449f006859e9eaeb6111bafd6cbdcf7.",
       "final_verdict": "pending",
       "source_result": "passed",
-      "macos_result": "pending",
-      "windows_result": "not_required",
+      "macos_result": "passed",
+      "windows_result": "pending",
       "missing_evidence": [
-        "accepted 0.15.1 macOS evidence exists in the library lineage; the current 0.16.0 candidate needs its own affected-input macOS confirmation",
-        "current-candidate exact-source gates and native confirmation are coordinator-gated",
-        "next owner: coordinator (final acceptance, integration, release)"
+        "The 0.15.1 case-closure record contains separate Windows evidence. The 0.16.1 candidate still needs Windows observations bound to its runtime and host inputs.",
+        "next owner: coordinator (Windows native acceptance)"
       ],
       "owner": "coordinator"
     },
@@ -1340,10 +1337,10 @@
       "positive": "restoration reads independent persisted state; request/actor/capture digests stay identical; judge and restore states stay strictly bound; the final mapping summary accepts only unmodified signed requests",
       "negative": "a restoration that mutates the request fails the final mapping instead of re-hashing or stripping fields; the original failing capture stays failed on its original identity and is not relabeled as a pass",
       "test_locator": "tests/test_incident_host_acceptance.py::CollectorRequestLifecycleTests::test_full_signed_request_survives_successful_restoration and ::test_v2_and_legacy_request_snapshots_survive_restoration and ::test_post_request_stop_failure_retains_signed_request_and_restores and ::test_restoration_and_receipt_failures_stay_pending_without_request_drift and ::test_signed_request_tampering_is_still_rejected",
-      "deeper_authority": "canonical library evidence at 4ed85ea binds the original Windows observation, the repair commits and the strict derived mapping",
+      "deeper_authority": "Canonical library evidence at 4ed85ea binds the original Windows observation and repair. The 0.16.1 macOS incident_host/v1-code-mode run on 954a53748198e3773c3e0f0bad15b523b4247a8d matched the persisted, actor-consumed and captured request and verified the restored POSIX fixture. Independent result SHA-256 7f4e91174de094f514cce4580eec8a0fc449f006859e9eaeb6111bafd6cbdcf7 and lifecycle audit SHA-256 85ab54f3c3e07ca3c8255813232e8cc64650ffff69183de32584906f8c8b8542. Windows DACL restoration requires separate native evidence.",
       "final_verdict": "pending",
       "source_result": "passed",
-      "macos_result": "not_required",
+      "macos_result": "passed",
       "windows_result": "pending",
       "missing_evidence": [
         "native Windows rerun on the current candidate is a coordinator-gated native fact",
