@@ -241,23 +241,11 @@ class BackendBindingTests(unittest.TestCase):
                     {'hooks': list(inventory.values())}]}}},
             ]
             names, threads = groups[role]
-            for ix, thread in enumerate(dict.fromkeys(threads)):
-                method = 'thread/resume' if role == 'stop_cold' and thread == 'stop0' else 'thread/start'
-                params = {'cwd': plan['cwd'], 'sandbox': 'workspace-write',
-                          'approvalPolicy': 'on-request'}
-                if method == 'thread/resume':
-                    params['threadId'] = thread
-                else:
-                    params.update(model=plan['model'], developerInstructions='synthetic test')
-                rows += [
-                    {'direction': 'request', 'message': {'id': 20 + ix, 'method': method, 'params': params}},
-                    {'direction': 'response', 'message': {'id': 20 + ix, 'result': {
-                        'thread': {'id': thread}, 'model': plan['model'],
-                        'modelProvider': backend.model_provider(plan),
-                        'cwd': plan['cwd'], 'approvalPolicy': 'on-request',
-                        'sandbox': {'type': 'workspaceWrite'}}}},
-                ]
+            seen_threads = set()
             for i, (name, thread) in enumerate(zip(names, threads)):
+                if thread not in seen_threads:
+                    rows.extend(self.thread_handshake(plan, role, thread, 20 + len(seen_threads)))
+                    seen_threads.add(thread)
                 turn, prompt, request_id = f'{role}-turn-{i}', f'synthetic {name}', 40 + i
                 observed = [
                     {'id': request_id, 'result': {'turn': {'id': turn}}},
@@ -283,6 +271,22 @@ class BackendBindingTests(unittest.TestCase):
             (subdir / 'rpc.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8')
             capture['backend_bindings'][role] = backend.bind(self.client(self.config(mode), {'status': 'ready'}), mode)
         return directory, capture
+
+    @staticmethod
+    def thread_handshake(plan, role, thread, request_id):
+        method = 'thread/resume' if role == 'stop_cold' and thread == 'stop0' else 'thread/start'
+        params = {'cwd': plan['cwd'], 'sandbox': 'workspace-write', 'approvalPolicy': 'on-request'}
+        if method == 'thread/resume':
+            params['threadId'] = thread
+        else:
+            params.update(model=plan['model'], developerInstructions='synthetic test')
+        return [
+            {'direction': 'request', 'message': {'id': request_id, 'method': method, 'params': params}},
+            {'direction': 'response', 'message': {'id': request_id, 'result': {
+                'thread': {'id': thread}, 'model': plan['model'],
+                'modelProvider': backend.model_provider(plan), 'cwd': plan['cwd'],
+                'approvalPolicy': 'on-request', 'sandbox': {'type': 'workspaceWrite'}}}},
+        ]
 
     def test_split_replay_binds_four_processes_to_their_stages(self):
         directory, capture = self.split_fixture()
@@ -314,6 +318,33 @@ class BackendBindingTests(unittest.TestCase):
                 self.assertEqual(launch['effort'], 'medium')
                 self.assertEqual(capture['backend_bindings'][role]['model_provider'], 'openai')
         self.assertNotIn('local_ollama', backend.project_config(self.config('mxc'), self.plan)['config']['model_providers'])
+
+    def test_official_stage_includes_notifications_drained_before_turn_request(self):
+        self.select_official()
+        directory, capture = self.split_fixture()
+        path = directory / host.SPLIT_JOURNALS['acl'] / 'rpc.jsonl'
+        rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+        stage = capture['stages'][host.ACL_STAGES[0]]
+        notifications = [
+            {'method': 'thread/started', 'params': {'thread': {'id': stage['thread']}}},
+            {'method': 'mcpServer/startupStatus/updated', 'params': {'threadId': stage['thread'],
+             'name': 'synthetic', 'status': 'ready', 'error': None, 'failureReason': None}},
+        ]
+        first_turn = next(i for i, row in enumerate(rows)
+                          if row['message'].get('method') == 'turn/start')
+        rows[first_turn:first_turn] = [{'direction': 'response', 'message': message}
+                                      for message in notifications]
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+        stage['rows'][:0] = notifications
+        host.verify_split_capture(directory, capture)
+
+        # A captured stage cannot omit, reorder, or invent a drained notification.
+        original = stage['rows'][:]
+        for prefix in (notifications[1:], notifications[::-1],
+                       [*notifications, {'method': 'thread/started', 'params': {}}]):
+            with self.subTest(prefix=prefix), self.assertRaisesRegex(ValueError, 'owning journal'):
+                stage['rows'] = prefix + original[len(notifications):]
+                host.verify_split_capture(directory, capture)
 
     def test_official_gpt_refuses_fallback_and_provider_overrides(self):
         self.select_official()
@@ -513,6 +544,60 @@ class WindowsBackendContractTests(P0Harness):
     stop_fixture = full.FullV2Tests.stop_fixture
     full_host = full.FullV2Tests.full_host
     full_capture = full.FullV2Tests.full_capture
+
+    def test_official_retained_mapping_binds_original_checkout_and_plan(self):
+        from tests.test_acceptance_identity import TempRepo
+        from tests.test_native_cli_adoption import receipt_fixture
+
+        self.full_host()
+        plan = self.plan
+        plan.update(schema='incident-host-plan/' + host.SPLIT_VERSION, gate_profile=host.PROFILE_FULL_SPLIT,
+                    backend_contract=backend.OFFICIAL_CONTRACT, cli_version=host.cli_adoption.VERSION,
+                    model=backend.OFFICIAL_MODEL, effort='medium', home=str(self.root / 'home'),
+                    codex=str(self.root / 'synthetic-codex.exe'))
+        execution = TempRepo()
+        self.addCleanup(execution.temp.cleanup)
+        tools = execution.root / 'tools/validation'
+        tools.mkdir(parents=True)
+        for name in host.toolkit(plan):
+            data = Path(host.__file__).with_name(name).read_bytes()
+            (tools / name).write_bytes(data + b'\n# previous collector\n' if name == 'incident_host_acceptance.py' else data)
+        scripts = execution.root / 'scripts'
+        scripts.mkdir()
+        (scripts / 'context_guard.py').write_bytes(b'# synthetic retained runtime\n')
+        execution.git('add', '-A')
+        execution.git('commit', '-qm', 'original synthetic tools')
+        plan.update(repo=str(execution.root), source=execution.identity(),
+                    runtime_sha256=host.base.runtime(execution.root),
+                    toolkit={name: host.base.sha(tools / name) for name in host.toolkit(plan)})
+        capability = receipt_fixture(plan, self.inventory)
+        capability['evidence_scope'] = 'native_zero_turn'
+        (Path(capability['capability_directory']) / 'receipt.json').write_text(
+            host.cli_adoption.canonical(capability), encoding='utf-8')
+        plan['cli_adoption'] = host.cli_adoption.adoption(capability)
+        directory = self.root / 'retained-capture'
+        directory.mkdir()
+        plan['output'] = str(directory)
+        capture = dict(self.capture, schema='incident-host-capture/' + host.SPLIT_VERSION,
+                       origin='native', failure_class='ValueError', plan_sha256=host.plan_identity(plan))
+        host.write_new(directory / 'capture.json', capture)
+        host.write_new(directory / 'plan.json', plan)
+        catalog = {p.name: host.base.sha(p) for p in directory.iterdir()}
+        host.write_new(directory / 'artifacts.json', catalog)
+        output = self.root / 'derived-result.json'
+        with self.assertRaisesRegex(ValueError, 'contract or pin differs'):
+            host.map_bundle(directory, output)
+        result = host.map_bundle(directory, output, execution_source=execution.root)
+        self.assertEqual(result['native_acceptance'], 'failed')
+        self.assertEqual(result['execution_identity']['toolkit'], plan['toolkit'])
+        self.assertEqual(result['mapping_identity']['toolkit'], host.toolkit(plan))
+        self.assertEqual(result['mapping_identity']['retained_capture'], {
+            'schema': 'retained-windows-split-capture/v1', 'execution_plan_sha256': capture['plan_sha256'],
+        })
+        self.assertEqual({name: host.base.sha(directory / name) for name in catalog}, catalog)
+        result['mapping_identity']['retained_capture']['execution_plan_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'retained capture identity differs'):
+            host.validate_result(result)
 
     def test_legacy_full_plan_capture_and_result_reject_split_fields(self):
         capture = self.full_capture()

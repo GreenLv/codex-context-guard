@@ -547,19 +547,50 @@ def split_preflight(plan, directory, *, record=False):
     base.require(len(pids) == len(roles), 'split preflight process identity reused')
 
 
-def split_turns(rows):
+def split_turns(rows, *, include_drained=False):
     """Replay the exact response slices that observed_turn retained."""
     turns = []
+    previous_request = previous_completion = None
     for i, row in enumerate(rows):
         req = row['message']
-        if row['direction'] != 'request' or req.get('method') != 'turn/start':
+        if row['direction'] != 'request':
+            continue
+        prior = previous_request
+        previous_request = i
+        if req.get('method') != 'turn/start':
             continue
         thread, prompt = req['params']['threadId'], req['params']['input']
         base.require(isinstance(prompt, list) and len(prompt) == 1
                      and prompt[0].get('type') == 'text' and isinstance(prompt[0].get('text'), str)
                      and req['params']['effort'] == 'medium', 'split turn request differs')
         observed, turn = [], None
-        for event in rows[i + 1:]:
+        if include_drained:
+            # The official live collector records its start offset before rpc()
+            # drains queued notifications, then sends turn/start. The prior
+            # synchronous operation defines the beginning of that drain.
+            base.require(prior is not None, 'split turn has no preceding operation')
+            preceding = rows[prior]['message']
+            if preceding.get('method') == 'thread/start':
+                ack = [j for j in range(prior + 1, i)
+                       if rows[j]['direction'] == 'response'
+                       and rows[j]['message'].get('id') == preceding['id']]
+                base.require(len(ack) == 1 and
+                             rows[ack[0]]['message']['result']['thread']['id'] == thread,
+                             'split initial turn has no matching thread response')
+                boundary = ack[0]
+            else:
+                base.require(preceding.get('method') == 'turn/start'
+                             and preceding['params']['threadId'] == thread
+                             and previous_completion is not None
+                             and prior < previous_completion < i,
+                             'split turn has no matching previous completion')
+                boundary = previous_completion
+            for event in rows[boundary + 1:i]:
+                message = event['message']
+                base.require(event['direction'] == 'response' and 'id' not in message
+                             and isinstance(message.get('method'), str), 'split drain is not notifications')
+                observed.append(message)
+        for j, event in enumerate(rows[i + 1:], i + 1):
             base.require(event['direction'] == 'response', 'split turn interrupted')
             message = event['message']
             observed.append(message)
@@ -569,6 +600,7 @@ def split_turns(rows):
                     and message['params']['turn']['id'] == turn):
                 base.require(message['params']['threadId'] == thread
                              and message['params']['turn']['status'] == 'completed', 'split turn incomplete')
+                previous_completion = j
                 break
         else:
             raise ValueError('split turn completion missing')
@@ -616,10 +648,11 @@ def verify_split_capture(directory, capture):
         methods = [row['message'].get('method') for row in rows if row['direction'] == 'request']
         base.require(methods.count('thread/compact/start') == (1 if role == 'stop_first' else 0),
                      'split compaction budget differs')
-        if windows_backends.model_provider(plan) == 'openai':
+        official = windows_backends.model_provider(plan) == 'openai'
+        if official:
             windows_backends.replay_compactions(rows, role)
-        turns = split_turns(rows)
         names, threads = groups[role]
+        turns = split_turns(rows, include_drained=official and bool(names))
         base.require(len(turns) == (len(names) if names else 3 if role == 'stop_first' else 2),
                      'split model turn count differs')
         for thread, turn, _, _ in turns:
@@ -1393,6 +1426,14 @@ def public_source(identity):
     return result
 
 
+def retained_mapping_schema(profile, subject):
+    if is_code(profile):
+        return 'retained-code-mode-capture/v1'
+    if profile == PROFILE_FULL_SPLIT and subject.get('backend_contract') == windows_backends.OFFICIAL_CONTRACT:
+        return 'retained-windows-split-capture/v1'
+    return None
+
+
 def map_capture(capture, *, mapper_identity=None, directory=None):
     profile = profile_for_plan(capture['plan'])
     version = profile_version(profile)
@@ -1597,19 +1638,16 @@ def validate_result(result):
     base.require(isinstance(execution, dict), 'invalid execution identity')
     mapping = result.get('mapping_identity')
     base.require(isinstance(mapping, dict), 'invalid mapping identity')
+    if 'retained_capture' in mapping:
+        schema = retained_mapping_schema(profile, execution)
+        plan_sha = execution.get('plan_sha256')
+        base.require(schema is not None and isinstance(plan_sha, str)
+                     and re.fullmatch(r'[0-9a-f]{64}', plan_sha)
+                     and mapping['retained_capture'] == {'schema': schema, 'execution_plan_sha256': plan_sha},
+                     'retained capture identity differs')
     if is_code(profile):
         expected = code_mode.adoption(windows=profile == PROFILE_FULL_CODE)
-        retained = mapping.get('retained_capture')
         if 'retained_capture' in mapping:
-            base.require(isinstance(retained, dict) and set(retained) ==
-                         {'schema', 'execution_plan_sha256'}
-                         and retained['schema'] == 'retained-code-mode-capture/v1'
-                         and isinstance(retained['execution_plan_sha256'], str)
-                         and re.fullmatch(r'[0-9a-f]{64}', retained['execution_plan_sha256'])
-                         and isinstance(execution.get('plan_sha256'), str)
-                         and re.fullmatch(r'[0-9a-f]{64}', execution['plan_sha256'])
-                         and retained['execution_plan_sha256'] == execution.get('plan_sha256'),
-                         'retained capture identity differs')
             original_tools = execution.get('toolkit', {})
             expected['toolkit'] = {name: original_tools.get(name) for name in code_mode.TOOLKIT}
             base.require(all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)
@@ -1951,12 +1989,13 @@ def map_bundle(directory, output, *, execution_source=None):
     if execution_source is None:
         return _map_bundle(directory, output)
     plan = read_subject(directory / 'capture.json', strict=True).get('plan', {})
-    base.require(is_code(plan.get('gate_profile')), 'retained mapping requires code-mode capture')
+    schema = retained_mapping_schema(plan.get('gate_profile'), plan)
+    base.require(schema is not None, 'profile does not allow retained mapping')
     with retained_execution_source(plan, execution_source) as verify:
-        return _map_bundle(directory, output, retained_verify=verify)
+        return _map_bundle(directory, output, retained_verify=verify, retained_schema=schema)
 
 
-def _map_bundle(directory, output, *, retained_verify=None):
+def _map_bundle(directory, output, *, retained_verify=None, retained_schema=None):
     base.require(not output.exists() and output.resolve() != ROOT and ROOT not in output.resolve().parents
                  and directory.resolve() != ROOT
                  and ROOT not in directory.resolve().parents, 'private capture outside source required')
@@ -1989,7 +2028,7 @@ def _map_bundle(directory, output, *, retained_verify=None):
     if retained_verify is not None:
         retained_verify()
         result['mapping_identity']['retained_capture'] = {
-            'schema': 'retained-code-mode-capture/v1',
+            'schema': retained_schema,
             'execution_plan_sha256': capture['plan_sha256'],
         }
     validate_result(result)
@@ -2009,7 +2048,7 @@ def main():
     mapping.add_argument('--capture-dir', type=Path, required=True)
     mapping.add_argument('--output', type=Path, required=True)
     mapping.add_argument('--execution-source', type=Path,
-                         help='Read-only original clean execution checkout for retained code-mode captures')
+                         help='Original clean execution checkout for retained code-mode or official Windows split captures')
     make = sub.add_parser('plan')
     for name in ('codex', 'python', 'home', 'cwd', 'plugin-root', 'data-root', 'output'):
         make.add_argument('--' + name, type=Path, required=True)
