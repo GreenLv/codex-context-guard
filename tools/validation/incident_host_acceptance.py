@@ -1422,6 +1422,7 @@ def collect(plan, output, *, supplemental=False):
         status_thread = client.start(instructions)
         s = turn('status', status_thread)
         item = command_observation(s, client.inventory, plan)
+        status_output(item, s, plan, inventory=client.inventory)
         probe_instructions = ('Execute exactly the requested standalone ordinary shell command. '
                                     'Do not escalate permissions. Keep output private. '
                                     'Final answer: 只读探针结束，验收仍等待。')

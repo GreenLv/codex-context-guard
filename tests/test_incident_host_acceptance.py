@@ -1412,6 +1412,7 @@ class IncidentHostTests(P0Harness):
                 with mock.patch.object(h, 'Client', Client), \
                      mock.patch.object(h, 'copy_session'), \
                      mock.patch.object(h, 'command_observation', return_value={}), \
+                     mock.patch.object(h, 'status_output'), \
                      mock.patch.object(h, 'principal_observation', return_value=restriction['sid']), \
                      mock.patch.object(h, 'make_fixture', return_value=request), \
                      mock.patch.object(h, 'baseline_observation', side_effect=observed), \
@@ -1447,6 +1448,74 @@ class IncidentHostTests(P0Harness):
 
 class CollectorRequestLifecycleTests(unittest.TestCase):
     """Synthetic collector lifecycle; no native process, ACL or model calls."""
+
+    def test_invalid_status_stops_before_principal_and_preserves_capture(self):
+        for kind in ('bare_command', 'nonzero_exit', 'invalid_output'):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output = root / 'capture'
+                plan = {'gate_profile': h.PROFILE_FULL, 'platform': 'Windows',
+                        'cwd': str(root), 'output': str(output), 'python': sys.executable}
+                item = {'command': 'checkpoint-status --commands',
+                        'exitCode': 1 if kind == 'nonzero_exit' else 0,
+                        'aggregatedOutput': 'not json'}
+                events = []
+
+                class Client:
+                    inventory = {}
+
+                    def __init__(self, *_):
+                        self.sequence = 0
+
+                    def start(self, *_):
+                        self.sequence += 1
+                        events.append(('start', self.sequence))
+                        return 'thread-' + str(self.sequence)
+
+                    def observed_turn(self, thread, prompt):
+                        events.append(('turn', thread))
+                        return {'thread': thread, 'turn': str(len(events)), 'rows': []}
+
+                    def close(self):
+                        events.append(('close',))
+                        return {'owned_process_exited': True,
+                                'owned_tree_no_running_members': True}
+
+                status_argv = (mock.patch.object(h, 'status_argv', wraps=h.status_argv)
+                               if kind == 'bare_command' else
+                               mock.patch.object(h, 'status_argv', return_value=['python', 'script', 'checkpoint-status']))
+                with mock.patch.object(h, 'profile_for_plan', return_value=h.PROFILE_FULL), \
+                     mock.patch.object(h.cli_adoption, 'validate'), \
+                     mock.patch.object(h, 'Client', Client), \
+                     mock.patch.object(h, 'copy_session'), \
+                     mock.patch.object(h, 'command_observation', return_value=item), \
+                     mock.patch.object(h, 'command_pair', return_value=(item, 0, 1)), \
+                     status_argv, \
+                     mock.patch.object(h, 'principal_observation') as principal, \
+                     mock.patch.object(h, 'make_fixture') as make_fixture, \
+                     mock.patch.object(h.base, 'collect') as stop:
+                    capture = h.collect(plan, output)
+
+                self.assertEqual([e for e in events if e[0] == 'start'],
+                                 [('start', 1), ('start', 2)])
+                self.assertEqual(len([e for e in events if e[0] == 'turn']), 6)
+                self.assertEqual(events[-1], ('close',))
+                self.assertEqual(capture['failure_class'],
+                                 'JSONDecodeError' if kind == 'invalid_output' else 'ValueError')
+                self.assertIn('status', capture['stages'])
+                self.assertNotIn('principal', capture['stages'])
+                self.assertEqual(capture['cleanups'], [{'owned_process_exited': True,
+                                                        'owned_tree_no_running_members': True}])
+                self.assertEqual(json.loads((output / 'capture.json').read_text()), capture)
+                failure = json.loads((output / 'failure.json').read_text())
+                expected = {'bare_command': 'direct status command required',
+                            'nonzero_exit': 'legal status CLI failed',
+                            'invalid_output': 'Expecting value'}
+                self.assertIn(expected[kind], failure['detail'])
+                self.assertFalse((root / ('incident-readonly-' + output.name)).exists())
+                principal.assert_not_called()
+                make_fixture.assert_not_called()
+                stop.assert_not_called()
 
     def collect_case(self, profile=h.PROFILE_FULL, failure=None, already_restored=False):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1519,6 +1588,7 @@ class CollectorRequestLifecycleTests(unittest.TestCase):
             with mock.patch.object(h, 'Client', Client), \
                  mock.patch.object(h, 'copy_session'), \
                  mock.patch.object(h, 'command_observation', return_value={}), \
+                 mock.patch.object(h, 'status_output'), \
                  mock.patch.object(h, 'principal_observation', return_value=restriction['sid']), \
                  mock.patch.object(h, 'make_fixture', return_value=request), \
                  mock.patch.object(h, 'baseline_observation', side_effect=baseline), \

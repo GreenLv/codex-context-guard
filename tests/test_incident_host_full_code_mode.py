@@ -1081,6 +1081,7 @@ class WindowsCodeModeFullTests(P0Harness):
                 mock.patch.object(h, "expected_code_command", side_effect=expected),
                 mock.patch.object(cm, "capture", side_effect=capture),
                 mock.patch.object(h, "command_observation", return_value={}),
+                mock.patch.object(h, "status_output"),
                 mock.patch.object(
                     h, "principal_observation", return_value=restriction["sid"]
                 ),

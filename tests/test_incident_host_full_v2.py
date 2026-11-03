@@ -288,6 +288,7 @@ class FullV2Tests(P0Harness):
                 with mock.patch.object(h, 'Client', Client), \
                      mock.patch.object(h, 'copy_session'), \
                      mock.patch.object(h, 'command_observation', return_value={}), \
+                     mock.patch.object(h, 'status_output'), \
                      mock.patch.object(h, 'principal_observation', return_value=restriction['sid']), \
                      mock.patch.object(h, 'make_fixture', return_value=request), \
                      mock.patch.object(h, 'baseline_observation', side_effect=observed), \
