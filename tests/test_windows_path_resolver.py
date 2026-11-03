@@ -78,6 +78,9 @@ class WindowsPathResolver(unittest.TestCase):
         # environment compatibility cases deliberately omit this injection.
         injected = "".join(f"$env:{key} = '{value.replace(chr(39), chr(39) * 2)}'\n"
                            for key, value in (post_start_env or {}).items())
+        if post_start_env and "PSModulePath" in post_start_env:
+            injected += ("if ($env:PSModulePath -cne $env:CG_TEST_EXPECTED_MODULE_PATH) "
+                         "{ throw 'Controlled module path changed after PowerShell startup' }\n")
         script.write_text("$ErrorActionPreference = 'Stop'\n"
                           "if ($PSVersionTable.PSVersion.Major -ne 5 -or "
                           "$PSVersionTable.PSVersion.Minor -ne 1) { exit 91 }\n"
@@ -89,13 +92,14 @@ class WindowsPathResolver(unittest.TestCase):
                                "-File", str(script)], input=payload, capture_output=True,
                               env=self.env, cwd=self.root, timeout=60)
 
-    def compare(self, name="python", *, expected=None, allow_missing=False):
+    def compare(self, name="python", *, expected=None, allow_missing=False,
+                post_start_env=None):
         self.env["CG_NAME"] = name
         result = self.run_ps(RESOLVER + r'''
 $old = Get-Command $env:CG_NAME -ErrorAction SilentlyContinue
 $new = Resolve-ContextGuardPythonCommand $env:CG_NAME
 @{old=$old.Source; new=$new.Source; seen_path=[string]$env:PATH; seen_pathext=[string]$env:PATHEXT} | ConvertTo-Json -Compress
-''')
+''', post_start_env=post_start_env)
         self.assertEqual(result.returncode, 0, result.stderr)
         values = json.loads(result.stdout.decode("utf-8-sig"))
         values.update(name=name, expected_fixture=str(expected) if expected else None)
@@ -226,7 +230,7 @@ $new = Resolve-ContextGuardPythonCommand python
         self.assertEqual(values["old"], values["new"])
         self.assertEqual(values["type"], "Function")
 
-    def launch(self, source, *, trap=False):
+    def launch(self, source, *, trap=False, post_start_env=None):
         launcher = self.root / "run-context-guard.ps1"
         launcher.write_text(source, encoding="utf-8")
         (self.root / "cg_hook.py").write_text(
@@ -235,7 +239,23 @@ $new = Resolve-ContextGuardPythonCommand python
         self.env["CG_LAUNCHER"] = str(launcher)
         prelude = "function Get-Command { throw 'general discovery reached' }\n" if trap else ""
         return self.run_ps(prelude + "& $env:CG_LAUNCHER hook SessionEnd\nexit $global:LASTEXITCODE\n",
-                           json.dumps({"text": "修复 café 🧪"}, ensure_ascii=False).encode("utf-8"))
+                           json.dumps({"text": "修复 café 🧪"}, ensure_ascii=False).encode("utf-8"),
+                           post_start_env=post_start_env)
+
+    def test_controlled_module_domain_is_effective_after_startup(self):
+        modules = self.root / "controlled-modules"
+        modules.mkdir()
+        controlled = {"PSModulePath": str(modules), "CG_TEST_EXPECTED_MODULE_PATH": str(modules)}
+        result = self.run_ps(r'''
+foreach ($name in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility')) {
+    $manifest = [IO.Path]::Combine($PSHOME, "Modules\$name\$name.psd1")
+    Microsoft.PowerShell.Core\Import-Module -Name $manifest -ErrorAction Stop
+}
+if ($env:PSModulePath -cne $env:CG_TEST_EXPECTED_MODULE_PATH) { exit 92 }
+[Console]::Out.Write('controlled-module-domain-ok')
+''', post_start_env=controlled)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"controlled-module-domain-ok")
 
     def test_real_generic_python_old_fails_discovery_trap_new_passes_unicode(self):
         # Use a real venv location rather than a copied venv executable whose
@@ -270,6 +290,12 @@ $new = Resolve-ContextGuardPythonCommand python
                     self.assertFalse(executable.exists())
 
     def test_batch_script_forms_and_generic_version_rejection(self):
+        # Compare PATH resolution with a controlled module domain. Unrelated
+        # installed modules can make the historical Get-Command control slow.
+        # A separate test exercises the current launcher with a polluted domain.
+        modules = self.root / "controlled-modules"
+        modules.mkdir()
+        controlled = {"PSModulePath": str(modules), "CG_TEST_EXPECTED_MODULE_PATH": str(modules)}
         for extension in (".cmd", ".bat", ".ps1"):
             with self.subTest(extension=extension):
                 with tempfile.TemporaryDirectory(dir=self.root) as temporary:
@@ -280,9 +306,9 @@ $new = Resolve-ContextGuardPythonCommand python
                                     '@echo off\n"%CG_REAL_PYTHON%" %*\nexit /b %errorlevel%\n',
                                     encoding="ascii")
                     try:
-                        self.compare(expected=shim)
+                        self.compare(expected=shim, post_start_env=controlled)
                         for source in (OLD_SOURCE, SOURCE):
-                            result = self.launch(source)
+                            result = self.launch(source, post_start_env=controlled)
                             self.assertEqual(result.returncode, 0, result.stderr)
                             self.assertEqual(json.loads(result.stdout.decode("utf-8")),
                                              {"text": "修复 café 🧪"})
@@ -301,10 +327,10 @@ $new = Resolve-ContextGuardPythonCommand python
             shim.write_text('@echo off\nif "%~1"=="-c" echo probe-ran>"%CG_PROBE_MARKER%"\n'
                             'exit /b 1\n', encoding="ascii")
             try:
-                self.compare(expected=shim)
+                self.compare(expected=shim, post_start_env=controlled)
                 for source in (OLD_SOURCE, SOURCE):
                     marker.unlink(missing_ok=True)
-                    result = self.launch(source)
+                    result = self.launch(source, post_start_env=controlled)
                     self.assertEqual(marker.read_bytes().strip(), b"probe-ran",
                                      (self.last_lookup, result.stderr))
                     self.assertEqual(result.returncode, 2, result.stderr)

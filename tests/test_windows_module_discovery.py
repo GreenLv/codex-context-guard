@@ -49,7 +49,7 @@ class WindowsModuleDiscovery(unittest.TestCase):
                         TMP=str(self.root), TEMP=str(self.root), TMPDIR=str(self.root),
                         PSModulePath=str(self.modules),
                         PSModuleAnalysisCachePath=str(self.root / "module-cache"),
-                        CG_TEST_LAUNCHER=str(self.launcher), CG_TEST_TRACE=str(self.trace))
+                        CG_TEST_LAUNCHER=str(self.launcher))
 
     def run_trace(self, expression):
         wrapper = self.root / "wrapper.ps1"
@@ -65,7 +65,7 @@ class WindowsModuleDiscovery(unittest.TestCase):
             encoding="utf-8")
         owner = OwnedProcess.spawn(
             [shutil.which("powershell.exe"), "-NoProfile", "-NonInteractive", "-File", str(wrapper)],
-            env=self.env, cwd=self.root, stdin=subprocess.PIPE,
+            env={**self.env, "CG_TEST_TRACE": str(self.trace)}, cwd=self.root, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             stdout, stderr = owner.process.communicate(b'{"probe":true}', timeout=30)
@@ -83,6 +83,31 @@ class WindowsModuleDiscovery(unittest.TestCase):
 
     def test_unconfigured_launch_avoids_unrelated_module_analysis(self):
         self.assertEqual(self.run_trace("& $env:CG_TEST_LAUNCHER hook UserPromptSubmit"),
+                         {"probe": True})
+
+    def test_cmd_launch_avoids_unrelated_module_analysis(self):
+        # The trap must be observable on ordinary Get-Command, while the
+        # current .cmd launcher must not inspect it. Each run gets a fresh
+        # module-analysis cache so the negative control cannot warm the other.
+        shim_dir = self.root / "cmd-shim"
+        shim_dir.mkdir()
+        (shim_dir / "python.cmd").write_text(
+            '@echo off\n"%CG_TEST_PYTHON%" %*\nexit /b %errorlevel%\n', encoding="ascii")
+        self.env["PATH"] = str(shim_dir)
+        self.env["CG_TEST_PYTHON"] = str(Path(sys.executable).resolve())
+        self.env["CG_TEST_MODULEPATH"] = str(self.modules)
+        domain = ("$env:PSModulePath = $env:CG_TEST_MODULEPATH\n"
+                  "if ($env:PSModulePath -cne $env:CG_TEST_MODULEPATH) { exit 92 }\n")
+        self.env["PSModuleAnalysisCachePath"] = str(self.root / "legacy-module-cache")
+        self.trace = self.root / "legacy-trace.log"
+        with self.assertRaisesRegex(AssertionError, "launcher analyzed an unrelated available module"):
+            self.run_trace(domain +
+                           "Get-Command cg-unavailable-python-candidate -ErrorAction SilentlyContinue | Out-Null\n"
+                           "[Console]::Out.Write('{\"probe\":true}')")
+
+        self.env["PSModuleAnalysisCachePath"] = str(self.root / "current-module-cache")
+        self.trace = self.root / "current-trace.log"
+        self.assertEqual(self.run_trace(domain + "& $env:CG_TEST_LAUNCHER hook UserPromptSubmit"),
                          {"probe": True})
 
     def test_configured_launch_avoids_unrelated_module_analysis(self):
