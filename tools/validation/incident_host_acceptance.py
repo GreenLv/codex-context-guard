@@ -152,12 +152,13 @@ def profile_for_plan(plan):
         cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'})
     split = plan.get('schema') == 'incident-host-plan/' + SPLIT_VERSION
     if split:
-        base.require(plan.get('backend_contract') == windows_backends.CONTRACT
+        base.require(plan.get('backend_contract') in (windows_backends.CONTRACT, windows_backends.OFFICIAL_CONTRACT)
                      and plan.get('cli_version') == cli_adoption.VERSION
                      and plan.get('toolkit') == toolkit(plan, execution=True)
                      and plan.get('manifest_sha256') == base.sha(MANIFEST_FULL),
                      'Windows split backend contract or pin differs')
-        windows_backends.validate_local_endpoint(plan.get('local_provider_endpoint'))
+        if windows_backends.model_provider(plan) == 'local_ollama':
+            windows_backends.validate_local_endpoint(plan.get('local_provider_endpoint'))
     else:
         base.require(not {'backend_contract', 'local_provider_endpoint'} & plan.keys(),
                      'backend contract requires explicit split profile')
@@ -409,7 +410,9 @@ class SplitClient(Client):
 
     def __init__(self, plan, directory, *, role):
         self.role = role
-        super().__init__(plan, directory, app_server_flags=windows_backends.launch_flags(split_backend(role)))
+        self.turn_count = self.compact_count = 0
+        windows_backends.check_launch_environment(plan)
+        super().__init__(plan, directory, app_server_flags=windows_backends.launch_flags(split_backend(role), plan))
 
     def close(self):
         pid = self.owned.process.pid if self.owned else None
@@ -421,7 +424,8 @@ class SplitClient(Client):
             # Persist only the allowlisted configuration projection. Raw Hook,
             # thread, turn, and tool RPCs are retained independently.
             base.require('method' not in message and 'error' not in message, 'config/read failed')
-            return {'id': self.config_read_id, 'result': windows_backends.project_config(message.get('result'))}
+            return {'id': self.config_read_id,
+                    'result': windows_backends.project_config(message.get('result'), self.plan)}
         return message
 
     def start(self, instructions=base.INSTRUCTIONS):
@@ -430,6 +434,15 @@ class SplitClient(Client):
         return super().start(instructions)
 
     def rpc(self, method, params):
+        if method == 'turn/start':
+            limit = {'primary': len(PRIMARY_STAGES), 'acl': len(ACL_STAGES),
+                     'stop_first': 3, 'stop_cold': 2}[self.role]
+            base.require(self.turn_count < limit and params.get('effort') == 'medium',
+                         'split turn budget or effort differs')
+            self.turn_count += 1
+        if method == 'thread/compact/start':
+            base.require(self.role == 'stop_first' and self.compact_count == 0, 'split compaction budget exhausted')
+            self.compact_count += 1
         if method == 'config/read':
             self.config_read_id = self.sequence + 1
         try:
@@ -448,13 +461,12 @@ def split_backend(role):
 
 def open_split_client(plan, directory, role, bindings, cleanups):
     backend = split_backend(role)
-    flags = windows_backends.launch_flags(backend)
+    flags = windows_backends.launch_flags(backend, plan)
     client = SplitClient(plan, directory, role=role)
     try:
         bindings[role] = windows_backends.bind(client, backend)
         write_new(directory / 'launch.json', {'role': role, 'pid': client.owned.process.pid,
-                  'argv': [plan['codex'], *flags, 'app-server'],
-                  'local_provider_endpoint': plan['local_provider_endpoint']})
+                  'argv': [plan['codex'], *flags, 'app-server'], **windows_backends.launch_subject(plan)})
         return client
     except BaseException:
         cleanups.append(client.close())
@@ -471,10 +483,11 @@ def split_cleanup(cleanup, role, pid):
 
 def split_launch(directory, role, plan):
     launch = read_subject(directory / 'launch.json', strict=True)
-    base.require(set(launch) == {'role', 'pid', 'argv', 'local_provider_endpoint'} and launch['role'] == role
+    subject = windows_backends.launch_subject(plan)
+    base.require(set(launch) == {'role', 'pid', 'argv', *subject} and launch['role'] == role
                  and type(launch['pid']) is int and launch['pid'] > 0
-                 and launch['local_provider_endpoint'] == plan['local_provider_endpoint']
-                 and launch['argv'] == [plan['codex'], *windows_backends.launch_flags(split_backend(role)),
+                 and all(launch[key] == value for key, value in subject.items())
+                 and launch['argv'] == [plan['codex'], *windows_backends.launch_flags(split_backend(role), plan),
                                         'app-server'], 'split app-server launch differs')
     return launch['pid']
 
@@ -1250,33 +1263,54 @@ def state_for(stage):
     return cg.read_only_committed_state(Path(stage['snapshot']))
 
 
-def pause_oracle(before, paused, resumed, typed, typed_before=None):
-    unit = before['work_units'][-1]['id']
-    base.require(paused['work_units'][-1]['id'] == resumed['work_units'][-1]['id'] == unit,
+def parked_wait(before, paused):
+    base.require(paused['work_units'][-1]['id'] == before['work_units'][-1]['id'],
                  'work unit changed')
     base.require(paused['work_units'][-1]['status'] == 'awaiting_user', 'pause not parked')
+    waits = [r for r in paused['wait_conditions'] if r['status'] == 'waiting']
+    base.require(len(waits) == 1 and waits[0].get('subject_sha256') is None, 'ordinary pause required')
+    return waits[0]
+
+
+def resume_oracle(before, paused, resumed):
+    wait = parked_wait(before, paused)
+    base.require(resumed['work_units'][-1]['id'] == before['work_units'][-1]['id'], 'work unit changed')
     base.require(resumed['work_units'][-1]['status'] == 'active', 'resume not active')
     pending = {r['id'] for r in before['requirements'] if r['status'] == 'pending'}
     base.require(pending and pending <= {r['id'] for r in resumed['requirements']
                                         if r['status'] == 'pending'}, 'old pending lost')
-    waits = [r for r in paused['wait_conditions'] if r['status'] == 'waiting']
-    base.require(len(waits) == 1 and waits[0].get('subject_sha256') is None, 'ordinary pause required')
-    match = [r for r in resumed['wait_conditions'] if r['condition_id'] == waits[0]['condition_id']]
+    match = [r for r in resumed['wait_conditions'] if r['condition_id'] == wait['condition_id']]
     base.require(len(match) == 1 and match[0]['status'] == 'released'
-                 and match[0]['raised_by_source'] == waits[0]['raised_by_source']
-                 and match[0]['source_clause_sha256'] == waits[0]['source_clause_sha256']
+                 and match[0]['raised_by_source'] == wait['raised_by_source']
+                 and match[0]['source_clause_sha256'] == wait['source_clause_sha256']
                  and match[0]['released_by_source'] == resumed['prompts'][-1]['id'],
                  'resume provenance differs')
+
+
+def typed_waits(state):
+    waits = {r['condition_id']: r for r in state['wait_conditions']
+             if r['status'] == 'waiting' and r.get('subject_sha256')}
+    base.require(waits, 'typed wait absent')
+    return waits
+
+
+def pause_oracle(before, paused, resumed, typed, typed_before=None):
+    resume_oracle(before, paused, resumed)
+    current = typed_waits(typed)
     if typed_before is not None:
-        old = {r['condition_id']: r for r in typed_before['wait_conditions']
-               if r['status'] == 'waiting' and r.get('subject_sha256')}
-        current = {r['condition_id']: r for r in typed['wait_conditions']}
-        base.require(old and all(k in current and current[k]['status'] == 'waiting'
-                     and current[k]['raised_by_source'] == v['raised_by_source']
-                     and current[k]['subject_sha256'] == v['subject_sha256']
-                     for k, v in old.items()), 'typed wait provenance lost')
-    base.require(any(r['status'] == 'waiting' and r.get('subject_sha256')
-                     for r in typed['wait_conditions']), 'typed wait released')
+        base.require(all(k in current and current[k]['raised_by_source'] == v['raised_by_source']
+                         and current[k]['subject_sha256'] == v['subject_sha256']
+                         for k, v in typed_waits(typed_before).items()), 'typed wait provenance lost')
+
+
+def verify_stage_state(stage):
+    state = state_for(stage)
+    base.require(state['session']['id'] == stage['thread'], 'state session differs')
+    base.require(state['prompts'] and state['prompts'][-1]['sha256'] == stage['prompt_sha256'],
+                 'prompt differs from captured authority')
+    valid, _ = cg.read_only_authority_sources_valid(Path(stage['snapshot']), state)
+    base.require(valid, 'snapshot authority unavailable')
+    return state
 
 
 def verify_stop_capture(directory, plan, receipt):
@@ -1383,12 +1417,7 @@ def map_capture(capture, *, mapper_identity=None, directory=None):
         if name in manifest['prompts']:
             expected = hashlib.sha256(manifest['prompts'][name].encode()).hexdigest()
             base.require(stage['prompt_sha256'] == expected, 'scenario prompt differs')
-        state = state_for(stage)
-        base.require(state['session']['id'] == stage['thread'], 'state session differs')
-        base.require(state['prompts'] and state['prompts'][-1]['sha256'] == stage['prompt_sha256'],
-                     'prompt differs from captured authority')
-        valid, _ = cg.read_only_authority_sources_valid(Path(stage['snapshot']), state)
-        base.require(valid, 'snapshot authority unavailable')
+        verify_stage_state(stage)
     if all(name in stages for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume')):
         base.require(len({stages[n]['thread'] for n in ('pending', 'pause', 'resume', 'typed', 'typed_resume')}) == 1
                      and len({stages[n]['turn'] for n in ('pending', 'pause', 'resume', 'typed', 'typed_resume')}) == 5,
@@ -1571,7 +1600,8 @@ def validate_result(result):
         base.require('command_observation_contract' not in execution, 'code-mode export requires profile')
     if profile == PROFILE_FULL_SPLIT:
         journals = execution.get('backend_journal_sha256')
-        base.require(execution.get('backend_contract') == windows_backends.CONTRACT
+        base.require(execution.get('backend_contract') in (
+                         windows_backends.CONTRACT, windows_backends.OFFICIAL_CONTRACT)
                      and execution.get('cli_version') == cli_adoption.VERSION
                      and result.get('evidence_scope') == 'native' and isinstance(journals, dict)
                      and (set(journals) == set(SPLIT_JOURNALS)
@@ -1579,6 +1609,7 @@ def validate_result(result):
                      and all(isinstance(v, str) and re.fullmatch(r'[0-9a-f]{64}', v)
                              for v in journals.values())
                      and len(set(journals.values())) == len(journals), 'split backend result proof differs')
+        windows_backends.model_provider(execution)
     else:
         base.require(not {'backend_contract', 'backend_journal_sha256'} & execution.keys(),
                      'backend export requires split profile')
@@ -1649,6 +1680,7 @@ def collect(plan, output, *, supplemental=False):
     cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=True)
     base.require(not (is_full(profile) and supplemental), 'full profile cannot supplement')
     split = profile == PROFILE_FULL_SPLIT
+    official = split and windows_backends.model_provider(plan) == 'openai'
     if split:
         split_preflight(plan, output.with_name(output.name + '.backend-preflight'))
     output.mkdir(mode=0o700)
@@ -1697,11 +1729,30 @@ def collect(plan, output, *, supplemental=False):
                     if os.name != 'nt':
                         archive.chmod(0o600)
             capture['stages'][name] = stage
+            if official:
+                verify_stage_state(stage)
             return stage
         if not supplemental and profile != PROFILE_V2:
             thread = client.start()
+            states = {}
             for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
-                turn(name, thread)
+                stage = turn(name, thread)
+                if official:
+                    base.require(all(h['status'] == 'completed' for h in base.hook_runs(
+                        stage['rows'], stage['thread'], stage['turn'], client.inventory)), 'pause Stop failed')
+                    states[name] = state_for(stage)
+                    if name == 'pending':
+                        base.require(any(r['status'] == 'pending' for r in states[name]['requirements']),
+                                     'pending work absent')
+                    elif name == 'pause':
+                        parked_wait(states['pending'], states[name])
+                    elif name == 'resume':
+                        resume_oracle(states['pending'], states['pause'], states[name])
+                    elif name == 'typed':
+                        typed_waits(states[name])
+                    else:
+                        pause_oracle(states['pending'], states['pause'], states['resume'],
+                                     states[name], states['typed'])
         instructions = ('This is a bounded diagnostic test. Use exactly one ordinary shell tool per turn. '
                         'Use the exact latest Context Guard checkpoint-status binding from its recovery packet. '
                         'Run the specified query as a standalone command, no helper or shell chain. '
@@ -1760,6 +1811,9 @@ def collect(plan, output, *, supplemental=False):
             if split:
                 base.require(rejection_observation(observed, client.inventory, plan, name)['status'] == 'passed',
                              'split negative control failed')
+                if official:
+                    base.require(state_for(observed)['evidence'] == state_for(s)['evidence'],
+                                 'diagnostic became business evidence')
         tool_argv = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'),
                      '--request', str(request_path)]
         capture['readonly_tool_argv'] = tool_argv
@@ -1780,11 +1834,17 @@ def collect(plan, output, *, supplemental=False):
                 stream.write(request_path.read_bytes())
             base.require(read_subject(output / 'authored-readonly-request.json', strict=True) == request,
                          'split signed request changed')
-        capture['cleanups'].append(client.close())
+        cleanup = client.close()
+        capture['cleanups'].append(cleanup)
         client = None
+        if official:
+            split_cleanup(cleanup, 'primary', split_launch(output / SPLIT_JOURNALS['primary'], 'primary', plan))
         if probe:
-            capture['cleanups'].append(probe.close())
+            cleanup = probe.close()
+            capture['cleanups'].append(cleanup)
             probe = None
+            if official:
+                split_cleanup(cleanup, 'acl', split_launch(output / SPLIT_JOURNALS['acl'], 'acl', plan))
         if profile != PROFILE_V2:
             shared = dict(plan, schema='stop-host-plan/v1')
             capture['stop_directory'] = str(output / 'stop')
@@ -1792,7 +1852,8 @@ def collect(plan, output, *, supplemental=False):
                 def stop_client(p, directory):
                     return open_split_client(p, directory, 'stop_' + directory.name,
                                              capture['backend_bindings'], capture['cleanups'])
-                capture['stop_result'] = base.collect(shared, output / 'stop', client_factory=stop_client)
+                capture['stop_result'] = base.collect(shared, output / 'stop', client_factory=stop_client,
+                                                      fail_fast=official)
             else:
                 capture['stop_result'] = base.collect(shared, output / 'stop')
             capture['cleanups'].extend(capture['stop_result']['cleanups'])
@@ -1933,6 +1994,8 @@ def main():
     make.add_argument('--shell', type=Path)
     make.add_argument('--model', required=True)
     make.add_argument('--local-provider-endpoint')
+    make.add_argument('--official-gpt', action='store_true',
+                      help='Bind the split profile to built-in OpenAI GPT-6.1 Sol / Medium')
     make.add_argument('--profile', choices=(PROFILE, PROFILE_CODE, PROFILE_V2, PROFILE_FULL_CODE,
                                             PROFILE_FULL_SPLIT), default=PROFILE)
     make.add_argument('--gate-scope', choices=('full',))
@@ -1953,8 +2016,9 @@ def main():
             base.require(not (codemode or split) or args.cli_adoption == cli_adoption.CONTRACT,
                          'selected profile requires CLI adoption')
             full = args.gate_scope == 'full'
-            base.require((args.local_provider_endpoint is not None) == split,
-                         'explicit loopback endpoint requires split profile')
+            base.require((args.local_provider_endpoint is not None) == (split and not args.official_gpt)
+                         and (not args.official_gpt or (split and args.model == windows_backends.OFFICIAL_MODEL)),
+                         'select the split loopback endpoint or explicit official GPT model')
             base.require(not (win_code or split) or full, 'selected Windows profile requires explicit full scope')
             base.require(not full or v2, 'full scope requires explicit v2 adoption')
             base.require((v2 and args.negative_observation == OBSERVATION_CONTRACTS['negative']
@@ -1976,8 +2040,10 @@ def main():
                 if full:
                     plan.update(gate_scope='full', required_gates=list(GATES))
             if split:
-                plan.update(backend_contract=windows_backends.CONTRACT, toolkit=toolkit(plan),
-                            local_provider_endpoint=windows_backends.validate_local_endpoint(args.local_provider_endpoint))
+                contract = windows_backends.OFFICIAL_CONTRACT if args.official_gpt else windows_backends.CONTRACT
+                plan.update(backend_contract=contract, toolkit=toolkit(plan))
+                if not args.official_gpt:
+                    plan['local_provider_endpoint'] = windows_backends.validate_local_endpoint(args.local_provider_endpoint)
             for key in ('codex', 'python', 'home', 'cwd', 'plugin_root', 'data_root'):
                 plan[key] = str(getattr(args, key).resolve(strict=key != 'data_root'))
             if plan['platform'] == 'Windows':

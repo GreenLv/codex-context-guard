@@ -16,6 +16,13 @@ CONTRACT = {
     'roles': {'primary': 'mxc', 'acl': 'elevated',
               'stop_first': 'mxc', 'stop_cold': 'mxc'},
 }
+OFFICIAL_CONTRACT = {**CONTRACT, 'schema': 'incident-windows-backends/v2',
+                     'model_provider': 'openai'}
+OFFICIAL_MODEL = 'gpt-6.1-sol'
+_OFFICIAL_ENV_OVERRIDES = (
+    'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL',
+    'CODEX_OPENAI_BASE_URL', 'CODEX_CHATGPT_BASE_URL', 'CHATGPT_BASE_URL',
+)
 _BINDING_SCHEMA = 'incident-windows-backend-binding/v1'
 _METHODS = ('config/read', 'windowsSandbox/readiness')
 
@@ -25,12 +32,36 @@ def _require(condition, message):
         raise ValueError(message)
 
 
-def launch_flags(backend):
+def model_provider(plan):
+    if plan.get('backend_contract') == OFFICIAL_CONTRACT:
+        _require(plan.get('model') == OFFICIAL_MODEL and plan.get('effort') == 'medium'
+                 and 'local_provider_endpoint' not in plan, 'official GPT plan differs')
+        return 'openai'
+    _require(plan.get('backend_contract', CONTRACT) == CONTRACT, 'unknown backend contract')
+    return 'local_ollama'
+
+
+def launch_flags(backend, plan=None):
     """Return fixed app-server CLI overrides, never an unsandboxed profile."""
     _require(type(backend) is str and backend in ('mxc', 'elevated'),
              'unknown Windows sandbox backend')
-    return ['-c', f'windows.sandbox="{backend}"',
-            '-c', 'features.prefer_mxc=false']
+    flags = ['-c', f'windows.sandbox="{backend}"', '-c', 'features.prefer_mxc=false']
+    if model_provider(plan or {}) == 'openai':
+        flags += ['-c', 'model_provider="openai"', '-c', f'model="{OFFICIAL_MODEL}"',
+                  '-c', 'features.code_mode=false', '-c', 'features.code_mode_only=false']
+    return flags
+
+
+def check_launch_environment(plan):
+    if model_provider(plan) == 'openai':
+        _require(not any(os.environ.get(key) for key in _OFFICIAL_ENV_OVERRIDES),
+                 'official GPT environment override refused')
+
+
+def launch_subject(plan):
+    if model_provider(plan) == 'openai':
+        return {'model_provider': 'openai', 'model': OFFICIAL_MODEL, 'effort': 'medium'}
+    return {'local_provider_endpoint': plan['local_provider_endpoint']}
 
 
 def validate_local_endpoint(value):
@@ -48,11 +79,11 @@ def validate_local_endpoint(value):
     return value
 
 
-def project_config(result):
+def project_config(result, plan=None):
     """Keep only non-secret fields needed to bind the selected configuration.
 
     This is a *projection* of config/read, not its complete original response.
-    Only the declared credential-free custom local provider is accepted.
+    Only the provider selected by the frozen plan is accepted.
     """
     _require(isinstance(result, dict) and isinstance(result.get('config'), dict),
              'config/read response unavailable')
@@ -60,10 +91,29 @@ def project_config(result):
     windows, features = config.get('windows'), config.get('features')
     _require(isinstance(windows, dict) and isinstance(features, dict),
              'sandbox configuration unavailable')
-    _require(config.get('model_provider') == 'local_ollama', 'local model provider differs')
+    provider_id = model_provider(plan or {})
+    _require(config.get('model_provider') == provider_id, 'model provider differs')
     model = config.get('model')
     _require(isinstance(model, str) and bool(model), 'configured model unavailable')
     providers = config.get('model_providers')
+    mode, prefer = windows.get('sandbox'), features.get('prefer_mxc')
+    _require(type(mode) is str and mode in ('mxc', 'elevated') and prefer is False,
+             'sandbox configuration differs')
+    projection = {'windows': {'sandbox': mode}, 'features': {'prefer_mxc': False},
+                  'model': model, 'model_provider': provider_id}
+    if provider_id == 'openai':
+        _require(model == OFFICIAL_MODEL
+                 and isinstance(providers, dict) and 'openai' not in providers
+                 and config.get('openai_base_url') in (None, 'https://api.openai.com/v1')
+                 and config.get('chatgpt_base_url') in (
+                     None, 'https://chatgpt.com/backend-api', 'https://chatgpt.com/backend-api/')
+                 and config.get('model_catalog_json') is None
+                 and config.get('forced_login_method') in (None, 'chatgpt')
+                 and all(features.get(key) is False for key in ('code_mode', 'code_mode_only')),
+                 'official GPT provider or ordinary tool configuration differs')
+        projection['features'].update(code_mode=False, code_mode_only=False)
+        projection['model_providers'] = {}
+        return {'config': projection}
     _require(isinstance(providers, dict) and isinstance(providers.get('local_ollama'), dict),
              'local provider configuration unavailable')
     provider = providers['local_ollama']
@@ -78,29 +128,24 @@ def project_config(result):
              'local provider protocol or authentication differs')
     endpoint = validate_local_endpoint(provider.get('base_url'))
     _require(urlsplit(endpoint).path == '/v1', 'local provider endpoint path differs')
-    mode, prefer = windows.get('sandbox'), features.get('prefer_mxc')
-    _require(type(mode) is str and mode in ('mxc', 'elevated') and prefer is False,
-             'sandbox configuration differs')
-    return {'config': {'windows': {'sandbox': mode},
-                       'features': {'prefer_mxc': False},
-                       'model': model, 'model_provider': 'local_ollama',
-                       'model_providers': {'local_ollama': {
-                           'base_url': endpoint, 'wire_api': 'responses',
-                           'requires_openai_auth': False}}}}
+    projection['model_providers'] = {'local_ollama': {
+        'base_url': endpoint, 'wire_api': 'responses', 'requires_openai_auth': False}}
+    return {'config': projection}
 
 
 def _config(result, backend, plan):
-    launch_flags(backend)
-    config = project_config(result)['config']
+    launch_flags(backend, plan)
+    config = project_config(result, plan)['config']
     windows, features = config.get('windows'), config.get('features')
     _require(isinstance(windows, dict) and windows.get('sandbox') == backend,
              'configured Windows sandbox differs')
     _require(isinstance(features, dict) and features.get('prefer_mxc') is False,
              'prefer_mxc is not explicitly false')
-    _require(config['model'] == plan.get('model') and
-             config['model_providers']['local_ollama']['base_url'] ==
-             validate_local_endpoint(plan.get('local_provider_endpoint')),
-             'local model or endpoint differs from plan')
+    _require(config['model'] == plan.get('model'), 'model differs from plan')
+    if model_provider(plan) == 'local_ollama':
+        _require(config['model_providers']['local_ollama']['base_url'] ==
+                 validate_local_endpoint(plan.get('local_provider_endpoint')),
+                 'local endpoint differs from plan')
 
 
 def _receipt(config, readiness, backend, plan):
@@ -109,7 +154,7 @@ def _receipt(config, readiness, backend, plan):
              'Windows sandbox readiness unavailable')
     return {'schema': _BINDING_SCHEMA, 'backend': backend,
             'windows_sandbox': backend, 'prefer_mxc': False,
-            'readiness': 'ready', 'model_provider': 'local_ollama'}
+            'readiness': 'ready', 'model_provider': model_provider(plan)}
 
 
 def bind(client, backend):
@@ -136,7 +181,7 @@ def validate_thread_result(result, plan):
     _require(isinstance(plan, dict) and isinstance(plan.get('model'), str)
              and bool(plan['model']), 'planned model unavailable')
     _require(isinstance(result, dict) and result.get('model') == plan['model']
-             and result.get('modelProvider') == 'local_ollama'
+             and result.get('modelProvider') == model_provider(plan)
              and result.get('cwd') == plan.get('cwd')
              and result.get('approvalPolicy') == 'on-request'
              and isinstance(result.get('sandbox'), dict)

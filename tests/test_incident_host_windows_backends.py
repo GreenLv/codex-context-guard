@@ -30,6 +30,13 @@ class BackendBindingTests(unittest.TestCase):
         self.addCleanup(environment.stop)
 
     def config(self, mode):
+        if backend.model_provider(self.plan) == 'openai':
+            return {'config': {'windows': {'sandbox': mode},
+                               'features': {'prefer_mxc': False, 'code_mode': False,
+                                            'code_mode_only': False},
+                               'model': self.plan['model'], 'model_provider': 'openai',
+                               'model_providers': {'local_ollama': {'base_url': 'http://127.0.0.1:11434/v1'}}},
+                    'origins': {}}
         return {'config': {'windows': {'sandbox': mode},
                            'features': {'prefer_mxc': False},
                            'model': self.plan['model'], 'model_provider': 'local_ollama',
@@ -115,7 +122,7 @@ class BackendBindingTests(unittest.TestCase):
                   'approvalPolicy': 'on-request', 'model': self.plan['model'],
                   'developerInstructions': 'synthetic test'}
         result = {'thread': {'id': 'synthetic-thread'}, 'model': self.plan['model'],
-                  'modelProvider': 'local_ollama', 'approvalPolicy': 'on-request',
+                  'modelProvider': backend.model_provider(self.plan), 'approvalPolicy': 'on-request',
                   'cwd': self.plan['cwd'], 'sandbox': {'type': 'workspaceWrite'}}
         return [
             {'direction': 'request', 'message': {'id': 1, 'method': 'config/read',
@@ -220,8 +227,8 @@ class BackendBindingTests(unittest.TestCase):
             subdir = directory / relative
             subdir.mkdir(parents=True)
             (subdir / 'launch.json').write_text(json.dumps({
-                'role': role, 'pid': n, 'argv': [plan['codex'], *backend.launch_flags(mode), 'app-server'],
-                'local_provider_endpoint': plan['local_provider_endpoint'],
+                'role': role, 'pid': n, 'argv': [plan['codex'], *backend.launch_flags(mode, plan), 'app-server'],
+                **backend.launch_subject(plan),
             }), encoding='utf-8')
             rows = self.journal(mode)[:4]
             rows += [
@@ -242,7 +249,8 @@ class BackendBindingTests(unittest.TestCase):
                 rows += [
                     {'direction': 'request', 'message': {'id': 20 + ix, 'method': method, 'params': params}},
                     {'direction': 'response', 'message': {'id': 20 + ix, 'result': {
-                        'thread': {'id': thread}, 'model': plan['model'], 'modelProvider': 'local_ollama',
+                        'thread': {'id': thread}, 'model': plan['model'],
+                        'modelProvider': backend.model_provider(plan),
                         'cwd': plan['cwd'], 'approvalPolicy': 'on-request',
                         'sandbox': {'type': 'workspaceWrite'}}}},
                 ]
@@ -276,6 +284,81 @@ class BackendBindingTests(unittest.TestCase):
         self.assertEqual(set(observed), set(backend.CONTRACT['roles']))
         for role, relative in host.SPLIT_JOURNALS.items():
             self.assertEqual(observed[role], hashlib.sha256((directory / relative / 'rpc.jsonl').read_bytes()).hexdigest())
+
+    def select_official(self):
+        self.plan.update(backend_contract=backend.OFFICIAL_CONTRACT,
+                         model=backend.OFFICIAL_MODEL, effort='medium')
+        del self.plan['local_provider_endpoint']
+
+    def test_official_gpt_binds_both_backends_and_replays_all_four_processes(self):
+        self.select_official()
+        directory, capture = self.split_fixture()
+        self.assertEqual(set(host.verify_split_capture(directory, capture)), set(backend.CONTRACT['roles']))
+        for role, relative in host.SPLIT_JOURNALS.items():
+            with self.subTest(role=role):
+                launch = json.loads((directory / relative / 'launch.json').read_text())
+                self.assertIn('model_provider="openai"', launch['argv'])
+                self.assertIn('model="gpt-6.1-sol"', launch['argv'])
+                self.assertIn(f'windows.sandbox="{backend.CONTRACT["roles"][role]}"', launch['argv'])
+                self.assertEqual(launch['effort'], 'medium')
+                self.assertEqual(capture['backend_bindings'][role]['model_provider'], 'openai')
+        self.assertNotIn('local_ollama', backend.project_config(self.config('mxc'), self.plan)['config']['model_providers'])
+
+    def test_official_gpt_refuses_fallback_and_provider_overrides(self):
+        self.select_official()
+        for field, value in (('model', 'gpt-6.1-other'), ('model_provider', 'local_ollama'),
+                             ('openai_base_url', 'http://127.0.0.1:11434/v1'),
+                             ('chatgpt_base_url', 'https://other.example'),
+                             ('model_catalog_json', 'synthetic-catalog'),
+                             ('model_providers', {'openai': {'base_url': 'https://other.example'}}),
+                             ('features', {'prefer_mxc': False, 'code_mode': True, 'code_mode_only': False})):
+            config = self.config('mxc')
+            config['config'][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                backend.bind(self.client(config, {'status': 'ready'}), 'mxc')
+        for update in ({'effort': 'high'}, {'model': 'local-model'},
+                       {'local_provider_endpoint': 'http://127.0.0.1:11434/v1'}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                backend.launch_flags('mxc', dict(self.plan, **update))
+        with mock.patch.dict(os.environ, {'CODEX_ACCESS_TOKEN': 'synthetic-override'}):
+            with self.assertRaises(ValueError):
+                backend.check_launch_environment(self.plan)
+        rows = self.journal('elevated')
+        rows[5]['message']['result']['modelProvider'] = 'local_ollama'
+        with self.assertRaises(ValueError):
+            backend.verify_journal(self.write_journal(rows), 'elevated', self.plan)
+
+    def test_live_split_limits_turns_and_compaction_before_sending(self):
+        caps = {'primary': 8, 'acl': 5, 'stop_first': 3, 'stop_cold': 2}
+        for role, cap in caps.items():
+            with self.subTest(role=role), mock.patch.object(host.Client, 'rpc') as rpc:
+                client = host.SplitClient.__new__(host.SplitClient)
+                client.role = role
+                client.turn_count = client.compact_count = 0
+                with self.assertRaises(ValueError):
+                    client.rpc('turn/start', {'effort': 'high'})
+                for _ in range(cap):
+                    client.rpc('turn/start', {'effort': 'medium'})
+                with self.assertRaises(ValueError):
+                    client.rpc('turn/start', {'effort': 'medium'})
+                if role == 'stop_first':
+                    client.rpc('thread/compact/start', {})
+                with self.assertRaises(ValueError):
+                    client.rpc('thread/compact/start', {})
+                self.assertEqual(rpc.call_count, cap + (role == 'stop_first'))
+
+    def test_stop_collection_can_fail_before_the_second_business_turn(self):
+        plan = {'source': {}, 'runtime_sha256': 'synthetic', 'cli_sha256': 'synthetic'}
+        client = mock.Mock()
+        client.turn.return_value = [{'status': 'stopped'}]
+        client.close.return_value = {}
+        result = host.base.collect(plan, Path(self.temp.name) / 'failed-stop',
+                                   client_factory=mock.Mock(return_value=client), fail_fast=True)
+        self.assertEqual(result['status'], 'failed')
+        self.assertIn('positive Stop incomplete', result['failure'])
+        client.turn.assert_called_once()
+        client.compact.assert_not_called()
+        client.close.assert_called_once()
 
     def test_split_replay_rejects_forged_roles_and_stage_evidence(self):
         directory, capture = self.split_fixture()

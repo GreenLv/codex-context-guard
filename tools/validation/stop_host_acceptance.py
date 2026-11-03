@@ -290,18 +290,34 @@ def compact_complete(rows, thread, inventory):
                and x['params']['status']['type'] == 'idle' for i, x in own)
 
 
-def verdict(positive, negative, before, after, negative_state, cleanups):
-    require(len(positive) == 4 and all(x and all(h['status'] == 'completed' for h in x)
-                                    for x in positive), 'positive Stop incomplete')
-    require([h['status'] for h in negative] == ['blocked', 'completed'],
-            'expected one correction followed by completion')
-    require(before['mode']['active'] and after['mode']['active'], 'Guard inactive')
+def positive_stop(hooks):
+    require(hooks and all(h['status'] == 'completed' for h in hooks), 'positive Stop incomplete')
+
+
+def pending_before_compact(before):
+    require(before['mode']['active'], 'Guard inactive')
     pending = {x['id'] for x in before['requirements'] if x['status'] == 'pending'}
-    require(pending and pending <= {x['id'] for x in after['requirements']
-                                   if x['status'] == 'pending'}, 'recovery lost pending work')
+    require(pending, 'pending work absent before compaction')
+    return pending
+
+
+def verify_recovery(before, after):
+    pending = pending_before_compact(before)
+    require(after['mode']['active'], 'Guard inactive')
+    require(pending <= {x['id'] for x in after['requirements'] if x['status'] == 'pending'},
+            'recovery lost pending work')
     require(len(after['compactions']) > len(before['compactions'])
             and after['pending']['recovery']['state'] == 'consumed',
             'compaction recovery not consumed')
+
+
+def verdict(positive, negative, before, after, negative_state, cleanups):
+    require(len(positive) == 4, 'positive Stop incomplete')
+    for hooks in positive:
+        positive_stop(hooks)
+    require([h['status'] for h in negative] == ['blocked', 'completed'],
+            'expected one correction followed by completion')
+    verify_recovery(before, after)
     require(any(x['outcome'] == 'visible_correction'
                 and 'waiting_condition_pending' in x['reason_codes']
                 for x in negative_state['decision_log']), 'missing waiting correction')
@@ -312,7 +328,7 @@ def verdict(positive, negative, before, after, negative_state, cleanups):
             for c in cleanups), 'owned cleanup incomplete')
 
 
-def collect(plan, output, *, client_factory=None):
+def collect(plan, output, *, client_factory=None, fail_fast=False):
     if 'cli_adoption' in plan:
         cli_adoption.validate(plan, legacy_versions={'codex-cli 0.158.0', 'codex-cli 0.160.0'}, require_native=True)
     output.mkdir(mode=0o700)
@@ -334,28 +350,40 @@ def collect(plan, output, *, client_factory=None):
             (output / n).mkdir()
         client = make_client(plan, output / 'first')
         thread = client.start()
-        positives = [client.turn(thread, '仅回答：7 的平方是多少？'),
-                     client.turn(thread, LONG),
-                     client.turn(thread, '继续保留上述待办，不执行工作。仅回复“等待后续安排”。')]
+        positives = []
+        def observe_positive(prompt):
+            hooks = client.turn(thread, prompt)
+            if fail_fast:
+                positive_stop(hooks)
+            positives.append(hooks)
+        for prompt in ('仅回答：7 的平方是多少？', LONG, '继续保留上述待办，不执行工作。仅回复“等待后续安排”。'):
+            observe_positive(prompt)
         def snapshot(tid, name):
             state = read_json(session_state_path(Path(plan['data_root']), tid))
             (output / (name + '.json')).write_text(json.dumps(state), encoding='utf-8')
             return state
         before = snapshot(thread, 'before-compact')
+        if fail_fast:
+            pending_before_compact(before)
         client.compact(thread)
-        result['cleanups'].append(client.close())
+        cleanup = client.close()
+        result['cleanups'].append(cleanup)
         client = None
+        if fail_fast:
+            require(cleanup.get('cleanup_complete') is True, 'owned cleanup incomplete')
         client = make_client(plan, output / 'cold')
         begin = len(client.rows)
         client.rpc('thread/resume', {'threadId': thread, 'cwd': plan['cwd'],
                    'sandbox': 'workspace-write', 'approvalPolicy': 'on-request'})
-        positives.append(client.turn(thread, '压缩后继续保持等待，不执行此前待办，仅回复“等待后续安排”。'))
+        observe_positive('压缩后继续保持等待，不执行此前待办，仅回复“等待后续安排”。')
         require(any(x.get('method') == 'hook/completed'
                     and x['params']['run']['eventName'] == 'sessionStart'
                     and x['params']['run']['status'] == 'completed'
                     and x['params'].get('threadId') == thread
                     for x in client.rows[begin:]), 'cold SessionStart missing')
         after = snapshot(thread, 'after-resume')
+        if fail_fast:
+            verify_recovery(before, after)
         nt = client.start(NEGATIVE)
         negative = client.turn(nt, WAIT)
         ns = snapshot(nt, 'negative-state')
