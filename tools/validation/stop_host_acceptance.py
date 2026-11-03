@@ -108,7 +108,7 @@ def validate_hook(h, inventory):
 
 
 class Client:
-    def __init__(self, plan, directory):
+    def __init__(self, plan, directory, *, app_server_flags=()):
         self.plan, self.rows, self.pending, self.sequence = plan, [], {}, 0
         self.q = queue.Queue(maxsize=10000)
         self.log = (directory / 'rpc.jsonl').open('x', encoding='utf-8')
@@ -116,7 +116,7 @@ class Client:
         self.owned = None
         try:
             self.owned = OwnedProcess.spawn(
-                [plan['codex'], 'app-server'], cwd=plan['cwd'],
+                [plan['codex'], *app_server_flags, 'app-server'], cwd=plan['cwd'],
                 env={**os.environ, 'CODEX_HOME': plan['home'],
                      'PYTHONUTF8': '1', 'PYTHONDONTWRITEBYTECODE': '1'},
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
@@ -160,9 +160,12 @@ class Client:
         self.owned.process.stdin.write(json.dumps(message) + '\n')
         self.owned.process.stdin.flush()
 
+    def journal_response(self, message):
+        return message
+
     def receive(self, deadline):
         require(len(self.rows) < 10000, 'RPC row limit')
-        x = self.q.get(timeout=max(.01, deadline - time.monotonic()))
+        x = self.journal_response(self.q.get(timeout=max(.01, deadline - time.monotonic())))
         self.rows.append(x)
         self.log.write(json.dumps({'direction': 'response', 'message': x}) + '\n')
         self.log.flush()
@@ -309,7 +312,7 @@ def verdict(positive, negative, before, after, negative_state, cleanups):
             for c in cleanups), 'owned cleanup incomplete')
 
 
-def collect(plan, output):
+def collect(plan, output, *, client_factory=None):
     if 'cli_adoption' in plan:
         cli_adoption.validate(plan, legacy_versions={'codex-cli 0.158.0', 'codex-cli 0.160.0'}, require_native=True)
     output.mkdir(mode=0o700)
@@ -325,10 +328,11 @@ def collect(plan, output):
     if 'cli_adoption' in plan:
         result.update(cli_version=plan['cli_version'], cli_adoption=cli_adoption.identity(plan))
     client = None
+    make_client = client_factory or Client
     try:
         for n in ('first', 'cold'):
             (output / n).mkdir()
-        client = Client(plan, output / 'first')
+        client = make_client(plan, output / 'first')
         thread = client.start()
         positives = [client.turn(thread, '仅回答：7 的平方是多少？'),
                      client.turn(thread, LONG),
@@ -341,7 +345,7 @@ def collect(plan, output):
         client.compact(thread)
         result['cleanups'].append(client.close())
         client = None
-        client = Client(plan, output / 'cold')
+        client = make_client(plan, output / 'cold')
         begin = len(client.rows)
         client.rpc('thread/resume', {'threadId': thread, 'cwd': plan['cwd'],
                    'sandbox': 'workspace-write', 'approvalPolicy': 'on-request'})

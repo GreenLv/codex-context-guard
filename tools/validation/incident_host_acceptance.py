@@ -1,9 +1,13 @@
-"""Two incident native supplement, incident_host/v1 (explicit model execution).
+"""Versioned incident host acceptance with explicit model execution.
 
 No authentication, installation, trust changes, permissions escalation or
 approval responses. Prepared isolated HOME must already have nine trusted
 Hooks. Missing observations stay pending. All captures are private; export
 contains only gate IDs, statuses and immutable execution/mapping identities.
+
+The Windows split full profile binds MXC status and Stop processes and an
+independent elevated ACL process. Its run requires a separate zero-turn
+preflight against the same plan and retains four process journals.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from scripts import context_guard as cg  # noqa: E402
 from tools.validation import incident_readonly_child as child  # noqa: E402
+from tools.validation import incident_windows_backends as windows_backends  # noqa: E402
 from tools.validation import native_cli_adoption as cli_adoption  # noqa: E402
 from tools.validation import native_code_mode_command as code_mode  # noqa: E402
 from tools.validation import stop_host_acceptance as base  # noqa: E402
@@ -37,6 +42,12 @@ PROFILE_CODE = 'incident_host/v1-code-mode'
 PROFILE_V2 = 'incident_host/v2'
 PROFILE_FULL = 'incident_host/v2-full'
 PROFILE_FULL_CODE = 'incident_host/v2-full-code-mode'
+PROFILE_FULL_SPLIT = 'incident_host/v2-full-windows-backends'
+SPLIT_VERSION = 'v2-full-windows-backends'
+SPLIT_JOURNALS = {'primary': 'rpc', 'acl': 'probe-rpc',
+                  'stop_first': 'stop/first', 'stop_cold': 'stop/cold'}
+PRIMARY_STAGES = ('pending', 'pause', 'resume', 'typed', 'typed_resume', 'status', 'unknown', 'missing')
+ACL_STAGES = ('principal', 'baseline_original', 'baseline_granted', 'baseline_denied', 'readonly')
 OBSERVATION_CONTRACTS = {'negative': 'powershell-host-rejection/v1',
                          'readonly_fixture': 'read-baseline-specific-write-deny/v3'}
 MANIFEST = Path(__file__).with_name('incident-host-scenarios.json')
@@ -59,15 +70,15 @@ def is_code(profile):
 
 
 def is_full(profile):
-    return profile in (PROFILE_FULL, PROFILE_FULL_CODE)
+    return profile in (PROFILE_FULL, PROFILE_FULL_CODE, PROFILE_FULL_SPLIT)
 
 
 def is_v2(profile):
-    return profile in (PROFILE_V2, PROFILE_FULL, PROFILE_FULL_CODE)
+    return profile == PROFILE_V2 or is_full(profile)
 
 
 def profile_version(profile):
-    return {PROFILE_FULL_CODE: 'v2-full-code-mode', PROFILE_CODE: 'v1-code-mode', PROFILE: 'v1', PROFILE_V2: 'v2', PROFILE_FULL: 'v2-full'}[profile]
+    return profile.split('/', 1)[1]
 
 
 def full_scope(value):
@@ -95,7 +106,7 @@ def read_subject(path, *, strict=False):
         for key, item in items:
             if (key == 'cli_adoption' or (key == 'gate_scope' and item == 'full') or
                 (key == 'gate_profile' and is_full(item)) or
-                (key == 'schema' and isinstance(item, str) and item.endswith(('/v2-full', '/v2-full-code-mode')))):
+                (key == 'schema' and isinstance(item, str) and item.endswith(('/v2-full', '/v2-full-code-mode', '/' + SPLIT_VERSION)))):
                 full = True
         return dict(items)
     json.loads(raw, object_pairs_hook=inspect)
@@ -125,6 +136,8 @@ def toolkit(plan=None, *, execution=False):
                   else 'incident-host-scenarios-code-mode.json')
     if profile == PROFILE_FULL_CODE:
         names += ('incident_code_mode_preflight.py',)
+    if profile == PROFILE_FULL_SPLIT:
+        names += ('incident_windows_backends.py',)
     return {name: base.sha(code_mode.execution_tool(name) if execution else
                            Path(__file__).with_name(name)) for name in names}
 
@@ -137,6 +150,17 @@ def profile_for_plan(plan):
     base.require(isinstance(plan, dict), 'plan object required')
     if 'cli_version' in plan or 'cli_adoption' in plan:
         cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'})
+    split = plan.get('schema') == 'incident-host-plan/' + SPLIT_VERSION
+    if split:
+        base.require(plan.get('backend_contract') == windows_backends.CONTRACT
+                     and plan.get('cli_version') == cli_adoption.VERSION
+                     and plan.get('toolkit') == toolkit(plan, execution=True)
+                     and plan.get('manifest_sha256') == base.sha(MANIFEST_FULL),
+                     'Windows split backend contract or pin differs')
+        windows_backends.validate_local_endpoint(plan.get('local_provider_endpoint'))
+    else:
+        base.require(not {'backend_contract', 'local_provider_endpoint'} & plan.keys(),
+                     'backend contract requires explicit split profile')
     if plan.get('schema') == 'incident-host-plan/v1-code-mode':
         base.require(plan.get('gate_profile') == PROFILE_CODE and not any(k in plan for k in
                      ('gate_scope', 'required_gates', 'observation_contracts', 'negative_parser_reference')),
@@ -152,7 +176,7 @@ def profile_for_plan(plan):
                      and plan.get('manifest_sha256') == base.sha(MANIFEST_FULL_CODE), 'Windows code-mode fixture pin differs')
     else:
         base.require('command_observation_contract' not in plan, 'code-mode contract requires explicit profile')
-    full = plan.get('schema') in ('incident-host-plan/v2-full', 'incident-host-plan/v2-full-code-mode')
+    full = split or plan.get('schema') in ('incident-host-plan/v2-full', 'incident-host-plan/v2-full-code-mode')
     if full:
         full_scope(plan)
     else:
@@ -162,8 +186,9 @@ def profile_for_plan(plan):
         base.require(not any(k in plan for k in ('observation_contracts', 'negative_parser_reference'))
                      and plan.get('gate_profile', PROFILE) == PROFILE, 'v1 cannot adopt v2 observations')
         return PROFILE
-    base.require(plan.get('schema') == ('incident-host-plan/v2-full-code-mode' if full_code else 'incident-host-plan/v2-full' if full else 'incident-host-plan/v2')
-                 and plan.get('gate_profile') == (PROFILE_FULL_CODE if full_code else PROFILE_FULL if full else PROFILE_V2)
+    profile = PROFILE_FULL_SPLIT if split else PROFILE_FULL_CODE if full_code else PROFILE_FULL if full else PROFILE_V2
+    base.require(plan.get('schema') == 'incident-host-plan/' + profile_version(profile)
+                 and plan.get('gate_profile') == profile
                  and plan.get('observation_contracts') == OBSERVATION_CONTRACTS
                  and plan.get('platform') == 'Windows'
                  and plan.get('cli_version') in ('codex-cli 0.160.0', cli_adoption.VERSION),
@@ -174,7 +199,7 @@ def profile_for_plan(plan):
                  and reference['schema'] == 'incident-parser-reference/v1'
                  and isinstance(reference['cases'], dict)
                  and set(reference['cases']) == {'unknown', 'missing'}, 'parser reference unavailable')
-    return PROFILE_FULL_CODE if full_code else PROFILE_FULL if full else PROFILE_V2
+    return profile
 
 
 def parser_envelope(text, kind):
@@ -225,7 +250,8 @@ def host_parser_signature(plan, output, kind):
 
 
 def manifest_for_plan(plan):
-    return {PROFILE_FULL_CODE: MANIFEST_FULL_CODE, PROFILE_CODE: MANIFEST_CODE, PROFILE: MANIFEST, PROFILE_V2: MANIFEST_V2, PROFILE_FULL: MANIFEST_FULL}[profile_for_plan(plan)]
+    return {PROFILE_FULL_CODE: MANIFEST_FULL_CODE, PROFILE_CODE: MANIFEST_CODE, PROFILE: MANIFEST,
+            PROFILE_V2: MANIFEST_V2, PROFILE_FULL: MANIFEST_FULL, PROFILE_FULL_SPLIT: MANIFEST_FULL}[profile_for_plan(plan)]
 
 
 def helper_prompt(plan, argv, stage):
@@ -376,6 +402,229 @@ class Client(base.Client):
                 return {'thread': thread, 'turn': turn, 'rows': self.rows[begin:],
                         'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest()}
         raise TimeoutError('incident turn')
+
+
+class SplitClient(Client):
+    config_read_id = None
+
+    def __init__(self, plan, directory, *, role):
+        self.role = role
+        super().__init__(plan, directory, app_server_flags=windows_backends.launch_flags(split_backend(role)))
+
+    def close(self):
+        pid = self.owned.process.pid if self.owned else None
+        cleanup = super().close()
+        return {**cleanup, 'role': self.role, 'pid': pid} if cleanup else None
+
+    def journal_response(self, message):
+        if self.config_read_id is not None and message.get('id') == self.config_read_id:
+            # Persist only the allowlisted configuration projection. Raw Hook,
+            # thread, turn, and tool RPCs are retained independently.
+            base.require('method' not in message and 'error' not in message, 'config/read failed')
+            return {'id': self.config_read_id, 'result': windows_backends.project_config(message.get('result'))}
+        return message
+
+    def start(self, instructions=base.INSTRUCTIONS):
+        if self.plan['schema'] == 'stop-host-plan/v1':
+            return base.Client.start(self, instructions)
+        return super().start(instructions)
+
+    def rpc(self, method, params):
+        if method == 'config/read':
+            self.config_read_id = self.sequence + 1
+        try:
+            result = super().rpc(method, params)
+        finally:
+            self.config_read_id = None
+        if method in ('thread/start', 'thread/resume'):
+            windows_backends.validate_thread_result(result, self.plan)
+        return result
+
+
+def split_backend(role):
+    base.require(role in SPLIT_JOURNALS, 'unknown split process role')
+    return windows_backends.CONTRACT['roles'][role]
+
+
+def open_split_client(plan, directory, role, bindings, cleanups):
+    backend = split_backend(role)
+    flags = windows_backends.launch_flags(backend)
+    client = SplitClient(plan, directory, role=role)
+    try:
+        bindings[role] = windows_backends.bind(client, backend)
+        write_new(directory / 'launch.json', {'role': role, 'pid': client.owned.process.pid,
+                  'argv': [plan['codex'], *flags, 'app-server'],
+                  'local_provider_endpoint': plan['local_provider_endpoint']})
+        return client
+    except BaseException:
+        cleanups.append(client.close())
+        raise
+
+
+def split_cleanup(cleanup, role, pid):
+    base.require(cleanup and all(cleanup.get(key) is True for key in
+                 ('owned_process_exited', 'owned_tree_no_running_members',
+                  'job_assignment_confirmed', 'job_close_confirmed', 'cleanup_complete'))
+                 and not cleanup.get('process_group_cleanup_error')
+                 and cleanup.get('role') == role and cleanup.get('pid') == pid, 'split owned cleanup failed')
+
+
+def split_launch(directory, role, plan):
+    launch = read_subject(directory / 'launch.json', strict=True)
+    base.require(set(launch) == {'role', 'pid', 'argv', 'local_provider_endpoint'} and launch['role'] == role
+                 and type(launch['pid']) is int and launch['pid'] > 0
+                 and launch['local_provider_endpoint'] == plan['local_provider_endpoint']
+                 and launch['argv'] == [plan['codex'], *windows_backends.launch_flags(split_backend(role)),
+                                        'app-server'], 'split app-server launch differs')
+    return launch['pid']
+
+
+def split_preflight(plan, directory, *, record=False):
+    """Exercise the same launch/readiness path before accepting any model turns."""
+    roles = ('primary', 'acl')
+    if record:
+        directory.mkdir(mode=0o700)
+        bindings, cleanups = {}, []
+        for role in roles:
+            target = directory / SPLIT_JOURNALS[role]
+            target.mkdir()
+            client = open_split_client(plan, target, role, bindings, cleanups)
+            cleanups.append(client.close())
+        write_new(directory / 'receipt.json', {'plan_sha256': plan_identity(plan),
+                  'bindings': bindings, 'cleanups': cleanups})
+    base.require(not directory.is_symlink() and directory.is_dir(), 'split preflight directory unavailable')
+    receipt = read_subject(directory / 'receipt.json', strict=True)
+    base.require(set(receipt) == {'plan_sha256', 'bindings', 'cleanups'}
+                 and receipt['plan_sha256'] == plan_identity(plan)
+                 and set(receipt['bindings']) == set(roles)
+                 and len(receipt['cleanups']) == len(roles), 'split preflight receipt differs')
+    pids = set()
+    for role, cleanup in zip(roles, receipt['cleanups']):
+        target = directory / SPLIT_JOURNALS[role]
+        base.require(not target.is_symlink() and target.is_dir(), 'split preflight role unavailable')
+        pid = split_launch(target, role, plan)
+        split_cleanup(cleanup, role, pid)
+        pids.add(pid)
+        binding, rows = windows_backends.verify_journal(
+            directory / SPLIT_JOURNALS[role] / 'rpc.jsonl', split_backend(role), plan)
+        base.require(binding == receipt['bindings'][role]
+                     and all(row['message'].get('method') in
+                             ('initialize', 'initialized', 'hooks/list', 'config/read', 'windowsSandbox/readiness')
+                             for row in rows if row['direction'] == 'request'),
+                     'split preflight must remain zero-turn')
+    base.require(len(pids) == len(roles), 'split preflight process identity reused')
+
+
+def split_turns(rows):
+    """Replay the exact response slices that observed_turn retained."""
+    turns = []
+    for i, row in enumerate(rows):
+        req = row['message']
+        if row['direction'] != 'request' or req.get('method') != 'turn/start':
+            continue
+        thread, prompt = req['params']['threadId'], req['params']['input']
+        base.require(isinstance(prompt, list) and len(prompt) == 1
+                     and prompt[0].get('type') == 'text' and isinstance(prompt[0].get('text'), str)
+                     and req['params']['effort'] == 'medium', 'split turn request differs')
+        observed, turn = [], None
+        for event in rows[i + 1:]:
+            base.require(event['direction'] == 'response', 'split turn interrupted')
+            message = event['message']
+            observed.append(message)
+            if message.get('id') == req['id']:
+                turn = message['result']['turn']['id']
+            if (turn and message.get('method') == 'turn/completed'
+                    and message['params']['turn']['id'] == turn):
+                base.require(message['params']['threadId'] == thread
+                             and message['params']['turn']['status'] == 'completed', 'split turn incomplete')
+                break
+        else:
+            raise ValueError('split turn completion missing')
+        turns.append((thread, turn, hashlib.sha256(prompt[0]['text'].encode()).hexdigest(), observed))
+    base.require(len({turn[1] for turn in turns}) == len(turns), 'split turn reused')
+    return turns
+
+
+def split_inventory(rows, plan):
+    matches = [row['message'] for row in rows if row['direction'] == 'request'
+               and row['message'].get('method') == 'hooks/list']
+    base.require(len(matches) == 1 and matches[0]['params'] == {'cwds': [plan['cwd']]},
+                 'split Hook inventory request differs')
+    replies = [row['message']['result']['data'] for row in rows if row['direction'] == 'response'
+               and row['message'].get('id') == matches[0]['id']]
+    base.require(len(replies) == 1 and len(replies[0]) == 1 and not replies[0][0].get('errors')
+                 and not replies[0][0].get('warnings'), 'split Hook inventory unavailable')
+    hooks = replies[0][0]['hooks']
+    base.require(len(hooks) == len(base.EVENTS), 'split Hook count differs')
+    return {hook['eventName']: hook for hook in hooks}
+
+
+def verify_split_capture(directory, capture):
+    plan = capture['plan']
+    base.require(capture['origin'] == 'native' and directory.resolve() == Path(plan['output']).resolve()
+                 and set(capture['backend_bindings']) == set(SPLIT_JOURNALS)
+                 and len(capture['cleanups']) == len(SPLIT_JOURNALS), 'split capture sources unavailable')
+    base.require(capture['stop_result']['cleanups'] == capture['cleanups'][2:],
+                 'split Stop cleanups differ')
+    stages = capture['stages']
+    base.require(set(stages) == set(PRIMARY_STAGES + ACL_STAGES), 'split stages incomplete')
+    pids, all_turns, journals = set(), set(), {}
+    primary_threads, acl_threads, first_threads, cold_threads = set(), set(), set(), set()
+    groups = {'primary': (PRIMARY_STAGES, primary_threads), 'acl': (ACL_STAGES, acl_threads),
+              'stop_first': ((), first_threads), 'stop_cold': ((), cold_threads)}
+    for (role, relative), cleanup in zip(SPLIT_JOURNALS.items(), capture['cleanups']):
+        pid = split_launch(directory / relative, role, plan)
+        split_cleanup(cleanup, role, pid)
+        base.require(pid not in pids, 'split process identity reused')
+        pids.add(pid)
+        path = directory / relative / 'rpc.jsonl'
+        binding, rows = windows_backends.verify_journal(path, split_backend(role), plan)
+        base.require(binding == capture['backend_bindings'][role], 'split process binding differs')
+        base.require(split_inventory(rows, plan) == capture['inventory'], 'split process Hook inventory differs')
+        methods = [row['message'].get('method') for row in rows if row['direction'] == 'request']
+        base.require(methods.count('thread/compact/start') == (1 if role == 'stop_first' else 0),
+                     'split compaction budget differs')
+        turns = split_turns(rows)
+        names, threads = groups[role]
+        base.require(len(turns) == (len(names) if names else 3 if role == 'stop_first' else 2),
+                     'split model turn count differs')
+        for thread, turn, _, _ in turns:
+            base.require(turn not in all_turns, 'split cross-process turn reused')
+            all_turns.add(turn)
+            threads.add(thread)
+        for name, (thread, turn, prompt_sha, observed) in zip(names, turns):
+            stage = stages[name]
+            base.require((stage['thread'], stage['turn'], stage['prompt_sha256'], stage['rows']) ==
+                         (thread, turn, prompt_sha, observed), 'split stage differs from owning journal')
+        journals[role] = base.sha(path)
+    base.require(len(primary_threads) == 2 and len(acl_threads) == len(first_threads) == 1
+                 and len(cold_threads) == 2 and first_threads < cold_threads
+                 and len(primary_threads | acl_threads | cold_threads) == 5, 'split thread roles overlap')
+    return journals
+
+
+def verify_split_fixture(status_stage, final_request, plan, inventory, directory):
+    state = state_for(status_stage)
+    argv = status_argv(command_observation(status_stage, inventory, plan), status_stage, plan, inventory=inventory)
+    token = cg.parse_checkpoint_status_option_bindings(argv[3:])['--token'][0]
+    if token == '[REDACTED_SECRET]':
+        token = hook_control_token(status_stage, inventory, plan, state)
+    thread, turn = status_stage['thread'], status_stage['turn']
+    fixture = final_request['fixture']
+    base.require(final_request['turn'] == turn and final_request['state_revision'] == state['content_hash']
+                 and final_request['argv'] == [*argv[:3], '--data-dir', fixture, '--session-id', thread,
+                                               '--turn-id', turn, '--token', token, '--commands'],
+                 'split fixture differs from status authority')
+    base.require(read_subject(directory / 'authored-readonly-request.json', strict=True) == final_request,
+                 'split authored request differs')
+    prefix = f'sessions-v2/{thread}/'
+    clone = {name[len(prefix):]: (info['sha256'], info['size'])
+             for name, info in final_request['inventory'].items()
+             if name.startswith(prefix) and info['kind'] == 'file'}
+    snapshot = {name: (info['sha256'], info['size'])
+                for name, info in child.inventory(Path(status_stage['snapshot'])).items()
+                if info['kind'] == 'file'}
+    base.require(snapshot and clone == snapshot, 'split exact copied session bytes differ')
 
 
 def canonical_shell_command(body, plan):
@@ -937,7 +1186,9 @@ def readonly_helper_argv(item, expected, plan):
                   code_mode.execution_tool('incident_readonly_child.py'))
         matches = (Path(argv[0]).resolve() == Path(plan['python']).resolve()
                    and Path(argv[1]).resolve() == helper.resolve())
-    if matches and windows and plan.get('schema') in ('incident-host-plan/v1', 'incident-host-plan/v2', 'incident-host-plan/v2-full', 'incident-host-plan/v2-full-code-mode'):
+    if matches and windows and plan.get('schema') in (
+            'incident-host-plan/v1', 'incident-host-plan/v2', 'incident-host-plan/v2-full',
+            'incident-host-plan/v2-full-code-mode', 'incident-host-plan/' + SPLIT_VERSION):
         request_path = Path(plan['cwd']) / ('incident-request-' + Path(plan['output']).name + '.json')
         matches = same_helper_path(expected[3], str(request_path), windows=True)
     base.require(matches, 'readonly tool argv differs')
@@ -1087,13 +1338,23 @@ def public_source(identity):
     return result
 
 
-def map_capture(capture, *, mapper_identity=None):
+def map_capture(capture, *, mapper_identity=None, directory=None):
     profile = profile_for_plan(capture['plan'])
     version = profile_version(profile)
     base.require(capture.get('schema') == 'incident-host-capture/' + version, 'wrong capture')
     base.require(capture.get('origin') in ('native', 'synthetic'), 'unknown execution origin')
     plan = capture['plan']
     cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=capture['origin'] == 'native')
+    backend_journals = {}
+    if profile == PROFILE_FULL_SPLIT:
+        base.require(capture['origin'] == 'native', 'split acceptance requires a native capture')
+        if not (capture.get('failure_class') or capture.get('pending_class')):
+            base.require(directory is not None, 'split acceptance requires original journals')
+            backend_journals = verify_split_capture(directory, capture)
+        else:
+            capture = {**capture, 'stages': {}, 'inventory': {}, 'cleanups': [], 'stop_result': None}
+    else:
+        base.require('backend_bindings' not in capture, 'backend bindings require split profile')
     if is_full(profile):
         full_scope(capture)
         base.require(plan.get('manifest_sha256') == base.sha(manifest_for_plan(plan)), 'full manifest adoption differs')
@@ -1208,6 +1469,8 @@ def map_capture(capture, *, mapper_identity=None):
         expected = helper_prompt(plan, capture['readonly_tool_argv'], 'readonly')
         base.require(stages['readonly']['prompt_sha256'] == hashlib.sha256(expected.encode()).hexdigest(),
                      'readonly helper prompt differs')
+        if profile == PROFILE_FULL_SPLIT:
+            verify_split_fixture(stages['status'], final_request, plan, inventory, directory)
     if 'readonly' in stages and capture.get('readonly_request'):
         item = command_observation(stages['readonly'], inventory, plan)
         readonly_helper_argv(item, capture['readonly_tool_argv'], plan)
@@ -1230,7 +1493,7 @@ def map_capture(capture, *, mapper_identity=None):
         verify_stop_capture(Path(capture['stop_directory']), plan, stop)
         gates.update(positive_negative_stop='passed', compaction_cold_resume='passed')
     cleanups = capture.get('cleanups', [])
-    if len(cleanups) == (1 if profile == PROFILE_V2 else 3):
+    if len(cleanups) == (len(SPLIT_JOURNALS) if profile == PROFILE_FULL_SPLIT else 1 if profile == PROFILE_V2 else 3):
         base.require(all(c and c.get('owned_process_exited') is True
                          and c.get('owned_tree_no_running_members') is True
                          and not c.get('process_group_cleanup_error') for c in cleanups), 'owned cleanup failed')
@@ -1265,6 +1528,9 @@ def map_capture(capture, *, mapper_identity=None):
     if is_full(profile):
         result['gate_scope'] = 'full'
         result['execution_identity'].update(gate_scope='full', required_gates=list(GATES))
+    if profile == PROFILE_FULL_SPLIT:
+        result['execution_identity'].update(backend_contract=plan['backend_contract'],
+                                            backend_journal_sha256=backend_journals)
     if is_code(profile):
         result['execution_identity']['command_observation_contract'] = plan['command_observation_contract']
     if 'cli_adoption' in plan:
@@ -1274,7 +1540,7 @@ def map_capture(capture, *, mapper_identity=None):
 
 def validate_result(result):
     profile = result.get('gate_profile')
-    base.require(profile in (PROFILE, PROFILE_CODE, PROFILE_V2, PROFILE_FULL, PROFILE_FULL_CODE)
+    base.require(profile in (PROFILE, PROFILE_CODE, PROFILE_V2, PROFILE_FULL, PROFILE_FULL_CODE, PROFILE_FULL_SPLIT)
                  and result.get('schema') == 'incident-host-acceptance/' +
                  profile_version(profile), 'wrong result profile')
     execution = result.get('execution_identity', {})
@@ -1303,6 +1569,19 @@ def validate_result(result):
                      'code-mode result contract differs')
     else:
         base.require('command_observation_contract' not in execution, 'code-mode export requires profile')
+    if profile == PROFILE_FULL_SPLIT:
+        journals = execution.get('backend_journal_sha256')
+        base.require(execution.get('backend_contract') == windows_backends.CONTRACT
+                     and execution.get('cli_version') == cli_adoption.VERSION
+                     and result.get('evidence_scope') == 'native' and isinstance(journals, dict)
+                     and (set(journals) == set(SPLIT_JOURNALS)
+                          or (not journals and result.get('status') != 'passed'))
+                     and all(isinstance(v, str) and re.fullmatch(r'[0-9a-f]{64}', v)
+                             for v in journals.values())
+                     and len(set(journals.values())) == len(journals), 'split backend result proof differs')
+    else:
+        base.require(not {'backend_contract', 'backend_journal_sha256'} & execution.keys(),
+                     'backend export requires split profile')
     if ('cli_adoption' in execution or execution.get('cli_version') == cli_adoption.VERSION
             or is_full(profile)):
         cli_adoption.validate_export(execution)
@@ -1369,23 +1648,35 @@ def collect(plan, output, *, supplemental=False):
     profile = profile_for_plan(plan)
     cli_adoption.validate(plan, legacy_versions={'codex-cli 0.160.0'}, require_native=True)
     base.require(not (is_full(profile) and supplemental), 'full profile cannot supplement')
+    split = profile == PROFILE_FULL_SPLIT
+    if split:
+        split_preflight(plan, output.with_name(output.name + '.backend-preflight'))
     output.mkdir(mode=0o700)
     capture = {'schema': 'incident-host-capture/' + profile_version(profile), 'origin': 'native',
                'plan': plan, 'plan_sha256': plan_identity(plan), 'stages': {}, 'cleanups': []}
     if is_full(profile):
         capture.update(gate_scope='full', required_gates=list(GATES))
+    if split:
+        capture['backend_bindings'] = {}
     write_new(output / 'plan.json', plan)
-    client = None
+    client = probe = None
     request = None
     fixture = Path(plan['cwd']) / ('incident-readonly-' + output.name)
     try:
         (output / 'rpc').mkdir()
-        client = Client(plan, output / 'rpc')
+        if split:
+            (output / 'probe-rpc').mkdir()
+            client = open_split_client(plan, output / 'rpc', 'primary', capture['backend_bindings'], capture['cleanups'])
+            probe = open_split_client(plan, output / 'probe-rpc', 'acl', capture['backend_bindings'], capture['cleanups'])
+            base.require(client.inventory == probe.inventory, 'split Hook inventories differ')
+        else:
+            client = Client(plan, output / 'rpc')
         capture['inventory'] = client.inventory
         manifest = base.read_json(manifest_for_plan(plan))
         def turn(name, thread, prompt=None, helper_argv=None):
             base.require(name not in capture['stages'], 'duplicate collected stage')
-            stage = client.observed_turn(thread, prompt or manifest['prompts'][name])
+            actor = probe if split and name in ACL_STAGES else client
+            stage = actor.observed_turn(thread, prompt or manifest['prompts'][name])
             dest = output / ('snapshot-' + name)
             copy_session(plan, thread, dest)
             stage['snapshot'] = str(dest)
@@ -1407,7 +1698,7 @@ def collect(plan, output, *, supplemental=False):
                         archive.chmod(0o600)
             capture['stages'][name] = stage
             return stage
-        if not supplemental and profile in (PROFILE, PROFILE_CODE, PROFILE_FULL, PROFILE_FULL_CODE):
+        if not supplemental and profile != PROFILE_V2:
             thread = client.start()
             for name in ('pending', 'pause', 'resume', 'typed', 'typed_resume'):
                 turn(name, thread)
@@ -1430,7 +1721,7 @@ def collect(plan, output, *, supplemental=False):
             probe_instructions += base.read_json(manifest_for_plan(plan))['transparent_fixture_instructions'].format(
                 cwd=json.dumps(plan['cwd'], ensure_ascii=True),
                 shell=json.dumps(plan.get('shell', {}).get('path'), ensure_ascii=True))
-        probe_thread = client.start(probe_instructions)
+        probe_thread = (probe or client).start(probe_instructions)
         principal = None
         if plan['platform'] == 'Windows':
             identity_argv = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'), '--identity']
@@ -1465,7 +1756,10 @@ def collect(plan, output, *, supplemental=False):
         write_new(request_path, request)
         capture['readonly_request'] = request
         for name in ('unknown', 'missing'):
-            turn(name, status_thread)
+            observed = turn(name, status_thread)
+            if split:
+                base.require(rejection_observation(observed, client.inventory, plan, name)['status'] == 'passed',
+                             'split negative control failed')
         tool_argv = [plan['python'], str(ROOT / 'tools/validation/incident_readonly_child.py'),
                      '--request', str(request_path)]
         capture['readonly_tool_argv'] = tool_argv
@@ -1473,15 +1767,40 @@ def collect(plan, output, *, supplemental=False):
         spelling = cg.shell_join(tool_argv)
         if plan['platform'] == 'Windows':
             spelling = '& ' + spelling
-        turn('readonly', probe_thread, helper_prompt(plan, tool_argv, 'readonly')
-             if is_v2(profile) else 'Run this exact ordinary tool command once: ' + spelling, helper_argv=tool_argv)
+        observed = turn('readonly', probe_thread, helper_prompt(plan, tool_argv, 'readonly')
+                        if is_v2(profile) else 'Run this exact ordinary tool command once: ' + spelling,
+                        helper_argv=tool_argv)
+        if split:
+            item = command_observation(observed, probe.inventory, plan)
+            readonly_helper_argv(item, tool_argv, plan)
+            base.require(item['exitCode'] == 0
+                         and child.judge(json.loads(item['aggregatedOutput']), request) == 'passed',
+                         'split readonly witness failed')
+            with (output / 'authored-readonly-request.json').open('xb') as stream:
+                stream.write(request_path.read_bytes())
+            base.require(read_subject(output / 'authored-readonly-request.json', strict=True) == request,
+                         'split signed request changed')
         capture['cleanups'].append(client.close())
         client = None
-        if profile in (PROFILE, PROFILE_CODE, PROFILE_FULL, PROFILE_FULL_CODE):
+        if probe:
+            capture['cleanups'].append(probe.close())
+            probe = None
+        if profile != PROFILE_V2:
             shared = dict(plan, schema='stop-host-plan/v1')
             capture['stop_directory'] = str(output / 'stop')
-            capture['stop_result'] = base.collect(shared, output / 'stop')
+            if split:
+                def stop_client(p, directory):
+                    return open_split_client(p, directory, 'stop_' + directory.name,
+                                             capture['backend_bindings'], capture['cleanups'])
+                capture['stop_result'] = base.collect(shared, output / 'stop', client_factory=stop_client)
+            else:
+                capture['stop_result'] = base.collect(shared, output / 'stop')
             capture['cleanups'].extend(capture['stop_result']['cleanups'])
+            if split and capture['stop_result']['status'] != 'passed':
+                kind = capture['stop_result'].get('failure', '').partition(':')[0]
+                if kind == 'ObservationPending':
+                    raise ObservationPending('official Stop server request retained')
+                raise ValueError('split Stop collection failed')
         base.require(prepared_source_identity(ROOT) == plan['source'], 'source changed during run')
         base.require(base.runtime(Path(plan['plugin_root'])) == plan['runtime_sha256'], 'runtime changed during run')
     except (Exception, KeyboardInterrupt) as exc:
@@ -1491,11 +1810,12 @@ def collect(plan, output, *, supplemental=False):
         write_new(output / 'failure.json', {'type': type(exc).__name__, 'detail': str(exc),
                                                'restriction': getattr(exc, 'record', None)})
     finally:
-        if client:
-            try:
-                capture['cleanups'].append(client.close())
-            except Exception as exc:
-                capture['failure_class'] = type(exc).__name__
+        for actor in (client, probe):
+            if actor:
+                try:
+                    capture['cleanups'].append(actor.close())
+                except Exception as exc:
+                    capture['failure_class'] = type(exc).__name__
         if request:
             try:
                 # Restore mutates diagnostics; preserve the exact signed tool request.
@@ -1576,7 +1896,7 @@ def _map_bundle(directory, output, *, retained_verify=None):
         p = Path(s['snapshot']).resolve()
         base.require(p.is_relative_to(directory.resolve()), 'snapshot outside bundle')
     try:
-        result = map_capture(capture)
+        result = map_capture(capture, directory=directory)
     except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
         minimal = {**capture, 'stages': {}, 'inventory': {}, 'cleanups': [],
                    'stop_result': None, 'failure_class': type(exc).__name__}
@@ -1612,7 +1932,9 @@ def main():
         make.add_argument('--' + name, type=Path, required=True)
     make.add_argument('--shell', type=Path)
     make.add_argument('--model', required=True)
-    make.add_argument('--profile', choices=(PROFILE, PROFILE_CODE, PROFILE_V2, PROFILE_FULL_CODE), default=PROFILE)
+    make.add_argument('--local-provider-endpoint')
+    make.add_argument('--profile', choices=(PROFILE, PROFILE_CODE, PROFILE_V2, PROFILE_FULL_CODE,
+                                            PROFILE_FULL_SPLIT), default=PROFILE)
     make.add_argument('--gate-scope', choices=('full',))
     make.add_argument('--negative-observation')
     make.add_argument('--fixture-policy')
@@ -1625,17 +1947,22 @@ def main():
             base.require(bool(args.cli_adoption) == bool(args.cli_capability_receipt),
                          'CLI adoption requires an independently prepared capability receipt')
             win_code = args.profile == PROFILE_FULL_CODE
-            v2 = args.profile in (PROFILE_V2, PROFILE_FULL_CODE)
+            split = args.profile == PROFILE_FULL_SPLIT
+            v2 = is_v2(args.profile)
             codemode = is_code(args.profile)
-            base.require(not codemode or args.cli_adoption == cli_adoption.CONTRACT, 'code-mode requires CLI adoption')
+            base.require(not (codemode or split) or args.cli_adoption == cli_adoption.CONTRACT,
+                         'selected profile requires CLI adoption')
             full = args.gate_scope == 'full'
-            base.require(not win_code or full, 'Windows code-mode requires explicit full scope')
+            base.require((args.local_provider_endpoint is not None) == split,
+                         'explicit loopback endpoint requires split profile')
+            base.require(not (win_code or split) or full, 'selected Windows profile requires explicit full scope')
             base.require(not full or v2, 'full scope requires explicit v2 adoption')
             base.require((v2 and args.negative_observation == OBSERVATION_CONTRACTS['negative']
                           and args.fixture_policy == OBSERVATION_CONTRACTS['readonly_fixture'])
                          or (not v2 and args.negative_observation is None and args.fixture_policy is None),
                          'observation contract adoption must be explicit and complete')
-            plan = {'schema': 'incident-host-plan/' + ('v2-full-code-mode' if win_code else 'v2-full' if full else 'v2' if v2 else 'v1-code-mode' if codemode else 'v1'), 'repo': str(ROOT),
+            profile = PROFILE_FULL if args.profile == PROFILE_V2 and full else args.profile
+            plan = {'schema': 'incident-host-plan/' + profile_version(profile), 'repo': str(ROOT),
                     'source': prepared_source_identity(ROOT), 'runtime_sha256': base.runtime(ROOT),
                     'cli_version': cli_adoption.VERSION if args.cli_adoption else 'codex-cli 0.160.0',
                     'platform': platform.system(),
@@ -1645,9 +1972,12 @@ def main():
                 plan.update(toolkit=toolkit(plan), manifest_sha256=base.sha(MANIFEST_FULL_CODE if win_code else MANIFEST_CODE))
             if v2:
                 base.require(platform.system() == 'Windows', 'v2 observation requires Windows')
-                plan.update(gate_profile=PROFILE_FULL_CODE if win_code else PROFILE_FULL if full else PROFILE_V2, observation_contracts=dict(OBSERVATION_CONTRACTS))
+                plan.update(gate_profile=profile, observation_contracts=dict(OBSERVATION_CONTRACTS))
                 if full:
                     plan.update(gate_scope='full', required_gates=list(GATES))
+            if split:
+                plan.update(backend_contract=windows_backends.CONTRACT, toolkit=toolkit(plan),
+                            local_provider_endpoint=windows_backends.validate_local_endpoint(args.local_provider_endpoint))
             for key in ('codex', 'python', 'home', 'cwd', 'plugin_root', 'data_root'):
                 plan[key] = str(getattr(args, key).resolve(strict=key != 'data_root'))
             if plan['platform'] == 'Windows':
@@ -1681,6 +2011,9 @@ def main():
         else:
             plan = preflight(args.plan, args.output)
             if args.preflight:
+                if profile_for_plan(plan) == PROFILE_FULL_SPLIT:
+                    directory = args.output.with_name(args.output.name + '.backend-preflight')
+                    split_preflight(plan, directory, record=not directory.exists())
                 print('incident_host_preflight=passed; model_calls=0; native_acceptance=not_run')
                 return 0
             collect(plan, args.output)
