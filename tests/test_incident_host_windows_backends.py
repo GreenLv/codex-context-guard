@@ -37,6 +37,7 @@ class BackendBindingTests(unittest.TestCase):
                                'features': {'prefer_mxc': False, 'code_mode': False,
                                             'code_mode_only': False},
                                'model': self.plan['model'], 'model_provider': 'openai',
+                               **backend.OFFICIAL_CONTEXT,
                                'model_providers': {'local_ollama': {'base_url': 'http://127.0.0.1:11434/v1'}}},
                     'origins': {}}
         return {'config': {'windows': {'sandbox': mode},
@@ -320,6 +321,9 @@ class BackendBindingTests(unittest.TestCase):
                              ('openai_base_url', 'http://127.0.0.1:11434/v1'),
                              ('chatgpt_base_url', 'https://other.example'),
                              ('model_catalog_json', 'synthetic-catalog'),
+                             ('model_context_window', 16_384), ('model_auto_compact_token_limit', 4096),
+                             ('model_auto_compact_token_limit_scope', 'body_after_prefix'),
+                             ('model_post_turn_compact_threshold_percent', True),
                              ('model_providers', {'openai': {'base_url': 'https://other.example'}}),
                              ('features', {'prefer_mxc': False, 'code_mode': True, 'code_mode_only': False})):
             config = self.config('mxc')

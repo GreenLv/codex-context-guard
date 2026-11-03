@@ -19,6 +19,14 @@ CONTRACT = {
 OFFICIAL_CONTRACT = {**CONTRACT, 'schema': 'incident-windows-backends/v3',
                      'model_provider': 'openai', 'compaction': 'one-explicit-stop/v1'}
 OFFICIAL_MODEL = 'gpt-6.1-sol'
+# The prior local-model HOME set a 16K window. Bound the official process to a
+# conservative window and explicit thresholds without changing that HOME.
+OFFICIAL_CONTEXT = {
+    'model_context_window': 131_072,
+    'model_auto_compact_token_limit': 98_304,
+    'model_auto_compact_token_limit_scope': 'total',
+    'model_post_turn_compact_threshold_percent': 0,
+}
 _OFFICIAL_ENV_OVERRIDES = (
     'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL',
     'CODEX_OPENAI_BASE_URL', 'CODEX_CHATGPT_BASE_URL', 'CHATGPT_BASE_URL',
@@ -131,6 +139,8 @@ def launch_flags(backend, plan=None):
     if model_provider(plan or {}) == 'openai':
         flags += ['-c', 'model_provider="openai"', '-c', f'model="{OFFICIAL_MODEL}"',
                   '-c', 'features.code_mode=false', '-c', 'features.code_mode_only=false']
+        for key, value in OFFICIAL_CONTEXT.items():
+            flags += ['-c', f'{key}={json.dumps(value)}']
     return flags
 
 
@@ -193,6 +203,9 @@ def project_config(result, plan=None):
                  and config.get('forced_login_method') in (None, 'chatgpt')
                  and all(features.get(key) is False for key in ('code_mode', 'code_mode_only')),
                  'official GPT provider or ordinary tool configuration differs')
+        _require(all(type(config.get(key)) is type(value) and config[key] == value
+                     for key, value in OFFICIAL_CONTEXT.items()), 'official context or compaction config differs')
+        projection.update(OFFICIAL_CONTEXT)
         projection['features'].update(code_mode=False, code_mode_only=False)
         projection['model_providers'] = {}
         return {'config': projection}
