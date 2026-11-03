@@ -411,6 +411,8 @@ class SplitClient(Client):
     def __init__(self, plan, directory, *, role):
         self.role = role
         self.turn_count = self.compact_count = 0
+        self.compaction_budget = (windows_backends.CompactionBudget(role)
+                                  if windows_backends.model_provider(plan) == 'openai' else None)
         windows_backends.check_launch_environment(plan)
         super().__init__(plan, directory, app_server_flags=windows_backends.launch_flags(split_backend(role), plan))
 
@@ -433,7 +435,20 @@ class SplitClient(Client):
             return base.Client.start(self, instructions)
         return super().start(instructions)
 
+    def receive(self, deadline):
+        message = super().receive(deadline)
+        if self.compaction_budget is not None:
+            self.compaction_budget.observe(message)
+        return message
+
     def rpc(self, method, params):
+        if self.compaction_budget is not None:
+            self.compaction_budget.check()
+            if method in ('turn/start', 'thread/compact/start'):
+                # Finish processing already queued events before spending more
+                # budget, including events after the previous turn boundary.
+                while not self.q.empty():
+                    self.receive(time.monotonic())
         if method == 'turn/start':
             limit = {'primary': len(PRIMARY_STAGES), 'acl': len(ACL_STAGES),
                      'stop_first': 3, 'stop_cold': 2}[self.role]
@@ -442,6 +457,8 @@ class SplitClient(Client):
             self.turn_count += 1
         if method == 'thread/compact/start':
             base.require(self.role == 'stop_first' and self.compact_count == 0, 'split compaction budget exhausted')
+            if self.compaction_budget is not None:
+                self.compaction_budget.request(params['threadId'])
             self.compact_count += 1
         if method == 'config/read':
             self.config_read_id = self.sequence + 1
@@ -520,6 +537,8 @@ def split_preflight(plan, directory, *, record=False):
         pids.add(pid)
         binding, rows = windows_backends.verify_journal(
             directory / SPLIT_JOURNALS[role] / 'rpc.jsonl', split_backend(role), plan)
+        if windows_backends.model_provider(plan) == 'openai':
+            windows_backends.replay_compactions(rows, role)
         base.require(binding == receipt['bindings'][role]
                      and all(row['message'].get('method') in
                              ('initialize', 'initialized', 'hooks/list', 'config/read', 'windowsSandbox/readiness')
@@ -597,6 +616,8 @@ def verify_split_capture(directory, capture):
         methods = [row['message'].get('method') for row in rows if row['direction'] == 'request']
         base.require(methods.count('thread/compact/start') == (1 if role == 'stop_first' else 0),
                      'split compaction budget differs')
+        if windows_backends.model_provider(plan) == 'openai':
+            windows_backends.replay_compactions(rows, role)
         turns = split_turns(rows)
         names, threads = groups[role]
         base.require(len(turns) == (len(names) if names else 3 if role == 'stop_first' else 2),
@@ -1869,7 +1890,8 @@ def collect(plan, output, *, supplemental=False):
                 else 'pending_class'] = type(exc).__name__
         # Exception text can contain raw prompts/private commands; private only.
         write_new(output / 'failure.json', {'type': type(exc).__name__, 'detail': str(exc),
-                                               'restriction': getattr(exc, 'record', None)})
+                    ('compaction' if isinstance(exc, windows_backends.CompactionLimitError) else 'restriction'):
+                    getattr(exc, 'record', None)})
     finally:
         for actor in (client, probe):
             if actor:

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import os
+import queue
 import tempfile
 import unittest
 from pathlib import Path
@@ -254,12 +256,6 @@ class BackendBindingTests(unittest.TestCase):
                         'cwd': plan['cwd'], 'approvalPolicy': 'on-request',
                         'sandbox': {'type': 'workspaceWrite'}}}},
                 ]
-            if role == 'stop_first':
-                rows += [
-                    {'direction': 'request', 'message': {'id': 30, 'method': 'thread/compact/start',
-                     'params': {'threadId': 'stop0'}}},
-                    {'direction': 'response', 'message': {'id': 30, 'result': {}}},
-                ]
             for i, (name, thread) in enumerate(zip(names, threads)):
                 turn, prompt, request_id = f'{role}-turn-{i}', f'synthetic {name}', 40 + i
                 observed = [
@@ -274,6 +270,15 @@ class BackendBindingTests(unittest.TestCase):
                 if role in ('primary', 'acl'):
                     capture['stages'][name] = {'thread': thread, 'turn': turn,
                         'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'rows': observed}
+            if role == 'stop_first':
+                rows += [
+                    {'direction': 'request', 'message': {'id': 30, 'method': 'thread/compact/start',
+                     'params': {'threadId': 'stop0'}}},
+                    {'direction': 'response', 'message': {'id': 30, 'result': {}}},
+                ]
+                if backend.model_provider(plan) == 'openai':
+                    rows.extend({'direction': 'response', 'message': self.compact_event(method)}
+                                for method in ('item/started', 'item/completed'))
             (subdir / 'rpc.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in rows), encoding='utf-8')
             capture['backend_bindings'][role] = backend.bind(self.client(self.config(mode), {'status': 'ready'}), mode)
         return directory, capture
@@ -289,6 +294,11 @@ class BackendBindingTests(unittest.TestCase):
         self.plan.update(backend_contract=backend.OFFICIAL_CONTRACT,
                          model=backend.OFFICIAL_MODEL, effort='medium')
         del self.plan['local_provider_endpoint']
+
+    @staticmethod
+    def compact_event(method, *, thread='stop0', turn='compact-turn', item='compact-item'):
+        return {'method': method, 'params': {'threadId': thread, 'turnId': turn,
+                'item': {'id': item, 'type': 'contextCompaction'}}}
 
     def test_official_gpt_binds_both_backends_and_replays_all_four_processes(self):
         self.select_official()
@@ -335,6 +345,7 @@ class BackendBindingTests(unittest.TestCase):
                 client = host.SplitClient.__new__(host.SplitClient)
                 client.role = role
                 client.turn_count = client.compact_count = 0
+                client.compaction_budget = None
                 with self.assertRaises(ValueError):
                     client.rpc('turn/start', {'effort': 'high'})
                 for _ in range(cap):
@@ -346,6 +357,52 @@ class BackendBindingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     client.rpc('thread/compact/start', {})
                 self.assertEqual(rpc.call_count, cap + (role == 'stop_first'))
+
+    def test_unplanned_compaction_start_latches_before_another_rpc(self):
+        client = host.SplitClient.__new__(host.SplitClient)
+        client.role = 'primary'
+        client.turn_count = client.compact_count = 0
+        client.compaction_budget = backend.CompactionBudget(client.role)
+        client.q, client.log, client.rows = queue.Queue(), io.StringIO(), []
+        event = self.compact_event('item/started')
+        client.q.put(event)
+        # The event arrived after the previous RPC boundary. The live client
+        # must journal it and stop before issuing the next request.
+        with mock.patch.object(host.Client, 'rpc') as rpc:
+            with self.assertRaisesRegex(backend.CompactionLimitError, 'unplanned automatic') as exc:
+                client.rpc('turn/start', {'effort': 'medium'})
+            rpc.assert_not_called()
+        self.assertEqual(json.loads(client.log.getvalue()), {'direction': 'response', 'message': event})
+        self.assertEqual(exc.exception.record, {'role': 'primary', 'actual_items': 1,
+                                               'completed_items': 0, 'unplanned_items': 1,
+                                               'explicit_requests': 0})
+        with mock.patch.object(host.Client, 'rpc') as rpc:
+            with self.assertRaises(backend.CompactionLimitError):
+                client.rpc('turn/start', {'effort': 'medium'})
+            rpc.assert_not_called()
+
+    def test_real_event_phases_count_once_and_second_item_stops_at_start(self):
+        budget = backend.CompactionBudget('stop_first')
+        budget.request('stop0')
+        budget.observe(self.compact_event('item/started'))
+        budget.observe(self.compact_event('item/completed'))
+        budget.verify_terminal()
+        self.assertEqual(budget.summary()['actual_items'], 1)
+        with self.assertRaisesRegex(backend.CompactionLimitError, 'actual compaction exceeds') as exc:
+            budget.observe(self.compact_event('item/started', item='second'))
+        self.assertEqual(exc.exception.record['actual_items'], 2)
+        self.assertEqual(exc.exception.record['completed_items'], 1)
+
+    def test_official_replay_rejects_extra_or_incomplete_actual_compaction(self):
+        self.select_official()
+        directory, capture = self.split_fixture()
+        path = directory / host.SPLIT_JOURNALS['stop_first'] / 'rpc.jsonl'
+        lines = path.read_text(encoding='utf-8').splitlines()
+        for updated in (lines[:-1], lines + [json.dumps({'direction': 'response',
+                         'message': self.compact_event('item/started', item='extra')})]):
+            with self.subTest(lines=len(updated)), self.assertRaises(ValueError):
+                path.write_text('\n'.join(updated) + '\n', encoding='utf-8')
+                host.verify_split_capture(directory, capture)
 
     def test_stop_collection_can_fail_before_the_second_business_turn(self):
         plan = {'source': {}, 'runtime_sha256': 'synthetic', 'cli_sha256': 'synthetic'}

@@ -16,8 +16,8 @@ CONTRACT = {
     'roles': {'primary': 'mxc', 'acl': 'elevated',
               'stop_first': 'mxc', 'stop_cold': 'mxc'},
 }
-OFFICIAL_CONTRACT = {**CONTRACT, 'schema': 'incident-windows-backends/v2',
-                     'model_provider': 'openai'}
+OFFICIAL_CONTRACT = {**CONTRACT, 'schema': 'incident-windows-backends/v3',
+                     'model_provider': 'openai', 'compaction': 'one-explicit-stop/v1'}
 OFFICIAL_MODEL = 'gpt-6.1-sol'
 _OFFICIAL_ENV_OVERRIDES = (
     'OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN', 'OPENAI_BASE_URL',
@@ -30,6 +30,88 @@ _METHODS = ('config/read', 'windowsSandbox/readiness')
 def _require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+class CompactionLimitError(ValueError):
+    def __init__(self, reason, record):
+        super().__init__(reason)
+        self.record = record
+
+
+class CompactionBudget:
+    """Count distinct actual items at start; only the planned Stop may compact."""
+
+    def __init__(self, role):
+        self.role = role
+        self.explicit_thread = None
+        self.items = {}
+        self.automatic_items = set()
+        self.fault = None
+
+    def summary(self):
+        return {'role': self.role, 'actual_items': len(self.items),
+                'completed_items': sum('item/completed' in phases for phases in self.items.values()),
+                'unplanned_items': len(self.automatic_items),
+                'explicit_requests': int(self.explicit_thread is not None)}
+
+    def fail(self, reason):
+        self.fault = CompactionLimitError(reason, self.summary())
+        raise self.fault
+
+    def check(self):
+        if self.fault:
+            raise self.fault
+
+    def request(self, thread):
+        self.check()
+        if self.role != 'stop_first' or self.explicit_thread is not None or self.items:
+            self.fail('explicit compaction exceeds the plan')
+        _require(isinstance(thread, str) and bool(thread), 'compact thread unavailable')
+        self.explicit_thread = thread
+
+    def observe(self, message):
+        self.check()
+        method = message.get('method')
+        if method not in ('item/started', 'item/completed'):
+            return
+        params = message.get('params', {})
+        item = params.get('item', {})
+        if item.get('type') != 'contextCompaction':
+            return
+        key = (params.get('threadId'), params.get('turnId'), item.get('id'))
+        if not all(isinstance(part, str) and part for part in key):
+            self.fail('compaction event identity unavailable')
+        phases = self.items.setdefault(key, set())
+        prior = set(phases)
+        phases.add(method)
+        if key[0] != self.explicit_thread or len(self.items) > 1:
+            self.automatic_items.add(key)
+        if len(self.items) > 1:
+            self.fail('actual compaction exceeds the plan')
+        if key[0] != self.explicit_thread:
+            # Reserve the single allowed compaction for the recovery scenario.
+            self.fail('unplanned automatic compaction started')
+        if ((method == 'item/started' and prior)
+                or (method == 'item/completed' and prior != {'item/started'})):
+            self.fail('compaction lifecycle differs')
+
+    def verify_terminal(self):
+        self.check()
+        expected = int(self.explicit_thread is not None)
+        summary = self.summary()
+        _require(summary['actual_items'] == summary['completed_items'] == expected,
+                 'actual compaction lifecycle incomplete')
+
+
+def replay_compactions(rows, role):
+    budget = CompactionBudget(role)
+    for row in rows:
+        message = row['message']
+        if row['direction'] == 'response':
+            budget.observe(message)
+        elif message.get('method') == 'thread/compact/start':
+            budget.request(message['params']['threadId'])
+    budget.verify_terminal()
 
 
 def model_provider(plan):
