@@ -43,24 +43,40 @@ class RetentionDisabledCandidate(fixtures.IsolatedEnvironment):
         self.assertTrue((current / "recovery.md").is_file())
         self.assertEqual((self.snapshot(old), self.snapshot(legacy)), before)
 
-    def test_explicit_cleanup_reports_unavailable_and_preserves_data(self):
+    def test_explicit_cleanup_requires_an_explicit_data_root(self):
+        # 0.17.0: cleanup became an inspectable maintenance command, but the
+        # no-root refusal is unchanged - it never resolves or creates a
+        # default home, and bare invocation never touches data.
         self.fixture_tree()
         before = self.snapshot(self.data_dir)
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
         result = subprocess.run([sys.executable, "-B", str(fixtures.MODULE_PATH), "cleanup"],
                                 env=env, text=True, capture_output=True, check=False)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("cleanup is disabled", result.stderr)
+        self.assertIn("--data-dir", result.stderr)
         self.assertNotIn("Removed", result.stdout)
         self.assertEqual(self.snapshot(self.data_dir), before)
 
-    def test_direct_api_reports_unavailable_without_mutation(self):
+    def test_direct_api_default_is_preview_without_mutation(self):
+        # 0.17.0: the internal API previews by default; deletion needs an
+        # enabled policy and an explicit apply bound to a manifest.
         old, _ = self.fixture_tree()
         before = self.snapshot(self.data_dir)
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        report = cg.cleanup_old_sessions(self.data_dir)
+        self.assertEqual(report["mode"], "preview")
+        self.assertEqual(report["counts"]["quarantined"], 0)
         self.assertTrue(old.is_dir())
-        self.assertEqual(self.snapshot(self.data_dir), before)
+        after = self.snapshot(self.data_dir)
+        # Only bounded discovery hints under .locks may appear; no session
+        # object and no policy object may change.
+        changed = {key for key in set(before) | set(after)
+                   if before.get(key) != after.get(key)
+                   and "/.locks/" not in key}
+        self.assertEqual(changed, set())
+        self.assertFalse(cg._retention_policy_path(self.data_dir).exists())
+        with self.assertRaisesRegex(RuntimeError, "enabled policy"):
+            cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(self.snapshot(self.data_dir), after)
 
     def test_internal_delete_reports_unavailable_without_mutation(self):
         old, _ = self.fixture_tree()
@@ -125,22 +141,26 @@ class RetentionDisabledCandidate(fixtures.IsolatedEnvironment):
         result = subprocess.run([sys.executable, "-B", str(fixtures.MODULE_PATH), "cleanup"],
                                 env=env, text=True, capture_output=True, check=False)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("cleanup is disabled", result.stderr)
+        self.assertIn("--data-dir", result.stderr)
         self.assertFalse(default_home.exists())
         self.assertEqual(dict(os.environ), before_environment)
 
     def test_direct_disabled_entries_never_inspect_or_mutate_supplied_paths(self):
         supplied = self.root / "uncreated-data-root"
         before_environment = dict(os.environ)
-        with mock.patch.object(cg.os, "scandir", side_effect=AssertionError("unexpected enumeration")), \
-                mock.patch.object(cg, "_maintenance_boundary_ok", side_effect=AssertionError("unexpected path inspection")), \
-                mock.patch.object(cg, "secure_directory", side_effect=AssertionError("unexpected permission mutation")):
-            for operation in (lambda: cg.cleanup_old_sessions(supplied),
-                              lambda: cg._delete_session_tree_bounded(supplied, lambda: True)):
-                with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-                    operation()
+        # The retired direct deletion helper can never be re-armed.
+        with mock.patch.object(cg, "_maintenance_boundary_ok",
+                               side_effect=AssertionError("unexpected path inspection")), \
+                mock.patch.object(cg, "secure_directory",
+                                  side_effect=AssertionError("unexpected permission mutation")):
+            with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
+                cg._delete_session_tree_bounded(supplied, lambda: True)
+        # The maintenance pass refuses an uncreated root without creating it
+        # and without mutating the environment.
+        report = cg.cleanup_old_sessions(supplied)
         self.assertFalse(supplied.exists())
         self.assertEqual(dict(os.environ), before_environment)
+        self.assertEqual(report["mode"], "preview")
 
     def _run_hook_process(self, event, session, **extra):
         payload = self.payload(event, session, **extra)

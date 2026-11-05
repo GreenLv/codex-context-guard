@@ -981,8 +981,9 @@ class F07SessionIdentity(IsolatedEnvironment):
     def test_cleanup_retires_owner_before_case_variant_is_admitted(self):
         self._expire_session("ABC")
         before = (self.session_dir("ABC") / "state.json").read_bytes()
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        # 0.17.0: preview never mutates; the case-variant admission gate is
+        # independent of maintenance and still refuses the new owner.
+        cg.cleanup_old_sessions(self.data_dir)
         refused = cg.safe_dispatch(self.payload("UserPromptSubmit", "abc", prompt="new owner", turn_id="t1"))
         self.assertNotEqual(refused, {})
         self.assertEqual((self.session_dir("ABC") / "state.json").read_bytes(), before)
@@ -1503,8 +1504,9 @@ class F08BoundedSessionEndCleanup(IsolatedEnvironment):
     def test_active_and_current_sessions_are_never_deleted(self):
         self._make_session("active-recent", ended_days_ago=1)
         cg.dispatch(self.payload("UserPromptSubmit", "current-keep", prompt="live", turn_id="t1"))
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, current=self.session_dir("current-keep"))
+        cg.write_retention_policy(self.data_dir, enabled=True)
+        report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(report["counts"]["quarantined"], 0)
         self.assertTrue(self.session_dir("active-recent").is_dir())
         self.assertTrue(self.session_dir("current-keep").is_dir())
 
@@ -1512,8 +1514,8 @@ class F08BoundedSessionEndCleanup(IsolatedEnvironment):
         legacy = self.data_dir / "sessions" / "legacy-old"
         legacy.mkdir(parents=True)
         (legacy / "state.json").write_text("{}", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        cg.write_retention_policy(self.data_dir, enabled=True)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
         self.assertEqual((legacy / "state.json").read_text(), "{}")
 
 
@@ -1647,8 +1649,8 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         (session / cg.CLEANUP_PARTIAL_MARKER).write_text("synthetic old marker")
         cg.dispatch(self.payload("UserPromptSubmit", name, prompt="continue the task", turn_id="t2"))
         self.assertFalse((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        cg.write_retention_policy(self.data_dir, enabled=True)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
         self.assertTrue(session.exists())
         self.assertIsNone(self.load_state(name)["session"]["ended_at"])
 
@@ -1660,8 +1662,8 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
         (session / "state.json").unlink()
         cg.dispatch(self.payload("UserPromptSubmit", name, prompt="task two", turn_id="t2"))
         self.assertFalse((session / cg.CLEANUP_PARTIAL_MARKER).exists())
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        cg.write_retention_policy(self.data_dir, enabled=True)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
         self.assertTrue((session / "state.json").is_file())
         self.assertIsNone(self.load_state(name)["session"]["ended_at"])
 
@@ -1677,9 +1679,13 @@ class F08CleanupResumeInvariants(IsolatedEnvironment):
                 cg.dispatch(self.payload("UserPromptSubmit", name, prompt="resume attempt", turn_id="t2"))
         self.assertTrue(marker.exists())
         self.assertEqual((session / "state.json").read_bytes(), before)
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        # 0.17.0: a failed resume leaves the partial marker authoritative;
+        # the maintenance pass protects the object (partial_marker).
+        cg.write_retention_policy(self.data_dir, enabled=True)
+        report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(report["counts"]["quarantined"], 0)
         self.assertTrue(marker.exists())
+        self.assertTrue(session.is_dir())
 
     def _patch_cleanup_scan(self, sessions, names_provider, arrivals):
         """Patch os.scandir for the cleanup namespace with an arrival check.
@@ -2513,8 +2519,9 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         parsed_cursor, parsed_pending = cg._read_cleanup_state(self.data_dir)
         self.assertEqual(parsed_pending, [],
                          "a parent-relative name must be dropped at load")
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(report["counts"]["quarantined"], 0)
         after = sorted(str(p.relative_to(self.data_dir))
                        for p in self.data_dir.rglob("*")
                        if "legacy" in str(p.relative_to(self.data_dir)))
@@ -2528,16 +2535,23 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("queued-v2-control")
         self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        names = {item["name"] for item in report["entries"]}
+        self.assertIn(cg.safe_session_id("queued-v2-control"), names,
+                      "a valid pending name still reaches adjudication")
         self.assertTrue(self.session_dir("queued-v2-control").exists())
 
     def test_stale_pending_name_is_decided_without_action(self) -> None:
         """Disabled deletion preserves this original hostile-input control."""
         self._expire_session("still-here")
         self._write_state_file("", ["vanished-session", "still-here"])
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        names = {item["name"] for item in report["entries"]}
+        self.assertNotIn("vanished-session", names,
+                         "a stale pending name is decided without action")
+        self.assertIn(cg.safe_session_id("still-here"), names)
         self.assertFalse(self.session_dir("vanished-session").exists())
         self.assertTrue(self.session_dir("still-here").exists())
 
@@ -2551,19 +2565,25 @@ class RV03PendingNamespaceGate(IsolatedEnvironment):
         shutil.rmtree(target)
         symlink_or_skip(self, target, outside / "keep", target_is_directory=True)
         self._write_state_file("", [cg.safe_session_id("queued-v2-control")])
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        entry = next(item for item in report["entries"]
+                     if item["name"] == cg.safe_session_id("queued-v2-control"))
+        self.assertEqual(entry["verdict"], "protected")
+        self.assertEqual(entry["reason"], "not_directory")
         self.assertTrue(target.is_symlink(), "the link must not be deleted")
         self.assertTrue((outside / "keep" / "data.txt").exists())
 
     def test_hostile_cursor_shape_is_ignored(self) -> None:
-        """Disabled deletion preserves this original hostile-input control."""
+        """0.17.0 restore keeps this original hostile-input control."""
         self._expire_session("queued-v2-control")
         self._write_state_file("../sessions/zzz", [])
         cursor, pending = cg._read_cleanup_state(self.data_dir)
         self.assertEqual(cursor, "")
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(report["counts"]["quarantined"], 0)
+        self.assertTrue(self.session_dir("queued-v2-control").exists())
 
 
 class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
@@ -2745,12 +2765,10 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         registry = cg._cleanup_registry_path(self.data_dir)
         registry.write_text("registered-expired\n../../evil\n.locks\n", encoding="utf-8")
         self.assertEqual(cg._read_discovery_registry(self.data_dir), {"registered-expired"})
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        cg.cleanup_old_sessions(self.data_dir)
         self.assertTrue(self.session_dir("registered-expired").exists())
         registry.unlink()
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        cg.cleanup_old_sessions(self.data_dir)
         self.assertFalse(registry.exists())
         self.assertTrue(self.session_dir("registered-expired").exists())
 
@@ -2780,8 +2798,9 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                         if p.is_file()}
         root_mode = outside.stat().st_mode & 0o777
         # Sweep entry: registration and any state writes must be skipped.
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(report.get("refused"), "boundary")
         # Registry read: treats a linked registry as absent.
         self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
         # Reset/orphan deletion: refused.
@@ -2818,8 +2837,11 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
 
     def _assert_outside_untouched(self, outside: Path) -> None:
         before = self._tree_state(outside)
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir, deadline=time.monotonic() + 30)
+        # 0.17.0: the maintenance pass refuses at the boundary and reports
+        # instead of raising; nothing external may be read or mutated.
+        report = cg.cleanup_old_sessions(
+            self.data_dir, deadline=time.monotonic() + 30)
+        self.assertEqual(report.get("refused"), "boundary")
         self.assertEqual(cg._read_discovery_registry(self.data_dir), set())
         cg._write_cleanup_state(self.data_dir, "", ["queued-name"])
         cg._reset_cleanup_state(self.data_dir)
@@ -3013,8 +3035,11 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         self._expire_session(".cleanup-report")
         self._expire_session("ordinary-report")
         self.assertEqual(cg.safe_session_id(".cleanup-report"), ".cleanup-report")
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        report = cg.cleanup_old_sessions(self.data_dir)
+        names = {item["name"] for item in report["entries"]}
+        self.assertIn(".cleanup-report", names,
+                      "a cleanup-prefixed encoded name is a real session")
+        self.assertIn("ordinary-report", names)
         self.assertTrue(self.session_dir(".cleanup-report").exists())
         self.assertTrue(self.session_dir("ordinary-report").exists())
 
@@ -3025,8 +3050,13 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
         (legacy / "KEEP.txt").write_text("sentinel")
         shutil.rmtree(self.session_dir("registered-session"))
         self._register([cg.safe_session_id("registered-session")])
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.data_dir)
+        report = cg.cleanup_old_sessions(self.data_dir)
+        # The registry hint names no live v2 object: it is decided without
+        # action and the legacy namesake is never touched.
+        self.assertEqual(
+            [item for item in report["entries"]
+             if item["name"] == cg.safe_session_id("registered-session")],
+            [])
         self.assertEqual((legacy / "KEEP.txt").read_text(), "sentinel")
         self.assertFalse((legacy.parent / ".locks").exists())
 
