@@ -44,8 +44,21 @@
     "registered_before_measurement": "2026-11-06",
     "reason": "The review required the missing planned scenarios: A/A noise, small/large record reading, busy locks, cold resume and the non-empty backlog. Cold resume (session_start_resume) and the non-empty backlog (retention_maintenance) already have cells; this addendum adds the two missing cells and the A/A control.",
     "new_cells": {
-      "terminal_read_large": "one host_terminal_result call over the observed Desktop shape with one unrelated row above the line limit; exact success oracle",
-      "session_end_busy_locks": "one complete SessionEnd dispatch with twelve externally held lifecycle locks; exact ended_at, intact-locked-objects and 3s-budget oracle"
+      "terminal_read_large": {
+        "description": "one host_terminal_result call over the observed Desktop shape with one unrelated row above the line limit; exact success oracle",
+        "mode": "standalone absolute budget (A/B undefined: the 0.16.1 baseline fails the cell's success oracle by design — that failure IS the repaired F03 defect, so a ratio would reward the bug)",
+        "budgets": {
+          "median_elapsed_seconds": 1.0,
+          "p95_elapsed_seconds": 2.0,
+          "per_attempt_timeout_seconds": 30.0
+        },
+        "registered_before_standalone_measurement": "2026-11-06",
+        "result_ref": "repair-r1 results: terminal-read.json (20/20, median 0.0504s, p95 0.0554s)"
+      },
+      "session_end_busy_locks": {
+        "description": "one complete SessionEnd dispatch with twelve externally held lifecycle locks; exact ended_at, intact-locked-objects and 3s-budget oracle",
+        "mode": "interleaved A/B vs b636930 (both sides pass the same oracle)"
+      }
     },
     "budgets": {
       "elapsed": {
@@ -62,6 +75,7 @@
       ],
       "mode": "same tree on both sides (candidate vs candidate), 20 attempts",
       "acceptance": "no declared regression against the same budgets; the A/A run validates the noise floor, it is not a pass substitute for A/B"
-    }
+    },
+    "aa_observation": "A/A run (20 attempts, same tree both sides): 0 declared regressions; 2 inconclusive pairs (session_end, memory_stop) — the observed noise floor at n=20. Inconclusive is retained as inconclusive; declared regressions in A/B runs remain the gate."
   }
 }
