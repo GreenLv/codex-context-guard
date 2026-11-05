@@ -1,6 +1,6 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "d874864c8e87078455a97d61644c6c26fb828c35",
+  "library_commit": "9d66fd6ff18100bcaec8d68168f8844af3b24f94",
   "frozen_at": "2026-11-06",
   "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
   "case_registry": {
@@ -726,7 +726,7 @@
         "runtime": "codex",
         "platform": "macos",
         "supersedes": "CGI-20261105-codex-plan-only-edit-obligation",
-        "record_sha256": "9609532b06622bf0d16ae0da64b65aa5231bd7cadafd77e1219d3afe1a273f27",
+        "record_sha256": "0d9644a50ad1d9d579bedc3fc1134780656dd9841d71e6e35654bb0270859046",
         "status": "active"
       },
       "CGI-20261106-codex-transcript-large-row-poisoning-source-fixed": {

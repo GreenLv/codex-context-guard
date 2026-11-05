@@ -1,6 +1,6 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "d874864c8e87078455a97d61644c6c26fb828c35",
+  "library_commit": "9d66fd6ff18100bcaec8d68168f8844af3b24f94",
   "denominator": {
     "case_registry": {
       "records": 79,
@@ -1581,7 +1581,7 @@
       "trigger": "_host_transcript_items with oversized unrelated rows of every outer type around the real terminal event",
       "positive": "large-unrelated-row control passes; the snapshot stays complete for later normal commands",
       "negative": "oversized event_msg, unknown type, unparseable head, embedded fake type, oversized duplicate candidate and oversized session_meta head keep the snapshot unavailable",
-      "test_locator": "tests/test_cg0170_host_evidence_family.py::HostEvidenceFamilyTests::test_large_unrelated_response_item_does_not_poison_the_snapshot and ::test_oversized_turn_context_row_is_skippable and ::test_oversized_event_msg_keeps_the_snapshot_unavailable and ::test_oversized_unknown_type_keeps_the_snapshot_unavailable and ::test_oversized_broken_noncandidate_row_is_skipped_by_design and ::test_oversized_broken_event_head_keeps_the_snapshot_unavailable and ::test_embedded_fake_type_inside_a_string_is_not_skippable and ::test_oversized_duplicate_candidate_keeps_the_snapshot_unavailable and ::test_oversized_session_meta_head_keeps_identity_unverified and ::test_small_unrelated_rows_never_changed_behavior",
+      "test_locator": "tests/test_cg0170_host_evidence_family.py::HostEvidenceFamilyTests::test_large_unrelated_response_item_does_not_poison_the_snapshot and ::test_oversized_turn_context_row_is_skippable and ::test_oversized_event_msg_keeps_the_snapshot_unavailable and ::test_oversized_unknown_type_keeps_the_snapshot_unavailable and ::test_oversized_broken_row_keeps_the_snapshot_unavailable and ::test_oversized_broken_event_head_keeps_the_snapshot_unavailable and ::test_embedded_fake_type_inside_a_string_is_not_skippable and ::test_oversized_duplicate_candidate_keeps_the_snapshot_unavailable and ::test_oversized_session_meta_head_keeps_identity_unverified and ::test_small_unrelated_rows_never_changed_behavior",
       "deeper_authority": "tests/test_cg0170_scope_family.py; tests/test_cg0170_host_evidence_family.py; library repro candidate-result.json records",
       "final_verdict": "executed_pass",
       "source_result": "passed",
