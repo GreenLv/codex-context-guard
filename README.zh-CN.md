@@ -12,25 +12,25 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
+> **0.17.0 — Unreleased 源码候选。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[候选说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份将从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
+
 > **0.16.1 — 2026-11-03。** 文件名或路径中的验收词不再凭空增加义务。本版还新增显式历史覆盖发布门、补全插件上架元数据，并继续停用会话保留清理。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 > **0.16.0 — 2026-11-01。** 上一版本加强凭据脱敏和私有状态权限保护，并改用 Codex 官方市场安装。升级动作见其[发布说明](docs/releases/v0.16.0.md)。
 
 ## 用 Codex 安装
 
-**0.16.1 — 2026-11-03。** 实验性市场名为
-`codex-context-guard-v016`，与已发布的 0.15.1 市场不同。真实旧任务续接、
-两个版本独立启停和 GUI 启动各自需要独立的原生证据。
+**0.17.0 — Unreleased 源码候选。** 本产品线尚未发布；以下安装/升级行为是候选合同，发布前需要独立的原生验收。市场身份从实验性 `codex-context-guard-v016`（0.16.x）迁移到稳定 `codex-context-guard`。在稳定身份下注册市场并安装属于官方同身份操作：可能移除旧实验缓存，保留缓存也不能证明旧会话会加载它。请先完成依赖已发布 0.16.1 运行时的任务，或为新任务另行配置独立 HOME；不要删除或手改任何版本缓存。
 
-请下载明确命名的发行制品 [context-guard-0.16.1.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.1/context-guard-0.16.1.zip)；源码验证可按下方命令构建。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
-它们带有仓库维护文件。把发行 ZIP 解压到自己控制的稳定目录并一直保留，
-官方市场后续读取和刷新仍依赖此来源，不要在安装后删除。
-
-维护者可以用 Python 3.10+ 将源码制品构建到检出目录外的新路径。下方安装步骤使用上面链接的发行 ZIP：
+目前没有已发布的 0.17.0 制品。源码验证可用 Python 3.10+ 将候选制品构建到检出目录外的新路径：
 
 ```shell
-python3 scripts/build_release_artifact.py --output ../context-guard-0.16.1.zip
+python3 scripts/build_release_artifact.py --output ../context-guard-0.17.0-candidate.zip
 ```
+
+已发布的 0.16.1 制品仍是 [context-guard-0.16.1.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.16.1/context-guard-0.16.1.zip)。不要把 Git 检出目录或 GitHub 自动源码 ZIP 注册为市场，
+它们带有仓库维护文件。把发行 ZIP 解压到自己控制的稳定目录并一直保留，
+官方市场后续读取和刷新仍依赖此来源，不要在安装后删除。
 
 Windows 的 Python 命令请把 `python3` 替换为 `py -3`。还需要支持插件的
 Codex CLI 和能加载生命周期 Hook 的宿主。从稳定的解压目录先读官方状态：
@@ -43,19 +43,19 @@ codex plugin list --json
 请先停在这里，等这些任务完成。暂不接受切换时保持原设置，或另行配置独立
 HOME；本版本不能证明旧任务会自动续接。
 
-如果相同市场标识下已经安装 0.16.0，本首次安装流程不会切换已有版本。请先完成依赖现有运行时的任务，或为新任务另行配置独立 HOME；保留既有版本缓存，并在新 HOME 中正常审阅 Hook。
+如果实验性市场身份下已经安装 0.16.x，本候选流程是一次身份切换，不是原地升级。在稳定 `codex-context-guard` 身份下注册市场并安装属于官方操作；它不迁移私有状态，并可能移除旧实验缓存。请先完成依赖现有运行时的任务，或为新任务另行配置独立 HOME；保留任何版本缓存，并在新 HOME 中正常审阅 Hook。
 
-只有当 `context-guard@codex-context-guard-v016` 不存在时，才注册并安装：
+只有当 `context-guard@codex-context-guard` 不存在时，才注册并安装：
 
 ```shell
 codex plugin marketplace add .
-codex plugin add context-guard@codex-context-guard-v016 --json
+codex plugin add context-guard@codex-context-guard --json
 codex plugin list --json
 ```
 
 请保存首次 add 的返回结果，用其中的 `installedPath` 确认待核验缓存。
 `plugin list` 提供身份、版本、已安装/已启用状态及市场来源，不提供缓存路径。
-必须恰好有一条完整身份匹配的记录，版本为 `0.16.1`，两项状态均为 true，
+必须恰好有一条完整身份匹配的记录，版本为 `0.17.0`，两项状态均为 true，
 来源是该稳定解压目录。请把下例双引号内的占位路径替换为完整的
 `installedPath` 返回值，并保留双引号，以支持路径中的空格：
 
@@ -74,8 +74,8 @@ python3 scripts/artifact_identity.py --compare-to "/path/from/installedPath"
 负责安装。相应原生门完成前，请保留既有 0.15.1 对象和日常配置。新市场名
 本身不能证明缓存保护或旧任务续接。信任新版 Hook 前，再检查原
 `context-guard@codex-context-guard` 标识；若它仍已启用，先结束所有依赖旧版的
-任务，再通过官方 Plugins UI 只禁用原标识，保持
-`context-guard@codex-context-guard-v016` 已启用。不要 remove 旧插件或删除旧缓存，
+任务，再通过官方 Plugins UI 只禁用原标识——本产品线即 0.16.x 留下的实验性
+`codex-context-guard-v016`——保持 `context-guard@codex-context-guard` 已启用。不要 remove 旧插件或删除旧缓存，
 也不要把同时信任两套 Hook 当作升级流程。桌面端可能需要重启；随后使用相同
 `CODEX_HOME` 和项目启动新的 Codex CLI 任务，输入 `/hooks`。逐项核对九个
 Context Guard 事件显示的来源，应为首次 add 返回的
@@ -237,7 +237,7 @@ flowchart TB
 
 运行时数据写入 Codex 管理的 `PLUGIN_DATA`。提示正文、任务状态、证据摘要和恢复文件都属于本地运行时数据，不属于本仓库。
 
-SessionEnd 保存当前状态，并在启用时保存恢复内容。本版停用会话保留删除：不运行自动扫描，`cleanup` 命令明确报告不可用、退出码为 2，且不删除数据。既有 v2 和 legacy 会话继续保存在磁盘上，因此存储可能增长；不提供30天自动删除或存储上限。本版没有受支持的人工回收工具。请保留活动任务、会话数据、生命周期锁和既有插件缓存。清理能力的剩余工作与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
+SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 候选线中，会话保留维护在新版本化合同下恢复，而 SessionEnd 本身仍不执行任何清扫：`cleanup --data-dir <根目录>` 默认只预览，不满足「显式启用的保留策略 + 绑定精确清单的 apply」时不会改动任何会话数据。合格结束会话（默认 30 天）进入可恢复隔离并提供恢复命令；永久回收只在再 7 天宽限期后进行，并留下到期退役的墓碑记录。活动、可恢复、未完成、锁占用、部分删除、旧版本、链接与范围外对象都会以明确原因被保护。请保留活动任务、会话数据、生命周期锁和既有插件缓存。停用时代的记录与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
 
 脱敏导出只在显式请求时创建，绝不覆盖既有文件，并省略原始提示、会话正文、凭据、认证头、URL 查询参数、URL userinfo 和插件私有路径；文档化脱敏域见[隐私说明](docs/PRIVACY.md)。未提供插件数据目录时，直接 CLI 回退状态存放在当前生效的 `CODEX_HOME` 之下。
 
@@ -252,9 +252,12 @@ SessionEnd 保存当前状态，并在启用时保存恢复内容。本版停用
 保持不变仍未验证：
 
 ```shell
-codex plugin remove context-guard@codex-context-guard-v016
-codex plugin marketplace remove codex-context-guard-v016
+codex plugin remove context-guard@codex-context-guard
+codex plugin marketplace remove codex-context-guard
 ```
+
+0.16.x 留下的实验性 `codex-context-guard-v016` 条目有自己的缓存和卸载命令；
+在其任务或缓存仍被依赖时不要移除。
 
 私有运行数据单独保存，此流程不迁移或删除它。
 

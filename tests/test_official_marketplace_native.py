@@ -29,12 +29,12 @@ class CandidateMarketplaceIdentityTests(unittest.TestCase):
         for version in ("0.15.1", "0.16", "0.16.02", "bad"):
             with self.subTest(version=version), self.assertRaises(native.NativeRunError):
                 native.marketplace_name_for_version(version)
-        self.assertEqual(native.marketplace_name_for_version("0.16.1+fixture"), "codex-context-guard-v016")
+        self.assertEqual(native.marketplace_name_for_version("0.17.0+fixture"), "codex-context-guard")
         self.assertEqual(native.marketplace_name_for_version("1.0.0-rc.1"), "codex-context-guard")
 
     def test_manifest_and_fake_official_flow_use_versioned_identity(self):
-        for version, market in (("0.16.1", "codex-context-guard-v016"),
-                                ("0.16.2", "codex-context-guard")):
+        for version, market in (("0.17.0", "codex-context-guard"),
+                                ("0.17.1", "codex-context-guard")):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 source, home = root / "source", root / "home"
@@ -74,8 +74,8 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "source"
             for name, body in {"scripts/core.py": b"synthetic core\n",
-                ".codex-plugin/plugin.json": b'{"version":"0.16.0"}\n',
-                ".agents/plugins/marketplace.json": b'{"name":"codex-context-guard-v016"}\n'}.items():
+                ".codex-plugin/plugin.json": b'{"version":"0.17.0"}\n',
+                ".agents/plugins/marketplace.json": b'{"name":"codex-context-guard"}\n'}.items():
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(body)
@@ -112,18 +112,18 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                     self.assertEqual(Path(env["TMPDIR"]).parent, home.parent)
                     self.assertNotIn(home, Path(env["TMPDIR"]).parents)
                     self.assertNotIn("OPENAI_API_KEY", env)
-                    cache = home / "plugins/cache/codex-context-guard-v016/context-guard/0.16.0"
+                    cache = home / "plugins/cache/codex-context-guard/context-guard/0.17.0"
                     shutil.copytree(state["source"], cache)
                     (home / "config.toml").write_bytes(b"synthetic-config\n")
                     (home / "plugins/installed_plugins.json").write_bytes(b"synthetic-registry\n")
                     (home / "synthetic-empty").mkdir()
                     state["cache"] = cache
-                    state["add"] = {"pluginId":"context-guard@codex-context-guard-v016","name":"context-guard",
-                        "marketplaceName":"codex-context-guard-v016","version":"0.16.0",
+                    state["add"] = {"pluginId":"context-guard@codex-context-guard","name":"context-guard",
+                        "marketplaceName":"codex-context-guard","version":"0.17.0",
                         "installedPath":str(cache)}
                     stdout = json.dumps(state["add"])
                 elif args[1:3] == ("plugin", "list"):
-                    self.assertEqual(args[3:], ('--marketplace', 'codex-context-guard-v016', '--json'))
+                    self.assertEqual(args[3:], ('--marketplace', 'codex-context-guard', '--json'))
                     self.lists += 1
                     entries = []
                     if "add" in state:
@@ -340,10 +340,10 @@ class OfficialWindowsPathIdentityTests(unittest.TestCase):
 
         self.source = TrustedWindowsPath(r"C:\Isolated Run\source")
         self.home = TrustedWindowsPath(r"C:\Isolated Run\home")
-        self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
+        self.cache = self.home / "plugins/cache/codex-context-guard/context-guard"
         self.installed = self.cache / "0.16.0"
-        self.added = dict(pluginId="context-guard@codex-context-guard-v016", name="context-guard",
-                          marketplaceName="codex-context-guard-v016", version="0.16.0",
+        self.added = dict(pluginId="context-guard@codex-context-guard", name="context-guard",
+                          marketplaceName="codex-context-guard", version="0.16.0",
                           installedPath=str(self.installed))
         self.entry = {key: self.added[key] for key in
                       ("pluginId", "name", "marketplaceName", "version")}
@@ -450,7 +450,7 @@ class OfficialWindowsPathIdentityTests(unittest.TestCase):
                 with (mock.patch.object(native.platform, "system", return_value="Windows"),
                       mock.patch.object(native, "Path", side_effect=AssertionError("JSON reached Path")),
                       mock.patch.object(native, "run", return_value=result),
-                      mock.patch.object(native, "candidate_marketplace_name", return_value="codex-context-guard-v016"),
+                      mock.patch.object(native, "candidate_marketplace_name", return_value="codex-context-guard"),
                       mock.patch.object(native, "exact_artifact_parity",
                                         side_effect=native.NativeRunError("synthetic reparse rejection")
                                         if reject else None) as parity):
@@ -483,7 +483,7 @@ class OfficialControlledUncIdentityTests(unittest.TestCase):
         concrete = type(self.source)
         self.source = concrete(root) / "source"
         self.home = concrete(root) / "home"
-        self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
+        self.cache = self.home / "plugins/cache/codex-context-guard/context-guard"
         self.installed = self.cache / name
         self.added["installedPath"] = str(self.installed)
         self.entry["source"]["path"] = str(self.source)
@@ -568,11 +568,11 @@ class OfficialPosixPathIdentityTests(unittest.TestCase):
     def test_posix_source_text_contract_and_cache_symlink_rejection_are_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             source, home = Path(directory) / "source", Path(directory) / "home"
-            cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
+            cache = home / "plugins/cache/codex-context-guard/context-guard"
             installed = cache / "0.16.0"
             installed.mkdir(parents=True)
-            added = dict(pluginId="context-guard@codex-context-guard-v016", name="context-guard",
-                         marketplaceName="codex-context-guard-v016", version="0.16.0",
+            added = dict(pluginId="context-guard@codex-context-guard", name="context-guard",
+                         marketplaceName="codex-context-guard", version="0.16.0",
                          installedPath=str(installed))
             entry = {key: added[key] for key in ("pluginId", "name", "marketplaceName", "version")}
             entry.update(installed=True, enabled=True, source={"source":"local", "path":str(source)},

@@ -74,30 +74,61 @@ for its current-session lock, further limited by a valid remaining Hook budget.
 Descriptor/path identity checks harden commits, and a zero inode fails closed.
 Identity checks do not provide a sandbox against arbitrary same-user mutation.
 
-SessionEnd saves current state and, when active, recovery content. Session retention deletion is disabled: automatic sweeps do not run, and the `cleanup` command reports that it is unavailable with exit code 2 without deleting data. Existing v2 and legacy sessions remain on disk, so storage can grow; there is no automatic 30-day deletion or storage cap. This version provides no supported manual reclamation tool. Keep active tasks, session data, lifecycle locks and existing plugin caches intact. The disabled-cleanup gap, its retained history and the conditions for restoring cleanup are recorded in [Retention cleanup follow-up](RETENTION_CLEANUP_FOLLOWUP.md).
+SessionEnd saves current state and, when active, recovery content. In the
+0.17.0 candidate line, session retention maintenance returns under a new
+versioned contract while SessionEnd itself still runs no sweep: no full
+enumeration, deletion, scheduling registration or waiting worker happens
+inside the 3-second host budget. The public `cleanup` command is an
+inspectable maintenance command (`cg-retention-report/v1`):
+
+- Preview is the default: `cleanup --data-dir <root>` scans, adjudicates and
+  reports without touching session data. Without an explicit `--data-dir` the
+  command refuses (exit 2) before resolving or creating any default home.
+- Deletion requires an explicitly enabled retention policy
+  (`cg-retention-policy/v1`; defaults: 30 days after session end, 7 days in
+  recoverable quarantine, both clamped, purge optional) plus an explicit apply
+  bound to an exact manifest. A policy object is never created automatically;
+  an upgraded installation stays preview-only until the user enables a policy.
+- Eligible objects move to recoverable quarantine; `cleanup --restore <name>`
+  puts one quarantined object back and refuses to overwrite a live successor.
+  Permanent purge runs only after the quarantine grace period, is bounded and
+  resumable, and leaves expiring tombstones; a purged object has no restore
+  path and the messages say so.
+- Active, resumable, unfinished, busy-locked, partial-marker, legacy, linked
+  and out-of-scope objects are protected with a named reason. Enumeration is
+  fair: the decided cursor prefix never starves the tail, and interrupted
+  passes resume through the cursor and pending queue. All 30 retired retention
+  test nodes are individually mapped in
+  `tests/retention_restoration_mapping.json`.
+
+The disabled-cleanup era of 0.16.0/0.16.1, its retained history and the
+restoration conditions are recorded in
+[Retention cleanup follow-up](RETENTION_CLEANUP_FOLLOWUP.md). That page's
+conditions describe what this candidate implements; native macOS/Windows
+retention acceptance, real-lock/permission/crash controls and installed-artifact
+verification remain separate gates for the release stage.
 
 The private permission boundary remains mandatory for state and recovery
-writes. A permission failure is still an error. Disabling retention work does
-not make mandatory writes or synchronous filesystem calls preemptible, and the
-complete installed command still needs its separate three-second native timing
-gate. The lightweight entry's monotonic anchor and current-session lock budget
-remain; no retention sweep runs after persistence.
+writes. A permission failure is still an error. Retention maintenance does not
+make mandatory writes or synchronous filesystem calls preemptible, and the
+complete installed SessionEnd command still needs its separate three-second
+native timing gate. The lightweight entry's monotonic anchor and
+current-session lock budget remain; no retention sweep runs after persistence.
 
-The `cleanup` command rejects the request before resolving or creating a data
-root. `cleanup_old_sessions` and the internal deletion helper also report
-unavailability before accessing the supplied path. There is no environment
-switch or fallback that re-enables deletion. Existing cursor, pending chunks and registry stay on disk, as do partial
-markers for sessions without a later state write. State saves no longer append new
-discovery entries while retention cleanup is disabled; existing registry bytes
-and objects are preserved. After each successful state write, the writer still
-attempts to retire its own old partial marker under the lifecycle lock. A real
-successful resume also clears `ended_at`. Old plugin caches are immutable and keep their original behavior; this
-source change does not update a running task's loaded runtime.
+The retired direct deletion helper stays refused, and there is no environment
+switch that bypasses the preview/policy/manifest contract. Existing cursor,
+pending chunks and registry objects are reused as progress data and discovery
+hints only — never as deletion authorization. Partial markers for sessions
+without a later state write keep protecting their object. After each
+successful state write, the writer still attempts to retire its own old
+partial marker under the lifecycle lock. A real successful resume also clears
+`ended_at`, which keeps the session protected from maintenance. Old plugin
+caches are immutable and keep their original behavior; this source change does
+not update a running task's loaded runtime.
 
-Do not use an older runtime's cleanup command, remove lifecycle locks, or delete
-an active session as a substitute. A separately requested data-removal operation
-needs its own scope and recovery review; this version supplies no safe bulk
-reclamation procedure.
+Do not use an older runtime's cleanup command, remove lifecycle locks, or
+delete an active session as a substitute. Data removal outside this contract
+still needs its own scope and recovery review.
 
 Tests for deletion execution, interrupted progress and discovery fairness are
 explicitly marked retired, with exact nodes, original source digests and previous

@@ -61,6 +61,13 @@ published 0.15.1:
   `~/.codex/context-guard`; with `CODEX_HOME` unset the default is unchanged.
   Existing explicit data roots keep their meaning, and nothing is migrated,
   merged, or deleted.
+- 0.17.0 switches the plugin marketplace identity to the stable
+  `codex-context-guard`; the 0.16.x experimental `codex-context-guard-v016`
+  remains a separate installed identity with its own cache. Registration and
+  installation under the stable identity are official same-identity operations
+  whose cache behavior (including possible removal of the old experimental
+  cache) requires native acceptance for this exact candidate. Private state is
+  not migrated by an identity change.
 - Official Codex marketplace installation replaces the project installer.
   `codex-context-guard-v016` is an experimental identity; installation and
   strict second-operation no-op evidence must bind the exact artifact and host.

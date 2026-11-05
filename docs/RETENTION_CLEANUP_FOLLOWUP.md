@@ -1,10 +1,17 @@
 # Session retention cleanup: disabled gap and restoration conditions
 
-Status: **deferred, disabled — not fixed, not re-enabled, not accepted.** The
-0.16.0 release disabled session retention cleanup by an adopted scope
-decision, and the 0.16.1 repair release keeps it disabled. Restoring cleanup
-is a separate future version with its own versioned contract; nothing in
-this repository re-enables it today.
+Status: **restoration implemented in the 0.17.0 Unreleased source candidate;
+not released, and not native-accepted.** The 0.16.0 release disabled session
+retention cleanup by an adopted scope decision, and 0.16.1 kept it disabled.
+The 0.17.0 candidate implements the restoration conditions listed below under
+a new versioned contract (`cg-retention-report/v1`, `cg-retention-policy/v1`,
+`cg-retention-manifest/v1`): preview by default, policy-gated apply bound to
+an exact manifest, recoverable quarantine with a restore command, bounded
+purge after a grace period, and per-object protection with named reasons. The
+disabled-era record below is retained as history; native macOS/Windows
+acceptance, real-lock/permission/crash controls, installed-artifact and
+identity-switch verification, and the release gates remain pending for the
+independent review stage.
 
 ## Current behavior and user impact
 

@@ -424,7 +424,7 @@ def marketplace_name_for_version(version: str) -> str:
         raise NativeRunError("unsupported marketplace version")
     core = tuple(int(part) for part in match.groups())
     if core in {(0, 16, 0), (0, 16, 1)}:
-        return "codex-context-guard-v016"
+        return "codex-context-guard"
     if core >= (0, 16, 2):
         return "codex-context-guard"
     raise NativeRunError("unsupported marketplace version")

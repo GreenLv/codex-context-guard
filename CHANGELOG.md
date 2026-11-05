@@ -4,6 +4,30 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
+## 0.17.0 — Unreleased
+
+### Highlights
+
+- Planning-only requests no longer inherit a file-modification obligation. Another actor's completed work ("a colleague already fixed it"), attributed advice ("an edit suggestion exists"), stated future intent ("planning the modification outline"), and bare verb negation ("do not modify the file", Chinese `不修改`) are interpreted through one clause-action rule (clause derivation 1.1.0): only a current-turn directive stamps the enforced contract or authorizes an action category. Delegation ("my colleague asked me to modify"), mixed planning-plus-directive prompts, and plan-reference prefixes keep their real obligations. Intake, evidence, Stop gating and cold recovery all follow the same derivation.
+- The Desktop `aggregated_output` terminal result is accepted. One authoritative-output rule recognizes the observed field alongside the legacy `stdout` field: an exactly equal pair is accepted, a conflicting pair stays rejected, and identity, working-directory, status and exit-code bindings are unchanged. Success and failure exits are both recognized again on the current Desktop host.
+- An unrelated oversized transcript row no longer disables terminal evidence for later normal commands. A row larger than the line limit is skipped only when a strict anchored head parse proves its outer record type can never carry the terminal candidate; any oversized `event_msg`, unknown type or unparseable head keeps the whole snapshot unavailable rather than shrinking the evidence. No event identifier is ever guessed from an oversized row, and limits are not raised.
+- Session retention cleanup returns under a new versioned contract. `cleanup` is an inspectable maintenance command: preview by default, deletion only with an explicitly enabled policy (`cg-retention-policy/v1`: 30-day minimum age and 7-day quarantine by default, clamped) and an explicit apply bound to an exact manifest. Eligible objects move to recoverable quarantine with a restore command; permanent purge runs only after the grace period, with bounded resume and expiring tombstones. Active, resumable, unfinished, busy-locked, partial, legacy, linked and out-of-scope objects are protected with a named reason. SessionEnd still runs no sweep and the 3-second host budget is unchanged. All 30 retired retention test nodes are individually mapped (see `tests/retention_restoration_mapping.json`).
+
+### Changes
+
+- The clause derivation version is now 1.1.0. Prompt action scope and the enforced contract share one negation pattern and one current-action interpretation; previously duplicated inline patterns were unified.
+- `cleanup` without an explicit `--data-dir` still refuses (exit 2) before resolving or creating any default home. The retired direct deletion helper stays refused; the old switch was not simply reopened.
+- The historical incident index and coverage table now bind to the current frozen library snapshot, including the three reproduced 0.17.0 cases, each with executable in-repository oracles.
+
+### Compatibility and upgrade
+
+- This line switches the marketplace identity from the experimental `codex-context-guard-v016` to the stable `codex-context-guard`. Registering the stable marketplace and installing from it are official same-identity operations: they may remove the old experimental cache, and keeping a cache never proves an old session loads it. Finish tasks that depend on the published 0.16.1 runtime first or use a separately configured HOME. See the [stable identity contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md).
+- Existing sessions, registries, cursors, pending chunks and partial markers are preserved. Old-version session data without a supported lifecycle record stays protected; a policy object is never created automatically, so an upgraded installation stays preview-only until the user explicitly enables a policy. No automatic scheduler is registered by installation.
+
+### Validation
+
+- Unreleased source candidate: macOS source evidence only. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.
+
 ## 0.16.1 — 2026-11-03
 
 ### Highlights

@@ -8,7 +8,7 @@ import json
 import sys
 from pathlib import Path
 
-VERSION = "0.16.1"
+VERSION = "0.17.0"
 # Stop protocol 4.0 / schema 12 (0.13.2): the public contract pins the runtime
 # constants and the one-way safety contract fragments below.
 SCHEMA_VERSION = 13
@@ -37,8 +37,8 @@ HOOK_EVENTS = {
     "Stop",
     "SessionEnd",
 }
-HOOK_CACHE_FRAGMENT_POSIX = "plugins/cache/codex-context-guard-v016/context-guard"
-HOOK_CACHE_FRAGMENT_WINDOWS = "plugins\\cache\\codex-context-guard-v016\\context-guard"
+HOOK_CACHE_FRAGMENT_POSIX = "plugins/cache/codex-context-guard/context-guard"
+HOOK_CACHE_FRAGMENT_WINDOWS = "plugins\\cache\\codex-context-guard\\context-guard"
 HOOK_REPAIR_HINT = "review the Context Guard installation in Codex Plugins and the supported Python on PATH"
 POSIX_STRICT_GATES = ("[ $# -eq 3 ]", "0?*)", '[ -z "$n" ]')
 WINDOWS_STRICT_RE = r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
@@ -266,8 +266,8 @@ def validate(root: Path) -> list[str]:
                 encoding="utf-8"
             )
         )
-        if marketplace.get("name") != "codex-context-guard-v016":
-            errors.append("marketplace name must be codex-context-guard-v016")
+        if marketplace.get("name") != "codex-context-guard":
+            errors.append("marketplace name must be codex-context-guard")
         entries = marketplace.get("plugins")
         if not isinstance(entries, list) or len(entries) != 1:
             errors.append("marketplace must contain exactly one plugin")

@@ -236,7 +236,7 @@ class MarketplaceArtifactTests(unittest.TestCase):
                 for hook in group["hooks"]:
                     for field in ("command", "commandWindows"):
                         body = hook[field]
-                        self.assertIn("codex-context-guard-v016", body)
+                        self.assertIn("codex-context-guard", body)
                         self.assertIn("local", body)
                         self.assertNotIn("manage" + "_plugin.py", body)
 
@@ -245,11 +245,13 @@ class MarketplaceArtifactTests(unittest.TestCase):
         hooks = json.loads((ROOT / "hooks/hooks.json").read_text())["hooks"]
         command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
         home = Path(self.tmp.name) / "synthetic-home"
-        candidate = home / "plugins/cache/codex-context-guard-v016/context-guard/local/scripts"
+        candidate = home / "plugins/cache/codex-context-guard/context-guard/local/scripts"
         candidate.mkdir(parents=True)
         script = candidate / "run_context_guard.sh"
         script.write_text("printf 'candidate-local\\n'\n")
-        old = home / "plugins/cache/codex-context-guard/context-guard/0.15.1/scripts"
+        # A foreign marketplace identity's versioned cache must never be
+        # executed by this candidate's fallback.
+        old = home / "plugins/cache/codex-context-guard-v016/context-guard/0.15.1/scripts"
         old.mkdir(parents=True)
         (old / "run_context_guard.sh").write_text("printf 'old-marketplace\\n'\n")
         env = {"PATH": os.defpath, "HOME": str(home), "CODEX_HOME": str(home),

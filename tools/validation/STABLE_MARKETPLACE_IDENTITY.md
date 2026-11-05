@@ -2,7 +2,7 @@
 
 This is an upgrade contract for a future candidate, not an installation
 instruction or a claim about the released 0.16.1 package. The current package
-continues to declare `codex-context-guard-v016`; installed consumer wrappers and
+continues to declare `codex-context-guard`; installed consumer wrappers and
 previous acceptance evidence retain their own identities. The current runtime
 validator and Hook fallbacks still enforce the published identity; the native
 acceptance tool is preparation for a future candidate, not an installed migration.
