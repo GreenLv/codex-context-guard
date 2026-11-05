@@ -102,3 +102,42 @@ class ScopedPerformanceTests(unittest.TestCase):
             (root / 'raw.json').write_text(json.dumps(raw), encoding='utf-8')
             self.assertEqual(verdicts.main([str(root / 'raw.json'), '--scope-manifest',
                                             str(root / 'scope.json'), '--out', str(root / 'uncertain.json')]), 1)
+
+
+class RetentionMaintenanceCellTests(unittest.TestCase):
+    """The 0.17.0 cleanup worker cell: positive and negative controls."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_retention_cell_positive_control_passes_and_reports_counts(self):
+        from tools.validation import perf_ab as driver
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "private"
+            data_dir.mkdir()
+            result = driver.run_retention_attempt(self.ROOT, data_dir)
+            self.assertEqual(result["outcome_class"], "completed", result)
+            self.assertEqual(result["assertion"], "ok")
+            self.assertEqual(result["fixture"]["quarantined"], 6)
+            self.assertEqual(result["fixture"]["protected"], 6)
+            self.assertGreater(result["elapsed"], 0.0)
+
+    def test_retention_cell_negative_control_is_retained_as_failure(self):
+        from tools.validation import perf_ab as driver
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "private"
+            data_dir.mkdir()
+            real = driver.run_retention_attempt
+
+            def broken(tree, data):
+                result = real(tree, data)
+                # A tampered count must surface as a failed attempt, never a
+                # success-conditioned sample.
+                result["fixture"]["quarantined"] = 5
+                result["outcome_class"] = "failed"
+                result["assertion"] = "retention_semantics_failed"
+                return result
+
+            with patch.object(driver, "run_retention_attempt", side_effect=broken):
+                rows = [driver.run_retention_attempt(self.ROOT, data_dir)]
+            self.assertEqual(rows[0]["outcome_class"], "failed")
+            self.assertNotEqual(rows[0]["assertion"], "ok")

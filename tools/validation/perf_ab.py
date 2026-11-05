@@ -516,12 +516,107 @@ def cell_specs() -> dict:
                         "payload": {"hook_event_name": "SessionEnd",
                                     "session_id": "perf-end", "cwd": "/tmp"},
                         "session": "perf-end"},
+        "retention_maintenance": {"event": "maintenance", "seed": None,
+                                  "timeout": 30.0, "payload": None},
         "lifecycle_matched": {"event": "PreToolUse", "seed": "perf-life",
                               "timeout": 120.0, "payload": None,
                               "session": "perf-life"},
         "memory_stop": {"event": "Stop", "timeout": 10.0},
         "stop_s1": {"event": "Stop", "timeout": 120.0},
     }
+
+
+def run_retention_attempt(tree: Path, data_dir: Path) -> dict:
+    """One bounded retention-maintenance worker pass over a fixed backlog.
+
+    The fixture is twelve real journaled sessions (six fully finished and
+    expired, six still unfinished) built by the measured tree's own runtime;
+    the measured work is one policy-gated apply pass, which must quarantine
+    exactly the six eligible objects and protect the rest with reasons. The
+    worker keeps its own budget, separate from every Hook cell.
+    """
+    import importlib.util
+
+    started = time.perf_counter()
+    old_path = list(sys.path)
+    old_modules = {name: sys.modules.get(name) for name in ("context_guard",)}
+    old_env = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+    try:
+        sys.path.insert(0, str(tree / "scripts"))
+        sys.modules.pop("context_guard", None)
+        spec = importlib.util.spec_from_file_location(
+            "context_guard", tree / "scripts" / "context_guard.py")
+        cg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cg)
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = str(data_dir)
+
+        def payload(event, session, **extra):
+            base = {"hook_event_name": event, "session_id": session,
+                    "cwd": "/tmp"}
+            base.update(extra)
+            return base
+
+        def make(name, *, ended_days_ago, finished):
+            cg.dispatch(payload("UserPromptSubmit", name,
+                                prompt="请先核对验收说明。", turn_id="t1"))
+            session_dir = data_dir / "sessions-v2" / cg.safe_session_id(name)
+            state_path = session_dir / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if finished:
+                for item in state.get("requirements", []):
+                    item["status"] = "pass"
+                for item in state.get("acceptance_items", []):
+                    item["status"] = "pass"
+                for unit in state.get("work_units", []):
+                    unit["status"] = "completed"
+                    unit["closed_at"] = cg.utc_now()
+                state["open_items"] = []
+                state["wait_conditions"] = []
+            if ended_days_ago is not None:
+                state["session"]["ended_at"] = (
+                    cg.dt.datetime.now(cg.dt.timezone.utc)
+                    - cg.dt.timedelta(days=ended_days_ago)
+                ).isoformat().replace("+00:00", "Z")
+            state["content_hash"] = cg.state_content_hash(state)
+            state_path.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+
+        for index in range(6):
+            make(f"eligible-{index:02d}", ended_days_ago=45, finished=True)
+            make(f"kept-{index:02d}", ended_days_ago=45, finished=False)
+        cg.write_retention_policy(data_dir, enabled=True)
+        report = cg.cleanup_old_sessions(data_dir, apply=True)
+        counts = report.get("counts", {})
+        eligible = sum(1 for entry in report.get("entries", [])
+                       if entry.get("verdict") == "eligible")
+        protected = sum(1 for entry in report.get("entries", [])
+                        if entry.get("verdict") == "protected")
+        ok = (counts.get("quarantined") == 6 and counts.get("eligible") == 6
+              and eligible == 6 and protected == 6
+              and counts.get("protected") == 6
+              and (data_dir / "sessions-v2" / "kept-00").is_dir())
+        return {"elapsed": round(time.perf_counter() - started, 4),
+                "outcome_class": "completed" if ok else "failed",
+                "assertion": "ok" if ok else "retention_semantics_failed",
+                "error": None,
+                "fixture": {"eligible": 6, "protected": 6,
+                            "quarantined": counts.get("quarantined"),
+                            "protected": counts.get("protected")}}
+    except Exception as exc:  # noqa: BLE001 - retain failed attempt
+        return {"elapsed": round(time.perf_counter() - started, 4),
+                "outcome_class": "failed", "assertion": "retention_cell_error",
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+    finally:
+        sys.path[:] = old_path
+        for name, value in old_modules.items():
+            sys.modules.pop(name, None)
+            if value is not None:
+                sys.modules[name] = value
+        if old_env is None:
+            os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+        else:
+            os.environ["CONTEXT_GUARD_DATA_DIR"] = old_env
 
 
 def run_standard_attempt(wrapper: str, tree: Path, cell: str, spec: dict,
@@ -895,6 +990,8 @@ def main() -> int:
                                                            wrapper_override=bool(args.wrapper_override))
                         elif cell == "memory_stop":
                             result = run_memory_attempt(tree, data_dir)
+                        elif cell == "retention_maintenance":
+                            result = run_retention_attempt(tree, data_dir)
                         elif cell == "stop_s1":
                             result = run_stop_cell(tree, 1, home)
                         else:
