@@ -2961,10 +2961,21 @@ class ContextGuardTests(unittest.TestCase):
         active_dir.mkdir()
         active = cg.new_state(self.payload("UserPromptSubmit", session="active-session"))
         cg.save_state(active_dir, active)
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.root / 'private', current=active_dir)
+        # 0.17.0: preview by default touches nothing; apply needs an enabled
+        # policy. With the policy enabled, the fully finished ended session
+        # reaches quarantine while the active session stays untouched.
+        root = self.root / 'private'
+        cg.cleanup_old_sessions(root, current=active_dir)
         self.assertTrue(old_dir.exists())
         self.assertTrue(active_dir.exists())
+        cg.write_retention_policy(root, enabled=True)
+        report = cg.cleanup_old_sessions(root, current=active_dir, apply=True)
+        self.assertEqual(report["counts"]["quarantined"], 1)
+        self.assertFalse(old_dir.exists())
+        self.assertTrue(active_dir.exists())
+        restored = cg.retention_restore(root, "old-session")
+        self.assertEqual(restored["outcome"], "restored")
+        self.assertTrue(old_dir.exists())
 
     def test_session_end_archives_state_and_writes_recovery(self) -> None:
         self.prompt(
@@ -6452,11 +6463,11 @@ class ContextGuardTests(unittest.TestCase):
                     for command in (hook["command"], hook["commandWindows"]):
                         self.assertIn("review the Context Guard installation in Codex Plugins and the supported Python on PATH", command)
                     self.assertIn(
-                        "plugins/cache/codex-context-guard-v016/context-guard",
+                        "plugins/cache/codex-context-guard/context-guard",
                         hook["command"],
                     )
                     self.assertIn(
-                        "plugins\\cache\\codex-context-guard-v016\\context-guard",
+                        "plugins\\cache\\codex-context-guard\\context-guard",
                         hook["commandWindows"],
                     )
                     if hook is hooks["SessionEnd"][0]["hooks"][0]:
@@ -6713,7 +6724,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard-v016"
+            / "codex-context-guard"
             / "context-guard"
         )
         self._write_stub_cache_tree(cache, "0.8.9", "OLD")
@@ -6782,7 +6793,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard-v016"
+            / "codex-context-guard"
             / "context-guard"
         )
         self._write_stub_cache_tree(cache, "0.0.0", "ZERO")
@@ -6808,7 +6819,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard-v016"
+            / "codex-context-guard"
             / "context-guard"
         )
         for invalid in (
@@ -6848,7 +6859,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard-v016"
+            / "codex-context-guard"
             / "context-guard"
         )
         for version, marker in (
@@ -6903,7 +6914,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard-v016"
+            / "codex-context-guard"
             / "context-guard"
         )
         self._write_stub_ps_tree(cache, "0.0.0", "ZERO")
@@ -6930,7 +6941,7 @@ class ContextGuardTests(unittest.TestCase):
             home
             / "plugins"
             / "cache"
-            / "codex-context-guard-v016"
+            / "codex-context-guard"
             / "context-guard"
         )
         for invalid in (

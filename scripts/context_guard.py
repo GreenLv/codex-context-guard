@@ -61,7 +61,7 @@ except ModuleNotFoundError as exc:
     instruction_text = _instruction_module.instruction_text
     locator_masked_text = _instruction_module.locator_masked_text
 
-PRODUCT_VERSION = "0.16.1"
+PRODUCT_VERSION = "0.17.0"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only
@@ -10953,9 +10953,10 @@ def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
                 continue
             if negative:
                 denied.add(category)
-            elif _clause_action_is_current(clause, hit):
+            elif category not in PRIMARY_CLAUSE_ACTIONS or _clause_action_is_current(clause, hit):
                 # Context actions (history, other actors, attributed advice,
-                # deferred plans) authorize nothing on their own.
+                # deferred plans) authorize no primary action on their own;
+                # verification categories keep their pre-existing reading.
                 authorized.add(category)
     positive_text = "\n".join(positive_clauses)
     broad = bool(
@@ -14941,13 +14942,17 @@ def _semantic_clause_metadata(text: str) -> dict[str, Any]:
     """Derive full source semantics in memory; never persist this projection."""
     clauses: list[dict[str, Any]] = []
     for clause in _protected_prompt_clauses(text):
-        # Only current-turn directives count: reported history, other-actor
-        # work, attributed advice and deferred intentions stay context, so a
-        # planning-only prompt never inherits a stamped mutation operation.
+        # Only current-turn directives count for the obligation-bearing
+        # primary actions: reported history, other-actor work, attributed
+        # advice and deferred intentions stay context, so a planning-only
+        # prompt never inherits a stamped mutation operation. Verification
+        # categories keep their pre-existing reading — their words are
+        # routinely objects of another action ("处理后续审查意见").
         operations = [
             category for category, pattern in ACTION_PATTERNS
             if (hit := action_search(pattern, clause)) is not None
-            and _clause_action_is_current(clause, hit)
+            and (category not in PRIMARY_CLAUSE_ACTIONS
+                 or _clause_action_is_current(clause, hit))
         ]
         primary_actions = [
             operation for operation in operations if operation in PRIMARY_CLAUSE_ACTIONS
