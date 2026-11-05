@@ -1038,3 +1038,53 @@ class RetentionRepairR1Tests(RetentionFixtureBase):
         restored = run("--restore", old.name)
         self.assertEqual(restored.returncode, 0, restored.stderr)
         self.assertTrue(old.exists())
+
+
+class RetentionMaintenanceScheduleTests(RetentionFixtureBase):
+    """B10: the opt-in scheduler entry is inspectable and idempotent.
+
+    Tests run in the process-isolated temporary HOME, never the daily one;
+    real platform registration stays a native-stage host action.
+    """
+
+    def run_cli(self, *args):
+        return subprocess.run(
+            [sys.executable, "-B", str(MODULE_PATH), "cleanup",
+             "--data-dir", str(self.data_dir), *args],
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+            text=True, capture_output=True, check=False)
+
+    @unittest.skipUnless(sys.platform == "darwin", "launchd entry contract")
+    def test_macos_maintenance_enable_status_disable_round_trip(self):
+        result = self.run_cli("--maintenance-enable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = json.loads(result.stdout)
+        self.assertEqual(body["status"], "registered")
+        plist = Path(body["entry"])
+        self.assertTrue(plist.is_file())
+        # The registered executor is the same versioned CLI pass.
+        content = plist.read_text(encoding="utf-8")
+        self.assertIn("cleanup", content)
+        self.assertIn("--apply", content)
+        # Second enable is a no-op with the same file bytes.
+        before = plist.read_bytes()
+        again = self.run_cli("--maintenance-enable")
+        self.assertEqual(again.returncode, 0)
+        self.assertEqual(json.loads(again.stdout).get("no_op"), True)
+        self.assertEqual(plist.read_bytes(), before)
+        # Status reads back the registration.
+        status = self.run_cli("--maintenance-status")
+        self.assertEqual(status.returncode, 0)
+        self.assertTrue(json.loads(status.stdout)["registered"])
+        # Disable removes the entry; a second disable is a no-op.
+        removed = self.run_cli("--maintenance-disable")
+        self.assertEqual(removed.returncode, 0)
+        self.assertFalse(plist.exists())
+        gone = self.run_cli("--maintenance-disable")
+        self.assertEqual(gone.returncode, 0)
+        self.assertEqual(json.loads(gone.stdout).get("no_op"), True)
+
+    def test_maintenance_status_unregistered_reads_back_false(self):
+        result = self.run_cli("--maintenance-status")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["registered"])

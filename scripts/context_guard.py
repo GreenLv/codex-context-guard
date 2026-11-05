@@ -25706,6 +25706,144 @@ def _print_retention_summary(report: dict[str, Any]) -> None:
           f"backlog={report.get('backlog')}")
 
 
+# --- opt-in scheduled maintenance (0.17.0 B10) ------------------------------
+# Both platforms share one versioned executor: the platform scheduler entry
+# invokes `context_guard.py cleanup --data-dir <root> --apply --json`, so the
+# same policy-gated, manifest-bound pass runs everywhere and registration is
+# always an explicit user action. The product never creates a schedule on its
+# own; enable/disable/status are inspectable and idempotent.
+
+_RETENTION_MACOS_PLIST_NAME = "com.context-guard.retention.plist"
+
+
+def _retention_maintenance_executor_command(data_dir: Path) -> list[str]:
+    return ["/usr/bin/env", "python3", "-B", str(
+        Path(__file__).resolve()), "cleanup",
+        "--data-dir", str(data_dir), "--apply", "--json"]
+
+
+def _retention_macos_plist_path(label: str) -> Path:
+    home = Path(os.environ.get("HOME") or Path.home())
+    return home / "Library" / "LaunchAgents" / f"{label}.plist"
+
+
+def _retention_macos_plist_body(label: str, data_dir: Path) -> str:
+    import plistlib
+    body = {
+        "Label": label,
+        "ProgramArguments": _retention_maintenance_executor_command(data_dir),
+        "StartCalendarInterval": {"Hour": 3, "Minute": 17},
+        "RunAtLoad": False,
+    }
+    return plistlib.dumps(body).decode("utf-8")
+
+
+def _retention_windows_schtasks_command(label: str, data_dir: Path) -> list[str]:
+    executor = " ".join(_retention_maintenance_executor_command(data_dir))
+    return ["schtasks", "/Create", "/F", "/SC", "DAILY", "/ST", "03:17",
+            "/TN", label, "/TR", executor]
+
+
+def _retention_macos_entry_registered(label: str, data_dir: Path) -> bool:
+    path = _retention_macos_plist_path(label)
+    try:
+        return (path.is_file() and not path.is_symlink()
+                and path.read_text(encoding="utf-8").strip()
+                == _retention_macos_plist_body(label, data_dir).strip())
+    except OSError:
+        return False
+
+
+def _retention_maintenance_enable(
+    data_dir: Path, label: str,
+) -> tuple[int, dict[str, Any]]:
+    """Register the platform schedule entry idempotently (opt-in only)."""
+    platform_name = sys.platform
+    if platform_name == "darwin":
+        path = _retention_macos_plist_path(label)
+        body = _retention_macos_plist_body(label, data_dir)
+        if _retention_macos_entry_registered(label, data_dir):
+            return 0, {"platform": "macos", "label": label,
+                       "entry": str(path), "status": "already_registered",
+                       "no_op": True}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(path, body + "\n")
+        except (OSError, PrivateBoundaryError) as exc:
+            return 2, {"platform": "macos", "label": label,
+                       "status": "failed", "error": str(exc)[:200]}
+        # Registration is file creation only; loading the agent into
+        # launchd is a separate explicit host action, reported as such.
+        return 0, {"platform": "macos", "label": label, "entry": str(path),
+                   "status": "registered",
+                   "note": "plist written; 'launchctl load <entry>' activates it"}
+    if os.name == "nt":
+        command = _retention_windows_schtasks_command(label, data_dir)
+        completed = subprocess.run(command, capture_output=True, text=True,
+                                   check=False)
+        result = {"platform": "windows", "label": label,
+                  "status": "registered" if completed.returncode == 0
+                  else "failed",
+                  "exit_code": completed.returncode}
+        if completed.returncode != 0:
+            result["error"] = completed.stderr.strip()[:200]
+        return (0 if completed.returncode == 0 else 2), result
+    return 2, {"status": "unsupported_platform",
+               "platform": platform_name}
+
+
+def _retention_maintenance_disable(
+    data_dir: Path, label: str,
+) -> tuple[int, dict[str, Any]]:
+    platform_name = sys.platform
+    if platform_name == "darwin":
+        path = _retention_macos_plist_path(label)
+        if not path.exists():
+            return 0, {"platform": "macos", "label": label,
+                       "status": "already_absent", "no_op": True}
+        try:
+            path.unlink()
+        except OSError as exc:
+            return 2, {"platform": "macos", "label": label,
+                       "status": "failed", "error": str(exc)[:200]}
+        return 0, {"platform": "macos", "label": label,
+                   "entry": str(path), "status": "removed"}
+    if os.name == "nt":
+        completed = subprocess.run(
+            ["schtasks", "/Delete", "/F", "/TN", label],
+            capture_output=True, text=True, check=False)
+        result = {"platform": "windows", "label": label,
+                  "status": "removed" if completed.returncode == 0
+                  else "failed",
+                  "exit_code": completed.returncode}
+        if completed.returncode != 0:
+            result["error"] = completed.stderr.strip()[:200]
+        return (0 if completed.returncode == 0 else 2), result
+    return 2, {"status": "unsupported_platform", "platform": platform_name}
+
+
+def _retention_maintenance_status(
+    data_dir: Path, label: str,
+) -> tuple[int, dict[str, Any]]:
+    platform_name = sys.platform
+    if platform_name == "darwin":
+        registered = _retention_macos_entry_registered(label, data_dir)
+        path = _retention_macos_plist_path(label)
+        return 0, {"platform": "macos", "label": label,
+                   "entry": str(path),
+                   "registered": registered,
+                   "policy_enabled": read_retention_policy(data_dir)["enabled"]}
+    if os.name == "nt":
+        completed = subprocess.run(
+            ["schtasks", "/Query", "/TN", label],
+            capture_output=True, text=True, check=False)
+        return 0, {"platform": "windows", "label": label,
+                   "registered": completed.returncode == 0,
+                   "exit_code": completed.returncode,
+                   "policy_enabled": read_retention_policy(data_dir)["enabled"]}
+    return 2, {"status": "unsupported_platform", "platform": platform_name}
+
+
 def command_cleanup(args: argparse.Namespace) -> int:
     """Session retention maintenance entry point.
 
@@ -25721,6 +25859,18 @@ def command_cleanup(args: argparse.Namespace) -> int:
         return 2
     root = root.expanduser().resolve()
     try:
+        if args.maintenance_enable:
+            code, result = _retention_maintenance_enable(root, args.maintenance_label)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return code
+        if args.maintenance_disable:
+            code, result = _retention_maintenance_disable(root, args.maintenance_label)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return code
+        if args.maintenance_status:
+            code, result = _retention_maintenance_status(root, args.maintenance_label)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return code
         if args.policy == "enable":
             policy = write_retention_policy(
                 root, enabled=True, min_age_days=args.min_age_days,
@@ -26181,6 +26331,17 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
                          help="quarantine without ever purging")
     cleanup.add_argument("--budget-seconds", type=float,
                          default=_RETENTION_MAINTENANCE_DEFAULT_BUDGET_SECONDS)
+    maintenance = cleanup.add_mutually_exclusive_group()
+    maintenance.add_argument("--maintenance-enable", action="store_true",
+                             help="register the platform-scheduled maintenance entry "
+                                  "(opt-in; the product never schedules on its own)")
+    maintenance.add_argument("--maintenance-disable", action="store_true",
+                             help="remove the registered maintenance entry")
+    maintenance.add_argument("--maintenance-status", action="store_true",
+                             help="read back the registered maintenance entry")
+    cleanup.add_argument("--maintenance-label",
+                         default="context-guard-retention",
+                         help="stable scheduler entry label")
     subparsers.add_parser("self-test", help="Validate the runtime and hook bundle")
     pending_review = subparsers.add_parser("review-pending", help="One review at the task-agent commentary delivery boundary")
     pending_review.add_argument("--data-dir", type=Path, required=True)

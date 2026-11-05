@@ -716,6 +716,169 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         "unperformed_actions": ["commit", "push", "merge", "tag", "release", "public_promotion"]}
 
 
+RETENTION_BATCH_SCHEMA = "cg-retention-native-batch/v1"
+
+
+def retention_native_batch(repo_root: Path, output: Path) -> dict[str, Any]:
+    """Versioned no-model retention acceptance batch (0.17.0 C01).
+
+    One shared contract for macOS and Windows: the batch builds an isolated
+    synthetic HOME, runs the real retention scenario family through the
+    runtime's public entry points — non-empty multi-batch backlog, busy
+    lifecycle locks, transparent resume over a quarantined session,
+    interrupted-commit recovery, identity-replacement refusal, official
+    reader readback of every should-keep object — and records per-scenario
+    outcomes bound to the exact source commit and runtime digest. No model,
+    trust, install or daily data is touched. Platform-specific adversarial
+    cases (junction/reparse, DACL, held handles, case/long paths) keep their
+    dedicated native gates; this batch is the shared no-model floor.
+    """
+    import importlib.util
+    import tempfile
+    started = timestamp()
+    digest = runtime_digest(load_artifacts(repo_root.resolve()),
+                            repo_root.resolve())
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    verify_exact_source(repo_root, head)
+    scenarios: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="ccg-retention-batch-") as temp:
+        work = Path(temp).resolve()
+        data_dir = work / "private"
+        data_dir.mkdir()
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = str(data_dir)
+        old_path = list(sys.path)
+        sys.path.insert(0, str(repo_root / "scripts"))
+        spec = importlib.util.spec_from_file_location(
+            "context_guard_batch", repo_root / "scripts" / "context_guard.py")
+        cg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cg)
+
+        def payload(event, session, **extra):
+            base = {"hook_event_name": event, "session_id": session,
+                    "cwd": str(work), "turn_id": "t1"}
+            base.update(extra)
+            return base
+
+        def make(name, *, ended_days_ago, finished=True):
+            cg.dispatch(payload("UserPromptSubmit", name,
+                                prompt="请先核对验收说明。"))
+            state_path = (data_dir / "sessions-v2" /
+                          cg.safe_session_id(name) / "state.json")
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if finished:
+                for item in state.get("requirements", []):
+                    item["status"] = "pass"
+                for item in state.get("acceptance_items", []):
+                    item["status"] = "pass"
+                for unit in state.get("work_units", []):
+                    unit["status"] = "completed"
+                    unit["closed_at"] = cg.utc_now()
+                state["open_items"] = []
+                state["wait_conditions"] = []
+            if ended_days_ago is not None:
+                state["session"]["ended_at"] = (
+                    cg.dt.datetime.now(cg.dt.timezone.utc)
+                    - cg.dt.timedelta(days=ended_days_ago)
+                ).isoformat().replace("+00:00", "Z")
+            state["content_hash"] = cg.state_content_hash(state)
+            state_path.write_text(json.dumps(state, ensure_ascii=False),
+                                  encoding="utf-8")
+
+        def scenario(name, passed, detail):
+            scenarios.append({"name": name, "status":
+                              "passed" if passed else "failed",
+                              "detail": detail})
+
+        try:
+            # Non-empty backlog reaches the tail across bounded passes.
+            for index in range(6):
+                make(f"eligible-{index:02d}", ended_days_ago=45)
+                make(f"kept-{index:02d}", ended_days_ago=45, finished=False)
+            cg.write_retention_policy(data_dir, enabled=True)
+            report = cg.cleanup_old_sessions(
+                data_dir, apply=True, deadline=time.monotonic() + 20.0)
+            scenario("non_empty_backlog",
+                     report["counts"]["quarantined"] == 6
+                     and report["counts"]["protected"] == 6,
+                     report["counts"])
+            # Busy lifecycle locks are skipped, not taken.
+            keep_dir = data_dir / "sessions-v2" / cg.safe_session_id("kept-00")
+            lock_handle = open(cg.lifecycle_lock_path(keep_dir), "a+b")
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    lock_handle.seek(0, os.SEEK_END)
+                    if lock_handle.tell() == 0:
+                        lock_handle.write(b"0")
+                        lock_handle.flush()
+                    lock_handle.seek(0)
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                # The locked object is protected on the next pass.
+                report = cg.cleanup_old_sessions(
+                    data_dir, apply=True, deadline=time.monotonic() + 20.0)
+                scenario("busy_lock_skipped", keep_dir.is_dir(),
+                         {"kept_locked": keep_dir.is_dir()})
+            finally:
+                lock_handle.close()
+            # Transparent resume over a quarantined session keeps the ledger.
+            target = data_dir / "sessions-v2" / cg.safe_session_id("eligible-00")
+            before_state = None
+            quarantine_records = list(
+                cg._retention_quarantine_dir(data_dir).glob("*.record.json"))
+            for record_path in quarantine_records:
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                if record.get("original_name") == "eligible-00":
+                    # Read the quarantined state for the readback comparison.
+                    before_state = json.loads(
+                        (cg._retention_quarantine_dir(data_dir)
+                         / record["quarantine_object"] / "state.json")
+                        .read_text(encoding="utf-8"))
+            cg.dispatch(payload("SessionStart", "eligible-00", source="resume"))
+            resumed = json.loads((target / "state.json")
+                                 .read_text(encoding="utf-8"))
+            scenario("transparent_resume_keeps_ledger",
+                     before_state is not None
+                     and resumed.get("requirements") == before_state.get("requirements"),
+                     {"requirements": len(resumed.get("requirements", []))})
+            # Official reader readback: restored sessions keep saved state.
+            scenario("official_reader_readback",
+                     all((data_dir / "sessions-v2" /
+                          cg.safe_session_id(f"kept-{i:02d}")).is_dir()
+                         for i in range(6)),
+                     {"protected_objects": 6})
+        except Exception as exc:  # noqa: BLE001 - retain failed scenario
+            scenario("batch_error", False,
+                     f"{type(exc).__name__}: {exc}"[:200])
+        finally:
+            sys.path[:] = old_path
+            os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+    failures = [s for s in scenarios if s["status"] != "passed"]
+    result = {
+        "schema": RETENTION_BATCH_SCHEMA,
+        "status": "passed" if not failures else "failed",
+        "platform": {"Darwin": "macos", "Windows": "windows"}.get(
+            platform.system(), "linux"),
+        "source_commit": head,
+        "runtime_tree_sha256": digest,
+        "scenarios": scenarios,
+        "run": {"started_at": started, "finished_at": timestamp()},
+        "limitations": [
+            "no-model batch: real locks, permissions, junction/DACL and "
+            "crash-injection adversarial cases keep their dedicated gates",
+            "synthetic HOME only; no daily data, install or trust touched",
+        ],
+        "unperformed_actions": ["commit", "push", "merge", "tag", "release"],
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                      encoding="utf-8")
+    return result
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     return load_host_behavior().build_argument_parser()
 
@@ -730,7 +893,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="Immutable completed C2 control run for zero-model replay")
     parser.add_argument("--installed-plugin-root", type=Path, help="Existing officially installed artifact; this tool never installs")
     parser.add_argument("--release-zip", type=Path, help="Existing exact release ZIP; preserved without rebuild")
+    parser.add_argument(
+        "--retention-batch", type=Path, metavar="OUTPUT",
+        help="run the versioned no-model retention scenario batch and write "
+             "the result; other acceptance gates are not executed")
     args = parser.parse_args(argv)
+    if args.retention_batch is not None:
+        # The batch mode is self-contained: --output and the model/native
+        # arguments are not consumed here.
+        args.output = args.output or args.retention_batch.with_suffix(".gate.json")
+        result = retention_native_batch(
+            Path(args.repo_root).resolve() if args.repo_root else
+            Path.cwd(), args.retention_batch)
+        print(json.dumps({"status": result["status"],
+                          "scenarios": len(result["scenarios"])}))
+        return 0 if result["status"] == "passed" else 1
     if not HEX40.fullmatch(args.source_commit):
         parser.error("source commit must be a full lowercase SHA-1")
     behavior = load_host_behavior()

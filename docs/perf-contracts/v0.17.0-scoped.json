@@ -39,5 +39,29 @@
       "per_attempt_timeout_seconds": 30.0
     },
     "rule": "Any failed attempt blocks acceptance. Budgets registered before measurement; never widened after seeing results."
+  },
+  "repair_r1_addendum": {
+    "registered_before_measurement": "2026-11-06",
+    "reason": "The review required the missing planned scenarios: A/A noise, small/large record reading, busy locks, cold resume and the non-empty backlog. Cold resume (session_start_resume) and the non-empty backlog (retention_maintenance) already have cells; this addendum adds the two missing cells and the A/A control.",
+    "new_cells": {
+      "terminal_read_large": "one host_terminal_result call over the observed Desktop shape with one unrelated row above the line limit; exact success oracle",
+      "session_end_busy_locks": "one complete SessionEnd dispatch with twelve externally held lifecycle locks; exact ended_at, intact-locked-objects and 3s-budget oracle"
+    },
+    "budgets": {
+      "elapsed": {
+        "relative": 0.1,
+        "absolute": 0.05
+      }
+    },
+    "aa_control": {
+      "cells": [
+        "user_prompt_active",
+        "posttool_active",
+        "session_end",
+        "memory_stop"
+      ],
+      "mode": "same tree on both sides (candidate vs candidate), 20 attempts",
+      "acceptance": "no declared regression against the same budgets; the A/A run validates the noise floor, it is not a pass substitute for A/B"
+    }
   }
 }

@@ -1086,7 +1086,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path,
+                        help="result path (required unless --retention-batch)")
     parser.add_argument("--preflight", action="store_true",
                         help="check inputs and result storage without writing acceptance evidence")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())

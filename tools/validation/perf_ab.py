@@ -24,6 +24,7 @@ as unavailable otherwise (formal refuses unavailable identities).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import math
@@ -518,6 +519,10 @@ def cell_specs() -> dict:
                         "session": "perf-end"},
         "retention_maintenance": {"event": "maintenance", "seed": None,
                                   "timeout": 30.0, "payload": None},
+        "terminal_read_large": {"event": "maintenance", "seed": None,
+                                "timeout": 30.0, "payload": None},
+        "session_end_busy_locks": {"event": "maintenance", "seed": None,
+                                   "timeout": 30.0, "payload": None},
         "lifecycle_matched": {"event": "PreToolUse", "seed": "perf-life",
                               "timeout": 120.0, "payload": None,
                               "session": "perf-life"},
@@ -616,6 +621,177 @@ def run_retention_attempt(tree: Path, data_dir: Path) -> dict:
             os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
         else:
             os.environ["CONTEXT_GUARD_DATA_DIR"] = old_env
+
+
+def _retention_import_tree(tree: Path):
+    """Import the measured tree's runtime in isolation for in-process cells."""
+    import importlib.util
+    old_path = list(sys.path)
+    old_modules = {name: sys.modules.get(name)
+                   for name in ("context_guard",)}
+    old_env = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+    sys.path.insert(0, str(tree / "scripts"))
+    sys.modules.pop("context_guard", None)
+    spec = importlib.util.spec_from_file_location(
+        "context_guard", tree / "scripts" / "context_guard.py")
+    cg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cg)
+    return cg, old_path, old_modules, old_env
+
+
+def _retention_restore_import(old_path, old_modules, old_env):
+    sys.path[:] = old_path
+    for name, value in old_modules.items():
+        sys.modules.pop(name, None)
+        if value is not None:
+            sys.modules[name] = value
+    if old_env is None:
+        os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+    else:
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = old_env
+
+
+def run_terminal_read_attempt(tree: Path, data_dir: Path) -> dict:
+    """One bounded host-terminal read over a large unrelated row (F03).
+
+    The fixture is the observed Desktop shape: one small unrelated
+    response_item far below the line limit, one unrelated row just above
+    it, and the real terminal event; the measured work is one
+    host_terminal_result call, which must still recognize the success.
+    """
+    import time as _time
+    started = _time.perf_counter()
+    cg, old_path, old_modules, old_env = _retention_import_tree(tree)
+    try:
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = str(data_dir)
+        session_id = "perf-terminal"
+        code_home = data_dir / "codex-home"
+        code_home.mkdir(parents=True, exist_ok=True)
+        transcript = code_home / "sessions" / "2026" / "01" / "01" / "t.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        work = data_dir / "work"
+        work.mkdir(exist_ok=True)
+        command = "echo sample"
+        invocation = (["pwsh.exe", "-Command", command] if os.name == "nt"
+                      else ["/bin/zsh", "-lc", command])
+        item = {"type": "CommandExecution", "id": "synthetic-read",
+                "command": invocation,
+                "parsed_cmd": [{"type": "unknown", "cmd": command}],
+                "cwd": work.as_uri(), "exit_code": 0,
+                "status": "completed", "stdout": "sample\n"}
+        event = {"type": "event_msg", "payload": {
+            "type": "item_completed", "thread_id": session_id,
+            "turn_id": "perf-turn", "item": item}}
+        rows = [{"type": "session_meta", "payload": {
+            "id": session_id, "session_id": session_id}},
+            {"type": "response_item", "payload": {
+                "type": "custom_tool_call_output", "call_id": "other-call",
+                "output": "x" * 64}},
+            {"type": "response_item", "payload": {
+                "type": "custom_tool_call_output", "call_id": "other-big",
+                "output": "x" * (cg.HOST_TRANSCRIPT_LINE_LIMIT + 16)}},
+            event]
+        transcript.write_bytes(
+            ("\n".join(json.dumps(r) for r in rows) + "\n").encode())
+        state = {"session": {"id": session_id,
+                             "transcript_path": str(transcript)}}
+        payload = {"session_id": session_id, "turn_id": "perf-turn",
+                   "transcript_path": str(transcript), "cwd": str(work),
+                   "tool_use_id": "synthetic-read", "tool_name": "Bash",
+                   "tool_input": {"command": command},
+                   "tool_response": "sample\n"}
+        os.environ["CODEX_HOME"] = str(code_home)
+        value = cg.host_terminal_result(state, payload)
+        ok = (value is not None and value.get("outcome") == "success")
+        return {"elapsed": round(_time.perf_counter() - started, 4),
+                "outcome_class": "completed" if ok else "failed",
+                "assertion": "ok" if ok else "terminal_read_semantics_failed",
+                "error": None,
+                "fixture": {"rows": len(rows),
+                            "unrelated_oversized_rows": 1}}
+    except Exception as exc:  # noqa: BLE001 - retain failed attempt
+        return {"elapsed": round(_time.perf_counter() - started, 4),
+                "outcome_class": "failed",
+                "assertion": "terminal_read_cell_error",
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+    finally:
+        _retention_restore_import(old_path, old_modules, old_env)
+
+
+def run_busy_lock_session_end_attempt(tree: Path, data_dir: Path) -> dict:
+    """One complete SessionEnd dispatch with twelve busy candidate locks.
+
+    The fixture builds one active session plus twelve ended sessions whose
+    lifecycle locks are held externally; the measured work is the full
+    SessionEnd dispatch, which must save state within the 3-second host
+    budget without touching the locked objects.
+    """
+    import time as _time
+    started = _time.perf_counter()
+    cg, old_path, old_modules, old_env = _retention_import_tree(tree)
+    handles = []
+    try:
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = str(data_dir)
+
+        def payload(event, session, **extra):
+            base = {"hook_event_name": event, "session_id": session,
+                    "cwd": "/tmp"}
+            base.update(extra)
+            return base
+
+        for index in range(12):
+            name = f"locked-{index:02d}"
+            cg.dispatch(payload("UserPromptSubmit", name,
+                                prompt="perf backlog", turn_id="t1"))
+            state_path = (data_dir / "sessions-v2" /
+                          cg.safe_session_id(name) / "state.json")
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["session"]["ended_at"] = (
+                cg.dt.datetime.now(cg.dt.timezone.utc)
+                - cg.dt.timedelta(days=45)).isoformat().replace("+00:00", "Z")
+            state["content_hash"] = cg.state_content_hash(state)
+            state_path.write_text(json.dumps(state, ensure_ascii=False),
+                                  encoding="utf-8")
+            lock_path = cg.lifecycle_lock_path(
+                data_dir / "sessions-v2" / cg.safe_session_id(name))
+            handle = open(lock_path, "a+b")
+            handles.append(handle)
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        cg.dispatch(payload("UserPromptSubmit", "perf-current",
+                            prompt="current session", turn_id="t1"))
+        cg.dispatch(payload("SessionEnd", "perf-current"))
+        state_path = (data_dir / "sessions-v2" / "perf-current" / "state.json")
+        final = json.loads(state_path.read_text(encoding="utf-8"))
+        locked_intact = all(
+            (data_dir / "sessions-v2" / f"locked-{i:02d}").is_dir()
+            for i in range(12))
+        ok = (final["session"]["ended_at"] is not None and locked_intact
+              and _time.perf_counter() - started < 3.0)
+        return {"elapsed": round(_time.perf_counter() - started, 4),
+                "outcome_class": "completed" if ok else "failed",
+                "assertion": "ok" if ok else "busy_lock_session_end_failed",
+                "error": None,
+                "fixture": {"busy_locks": 12}}
+    except Exception as exc:  # noqa: BLE001 - retain failed attempt
+        return {"elapsed": round(_time.perf_counter() - started, 4),
+                "outcome_class": "failed",
+                "assertion": "busy_lock_cell_error",
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.close()
+        _retention_restore_import(old_path, old_modules, old_env)
 
 
 def run_standard_attempt(wrapper: str, tree: Path, cell: str, spec: dict,
@@ -961,7 +1137,9 @@ def main() -> int:
                     data_dir = home / "private"
                     data_dir.mkdir()
                     budget = spec["timeout"] if args.timeout is None else min(args.timeout, spec["timeout"])
-                    wrapper = None if cell == "retention_maintenance" else (
+                    wrapper = None if cell in {
+                        "retention_maintenance", "terminal_read_large",
+                        "session_end_busy_locks"} else (
                         args.wrapper_override or load_wrapper(tree, spec["event"]))
                     seeded = True
                     if spec.get("seed"):
@@ -992,6 +1170,11 @@ def main() -> int:
                             result = run_memory_attempt(tree, data_dir)
                         elif cell == "retention_maintenance":
                             result = run_retention_attempt(tree, data_dir)
+                        elif cell == "terminal_read_large":
+                            result = run_terminal_read_attempt(tree, data_dir)
+                        elif cell == "session_end_busy_locks":
+                            result = run_busy_lock_session_end_attempt(
+                                tree, data_dir)
                         elif cell == "stop_s1":
                             result = run_stop_cell(tree, 1, home)
                         else:
