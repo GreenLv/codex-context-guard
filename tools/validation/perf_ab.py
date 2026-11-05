@@ -962,7 +962,8 @@ def main() -> int:
                     data_dir = home / "private"
                     data_dir.mkdir()
                     budget = spec["timeout"] if args.timeout is None else min(args.timeout, spec["timeout"])
-                    wrapper = args.wrapper_override or load_wrapper(tree, spec["event"])
+                    wrapper = None if cell == "retention_maintenance" else (
+                        args.wrapper_override or load_wrapper(tree, spec["event"]))
                     seeded = True
                     if spec.get("seed"):
                         try:

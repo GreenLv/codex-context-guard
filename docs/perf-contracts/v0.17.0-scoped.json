@@ -4,18 +4,40 @@
   "baseline": "b636930ed356c1dda86405d64819b1f1b2ca5831 (published 0.16.1 line, retention disabled)",
   "candidate": "codex/0.17.0-candidate head at measurement time",
   "attempts": 20,
-  "cells": ["user_prompt_active", "posttool_active", "session_end", "retention_maintenance", "memory_stop"],
+  "cells": [
+    "user_prompt_active",
+    "posttool_active",
+    "session_end",
+    "memory_stop"
+  ],
   "cell_rationale": {
     "user_prompt_active": "F01 clause derivation runs at intake (UserPromptSubmit).",
     "posttool_active": "F01/F02 evidence classification runs at PostToolUse.",
     "session_end": "SessionEnd command budget (3s host contract) must not regress.",
-    "retention_maintenance": "New 0.17.0 cleanup worker cell: fixed 12-session backlog, six eligible and six protected, one policy-gated apply pass; separate 30s worker budget, never folded into Hook cells.",
     "memory_stop": "Stop allocation guard (tracemalloc peak_bytes) for the shared derivation path."
   },
   "budgets": {
-    "elapsed": {"relative": 0.10, "absolute": 0.05},
-    "peak_bytes": {"relative": 0.10, "absolute": 2000000}
+    "elapsed": {
+      "relative": 0.1,
+      "absolute": 0.05
+    },
+    "peak_bytes": {
+      "relative": 0.1,
+      "absolute": 2000000
+    }
   },
   "budget_rationale": "A cell is DECLARED-SLOWER only when the 99% bootstrap lower bound of the candidate/baseline ratio exceeds 1.10 AND the absolute lower-bound delta exceeds 50 ms (2 MB for peak_bytes). Tail-only regressions are declared through the p95 statistic; inconclusive pairs are retained as INCONCLUSIVE and never read as passes; failed samples are retained without replacement.",
-  "rule": "No sample count is increased after seeing results. A failed attempt blocks acceptance and is never replaced."
+  "rule": "No sample count is increased after seeing results. A failed attempt blocks acceptance and is never replaced.",
+  "retention_worker": {
+    "mode": "standalone absolute budget (not A/B)",
+    "reason": "The published 0.16.1 baseline has no retention maintenance API; an A/B ratio is undefined for the new worker. The worker is measured as its own budgeted run, never folded into Hook cells.",
+    "scenario": "run_retention_attempt: fixed twelve-session backlog (six eligible, six protected) built by the measured runtime, one policy-gated apply pass, exact count oracle",
+    "samples": 20,
+    "budgets": {
+      "median_elapsed_seconds": 2.0,
+      "p95_elapsed_seconds": 4.0,
+      "per_attempt_timeout_seconds": 30.0
+    },
+    "rule": "Any failed attempt blocks acceptance. Budgets registered before measurement; never widened after seeing results."
+  }
 }
