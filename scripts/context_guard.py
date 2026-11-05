@@ -90,7 +90,7 @@ CURRENT_RELEASE_READINESS_SCHEMA = "release-readiness/v3"
 SUPPORTED_RELEASE_READINESS_SCHEMAS = frozenset(
     {"release-readiness/v2", CURRENT_RELEASE_READINESS_SCHEMA}
 )
-CLAUSE_DERIVATION_VERSION = "1.0.0"
+CLAUSE_DERIVATION_VERSION = "1.1.0"
 ADAPTER_MANIFEST = {
     "version": ADAPTER_MANIFEST_VERSION,
     "adapters": {
@@ -854,7 +854,15 @@ IMAGE_REFERENCE_RE = re.compile(r"(?:截图|图片|图像|image|screenshot|visua
 # identity obligations, or surface escalation.
 CLAUSE_NEGATION_RE = re.compile(
     r"\b(?:do\s+not|don't|must\s+not|should\s+not|no|without)\b|"
-    r"(?:不要|不得|无需|不需要|暂不|不再|别|切勿|勿|不跑|不执行)",
+    r"\bnot\s+(?:to\s+|be\s+)?(?:modify|edit|change|update|fix|delete|remove|"
+    r"create|push|commit|publish|run|execute|write|touch|alter|apply)\b|"
+    r"(?:不要|不得|无需|不需要|暂不|不再|别|切勿|勿|不跑|不执行|"
+    # Bare negation directly governing an action verb ("不修改文件",
+    # "尚未提交") is a negative clause; 不/没/未 before non-action words
+    # ("不足", "不断") stays positive, so the lookahead is part of the
+    # pattern rather than a post-filter.
+    r"(?:不|没|未)(?=(?:修改|编辑|更新|修复|实现|删除|创建|推送|提交|发布|"
+    r"运行|写入|改动|变更|调整|覆盖|处理|执行)))",
     re.IGNORECASE,
 )
 VISUAL_MUTATION_RE = re.compile(
@@ -1231,6 +1239,128 @@ PRIMARY_CLAUSE_ACTIONS = {
     "remote_publish",
     "artifact_work",
 }
+
+# 0.17.0 action-context machinery (F01 family closure): a matched action
+# signal only counts as this turn's own request when the same production
+# interpretation says the actor, aspect and framing belong to the current
+# turn. Reported work by another actor, historical completion, attributed
+# advice and deferred intentions are context: they never stamp the contract
+# operation or authorize an action category, and the same rule applies to
+# both the clause derivation and the prompt action scope.
+CLAUSE_ACTION_OTHER_ACTOR_RE = re.compile(
+    r"(?:同事|别人|某人|有人|他人|其他(?:人|同事)|团队成员|队友|搭档|"
+    r"上游|作者|维护者|审核(?:者|人|员)|贡献者|用户|老板|经理|"
+    r"(?:前一个|上一个|之前(?:的)?)?(?:会话|对话|任务|轮次|代理|助手)|"
+    r"\b(?:colleague|teammate|reviewer|maintainer|contributor|upstream|"
+    r"someone|somebody|another\s+(?:agent|engineer|session|colleague|person)|"
+    r"previous\s+(?:session|turn|agent|assistant)|the\s+user|users)\b)",
+    re.IGNORECASE,
+)
+CLAUSE_ACTION_DELEGATION_RE = re.compile(
+    r"(?:让|叫|请|要求|委托|需要|麻烦|asked?|requested?|delegated?)\s*"
+    r"(?:我|自己|我们)?",
+    re.IGNORECASE,
+)
+CLAUSE_ACTION_ATTRIBUTION_BRIDGE_RE = re.compile(
+    r"(?:建议|意见|反馈|提议|说法|表示|提到|说过|要求过|"
+    r"\b(?:suggest(?:ed)?|advised?|said|mentioned|proposed)\b)",
+    re.IGNORECASE,
+)
+# Direct reports between an actor head and the verb ("同事修改完了") are
+# allowed fillers; anything else between the two keeps the default reading.
+CLAUSE_ACTION_CONNECTOR_RE = re.compile(
+    r"[\s的了已曾刚就都全又还再们和与并及得完后过之先后昨今天上上次次地]*"
+)
+# Completion markers bind tightly: the prefix must end with the marker, so
+# "已经修改" reports history while "把之前的记录读出来，再修改" stays current.
+CLAUSE_ACTION_COMPLETED_PREFIX_RE = re.compile(
+    r"(?:已经|曾(?:经)?|先前|此前|刚才|刚刚|已|之前|"
+    r"\b(?:already|previously|earlier|just)\b|\bjust\s+|"
+    r"\b(?:was|were|has\s+been|have\s+been|had\s+been)\s+)$",
+    re.IGNORECASE,
+)
+CLAUSE_ACTION_COMPLETIVE_SUFFIX_RE = re.compile(r"\s*(?:完|好|过)了")
+CLAUSE_ACTION_ADVICE_COMPOUND_RE = re.compile(
+    r"\s*(?:建议|意见|反馈|提议|"
+    r"(?!the\s)(?:suggestion|advice)\b)",
+    re.IGNORECASE,
+)
+CLAUSE_ACTION_DEFERRED_PREFIX_RE = re.compile(
+    r"(?:之后|以后|稍后|回头|待会(?:儿)?|下一轮|下次|后续|"
+    r"\b(?:later|afterwards?|next\s+(?:turn|round|iteration|version))\b)\s*[再就]?\s*$",
+    re.IGNORECASE,
+)
+# Future intent: a stated intention head directly before the verb ("计划
+# 修改", "我打算修改") announces work to design, not work this turn owes.
+# The head must sit at the very start of the prefix, optionally behind a
+# bare subject, so "按计划修改" stays a direct request.
+# The intent word itself is mandatory, so a verb at the very start of a
+# clause never matches (fullmatch of an empty/lead-only prefix fails).
+CLAUSE_ACTION_INTENT_PREFIX_RE = re.compile(
+    r"(?:(?:我|我们|你|您|请|帮我|帮忙|麻烦|这次|本轮|this\s+turn)\s*)?"
+    r"(?:计划|打算|考虑|规划|拟定|起草|"
+    r"\b(?:plan|intend)\s+to\b|"
+    r"\bplans?\b|\b(?:outline|draft|design)\b)"
+    r"\s*(?:先|再|然后|去|来|to\b)?",
+    re.IGNORECASE,
+)
+# A planning noun right after the verb makes the action attributive inside a
+# planning object ("规划修改大纲"); without an intent head ("修改方案")
+# the verb stays a direct request.
+CLAUSE_ACTION_PLANNING_OBJECT_RE = re.compile(
+    r"^\s*(?:大纲|提纲|思路|草稿|安排|\b(?:outline|blueprint)\b)",
+    re.IGNORECASE,
+)
+
+
+def _clause_action_is_current(clause: str, match: re.Match[str]) -> bool:
+    """Decide whether one matched action signal is this turn's own request.
+
+    Every consumer of clause operations (contract stamping, primary clause
+    selection, prompt action scope) goes through this single interpretation,
+    so historical, other-actor, attributed and deferred readings cannot be
+    patched per call site or per phrase.
+    """
+    suffix = clause[match.end():match.end() + 12]
+    # "修改建议" is an attributive compound naming existing material, and
+    # "修改完了" reports finished work; neither is a request to act.
+    if CLAUSE_ACTION_ADVICE_COMPOUND_RE.match(suffix):
+        return False
+    if CLAUSE_ACTION_COMPLETIVE_SUFFIX_RE.match(suffix):
+        return False
+    prefix = clause[max(0, match.start() - 16):match.start()]
+    if CLAUSE_ACTION_DEFERRED_PREFIX_RE.search(prefix):
+        return False
+    if CLAUSE_ACTION_COMPLETED_PREFIX_RE.search(prefix):
+        return False
+    if CLAUSE_ACTION_INTENT_PREFIX_RE.fullmatch(prefix):
+        # A stated intention head directly before the verb ("计划修改",
+        # "我打算修改") is future intent, not this turn's directive. A
+        # planning word with other content before it ("按计划修改") keeps
+        # the default reading, and the planning-noun object rule below
+        # still applies.
+        return False
+    if CLAUSE_ACTION_PLANNING_OBJECT_RE.match(suffix) and (
+            CLAUSE_ACTION_INTENT_PREFIX_RE.search(prefix)):
+        return False
+    actor = None
+    actor_matches = list(CLAUSE_ACTION_OTHER_ACTOR_RE.finditer(prefix))
+    if actor_matches:
+        actor = actor_matches[-1]
+    if actor is not None:
+        bridge = prefix[actor.end():]
+        if CLAUSE_ACTION_DELEGATION_RE.search(bridge):
+            # "同事让我修改" delegates the work back to this turn.
+            return True
+        if CLAUSE_ACTION_ATTRIBUTION_BRIDGE_RE.search(bridge):
+            # "同事建议修改" quotes advice; it is not this user's request.
+            return False
+        if CLAUSE_ACTION_CONNECTOR_RE.fullmatch(bridge):
+            # "同事（已经）修改完了" reports another actor's completed work.
+            return False
+        # A distant actor mention with unrelated words in between stays
+        # unknown and keeps the conservative current-turn reading.
+    return True
 EXECUTION_RESUME_RE = re.compile(
     json.loads((Path(__file__).resolve().parent.parent / "assets/core-intent-v2.json")
                .read_text(encoding="utf-8"))["patterns"]["EXECUTION_RESUME_RE"],
@@ -10810,18 +10940,23 @@ def prompt_action_scope(prompt_text: str) -> dict[str, Any]:
     authorized: set[str] = set()
     denied: set[str] = set()
     positive_clauses: list[str] = []
-    negation = re.compile(
-        r"\b(?:do\s+not|don't|must\s+not|should\s+not|no|without)\b|"
-        r"(?:不要|不得|无需|不需要|暂不|不再|别|切勿|勿|不跑|不执行)",
-        re.IGNORECASE,
-    )
+    # One negation source for the whole product: the prompt action scope uses
+    # the same polarity pattern as the clause derivation.
+    negation = CLAUSE_NEGATION_RE
     for clause in _protected_prompt_clauses(prompt_text):
         negative = bool(negation.search(instruction_text(clause)))
         if not negative:
             positive_clauses.append(clause)
         for category, pattern in ACTION_PATTERNS:
-            if action_search(pattern, clause):
-                (denied if negative else authorized).add(category)
+            hit = action_search(pattern, clause)
+            if not hit:
+                continue
+            if negative:
+                denied.add(category)
+            elif _clause_action_is_current(clause, hit):
+                # Context actions (history, other actors, attributed advice,
+                # deferred plans) authorize nothing on their own.
+                authorized.add(category)
     positive_text = "\n".join(positive_clauses)
     broad = bool(
         BROAD_EXECUTION_PROMPT_RE.search(positive_text)
@@ -14806,7 +14941,14 @@ def _semantic_clause_metadata(text: str) -> dict[str, Any]:
     """Derive full source semantics in memory; never persist this projection."""
     clauses: list[dict[str, Any]] = []
     for clause in _protected_prompt_clauses(text):
-        operations = [category for category, pattern in ACTION_PATTERNS if action_search(pattern, clause)]
+        # Only current-turn directives count: reported history, other-actor
+        # work, attributed advice and deferred intentions stay context, so a
+        # planning-only prompt never inherits a stamped mutation operation.
+        operations = [
+            category for category, pattern in ACTION_PATTERNS
+            if (hit := action_search(pattern, clause)) is not None
+            and _clause_action_is_current(clause, hit)
+        ]
         primary_actions = [
             operation for operation in operations if operation in PRIMARY_CLAUSE_ACTIONS
         ]
@@ -19750,6 +19892,36 @@ def tool_outcome_details(payload: dict[str, Any]) -> tuple[str, str]:
 HOST_TRANSCRIPT_LIMIT = 32 * 1024 * 1024
 HOST_TRANSCRIPT_LINE_LIMIT = 1024 * 1024
 
+# F03 bounded unrelated-record isolation. Only an ``event_msg`` record can
+# carry the terminal ``item_completed`` candidate this snapshot selects, so an
+# oversized row whose outer type is provably one of the never-candidate types
+# is skippable. Everything else — unparseable heads, unknown types, and any
+# oversized ``event_msg`` — keeps the whole snapshot unavailable so a
+# conflicting terminal record can never hide behind the byte budget. The head
+# read is a strict anchored member-sequence scan, never a substring search,
+# and no event identifier is ever guessed from an oversized row.
+_HOST_OVERSIZED_SKIP_TYPES = frozenset({
+    "response_item", "turn_context", "session_meta", "compacted",
+})
+_HOST_RECORD_TYPE_HEAD_RE = re.compile(
+    r'\{(?:"(?:[^"\\\x00]|\\.)*"\s*:\s*'
+    r'(?:"(?:[^"\\\x00]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)'
+    r'\s*,\s*)*'
+    r'"type"\s*:\s*"([^"]*)"'
+)
+
+
+def _oversized_host_record_skippable(line: bytes) -> bool:
+    """Closed structural read of an oversized record's outer type."""
+    try:
+        head = line[:2048].decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    match = _HOST_RECORD_TYPE_HEAD_RE.match(head)
+    if match is None:
+        return False
+    return match.group(1) in _HOST_OVERSIZED_SKIP_TYPES
+
 
 def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Read only the current Host session transcript snapshot, never tool prose.
@@ -19801,10 +19973,24 @@ def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> li
                 or len(raw) > HOST_TRANSCRIPT_LIMIT or not raw.endswith(b"\n")):
             return []
         lines = raw.splitlines(keepends=True)
-        if not lines or any(len(line) > HOST_TRANSCRIPT_LINE_LIMIT for line in lines):
+        if not lines:
             return []
-        records = [json.loads(line.decode("utf-8")) for line in lines]
-    except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+        records: list[dict[str, Any] | None] = []
+        for line in lines:
+            if len(line) > HOST_TRANSCRIPT_LINE_LIMIT:
+                # F03: an unrelated oversized row stays out of the snapshot,
+                # but only when a closed parse proves it can never carry the
+                # terminal candidate. Anything else keeps the snapshot
+                # unavailable instead of silently shrinking the evidence.
+                if _oversized_host_record_skippable(line):
+                    records.append(None)
+                    continue
+                return []
+            try:
+                records.append(json.loads(line.decode("utf-8")))
+            except (UnicodeError, json.JSONDecodeError):
+                return []
+    except (OSError, ValueError):
         return []
     first = records[0]
     if (not isinstance(first, dict) or first.get("type") != "session_meta"
@@ -19818,7 +20004,7 @@ def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> li
         return []
     matches = []
     for record in records[1:]:
-        if not isinstance(record, dict) or record.get("type") != "event_msg":
+        if record is None or not isinstance(record, dict) or record.get("type") != "event_msg":
             continue
         event = record.get("payload")
         if not isinstance(event, dict) or event.get("type") != "item_completed":
@@ -19995,7 +20181,15 @@ def host_terminal_result(state: dict[str, Any], payload: dict[str, Any]) -> dict
         status = item.get("status")
         if code is None or (code == 0 and status != "completed") or (code != 0 and status != "failed"):
             return None
-        stdout = item.get("stdout")
+        # F02: the Desktop Host reports terminal output as aggregated_output
+        # while legacy producers keep stdout. One authoritative-output rule
+        # accepts either field, requires an exactly equal pair when both are
+        # present, and keeps the byte limit and identity binding unchanged.
+        outputs = [item.get(field) for field in ("stdout", "aggregated_output")]
+        present = [value for value in outputs if value is not None]
+        if not present or any(value != present[0] for value in present):
+            return None
+        stdout = present[0]
         if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > HOST_TRANSCRIPT_LINE_LIMIT:
             return None
         return {"type": "command", "outcome": "success" if code == 0 else "failed",
@@ -23488,14 +23682,932 @@ def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
         return
 
 
+# ---------------------------------------------------------------------------
+# Session retention maintenance (0.17.0 restoration, contract
+# `cg-retention-report/v1`). The 0.16.0/0.16.1 disabled state was a product
+# gap, not a safety feature to reopen: this is a new versioned lifecycle —
+# preview by default, policy-gated apply, quarantine with a documented
+# restore path, then a separate purge stage with tombstones. The retired
+# direct deletion helper stays refused below; nothing here re-arms it.
+# ---------------------------------------------------------------------------
+
+RETENTION_POLICY_SCHEMA = "cg-retention-policy/v1"
+RETENTION_MANIFEST_SCHEMA = "cg-retention-manifest/v1"
+RETENTION_REPORT_SCHEMA = "cg-retention-report/v1"
+RETENTION_QUARANTINE_RECORD_SCHEMA = "cg-retention-quarantine/v1"
+RETENTION_TOMBSTONE_SCHEMA = "cg-retention-tombstone/v1"
+RETENTION_POLICY_NAME = "retention-policy.json"
+_RETENTION_QUARANTINE_DIR_NAME = "retention-quarantine"
+_RETENTION_MIN_AGE_DAYS_RANGE = (1, 3650)
+_RETENTION_QUARANTINE_DAYS_RANGE = (1, 365)
+# A purged object leaves a minimal anti-resurrection/audit record; it is
+# itself retained for a bounded period and then retired, so purge history
+# cannot grow into a second unbounded copy of the session list.
+_RETENTION_TOMBSTONE_RETENTION_DAYS = 90
+_RETENTION_REPORT_ENTRY_LIMIT = 200
+# Hard per-pass walk cap: a single pass never lists more entries than this,
+# whatever the namespace size; progress continues via cursor and queue.
+_RETENTION_SCAN_ENTRY_CAP = 65536
+_RETENTION_STATE_READ_LIMIT = 8 * 1024 * 1024
+_RETENTION_MAINTENANCE_DEFAULT_BUDGET_SECONDS = 20.0
+_RETENTION_PROTECTED_REASONS = (
+    "boundary", "not_directory", "linked_object", "missing_state",
+    "state_unreadable", "state_too_large", "unsupported_schema",
+    "session_id_missing", "no_end_time", "not_expired", "unfinished_work",
+    "active_wait", "partial_marker", "legacy_namespace", "busy_lock",
+    "identity_changed", "policy_mismatch", "manifest_mismatch",
+    "cross_device", "quarantine_failed", "registry_unverified",
+)
+
+_RETENTION_POLICY_DEFAULTS = {
+    "schema": RETENTION_POLICY_SCHEMA,
+    "enabled": False,
+    "min_age_days": 30,
+    "quarantine_days": 7,
+    "purge_enabled": True,
+    "policy_version": 0,
+}
+
+
+def _retention_policy_path(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / RETENTION_POLICY_NAME
+
+
+def _retention_policy_locked(root: Path) -> bool:
+    return _maintenance_boundary_ok(root) and _registry_object_is_writable(
+        _retention_policy_path(root))
+
+
+def _clamp_retention_days(value: Any, bounds: tuple[int, int]) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return bounds[0]
+    return max(bounds[0], min(bounds[1], number))
+
+
+def read_retention_policy(root: Path) -> dict[str, Any]:
+    """Load the durable retention policy; anything unusable reads disabled.
+
+    A missing, corrupted, linked or schema-mismatched policy object can
+    never authorize deletion: the maintenance pass then reports the
+    disabled default. Values are clamped into their documented ranges so a
+    hostile file cannot request a zero-day purge.
+    """
+    policy = dict(_RETENTION_POLICY_DEFAULTS)
+    if not _retention_policy_locked(root):
+        return policy
+    try:
+        raw = _retention_policy_path(root).read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return policy
+    if not isinstance(data, dict) or data.get("schema") != RETENTION_POLICY_SCHEMA:
+        return policy
+    policy["enabled"] = data.get("enabled") is True
+    policy["min_age_days"] = _clamp_retention_days(
+        data.get("min_age_days"), _RETENTION_MIN_AGE_DAYS_RANGE)
+    policy["quarantine_days"] = _clamp_retention_days(
+        data.get("quarantine_days"), _RETENTION_QUARANTINE_DAYS_RANGE)
+    policy["purge_enabled"] = data.get("purge_enabled") is not False
+    version = data.get("policy_version")
+    policy["policy_version"] = version if type(version) is int and version >= 1 else 0
+    return policy
+
+
+def write_retention_policy(
+    root: Path, *, enabled: bool, min_age_days: int | None = None,
+    quarantine_days: int | None = None, purge_enabled: bool | None = None,
+) -> dict[str, Any]:
+    """Create or update the policy; every change bumps the policy version.
+
+    Adoption is always explicit: a fresh install or upgrade never writes a
+    policy object, and an absent policy keeps maintenance preview-only.
+    """
+    if not _maintenance_boundary_ok(root):
+        raise RuntimeError(
+            "retention policy boundary failed; policy was not written")
+    previous = read_retention_policy(root)
+    current = _retention_policy_path(root)
+    try:
+        exists = current.exists()
+    except OSError:
+        exists = False
+    policy = {
+        "schema": RETENTION_POLICY_SCHEMA,
+        "enabled": bool(enabled),
+        "min_age_days": _clamp_retention_days(
+            min_age_days if min_age_days is not None else previous["min_age_days"],
+            _RETENTION_MIN_AGE_DAYS_RANGE),
+        "quarantine_days": _clamp_retention_days(
+            quarantine_days if quarantine_days is not None
+            else previous["quarantine_days"],
+            _RETENTION_QUARANTINE_DAYS_RANGE),
+        "purge_enabled": previous["purge_enabled"]
+        if purge_enabled is None else bool(purge_enabled),
+        "policy_version": (previous["policy_version"] + 1) if exists else 1,
+        "updated_at": utc_now(),
+    }
+    if not _registry_object_is_writable(current):
+        raise RuntimeError(
+            "retention policy object is not a private regular file; policy was not written")
+    try:
+        current.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            current, json.dumps(policy, ensure_ascii=False) + "\n")
+    except (OSError, PrivateBoundaryError) as exc:
+        raise RuntimeError(f"retention policy write failed: {exc}") from exc
+    return policy
+
+
+def _retention_quarantine_dir(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / _RETENTION_QUARANTINE_DIR_NAME
+
+
+def _retention_data_root_digest(root: Path) -> str:
+    """Bind manifests to the data root identity without storing the path."""
+    try:
+        resolved = str(root.resolve())
+    except OSError:
+        resolved = str(root)
+    return sha256_text(resolved)
+
+
+def _retention_state_facts(candidate: Path) -> tuple[dict[str, Any] | None, str]:
+    """Read a session state file for adjudication.
+
+    Returns (state, reason): state is None when the object is protected for
+    the returned reason. Every failure mode names its reason so previews can
+    say exactly which fact is missing.
+    """
+    state_path = candidate / "state.json"
+    try:
+        info = state_path.lstat()
+    except FileNotFoundError:
+        return None, "missing_state"
+    except OSError:
+        return None, "state_unreadable"
+    if not stat.S_ISREG(info.st_mode) or state_path.is_symlink():
+        return None, "state_unreadable"
+    if info.st_size > _RETENTION_STATE_READ_LIMIT:
+        return None, "state_too_large"
+    try:
+        raw = state_path.read_bytes()
+        state = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, "state_unreadable"
+    if not isinstance(state, dict):
+        return None, "state_unreadable"
+    try:
+        validate_state_integrity(state)
+    except (StateIntegrityError, TypeError, ValueError):
+        return None, "state_unreadable"
+    return state, ""
+
+
+def _retention_has_unfinished_work(state: dict[str, Any]) -> bool:
+    """True when the session still owes verification, recovery or waits.
+
+    Ended sessions with open obligations stay protected: quarantine could
+    not be entered without discarding a resumable task's dependencies.
+    """
+    if state.get("open_items"):
+        return True
+    if state.get("wait_conditions"):
+        return True
+    for unit in state.get("work_units", []) or []:
+        if isinstance(unit, dict) and unit.get("status") != "completed":
+            return True
+    for group in ("requirements", "acceptance_items"):
+        for item in state.get(group, []) or []:
+            if isinstance(item, dict) and item.get("status") not in TERMINAL_ITEM_STATUSES:
+                return True
+    return False
+
+
+def _retention_probe_lifecycle_lock(candidate: Path) -> tuple[bool, Any]:
+    """Non-creating probe of the shared lifecycle lock.
+
+    Returns (busy, handle): busy is True when a writer or recovery currently
+    holds the lock; otherwise the returned handle (or None when no lock file
+    exists) keeps an exclusive hold until closed. The probe never creates
+    the lock file and never touches the session directory itself.
+    """
+    lock_path = lifecycle_lock_path(candidate)
+    try:
+        info = lock_path.lstat()
+    except FileNotFoundError:
+        return False, None  # no lock object: no current writer
+    except OSError:
+        return True, None
+    if not stat.S_ISREG(info.st_mode) or lock_path.is_symlink():
+        return True, None
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(lock_path, flags)
+    except OSError:
+        return True, None
+    try:
+        if _msvcrt is not None:
+            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+        elif _fcntl is not None:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        else:
+            os.close(fd)
+            return True, None
+    except (OSError, ValueError):
+        os.close(fd)
+        return True, None
+
+    class _Handle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.release()
+            return False
+
+        @staticmethod
+        def release():
+            try:
+                if _msvcrt is not None:
+                    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+                elif _fcntl is not None:
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    return False, _Handle()
+
+
+def _retention_adjudicate(
+    candidate: Path, policy: dict[str, Any], now: dt.datetime,
+    *, probe_lock: bool = True,
+) -> dict[str, Any]:
+    """Full eligibility adjudication for one v2 session object.
+
+    Every fact is named: an eligible object carries its state digest and
+    identity; a protected object names the exact missing or conflicting
+    fact. Any single uncertainty protects.
+    """
+    entry: dict[str, Any] = {"name": candidate.name, "verdict": "protected"}
+    try:
+        info = candidate.lstat()
+    except FileNotFoundError:
+        entry["reason"] = "boundary"
+        return entry
+    except OSError:
+        entry["reason"] = "boundary"
+        return entry
+    if not stat.S_ISDIR(info.st_mode) or candidate.is_symlink():
+        entry["reason"] = "not_directory"
+        return entry
+    if (getattr(info, "st_file_attributes", 0) & 0x400):
+        entry["reason"] = "linked_object"
+        return entry
+    state, reason = _retention_state_facts(candidate)
+    if state is None:
+        entry["reason"] = reason
+        return entry
+    if state.get("schema_version") != SCHEMA_VERSION:
+        entry["reason"] = "unsupported_schema"
+        return entry
+    session = state.get("session")
+    if not isinstance(session, dict) or not str(session.get("id") or "").strip():
+        entry["reason"] = "session_id_missing"
+        return entry
+    if _retention_has_unfinished_work(state):
+        entry["reason"] = "unfinished_work"
+        return entry
+    ended = parse_time(session.get("ended_at"))
+    if ended is None:
+        entry["reason"] = "no_end_time"
+        return entry
+    age_days = (now - ended).total_seconds() / 86400.0
+    if age_days < float(policy["min_age_days"]):
+        entry["reason"] = "not_expired"
+        return entry
+    if (candidate / CLEANUP_PARTIAL_MARKER).exists():
+        entry["reason"] = "partial_marker"
+        return entry
+    busy, probe_handle = (False, None)
+    if probe_lock:
+        busy, probe_handle = _retention_probe_lifecycle_lock(candidate)
+    # Adjudication only asks whether a writer holds the lock now; the hold
+    # that matters is re-taken at apply time, so release immediately.
+    if probe_handle is not None:
+        probe_handle.release()
+    if busy:
+        entry["reason"] = "busy_lock"
+        return entry
+    try:
+        state_digest = hashlib.sha256(
+            (candidate / "state.json").read_bytes()).hexdigest()
+    except OSError:
+        # The object changed while it was being adjudicated; protect.
+        entry["reason"] = "state_unreadable"
+        return entry
+    entry.update({
+        "verdict": "eligible",
+        "state_sha256": state_digest,
+        "identity": [info.st_dev, info.st_ino],
+        "age_days": round(age_days, 2),
+    })
+    return entry
+
+
+def _retention_manifest_digest(manifest: dict[str, Any]) -> str:
+    material = {key: value for key, value in manifest.items()
+                if key != "manifest_sha256"}
+    return sha256_text(canonical_json(material))
+
+
+def _retention_make_manifest(
+    root: Path, policy: dict[str, Any], entries: list[dict[str, Any]],
+    now: dt.datetime,
+) -> dict[str, Any]:
+    manifest = {
+        "schema": RETENTION_MANIFEST_SCHEMA,
+        "data_root": _retention_data_root_digest(root),
+        "policy_version": policy["policy_version"],
+        "min_age_days": policy["min_age_days"],
+        "quarantine_days": policy["quarantine_days"],
+        "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "entries": [
+            {"name": entry["name"], "state_sha256": entry["state_sha256"],
+             "identity": entry["identity"]}
+            for entry in entries if entry.get("verdict") == "eligible"
+        ],
+    }
+    manifest["manifest_sha256"] = _retention_manifest_digest(manifest)
+    return manifest
+
+
+def _retention_reverify_entry(
+    candidate: Path, item: dict[str, Any], policy: dict[str, Any],
+    now: dt.datetime,
+) -> str:
+    """Re-verify one planned object immediately before its quarantine.
+
+    Returns "" when the object still matches the manifest binding, or the
+    protection reason. The manifest authorizes exactly this object state —
+    a replaced, rewritten, younger or policy-changed object is skipped.
+    """
+    if not _is_session_component(item.get("name")):
+        return "manifest_mismatch"
+    if item["name"] != candidate.name:
+        return "manifest_mismatch"
+    try:
+        info = candidate.lstat()
+    except OSError:
+        return "boundary"
+    if not stat.S_ISDIR(info.st_mode) or candidate.is_symlink():
+        return "not_directory"
+    if [info.st_dev, info.st_ino] != item.get("identity"):
+        return "identity_changed"
+    state, reason = _retention_state_facts(candidate)
+    if state is None:
+        return reason or "state_unreadable"
+    try:
+        live_digest = hashlib.sha256(
+            (candidate / "state.json").read_bytes()).hexdigest()
+    except OSError:
+        return "manifest_mismatch"
+    if live_digest != item.get("state_sha256"):
+        return "manifest_mismatch"
+    # Called under the lifecycle lock (or immediately before it): re-probing
+    # the same lock would self-block, so eligibility is re-checked without a
+    # second lock acquisition.
+    fresh = _retention_adjudicate(candidate, policy, now, probe_lock=False)
+    if fresh.get("verdict") != "eligible":
+        return fresh.get("reason") or "unfinished_work"
+    return ""
+
+
+def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
+    """Bounded recursive removal of one quarantined object.
+
+    Returns True when the tree is gone; False when the budget expired and
+    the object is partially deleted (the quarantine record stays
+    authoritative so the next pass resumes without enlarging the set).
+    """
+    try:
+        entries = list(os.scandir(path))
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    for entry in entries:
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                if not _retention_purge_tree(Path(entry.path), deadline):
+                    return False
+            else:
+                os.unlink(entry.path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+    try:
+        path.rmdir()
+    except OSError:
+        return False
+    return True
+
+
+def _retention_write_record(path: Path, payload: dict[str, Any]) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def _retention_quarantine_object(
+    root: Path, candidate: Path, item: dict[str, Any], manifest: dict[str, Any],
+    now: dt.datetime,
+) -> dict[str, Any]:
+    """Move one re-verified object into recoverable quarantine."""
+    qdir = _retention_quarantine_dir(root)
+    stamp = str(now.strftime("%Y%m%dT%H%M%S")) + "q" + \
+        sha256_text(f"{candidate.name}:{time.time_ns():d}")[:8]
+    target = qdir / f"{candidate.name}.{stamp}"
+    record_name = f"{target.name}.record.json"
+    outcome: dict[str, Any] = {"name": candidate.name, "action": "quarantine"}
+    try:
+        qdir.mkdir(parents=True, exist_ok=True)
+        qinfo = qdir.lstat()
+        if not stat.S_ISDIR(qinfo.st_mode) or qdir.is_symlink():
+            outcome.update(action="skipped", reason="boundary")
+            return outcome
+        os.rename(candidate, target)
+    except OSError as exc:
+        reason = "cross_device" if exc.errno == errno.EXDEV else "quarantine_failed"
+        outcome.update(action="skipped", reason=reason, error=type(exc).__name__)
+        return outcome
+    _retention_write_record(qdir / record_name, {
+        "schema": RETENTION_QUARANTINE_RECORD_SCHEMA,
+        "original_name": candidate.name,
+        "quarantine_object": target.name,
+        "quarantined_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "policy_version": manifest["policy_version"],
+        "manifest_sha256": manifest["manifest_sha256"],
+        "state_sha256": item["state_sha256"],
+        "restore": "context_guard.py cleanup --restore <name>",
+    })
+    outcome["quarantine_object"] = target.name
+    return outcome
+
+
+def _retention_purge_pass(
+    root: Path, policy: dict[str, Any], now: dt.datetime,
+    deadline: float | None,
+) -> dict[str, Any]:
+    """Quarantine past its grace period moves to permanent reclaim.
+
+    Restore is no longer possible after purge; tombstones record the event
+    for a bounded period and are then retired themselves.
+    """
+    summary = {"purged": 0, "purge_pending": 0, "purge_partial": 0,
+               "tombstones_retired": 0, "purge_disabled": 0}
+    qdir = _retention_quarantine_dir(root)
+    try:
+        records = sorted(qdir.glob("*.record.json"))
+    except OSError:
+        return summary
+    for record_path in records:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            summary["purge_pending"] += 1  # unreadable record: keep object
+            continue
+        if record.get("schema") != RETENTION_QUARANTINE_RECORD_SCHEMA:
+            summary["purge_pending"] += 1
+            continue
+        quarantined = parse_time(str(record.get("quarantined_at") or ""))
+        if quarantined is None:
+            summary["purge_pending"] += 1
+            continue
+        grace = float(policy["quarantine_days"])
+        if (now - quarantined).total_seconds() < grace * 86400.0:
+            summary["purge_pending"] += 1
+            continue
+        if not policy["purge_enabled"]:
+            summary["purge_disabled"] += 1
+            continue
+        target = qdir / str(record.get("quarantine_object") or "")
+        if not _is_session_component(str(record.get("original_name") or "")):
+            summary["purge_pending"] += 1
+            continue
+        if target.exists() and not _retention_purge_tree(
+                target, deadline):
+            summary["purge_partial"] += 1
+            continue
+        tombstone = qdir / (
+            record_path.name[:-len(".record.json")] + ".tombstone.json")
+        _retention_write_record(tombstone, {
+            "schema": RETENTION_TOMBSTONE_SCHEMA,
+            "original_name": record["original_name"],
+            "purged_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "quarantined_at": record.get("quarantined_at"),
+            "policy_version": record.get("policy_version"),
+            "restore": "unavailable_after_purge",
+            "tombstone_retention_days": _RETENTION_TOMBSTONE_RETENTION_DAYS,
+        })
+        record_path.unlink(missing_ok=True)
+        summary["purged"] += 1
+    # Tombstones themselves expire so purge history cannot grow forever.
+    cutoff = now - dt.timedelta(days=_RETENTION_TOMBSTONE_RETENTION_DAYS)
+    try:
+        for tombstone in qdir.glob("*.tombstone.json"):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            try:
+                record = json.loads(tombstone.read_text(encoding="utf-8"))
+                purged = parse_time(str(record.get("purged_at") or ""))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if purged is not None and purged < cutoff:
+                tombstone.unlink(missing_ok=True)
+                summary["tombstones_retired"] += 1
+    except OSError:
+        pass
+    return summary
+
+
+def retention_restore(root: Path, name: str) -> dict[str, Any]:
+    """Restore one quarantined object to its original namespace position.
+
+    Only objects still in quarantine can be restored; a purged object has
+    no restore path, and a name that already has a live successor is never
+    overwritten.
+    """
+    report: dict[str, Any] = {"schema": RETENTION_REPORT_SCHEMA,
+                              "mode": "restore", "name": name}
+    if not _is_session_component(name):
+        report["outcome"] = "refused"
+        report["reason"] = "not_a_session_component"
+        return report
+    if not _maintenance_boundary_ok(root):
+        report["outcome"] = "refused"
+        report["reason"] = "boundary"
+        return report
+    qdir = _retention_quarantine_dir(root)
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    try:
+        candidates = sorted(qdir.glob("*.record.json"))
+    except OSError:
+        candidates = []
+    for record_path in candidates:
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if (record.get("schema") == RETENTION_QUARANTINE_RECORD_SCHEMA
+                and record.get("original_name") == name):
+            matches.append((record_path, record))
+    if len(matches) != 1:
+        report["outcome"] = "not_found" if not matches else "ambiguous"
+        return report
+    record_path, record = matches[0]
+    target_object = qdir / str(record.get("quarantine_object") or "")
+    home = root / V2_NAMESPACE / name
+    if not target_object.is_dir():
+        report["outcome"] = "unavailable"
+        report["reason"] = "purged_or_removed"
+        return report
+    if home.exists() or home.is_symlink():
+        report["outcome"] = "refused"
+        report["reason"] = "live_successor_exists"
+        return report
+    try:
+        os.rename(target_object, home)
+    except OSError as exc:
+        report["outcome"] = "failed"
+        report["reason"] = ("cross_device"
+                            if exc.errno == errno.EXDEV else "restore_failed")
+        return report
+    record_path.unlink(missing_ok=True)
+    report["outcome"] = "restored"
+    return report
+
+
+def _retention_iter_candidates(
+    root: Path, deadline: float | None, cursor: str, pending: list[str],
+    scan_state: dict[str, bool],
+) -> Iterator[str]:
+    """Lazily yield candidate session names for one maintenance pass.
+
+    The persisted pending queue is drained first (FIFO progress that never
+    depends on readdir order); the live scan then yields names after the
+    decided cursor prefix. The deadline is checked per directory entry, so
+    enumeration and adjudication share one bounded budget, and every
+    pulled-but-unprocessed name re-enters the pending queue instead of
+    being skipped. The registry and queue are discovery hints only: each
+    candidate is re-verified against the live namespace before use.
+    """
+    namespace = root / V2_NAMESPACE
+    queued = sorted(
+        name for name in pending
+        if _is_session_component(name) and (namespace / name).exists()
+    )
+    queued_set = set(queued)
+    for name in queued:
+        yield name
+    registry = _read_discovery_registry(root)
+    fresh: list[str] = []
+    walked = 0
+    try:
+        with os.scandir(namespace) as source:
+            for entry in source:
+                # The readdir walk itself is not clock-budgeted: it is a
+                # bounded-cost listing (documented assumption: a finite or
+                # controlled-growth namespace), and per-entry clock checks
+                # here would let a long decided prefix starve the tail —
+                # the exact risk the retained RV03 failure records. The
+                # maintenance budget governs adjudication and deletion
+                # work, and a hard entry cap bounds a single pass's walk.
+                walked += 1
+                if walked > _RETENTION_SCAN_ENTRY_CAP:
+                    scan_state["complete"] = False
+                    break
+                name = entry.name
+                if name == ".locks" or not _is_session_component(name):
+                    continue
+                if name in queued_set or (cursor and name <= cursor):
+                    continue  # queued or already-decided prefix
+                fresh.append(name)
+                if name not in registry:
+                    # Register before adjudication so a later pass can find
+                    # this name even if this pass is interrupted first.
+                    _add_cleanup_registry_entries(root, [name])
+                yield name
+    except OSError:
+        scan_state["complete"] = False
+        return
+    if fresh:
+        # Batch-append any names registered one-by-one above (duplicates are
+        # harmless set semantics on read); a failed append costs discovery
+        # convenience only, never correctness.
+        _add_cleanup_registry_entries(root, fresh)
+
+
+def _retention_apply_object(
+    root: Path, candidate: Path, item: dict[str, Any],
+    policy: dict[str, Any], now: dt.datetime,
+    report: dict[str, Any], manifest: dict[str, Any] | None,
+) -> None:
+    """Re-verify one bound object under its lifecycle lock and quarantine it.
+
+    Called with either a just-adjudicated entry (same-pass apply) or an
+    external manifest entry. Every mismatch skips the object; nothing here
+    can widen the deletion set beyond the recorded binding.
+    """
+    item = dict(item)
+    if "identity" not in item and manifest is None:
+        # Same-pass binding carries the adjudicated identity explicitly.
+        item["identity"] = item.get("identity")
+    reason = _retention_reverify_entry(candidate, item, policy, now)
+    if reason:
+        report["counts"]["skipped"] += 1
+        _retention_report_entry(report, {"name": candidate.name,
+                                         "verdict": "skipped",
+                                         "reason": reason})
+        return
+    busy, handle = _retention_probe_lifecycle_lock(candidate)
+    if busy:
+        report["counts"]["skipped"] += 1
+        _retention_report_entry(report, {"name": candidate.name,
+                                         "verdict": "skipped",
+                                         "reason": "busy_lock"})
+        return
+    with handle if handle is not None else contextlib.nullcontext():
+        # Final identity binding under the shared lifecycle lock.
+        reason = _retention_reverify_entry(candidate, item, policy, now)
+        if reason:
+            report["counts"]["skipped"] += 1
+            _retention_report_entry(report, {"name": candidate.name,
+                                             "verdict": "skipped",
+                                             "reason": reason})
+            return
+        binding_manifest = manifest if manifest is not None else {
+            "schema": RETENTION_MANIFEST_SCHEMA,
+            "policy_version": policy["policy_version"],
+            "manifest_sha256": "same-pass",
+        }
+        outcome = _retention_quarantine_object(
+            root, candidate, item, binding_manifest, now)
+    if outcome.get("action") == "quarantine":
+        report["counts"]["quarantined"] += 1
+    else:
+        report["counts"]["skipped"] += 1
+    applied = {
+        "name": outcome.get("name", ""),
+        "verdict": "quarantined"
+        if outcome.get("action") == "quarantine" else "skipped",
+    }
+    if outcome.get("reason"):
+        applied["reason"] = outcome["reason"]
+    _retention_report_entry(report, applied)
+
+
+def _retention_report_entry(report: dict[str, Any], entry: dict[str, Any]) -> None:
+    if len(report["entries"]) < _RETENTION_REPORT_ENTRY_LIMIT:
+        report["entries"].append(entry)
+
+
+def _retention_maintenance_pass(
+    root: Path, *, deadline: float | None, apply: bool,
+    manifest: dict[str, Any] | None, with_manifest: bool = False,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    now = dt.datetime.now(dt.timezone.utc)
+    policy = read_retention_policy(root)
+    report: dict[str, Any] = {
+        "schema": RETENTION_REPORT_SCHEMA,
+        "mode": "apply" if apply else "preview",
+        "policy": {key: policy[key] for key in (
+            "schema", "enabled", "min_age_days", "quarantine_days",
+            "purge_enabled", "policy_version")},
+        "counts": {"eligible": 0, "protected": 0, "quarantined": 0,
+                   "skipped": 0, "scanned": 0},
+        "entries": [],
+        "backlog": False,
+        "scan_complete": False,
+    }
+    if not _maintenance_boundary_ok(root):
+        report["refused"] = "boundary"
+        return report
+    if apply and manifest is None and not policy["enabled"]:
+        raise RuntimeError(
+            "retention apply requires an enabled policy; preview only")
+    if apply and manifest is not None:
+        if manifest.get("schema") != RETENTION_MANIFEST_SCHEMA:
+            raise RuntimeError("unsupported retention manifest schema")
+        if manifest.get("data_root") != _retention_data_root_digest(root):
+            raise RuntimeError("retention manifest does not bind this data root")
+        if manifest.get("policy_version") != policy["policy_version"]:
+            raise RuntimeError(
+                "retention policy changed since the manifest was generated")
+        if _retention_manifest_digest(manifest) != manifest.get("manifest_sha256"):
+            raise RuntimeError("retention manifest digest mismatch")
+    if not (root / V2_NAMESPACE).is_dir():
+        # Nothing to maintain: refuse without creating anything (no policy
+        # object, no locks directory, no cursor write on a fresh root).
+        report["refused"] = "missing_data_root"
+        return report
+
+    cursor, pending = _read_cleanup_state(root)
+    scan_state = {"complete": True}
+    candidates = _retention_iter_candidates(
+        root, deadline, cursor, pending, scan_state)
+    eligible_entries: list[dict[str, Any]] = []
+    protected_reasons: dict[str, int] = {}
+    processed: list[str] = []
+    pulled_unprocessed: list[str] = []
+    interrupted = False
+    current: str | None = None
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            interrupted = True
+            break
+        try:
+            current = next(candidates)
+        except StopIteration:
+            current = None
+            break
+        processed.append(current)
+        report["counts"]["scanned"] += 1
+        candidate = root / V2_NAMESPACE / current
+        entry = _retention_adjudicate(candidate, policy, now)
+        compact = {"name": entry["name"], "verdict": entry["verdict"]}
+        if entry.get("reason"):
+            compact["reason"] = entry["reason"]
+        if "age_days" in entry:
+            compact["age_days"] = entry["age_days"]
+        if entry["verdict"] == "eligible":
+            report["counts"]["eligible"] += 1
+            eligible_entries.append(entry)
+            # Same-pass apply is atomic per object: the object just
+            # adjudicated is immediately re-verified under its lifecycle
+            # lock against its own recorded identity and state digest and
+            # then quarantined. The manifest entry set below records the
+            # exact bindings; an external manifest apply uses the same
+            # per-object re-verification.
+            if apply and manifest is None:
+                _retention_apply_object(
+                    root, candidate, entry, policy, now, report,
+                    manifest=None)
+        else:
+            report["counts"]["protected"] += 1
+            protected_reasons[entry.get("reason", "unknown")] = \
+                protected_reasons.get(entry.get("reason", "unknown"), 0) + 1
+        if len(report["entries"]) < _RETENTION_REPORT_ENTRY_LIMIT:
+            report["entries"].append(compact)
+        current = None
+    if current is not None:
+        # A pulled-but-unprocessed candidate re-enters the queue.
+        pulled_unprocessed.append(current)
+        processed.remove(current)
+    if interrupted:
+        scan_state["complete"] = False
+    report["scan_complete"] = scan_state["complete"]
+    report["protected_reasons"] = protected_reasons
+    if with_manifest:
+        binding = _retention_make_manifest(root, policy, eligible_entries, now)
+        if binding["entries"]:
+            report["manifest"] = binding
+            report["manifest_sha256"] = binding["manifest_sha256"]
+
+    apply_deferred: list[str] = []
+    if apply and manifest is not None:
+        # External manifest apply: consume exactly the saved binding. Each
+        # object is re-verified against its recorded identity and digest
+        # under the lifecycle lock; a budget cut defers the remaining names
+        # into the pending queue instead of dropping them.
+        report["manifest_sha256"] = manifest["manifest_sha256"]
+        for item_index, item in enumerate(manifest["entries"]):
+            if deadline is not None and time.monotonic() >= deadline:
+                apply_deferred.extend(
+                    str(planned.get("name") or "")
+                    for planned in manifest["entries"][item_index:]
+                    if isinstance(planned, dict))
+                report["backlog"] = True
+                break
+            candidate = root / V2_NAMESPACE / str(item.get("name") or "")
+            _retention_apply_object(
+                root, candidate, item if isinstance(item, dict) else {},
+                policy, now, report, manifest)
+        if apply_deferred:
+            report["apply_deferred"] = apply_deferred
+    if apply and manifest is None and eligible_entries:
+        # Record the same-pass binding digest for auditability.
+        binding = _retention_make_manifest(
+            root, policy,
+            [entry for entry in eligible_entries
+             if (root / V2_NAMESPACE / entry["name"]).exists()],
+            now)
+        report["manifest_sha256"] = binding["manifest_sha256"]
+    if apply and policy["enabled"]:
+        if policy["purge_enabled"]:
+            report["purge"] = _retention_purge_pass(
+                root, policy, now, deadline)
+        else:
+            report["purge"] = {"purge_disabled": 1, "purged": 0,
+                               "purge_pending": 0, "purge_partial": 0,
+                               "tombstones_retired": 0}
+
+    # Persist enumeration progress: a completed generation resets the
+    # cursor, an interrupted one resumes exactly where it stopped. The
+    # pending queue carries pulled-but-unprocessed names so no candidate is
+    # ever lost to a budget cut.
+    queued_pending = [
+        name for name in pending if _is_session_component(name)
+        and name not in set(processed)
+    ]
+    remaining = set(queued_pending) | set(pulled_unprocessed)
+    if apply:
+        # Budget-deferred apply items re-enter the queue for the next pass.
+        remaining |= {name for name in apply_deferred
+                      if _is_session_component(name)}
+    remaining = sorted(remaining)
+    if not remaining and scan_state["complete"] and not interrupted:
+        _reset_cleanup_state(root, deadline=deadline)
+        report["backlog"] = False
+    else:
+        next_cursor = processed[-1] if processed else cursor
+        _write_cleanup_state(root, next_cursor, remaining, deadline=deadline)
+        report["backlog"] = True
+    report["elapsed_seconds"] = round(time.monotonic() - started, 4)
+    return report
+
+
 def cleanup_old_sessions(
     root: Path,
     current: Path | None = None,
     *,
     deadline: float | None = None,
-) -> int:
-    """Retention deletion is unavailable pending a crash-safe protocol."""
-    raise RuntimeError("Session retention cleanup is disabled; no sessions were deleted.")
+    apply: bool = False,
+    manifest: dict[str, Any] | None = None,
+    with_manifest: bool = False,
+) -> dict[str, Any]:
+    """Run one bounded retention-maintenance pass under contract
+    ``cg-retention-report/v1`` (0.17.0 restoration).
+
+    Default invocation is preview-only and never mutates session data.
+    Deletion requires an enabled retention policy plus an explicit apply
+    bound to an exact manifest; every planned object is re-verified under
+    the shared non-creating lifecycle lock immediately before its
+    quarantine rename, and quarantine keeps a documented restore path
+    before the separate purge stage. Old cursors, pending chunks and
+    partial markers are progress data, never deletion authorization.
+    """
+
+    del current  # kept for API compatibility; scope is always the whole root
+    return _retention_maintenance_pass(
+        root, deadline=deadline, apply=apply, manifest=manifest,
+        with_manifest=with_manifest,
+    )
 
 
 def _resume_retired_marker(candidate: Path) -> bool:
@@ -23921,6 +25033,108 @@ def _latest_state_candidates(sessions: Path):
     return candidates
 
 
+def _print_retention_summary(report: dict[str, Any]) -> None:
+    counts = report.get("counts", {})
+    mode = report.get("mode", "preview")
+    print(f"retention {mode}: "
+          f"scanned={counts.get('scanned', 0)} "
+          f"eligible={counts.get('eligible', 0)} "
+          f"protected={counts.get('protected', 0)} "
+          f"quarantined={counts.get('quarantined', 0)} "
+          f"skipped={counts.get('skipped', 0)}")
+    policy = report.get("policy", {})
+    print(f"policy: enabled={policy.get('enabled')} "
+          f"min_age_days={policy.get('min_age_days')} "
+          f"quarantine_days={policy.get('quarantine_days')} "
+          f"purge_enabled={policy.get('purge_enabled')}")
+    for entry in report.get("entries", []):
+        line = f"  {entry.get('verdict', '?'):>10}  {entry.get('name', '')}"
+        if entry.get("reason"):
+            line += f"  ({entry['reason']})"
+        if "age_days" in entry:
+            line += f"  age={entry['age_days']}d"
+        print(line)
+    if report.get("purge"):
+        print(f"purge: {report['purge']}")
+    print(f"scan_complete={report.get('scan_complete')} "
+          f"backlog={report.get('backlog')}")
+
+
+def command_cleanup(args: argparse.Namespace) -> int:
+    """Session retention maintenance entry point.
+
+    Without an explicit data directory the command refuses before any
+    root resolution: it never creates or scans a default home. Preview is
+    the default mode; deletion requires an enabled policy and an explicit
+    apply bound to an exact manifest.
+    """
+    root = args.data_dir
+    if root is None or not str(root).strip():
+        print("cleanup requires --data-dir; no default data root is used.",
+              file=sys.stderr)
+        return 2
+    root = root.expanduser().resolve()
+    try:
+        if args.policy == "enable":
+            policy = write_retention_policy(
+                root, enabled=True, min_age_days=args.min_age_days,
+                quarantine_days=args.quarantine_days,
+                purge_enabled=False if args.no_purge else None)
+            print(json.dumps({"policy": policy}, ensure_ascii=False, indent=2))
+            return 0
+        if args.policy == "disable":
+            policy = write_retention_policy(
+                root, enabled=False, min_age_days=args.min_age_days,
+                quarantine_days=args.quarantine_days,
+                purge_enabled=False if args.no_purge else None)
+            print(json.dumps({"policy": policy}, ensure_ascii=False, indent=2))
+            return 0
+        if args.policy == "show":
+            print(json.dumps({"policy": read_retention_policy(root)},
+                             ensure_ascii=False, indent=2))
+            return 0
+        if args.restore is not None:
+            report = retention_restore(root, args.restore)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("outcome") == "restored" else 2
+        manifest = None
+        if args.apply_manifest is not None:
+            try:
+                manifest = json.loads(
+                    args.apply_manifest.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                print(f"retention manifest unreadable: {exc}", file=sys.stderr)
+                return 2
+        deadline = (time.monotonic()
+                    + max(0.0, float(args.budget_seconds or 0.0)))
+        report = cleanup_old_sessions(
+            root, deadline=deadline,
+            apply=bool(args.apply or manifest is not None),
+            manifest=manifest)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.save_manifest is not None:
+        if not report.get("manifest"):
+            print("no eligible objects; no manifest was saved.", file=sys.stderr)
+            return 2
+        try:
+            args.save_manifest.parent.mkdir(parents=True, exist_ok=True)
+            args.save_manifest.write_text(
+                json.dumps(report["manifest"], ensure_ascii=False, indent=2)
+                + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"manifest save failed: {exc}", file=sys.stderr)
+            return 2
+        print(f"manifest saved: {args.save_manifest} "
+              f"({len(report['manifest']['entries'])} objects)")
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        _print_retention_summary(report)
+    return 0
+
+
 def command_status() -> int:
     latest = find_latest_state(data_root())
     if latest is None:
@@ -24290,7 +25504,34 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
     )
     recovery_page.add_argument("--limit", type=int, default=8)
     recovery_page.add_argument("--session-id", required=True)
-    subparsers.add_parser("cleanup", help="Unavailable: session retention deletion is disabled")
+    cleanup = subparsers.add_parser(
+        "cleanup",
+        help="Session retention maintenance: preview by default, "
+             "policy-gated quarantine/restore/purge",
+        allow_abbrev=False,
+    )
+    cleanup.add_argument("--data-dir", type=Path)
+    cleanup.add_argument("--json", action="store_true",
+                         help="print the full versioned report")
+    cleanup.add_argument(
+        "--apply", action="store_true",
+        help="apply this pass's own adjudicated set (requires an enabled policy)",
+    )
+    cleanup.add_argument(
+        "--apply-manifest", type=Path,
+        help="apply exactly the saved preview manifest (requires an enabled policy)",
+    )
+    cleanup.add_argument("--save-manifest", type=Path,
+                         help="save the preview manifest for later exact apply")
+    cleanup.add_argument("--restore", metavar="NAME",
+                         help="restore one quarantined session by encoded name")
+    cleanup.add_argument("--policy", choices=("show", "enable", "disable"))
+    cleanup.add_argument("--min-age-days", type=int)
+    cleanup.add_argument("--quarantine-days", type=int)
+    cleanup.add_argument("--no-purge", action="store_true",
+                         help="quarantine without ever purging")
+    cleanup.add_argument("--budget-seconds", type=float,
+                         default=_RETENTION_MAINTENANCE_DEFAULT_BUDGET_SECONDS)
     subparsers.add_parser("self-test", help="Validate the runtime and hook bundle")
     pending_review = subparsers.add_parser("review-pending", help="One review at the task-agent commentary delivery boundary")
     pending_review.add_argument("--data-dir", type=Path, required=True)
@@ -24379,8 +25620,7 @@ def main(*, budget_started_at: Any = _SESSION_END_BUDGET_UNSET) -> int:
     if args.command == "diagnose":
         return command_diagnose(args)
     if args.command == "cleanup":
-        print("Session retention cleanup is disabled; no sessions were deleted.", file=sys.stderr)
-        return 2
+        return command_cleanup(args)
     if args.command == "review-pending":
         return command_review_pending(args)
     if args.command == "review-answer":
