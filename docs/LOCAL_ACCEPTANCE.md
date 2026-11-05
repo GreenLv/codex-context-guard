@@ -1,5 +1,49 @@
 # Local Release Acceptance
 
+## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
+
+This section records 0.17.0 development-stage observations on the
+`codex/0.17.0-candidate` branch. They are macOS source evidence only: full
+CI, native macOS/Windows retention acceptance, installed artifacts, the
+identity switch and the release gate are separate pending stages, and nothing
+here is release evidence.
+
+- Historical incident oracles: the canonical library
+  (`context-guard-effectiveness` at `d874864`) carries three reproduced
+  0.17.0 cases. On the 0.16.1 baseline (`b636930`) their oracles reproduce
+  exactly as recorded (3 failing / 2 controls; 3 failing / 5 controls). On the
+  candidate the same oracles pass 5/5 and 8/8 with unchanged fixtures and
+  replay scripts; candidate results are registered in the library as
+  retained `source_fixed` successors, leaving the original records and
+  failure receipts byte-identical.
+- The pre-registered scoped performance contract
+  (`docs/perf-contracts/v0.17.0-scoped.json`, budgets fixed before
+  measurement) compared the candidate against a baseline worktree at
+  `b636930` with the formal interleaved driver (20 attempts per side, both
+  sides zero failures). All four gated cells are WITHIN-DECLARED-BUDGET with
+  zero declared regressions and zero inconclusive pairs:
+  `user_prompt_active` median ratio 0.558 (p95 LoCI 0.429),
+  `posttool_active` 0.544 (p95 LoCI 0.423), `session_end` 0.565 (p95 LoCI
+  0.392), `memory_stop` median ratio 1.007 / p95 0.981 with tracemalloc peak
+  ratio 1.001. The large Hook-cell speedup relative to 0.16.1 reflects the
+  candidate's overall dispatch work on this host; the predeclared gate treats
+  it as within budget, not as a guarantee.
+- The retention maintenance worker ran its standalone predeclared budget
+  (20 samples over the fixed twelve-session backlog): 20/20 completed, median
+  0.063 s, p95 0.076 s against the registered 2.0 s / 4.0 s budgets, with the
+  exact six-quarantined/six-protected count oracle. The worker keeps its own
+  budget and is never folded into Hook cells. Raw A/B and worker results are
+  retained outside the source checkout; their digests are recorded in the
+  development handoff package.
+- The canonical historical-library release gate
+  (`check_incident_coverage . --execute --release-gate`, fresh report outside
+  the repository) was executed by the development thread against the frozen
+  library `d874864` and the candidate tree; its receipt inventory, per-row
+  verdicts and report digests are recorded in the handoff package. Native
+  Windows rows, native macOS model observations and release-stage gates keep
+  their separate pending status; a source-suite pass never substitutes for
+  them.
+
 ## 0.16.1 — acceptance history (2026-11-03)
 
 This section records 0.16.1 acceptance observations on their named source

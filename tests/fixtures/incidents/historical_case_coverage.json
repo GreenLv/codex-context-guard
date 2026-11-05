@@ -1,10 +1,10 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "3add004535404dc62fb98b338fd1514e0206cc96",
+  "library_commit": "d874864c8e87078455a97d61644c6c26fb828c35",
   "denominator": {
     "case_registry": {
-      "records": 73,
-      "active": 56
+      "records": 79,
+      "active": 59
     },
     "legacy_source": {
       "records": 16,
@@ -19,7 +19,7 @@
     "pending",
     "excluded_incomplete"
   ],
-  "description": "Per-case mapping of the anonymized historical incident corpus (bound to the frozen library snapshot; refreshed for CG-0151-HOOK-REPAIR and its review R1 repair round (CGI-20261002/CGI-20261003 added, source results re-executed on the 0.15.1 candidate)) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit.",
+  "description": "Per-case mapping of the anonymized historical incident corpus (bound to the frozen library snapshot; refreshed for CG-0151-HOOK-REPAIR and its review R1 repair round (CGI-20261002/CGI-20261003 added, source results re-executed on the 0.15.1 candidate)) to the current public product contract. Two separately numbered lineages; equal numeric suffixes are not the same incident. Superseded rows carry successor attribution; active rows carry the current invariant, synthetic trigger, positive and negative assertions, executed locators, platform-split results and the verdict. DSH rows are analogue_only: shared semantics verified on the Codex side, never a DSH fix claim. Pending rows keep their missing native evidence explicit. Refreshed for the 0.17.0 candidate: library pin d874864, three reproduced 0.17.0 cases added with retained source_fixed successors as the active adjudication rows; all previously passing rows are carried over unchanged.",
   "cases": [
     {
       "id": "CGI-20260913-codex-archive-009",
@@ -1491,6 +1491,105 @@
       "windows_result": "passed",
       "missing_evidence": [],
       "owner": "coordinator"
+    },
+    {
+      "id": "CGI-20261105-codex-plan-only-edit-obligation",
+      "lineage": "case-registry",
+      "status": "superseded",
+      "title": "仅规划大纲的请求被推导为修改文件义务并在答复后触发补证",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "planning-scope-operation-and-completion-evidence",
+      "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+      "note": "superseded by the retained source_fixed successor; adjudication lives on the successor row"
+    },
+    {
+      "id": "CGI-20261105-codex-host-aggregated-output",
+      "lineage": "case-registry",
+      "status": "superseded",
+      "title": "当前 Desktop 命令结果字段变化导致成功和失败退出均丢失",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "host-terminal-result-shape",
+      "successor": "CGI-20261106-codex-host-aggregated-output-source-fixed",
+      "note": "superseded by the retained source_fixed successor; adjudication lives on the successor row"
+    },
+    {
+      "id": "CGI-20261105-codex-transcript-large-row-poisoning",
+      "lineage": "case-registry",
+      "status": "superseded",
+      "title": "无关超大历史输出使后续正常命令的终端证据全部不可用",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "host-transcript-bounded-reader-isolation",
+      "successor": "CGI-20261106-codex-transcript-large-row-poisoning-source-fixed",
+      "note": "superseded by the retained source_fixed successor; adjudication lives on the successor row"
+    },
+    {
+      "id": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "规划范围误判已在 0.17.0 候选源码修复（原生验收待做）",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "planning-scope-operation-and-completion-evidence",
+      "current_contract": "0.17.0 candidate: clause derivation 1.1.0 stamps and authorizes only current-turn primary actions; verification categories keep their prior reading",
+      "trigger": "verification_contract and prompt_action_scope on reported-history, advice, bare-negation, delegation, deferred and mixed prompts; dispatcher lifecycle UserPromptSubmit -> PostToolUse -> Stop -> cold resume",
+      "positive": "original 3 failing assertions and both controls pass (5/5); 23-row family table, scope authorization and the dispatcher lifecycle pass",
+      "negative": "real-edit control still blocks without evidence; unknown semantics stay unknown",
+      "test_locator": "tests/test_cg0170_scope_family.py::ClauseActionContextTests::test_planning_only_history_and_advice_never_stamp_local_edit and ::test_current_directives_keep_their_obligations and ::test_prompt_action_scope_authorizes_only_current_actions and ::test_contract_mode_matches_operation_stamp; tests/test_cg0170_scope_family.py::PlanningOnlyLifecycleTests::test_planning_only_turn_stops_without_edit_gate and ::test_real_edit_turn_still_demands_evidence and ::test_planning_state_survives_cold_readback",
+      "deeper_authority": "tests/test_cg0170_scope_family.py; tests/test_cg0170_host_evidence_family.py; library repro candidate-result.json records",
+      "final_verdict": "executed_pass",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "not_required",
+      "missing_evidence": [],
+      "owner": "development (0.17.0 candidate)",
+      "note": "macOS source evidence only: the executed oracles are source-level semantic and adapter executions, not native Host turns. Native cross-platform acceptance and the release gate remain separate pending stages; this row never waives them."
+    },
+    {
+      "id": "CGI-20261106-codex-host-aggregated-output-source-fixed",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "Desktop aggregated_output 终端结果已在 0.17.0 候选源码修复（原生验收待做）",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "host-terminal-result-shape",
+      "current_contract": "0.17.0 candidate: one authoritative-output rule accepts stdout or the observed aggregated_output; an exactly equal pair is accepted, a conflicting pair is rejected",
+      "trigger": "host_terminal_result with synthetic native-shaped CommandExecution items on both output fields, plus identity/turn/cwd/status/exit-code bindings",
+      "positive": "original 8-scenario oracle 8/8: aggregated success and failure recognized, controls still reject unreliable evidence",
+      "negative": "conflicting dual fields, non-string, oversized output, missing fields, wrong turn and duplicate candidates stay rejected",
+      "test_locator": "tests/test_cg0170_host_evidence_family.py::HostEvidenceFamilyTests::test_aggregated_output_success_and_failure_are_recognized and ::test_conflicting_dual_output_fields_stay_rejected and ::test_equal_dual_output_fields_are_accepted and ::test_empty_aggregated_output_stays_a_process_result and ::test_non_string_aggregated_output_stays_rejected and ::test_oversized_aggregated_output_stays_rejected and ::test_missing_both_output_fields_stays_rejected",
+      "deeper_authority": "tests/test_cg0170_scope_family.py; tests/test_cg0170_host_evidence_family.py; library repro candidate-result.json records",
+      "final_verdict": "executed_pass",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "not_required",
+      "missing_evidence": [],
+      "owner": "development (0.17.0 candidate)",
+      "note": "macOS source evidence only: the executed oracles are source-level semantic and adapter executions, not native Host turns. Native cross-platform acceptance and the release gate remain separate pending stages; this row never waives them."
+    },
+    {
+      "id": "CGI-20261106-codex-transcript-large-row-poisoning-source-fixed",
+      "lineage": "case-registry",
+      "status": "active",
+      "title": "无关超大日志行连带拒绝已在 0.17.0 候选源码修复（原生验收待做）",
+      "runtime": "codex",
+      "platform": "macos",
+      "family": "host-transcript-bounded-reader-isolation",
+      "current_contract": "0.17.0 candidate: bounded unrelated-record isolation skips an oversized row only when a closed anchored head parse proves its outer type can never carry the terminal candidate",
+      "trigger": "_host_transcript_items with oversized unrelated rows of every outer type around the real terminal event",
+      "positive": "large-unrelated-row control passes; the snapshot stays complete for later normal commands",
+      "negative": "oversized event_msg, unknown type, unparseable head, embedded fake type, oversized duplicate candidate and oversized session_meta head keep the snapshot unavailable",
+      "test_locator": "tests/test_cg0170_host_evidence_family.py::HostEvidenceFamilyTests::test_large_unrelated_response_item_does_not_poison_the_snapshot and ::test_oversized_turn_context_row_is_skippable and ::test_oversized_event_msg_keeps_the_snapshot_unavailable and ::test_oversized_unknown_type_keeps_the_snapshot_unavailable and ::test_oversized_broken_noncandidate_row_is_skipped_by_design and ::test_oversized_broken_event_head_keeps_the_snapshot_unavailable and ::test_embedded_fake_type_inside_a_string_is_not_skippable and ::test_oversized_duplicate_candidate_keeps_the_snapshot_unavailable and ::test_oversized_session_meta_head_keeps_identity_unverified and ::test_small_unrelated_rows_never_changed_behavior",
+      "deeper_authority": "tests/test_cg0170_scope_family.py; tests/test_cg0170_host_evidence_family.py; library repro candidate-result.json records",
+      "final_verdict": "executed_pass",
+      "source_result": "passed",
+      "macos_result": "passed",
+      "windows_result": "not_required",
+      "missing_evidence": [],
+      "owner": "development (0.17.0 candidate)",
+      "note": "macOS source evidence only: the executed oracles are source-level semantic and adapter executions, not native Host turns. Native cross-platform acceptance and the release gate remain separate pending stages; this row never waives them."
     }
   ],
   "legacy": [
