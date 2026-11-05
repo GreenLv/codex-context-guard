@@ -209,19 +209,31 @@ class RetentionPolicyTests(RetentionFixtureBase):
         self.assertFalse(cg.read_retention_policy(self.data_dir)["enabled"])
         self.assertGreater(disabled["policy_version"], again["policy_version"])
 
-    def test_policy_values_are_clamped_into_safe_ranges(self):
+    def test_policy_values_are_clamped_on_write_and_invalid_on_read(self):
+        # The explicit write path clamps into the documented safe ranges.
         policy = cg.write_retention_policy(
             self.data_dir, enabled=True, min_age_days=0, quarantine_days=-5)
         self.assertEqual(policy["min_age_days"], 1)
         self.assertEqual(policy["quarantine_days"], 1)
+        # A hostile hand-edited file is never clamped into authorization:
+        # any missing field, wrong type or out-of-range value makes the
+        # whole policy invalid and disabled with the failing fact named.
         hostile = cg._retention_policy_path(self.data_dir)
-        hostile.write_text(json.dumps({
-            "schema": cg.RETENTION_POLICY_SCHEMA, "enabled": True,
-            "min_age_days": -100, "quarantine_days": 10 ** 6,
-            "policy_version": 1}), encoding="utf-8")
-        read = cg.read_retention_policy(self.data_dir)
-        self.assertEqual(read["min_age_days"], 1)
-        self.assertEqual(read["quarantine_days"], 365)
+        for mutation in (
+                {"min_age_days": -100},
+                {"min_age_days": 10 ** 6},
+                {"quarantine_days": 10 ** 6},
+                {"quarantine_days": "7"},
+                {"purge_enabled": None},
+                {"enabled": "yes"},
+                {"policy_version": 0},
+                {"updated_at": "not-a-time"}):
+            good = cg.write_retention_policy(self.data_dir, enabled=True)
+            data = {**good, **mutation}
+            hostile.write_text(json.dumps(data), encoding="utf-8")
+            read = cg.read_retention_policy(self.data_dir)
+            self.assertFalse(read["enabled"], mutation)
+            self.assertTrue(read.get("policy_invalid"), mutation)
 
     def test_corrupted_or_linked_policy_reads_disabled(self):
         self.enable_policy()
@@ -499,22 +511,22 @@ class RetentionApplyTests(RetentionFixtureBase):
         old = self.make_session("old", ended_days_ago=45)
         self.enable_policy()
         retained = self.root / "retained-original"
-        real_probe = cg._retention_probe_lifecycle_lock
+        real_acquire = cg._retention_acquire_lifecycle_lock
         calls: list[Path] = []
 
-        def interleave_probe(candidate, *args, **kwargs):
+        def interleave_acquire(candidate, *args, **kwargs):
             calls.append(candidate)
-            # The second probe for this object is the apply-phase lock right
-            # before re-verification: a completed writer transaction wins at
+            # The apply-phase lock acquire is the last serialization point
+            # before the rename: a completed writer transaction wins at
             # exactly that point, replacing the object under the same name.
-            if candidate == old and calls.count(candidate) >= 2:
+            if candidate == old and calls.count(candidate) >= 1:
                 os.rename(old, retained)
                 old.mkdir()
                 (old / "keep.txt").write_text("new object", encoding="utf-8")
-            return real_probe(candidate, *args, **kwargs)
+            return real_acquire(candidate, *args, **kwargs)
 
-        with mock.patch.object(cg, "_retention_probe_lifecycle_lock",
-                               interleave_probe):
+        with mock.patch.object(cg, "_retention_acquire_lifecycle_lock",
+                               interleave_acquire):
             report = cg.cleanup_old_sessions(self.data_dir, apply=True)
         self.assertEqual(report["counts"]["quarantined"], 0)
         self.assertEqual(report["counts"]["skipped"], 1)
@@ -539,12 +551,41 @@ class RetentionApplyTests(RetentionFixtureBase):
             cg.retention_restore(self.data_dir, old.name)["outcome"],
             "not_found")
 
-    def test_restore_refuses_to_overwrite_a_live_successor(self):
+    def test_quarantined_resume_transparently_restores_the_ledger(self):
+        # B02: a late resume or a new prompt on a quarantined name must
+        # never silently re-initialize over recoverable data. The official
+        # reader transparently restores the quarantined object, so the
+        # original ledger continues; only an unrestorable state refuses
+        # visibly.
+        old = self.make_session("old", ended_days_ago=45)
+        before = json.loads((old / "state.json").read_text(encoding="utf-8"))
+        self.enable_policy()
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertFalse(old.exists())
+        cg.dispatch(self.payload(
+            "SessionStart", "old", source="resume"))
+        state = json.loads(
+            (old / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["requirements"], before["requirements"])
+        # A following prompt continues the same ledger.
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "old", prompt="继续原任务。", turn_id="t2"))
+        after = json.loads((old / "state.json").read_text(encoding="utf-8"))
+        self.assertIn(before["requirements"][0], after["requirements"])
+        # The quarantine record is consumed by the transparent restore.
+        self.assertEqual(
+            cg.retention_restore(self.data_dir, old.name)["outcome"],
+            "not_found")
+
+    def test_restore_refuses_to_overwrite_a_real_live_successor(self):
         self.make_session("old", ended_days_ago=45)
         self.enable_policy()
         cg.cleanup_old_sessions(self.data_dir, apply=True)
-        cg.dispatch(self.payload(
-            "UserPromptSubmit", "old", prompt="new owner", turn_id="t1"))
+        # Simulate a successor created before the recreation guard existed
+        # (for example by an older runtime): the restore still refuses to
+        # overwrite a live directory at the home position.
+        self.session_dir("old").mkdir()
+        (self.session_dir("old") / "state.json").write_text("successor", encoding="utf-8")
         report = cg.retention_restore(
             self.data_dir, cg.safe_session_id("old"))
         self.assertEqual(report["outcome"], "refused")
@@ -799,3 +840,201 @@ class RetentionMappingContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetentionRepairR1Tests(RetentionFixtureBase):
+    """Repair-r1 contract regressions (review probes B01-B04/B05 family)."""
+
+    def test_purge_never_follows_a_replaced_quarantine_target(self):
+        # B01: a quarantine target replaced by a symlink is never purged
+        # through; the outside sentinel survives and the refusal is named.
+        self.make_session("old", ended_days_ago=45)
+        self.enable_policy(quarantine_days=1)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        record_path = next(qdir.glob("*.record.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        target = qdir / record["quarantine_object"]
+        target.rename(target.with_name(target.name + ".retained"))
+        outside = self.root / "outside-product-data"
+        outside.mkdir()
+        sentinel = outside / "must-keep.txt"
+        sentinel.write_text("synthetic outside-product bytes")
+        target.symlink_to(outside, target_is_directory=True)
+        future = cg.dt.datetime.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+        purge = cg._retention_purge_pass(
+            self.data_dir, cg.read_retention_policy(self.data_dir), future, None)
+        self.assertTrue(sentinel.exists())
+        self.assertEqual(purge["purge_refused"], 1)
+        self.assertEqual(purge["purged"], 0)
+        self.assertTrue((qdir / (record["quarantine_object"] + ".retained")).exists())
+
+    def test_identity_bound_purge_refuses_replaced_directory(self):
+        self.make_session("old", ended_days_ago=45)
+        self.enable_policy(quarantine_days=1)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        record_path = next(qdir.glob("*.record.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        target = qdir / record["quarantine_object"]
+        retained = target.with_name(target.name + ".retained")
+        target.rename(retained)
+        target.mkdir()  # same name, different inode: a replacement object
+        (target / "keep.txt").write_text("new object", encoding="utf-8")
+        future = cg.dt.datetime.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+        purge = cg._retention_purge_pass(
+            self.data_dir, cg.read_retention_policy(self.data_dir), future, None)
+        self.assertEqual(purge["purge_refused"], 1)
+        self.assertEqual((target / "keep.txt").read_text(), "new object")
+        self.assertTrue((retained / "state.json").exists())
+
+    def test_intent_record_precedes_the_rename(self):
+        # B02a: a record-write failure before the rename leaves the object
+        # in place with no quarantine entry and no lost session.
+        old = self.make_session("crash-before-rename", ended_days_ago=45)
+        self.enable_policy()
+        with mock.patch.object(cg, "_retention_write_record",
+                               side_effect=OSError("synthetic-disk-full")):
+            report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(report["counts"]["quarantined"], 0)
+        self.assertTrue(old.exists())
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        if qdir.exists():
+            self.assertEqual([p for p in qdir.iterdir()], [])
+
+    def test_interrupted_commit_is_recovered_by_the_next_pass(self):
+        # B02a: a crash between the rename and the commit write leaves a
+        # planned record; the next pass promotes it and restore works.
+        old = self.make_session("crash-after-rename", ended_days_ago=45)
+        self.enable_policy()
+        real = cg._retention_write_record
+        state = {"calls": 0}
+
+        def fail_commit(path, payload):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return real(path, payload)  # planned record succeeds
+            raise OSError("synthetic-disk-full")  # commit write fails
+
+        with mock.patch.object(cg, "_retention_write_record",
+                               side_effect=fail_commit):
+            cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertFalse(old.exists())
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        record_path = next(qdir.glob("*.record.json"))
+        self.assertEqual(json.loads(record_path.read_text())["state"], "planned")
+        preview = cg.cleanup_old_sessions(self.data_dir)
+        self.assertGreaterEqual(preview["recovery"]["recovered"], 1)
+        self.assertEqual(
+            json.loads(record_path.read_text())["state"], "quarantined")
+        restored = cg.retention_restore(self.data_dir, old.name)
+        self.assertEqual(restored["outcome"], "restored")
+        self.assertTrue(old.exists())
+
+    def test_tombstone_blocks_recreation_until_expiry(self):
+        old = self.make_session("purged-name", ended_days_ago=45)
+        self.enable_policy(quarantine_days=1)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        record_path = next(qdir.glob("*.record.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["quarantined_at"] = "2020-01-01T00:00:00Z"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertFalse(old.exists())
+        # Inside the tombstone window the name cannot start a new ledger.
+        with self.assertRaises(cg.RetentionRecreationRefused):
+            cg.dispatch(self.payload(
+                "UserPromptSubmit", "purged-name", prompt="new task",
+                turn_id="t1"))
+        # An expired tombstone no longer blocks.
+        tombstone_path = next(qdir.glob("*.tombstone.json"))
+        tombstone = json.loads(tombstone_path.read_text(encoding="utf-8"))
+        tombstone["purged_at"] = "2000-01-01T00:00:00Z"
+        tombstone_path.write_text(json.dumps(tombstone), encoding="utf-8")
+        cg.dispatch(self.payload(
+            "UserPromptSubmit", "purged-name", prompt="new task", turn_id="t2"))
+        self.assertTrue(self.session_dir("purged-name").is_dir())
+
+    def test_minimal_malformed_policy_never_authorizes(self):
+        # B03: the review probe's exact hostile shape (schema + enabled only)
+        # reads disabled with the failing fact named; nothing is clamped
+        # into an aggressive one-day default.
+        self.make_session("strict-policy", ended_days_ago=45)
+        self.enable_policy()
+        p = cg._retention_policy_path(self.data_dir)
+        p.write_text(json.dumps(
+            {"schema": cg.RETENTION_POLICY_SCHEMA, "enabled": True}),
+            encoding="utf-8")
+        policy = cg.read_retention_policy(self.data_dir)
+        self.assertFalse(policy["enabled"])
+        self.assertTrue(policy["policy_invalid"])
+        with self.assertRaisesRegex(RuntimeError, "enabled policy"):
+            cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertTrue(self.session_dir("strict-policy").exists())
+
+    def test_policy_revocation_before_the_rename_is_respected(self):
+        # B03: a revocation landing between adjudication and the rename is
+        # honored: the per-object in-lock policy re-read sees disabled.
+        old = self.make_session("revoke-before-rename", ended_days_ago=45)
+        self.enable_policy()
+        original = cg._retention_apply_object
+
+        def revoke_then_apply(*args, **kwargs):
+            cg.write_retention_policy(self.data_dir, enabled=False)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(cg, "_retention_apply_object",
+                               side_effect=revoke_then_apply):
+            r = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(r["counts"]["quarantined"], 0)
+        self.assertTrue(old.exists())
+
+    def test_decided_prefix_never_consumes_the_adjudication_cap(self):
+        # B04: the cap counts only undecided candidates, so a protected
+        # prefix cannot starve the eligible tail of a finite namespace.
+        for i in range(5):
+            self.make_session(f"prefix-{i}", ended_days_ago=45, finished=False)
+        tail = self.make_session("zz-tail-eligible", ended_days_ago=45)
+        self.enable_policy()
+        visited: list = []
+        clock = [0.0]
+        with self.scan_stub(self.data_dir / cg.V2_NAMESPACE, visited, clock), \
+                mock.patch.object(cg, "_RETENTION_SCAN_ENTRY_CAP", 3):
+            reached = False
+            for _ in range(8):
+                report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+                if report["counts"]["quarantined"] >= 1:
+                    reached = True
+                    break
+        self.assertTrue(reached, "the eligible tail starved under the cap")
+        self.assertIn("zz-tail-eligible", visited)
+        self.assertFalse(tail.exists())
+
+    def test_cli_manifest_end_to_end_preview_save_apply_restore(self):
+        # B05: the user-facing CLI must produce an appliable manifest.
+        old = self.make_session("cli-e2e", ended_days_ago=45)
+        self.enable_policy()
+        manifest_path = self.root / "selected-manifest.json"
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+
+        def run(*args):
+            return subprocess.run(
+                [sys.executable, "-B", str(MODULE_PATH), "cleanup",
+                 "--data-dir", str(self.data_dir), *args],
+                env=env, text=True, capture_output=True, check=False)
+
+        preview = run("--save-manifest", str(manifest_path))
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertTrue(manifest_path.exists())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [entry["name"] for entry in manifest["entries"]],
+            [old.name])
+        # The saved manifest binds the exact object: apply quarantines it.
+        applied = run("--apply-manifest", str(manifest_path))
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.assertFalse(old.exists())
+        restored = run("--restore", old.name)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertTrue(old.exists())

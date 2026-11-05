@@ -423,8 +423,12 @@ def marketplace_name_for_version(version: str) -> str:
     if match is None:
         raise NativeRunError("unsupported marketplace version")
     core = tuple(int(part) for part in match.groups())
+    # Historical identity facts are not rewritten: the published 0.16.0 and
+    # 0.16.1 packages declare the experimental marketplace, and every later
+    # version uses the stable identity. Both transitions are separate
+    # native scenarios (experimental->stable and stable->stable).
     if core in {(0, 16, 0), (0, 16, 1)}:
-        return "codex-context-guard"
+        return "codex-context-guard-v016"
     if core >= (0, 16, 2):
         return "codex-context-guard"
     raise NativeRunError("unsupported marketplace version")

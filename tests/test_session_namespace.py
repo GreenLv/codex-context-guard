@@ -325,7 +325,8 @@ class NamespaceResolutionTests(unittest.TestCase):
         cg.cleanup_old_sessions(self.root / 'private')
         cg.cleanup_old_sessions(self.root / 'private')
         self.assertEqual(sorted(p.name for p in directory.parent.joinpath(".locks").iterdir()),
-                         [".session-registry", "expired.lock"])
+                         [".session-registry", "expired.lock",
+                          "retention-maintenance.lock"])
 
     def test_zero_inode_never_certifies_lock_ownership(self):
         from types import SimpleNamespace

@@ -29,10 +29,19 @@ class CandidateMarketplaceIdentityTests(unittest.TestCase):
         for version in ("0.15.1", "0.16", "0.16.02", "bad"):
             with self.subTest(version=version), self.assertRaises(native.NativeRunError):
                 native.marketplace_name_for_version(version)
+        # Historical identity facts are not rewritten: the published
+        # 0.16.x packages keep their experimental marketplace identity.
+        self.assertEqual(native.marketplace_name_for_version("0.16.0"), "codex-context-guard-v016")
+        self.assertEqual(native.marketplace_name_for_version("0.16.1"), "codex-context-guard-v016")
+        self.assertEqual(native.marketplace_name_for_version("0.16.1+fixture"), "codex-context-guard-v016")
+        # The 0.17.0 line adopts the stable identity.
         self.assertEqual(native.marketplace_name_for_version("0.17.0+fixture"), "codex-context-guard")
         self.assertEqual(native.marketplace_name_for_version("1.0.0-rc.1"), "codex-context-guard")
 
     def test_manifest_and_fake_official_flow_use_versioned_identity(self):
+        # Two independent transition scenarios: the experimental->stable
+        # adoption (0.17.0 against an experimental predecessor) and a
+        # stable->stable upgrade (0.17.1 over 0.17.0).
         for version, market in (("0.17.0", "codex-context-guard"),
                                 ("0.17.1", "codex-context-guard")):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
@@ -340,10 +349,11 @@ class OfficialWindowsPathIdentityTests(unittest.TestCase):
 
         self.source = TrustedWindowsPath(r"C:\Isolated Run\source")
         self.home = TrustedWindowsPath(r"C:\Isolated Run\home")
-        self.cache = self.home / "plugins/cache/codex-context-guard/context-guard"
+        # Historical 0.16.0 package identity: the experimental marketplace.
+        self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
         self.installed = self.cache / "0.16.0"
-        self.added = dict(pluginId="context-guard@codex-context-guard", name="context-guard",
-                          marketplaceName="codex-context-guard", version="0.16.0",
+        self.added = dict(pluginId="context-guard@codex-context-guard-v016", name="context-guard",
+                          marketplaceName="codex-context-guard-v016", version="0.16.0",
                           installedPath=str(self.installed))
         self.entry = {key: self.added[key] for key in
                       ("pluginId", "name", "marketplaceName", "version")}
@@ -450,7 +460,7 @@ class OfficialWindowsPathIdentityTests(unittest.TestCase):
                 with (mock.patch.object(native.platform, "system", return_value="Windows"),
                       mock.patch.object(native, "Path", side_effect=AssertionError("JSON reached Path")),
                       mock.patch.object(native, "run", return_value=result),
-                      mock.patch.object(native, "candidate_marketplace_name", return_value="codex-context-guard"),
+                      mock.patch.object(native, "candidate_marketplace_name", return_value="codex-context-guard-v016"),
                       mock.patch.object(native, "exact_artifact_parity",
                                         side_effect=native.NativeRunError("synthetic reparse rejection")
                                         if reject else None) as parity):
@@ -483,7 +493,7 @@ class OfficialControlledUncIdentityTests(unittest.TestCase):
         concrete = type(self.source)
         self.source = concrete(root) / "source"
         self.home = concrete(root) / "home"
-        self.cache = self.home / "plugins/cache/codex-context-guard/context-guard"
+        self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
         self.installed = self.cache / name
         self.added["installedPath"] = str(self.installed)
         self.entry["source"]["path"] = str(self.source)
@@ -568,11 +578,11 @@ class OfficialPosixPathIdentityTests(unittest.TestCase):
     def test_posix_source_text_contract_and_cache_symlink_rejection_are_unchanged(self):
         with tempfile.TemporaryDirectory() as directory:
             source, home = Path(directory) / "source", Path(directory) / "home"
-            cache = home / "plugins/cache/codex-context-guard/context-guard"
+            cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
             installed = cache / "0.16.0"
             installed.mkdir(parents=True)
-            added = dict(pluginId="context-guard@codex-context-guard", name="context-guard",
-                         marketplaceName="codex-context-guard", version="0.16.0",
+            added = dict(pluginId="context-guard@codex-context-guard-v016", name="context-guard",
+                         marketplaceName="codex-context-guard-v016", version="0.16.0",
                          installedPath=str(installed))
             entry = {key: added[key] for key in ("pluginId", "name", "marketplaceName", "version")}
             entry.update(installed=True, enabled=True, source={"source":"local", "path":str(source)},

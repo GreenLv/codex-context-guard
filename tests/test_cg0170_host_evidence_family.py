@@ -202,16 +202,16 @@ class HostEvidenceFamilyTests(unittest.TestCase):
         self.assertIsNone(self.run_mixed(
             [self.meta_row(), big_unknown, self.event_row(item)]))
 
-    def test_oversized_broken_noncandidate_row_is_skipped_by_design(self):
-        # A broken oversized row whose outer type is provably never a
-        # candidate cannot hide a conflicting terminal event, so the bounded
-        # isolation skips it; candidacy only needs the outer type member.
+    def test_oversized_broken_row_keeps_the_snapshot_unavailable(self):
+        # B07 contract: a malformed oversized row is never provably
+        # skippable, even when its head claims a never-candidate type —
+        # the full-structure scan cannot certify an unclosed line.
         item = self.command_item("synthetic-read", output="sample\n")
         broken = b'{"type": "response_item", "payload": [broken' + \
             b"x" * (cg.HOST_TRANSCRIPT_LINE_LIMIT + 8) + b"\n"
         value = self.run_mixed(
             [self.meta_row(), broken, self.event_row(item)])
-        self.assertIsNotNone(value)
+        self.assertIsNone(value)
 
     def test_oversized_broken_event_head_keeps_the_snapshot_unavailable(self):
         item = self.command_item("synthetic-read", output="sample\n")
