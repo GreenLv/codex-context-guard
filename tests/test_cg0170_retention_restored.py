@@ -10,7 +10,6 @@ evidence: identity replacement, manifest binding, cursor starvation.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
@@ -28,8 +27,9 @@ try:
 except ImportError:  # Windows: msvcrt fixtures cover locks
     fcntl = None
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "context_guard.py"
 import importlib.util
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "context_guard.py"
 SPEC = importlib.util.spec_from_file_location("context_guard_0170", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 cg = importlib.util.module_from_spec(SPEC)

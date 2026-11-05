@@ -34,7 +34,7 @@ class ClauseActionContextTests(phase3.Phase3TestCase):
             # Other actor's completed work (original repro).
             (f"同事修改完了 {self.TARGET}。请规划内容逻辑和大纲，本轮不执行具体修改。", False),
             (f"同事修改了 {self.TARGET}。", False),
-            (f"有人删除了 /work/a.txt，请检查现状。", False),
+            ("有人删除了 /work/a.txt，请检查现状。", False),
             (f"A colleague already modified {self.TARGET}. Plan the outline this turn.", False),
             (f"{self.TARGET} was modified by a teammate. Please plan the outline.", False),
             # Attributed advice and suggestions.
@@ -45,7 +45,7 @@ class ClauseActionContextTests(phase3.Phase3TestCase):
             # Bare and strong negation, Chinese and English.
             (f"参考 {self.TARGET}，只给大纲，不修改文件。", False),
             (f"参考 {self.TARGET}，只给大纲，不要修改文件。", False),
-            (f"参考 /work/a.txt，只给大纲，do not modify files.", False),
+            ("参考 /work/a.txt，只给大纲，do not modify files.", False),
             (f"The file {self.TARGET} will not be modified this turn; plan the outline.", False),
             (f"尚未提交任何改动。请给出 {self.TARGET} 的大纲。", False),
             (f"没修改过 {self.TARGET}，请先读它再给大纲。", False),
@@ -62,7 +62,7 @@ class ClauseActionContextTests(phase3.Phase3TestCase):
             # Delegation from another actor is this turn's own work.
             (f"同事让我修改 {self.TARGET}。", True),
             # Mixed planning plus a current directive.
-            (f"先规划大纲，然后修改 /work/a.txt。", True),
+            ("先规划大纲，然后修改 /work/a.txt。", True),
             (f"请规划大纲，然后修改 {self.TARGET}。", True),
             # An intent word with other content before it is a plan
             # reference, not future intent.

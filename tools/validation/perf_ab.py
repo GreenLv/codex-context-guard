@@ -593,14 +593,13 @@ def run_retention_attempt(tree: Path, data_dir: Path) -> dict:
         protected = sum(1 for entry in report.get("entries", [])
                         if entry.get("verdict") == "protected")
         ok = (counts.get("quarantined") == 6 and counts.get("eligible") == 6
-              and eligible == 6 and protected == 6
-              and counts.get("protected") == 6
+              and eligible == 6 and counts.get("protected") == 6 and protected == 6
               and (data_dir / "sessions-v2" / "kept-00").is_dir())
         return {"elapsed": round(time.perf_counter() - started, 4),
                 "outcome_class": "completed" if ok else "failed",
                 "assertion": "ok" if ok else "retention_semantics_failed",
                 "error": None,
-                "fixture": {"eligible": 6, "protected": 6,
+                "fixture": {"eligible": 6, "kept": 6,
                             "quarantined": counts.get("quarantined"),
                             "protected": counts.get("protected")}}
     except Exception as exc:  # noqa: BLE001 - retain failed attempt
