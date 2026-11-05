@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.17.0 — Unreleased 源码候选。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[候选说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份将从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
+> **0.17.0 — Unreleased 源码候选。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份将从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
 
 > **0.16.1 — 2026-11-03。** 文件名或路径中的验收词不再凭空增加义务。本版还新增显式历史覆盖发布门、补全插件上架元数据，并继续停用会话保留清理。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 

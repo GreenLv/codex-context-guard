@@ -189,8 +189,9 @@ class NamespaceResolutionTests(unittest.TestCase):
 
         with cg.session_lock(expired_dir):
             pass
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.root / 'private')
+        # 0.17.0: maintenance preview and apply both keep the active, the
+        # legacy and the locked objects; lock files survive.
+        cg.cleanup_old_sessions(self.root / 'private')
         self.assertTrue(expired_dir.exists())
         self.assertTrue(active_dir.exists())
         self.assertTrue(legacy_dir.exists())
@@ -208,12 +209,20 @@ class NamespaceResolutionTests(unittest.TestCase):
         import time as time_module
         old = time_module.time() - 10_000_000
         os.utime(active_dir / "state.json", (old, old))
+        cg.write_retention_policy(self.root / 'private', enabled=True)
         with cg.session_lock(active_dir, timeout=1.0):
-            with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-                cg.cleanup_old_sessions(self.root / 'private')
+            # The writer's lock makes the object busy; eligibility is
+            # re-checked and the object survives both passes.
+            report = cg.cleanup_old_sessions(self.root / 'private', apply=True)
+            self.assertEqual(report["counts"]["quarantined"], 0)
             self.assertTrue(active_dir.exists())
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.root / 'private')
+        report = cg.cleanup_old_sessions(self.root / 'private', apply=True)
+        # The released writer's session is fully finished and expired: the
+        # re-verified object now reaches quarantine (restore path available).
+        self.assertEqual(report["counts"]["quarantined"], 1)
+        self.assertFalse(active_dir.exists())
+        restored = cg.retention_restore(self.root / 'private', "writer-holds")
+        self.assertEqual(restored["outcome"], "restored")
 
     def test_ended_at_is_not_a_terminal_barrier_in_the_product(self):
         """Coordinator probe legacy_ended_not_immutable, converted: a session
@@ -310,10 +319,11 @@ class NamespaceResolutionTests(unittest.TestCase):
             pass
         registry = cg._cleanup_registry_path(self.root / "private")
         registry.write_text("expired\n", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.root / 'private')
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.root / 'private')
+        # 0.17.0: the registry names no lock/registry object as a session;
+        # adjudication covers the real object only and never the maintenance
+        # files, and two passes change nothing.
+        cg.cleanup_old_sessions(self.root / 'private')
+        cg.cleanup_old_sessions(self.root / 'private')
         self.assertEqual(sorted(p.name for p in directory.parent.joinpath(".locks").iterdir()),
                          [".session-registry", "expired.lock"])
 
@@ -356,8 +366,7 @@ class NamespaceResolutionTests(unittest.TestCase):
         cg.save_state(directory, state)
         self._dispatch("UserPromptSubmit", session="resumed",
                        prompt="继续未完成需求，必须运行验证。")
-        with self.assertRaisesRegex(RuntimeError, "cleanup is disabled"):
-            cg.cleanup_old_sessions(self.root / 'private')
+        cg.cleanup_old_sessions(self.root / 'private')
         self.assertTrue(directory.is_dir())
         self.assertTrue(cg.load_state(directory, {"session_id": "resumed"})["requirements"])
 
