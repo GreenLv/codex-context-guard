@@ -735,6 +735,7 @@ def retention_native_batch(repo_root: Path, output: Path) -> dict[str, Any]:
     """
     import importlib.util
     import tempfile
+    import time as _time
     started = timestamp()
     digest = runtime_digest(load_artifacts(repo_root.resolve()),
                             repo_root.resolve())
@@ -797,7 +798,7 @@ def retention_native_batch(repo_root: Path, output: Path) -> dict[str, Any]:
                 make(f"kept-{index:02d}", ended_days_ago=45, finished=False)
             cg.write_retention_policy(data_dir, enabled=True)
             report = cg.cleanup_old_sessions(
-                data_dir, apply=True, deadline=time.monotonic() + 20.0)
+                data_dir, apply=True, deadline=_time.monotonic() + 20.0)
             scenario("non_empty_backlog",
                      report["counts"]["quarantined"] == 6
                      and report["counts"]["protected"] == 6,
@@ -819,7 +820,7 @@ def retention_native_batch(repo_root: Path, output: Path) -> dict[str, Any]:
                     fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
                 # The locked object is protected on the next pass.
                 report = cg.cleanup_old_sessions(
-                    data_dir, apply=True, deadline=time.monotonic() + 20.0)
+                    data_dir, apply=True, deadline=_time.monotonic() + 20.0)
                 scenario("busy_lock_skipped", keep_dir.is_dir(),
                          {"kept_locked": keep_dir.is_dir()})
             finally:
