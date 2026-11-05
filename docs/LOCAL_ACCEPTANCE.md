@@ -2,6 +2,59 @@
 
 ## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
 
+### Repair round R1 (2026-11-06)
+
+The independent review of `cc7714e` returned 11 reproducible contract
+violations (B01-B10 families). The repair re-closed each family at source
+level; all 11 review probes now pass (0 violations), and the probe families
+are migrated into the repository suite as `RetentionRepairR1Tests`,
+the policy-validation table, the transparent-resume ledger test and the
+CLI end-to-end manifest test:
+
+- B01/B02: the quarantine became a two-phase transaction (intent record
+  before the rename, commit after), with recovery/rollback on the next
+  pass, an identity-bound fd-anchored purge that refuses replaced or
+  linked targets, transparent official-reader restore of a quarantined
+  session (the ledger continues), tombstone anti-resurrection, and one
+  re-entrant maintenance lock serializing passes, policy writes and
+  restore.
+- B03: the policy is strictly validated (invalid = disabled, failing fact
+  named); every destructive transition re-reads the policy inside the
+  maintenance lock.
+- B04: the enumeration cap counts only undecided candidates, so a decided
+  prefix can never starve the tail; the pass deadline still bounds work.
+- B05: the public CLI produces an appliable manifest; end-to-end
+  preview/save/apply/restore runs through the real command.
+- B06/B07: every action span is interpreted individually (later current
+  directives survive earlier history), and oversized-row isolation scans
+  the whole line (repeated outer type members and malformed rows are
+  never skippable).
+- B08: the published 0.16.0/0.16.1 packages keep their experimental
+  marketplace identity in the native mapper; the 0.17.0 line uses the
+  stable identity and both transitions are separate scenarios.
+- B09: the plan-only repair record was re-intaked through the official
+  library entry (`incident add --reviewed`) after an intake error of the
+  first commit (a 560-character reference over the 500 limit); the
+  original bytes stay retrievable at `d874864` in git, the corrected
+  registry validates (`incident validate` rc=0), and the product pin is
+  re-frozen at `9d66fd6`.
+- B10: the opt-in scheduler entry (enable/status/disable, idempotent,
+  same versioned executor on both platforms), the missing perf scenarios
+  (terminal_read_large, session_end_busy_locks, A/A noise control) and
+  the versioned no-model retention native batch
+  (`cg-retention-native-batch/v1`, 4/4 scenarios passing on macOS) are
+  implemented; real registration and the two-platform native runs stay
+  with the coordinator.
+
+The pre-registered performance addendum results (A/A and the two new
+cells) are recorded with their raw outputs outside the source checkout
+and referenced from the repair handoff. Still pending: full-matrix CI,
+native macOS/Windows retention acceptance including crash injection and
+DACL/junction adversarial cases, installed artifacts, the identity
+transition and the release gate.
+
+## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
+
 This section records 0.17.0 development-stage observations on the
 `codex/0.17.0-candidate` branch. They are macOS source evidence only: full
 CI, native macOS/Windows retention acceptance, installed artifacts, the

@@ -26,7 +26,13 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 ### Validation
 
-- Unreleased source candidate: macOS source evidence only. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.
+- Unreleased source candidate: macOS source evidence only. The first
+  development candidate failed independent review (11 reproducible
+  contract violations across retention lifecycle, policy integrity,
+  fairness, CLI manifest, evidence intake and identity facts); the repair
+  round closed each family at source level, all review probes pass, the
+  historical library record was re-intaked through the official entry,
+  and the review families are covered by repository regressions. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.
 
 ## 0.16.1 — 2026-11-03
 
