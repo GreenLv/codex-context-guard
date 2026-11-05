@@ -416,7 +416,29 @@ def inspect_installed_artifact(root: Path, source_commit: str, codex: str,
     }
 
 
-OFFICIAL_PLUGIN = "context-guard@codex-context-guard-v016"
+# Future acceptance preparation only: the released 0.16.1 runtime validator
+# remains unchanged. The next candidate must align its own validator and Hooks.
+def marketplace_name_for_version(version: str) -> str:
+    match = re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?", version)
+    if match is None:
+        raise NativeRunError("unsupported marketplace version")
+    core = tuple(int(part) for part in match.groups())
+    if core in {(0, 16, 0), (0, 16, 1)}:
+        return "codex-context-guard-v016"
+    if core >= (0, 16, 2):
+        return "codex-context-guard"
+    raise NativeRunError("unsupported marketplace version")
+
+
+def candidate_marketplace_name(source: Path, version: str) -> str:
+    try:
+        manifest = json.loads((source / ".agents/plugins/marketplace.json").read_text(encoding="utf-8"))
+        expected = marketplace_name_for_version(version)
+        if not isinstance(manifest, dict) or manifest.get("name") != expected:
+            raise NativeRunError("candidate marketplace identity differs from version")
+        return expected
+    except (OSError, json.JSONDecodeError) as exc:
+        raise NativeRunError("candidate marketplace manifest unavailable") from exc
 
 
 def _windows_safe_path_component(part: str) -> bool:
@@ -490,15 +512,17 @@ def official_identity(listed: dict[str, Any], added: dict[str, Any],
     entries = listed.get("installed")
     if not isinstance(entries, list):
         raise NativeRunError("official list has no installed array")
+    market = marketplace_name_for_version(version)
+    plugin_id = f"context-guard@{market}"
     matches = [entry for entry in entries if isinstance(entry, dict)
-               and entry.get("pluginId") == OFFICIAL_PLUGIN]
+               and entry.get("pluginId") == plugin_id]
     if len(matches) != 1:
         raise NativeRunError("official installed identity is missing or ambiguous")
     if not isinstance(added, dict):
         raise NativeRunError("official add is not an object")
     entry = matches[0]
-    expected = {"pluginId": OFFICIAL_PLUGIN, "name": "context-guard",
-                "marketplaceName": "codex-context-guard-v016", "version": version}
+    expected = {"pluginId": plugin_id, "name": "context-guard",
+                "marketplaceName": market, "version": version}
     if any(entry.get(k) != v or added.get(k) != v for k, v in expected.items()):
         raise NativeRunError("official installed identity differs")
     if entry.get("installed") is not True or entry.get("enabled") is not True:
@@ -516,7 +540,7 @@ def official_identity(listed: dict[str, Any], added: dict[str, Any],
     raw = added.get("installedPath")
     if not isinstance(raw, str):
         raise NativeRunError("official add has no installed path")
-    cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
+    cache = home / "plugins" / "cache" / market / "context-guard"
     if windows:
         # Check untrusted JSON lexically, then return only a path constructed
         # from this run's trusted HOME. Existing parity/reparse checks consume
@@ -555,24 +579,26 @@ def strict_cache_objects(root: Path) -> dict[str, tuple[Any, ...]]:
 def documented_official_flow(root: Path, codex: str, home: Path, source: Path,
                               environment: dict[str, str], files: dict[str, str],
                               version: str, added: dict[str, Any] | None) -> tuple[dict[str, Any], Path]:
+    market = candidate_marketplace_name(source, version)
+    plugin_id = f"context-guard@{market}"
     if added is None:
         # Caller owns a newly created HOME; the marketplace is not registered.
         if (environment.get('CODEX_HOME') != str(home) or
                 any((home / path).exists() for path in ('config.toml', 'plugins/installed_plugins.json',
-                    'plugins/cache/codex-context-guard-v016'))):
+                    f'plugins/cache/{market}'))):
             raise NativeRunError('fresh isolated HOME precondition failed')
         run(root, codex, "plugin", "marketplace", "add", str(source), env=environment)
-        added = json.loads(run(root, codex, "plugin", "add", OFFICIAL_PLUGIN,
+        added = json.loads(run(root, codex, "plugin", "add", plugin_id,
                                "--json", env=environment).stdout)
     listed = json.loads(run(root, codex, "plugin", "list", "--marketplace",
-                            'codex-context-guard-v016', "--json", env=environment).stdout)
+                            market, "--json", env=environment).stdout)
     if not isinstance(listed, dict):
         raise NativeRunError("official list is not an object")
     entries = listed.get("installed")
     if not isinstance(entries, list):
         raise NativeRunError("official list has no installed array")
     matches = [item for item in entries if isinstance(item, dict)
-               and item.get("pluginId") == OFFICIAL_PLUGIN]
+               and item.get("pluginId") == plugin_id]
     if not matches:
         raise NativeRunError("installed plugin disappeared")
     installed = official_identity(listed, added, source, home, version)
@@ -637,7 +663,10 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         gates.append(gate("exact_release_zip", digest, passed=True))
         # A disclosed synthetic previous-version object fixture, never a daily
         # cache or proof of a resumed real task. It is only preservation evidence.
-        old = home / "plugins/cache/codex-context-guard/context-guard/0.15.1"
+        market = candidate_marketplace_name(source, version)
+        previous_market = ("codex-context-guard-v016" if market == "codex-context-guard"
+                           else "codex-context-guard")
+        old = home / "plugins" / "cache" / previous_market / "context-guard" / "0.15.1"
         old.mkdir(parents=True)
         (old / "synthetic-preservation-control").write_bytes(b"synthetic previous cache object\n")
         old_before = strict_cache_objects(old)

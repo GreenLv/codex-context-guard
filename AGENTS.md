@@ -73,6 +73,8 @@ authoritative.
 - Installed versioned plugin caches are immutable. Never refresh or repair an
   already consumed cache from new source bytes. Preserve old caches for open
   tasks; same-version candidate revisions use separate isolated homes.
+- For a future single-identity upgrade, follow [the stable marketplace identity
+  contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md) before changing a daily HOME.
 - Use official Codex marketplace operations for installation; the candidate supplies no cache or archive repair. Do not hand-copy into
   a live cache, delete historical caches automatically, or treat an unindexed or
   hash-mismatched archive as repair authority.

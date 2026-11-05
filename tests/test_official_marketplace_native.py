@@ -24,12 +24,58 @@ from tools.validation import native_acceptance as native
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class CandidateMarketplaceIdentityTests(unittest.TestCase):
+    def test_version_identity_rule_rejects_unknown_versions(self):
+        for version in ("0.15.1", "0.16", "0.16.02", "bad"):
+            with self.subTest(version=version), self.assertRaises(native.NativeRunError):
+                native.marketplace_name_for_version(version)
+        self.assertEqual(native.marketplace_name_for_version("0.16.1+fixture"), "codex-context-guard-v016")
+        self.assertEqual(native.marketplace_name_for_version("1.0.0-rc.1"), "codex-context-guard")
+
+    def test_manifest_and_fake_official_flow_use_versioned_identity(self):
+        for version, market in (("0.16.1", "codex-context-guard-v016"),
+                                ("0.16.2", "codex-context-guard")):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, home = root / "source", root / "home"
+                path = source / ".agents/plugins/marketplace.json"
+                path.parent.mkdir(parents=True)
+                home.mkdir()
+                path.write_text(json.dumps({"name": market}))
+                calls = []
+                plugin = f"context-guard@{market}"
+                installed = home / "plugins" / "cache" / market / "context-guard" / version
+                add = {"pluginId": plugin, "name": "context-guard", "marketplaceName": market,
+                       "version": version, "installedPath": str(installed)}
+                entry = {key: add[key] for key in ("pluginId", "name", "marketplaceName", "version")}
+                entry.update(installed=True, enabled=True, source={"source":"local", "path":str(source)},
+                             marketplaceSource={"sourceType":"local", "source":str(source)})
+                def run(_root, *args, env=None):
+                    calls.append(args)
+                    result = add if args[1:3] == ("plugin", "add") else {"installed": [entry]}
+                    return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
+                with mock.patch.object(native, "run", side_effect=run), \
+                        mock.patch.object(native, "exact_artifact_parity"):
+                    _, actual = native.documented_official_flow(root, "codex", home, source,
+                                                                {"CODEX_HOME":str(home)}, {}, version, None)
+                self.assertEqual(actual, installed)
+                self.assertIn(("codex", "plugin", "add", plugin, "--json"), calls)
+                self.assertIn(("codex", "plugin", "list", "--marketplace", market, "--json"), calls)
+                path.write_text(json.dumps({"name": "wrong-market"}))
+                with mock.patch.object(native, "run") as runner, self.assertRaisesRegex(
+                        native.NativeRunError, "candidate marketplace identity differs"):
+                    native.documented_official_flow(root, "codex", home, source,
+                                                    {"CODEX_HOME":str(home)}, {}, version, None)
+                runner.assert_not_called()
+
+
 class OfficialMarketplaceNativeTests(unittest.TestCase):
     def exercise(self, failure="none"):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "source"
             for name, body in {"scripts/core.py": b"synthetic core\n",
-                ".codex-plugin/plugin.json": b'{"version":"0.16.0"}\n'}.items():
+                ".codex-plugin/plugin.json": b'{"version":"0.16.0"}\n',
+                ".agents/plugins/marketplace.json": b'{"name":"codex-context-guard-v016"}\n'}.items():
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(body)
@@ -72,7 +118,7 @@ class OfficialMarketplaceNativeTests(unittest.TestCase):
                     (home / "plugins/installed_plugins.json").write_bytes(b"synthetic-registry\n")
                     (home / "synthetic-empty").mkdir()
                     state["cache"] = cache
-                    state["add"] = {"pluginId":native.OFFICIAL_PLUGIN,"name":"context-guard",
+                    state["add"] = {"pluginId":"context-guard@codex-context-guard-v016","name":"context-guard",
                         "marketplaceName":"codex-context-guard-v016","version":"0.16.0",
                         "installedPath":str(cache)}
                     stdout = json.dumps(state["add"])
@@ -296,7 +342,7 @@ class OfficialWindowsPathIdentityTests(unittest.TestCase):
         self.home = TrustedWindowsPath(r"C:\Isolated Run\home")
         self.cache = self.home / "plugins/cache/codex-context-guard-v016/context-guard"
         self.installed = self.cache / "0.16.0"
-        self.added = dict(pluginId=native.OFFICIAL_PLUGIN, name="context-guard",
+        self.added = dict(pluginId="context-guard@codex-context-guard-v016", name="context-guard",
                           marketplaceName="codex-context-guard-v016", version="0.16.0",
                           installedPath=str(self.installed))
         self.entry = {key: self.added[key] for key in
@@ -404,6 +450,7 @@ class OfficialWindowsPathIdentityTests(unittest.TestCase):
                 with (mock.patch.object(native.platform, "system", return_value="Windows"),
                       mock.patch.object(native, "Path", side_effect=AssertionError("JSON reached Path")),
                       mock.patch.object(native, "run", return_value=result),
+                      mock.patch.object(native, "candidate_marketplace_name", return_value="codex-context-guard-v016"),
                       mock.patch.object(native, "exact_artifact_parity",
                                         side_effect=native.NativeRunError("synthetic reparse rejection")
                                         if reject else None) as parity):
@@ -524,7 +571,7 @@ class OfficialPosixPathIdentityTests(unittest.TestCase):
             cache = home / "plugins/cache/codex-context-guard-v016/context-guard"
             installed = cache / "0.16.0"
             installed.mkdir(parents=True)
-            added = dict(pluginId=native.OFFICIAL_PLUGIN, name="context-guard",
+            added = dict(pluginId="context-guard@codex-context-guard-v016", name="context-guard",
                          marketplaceName="codex-context-guard-v016", version="0.16.0",
                          installedPath=str(installed))
             entry = {key: added[key] for key in ("pluginId", "name", "marketplaceName", "version")}
