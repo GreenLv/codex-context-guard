@@ -18,7 +18,15 @@ the freed inode. The fresh-process family below forces exactly that reuse
 replacement and its sentinel to survive, while normal purge, crash restart
 and partial progress keep advancing. It runs with the platform's creation
 time and again on a modeled filesystem without one (change-time binding).
-Synthetic data only.
+
+R7 closes the same ownership-provenance invariant at the two remaining
+entries that minted a binding from whatever occupied the quarantine name
+(the commit after the rename and the ``planned`` recovery) and at the
+outer write-back that turned a refused opened-root check into "I
+partially removed it". ``OwnershipProvenanceTests`` and the change-time
+refusal test force the identity-reuse model with real timestamps or the
+modeled no-creation-time filesystem; a refused, unknown or not-executed
+removal never becomes authority. Synthetic data only.
 """
 
 from __future__ import annotations
@@ -407,6 +415,166 @@ class ChangeTimeBindingTests(ReplacementBindingTests):
         self.assertEqual(self.state(record_path), "purge_planned")
         refused = cg.retention_restore(self.data_dir, record["original_name"])
         self.assertNotEqual(refused.get("outcome"), "restored")
+
+    def test_refusal_before_any_removal_never_adopts_the_current_stamp(self):
+        # R7 entry 1: the real opened-root check refuses a replacement
+        # (identity-reuse model, no creation time on this modeled
+        # filesystem); the outer pass must count a refusal and must not
+        # write the replacement's change time as the record's binding --
+        # which the next pass would then purge.
+        qdir, record_path, record, target = self.quarantine_wide()
+        original_stamp = dict(record["object_stamp"])
+        self.assertEqual(original_stamp["kind"], "ctime")
+        real_purge = cg._retention_purge_tree
+        sentinel = target / "replacement-sentinel.txt"
+
+        def swap_then_real_purge(path, deadline):
+            self.assertEqual(path, target)
+            os.rename(target, self.root / "original-preserved")
+            target.mkdir()
+            sentinel.write_text("must survive", encoding="utf-8")
+            current = json.loads(record_path.read_text(encoding="utf-8"))
+            info = target.lstat()
+            current["identity"] = [info.st_dev, info.st_ino]
+            cg._retention_write_record(record_path, current)
+            # The real helper refuses this different change time and has
+            # removed nothing of the replacement.
+            removed = real_purge(path, deadline)
+            self.assertFalse(removed)
+            self.assertTrue(sentinel.is_file())
+            return removed
+
+        real_datetime = cg.dt.datetime
+        future = real_datetime.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+
+        class FutureClock(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return future if tz else future.replace(tzinfo=None)
+
+        with mock.patch.object(cg.dt, "datetime", FutureClock):
+            with mock.patch.object(cg, "_retention_purge_tree",
+                                   side_effect=swap_then_real_purge):
+                first = cg.cleanup_old_sessions(self.data_dir, apply=True)
+            self.assertEqual(first["purge"]["purge_partial"], 0, first)
+            self.assertEqual(first["purge"]["purge_refused"], 1, first)
+            persisted = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["object_stamp"], original_stamp)
+            second = cg.cleanup_old_sessions(self.data_dir, apply=True)
+            self.assertEqual(second["purge"]["purged"], 0, second)
+            self.assertEqual(second["purge"]["purge_refused"], 1, second)
+        self.assertTrue(sentinel.is_file())
+        self.assertTrue((self.root / "original-preserved").is_dir())
+
+
+class OwnershipProvenanceTests(ReplacementBindingTests):
+    """R7 (N2): one ownership-provenance invariant across the chain.
+
+    A current object or timestamp becomes destructive authority only when
+    it is proven to still belong to the originally selected object. Two
+    entries minted authority from whatever occupied the quarantine name:
+    the ``quarantined`` commit after the rename and the ``planned``
+    recovery. Both tests force the identity-reuse model (the record's
+    ``(dev, ino)`` equals the replacement's, exactly what a fast inode
+    reuse looks like) with real platform creation times, and keep a
+    sentinel the maintenance must never remove.
+    """
+
+    def future_pass(self):
+        real = cg.dt.datetime
+        now = real.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+
+        class Clock(real):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+
+        with mock.patch.object(cg.dt, "datetime", Clock):
+            return cg.cleanup_old_sessions(self.data_dir, apply=True)
+
+    def test_commit_after_a_name_swap_keeps_the_original_binding(self):
+        # The swap lands between the real rename and the quarantined
+        # commit; the recorded identity is rebound to the replacement. The
+        # commit must refuse instead of sampling the replacement's stamp.
+        old = self.make_session("mint-race", ended_days_ago=45)
+        old_stamp = cg._retention_object_stamp(old, old.lstat())
+        self.enable_policy(quarantine_days=1)
+        rename, holds = cg.os.rename, cg._retention_holds
+        moved = {}
+
+        def replace_after_move(source, target):
+            rename(source, target)
+            if Path(source) == old:
+                target = Path(target)
+                rename(target, self.root / "original-preserved")
+                target.mkdir()
+                (target / "replacement-sentinel.txt").write_text(
+                    "must survive", encoding="utf-8")
+                moved["target"] = target
+
+        def model_identity(path, record):
+            if Path(path) == moved.get("target"):
+                info = Path(path).lstat()
+                record["identity"] = [info.st_dev, info.st_ino]
+            return holds(path, record)
+
+        with mock.patch.object(cg.os, "rename", side_effect=replace_after_move), \
+                mock.patch.object(cg, "_retention_holds",
+                                  side_effect=model_identity):
+            first = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        target = moved["target"]
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        record_path = next(qdir.glob("*.record.json"))
+        persisted = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(first["counts"]["quarantined"], 0, first)
+        self.assertEqual(first["counts"]["skipped"], 1, first)
+        self.assertEqual(persisted["state"], "planned")
+        self.assertEqual(persisted.get("object_stamp"), old_stamp)
+        second = self.future_pass()
+        self.assertEqual(second["purge"]["purged"], 0, second)
+        self.assertTrue((target / "replacement-sentinel.txt").is_file())
+        self.assertTrue((self.root / "original-preserved").is_dir())
+
+    def test_planned_recovery_over_an_identity_reuse_is_indeterminate(self):
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        record.pop("object_stamp")  # intent shape before the R7 binding
+        record.update(state="planned", quarantined_at=None)
+        os.rename(target, self.root / "original-preserved")
+        target.mkdir()
+        sentinel = target / "replacement-sentinel.txt"
+        sentinel.write_text("must survive", encoding="utf-8")
+        info = target.lstat()
+        record["identity"] = [info.st_dev, info.st_ino]
+        record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        verdict = cg._retention_settle_record(
+            self.data_dir, qdir, record_path, record,
+            cg.dt.datetime.now(cg.dt.timezone.utc))
+        self.assertEqual(verdict, "indeterminate")
+        settled = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertNotIn("object_stamp", settled)
+        later = self.future_pass()
+        self.assertEqual(later["purge"]["purged"], 0, later)
+        self.assertTrue(sentinel.is_file())
+        self.assertTrue((self.root / "original-preserved").is_dir())
+
+    def test_legitimate_planned_intent_still_recovers_with_its_binding(self):
+        # Positive control for the same gate: a real interruption between
+        # the rename and the commit recovers, keeps the pre-move binding,
+        # and purges once the grace period has passed.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        binding = record["object_stamp"]
+        record.update(state="planned", quarantined_at=None)
+        record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        verdict = cg._retention_settle_record(
+            self.data_dir, qdir, record_path, record,
+            cg.dt.datetime.now(cg.dt.timezone.utc))
+        self.assertEqual(verdict, "recovered")
+        settled = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(settled["state"], "quarantined")
+        self.assertEqual(settled["object_stamp"], binding)
+        later = self.future_pass()
+        self.assertEqual(later["purge"]["purged"], 1, later)
+        self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":

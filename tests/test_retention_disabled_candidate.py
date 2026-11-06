@@ -68,10 +68,12 @@ class RetentionDisabledCandidate(fixtures.IsolatedEnvironment):
         self.assertTrue(old.is_dir())
         after = self.snapshot(self.data_dir)
         # Only bounded discovery hints under .locks may appear; no session
-        # object and no policy object may change.
+        # object and no policy object may change. Match the allowed
+        # directory by path component: Windows snapshot keys use
+        # backslashes (R7 N3).
         changed = {key for key in set(before) | set(after)
                    if before.get(key) != after.get(key)
-                   and "/.locks/" not in key}
+                   and ".locks" not in key.replace("\\", "/").split("/")}
         self.assertEqual(changed, set())
         self.assertFalse(cg._retention_policy_path(self.data_dir).exists())
         with self.assertRaisesRegex(RuntimeError, "enabled policy"):

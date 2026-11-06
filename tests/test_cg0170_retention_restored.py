@@ -825,10 +825,12 @@ class RetentionSessionEndBoundaryTests(RetentionFixtureBase):
         self.assertIn("eligible=1", result.stdout)
         after = self.snapshot(self.data_dir)
         # Bounded discovery hints under .locks may be appended; no session
-        # object and no policy object may appear or change.
+        # object and no policy object may appear or change. The allowed
+        # directory is matched by path component, not by a POSIX separator
+        # substring: Windows snapshot keys use backslashes (R7 N3).
         changed = {key for key in set(before) | set(after)
                    if before.get(key) != after.get(key)
-                   and "/.locks/" not in key}
+                   and ".locks" not in key.replace("\\", "/").split("/")}
         self.assertEqual(changed, set())
         self.assertFalse(cg._retention_policy_path(self.data_dir).exists())
 

@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -389,6 +390,11 @@ class RetentionTransactionR2Tests(RetentionFixtureBase):
 
         def interrupted(path, deadline):
             (path / "state.json").unlink()
+            # Emulate the removal contract the real helper reports (R7):
+            # one entry of the verified object left, and the held object's
+            # own change time moved with it.
+            cg._retention_purge_note_removal()
+            cg._retention_purge_note_continuous(path.lstat().st_ctime_ns)
             return False
         with mock.patch.object(cg, "_retention_purge_tree", side_effect=interrupted):
             partial = cg._retention_purge_pass(self.data_dir, policy, moment, None)
@@ -686,8 +692,18 @@ class RetentionScheduleLifecycleTests(RetentionFixtureBase):
         (self.data_dir / cg.V2_NAMESPACE).mkdir(parents=True)
 
     def on(self, platform, adapter):
-        return mock.patch.multiple(cg, _retention_schedule_platform=lambda: platform,
-                                   _retention_scheduler_run=adapter)
+        stack = ExitStack()
+        stack.enter_context(mock.patch.multiple(
+            cg, _retention_schedule_platform=lambda: platform,
+            _retention_scheduler_run=adapter))
+        if platform == "macos":
+            # Simulated-macOS fixture input only (R7 N3): the host may be
+            # Windows, where os.getuid does not exist. The real selector
+            # keeps separate coverage and no Windows product path is given
+            # a fake getuid.
+            stack.enter_context(mock.patch.object(cg.os, "getuid",
+                                                  lambda: 501, create=True))
+        return stack
 
     def test_macos_enable_loads_status_reads_back_and_disable_unloads(self):
         launchd = FakeLaunchd()
@@ -859,7 +875,8 @@ class RetentionScheduleLifecycleTests(RetentionFixtureBase):
     def test_status_reaches_the_adapter_through_the_real_selector(self):
         launchd = FakeLaunchd()
         with mock.patch.object(cg.sys, "platform", "darwin"), \
-                mock.patch.object(cg, "_retention_scheduler_run", launchd):
+                mock.patch.object(cg, "_retention_scheduler_run", launchd), \
+                mock.patch.object(cg.os, "getuid", lambda: 501, create=True):
             code, result = cg._retention_maintenance_status(self.data_dir, self.LABEL)
         self.assertEqual((code, result["state"]), (0, "disabled"))
         self.assertEqual(launchd.verbs(), ["print"])

@@ -163,7 +163,24 @@ intents preserve interrupted operations; a purged name retains a bounded
 anti-resurrection tombstone. Purge binds a quarantined object by its file
 identity and by the creation time recorded at quarantine (change time where
 the filesystem reports none), so a replacement directory that reuses a freed
-inode is refused rather than removed. SessionEnd only saves current state and recovery;
+inode is refused rather than removed. The binding is ownership provenance
+across the whole chain: the intent records the stamp observed on the verified
+object before the move; the quarantined commit and the `planned` recovery
+promote only an object proven continuous with that intent — by the surviving
+creation time, or by the intent's structural tree digest when the rename
+itself moved the change time (which then upgrades the binding). A partially
+removed object re-records its change time only from the value the same attempt
+observed on the object it held open and only after the name still provably
+holds that object; a refused, unknown, budget-expired-without-removal or
+otherwise unexecuted result never becomes "partially removed by me", and the
+next pass never deletes by metadata written for a different occupant. On a
+filesystem without creation times this has one exact boundary: a hard
+interruption between the first entry removal and the durable re-bind write
+leaves a change time the record cannot explain, so that object stays refused
+and its remaining data is kept — never deleted further, never restorable.
+Budget-cut removals re-bind before the attempt ends and resume; creation-time
+filesystems keep one invariant stamp and resume across such interruptions.
+SessionEnd only saves current state and recovery;
 it does not scan, delete, register or wait for maintenance.
 
 An adopted root records content-free discovery hints in private journals,

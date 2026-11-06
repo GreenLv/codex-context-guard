@@ -25318,6 +25318,45 @@ def _retention_expect_root(identity: list[int], *,
         _RETENTION_PURGE_EXPECTED.identity, _RETENTION_PURGE_EXPECTED.record = previous
 
 
+# What one purge attempt actually proved (R7, N2 ownership provenance). A
+# ``False`` return alone cannot distinguish "the opened root was refused"
+# from "entries of the verified object were removed and the budget stopped
+# us", and only the second may re-bind a fresh change time. The removal
+# reports what it observed on this thread; a caller that patches
+# ``_retention_purge_tree`` resets the channel first, so a double that
+# emulates a real partial removal reports its removals the same way the
+# real helper does.
+_RETENTION_PURGE_PROGRESS = threading.local()
+
+
+def _retention_purge_progress_reset() -> None:
+    _RETENTION_PURGE_PROGRESS.removed = 0
+    _RETENTION_PURGE_PROGRESS.continuous = False
+    _RETENTION_PURGE_PROGRESS.observed_stamp_ns = None
+
+
+def _retention_purge_progress() -> dict[str, Any]:
+    return {"removed": getattr(_RETENTION_PURGE_PROGRESS, "removed", 0),
+            "continuous": getattr(_RETENTION_PURGE_PROGRESS, "continuous", False),
+            "observed_stamp_ns": getattr(_RETENTION_PURGE_PROGRESS,
+                                         "observed_stamp_ns", None)}
+
+
+def _retention_purge_note_removal() -> None:
+    """One entry of the verified object left the tree during this attempt."""
+    _RETENTION_PURGE_PROGRESS.removed = (getattr(_RETENTION_PURGE_PROGRESS,
+                                                 "removed", 0) + 1)
+
+
+def _retention_purge_note_continuous(observed_stamp_ns: int | None = None) -> None:
+    """The name still holds the object this attempt removed from; carry the
+    change time observed on the held object so the caller never has to
+    re-read the name (which a replacement could have taken)."""
+    _RETENTION_PURGE_PROGRESS.continuous = True
+    if observed_stamp_ns is not None:
+        _RETENTION_PURGE_PROGRESS.observed_stamp_ns = observed_stamp_ns
+
+
 def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
     """Bounded recursive removal of one identity-verified quarantined object.
 
@@ -25335,6 +25374,7 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
     """
     expected = getattr(_RETENTION_PURGE_EXPECTED, "identity", None)
     bound = getattr(_RETENTION_PURGE_EXPECTED, "record", None)
+    _retention_purge_progress_reset()
     if os.name == "nt":
         try:
             root_info = path.lstat()
@@ -25345,7 +25385,25 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
         if (bound is not None and "object_stamp" in bound
                 and not _retention_stamp_matches(path, root_info, bound)):
             return False  # same identity, different object (R6)
-        return _retention_purge_tree_windows(path, deadline)
+        removed = _retention_purge_tree_windows(path, deadline)
+        if not removed and _retention_purge_progress()["removed"]:
+            # Prove the name still holds the object whose entries this
+            # attempt removed before any re-bind may trust the name again
+            # (R7). Windows has no descriptor to carry, so the re-check is
+            # the recorded identity plus, for birth stamps, the invariant
+            # creation time.
+            try:
+                current = path.lstat()
+            except OSError:
+                return False
+            if ([current.st_dev, current.st_ino]
+                    == [root_info.st_dev, root_info.st_ino]
+                    and not (bound is not None
+                             and (bound.get("object_stamp") or {}).get("kind") == "birth"
+                             and not _retention_stamp_matches(path, current, bound))):
+                _retention_purge_note_continuous(
+                    getattr(current, "st_ctime_ns", None))
+        return removed
     try:
         before = os.lstat(path)
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
@@ -25365,12 +25423,36 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
             return False  # the OPENED directory is not the bound object (R6)
         emptied = _retention_purge_tree_posix(dir_fd, deadline)
         if not emptied:
+            # Entries of the opened object may already be gone (R5 budget
+            # progress). The name must still hold the opened object before
+            # that progress may re-bind its change time (R7): observe the
+            # change time on the held descriptor, never on the name.
+            try:
+                current = os.lstat(path)
+                if ((current.st_dev, current.st_ino)
+                        == (before.st_dev, before.st_ino)):
+                    held = os.fstat(dir_fd)
+                    _retention_purge_note_continuous(
+                        getattr(held, "st_ctime_ns", None))
+            except OSError:
+                pass
             return False
         # Re-verify the root identity by path before removing it: the empty
         # directory that is rmdir'ed must be the one that was opened.
         recheck = os.lstat(path)
         if (recheck.st_dev, recheck.st_ino) != (before.st_dev, before.st_ino):
             return False
+        # The name provably holds the opened object; removals so far were
+        # ours on that object, so a failed rmdir below stays a continuous
+        # partial removal (R7). Observe the change time on the descriptor
+        # again: it moved with this attempt's own removals.
+        if _retention_purge_progress()["removed"]:
+            try:
+                held = os.fstat(dir_fd)
+                _retention_purge_note_continuous(
+                    getattr(held, "st_ctime_ns", None))
+            except OSError:
+                pass
         try:
             os.rmdir(path)
         except OSError:
@@ -25438,9 +25520,10 @@ def _retention_purge_entry_posix(dir_fd: int, entry: os.DirEntry,
         else:
             os.unlink(entry.name, dir_fd=dir_fd)
     except FileNotFoundError:
-        return True
+        return True  # already gone: not this attempt's removal
     except OSError:
         return False
+    _retention_purge_note_removal()
     return True
 
 
@@ -25489,13 +25572,18 @@ def _retention_purge_entry_windows(entry: os.DirEntry, deadline: float | None) -
                 # A junction or symlink directory is unlinked as an
                 # object, never descended into.
                 child.unlink()
+                _retention_purge_note_removal()
                 return True
-            return _retention_purge_tree_windows(child, deadline)
+            if not _retention_purge_tree_windows(child, deadline):
+                return False
+            _retention_purge_note_removal()  # the emptied child root itself
+            return True
         child.unlink()
     except FileNotFoundError:
-        return True
+        return True  # already gone: not this attempt's removal
     except OSError:
         return False
+    _retention_purge_note_removal()
     return True
 
 
@@ -25921,6 +26009,33 @@ def _retention_object_bound(
     return "" if actual == expected_tree else "refused"
 
 
+def _retention_continuity_verdict(
+    target: Path, info: os.stat_result, record: dict[str, Any],
+    deadline: float | None,
+) -> tuple[bool, dict[str, Any] | None]:
+    """Does the object at ``target`` provably descend from the object an
+    intent was written for (R7)? Returns ``(continuous, binding_upgrade)``.
+
+    The intent binds the stamp observed on the verified object before the
+    move. A creation-time stamp survives the rename, so a match is the
+    continuity proof. A change-time stamp may have moved with the rename
+    itself: a mismatch then falls back to the structural tree digest bound
+    in the intent, and only a digest-proven object may carry an upgraded
+    binding sampled from itself. Current-path metadata never becomes
+    authority without one of those two proofs."""
+    if "object_stamp" in record and _retention_stamp_matches(target, info, record):
+        return True, None
+    expected_tree = record.get("tree")
+    if expected_tree is None:
+        return False, None
+    actual = _retention_tree_digest(target, deadline)
+    if actual is None or actual != expected_tree:
+        return False, None
+    if "object_stamp" not in record:
+        return True, None  # legacy intent: the purge pass binds a stamp
+    return True, _retention_object_stamp(target, info)
+
+
 def _retention_acquire_lifecycle_lock(candidate: Path):
     """Hold the shared lifecycle lock across a destructive transition.
 
@@ -26053,6 +26168,12 @@ def _retention_quarantine_object(
             "tree": tree,
             "restore": "context_guard.py cleanup --restore <name>",
         }
+        # Bind the stamp observed on the verified object BEFORE the move
+        # (R7): the intent's authority is sampled from the selected object,
+        # never from whatever occupies the quarantine name afterwards.
+        pre_stamp = _retention_object_stamp(candidate, candidate_info)
+        if pre_stamp is not None:
+            record["object_stamp"] = pre_stamp
         # Write-ahead discovery hint: the record name is journaled before the
         # record exists, so the records window reaches it from any later
         # process without listing the quarantine directory (hint only).
@@ -26104,14 +26225,30 @@ def _retention_quarantine_object(
             outcome.update(action="skipped", reason="identity_changed_unresolved",
                            record_pending=True)
         return outcome
+    try:
+        moved_info = target.lstat()
+    except OSError:
+        moved_info = None
+    continuous = False
+    upgrade = None
+    if moved_info is not None:
+        continuous, upgrade = _retention_continuity_verdict(
+            target, moved_info, record, deadline)
+    if moved_info is None or not continuous:
+        # The name was taken between the intent and the commit -- identity
+        # reuse included (R7). The intent's binding never becomes permission
+        # for whatever occupies the name now, and no binding is minted from
+        # it; the intent stays for recovery, which reports the transaction
+        # indeterminate and preserves both objects.
+        outcome.update(action="skipped", reason="identity_changed_unresolved",
+                       record_pending=True)
+        return outcome
+    if upgrade is not None:
+        # Digest-proven upgrade of a change-time binding the rename itself
+        # moved; the birth binding never needs it.
+        record["object_stamp"] = upgrade
     record["state"] = "quarantined"
     record["quarantined_at"] = record["planned_at"]
-    try:
-        stamp_value = _retention_object_stamp(target, target.lstat())
-    except OSError:
-        stamp_value = None
-    if stamp_value is not None:
-        record["object_stamp"] = stamp_value
     try:
         _retention_write_record(record_path, record)
     except (OSError, PrivateBoundaryError):
@@ -26152,13 +26289,16 @@ def _retention_complete_purge(
 
 def _retention_settle_record(
     root: Path, qdir: Path, record_path: Path, record: dict[str, Any],
-    now: dt.datetime,
+    now: dt.datetime, *, deadline: float | None = None,
 ) -> str:
     """Decide one interrupted transaction from (state, home, target).
 
     ``planned``: home is the bound object and target absent -> the rename
     never landed, roll the intent back; target is the bound object and home
-    is not -> the rename landed, promote to ``quarantined``.
+    is not -> the rename landed, promote to ``quarantined`` -- but only if
+    the target provably descends from the intent's object (stamp, or the
+    intent's tree digest); otherwise the promotion is indeterminate and no
+    binding is minted from the occupant (R7).
     ``restore_planned``: home bound and target absent -> the rename back
     landed, retire the record; target bound and home absent -> it never
     landed, revert to ``quarantined``.
@@ -26185,12 +26325,21 @@ def _retention_settle_record(
                 record_path.unlink()
                 return "rolled_back"
             if target_bound and not home_bound:
+                continuous, upgrade = _retention_continuity_verdict(
+                    target, target_info, record, deadline)
+                if not continuous:
+                    return "indeterminate"
                 record = dict(record, state="quarantined",
                               quarantined_at=record.get("planned_at"),
                               recovered_at=stamp)
-                object_stamp = _retention_object_stamp(target, target_info)
-                if object_stamp is not None:
-                    record["object_stamp"] = object_stamp
+                if upgrade is not None:
+                    record["object_stamp"] = upgrade
+                elif "object_stamp" not in record:
+                    # A legacy intent without a stamp: the tree digest just
+                    # proved this is the moved object; bind it now.
+                    object_stamp = _retention_object_stamp(target, target_info)
+                    if object_stamp is not None:
+                        record["object_stamp"] = object_stamp
                 _retention_write_record(record_path, record)
                 return "recovered"
             return "indeterminate"
@@ -26234,7 +26383,8 @@ def _retention_recover_records(
             break
         if record.get("state") == "quarantined":
             continue
-        outcome = _retention_settle_record(root, qdir, record_path, record, now)
+        outcome = _retention_settle_record(root, qdir, record_path, record, now,
+                                           deadline=deadline)
         if outcome in summary:
             summary[outcome] += 1
     return summary
@@ -26344,20 +26494,29 @@ def _retention_purge_record(
             summary["purge_refused"] += 1
             return "done"
         with _retention_expect_root(record["identity"], record=record):
+            _retention_purge_progress_reset()
             removed = _retention_purge_tree(target, deadline)
         if not removed:
+            progress = _retention_purge_progress()
             if _retention_lstat_or_marker(target) is None:
                 removed = True  # gone between the removal and this check
-            elif not _retention_holds(target, record):
-                summary["purge_refused"] += 1
-                return "done"
-            else:
-                _retention_rebind_ctime(record_path, record, target)
+            elif (progress["removed"] and progress["continuous"]
+                    and _retention_holds(target, record)):
+                # This attempt itself removed entries of the verified object
+                # and the name still provably holds it: the change time it
+                # observed on the held object is this removal's own effect
+                # (R7). A refusal, an unknown result or a budget stop before
+                # any removal never becomes "I partially removed it".
+                _retention_rebind_ctime(record_path, record, target,
+                                        observed_stamp_ns=progress["observed_stamp_ns"])
                 summary["purge_partial"] += 1
                 if deadline is not None and time.monotonic() >= deadline:
                     # Cut by the budget: unfinished work keeps the window
                     # position so the next pass resumes this object first.
                     return "deadline"
+                return "done"
+            else:
+                summary["purge_refused"] += 1
                 return "done"
         if _retention_complete_purge(qdir, record_path, record, now):
             summary["purged"] += 1
@@ -26369,18 +26528,24 @@ def _retention_purge_record(
 
 
 def _retention_rebind_ctime(record_path: Path, record: dict[str, Any],
-                            target: Path) -> None:
-    """A ``ctime``-stamped object's own partial removal changed its change
-    time: re-record it so the next step accepts exactly this object. A crash
-    before this write leaves an unexplained change, which is refused."""
+                            target: Path, *,
+                            observed_stamp_ns: int | None = None) -> None:
+    """A ``ctime``-stamped object's own verified partial removal changed its
+    change time: re-record it so the next step accepts exactly this object.
+    The caller hands the value the purge observed on the held object; only a
+    caller that has proved the path still holds the removed-from object may
+    fall back to reading the name. A crash before this write leaves an
+    unexplained change, which is refused."""
     stamp = record.get("object_stamp")
     if not (_retention_stamp_ok(stamp) and stamp["kind"] == "ctime"):
         return
     try:
-        info = _retention_lstat(target)
-        if info is None or not _retention_bound_dir(info, record):
-            return
-        record["object_stamp"] = {"kind": "ctime", "ns": info.st_ctime_ns}
+        if observed_stamp_ns is None:
+            info = _retention_lstat(target)
+            if info is None or not _retention_bound_dir(info, record):
+                return
+            observed_stamp_ns = info.st_ctime_ns
+        record["object_stamp"] = {"kind": "ctime", "ns": observed_stamp_ns}
         _retention_write_record(record_path, record)
     except (OSError, PrivateBoundaryError):
         return
@@ -26535,7 +26700,8 @@ def retention_restore(
                 for record_path, record in first["valid"]:
                     if (record.get("original_name") == name
                             and record.get("state") != "quarantined"):
-                        _retention_settle_record(root, qdir, record_path, record, now)
+                        _retention_settle_record(root, qdir, record_path, record,
+                                                 now, deadline=deadline)
                 lookup = _retention_collect_records(qdir, deadline, prefix=f"{name}.")
                 if not lookup["complete"]:
                     report["outcome"] = "refused"
@@ -26897,7 +27063,8 @@ def _retention_maintenance_pass(
                 # so the next pass serves it first.
                 if apply and manifest is None:
                     if not _retention_settle_name_intents(
-                            root, qdir, name, record_hints, now, recovery):
+                            root, qdir, name, record_hints, now, recovery,
+                            deadline=deadline):
                         report["counts"]["skipped"] += 1
                         _retention_report_entry(report, {
                             "name": name, "verdict": "skipped",
@@ -27035,7 +27202,8 @@ def _retention_maintenance_pass(
 
 def _retention_settle_name_intents(
     root: Path, qdir: Path, name: str, record_hints: "_DiscoveryHints",
-    now: dt.datetime, recovery: dict[str, int],
+    now: dt.datetime, recovery: dict[str, int], *,
+    deadline: float | None = None,
 ) -> bool:
     """Settle this name's interrupted transactions before a new quarantine.
 
@@ -27055,7 +27223,8 @@ def _retention_settle_name_intents(
             continue
         if record.get("state") == "quarantined":
             continue
-        outcome = _retention_settle_record(root, qdir, path, record, now)
+        outcome = _retention_settle_record(root, qdir, path, record, now,
+                                           deadline=deadline)
         if outcome in recovery:
             recovery[outcome] += 1
         if outcome in ("indeterminate", "unchanged"):
@@ -27087,7 +27256,8 @@ def _retention_records_step(
             records["unknown"] += 1
         return "done"
     if record.get("state") != "quarantined":
-        outcome = _retention_settle_record(root, qdir, path, record, now)
+        outcome = _retention_settle_record(root, qdir, path, record, now,
+                                           deadline=deadline)
         if outcome in recovery:
             recovery[outcome] += 1
         if outcome != "unchanged":
