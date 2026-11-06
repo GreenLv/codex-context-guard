@@ -36,7 +36,8 @@ Versions are listed from newest to oldest. Public availability is determined by 
   counterexamples in seven families (transaction and lock ownership,
   complete JSON semantics, discovery budget, scheduler lifecycle, native
   harness oracles, history immutability, evidence binding). Repair R2
-  closes each family by its invariant; the historical library record that
+  closes each family by its invariant (R3 then closed five remaining
+  root-identity and enumeration-budget boundaries); the historical library record that
   had been deleted and re-added under the same ID is restored with its
   original bytes and a hash-bound rejected-intake record, and the
   corrected facts carry a new ID. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.

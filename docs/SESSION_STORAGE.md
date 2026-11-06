@@ -121,8 +121,24 @@ inspectable maintenance command (`cg-retention-report/v1`):
   runtime creates registers itself, so passes reach registered names in a
   stable order regardless of readdir order or directory size. A budgeted
   directory backfill finds names created later by older runtimes or lost from
-  a damaged registry; it completes only when a pass's backfill share covers
-  one listing of the namespace. Each pass checks its deadline before every directory
+  a damaged registry. Each listing (the namespace backfill and the quarantine
+  record scan) resumes in the next pass of the same process instead of
+  restarting at the first entry, so a finite directory is covered after a
+  bounded number of passes even when no single pass can list it once. Across
+  processes a listing restarts, because directory positions are not portable;
+  names it already reached stay registered.
+- Every enumeration charges the caller's deadline before each unit of work:
+  quarantine records are listed once per pass (feeding recovery, the
+  unknown-record count and purge), per-session lookups during resume and
+  restore are bounded and refuse rather than guess when cut, and the tree
+  digest, purge listings and registry parsing stop at the deadline.
+- Quarantine, restore and purge re-check the record's directory identity
+  after each intent is written, immediately before the move or deletion, and
+  check the object actually moved or opened. A substituted object is left
+  in place (or moved back) untouched, the transaction reports
+  `identity_changed`, and an unprovable state stays indeterminate for
+  inspection; purge never deletes a directory that is not the record's
+  object. Each pass checks its deadline before every directory
   entry, adjudication and transition, and a transition cut by the deadline is
   queued for the next pass instead of being skipped. All 30 retired retention
   test nodes are individually mapped in

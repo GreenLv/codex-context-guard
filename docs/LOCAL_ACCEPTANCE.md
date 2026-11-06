@@ -2,6 +2,22 @@
 
 ## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
 
+### Repair round R3 (2026-11-06)
+
+The independent review of R2 (`a26f843`) accepted the other families and
+found five boundary violations in two: quarantine, restore and purge acted
+on whatever object held the name after their intent was written, and the
+record scan and namespace backfill ignored the pass budget (100 records read
+twice in a 3 ms budget; an unregistered tail never reached in 20 passes).
+R3 re-binds the recorded identity after every intent, checks the object
+actually moved or opened and puts a substituted object back untouched;
+purge passes the bound identity into the removal. All listings charge the
+deadline per unit; the backfill and record scan resume across passes of one
+process. Source checks for this round are recorded in the R3 handoff outside
+the checkout; the full suite, history gate and performance runs wait for the
+coordinator's source review. Across processes a listing restarts, which is
+a remaining platform boundary for names no runtime registered.
+
 ### Repair round R2 (2026-11-06)
 
 The independent review of R1 (`b65bacc`) confirmed that the original 11
