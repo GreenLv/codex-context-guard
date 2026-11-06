@@ -45,6 +45,25 @@ def load_product():
     return module
 
 
+def windows_text_tempfile():
+    """A ``tempfile`` stand-in whose text-mode NamedTemporaryFile translates
+    ``\\n`` to ``\\r\\n`` whenever ``newline`` is None (the default) -- the
+    behavior of text files on Windows (R6, N1)."""
+    import tempfile
+    import types
+
+    def named(*args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "w+b")
+        if "b" not in mode and kwargs.get("newline") is None:
+            kwargs["newline"] = "\r\n"
+        return tempfile.NamedTemporaryFile(*args, **kwargs)
+    shim = types.SimpleNamespace(**{name: getattr(tempfile, name)
+                                    for name in dir(tempfile)
+                                    if not name.startswith("__")})
+    shim.NamedTemporaryFile = named
+    return shim
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=Path, required=True)
@@ -58,6 +77,11 @@ def main(argv=None) -> int:
     parser.add_argument("--frozen-mtime", action="store_true")
     parser.add_argument("--future-days", type=float, default=0.0)
     parser.add_argument("--crash", default="")
+    parser.add_argument("--no-birth-time", action="store_true",
+                        help="model a filesystem that reports no creation time")
+    parser.add_argument("--windows-newlines", action="store_true",
+                        help="emulate Windows text-mode newline translation "
+                             "(CRLF) for the product's text writes")
     parser.add_argument("--create-during-listing", default="",
                         help="NAME:AFTER_ENTRIES:registered|legacy:TEMPLATE_DIR")
     args = parser.parse_args(argv)
@@ -219,6 +243,11 @@ def main(argv=None) -> int:
         patches.append(mock.patch.object(cg.os, "unlink", side_effect=unlink))
     elif crash:
         raise SystemExit(f"unknown crash point {crash}")
+
+    if args.windows_newlines:
+        patches.append(mock.patch.object(cg, "tempfile", windows_text_tempfile()))
+    if args.no_birth_time:
+        patches.append(mock.patch.object(cg, "_retention_birth_ns", return_value=None))
 
     for patch in patches:
         patch.start()

@@ -137,6 +137,42 @@ class RetentionBatchHarnessTests(unittest.TestCase):
         within["detail"]["tail_reached_run"] = 9
         self.assertIn("within_capacity_runs", errors(late))
         self.assertIn("schema", errors(dict(result, schema="cg-retention-native-batch/v2")))
+        self.assertIn("schema", errors(dict(result, schema="cg-retention-native-batch/v3")))
+
+    def test_consumer_rederives_purge_objects_before_dispatch(self):
+        """v4 (R6): a purge row whose booleans still claim success is
+        rejected when its object facts, recorded before the later dispatch,
+        show the object was not purged (the Windows original failure shape:
+        tombstone missing, object later transparently restored)."""
+        result = finish(self.real, self.temp.name)
+
+        def errors(mutated):
+            return native.validate_retention_batch_result(
+                mutated, source_commit=COMMIT, runtime_tree_sha256=DIGEST)
+        self.assertEqual(errors(result), [])
+        cases = {
+            "purge_complete_objects": ("purge_complete", "before_dispatch",
+                                       {"tombstones": 0}),
+            "purge_complete_objects ": ("purge_complete", "before_dispatch",
+                                        {"target_present": True}),
+            "purge_complete_objects  ": ("purge_complete", "after_dispatch",
+                                         {"home_exists": True}),
+            "purge_partial_objects": ("purge_partial_resume", "after_resume",
+                                      {"records": ["purge_planned"]}),
+            "crash_boundary_objects": ("crash_boundaries", "after_completion",
+                                       {"tombstones": 0}),
+        }
+        for code, (row, field, change) in cases.items():
+            forged = json.loads(json.dumps(result))
+            by_name(forged["scenarios"])[row]["detail"][field].update(change)
+            self.assertIn(code.strip(), errors(forged), (row, field, change))
+        removed = json.loads(json.dumps(result))
+        del by_name(removed["scenarios"])["purge_complete"]["detail"]["before_dispatch"]
+        self.assertIn("purge_complete_objects", errors(removed))
+        stalled = json.loads(json.dumps(result))
+        beyond = by_name(stalled["scenarios"])["fresh_process_capacity_exceeded"]
+        beyond["detail"]["runs"][-1]["registered_present"] = True
+        self.assertIn("capacity_registered_object", errors(stalled))
 
     def test_destroyed_should_keep_ledgers_fail_the_batch(self):
         def mutate(module):

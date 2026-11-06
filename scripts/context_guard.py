@@ -2639,10 +2639,16 @@ def _replace_windows_committed_state(source: Path, target: Path) -> None:
         close(handle)
 
 
-def atomic_write_text(path: Path, content: str, *, committed_state: bool = False) -> None:
+def atomic_write_text(path: Path, content: str, *, committed_state: bool = False,
+                      newline: str | None = None) -> None:
+    """Atomically publish ``content``. ``newline`` is the text-mode newline
+    translation: the default keeps the platform convention (CRLF on
+    Windows); a byte-exact format such as the discovery snapshot passes
+    ``""`` so the bytes are identical on every platform."""
     secure_directory(path.parent)
     handle = tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False, prefix=f".{path.name}."
+        "w", encoding="utf-8", dir=path.parent, delete=False, prefix=f".{path.name}.",
+        newline=newline,
     )
     temp_path = Path(handle.name)
     try:
@@ -24158,7 +24164,10 @@ def _discovery_write_snapshot(root: Path, scope: str, ordered: list[str],
             f"sha256={digest.hexdigest()}\n")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, head + "".join(chunks))
+        # Byte-exact on every platform: the reader validates LF-separated
+        # names against the header digest (R6: Windows text mode wrote CRLF
+        # and the product's own reader rejected its snapshot as corrupt).
+        atomic_write_text(path, head + "".join(chunks), newline="")
     except (OSError, PrivateBoundaryError):
         return False
     return True
@@ -25297,13 +25306,16 @@ _RETENTION_PURGE_EXPECTED = threading.local()
 
 
 @contextlib.contextmanager
-def _retention_expect_root(identity: list[int]):
-    previous = getattr(_RETENTION_PURGE_EXPECTED, "identity", None)
+def _retention_expect_root(identity: list[int], *,
+                           record: dict[str, Any] | None = None):
+    previous = (getattr(_RETENTION_PURGE_EXPECTED, "identity", None),
+                getattr(_RETENTION_PURGE_EXPECTED, "record", None))
     _RETENTION_PURGE_EXPECTED.identity = list(identity)
+    _RETENTION_PURGE_EXPECTED.record = record
     try:
         yield
     finally:
-        _RETENTION_PURGE_EXPECTED.identity = previous
+        _RETENTION_PURGE_EXPECTED.identity, _RETENTION_PURGE_EXPECTED.record = previous
 
 
 def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
@@ -25322,6 +25334,7 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
     set).
     """
     expected = getattr(_RETENTION_PURGE_EXPECTED, "identity", None)
+    bound = getattr(_RETENTION_PURGE_EXPECTED, "record", None)
     if os.name == "nt":
         try:
             root_info = path.lstat()
@@ -25329,6 +25342,9 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
             return False
         if expected is not None and [root_info.st_dev, root_info.st_ino] != expected:
             return False  # the name no longer holds the bound object
+        if (bound is not None and "object_stamp" in bound
+                and not _retention_stamp_matches(path, root_info, bound)):
+            return False  # same identity, different object (R6)
         return _retention_purge_tree_windows(path, deadline)
     try:
         before = os.lstat(path)
@@ -25344,6 +25360,9 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
         after = os.fstat(dir_fd)
         if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
             return False
+        if (bound is not None and "object_stamp" in bound
+                and not _retention_stamp_matches(dir_fd, after, bound)):
+            return False  # the OPENED directory is not the bound object (R6)
         emptied = _retention_purge_tree_posix(dir_fd, deadline)
         if not emptied:
             return False
@@ -25588,6 +25607,8 @@ def _retention_read_record(path: Path) -> dict[str, Any] | None:
             and re.fullmatch(r"[0-9a-f]{64}", tree["sha256"])
             and type(tree.get("entries")) is int and tree["entries"] >= 0):
         return None
+    if "object_stamp" in record and not _retention_stamp_ok(record["object_stamp"]):
+        return None
     return record
 
 
@@ -25778,6 +25799,128 @@ def _retention_bound_dir(info: os.stat_result | None, record: dict[str, Any]) ->
             and [info.st_dev, info.st_ino] == record.get("identity"))
 
 
+# Replacement binding (R6, N2). ``(dev, ino)`` alone cannot tell a bound
+# object from a replacement that reuses the freed inode number (observed on
+# Linux CI: remove the quarantined tree, create a directory at the same
+# name, and the new directory can carry the old identity). The record
+# therefore also binds an ``object_stamp`` sampled when the object became
+# quarantined, compared on every purge step across processes without
+# holding any descriptor and without adding any entry to the object:
+#
+# * ``birth``: the object's creation time (``st_birthtime`` on macOS and
+#   Windows, ``statx`` STATX_BTIME on Linux). A replacement is a new object
+#   with a new creation time; removing entries never changes it, so partial
+#   removal, crashes and restarts keep the binding.
+# * ``ctime`` (a filesystem without creation time): the change time of the
+#   untouched quarantined root. Every purge step re-records it after its
+#   own removal; a change the record does not explain -- a replacement, or
+#   a crash inside a removal -- is refused, never guessed.
+_RETENTION_STAMP_KINDS = ("birth", "ctime")
+_STATX_BTIME = 0x800
+_STATX_INO = 0x100
+_AT_FDCWD = -100
+_AT_SYMLINK_NOFOLLOW = 0x100
+_AT_EMPTY_PATH = 0x1000
+_RETENTION_STATX: list[Any] = []
+
+
+def _retention_linux_birth_ns(target: Path | int, ino: int) -> int | None:
+    """Creation time through glibc ``statx`` of a path (no link followed)
+    or an open descriptor; None when unavailable or the filesystem does not
+    report it."""
+    if not _RETENTION_STATX:
+        function = None
+        try:
+            import ctypes
+            libc = ctypes.CDLL(None, use_errno=True)
+            function = libc.statx
+            function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                                 ctypes.c_uint, ctypes.c_void_p]
+            function.restype = ctypes.c_int
+        except (OSError, AttributeError, ImportError):
+            function = None
+        _RETENTION_STATX.append(function)
+    function = _RETENTION_STATX[0]
+    if function is None:
+        return None
+    import ctypes
+    buffer = ctypes.create_string_buffer(256)
+    if isinstance(target, int):
+        status = function(target, b"", _AT_EMPTY_PATH | _AT_SYMLINK_NOFOLLOW,
+                          _STATX_BTIME | _STATX_INO, buffer)
+    else:
+        status = function(_AT_FDCWD, os.fsencode(target), _AT_SYMLINK_NOFOLLOW,
+                          _STATX_BTIME | _STATX_INO, buffer)
+    if status != 0:
+        return None
+    raw = buffer.raw
+    mask = int.from_bytes(raw[0:4], sys.byteorder)
+    if not mask & _STATX_BTIME or int.from_bytes(raw[32:40], sys.byteorder) != ino:
+        return None
+    seconds = int.from_bytes(raw[80:88], sys.byteorder, signed=True)
+    nanoseconds = int.from_bytes(raw[88:92], sys.byteorder)
+    return seconds * 1_000_000_000 + nanoseconds
+
+
+def _retention_birth_ns(path: Path | int, info: os.stat_result) -> int | None:
+    """Creation time of ``path`` (or open descriptor) whose stat is ``info``."""
+    if os.name == "nt":
+        birth = getattr(info, "st_birthtime_ns", None)
+        if type(birth) is int:
+            return birth
+        value = getattr(info, "st_ctime_ns", None)  # creation time on Windows
+        return value if type(value) is int else None
+    birth = getattr(info, "st_birthtime", None)
+    if isinstance(birth, float):
+        return round(birth * 1_000_000_000)
+    if sys.platform.startswith("linux"):
+        return _retention_linux_birth_ns(path, info.st_ino)
+    return None
+
+
+def _retention_object_stamp(path: Path, info: os.stat_result) -> dict[str, Any] | None:
+    birth = _retention_birth_ns(path, info)
+    if birth is not None:
+        return {"kind": "birth", "ns": birth}
+    ctime = getattr(info, "st_ctime_ns", None)
+    return {"kind": "ctime", "ns": ctime} if type(ctime) is int else None
+
+
+def _retention_stamp_ok(value: Any) -> bool:
+    return (isinstance(value, dict) and set(value) == {"kind", "ns"}
+            and value["kind"] in _RETENTION_STAMP_KINDS and type(value["ns"]) is int)
+
+
+def _retention_stamp_matches(path: Path | int, info: os.stat_result | None,
+                             record: dict[str, Any] | None) -> bool:
+    expected = (record or {}).get("object_stamp")
+    if info is None or not _retention_stamp_ok(expected):
+        return False
+    if expected["kind"] == "birth":
+        return _retention_birth_ns(path, info) == expected["ns"]
+    return getattr(info, "st_ctime_ns", None) == expected["ns"]
+
+
+def _retention_object_bound(
+    target: Path, info: os.stat_result, record: dict[str, Any],
+    deadline: float | None,
+) -> str:
+    """Is the bound name still the object that was quarantined? Returns
+    "" (yes), "deadline" or "refused". A quarantined record without a stamp
+    (written before R6) is verified by its structural tree digest instead;
+    an unstamped ``purge_planned`` object has no remaining proof."""
+    if "object_stamp" in record:
+        return "" if _retention_stamp_matches(target, info, record) else "refused"
+    expected_tree = record.get("tree")
+    if record.get("state") != "quarantined" or expected_tree is None:
+        return "refused"
+    actual = _retention_tree_digest(target, deadline)
+    if actual is None:
+        return ("deadline" if deadline is not None and time.monotonic() >= deadline
+                else "refused")
+    return "" if actual == expected_tree else "refused"
+
+
 def _retention_acquire_lifecycle_lock(candidate: Path):
     """Hold the shared lifecycle lock across a destructive transition.
 
@@ -25964,6 +26107,12 @@ def _retention_quarantine_object(
     record["state"] = "quarantined"
     record["quarantined_at"] = record["planned_at"]
     try:
+        stamp_value = _retention_object_stamp(target, target.lstat())
+    except OSError:
+        stamp_value = None
+    if stamp_value is not None:
+        record["object_stamp"] = stamp_value
+    try:
         _retention_write_record(record_path, record)
     except (OSError, PrivateBoundaryError):
         # The rename landed; the recovery pass promotes the intent.
@@ -26039,6 +26188,9 @@ def _retention_settle_record(
                 record = dict(record, state="quarantined",
                               quarantined_at=record.get("planned_at"),
                               recovered_at=stamp)
+                object_stamp = _retention_object_stamp(target, target_info)
+                if object_stamp is not None:
+                    record["object_stamp"] = object_stamp
                 _retention_write_record(record_path, record)
                 return "recovered"
             return "indeterminate"
@@ -26158,23 +26310,40 @@ def _retention_purge_record(
             # removal of whatever occupies its name.
             summary["purge_refused"] += 1
             return "done"
+        # (dev, ino) can be reused by a replacement: the object must also
+        # carry the stamp bound when it was quarantined (R6).
+        verdict = _retention_object_bound(target, target_info, record, deadline)
+        if verdict == "deadline":
+            return "deadline"
+        if verdict:
+            summary["purge_refused"] += 1
+            return "done"
         if deadline is not None and time.monotonic() >= deadline:
             return "deadline"
         if state == "quarantined":
             record = dict(record, state="purge_planned",
                           purge_started_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            if "object_stamp" not in record:
+                # A pre-R6 record whose object the tree digest just proved:
+                # bind the stamp before the first removal changes the tree.
+                upgraded = _retention_object_stamp(target, target_info)
+                if upgraded is None:
+                    summary["purge_refused"] += 1
+                    return "done"
+                record["object_stamp"] = upgraded
             try:
                 _retention_write_record(record_path, record)
             except (OSError, PrivateBoundaryError):
                 summary["purge_pending"] += 1
                 return "done"
         # Re-bind after the intent is durable, and hand the bound identity
-        # to the removal itself: it opens the root without following links
-        # and refuses unless the opened directory IS the record's object.
+        # and stamp to the removal itself: it opens the root without
+        # following links and refuses unless the opened directory IS the
+        # record's object.
         if not (_retention_parents_ok(root) and _retention_holds(target, record)):
             summary["purge_refused"] += 1
             return "done"
-        with _retention_expect_root(record["identity"]):
+        with _retention_expect_root(record["identity"], record=record):
             removed = _retention_purge_tree(target, deadline)
         if not removed:
             if _retention_lstat_or_marker(target) is None:
@@ -26183,6 +26352,7 @@ def _retention_purge_record(
                 summary["purge_refused"] += 1
                 return "done"
             else:
+                _retention_rebind_ctime(record_path, record, target)
                 summary["purge_partial"] += 1
                 if deadline is not None and time.monotonic() >= deadline:
                     # Cut by the budget: unfinished work keeps the window
@@ -26196,6 +26366,24 @@ def _retention_purge_record(
         return "done"
     finally:
         release()
+
+
+def _retention_rebind_ctime(record_path: Path, record: dict[str, Any],
+                            target: Path) -> None:
+    """A ``ctime``-stamped object's own partial removal changed its change
+    time: re-record it so the next step accepts exactly this object. A crash
+    before this write leaves an unexplained change, which is refused."""
+    stamp = record.get("object_stamp")
+    if not (_retention_stamp_ok(stamp) and stamp["kind"] == "ctime"):
+        return
+    try:
+        info = _retention_lstat(target)
+        if info is None or not _retention_bound_dir(info, record):
+            return
+        record["object_stamp"] = {"kind": "ctime", "ns": info.st_ctime_ns}
+        _retention_write_record(record_path, record)
+    except (OSError, PrivateBoundaryError):
+        return
 
 
 def _retention_retire_tombstone(qdir: Path, tombstone: Path, now: dt.datetime,
@@ -26622,14 +26810,14 @@ def _retention_maintenance_pass(
                    "complete": False, "unknown": 0}
         # One window cycle runs from the persisted cursor to the end of the
         # hints; reaching the end completes the cycle and resets the cursor.
-        record_names = record_hints.after(records["cursor"])
+        records["names"] = record_hints.after(records["cursor"])
         records["resume"] = None
 
         def next_record() -> str | None:
             if records["resume"] is not None:
                 name, records["resume"] = records["resume"], None
                 return name
-            return next(record_names, None)
+            return next(records["names"], None)
 
         def records_window(until: float | None) -> None:
             """Serve records until ``until``. The share only bounds STARTING
@@ -26785,7 +26973,15 @@ def _retention_maintenance_pass(
                 now)
             report["manifest_sha256"] = binding["manifest_sha256"]
 
-        # 4. The records window continues with whatever budget is left.
+        # 4. The records window continues with whatever budget is left. A
+        # cycle that ended before this pass's discovery restored record
+        # hints (damaged snapshot, rotated journal) is reopened after its
+        # last served name, so restored records are served now instead of
+        # the pass claiming a complete cycle over hints it never had (R6).
+        # Names sorting before that position are served by the next cycle.
+        if records["complete"]:
+            records["complete"] = False
+            records["names"] = record_hints.after(records["cursor"])
         records_window(deadline)
         report["recovery"] = recovery
         report["unknown_records"] = records["unknown"]

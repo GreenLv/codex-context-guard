@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -716,7 +717,7 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         "unperformed_actions": ["commit", "push", "merge", "tag", "release", "public_promotion"]}
 
 
-RETENTION_BATCH_SCHEMA = "cg-retention-native-batch/v3"
+RETENTION_BATCH_SCHEMA = "cg-retention-native-batch/v4"
 # The exact scenario set a consumer requires; a missing, renamed or extra
 # scenario fails the batch instead of shrinking it.
 RETENTION_BATCH_SCENARIOS = (
@@ -884,6 +885,7 @@ def validate_retention_batch_result(
                 or any(value is not True for value in checks.values())):
             errors.append(f"checks:{name}")
     errors.extend(_validate_fresh_process_rows(by_name))
+    errors.extend(_validate_purge_object_rows(by_name))
     kept = by_name.get("kept_ledger_readback", {}).get("detail", {})
     objects = kept.get("objects") if isinstance(kept, dict) else None
     if (not isinstance(objects, list) or len(objects) != 6
@@ -897,6 +899,54 @@ def validate_retention_batch_result(
         errors.append("status_inconsistent")
     if result.get("status") == "passed" and errors:
         errors.append("status_claims_pass")
+    return errors
+
+
+def _validate_purge_object_rows(by_name: dict[str, Any]) -> list[str]:
+    """v4 (R6): purge outcomes re-derived from per-object facts recorded
+    before any later dispatch could restore or recreate the object; counts
+    and the scenario's own booleans are never enough."""
+    errors: list[str] = []
+
+    def detail(name: str) -> dict[str, Any]:
+        value = by_name.get(name, {}).get("detail")
+        return value if isinstance(value, dict) else {}
+
+    def state(value: Any) -> dict[str, Any] | None:
+        if (isinstance(value, dict) and isinstance(value.get("records"), list)
+                and type(value.get("tombstones")) is int
+                and isinstance(value.get("home_exists"), bool)):
+            return value
+        return None
+
+    complete = detail("purge_complete")
+    before, after = state(complete.get("before_dispatch")), state(complete.get("after_dispatch"))
+    if (before is None or after is None or before.get("target_present") is not False
+            or before["records"] or before["tombstones"] != 1 or before["home_exists"]
+            or after["home_exists"] or after["records"] or after["tombstones"] != 1
+            or complete.get("restore_outcome") == "restored"
+            or not complete.get("dispatch_error")):
+        errors.append("purge_complete_objects")
+    partial = detail("purge_partial_resume")
+    first, resumed = state(partial.get("after_partial")), state(partial.get("after_resume"))
+    if (first is None or resumed is None or first["records"] != ["purge_planned"]
+            or resumed.get("target_present") is not False or resumed["records"]
+            or resumed["tombstones"] != 1):
+        errors.append("purge_partial_objects")
+    crash = detail("crash_boundaries")
+    lost, done = state(crash.get("after_tombstone_loss")), state(crash.get("after_completion"))
+    if (lost is None or done is None or lost["records"] != ["purge_planned"]
+            or lost["tombstones"] != 0 or done["records"] or done["tombstones"] != 1):
+        errors.append("crash_boundary_objects")
+    beyond = detail("fresh_process_capacity_exceeded")
+    runs = beyond.get("runs")
+    present = ([run.get("registered_present") for run in runs]
+               if isinstance(runs, list) and all(isinstance(run, dict) for run in runs)
+               else None)
+    if (beyond.get("registered_hinted") is not True or not present
+            or any(not isinstance(value, bool) for value in present)
+            or present[-1] is not False):
+        errors.append("capacity_registered_object")
     return errors
 
 
@@ -1039,6 +1089,21 @@ def run_retention_batch_scenarios(repo_root: Path) -> list[dict[str, Any]]:
 
         def read_official(name):
             return cg.load_state(home(name), payload("SessionStart", name))
+
+        def object_state(name):
+            """Per-object facts of one session name, taken BEFORE any later
+            dispatch can transparently restore or recreate it (v4, R6)."""
+            rows = records_for(name)
+            stones = []
+            with contextlib.suppress(OSError):
+                stones = sorted(path.name for path in qdir.iterdir()
+                                if path.name.startswith(cg.safe_session_id(name) + ".")
+                                and path.name.endswith(".tombstone.json"))
+            return {"home_exists": home(name).exists(),
+                    "records": [record.get("state") for _p, record in rows],
+                    "objects_present": [(qdir / record["quarantine_object"]).exists()
+                                        for _p, record in rows],
+                    "tombstones": len(stones)}
 
         def scenario(name, checks, **detail):
             scenarios.append({"name": name,
@@ -1198,19 +1263,30 @@ def run_retention_batch_scenarios(repo_root: Path) -> list[dict[str, Any]]:
             target = qdir / record["quarantine_object"]
             with future_clock(8):
                 purge = run_pass()
+            # Judged BEFORE the dispatch below, which could otherwise
+            # transparently restore the object and hide a missed purge.
+            before_dispatch = dict(object_state("eligible-03"),
+                                   target_present=target.exists())
+            tombstone = (qdir / (record["quarantine_object"] + ".tombstone.json")).is_file()
+            restore_outcome = cg.retention_restore(
+                data_dir, cg.safe_session_id("eligible-03")).get("outcome")
             recreate_refused = False
+            dispatch_error = None
             try:
                 cg.dispatch(payload("UserPromptSubmit", "eligible-03", prompt="继续"))
-            except Exception:  # noqa: BLE001 - refusal is the expected outcome
+            except Exception as exc:  # noqa: BLE001 - refusal is the expected outcome
                 recreate_refused = True
+                dispatch_error = type(exc).__name__
+            after_dispatch = object_state("eligible-03")
             scenario("purge_complete", {
-                "target_gone": not target.exists(),
-                "tombstone": (qdir / (record["quarantine_object"] + ".tombstone.json")).is_file(),
-                "record_retired": not records_for("eligible-03"),
-                "restore_unavailable": cg.retention_restore(
-                    data_dir, cg.safe_session_id("eligible-03")).get("outcome") != "restored",
-                "recreation_refused": recreate_refused or not home("eligible-03").exists(),
-            }, purge=purge.get("purge"))
+                "target_gone": not before_dispatch["target_present"],
+                "tombstone": tombstone,
+                "record_retired": not before_dispatch["records"],
+                "restore_unavailable": restore_outcome != "restored",
+                "recreation_refused": recreate_refused and not after_dispatch["home_exists"],
+            }, purge=purge.get("purge"), before_dispatch=before_dispatch,
+                after_dispatch=after_dispatch, restore_outcome=restore_outcome,
+                dispatch_error=dispatch_error)
 
             refused_pass = purge
             scenario("replacement_refusal", {
@@ -1234,16 +1310,20 @@ def run_retention_batch_scenarios(repo_root: Path) -> list[dict[str, Any]]:
             with future_clock(8), mock.patch.object(cg, "_retention_purge_tree",
                                                     side_effect=interrupted):
                 run_pass()
+            after_partial = object_state("partial-purge")
             state_after_partial = (records_for("partial-purge") or [(None, {})])[0][1].get("state")
             refused = cg.retention_restore(data_dir, cg.safe_session_id("partial-purge"))
             with future_clock(8):
-                run_pass()
+                resumed = run_pass()
+            after_resume = dict(object_state("partial-purge"), target_present=target.exists())
             scenario("purge_partial_resume", {
                 "marked_purge_planned": state_after_partial == "purge_planned",
                 "restore_refused": refused.get("outcome") != "restored",
-                "completed_next_pass": not target.exists() and not records_for("partial-purge"),
+                "completed_next_pass": not after_resume["target_present"]
+                and not after_resume["records"] and after_resume["tombstones"] == 1,
                 "real_tree_helper_restored": cg._retention_purge_tree is real_purge_tree,
-            })
+            }, after_partial=after_partial, after_resume=after_resume,
+                purge=resumed.get("purge"))
 
             # Crash boundaries of every transition.
             checks = {}
@@ -1287,12 +1367,16 @@ def run_retention_batch_scenarios(repo_root: Path) -> list[dict[str, Any]]:
                 run_pass()
             checks["tombstone_loss_keeps_purge_record"] = [
                 r.get("state") for _p, r in records_for("crash-b")] == ["purge_planned"]
+            after_tombstone_loss = object_state("crash-b")
             with future_clock(8):
-                run_pass()
+                completed = run_pass()
+            after_completion = object_state("crash-b")
             checks["tombstone_completed_next_pass"] = (
                 not records_for("crash-b")
                 and (qdir / (record["quarantine_object"] + ".tombstone.json")).is_file())
-            scenario("crash_boundaries", checks)
+            scenario("crash_boundaries", checks,
+                     after_tombstone_loss=after_tombstone_loss,
+                     after_completion=after_completion, purge=completed.get("purge"))
 
             _retention_fresh_process_scenarios(
                 cg, repo_root, work, payload, scenario, future_clock)
@@ -1403,7 +1487,11 @@ def _retention_fresh_process_scenarios(cg, repo_root: Path, work: Path, payload,
     (root / "sessions-v2").mkdir(parents=True)
     tail = prefix_and_legacy_tail(root, registered="y-registered-eligible")
     registered = root / "sessions-v2" / cg.safe_session_id("y-registered-eligible")
-    runs = [modeled(root, 4.0) for _ in range(8)]
+    registered_hinted = registered.name in cg._read_discovery_registry(root)
+    runs = []
+    for _ in range(8):
+        runs.append(modeled(root, 4.0))
+        runs[-1]["registered_present"] = registered.exists()
     scenario("fresh_process_capacity_exceeded", {
         "backlog_every_run": all(run["backlog"] is True for run in runs),
         "never_scan_complete": all(run["scan_complete"] is False for run in runs),
@@ -1411,7 +1499,7 @@ def _retention_fresh_process_scenarios(cg, repo_root: Path, work: Path, payload,
         "registered_work_advanced": not registered.exists(),
         "tail_not_claimed": tail.exists(),
         "budget_respected": all(run["virtual_ms"] <= run["budget_ms"] + 2.0 for run in runs),
-    }, runs=runs)
+    }, runs=runs, registered_hinted=registered_hinted)
 
     # Purge of a registered quarantined object: 19 children at 1 ms per
     # listed child, 3 ms per invocation, each invocation a fresh process.
