@@ -26,7 +26,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "cg-retention-scheduler-native/v1"
+SCHEMA = "cg-retention-scheduler-native/v2"
+WINDOWS_V1_SCHEMA = "cg-retention-scheduler-native/v1"
 LABEL = re.compile(r"cg-ccg0170-[A-Za-z0-9][A-Za-z0-9._-]{0,70}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 JOB_BUDGET_SECONDS = 45.0
@@ -274,26 +275,16 @@ class _Mac:
         return self.absent(label)
 
     def trigger(self, label: str, scratch: Path) -> dict[str, Any]:
-        stdout, stderr = scratch / "launchd-stdout.txt", scratch / "launchd-stderr.txt"
-        for path in (stdout, stderr):
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            os.close(fd)
-        debug = self.call("debug", self.target(label), "--stdout", str(stdout),
-                          "--stderr", str(stderr))
-        if debug.returncode != 0:
-            return {"exit_code": None, "debug_exit_code": debug.returncode,
-                    "trigger_attempted": False,
-                    "debug_stderr": debug.stderr.decode("utf-8", errors="replace")[-4000:]}
+        del scratch
         result = self.call("kickstart", "-p", self.target(label))
         try:
             pid = int(result.stdout.strip())
         except ValueError:
             pid = None
-        return {"exit_code": result.returncode, "pid": pid, "debug_exit_code": 0,
+        return {"exit_code": result.returncode, "pid": pid,
                 "trigger_attempted": True,
                 "trigger_stderr": result.stderr.decode("utf-8", errors="replace")[-4000:],
-                "stdout_path": str(stdout), "stderr_path": str(stderr),
-                "observation": "one-run launchctl debug redirects streams only"}
+                "job_stdout": "unavailable", "job_stderr": "unavailable"}
 
     def stop(self, label: str) -> dict[str, Any]:
         result = self.call("kill", "SIGTERM", self.target(label))
@@ -313,9 +304,13 @@ class _Windows:
 
     def ps(self, source: str, *, timeout: float = 30.0) -> subprocess.CompletedProcess[bytes]:
         command = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);" + source
+        # Let this PowerShell select its own system modules, without altering
+        # the caller's environment or bypassing any ACL check.
+        child_env = {key: value for key, value in self.env.items()
+                     if key.casefold() != "psmodulepath"}
         return _command(self.native, self.source,
                         [self.powershell, "-NoProfile", "-NonInteractive", "-Command", command],
-                        env=self.env, timeout=timeout)
+                        env=child_env, timeout=timeout)
 
     def exists(self, label: str) -> bool:
         # COM HRESULT distinguishes an absent task from denied/unknown query.
@@ -732,7 +727,8 @@ def _definition_matches(actual: dict[str, Any], expected: dict[str, Any], system
 def consume(report: Any, *, expected_subject: dict[str, Any], fixture: Path,
             system: str) -> list[str]:
     """Independent verdict from facts; a claimed passed flag is insufficient."""
-    if not isinstance(report, dict) or report.get("schema") != SCHEMA:
+    expected_schema = SCHEMA if system == "Darwin" else WINDOWS_V1_SCHEMA
+    if not isinstance(report, dict) or report.get("schema") != expected_schema:
         return ["schema"]
     errors = []
     subject = _dict(report.get("subject"))
@@ -790,18 +786,25 @@ def consume(report: Any, *, expected_subject: dict[str, Any], fixture: Path,
                 or type(_dict(scene.get("trigger")).get("pid")) is not int
                 or _dict(scene.get("trigger")).get("pid", 0) <= 0):
             errors.append("native_execution")
-        result = _dict(scene.get("job_report"))
-        counts = _dict(result.get("counts"))
-        entries = result.get("entries") if isinstance(result.get("entries"), list) else []
-        protected_count = counts.get("protected")
-        if (result.get("mode") != "apply" or type(counts.get("quarantined")) is not int
-                or counts.get("quarantined") != 1
-                or type(protected_count) is not int or protected_count < 1
-                or not any(entry.get("name") == "scheduler-pending"
-                           and entry.get("reason") == "unfinished_work"
-                           for entry in entries if isinstance(entry, dict))
-                or result.get("refused") or result.get("capacity_exceeded")):
-            errors.append("job_report")
+        trigger = _dict(scene.get("trigger"))
+        if (trigger.get("trigger_attempted") is not True
+                or trigger.get("job_stdout") != "unavailable"
+                or trigger.get("job_stderr") != "unavailable"
+                or "job_report" in scene):
+            errors.append("job_output_boundary")
+        preview = _dict(scene.get("post_job_preview"))
+        preview_json = _dict(preview.get("json"))
+        entries = preview_json.get("entries")
+        if (type(preview.get("exit_code")) is not int or preview.get("exit_code") != 0
+                or preview_json.get("mode") != "preview"
+                or preview_json.get("refused") or preview_json.get("capacity_exceeded") is not False
+                or preview_json.get("deadline_reached")
+                or type(_dict(preview_json.get("counts")).get("protected")) is not int
+                or _dict(preview_json.get("counts")).get("protected", 0) < 1
+                or not isinstance(entries, list)
+                or not any(isinstance(entry, dict) and entry.get("name") == "scheduler-pending"
+                           and entry.get("reason") == "unfinished_work" for entry in entries)):
+            errors.append("post_job_preview")
     elif report.get("platform") == "windows":
         try:
             started = dt.datetime.fromisoformat(report["started_at"]).astimezone(dt.timezone.utc)
@@ -847,6 +850,24 @@ def consume(report: Any, *, expected_subject: dict[str, Any], fixture: Path,
             or reader.get("protected_unfinished") != pre.get("protected_unfinished")
             or reader.get("quarantine_record_exists") is not False):
         errors.append("official_reader")
+    if system == "Darwin":
+        before_eligible = _dict(pre.get("eligible_object"))
+        before_protected = _dict(pre.get("protected_object"))
+        record = _dict(post.get("record_binding"))
+        if (pre.get("records_empty") is not True
+                or not _object_valid(before_eligible) or not _object_valid(before_protected)
+                or post.get("quarantine_object") != before_eligible
+                or post.get("protected_object") != before_protected
+                or reader.get("eligible_object") != before_eligible
+                or reader.get("protected_object") != before_protected
+                or record.get("identity") != before_eligible.get("identity")
+                or record.get("object_stamp") != before_eligible.get("object_stamp")
+                or record.get("state") != "quarantined"
+                or record.get("original_name") != "scheduler-eligible"
+                or not isinstance(record.get("quarantine_object"), str)
+                or not record.get("quarantine_object", "").startswith("scheduler-eligible.")
+                or Path(record["quarantine_object"]).name != record["quarantine_object"]):
+            errors.append("full_object_binding")
     if _json_exit(scene, "disable") != (0, "disabled", "disabled"):
         errors.append("disable")
     if (_json_exit(scene, "second_disable") != (0, "already_disabled", "disabled")
@@ -881,6 +902,39 @@ def _expected_definition(subject: dict[str, Any], data: Path, system: str) -> di
     return {"command": argv[0], "arguments": subprocess.list2cmdline(argv[1:]),
             "description": "Context Guard retention maintenance; data root "
                            + hashlib.sha256(str(data).encode()).hexdigest()[:16]}
+
+
+def _object_valid(value: Any) -> bool:
+    row = _dict(value)
+    identity = row.get("identity")
+    stamp = _dict(row.get("object_stamp"))
+    return (isinstance(identity, list) and len(identity) == 2
+            and all(type(item) is int and item > 0 for item in identity)
+            and stamp.get("kind") == "birth" and type(stamp.get("ns")) is int
+            and stamp["ns"] > 0 and _valid_sha(row.get("tree_sha256"))
+            and type(row.get("file_count")) is int and row["file_count"] > 0)
+
+
+def _object_snapshot(native: Any, cg: Any, path: Path) -> dict[str, Any]:
+    info = path.lstat()
+    stamp = cg._retention_object_stamp(path, info)
+    objects = native.installed_object_snapshot(path)
+    after = path.lstat()
+    if ((info.st_dev, info.st_ino) != (after.st_dev, after.st_ino)
+            or stamp != cg._retention_object_stamp(path, after)):
+        raise SchedulerBatchError("object identity changed during snapshot")
+    result = {"identity": [info.st_dev, info.st_ino], "object_stamp": stamp,
+              "tree_sha256": _digest(objects),
+              "file_count": sum(value[0] == "file" for value in objects.values())}
+    if not _object_valid(result):
+        raise SchedulerBatchError("strong object identity or tree unavailable")
+    return result
+
+
+def _preview(native: Any, source: Path, script: Path, data: Path,
+             env: dict[str, str]) -> dict[str, Any]:
+    argv = [sys.executable, "-B", str(script), "cleanup", "--data-dir", str(data), "--json"]
+    return _parse_json_command(_command(native, source, argv, env=env))
 
 
 def _scene_snapshot(driver: Any, cg: Any, data: Path, label: str) -> dict[str, Any]:
@@ -944,7 +998,8 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
     env = _fixture_env(fixture)
     driver = _driver(native, source, env, system)
     result: dict[str, Any] = {
-        "schema": SCHEMA, "status": "running", "subject": dict(subject),
+        "schema": SCHEMA if system == "Darwin" else WINDOWS_V1_SCHEMA,
+        "status": "running", "subject": dict(subject),
         "platform": {"Darwin": "macos", "Windows": "windows"}[system],
         "label": label, "foreign_label": label + "-foreign",
         "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -955,7 +1010,7 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
                         "unrelated inventory checks metadata/names only, not job content"],
     }
     if system == "Darwin":
-        result["limitations"].append("launchctl debug redirects stdout/stderr for this invocation")
+        result["limitations"].append("job stdout/stderr and job diagnostic report unobserved; preview is a separate post-job command")
     else:
         result["limitations"].append("Windows task stdout/stderr are unavailable; definition was not changed")
     progress = output.with_name(output.name + ".progress")
@@ -985,6 +1040,16 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
                 "protected_unfinished": _unfinished(protected_state),
             }
             before = result["scene"]["fixture_before"]
+            if system == "Darwin":
+                qdir = cg._retention_quarantine_dir(data)
+                scanned = cg._retention_collect_records(qdir, time.monotonic() + 20)
+                before["records_empty"] = (scanned["complete"] is True
+                                           and not scanned["valid"] and not scanned["unknown"]
+                                           and not scanned["tombstones"])
+                if not before["records_empty"]:
+                    raise SchedulerBatchError("initial quarantine records not empty")
+                before["eligible_object"] = _object_snapshot(native, cg, eligible)
+                before["protected_object"] = _object_snapshot(native, cg, protected)
             if (not before["policy_enabled"] or not before["eligible_exists"]
                     or before["protected_unfinished"] < 1):
                 raise SchedulerBatchError("synthetic fixture is not eligible and protected")
@@ -1062,15 +1127,6 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
             result["scene"]["observation_seconds"] = time.monotonic() - observation_start
             if not observed_in_budget:
                 raise SchedulerBatchError("job completion not observed within 45 seconds")
-            if system == "Darwin":
-                try:
-                    job_report = json.loads(Path(trigger["stdout_path"]).read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                    raise SchedulerBatchError("launchd job output is not valid JSON") from exc
-                if not isinstance(job_report, dict):
-                    raise SchedulerBatchError("launchd job output is not an object")
-                result["scene"]["job_report"] = job_report
-                result["scene"]["job_stderr_sha256"] = _sha(Path(trigger["stderr_path"]))
             qdir = cg._retention_quarantine_dir(data)
             records = list(cg._retention_iter_records(qdir))
             row: dict[str, Any] = {
@@ -1082,11 +1138,18 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
                 target = qdir / record["quarantine_object"]
                 row.update(record_state=record.get("state"), record_original=record.get("original_name"),
                            quarantine_state_sha256=_sha(target / "state.json"))
+                if system == "Darwin":
+                    row["quarantine_object"] = _object_snapshot(native, cg, target)
+                    row["protected_object"] = _object_snapshot(native, cg, protected)
+                    row["record_binding"] = {key: record.get(key) for key in
+                                             ("identity", "object_stamp", "state", "original_name", "quarantine_object")}
             result["scene"]["fixture_after_job"] = row
             _progress(output, "06-after-job", {"job": job_after, "fixture": row,
                                                 "job_report": result["scene"].get("job_report")})
             if len(records) != 1 or eligible.exists():
                 raise SchedulerBatchError("real scheduler did not quarantine the intended object")
+            if system == "Darwin":
+                result["scene"]["post_job_preview"] = _preview(native, source, script, data, env)
             # Use the actual installed module's official reader. It restores
             # the complete eligible record, then reads the untouched unfinished one.
             eligible_state = cg.load_state(eligible, eligible_payload)
@@ -1099,6 +1162,9 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
                 "protected_unfinished": _unfinished(protected_after),
                 "quarantine_record_exists": record_path.exists(),
             }
+            if system == "Darwin":
+                result["scene"]["reader"]["eligible_object"] = _object_snapshot(native, cg, eligible)
+                result["scene"]["reader"]["protected_object"] = _object_snapshot(native, cg, protected)
             _progress(output, "07-reader", result["scene"]["reader"])
     except BaseException as exc:  # preserve failure and cleanup on every path
         original_error = type(exc).__name__ + ": " + str(exc)[:500]

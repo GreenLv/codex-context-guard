@@ -41,23 +41,34 @@ def passing_macos():
                "disable": {"exit_code": 2, "json": {"reason": "foreign_entry", "owned": False}},
                "before": foreign_facts, "after": dict(foreign_facts), "removed": True}
     snapshot = {"definition": definition, "ownership_manifest": dict(file_facts)}
+    eligible_obj = {"identity": [1, 2], "object_stamp": {"kind": "birth", "ns": 3},
+                    "tree_sha256": "e" * 64, "file_count": 1}
+    protected_obj = {"identity": [1, 4], "object_stamp": {"kind": "birth", "ns": 5},
+                     "tree_sha256": "f" * 64, "file_count": 1}
     before = {"policy_enabled": True, "eligible_exists": True, "protected_unfinished": 1,
-              "eligible_state_sha256": "a" * 64, "protected_state_sha256": "b" * 64}
+              "eligible_state_sha256": "a" * 64, "protected_state_sha256": "b" * 64,
+              "records_empty": True, "eligible_object": eligible_obj, "protected_object": protected_obj}
     after = {"eligible_exists": False, "record_count": 1, "record_state": "quarantined",
              "record_original": "scheduler-eligible", "quarantine_state_sha256": "a" * 64,
-             "protected_state_sha256": "b" * 64}
+             "protected_state_sha256": "b" * 64,
+             "quarantine_object": copy.deepcopy(eligible_obj), "protected_object": copy.deepcopy(protected_obj),
+             "record_binding": {"identity": [1, 2], "object_stamp": {"kind": "birth", "ns": 3},
+                                "state": "quarantined", "original_name": "scheduler-eligible",
+                                "quarantine_object": "scheduler-eligible.123"}}
     reader = {"eligible_state_sha256": "a" * 64, "protected_state_sha256": "b" * 64,
-              "protected_unfinished": 1, "quarantine_record_exists": False}
+              "protected_unfinished": 1, "quarantine_record_exists": False,
+              "eligible_object": copy.deepcopy(eligible_obj), "protected_object": copy.deepcopy(protected_obj)}
     scene = {"initial_status": command("read_back", "disabled"),
              "enable": command("enabled", "enabled", owned=True, current=True),
              "status": command("read_back", "enabled"),
              "second_enable": command("already_enabled", "enabled", no_op=True),
              "before_second": snapshot, "after_second": copy.deepcopy(snapshot),
              "job_before": {"runs": 0}, "job_after": {"runs": 1, "last_exit_code": 0, "state": "waiting"},
-             "trigger": {"exit_code": 0, "pid": 123},
+             "trigger": {"exit_code": 0, "pid": 123, "trigger_attempted": True,
+                         "job_stdout": "unavailable", "job_stderr": "unavailable"},
              "observation_seconds": 0.1,
-             "job_report": {"mode": "apply", "counts": {"quarantined": 1, "protected": 1},
-                            "entries": [{"name": "scheduler-pending", "reason": "unfinished_work"}]},
+             "post_job_preview": {"exit_code": 0, "json": {"mode": "preview", "capacity_exceeded": False,
+                 "counts": {"protected": 1}, "entries": [{"name": "scheduler-pending", "reason": "unfinished_work"}]}},
              "fixture_before": before, "fixture_after_job": after, "reader": reader,
              "disable": command("disabled", "disabled"),
              "second_disable": command("already_disabled", "disabled", no_op=True),
@@ -77,6 +88,58 @@ def passing_macos():
 class SchedulerBatchTests(unittest.TestCase):
     def consume(self, report, subject, fixture):
         return SCHED.consume(report, expected_subject=subject, fixture=fixture, system="Darwin")
+
+    def test_v2_rejects_missing_or_altered_native_witnesses(self):
+        report, subject, fixture = passing_macos()
+        mutations = [
+            lambda x: x.update(schema=SCHED.WINDOWS_V1_SCHEMA),
+            lambda x: x["scene"]["fixture_before"].update(records_empty=False),
+            lambda x: x["scene"]["fixture_before"]["eligible_object"].update(tree_sha256=None),
+            lambda x: x["scene"]["fixture_before"]["eligible_object"].update(identity=[]),
+            lambda x: x["scene"]["fixture_before"]["eligible_object"].update(object_stamp=None),
+            lambda x: x["scene"]["fixture_after_job"]["record_binding"].update(identity=[8, 9]),
+            lambda x: x["scene"]["fixture_after_job"]["record_binding"].update(object_stamp={"kind": "birth", "ns": 8}),
+            lambda x: x["scene"]["reader"].pop("eligible_object"),
+            lambda x: x["scene"]["fixture_after_job"]["protected_object"].update(tree_sha256="0" * 64),
+            lambda x: x["scene"]["trigger"].update(trigger_attempted=False),
+            lambda x: x["scene"]["job_after"].update(last_exit_code=1),
+            lambda x: x["scene"]["job_after"].update(runs=2),
+            lambda x: x["scene"]["post_job_preview"]["json"]["entries"][0].update(reason="wrong"),
+            lambda x: x["scene"].update(job_report=x["scene"].pop("post_job_preview")),
+            lambda x: x["cleanup"].update(job_process_unknown=None),
+        ]
+        for mutate in mutations:
+            bad = copy.deepcopy(report)
+            mutate(bad)
+            self.assertTrue(self.consume(bad, subject, fixture))
+
+    def test_object_snapshot_uses_real_anchored_tree_and_refuses_links(self):
+        spec = importlib.util.spec_from_file_location("snapshot_native", ROOT / "tools/validation/native_acceptance.py")
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        cg = mock.Mock()
+        cg._retention_object_stamp.return_value = {"kind": "birth", "ns": 3}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "object"
+            root.mkdir()
+            (root / "payload").write_bytes(b"first")
+            before = SCHED._object_snapshot(native, cg, root)
+            self.assertEqual(before["file_count"], 1)
+            (root / "payload").write_bytes(b"changed")
+            self.assertNotEqual(before["tree_sha256"], SCHED._object_snapshot(native, cg, root)["tree_sha256"])
+            if os.name != "nt":
+                (root / "link").symlink_to(root / "payload")
+                with self.assertRaises(native.NativeRunError):
+                    SCHED._object_snapshot(native, cg, root)
+
+    def test_macos_trigger_uses_only_user_kickstart(self):
+        driver = object.__new__(SCHED._Mac)
+        driver.domain = "gui/501"
+        driver.call = mock.Mock(return_value=subprocess.CompletedProcess([], 0, b"123\n", b""))
+        result = driver.trigger("cg-ccg0170-test", Path("/unused"))
+        driver.call.assert_called_once_with("kickstart", "-p", "gui/501/cg-ccg0170-test")
+        self.assertEqual(result["pid"], 123)
+        self.assertEqual(result["job_stdout"], "unavailable")
 
     def test_valid_facts_and_cli_success_without_movement(self):
         report, subject, fixture = passing_macos()
@@ -170,7 +233,7 @@ class SchedulerBatchTests(unittest.TestCase):
             self.assertTrue(self.consume(bad, subject, fixture))
         bad = copy.deepcopy(report)
         bad["scene"]["enable"]["json"] = None
-        bad["scene"]["job_report"]["counts"] = None
+        bad["scene"]["post_job_preview"]["json"] = None
         self.assertTrue(self.consume(bad, subject, fixture))
 
     def test_registration_args_checked_against_installed_cache(self):
@@ -185,6 +248,7 @@ class SchedulerBatchTests(unittest.TestCase):
     def test_windows_native_facts_need_a_new_successful_run(self):
         report, subject, fixture = passing_macos()
         report["platform"] = "windows"
+        report["schema"] = SCHED.WINDOWS_V1_SCHEMA
         report["started_at"] = "2026-01-01T00:00:00+00:00"
         start = dt.datetime.fromisoformat(report["started_at"])
         delta = start - dt.datetime(1, 1, 1, tzinfo=dt.timezone.utc)
@@ -236,6 +300,25 @@ class SchedulerBatchTests(unittest.TestCase):
                          foreign.find("t:Actions", namespace).get("Context"))
         self.assertEqual("false", foreign.find("t:Settings/t:Enabled", namespace).text)
         self.assertEqual("false", foreign.find("t:Triggers/t:TimeTrigger/t:Enabled", namespace).text)
+
+    def test_windows_powershell_removes_only_module_path_in_child(self):
+        driver = object.__new__(SCHED._Windows)
+        driver.native, driver.source, driver.powershell = mock.Mock(), ROOT, "powershell.exe"
+        driver.env = {"PSModulePath": "one", "psmodulepath": "two", "PsMoDuLePaTh": "three",
+                      "PATH": "keep-path", "SYSTEMROOT": "keep-system", "OTHER": "keep-other"}
+        original = dict(driver.env)
+        parent = dict(os.environ)
+        with mock.patch.object(SCHED, "_command", return_value=subprocess.CompletedProcess([], 0, b"PRIVATE", b"")) as call:
+            self.assertTrue(driver.private_parent(Path("private")))
+        self.assertEqual(call.call_args.kwargs["env"],
+                         {"PATH": "keep-path", "SYSTEMROOT": "keep-system", "OTHER": "keep-other"})
+        self.assertEqual(driver.env, original)
+        self.assertEqual(dict(os.environ), parent)
+        # Even a misleading stdout cannot override a failing Get-Acl process.
+        with mock.patch.object(SCHED, "_command", return_value=subprocess.CompletedProcess([], 1, b"PRIVATE", b"Get-Acl failed")):
+            self.assertFalse(driver.private_parent(Path("private")))
+        self.assertEqual(driver.env, original)
+        self.assertEqual(dict(os.environ), parent)
 
     def test_windows_security_capture_exports_only_valid_digest(self):
         driver = object.__new__(SCHED._Windows)
@@ -360,11 +443,10 @@ class SchedulerBatchTests(unittest.TestCase):
             def trigger(unused, scratch):
                 cg = fixture_product[-1]
                 report = cg.cleanup_old_sessions(fixture / "guard-data", deadline=time.monotonic() + 20, apply=True)
-                stdout, stderr = scratch / "job.out", scratch / "job.err"
-                stdout.write_text(json.dumps(report), encoding="utf-8")
-                stderr.write_text("", encoding="utf-8")
+                self.assertEqual(report["counts"]["quarantined"], 1)
                 job.update(runs=1, state="waiting", last_exit_code=0)
-                return {"exit_code": 0, "pid": 123, "stdout_path": str(stdout), "stderr_path": str(stderr)}
+                return {"exit_code": 0, "pid": 123, "trigger_attempted": True,
+                        "job_stdout": "unavailable", "job_stderr": "unavailable"}
 
             driver.trigger.side_effect = trigger
             reads = 0
@@ -401,10 +483,15 @@ class SchedulerBatchTests(unittest.TestCase):
                  mock.patch.object(SCHED, "_driver", return_value=driver), \
                  mock.patch.object(SCHED, "_load_fixture", side_effect=load_fixture), \
                  mock.patch.object(SCHED, "_scene_snapshot", return_value=snapshot) as scene_mock, \
+                 mock.patch.object(SCHED, "_command", side_effect=lambda native, source, argv, **kw: subprocess.run(argv, cwd=source, env=kw.get("env"), capture_output=True, check=False)), \
                  mock.patch.object(SCHED, "_cli", side_effect=observed_cli) as cli_mock, \
                  mock.patch.object(SCHED.platform, "system", return_value="Darwin"), \
                  mock.patch.object(SCHED, "_safe_time", return_value=True):
-                result = SCHED.execute(None, ROOT, "a" * 40, "b" * 40, ROOT,
+                native_spec = importlib.util.spec_from_file_location(
+                    "scheduler_native_snapshot", ROOT / "tools/validation/native_acceptance.py")
+                native = importlib.util.module_from_spec(native_spec)
+                native_spec.loader.exec_module(native)
+                result = SCHED.execute(native, ROOT, "a" * 40, "b" * 40, ROOT,
                                        root / "unused.zip", "c" * 64, output, fixture, label)
                 self.assertEqual("passed", result["status"], (result.get("error"), result.get("consumer_errors")))
                 self.assertEqual("passed", json.loads(output.read_text())["status"])
@@ -432,7 +519,7 @@ class SchedulerBatchTests(unittest.TestCase):
 
                 driver.job.side_effect = became_running
                 driver.stop.side_effect = SCHED.ProcessStateUnknown("stop unknown")
-                result = SCHED.execute(None, ROOT, "a" * 40, "b" * 40, ROOT,
+                result = SCHED.execute(native, ROOT, "a" * 40, "b" * 40, ROOT,
                                        root / "unused.zip", "c" * 64, output, fixture, label)
                 self.assertEqual("failed", result["status"])
                 self.assertIs(result["cleanup"]["command_process_unknown"], True)
