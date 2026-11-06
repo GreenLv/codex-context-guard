@@ -28,6 +28,8 @@ from typing import Any
 
 SCHEMA = "cg-retention-scheduler-native/v2"
 WINDOWS_V1_SCHEMA = "cg-retention-scheduler-native/v1"
+WINDOWS_SCHEMA = "cg-retention-scheduler-native/v2"
+WINDOWS_DEFINITION_SCHEMA = "cg-windows-task-definition/v1"
 LABEL = re.compile(r"cg-ccg0170-[A-Za-z0-9][A-Za-z0-9._-]{0,70}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 JOB_BUDGET_SECONDS = 45.0
@@ -291,6 +293,116 @@ class _Mac:
         return {"exit_code": result.returncode, "method": "launchctl kill SIGTERM"}
 
 
+def _windows_xml_observation(payload: bytes | str) -> dict[str, Any]:
+    """Read exact scoped XML fields; omission is recorded, never defaulted."""
+    import xml.etree.ElementTree as ET
+    text = payload if isinstance(payload, str) else None
+    if text is None:
+        for encoding in ("utf-16", "utf-8-sig", "utf-8"):
+            try:
+                candidate = payload.decode(encoding)
+                if "<" in candidate:
+                    text = candidate
+                    break
+            except UnicodeError:
+                pass
+    if text is None:
+        raise SchedulerBatchError("Windows task XML encoding unavailable")
+    text = text.lstrip("\ufeff").strip()
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise SchedulerBatchError("Windows task XML is malformed") from exc
+    namespace = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+    ns = {"t": namespace}
+    if root.tag != "{" + namespace + "}Task":
+        raise SchedulerBatchError("Windows task XML namespace/root mismatch")
+
+    def node(path: str, *, optional: bool = False):
+        found = root.findall(path, ns)
+        if len(found) > 1 or (not optional and len(found) != 1):
+            raise SchedulerBatchError("Windows task XML nonunique/missing path: " + path)
+        return found[0] if found else None
+
+    def field(path: str, *, optional: bool = False):
+        value = node(path, optional=optional)
+        if value is None:
+            return None
+        if len(value) or not (value.text or "").strip():
+            raise SchedulerBatchError("Windows task XML empty/nonleaf field: " + path)
+        return value.text.strip()
+
+    registration = node("t:RegistrationInfo")
+    settings = node("t:Settings", optional=True)
+    principals = node("t:Principals")
+    principal = node("t:Principals/t:Principal")
+    actions = node("t:Actions")
+    execution = node("t:Actions/t:Exec")
+    triggers = node("t:Triggers")
+    if (len(principals) != 1 or len(actions) != 1 or len(triggers) != 1
+            or not principal.get("id") or actions.get("Context") != principal.get("id")):
+        raise SchedulerBatchError("Windows task XML principal/action/trigger is ambiguous")
+    trigger = triggers[0]
+    kind = trigger.tag.rsplit("}", 1)[-1]
+    if trigger.tag not in ("{" + namespace + "}CalendarTrigger", "{" + namespace + "}TimeTrigger"):
+        raise SchedulerBatchError("Windows task XML trigger kind unsupported")
+    parents = {child: parent for parent in root.iter() for child in parent}
+    allowed = {"Enabled": (settings, trigger), "RunLevel": (principal,),
+               "LogonType": (principal,), "Command": (execution,),
+               "Arguments": (execution,), "Description": (registration,)}
+    structural = {"Settings", "Principals", "Principal", "Actions", "Exec", "Triggers",
+                  "RegistrationInfo", "CalendarTrigger", "TimeTrigger"}
+    containers = {"Settings": root, "Principals": root, "Actions": root,
+                  "Triggers": root, "RegistrationInfo": root, "Principal": principals,
+                  "Exec": actions, "CalendarTrigger": triggers, "TimeTrigger": triggers}
+    for value in root.iter():
+        local = value.tag.rsplit("}", 1)[-1]
+        if local in allowed or local in structural:
+            if value.tag != "{" + namespace + "}" + local:
+                raise SchedulerBatchError("Windows task XML field namespace mismatch")
+        if local in allowed and parents.get(value) not in allowed[local]:
+            raise SchedulerBatchError("Windows task XML field in wrong context: " + local)
+        if local in containers and parents.get(value) is not containers[local]:
+            raise SchedulerBatchError("Windows task XML container in wrong context: " + local)
+    return {"command": field("t:Actions/t:Exec/t:Command"),
+            "arguments": field("t:Actions/t:Exec/t:Arguments"),
+            "description": field("t:RegistrationInfo/t:Description"),
+            "enabled": field("t:Settings/t:Enabled", optional=True),
+            "logon_type": field("t:Principals/t:Principal/t:LogonType"),
+            "run_level": field("t:Principals/t:Principal/t:RunLevel", optional=True),
+            "trigger_kind": kind,
+            "trigger_enabled": field("t:Triggers/t:" + kind + "/t:Enabled", optional=True),
+            "xml_semantic_sha256": hashlib.sha256(
+                ET.canonicalize(text, strip_text=True).encode("utf-8")).hexdigest()}
+
+
+def _windows_definition_observed(row: Any, enabled: bool) -> bool:
+    """Require native COM facts and agreement with every explicit XML value."""
+    if not isinstance(row, dict):
+        return False
+    observation = _dict(row.get("observation"))
+    com = _dict(observation.get("com"))
+    boolean = {"true": True, "1": True, "false": False, "0": False}
+    return (observation.get("schema") == WINDOWS_DEFINITION_SCHEMA
+            and _valid_sha(row.get("sha256")) and _valid_sha(row.get("security_sha256"))
+            and _valid_sha(row.get("xml_semantic_sha256"))
+            and observation.get("xml_after_sha256") == row["sha256"]
+            and observation.get("com_xml_semantic_sha256") == row["xml_semantic_sha256"]
+            and set(com) == {"registered_enabled", "settings_enabled", "principal_run_level",
+                             "trigger_enabled", "trigger_type", "trigger_count"}
+            and all(type(com[k]) is bool and com[k] is enabled
+                    for k in ("registered_enabled", "settings_enabled", "trigger_enabled"))
+            and type(com["principal_run_level"]) is int and com["principal_run_level"] == 0
+            and type(com["trigger_count"]) is int and com["trigger_count"] == 1
+            and type(com["trigger_type"]) is int and com["trigger_type"] == (2 if enabled else 1)
+            and row.get("trigger_kind") == ("CalendarTrigger" if enabled else "TimeTrigger")
+            and all(k in row and (row[k] is None or (
+                isinstance(row[k], str) and row[k] in boolean and boolean[row[k]] is enabled))
+                    for k in ("enabled", "trigger_enabled"))
+            and "run_level" in row and row["run_level"] in (None, "LeastPrivilege")
+            and row.get("logon_type") == "InteractiveToken")
+
+
 class _Windows:
     def __init__(self, native: Any, source: Path, env: dict[str, str]):
         self.native, self.source, self.env = native, source, env
@@ -391,36 +503,48 @@ class _Windows:
                 "scope": "visible root task names only; other definitions not read"}
 
     def definition(self, label: str) -> dict[str, Any]:
-        import xml.etree.ElementTree as ET
+        if not (LABEL.fullmatch(label) or (label.endswith("-foreign")
+                                          and LABEL.fullmatch(label[:-len("-foreign")]))):
+            raise SchedulerBatchError("invalid task label")
         result = self.call("/Query", "/TN", label, "/XML")
         if result.returncode != 0 or not result.stdout:
             raise SchedulerBatchError("Windows task definition unavailable")
-        text = None
-        for encoding in ("utf-16", "utf-8-sig", "utf-8"):
-            try:
-                candidate = result.stdout.decode(encoding)
-                if "<" in candidate:
-                    text = candidate
-                    break
-            except UnicodeError:
-                pass
-        if text is None:
-            raise SchedulerBatchError("Windows task XML encoding unavailable")
-        try:
-            root = ET.fromstring(text.lstrip("\ufeff").strip())
-        except ET.ParseError as exc:
-            raise SchedulerBatchError("Windows task XML is malformed") from exc
+        fields = _windows_xml_observation(result.stdout)
+        code = ("$ErrorActionPreference='Stop';$s=New-Object -ComObject Schedule.Service;"
+                "$s.Connect();$t=$s.GetFolder('\\').GetTask('" + label + "');$d=$t.Definition;"
+                "if($d.Triggers.Count -ne 1){exit 2};$trigger=$d.Triggers.Item(1);"
+                "@{xml=$t.Xml;registered_enabled=$t.Enabled;settings_enabled=$d.Settings.Enabled;"
+                "principal_run_level=$d.Principal.RunLevel;trigger_count=$d.Triggers.Count;"
+                "trigger_type=$trigger.Type;trigger_enabled=$trigger.Enabled}|ConvertTo-Json -Compress")
+        observed = self.ps(code)
+        if observed.returncode != 0:
+            raise SchedulerBatchError("Windows task COM definition unavailable")
 
-        def field(name: str) -> str | None:
-            for node in root.iter():
-                if node.tag.rsplit("}", 1)[-1] == name:
-                    return (node.text or "").strip()
-            return None
-        return {"sha256": hashlib.sha256(result.stdout).hexdigest(),
-                "command": field("Command"), "arguments": field("Arguments"),
-                "description": field("Description"), "enabled": field("Enabled"),
-                "logon_type": field("LogonType"), "run_level": field("RunLevel"),
-                "security_sha256": self.task_security(label)}
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate COM field")
+                value[key] = item
+            return value
+
+        try:
+            com = json.loads(observed.stdout.decode("utf-8-sig"), object_pairs_hook=unique)
+            if not isinstance(com, dict) or not isinstance(com.get("xml"), str):
+                raise ValueError("COM XML missing")
+            com_fields = _windows_xml_observation(com.pop("xml"))
+        except (UnicodeError, ValueError) as exc:
+            raise SchedulerBatchError("Windows task COM observation unreadable") from exc
+        after = self.call("/Query", "/TN", label, "/XML")
+        if after.returncode != 0 or result.stdout != after.stdout:
+            raise SchedulerBatchError("Windows task XML changed during COM observation")
+        if fields["xml_semantic_sha256"] != com_fields["xml_semantic_sha256"]:
+            raise SchedulerBatchError("Windows task COM XML differs from exported definition")
+        return {**fields, "sha256": hashlib.sha256(result.stdout).hexdigest(),
+                "security_sha256": self.task_security(label),
+                "observation": {"schema": WINDOWS_DEFINITION_SCHEMA, "com": com,
+                                "xml_after_sha256": hashlib.sha256(after.stdout).hexdigest(),
+                                "com_xml_semantic_sha256": com_fields["xml_semantic_sha256"]}}
 
     def job(self, label: str, *, timeout: float = 30.0) -> dict[str, Any]:
         code = ("$ErrorActionPreference='Stop';Import-Module ScheduledTasks;"
@@ -697,9 +821,7 @@ def _foreign_valid(value: Any, system: str, label: Any) -> bool:
             and _valid_sha(row.get("security_sha256"))
             and isinstance(label, str)
             and row.get("description") == "ccg0170-owned-foreign-fixture-" + label
-            and str(row.get("enabled") or "").lower() == "false"
-            and row.get("logon_type") == "InteractiveToken"
-            and row.get("run_level") == "LeastPrivilege")
+            and _windows_definition_observed(row, False))
 
 
 def _inventory_valid(value: Any) -> bool:
@@ -718,16 +840,14 @@ def _definition_matches(actual: dict[str, Any], expected: dict[str, Any], system
         return (actual.get("command") == expected.get("command")
                 and actual.get("arguments") == expected.get("arguments")
                 and actual.get("description") == expected.get("description")
-                and str(actual.get("enabled") or "").lower() == "true"
-                and actual.get("logon_type") == "InteractiveToken"
-                and actual.get("run_level") == "LeastPrivilege")
+                and _windows_definition_observed(actual, True))
     return False
 
 
 def consume(report: Any, *, expected_subject: dict[str, Any], fixture: Path,
             system: str) -> list[str]:
     """Independent verdict from facts; a claimed passed flag is insufficient."""
-    expected_schema = SCHEMA if system == "Darwin" else WINDOWS_V1_SCHEMA
+    expected_schema = SCHEMA if system == "Darwin" else WINDOWS_SCHEMA
     if not isinstance(report, dict) or report.get("schema") != expected_schema:
         return ["schema"]
     errors = []
@@ -998,7 +1118,7 @@ def execute(native: Any, source: Path, commit: str, tool_commit: str,
     env = _fixture_env(fixture)
     driver = _driver(native, source, env, system)
     result: dict[str, Any] = {
-        "schema": SCHEMA if system == "Darwin" else WINDOWS_V1_SCHEMA,
+        "schema": SCHEMA if system == "Darwin" else WINDOWS_SCHEMA,
         "status": "running", "subject": dict(subject),
         "platform": {"Darwin": "macos", "Windows": "windows"}[system],
         "label": label, "foreign_label": label + "-foreign",
