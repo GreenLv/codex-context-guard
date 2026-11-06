@@ -8,11 +8,11 @@ the frozen product checkout or an installed plugin cache.
 
 ## Subject and result
 
-`windows_retention_native.py` implements `cg-windows-retention-native/v1`, four
+`windows_retention_native.py` implements `cg-windows-retention-native/v2`, four
 synthetic-root cases, `--preflight` and `--verify-result`. It loads the checked
 **installed** `scripts/context_guard.py`; it does not use a test fixture's global
 source runtime. Required product source is
-`daff36e8b7855b0c16962f18a419fcb9fca50109`, runtime digest
+`5269d89b84bdb77fdfdf01dbaadf312aa8e2488b`, runtime digest
 `31399e314f38fb265f2a679a086782bdb17a379c458a64b72dca9951638104de`.
 
 Bindings include toolkit commit and disk bytes of this module and the existing
@@ -26,13 +26,24 @@ confusion, changed object/ledger, missing candidate report or missing positive
 control. Recorded JSON is not an authentication/provenance mechanism: arbitrary
 caller-authored JSON does not establish an observed native run.
 
+Version 2 requires independent native and Python read-denial observations in the
+DACL case. Version 1 receipts retain their original status and are not accepted
+as version 2 evidence; missing historical exception details stay unknown.
+
 Four cases:
 
 1. **DACL refusal.** A pinned, self-owned synthetic `state.json` receives one
-   actual deny-READ_DATA ACE. A real file read must return WinError 5, and the
-   actual retention report must name `candidate:state_unreadable`. The original
+   actual deny-READ_DATA ACE. An independent `CreateFileW` request for
+   `FILE_READ_DATA` must fail with the immediately captured native error 5.
+   Separately, Python `Path.open("rb")` must raise `PermissionError` with errno
+   13. Its actual `winerror` may be absent (`null`) or integer 5; the tool never
+   fills in a missing value from the native probe. Native or Python success,
+   another error, or a changed file identity fails before retention runs.
+   The actual retention report must name `candidate:state_unreadable`. The original
    DACL is restored through its original file handle, with descriptor-contract
-   readback and handle closure in `finally`. The original descriptor is kept in
+   readback, original content hash and handle closure in `finally`. Native path
+   identities before/after the reads and restoration must match the pinned file.
+   The original descriptor is kept in
    an ACL-private recovery sidecar in the fixture. No owner/group/SACL change or
    privilege request is made. A cleanup error remains failed and retains both
    the primary observation and recovery information.

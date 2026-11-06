@@ -1,6 +1,8 @@
 """Pure consumer/guard controls for the proposal; no Windows scenes executed."""
 
 import copy
+import ctypes
+import errno
 import importlib.util
 import tempfile
 import unittest
@@ -48,6 +50,27 @@ def report(reason=None, quarantine=0):
     return {"counts": {"scanned": 2, "quarantined": quarantine}, "entries": [entry]}
 
 
+def native_denial():
+    return {
+        "api": "CreateFileW_FILE_READ_DATA",
+        "desired_access": 1,
+        "share_mode": 7,
+        "creation_disposition": 3,
+        "flags": 0x00200000,
+        "opened": False,
+        "winerror": 5,
+    }
+
+
+def python_denial(winerror=None):
+    return {
+        "outcome": "error",
+        "type": "PermissionError",
+        "errno": 13,
+        "winerror": winerror,
+    }
+
+
 def valid_result():
     binding = {"tool_commit": "1" * 40, "fixture_root": "C:\\private\\fixture"}
     rows = []
@@ -87,10 +110,14 @@ def valid_result():
             pinned = dict(winid(), kind="file")
             c.update(
                 dacl_changed=True,
-                read_winerror=5,
+                native_read_probe=native_denial(),
+                python_read_probe=python_denial(),
                 pinned_before=copy.deepcopy(pinned),
                 pinned_after=copy.deepcopy(pinned),
                 path_after=copy.deepcopy(pinned),
+                read_path_before=copy.deepcopy(pinned),
+                read_path_after=copy.deepcopy(pinned),
+                restored_state_sha256=snap()["state_sha256"],
                 original_dacl_sha256="e" * 64,
                 restored_dacl_sha256="e" * 64,
                 apply_api={
@@ -157,6 +184,56 @@ def valid_result():
 
 
 class ConsumerControls(unittest.TestCase):
+    def test_python_crt_and_win32_denials_are_independent(self):
+        for winerror in (None, 5):
+            value, binding = valid_result()
+            value["cases"][0]["condition"]["python_read_probe"] = python_denial(
+                winerror
+            )
+            self.assertEqual(w.verify_result(value, binding), [])
+        for key in ("native_read_probe", "python_read_probe"):
+            self.rejected(lambda x: x["cases"][0]["condition"].pop(key))
+        for key, values in {
+            "api": ("CreateFileW_DELETE", ""),
+            "desired_access": (0, 0x80, True, 1.0),
+            "share_mode": (3, 7.0, True),
+            "creation_disposition": (2, 3.0, True),
+            "flags": (0, 0x00200000 * 1.0, True),
+            "opened": (True, 0, None),
+            "winerror": (0, 2, 32, None, 5.0, True, "5"),
+        }.items():
+            for bad in values:
+                with self.subTest(native_key=key, bad=bad):
+                    self.rejected(
+                        lambda x: x["cases"][0]["condition"][
+                            "native_read_probe"
+                        ].update({key: bad})
+                    )
+        for key, values in {
+            "outcome": ("read", None),
+            "type": ("OSError", "FileNotFoundError", "IsADirectoryError", None),
+            "errno": (None, 0, 1, 2, 5, 13.0, True, "13"),
+            "winerror": (0, 2, 32, 5.0, True, "5"),
+        }.items():
+            for bad in values:
+                with self.subTest(python_key=key, bad=bad):
+                    self.rejected(
+                        lambda x: x["cases"][0]["condition"][
+                            "python_read_probe"
+                        ].update({key: bad})
+                    )
+
+    def test_v1_and_single_error_field_cannot_be_promoted(self):
+        self.rejected(lambda x: x.update(schema="cg-windows-retention-native/v1"))
+
+        def old_condition(x):
+            c = x["cases"][0]["condition"]
+            c.pop("native_read_probe")
+            c.pop("python_read_probe")
+            c["read_winerror"] = 5
+
+        self.rejected(old_condition)
+
     def test_dacl_requires_actual_api_binding_and_restoration(self):
         for edit in (
             lambda x: x["cases"][0]["condition"].pop("restore_api"),
@@ -165,8 +242,45 @@ class ConsumerControls(unittest.TestCase):
             lambda x: x["cases"][0]["condition"].update(restored_dacl_sha256="d" * 64),
             lambda x: x["cases"][0]["condition"].update(pinned_before={}),
             lambda x: x["cases"][0]["condition"]["path_after"].update(file_id="3" * 32),
+            lambda x: x["cases"][0]["condition"]["read_path_before"].update(
+                file_id="3" * 32
+            ),
+            lambda x: x["cases"][0]["condition"]["read_path_after"].update(
+                file_id="3" * 32
+            ),
+            lambda x: x["cases"][0]["condition"].update(restored_state_sha256="d" * 64),
+            lambda x: x["cases"][0]["resources"].update(handles_closed=False),
         ):
             self.rejected(edit)
+
+    def test_each_native_identity_is_typed_before_equality(self):
+        groups = (
+            (
+                0,
+                (
+                    "pinned_before",
+                    "pinned_after",
+                    "path_after",
+                    "read_path_before",
+                    "read_path_after",
+                ),
+            ),
+            (1, ("handle_identity", "path_identity")),
+            (2, ("original_identity", "alias_identity")),
+        )
+        for index, keys in groups:
+            for key in keys:
+                for field, values in {
+                    "volume_serial": (True, 1.0),
+                    "reparse_tag": (False, 0.0),
+                }.items():
+                    for bad in values:
+                        with self.subTest(index=index, key=key, field=field, bad=bad):
+                            self.rejected(
+                                lambda x: x["cases"][index]["condition"][key].update(
+                                    {field: bad}
+                                )
+                            )
 
     def test_long_path_recomputes_scope_and_components(self):
         paths = [
@@ -345,6 +459,312 @@ class ConsumerControls(unittest.TestCase):
         for text in ('{"x":1,"x":2}', '{"x":NaN}', '{"x":Infinity}', '{"x":-1e999}'):
             with self.assertRaises(ValueError):
                 w.strict_json(text)
+
+
+class ReadProbeControls(unittest.TestCase):
+    def test_native_requests_data_and_captures_real_last_error(self):
+        api = mock.Mock()
+        api.CreateFileW.return_value = ctypes.c_void_p(-1).value
+        for code in (5, 32, 2, 0):
+            with (
+                mock.patch.object(
+                    w.ctypes, "WinDLL", return_value=api, create=True
+                ) as dll,
+                mock.patch.object(
+                    w.ctypes, "get_last_error", return_value=code, create=True
+                ) as error,
+            ):
+                result = w.read_access_probe(Path("synthetic.bin"))
+            dll.assert_called_once_with("kernel32", use_last_error=True)
+            api.CreateFileW.assert_called_with(
+                "synthetic.bin", 1, 7, None, 3, 0x00200000, None
+            )
+            error.assert_called_once_with()
+            self.assertEqual(result["winerror"], code)
+            self.assertIs(result["opened"], False)
+            self.assertEqual(w.dacl_reads_denied(result, python_denial()), code == 5)
+        api.CloseHandle.assert_not_called()
+
+    def test_native_unexpected_open_closes_and_never_uses_stale_error(self):
+        api = mock.Mock()
+        api.CreateFileW.return_value = 42
+        api.CloseHandle.return_value = 1
+        with (
+            mock.patch.object(w.ctypes, "WinDLL", return_value=api, create=True),
+            mock.patch.object(
+                w.ctypes,
+                "get_last_error",
+                side_effect=AssertionError("stale error"),
+                create=True,
+            ),
+        ):
+            result = w.read_access_probe(Path("synthetic.bin"))
+        api.CloseHandle.assert_called_once_with(42)
+        self.assertIs(result["opened"], True)
+        self.assertEqual(result["winerror"], 0)
+        self.assertFalse(w.dacl_reads_denied(result, python_denial()))
+
+    def test_native_unexpected_open_close_failure_is_recorded(self):
+        api = mock.Mock()
+        api.CreateFileW.return_value = 42
+        api.CloseHandle.return_value = 0
+        with (
+            mock.patch.object(w.ctypes, "WinDLL", return_value=api, create=True),
+            mock.patch.object(w.ctypes, "get_last_error", return_value=6, create=True),
+        ):
+            result = w.read_access_probe(Path("synthetic.bin"))
+        self.assertEqual(result["close"]["return_value"], 0)
+        self.assertEqual(result["close"]["winerror"], 6)
+        self.assertFalse(w.dacl_reads_denied(result, python_denial()))
+
+    def test_native_close_exception_retains_unconfirmed_resource(self):
+        for close_raises in (True, False):
+            api = mock.Mock()
+            api.CreateFileW.return_value = 42
+            api.CloseHandle.return_value = 0
+            if close_raises:
+                api.CloseHandle.side_effect = OSError(
+                    errno.EIO, "synthetic close error"
+                )
+            with (
+                mock.patch.object(w.ctypes, "WinDLL", return_value=api, create=True),
+                mock.patch.object(
+                    w.ctypes,
+                    "get_last_error",
+                    side_effect=OSError(errno.EIO, "synthetic last-error failure"),
+                    create=True,
+                ),
+            ):
+                result = w.read_access_probe(Path("synthetic.bin"))
+            self.assertEqual(
+                result["close"]["return_value"], None if close_raises else 0
+            )
+            self.assertEqual(result["close"]["error"]["errno"], errno.EIO)
+            self.assertFalse(w.dacl_reads_denied(result, python_denial()))
+
+    def test_python_records_actual_exception_without_filling_winerror(self):
+        errors = [
+            PermissionError(errno.EACCES, "denied"),
+            OSError(errno.EIO, "io"),
+            FileNotFoundError(errno.ENOENT, "missing"),
+        ]
+        native = PermissionError(errno.EACCES, "denied")
+        native.winerror = 5
+        errors.append(native)
+        for exc in errors:
+            with (
+                self.subTest(exc=exc),
+                mock.patch.object(Path, "open", side_effect=exc),
+            ):
+                result = w.python_read_probe(Path("synthetic.bin"))
+            self.assertEqual(
+                result,
+                {
+                    "outcome": "error",
+                    "type": type(exc).__name__,
+                    "errno": exc.errno,
+                    "winerror": getattr(exc, "winerror", None),
+                },
+            )
+            self.assertEqual(
+                w.dacl_reads_denied(native_denial(), result),
+                isinstance(exc, PermissionError),
+            )
+
+    def test_python_success_and_non_os_error_never_denied(self):
+        path = mock.MagicMock()
+        result = w.python_read_probe(path)
+        self.assertEqual(result["outcome"], "read")
+        self.assertFalse(w.dacl_reads_denied(native_denial(), result))
+        path.open.side_effect = RuntimeError("unexpected")
+        with self.assertRaises(RuntimeError):
+            w.python_read_probe(path)
+
+
+class DaclProducerControls(unittest.TestCase):
+    def run_scene(
+        self,
+        *,
+        native=None,
+        python=None,
+        identity_mismatch=False,
+        restore_error=False,
+        changed_content=False,
+        dacl_unchanged=False,
+        restore_identity_mismatch=False,
+    ):
+        # Pure harness controls: no native API or actual ACL mutation occurs.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            home = root / "candidate"
+            home.mkdir()
+            (home / "state.json").write_text("synthetic", encoding="utf-8")
+            fixture = mock.Mock(work=root, guard=root / "guard")
+            fixture.make.return_value = home
+            before = snap()
+            before["state_sha256"] = w.file_digest(home / "state.json")
+            fixture.guard_before = copy.deepcopy(before)
+            fixture.reader.return_value = copy.deepcopy(before)
+            fixture.advance.return_value = {}
+            backend = fixture.backend
+            backend.open_windows_handle.return_value = ("api", "pinned-handle")
+            identity = dict(winid(), kind="file")
+            backend.windows_handle_identity.return_value = identity
+            backend.windows_object_identity.return_value = identity
+            if identity_mismatch:
+                backend.windows_object_identity.side_effect = [
+                    dict(identity, file_id="3" * 32),
+                    identity,
+                    identity,
+                ]
+            descriptor = ["saved"]
+            backend.windows_handle_descriptor.side_effect = lambda _: descriptor[0]
+            backend.descriptor_contract.side_effect = lambda value: {
+                "aces": [] if value == "saved" or dacl_unchanged else ["deny"]
+            }
+            backend.sid_bytes.return_value = b"synthetic-sid"
+            backend.descriptor_with_aces.return_value = "denied"
+            backend.close_windows_handle.return_value = {"return_value": 1}
+
+            def apply(_backend, handle, value, *, restore=False):
+                self.assertEqual(handle, "pinned-handle")
+                if restore_error and restore:
+                    raise OSError(errno.EIO, "synthetic restoration failure")
+                descriptor[0] = value
+                if restore and restore_identity_mismatch:
+                    backend.windows_object_identity.return_value = dict(
+                        identity, file_id="3" * 32
+                    )
+                if changed_content and restore:
+                    (home / "state.json").write_text("changed", encoding="utf-8")
+                return {
+                    "api": "SetSecurityInfo_DACL_only",
+                    "flags": 0x80000004 if restore else 4,
+                    "winerror": 0,
+                }
+
+            original_open = Path.open
+
+            def controlled_open(path, mode="r", *args, **kwargs):
+                if (
+                    path == home / "state.json"
+                    and mode == "rb"
+                    and descriptor[0] == "denied"
+                ):
+                    raise PermissionError(errno.EACCES, "synthetic denied CRT read")
+                return original_open(path, mode, *args, **kwargs)
+
+            with (
+                mock.patch.object(w, "snapshot", return_value=before),
+                mock.patch.object(w, "private_acl"),
+                mock.patch.object(w, "set_handle_dacl", side_effect=apply),
+                mock.patch.object(
+                    w,
+                    "read_access_probe",
+                    return_value=native if native is not None else native_denial(),
+                    create=True,
+                ),
+                mock.patch.object(
+                    w,
+                    "python_read_probe",
+                    return_value=python if python is not None else python_denial(),
+                    create=True,
+                ),
+                mock.patch.object(Path, "open", new=controlled_open),
+            ):
+                row = w.scenario("dacl_refusal", fixture)
+            return row, fixture, backend
+
+    def test_crt_mapping_gap_reaches_retention_then_restores_original_handle(self):
+        row, fixture, backend = self.run_scene()
+        self.assertEqual(row["status"], "passed")
+        fixture.run.assert_called_once_with()
+        self.assertIsNone(row["condition"]["python_read_probe"]["winerror"])
+        self.assertEqual(row["condition"]["native_read_probe"]["winerror"], 5)
+        self.assertEqual(
+            row["resources"], {"dacl_restored": True, "handles_closed": True}
+        )
+        backend.close_windows_handle.assert_called_once_with("api", "pinned-handle")
+
+    def test_missing_independent_denial_never_runs_retention_and_still_restores(self):
+        for native, python in (
+            (
+                dict(
+                    native_denial(), opened=True, winerror=0, close={"return_value": 1}
+                ),
+                python_denial(),
+            ),
+            (dict(native_denial(), winerror=32), python_denial()),
+            (
+                native_denial(),
+                {"outcome": "read", "type": None, "errno": None, "winerror": None},
+            ),
+            (native_denial(), dict(python_denial(), type="FileNotFoundError", errno=2)),
+        ):
+            with self.subTest(native=native, python=python):
+                row, fixture, _ = self.run_scene(native=native, python=python)
+                self.assertEqual(row["status"], "failed")
+                fixture.run.assert_not_called()
+                self.assertEqual(row["condition"]["native_read_probe"], native)
+                self.assertEqual(row["condition"]["python_read_probe"], python)
+                self.assertEqual(
+                    row["resources"], {"dacl_restored": True, "handles_closed": True}
+                )
+
+    def test_read_identity_mismatch_refused_before_retention(self):
+        row, fixture, _ = self.run_scene(identity_mismatch=True)
+        self.assertEqual(row["status"], "failed")
+        fixture.run.assert_not_called()
+
+    def test_unchanged_dacl_cannot_use_other_denials_to_reach_retention(self):
+        row, fixture, _ = self.run_scene(dacl_unchanged=True)
+        self.assertEqual(row["status"], "failed")
+        fixture.run.assert_not_called()
+
+    def test_restoration_failure_and_changed_content_cannot_pass(self):
+        for kwargs in (
+            {"restore_error": True},
+            {"changed_content": True},
+            {"restore_identity_mismatch": True},
+        ):
+            with self.subTest(kwargs=kwargs):
+                row, _, backend = self.run_scene(**kwargs)
+                self.assertEqual(row["status"], "failed")
+                self.assertIn("cleanup_error", row["condition"])
+                backend.close_windows_handle.assert_called_once_with(
+                    "api", "pinned-handle"
+                )
+
+    def test_failed_unexpected_read_handle_close_stays_failed_after_pinned_close(self):
+        for close in (
+            {"return_value": 0, "winerror": 6},
+            {
+                "return_value": None,
+                "winerror": None,
+                "error": {"type": "OSError", "errno": errno.EIO},
+            },
+        ):
+            row, fixture, _ = self.run_scene(
+                native=dict(
+                    native_denial(),
+                    opened=True,
+                    winerror=0,
+                    close=close,
+                )
+            )
+            self.assertEqual(row["status"], "failed")
+            self.assertIs(row["resources"]["handles_closed"], False)
+            fixture.run.assert_not_called()
+
+    def test_primary_and_cleanup_errors_both_survive(self):
+        row, fixture, _ = self.run_scene(
+            native=dict(native_denial(), winerror=32), restore_error=True
+        )
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["condition"]["primary_error"]["type"], "AssertionError")
+        self.assertEqual(row["condition"]["cleanup_error"]["errno"], errno.EIO)
+        self.assertIs(row["resources"]["dacl_restored"], False)
+        fixture.run.assert_not_called()
 
 
 class GuardControls(unittest.TestCase):

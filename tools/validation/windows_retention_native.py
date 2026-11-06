@@ -10,6 +10,7 @@ import argparse
 import base64
 import contextlib
 import ctypes
+import errno
 import hashlib
 import importlib.util
 import json
@@ -24,7 +25,7 @@ import time
 import zipfile
 from pathlib import Path, PureWindowsPath
 
-SCHEMA = "cg-windows-retention-native/v1"
+SCHEMA = "cg-windows-retention-native/v2"
 SOURCE = "5269d89b84bdb77fdfdf01dbaadf312aa8e2488b"
 RUNTIME = "31399e314f38fb265f2a679a086782bdb17a379c458a64b72dca9951638104de"
 CASES = ("dacl_refusal", "no_delete_share", "case_alias", "long_payload")
@@ -474,6 +475,104 @@ def delete_access_probe(path):
     return {"api": "CreateFileW_DELETE", "winerror": 0}
 
 
+def read_access_probe(path):
+    """Request FILE_READ_DATA independently of Python's CRT error mapping."""
+    from ctypes import wintypes
+
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = api.CreateFileW
+    create.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create.restype = wintypes.HANDLE
+    observation = {
+        "api": "CreateFileW_FILE_READ_DATA",
+        "desired_access": 1,
+        "share_mode": 7,
+        "creation_disposition": 3,
+        "flags": 0x00200000,
+    }
+    handle = create(str(path), 1, 7, None, 3, 0x00200000, None)
+    if handle == ctypes.c_void_p(-1).value:
+        # Capture GetLastError immediately, before another native call.
+        observation.update(opened=False, winerror=ctypes.get_last_error())
+        return observation
+    observation.update(opened=True, winerror=0)
+    closed = None
+    try:
+        close = api.CloseHandle
+        close.argtypes, close.restype = [wintypes.HANDLE], wintypes.BOOL
+        closed = int(close(handle))
+        observation["close"] = {
+            "api": "CloseHandle",
+            "return_value": closed,
+            "winerror": 0 if closed else ctypes.get_last_error(),
+        }
+    except Exception as exc:
+        observation["close"] = {
+            "api": "CloseHandle",
+            "return_value": closed,
+            "winerror": None,
+            "error": {
+                "type": type(exc).__name__,
+                "errno": getattr(exc, "errno", None),
+                "winerror": getattr(exc, "winerror", None),
+            },
+        }
+    return observation
+
+
+def python_read_probe(path):
+    """Keep the actual Python exception; never manufacture a Win32 code."""
+    try:
+        with path.open("rb") as stream:
+            stream.read(1)
+    except OSError as exc:
+        return {
+            "outcome": "error",
+            "type": type(exc).__name__,
+            "errno": exc.errno,
+            "winerror": getattr(exc, "winerror", None),
+        }
+    return {"outcome": "read", "type": None, "errno": None, "winerror": None}
+
+
+def dacl_reads_denied(native, python):
+    """Both independent observations are required, with exact numeric types."""
+    expected = {
+        "api": "CreateFileW_FILE_READ_DATA",
+        "desired_access": 1,
+        "share_mode": 7,
+        "creation_disposition": 3,
+        "flags": 0x00200000,
+        "opened": False,
+        "winerror": 5,
+    }
+    return (
+        isinstance(native, dict)
+        and set(native) == set(expected)
+        and all(
+            type(native[k]) is type(v) and native[k] == v for k, v in expected.items()
+        )
+        and isinstance(python, dict)
+        and set(python) == {"outcome", "type", "errno", "winerror"}
+        and python["outcome"] == "error"
+        and python["type"] == "PermissionError"
+        and type(python["errno"]) is int
+        and python["errno"] == errno.EACCES
+        and (
+            python["winerror"] is None
+            or (type(python["winerror"]) is int and python["winerror"] == 5)
+        )
+    )
+
+
 class Fixture:
     def __init__(self, cg, backend, work, emit):
         self.cg, self.backend, self.work, self.emit = cg, backend, work, emit
@@ -629,6 +728,7 @@ def scenario(name, f):
                 ) from exc
             row["resources"]["handles_closed"] = False
             saved, pinned_identity = None, None
+            read_probe_closed = True
             try:
                 pinned_identity = backend.windows_handle_identity(api, handle)
                 saved = backend.windows_handle_descriptor(handle)
@@ -663,18 +763,30 @@ def scenario(name, f):
                 condition["dacl_changed"] = backend.descriptor_contract(
                     backend.windows_handle_descriptor(handle)
                 ) != backend.descriptor_contract(saved)
-                try:
-                    with target.open("rb") as stream:
-                        stream.read(1)
-                    condition["read_winerror"] = 0
-                except OSError as exc:
-                    condition["read_winerror"] = getattr(exc, "winerror", None)
-                if condition["read_winerror"] != 5:
-                    raise AssertionError("actual file read was not denied")
+                condition["read_path_before"] = backend.windows_object_identity(target)
+                condition["native_read_probe"] = read_access_probe(target)
+                if condition["native_read_probe"].get("opened") is True:
+                    read_probe_closed = (
+                        condition["native_read_probe"]["close"]["return_value"] == 1
+                    )
+                condition["python_read_probe"] = python_read_probe(target)
+                condition["read_path_after"] = backend.windows_object_identity(target)
+                if any(
+                    condition[key] != pinned_identity
+                    for key in ("read_path_before", "read_path_after")
+                ):
+                    raise AssertionError("DACL read probe file identity differs")
+                if condition["dacl_changed"] is not True or not dacl_reads_denied(
+                    condition["native_read_probe"], condition["python_read_probe"]
+                ):
+                    raise AssertionError(
+                        "independent native/Python read denials missing"
+                    )
                 condition["report"] = f.run()
             except BaseException as exc:
                 condition["primary_error"] = {
                     "type": type(exc).__name__,
+                    "errno": getattr(exc, "errno", None),
                     "winerror": getattr(exc, "winerror", None),
                     "message": str(exc),
                 }
@@ -696,11 +808,19 @@ def scenario(name, f):
                         condition["path_after"] = backend.windows_object_identity(
                             target
                         )
+                        if any(
+                            condition[key] != pinned_identity
+                            for key in ("pinned_after", "path_after")
+                        ):
+                            raise AssertionError("DACL restored file identity differs")
                         condition["restored_dacl_sha256"] = digest(
                             backend.descriptor_contract(
                                 backend.windows_handle_descriptor(handle)
                             )
                         )
+                        condition["restored_state_sha256"] = file_digest(target)
+                        if condition["restored_state_sha256"] != before["state_sha256"]:
+                            raise AssertionError("DACL restored file content differs")
                         row["resources"]["dacl_restored"] = backend.descriptor_contract(
                             backend.windows_handle_descriptor(handle)
                         ) == backend.descriptor_contract(saved)
@@ -709,6 +829,7 @@ def scenario(name, f):
                 except BaseException as exc:
                     condition["cleanup_error"] = {
                         "type": type(exc).__name__,
+                        "errno": getattr(exc, "errno", None),
                         "winerror": getattr(exc, "winerror", None),
                         "message": str(exc),
                     }
@@ -717,7 +838,7 @@ def scenario(name, f):
                 finally:
                     condition["close"] = backend.close_windows_handle(api, handle)
                     row["resources"]["handles_closed"] = (
-                        condition["close"]["return_value"] == 1
+                        read_probe_closed and condition["close"]["return_value"] == 1
                     )
                     if not row["resources"]["handles_closed"]:
                         raise AssertionError("DACL recovery handle close failed")
@@ -967,17 +1088,23 @@ def verify_result(result, expected):
                 or not action_entry(p["quarantine_report"], ref["session_id"], None)
             ):
                 raise ValueError("positive quarantine witness")
-            if name == "dacl_refusal" and (
-                c["dacl_changed"] is not True
-                or type(c["read_winerror"]) is not int
-                or c["read_winerror"] != 5
-            ):
-                raise ValueError("real DACL denial")
             if name == "dacl_refusal":
+                if c["dacl_changed"] is not True or not dacl_reads_denied(
+                    c["native_read_probe"], c["python_read_probe"]
+                ):
+                    raise ValueError("independent native/Python DACL denials")
                 if (
                     not valid_winid(c["pinned_before"], "file")
-                    or c["pinned_before"] != c["pinned_after"]
-                    or c["pinned_before"] != c["path_after"]
+                    or any(
+                        not valid_winid(c[key], "file") or c[key] != c["pinned_before"]
+                        for key in (
+                            "pinned_after",
+                            "path_after",
+                            "read_path_before",
+                            "read_path_after",
+                        )
+                    )
+                    or c["restored_state_sha256"] != r["before"]["state_sha256"]
                 ):
                     raise ValueError("DACL original file binding")
                 if (
@@ -1010,6 +1137,7 @@ def verify_result(result, expected):
                 or type(c["delete_probe"]["winerror"]) is not int
                 or c["delete_probe"]["winerror"] != 32
                 or not valid_winid(c["handle_identity"])
+                or not valid_winid(c["path_identity"])
                 or c["handle_identity"] != c["path_identity"]
                 or type(c["close"]["return_value"]) is not int
                 or c["close"]["return_value"] != 1
@@ -1019,6 +1147,7 @@ def verify_result(result, expected):
                 c["original"] == c["alias"]
                 or c["original"].casefold() != c["alias"].casefold()
                 or not valid_winid(c["original_identity"])
+                or not valid_winid(c["alias_identity"])
                 or c["original_identity"] != c["alias_identity"]
                 or c["kernel_lock_released"] is not True
             ):
