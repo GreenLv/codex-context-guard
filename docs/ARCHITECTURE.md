@@ -160,11 +160,15 @@ by default; an explicit apply requires an enabled versioned policy and
 re-verifies each selected object's identity, state and lifecycle lock. Eligible
 objects first move into recoverable quarantine. Separate restore and purge
 intents preserve interrupted operations; a purged name retains a bounded
-anti-resurrection tombstone. SessionEnd only saves current state and recovery;
+anti-resurrection tombstone. Purge binds a quarantined object by its file
+identity and by the creation time recorded at quarantine (change time where
+the filesystem reports none), so a replacement directory that reuses a freed
+inode is refused rather than removed. SessionEnd only saves current state and recovery;
 it does not scan, delete, register or wait for maintenance.
 
 An adopted root records content-free discovery hints in private journals,
-snapshots and generation state. Independent maintenance processes use durable
+snapshots and generation state; snapshots are LF-separated bytes on every
+platform. Independent maintenance processes use durable
 window cursors to advance registered work. Within capacity, repeated runs
 discover unregistered names; when a complete names-only discovery scan cannot
 fit the remaining invocation budget, the report says `capacity_exceeded` with

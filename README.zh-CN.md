@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.17.0 — 2026-11-06。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
+> **0.17.0 — Unreleased 源码候选。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
 
 > **0.16.1 — 2026-11-03。** 文件名或路径中的验收词不再凭空增加义务。本版还新增显式历史覆盖发布门、补全插件上架元数据，并继续停用会话保留清理。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
@@ -20,9 +20,14 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 ## 用 Codex 安装
 
-**0.17.0 — 2026-11-06。** 市场身份从实验性 `codex-context-guard-v016`（0.16.x）迁移到稳定 `codex-context-guard`。注册稳定市场并安装属于官方市场操作：可能移除旧实验缓存，保留缓存也不能证明旧会话会加载它。请先完成依赖已发布 0.16.1 运行时的任务，或为新任务另行配置独立 HOME；不要删除或手改任何版本缓存。
+**0.17.0 — Unreleased 源码候选。** 本产品线尚未发布；以下安装/升级行为是候选合同，发布前需要独立的原生验收。市场身份从实验性 `codex-context-guard-v016`（0.16.x）迁移到稳定 `codex-context-guard`。注册稳定市场并安装属于官方市场操作：可能移除旧实验缓存，保留缓存也不能证明旧会话会加载它。请先完成依赖已发布 0.16.1 运行时的任务，或为新任务另行配置独立 HOME；不要删除或手改任何版本缓存。
 
-下载 [context-guard-0.17.0.zip](https://github.com/GreenLv/codex-context-guard/releases/download/v0.17.0/context-guard-0.17.0.zip)。
+目前没有已发布的 0.17.0 制品。源码验证可用 Python 3.10+ 将候选制品构建到检出目录外的新路径：
+
+```shell
+python3 scripts/build_release_artifact.py --output ../context-guard-0.17.0-candidate.zip
+```
+
 将发行 ZIP 解压到自己控制的稳定目录并一直保留；官方市场后续读取和刷新仍依赖此来源。
 不要把 Git 检出目录或 GitHub 自动生成的源码 ZIP 注册为市场。
 
@@ -231,7 +236,7 @@ flowchart TB
 
 运行时数据写入 Codex 管理的 `PLUGIN_DATA`。提示正文、任务状态、证据摘要和恢复文件都属于本地运行时数据，不属于本仓库。
 
-SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 中，会话保留维护在新版本化合同下恢复，而 SessionEnd 本身仍不执行任何清扫：`cleanup --data-dir <根目录>` 默认只预览，不满足「显式启用的保留策略 + 绑定精确清单的 apply」时不会改动任何会话数据。合格结束会话（默认 30 天）进入可恢复隔离并提供恢复命令；恢复只在证明对象完整后才搬回；永久回收只在再 7 天宽限期后进行，并留下到期退役的墓碑记录。定时维护需要用户显式开启，且不会改动不属于本产品的调度条目。活动、可恢复、未完成、锁占用、部分删除、旧版本、链接与范围外对象都会以明确原因被保护。请保留活动任务、会话数据、生命周期锁和既有插件缓存。停用时代的记录与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
+SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 候选线中，会话保留维护在新版本化合同下恢复，而 SessionEnd 本身仍不执行任何清扫：`cleanup --data-dir <根目录>` 默认只预览，不满足「显式启用的保留策略 + 绑定精确清单的 apply」时不会改动任何会话数据。合格结束会话（默认 30 天）进入可恢复隔离并提供恢复命令；恢复只在证明对象完整后才搬回；永久回收只在再 7 天宽限期后进行，并留下到期退役的墓碑记录。定时维护需要用户显式开启，且不会改动不属于本产品的调度条目。活动、可恢复、未完成、锁占用、部分删除、旧版本、链接与范围外对象都会以明确原因被保护。请保留活动任务、会话数据、生命周期锁和既有插件缓存。停用时代的记录与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
 
 脱敏导出只在显式请求时创建，绝不覆盖既有文件，并省略原始提示、会话正文、凭据、认证头、URL 查询参数、URL userinfo 和插件私有路径；文档化脱敏域见[隐私说明](docs/PRIVACY.md)。未提供插件数据目录时，直接 CLI 回退状态存放在当前生效的 `CODEX_HOME` 之下。
 

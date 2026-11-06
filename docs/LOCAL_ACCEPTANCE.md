@@ -1,6 +1,38 @@
 # Local Release Acceptance
 
-## 0.17.0 — source acceptance (2026-11-06)
+## 0.17.0 — source acceptance (Unreleased source candidate)
+
+### Repair round R6 (2026-11-06)
+
+Cross-platform review of the earlier candidate `ffac148` failed, and those
+results remain failed evidence for that commit:
+
+- Native Windows (Python 3.12.10): the `cg-retention-native-batch/v3`
+  batch passed 8 of 12 scenarios; `purge_complete`, `purge_partial_resume`,
+  `crash_boundaries` and `fresh_process_capacity_exceeded` failed and the
+  independent consumer rejected the result. The discovery snapshot the
+  product wrote went through text-mode newline translation (CRLF), and the
+  strict snapshot reader rejected its own bytes as `corrupt`.
+- Linux CI (Python 3.10–3.14): `replacement_refusal` and the
+  partial-purge replacement control removed a replacement directory and its
+  sentinel. Purge bound an object only by `(dev, ino)`, which a replacement
+  can reuse.
+
+R6 writes the snapshot byte-exact with LF, reopens the records window when
+the same pass's discovery restores record hints, and binds purge to the
+object's creation time (`statx` on Linux, `st_birthtime` on macOS/Windows;
+change time where none is reported, re-recorded after each own partial
+removal). The batch is `v4`: purge outcomes are recorded per object before
+the later dispatch and the consumer re-derives them; `v3` rows, including
+the earlier source's own passing macOS rows, are rejected by the `v4`
+consumer.
+
+Evidence boundary: macOS source only. Emulated Windows newline translation
+reproduces the four Windows failures on `ffac148` and passes on R6; forced
+`(dev, ino)` reuse reproduces the deleted-sentinel failure on `ffac148` and
+is refused on R6, with a modeled no-creation-time filesystem covered too.
+Native Windows, Linux CI, installation and every later gate must run on the
+R6 commit; the source-check figures below describe the earlier candidate.
 
 This section describes local source evidence. Native macOS/Windows behavior,
 normal Hook trust, old-task continuity, exact-artifact installation and upgrade,

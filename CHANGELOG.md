@@ -4,7 +4,7 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## 0.17.0 — 2026-11-06
+## 0.17.0 — Unreleased source candidate
 
 ### Highlights
 
@@ -20,10 +20,12 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - Scheduling is an explicit enable/status/disable operation, separate from policy adoption and installation. The verified interpreter runs the same maintenance executor through launchd or Windows Task Scheduler. Definitions, loaded state and ownership are checked separately; unrelated jobs are refused.
 - The historical incident pin covers the three reproduced scope and terminal-evidence defects. A rejected intake retains its original bytes outside the active case denominator, with corrected facts under a new identity.
 - Existing session data and consumed caches are not migrated. Installation creates neither a retention policy nor a scheduler. See the [stable identity contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md) and [session storage](docs/SESSION_STORAGE.md) before changing an existing HOME.
+- Source candidate repairs after cross-platform review: on Windows the discovery snapshot is written with LF bytes, so the product reads back its own hints (a CRLF snapshot from an earlier candidate is treated as damaged and rebuilt), and records that discovery restores are served in the same pass. Purge now binds each quarantined object to its creation time (change time where the filesystem reports none) in addition to its file identity, so a replacement directory that reuses a freed inode is refused instead of removed. The retention acceptance batch is `cg-retention-native-batch/v4`: purge outcomes are recorded per object before any later dispatch and re-derived by the consumer.
 
 ### Validation
 
 - Local source evidence: focused source regressions and synthetic fresh-process controls cover scope interpretation, terminal evidence, retention identity and recovery, capacity reporting and incremental purge. The macOS source suite completed 3,137 tests with zero failures or errors (94 platform/capability or historical-retirement skips). The canonical historical-library gate, performance comparison, native macOS/Windows behavior, exact-artifact installation and upgrade, CI and HOL remain separate required evidence. See [local acceptance](docs/LOCAL_ACCEPTANCE.md) for the current results and limits.
+- Cross-platform review of the earlier candidate (`ffac148`) failed: native Windows retention batch 8/12 (CRLF snapshot self-incompatibility) and Linux CI replacement refusal on Python 3.10–3.14. Those results stay failed. The repair is macOS source evidence only: emulated Windows newline translation and forced identity reuse reproduce the failures on the earlier source and pass on the repair; native Windows, Linux CI and every downstream gate must run again on the new commit.
 
 ## 0.16.1 — 2026-11-03
 

@@ -1,6 +1,6 @@
 # Versioning policy
 
-## 0.17.0 — 2026-11-06
+## 0.17.0 — Unreleased source candidate
 
 Schema 13,
 Stop protocol 5.0.0, the nine Hook events and the default business-tool path
@@ -26,6 +26,15 @@ changed versioned contracts relative to published 0.16.1:
   records are `<name>\t<crc32>` lines. Bare-name lines written by earlier
   0.17.0 candidates are read as hints and trigger a checked generation; no
   published release wrote any of these files.
+- Quarantine records (`cg-retention-quarantine/v3`) gain an optional
+  `object_stamp` (`{"kind": "birth"|"ctime", "ns": int}`) bound when the
+  object becomes quarantined; purge refuses a bound name whose stamp no
+  longer matches. Records without it (earlier candidates) are verified by
+  their tree digest before their first removal. The discovery snapshot is
+  written with LF bytes on every platform; a CRLF snapshot is `corrupt`.
+- Validation tooling: `cg-retention-native-batch/v4` (R6) records purge
+  outcomes per object before any later dispatch and the consumer re-derives
+  them; `v3` results are not accepted as `v4` evidence.
 - Validation tooling: `cg-retention-native-batch/v3` adds three
   fresh-process scenarios (real-executor discovery within capacity, honest
   capacity report beyond it, purge progress) to the nine per-object
