@@ -28,6 +28,21 @@ def command(status, state, **extra):
     return {"exit_code": 0, "json": {"status": status, "state": state, **extra}}
 
 
+def recorded_windows_definition(expected=None, *, enabled=True):
+    return {**(expected or {}), "enabled": "true" if enabled else "false",
+            "logon_type": "InteractiveToken", "run_level": "LeastPrivilege",
+            "trigger_kind": "CalendarTrigger" if enabled else "TimeTrigger",
+            "trigger_enabled": "true" if enabled else "false",
+            "sha256": "c" * 64, "security_sha256": "f" * 64,
+            "xml_semantic_sha256": "e" * 64,
+            "observation": {"schema": SCHED.WINDOWS_DEFINITION_SCHEMA,
+                            "xml_after_sha256": "c" * 64,
+                            "com_xml_semantic_sha256": "e" * 64,
+                            "com": {"registered_enabled": enabled, "settings_enabled": enabled,
+                                    "principal_run_level": 0, "trigger_enabled": enabled,
+                                    "trigger_type": 2 if enabled else 1, "trigger_count": 1}}}
+
+
 def passing_macos():
     fixture = Path("/private/tmp/scheduler-fixture")
     subject = {"source_commit": "a" * 40, "toolkit_commit": "b" * 40,
@@ -301,29 +316,41 @@ class SchedulerBatchTests(unittest.TestCase):
     def test_windows_native_facts_need_a_new_successful_run(self):
         report, subject, fixture = passing_macos()
         report["platform"] = "windows"
-        report["schema"] = SCHED.WINDOWS_V1_SCHEMA
+        report["schema"] = SCHED.WINDOWS_SCHEMA
         report["started_at"] = "2026-01-01T00:00:00+00:00"
         start = dt.datetime.fromisoformat(report["started_at"])
         delta = start - dt.datetime(1, 1, 1, tzinfo=dt.timezone.utc)
         ticks = (delta.days * 86400 + delta.seconds) * 10_000_000
         expected = SCHED._expected_definition(subject, fixture / "guard-data", "Windows")
         report["subject"]["expected_definition"] = expected
-        definition = {**expected, "enabled": "true", "logon_type": "InteractiveToken",
-                      "run_level": "LeastPrivilege", "sha256": "c" * 64,
-                      "security_sha256": "f" * 64}
+        definition = recorded_windows_definition(expected)
         report["scene"]["before_second"]["definition"] = definition
         report["scene"]["after_second"]["definition"] = copy.deepcopy(definition)
         report["scene"]["before_second"]["ownership_manifest"]["security_sha256"] = "f" * 64
         report["scene"]["after_second"]["ownership_manifest"]["security_sha256"] = "f" * 64
-        foreign = {"sha256": "e" * 64, "description": "ccg0170-owned-foreign-fixture-"
-                   + report["foreign_label"], "enabled": "false", "logon_type": "InteractiveToken",
-                   "run_level": "LeastPrivilege", "security_sha256": "a" * 64}
+        foreign = recorded_windows_definition(
+            {"description": "ccg0170-owned-foreign-fixture-" + report["foreign_label"]}, enabled=False)
         report["foreign"]["before"] = foreign
         report["foreign"]["after"] = dict(foreign)
         report["scene"]["job_before"] = {"last_run_ticks": ticks - 1, "state": "Ready"}
         report["scene"]["job_after"] = {"last_run_ticks": ticks + 1, "last_result": 0, "state": "Ready"}
         report["cleanup"]["job_before_disable"] = dict(report["scene"]["job_after"])
         self.assertEqual([], SCHED.consume(report, expected_subject=subject, fixture=fixture, system="Windows"))
+        old = copy.deepcopy(report)
+        old["schema"] = SCHED.WINDOWS_V1_SCHEMA
+        self.assertEqual(["schema"], SCHED.consume(
+            old, expected_subject=subject, fixture=fixture, system="Windows"))
+        missing = copy.deepcopy(report)
+        missing["scene"]["before_second"]["definition"].pop("observation")
+        self.assertIn("registered_definition", SCHED.consume(
+            missing, expected_subject=subject, fixture=fixture, system="Windows"))
+        for key, value in (("settings_enabled", False), ("principal_run_level", True),
+                           ("trigger_enabled", False), ("trigger_count", 2)):
+            bad = copy.deepcopy(report)
+            for name in ("before_second", "after_second"):
+                bad["scene"][name]["definition"]["observation"]["com"][key] = value
+            self.assertIn("registered_definition", SCHED.consume(
+                bad, expected_subject=subject, fixture=fixture, system="Windows"))
         for collection in ("definition", "ownership_manifest"):
             for value in (None, "d" * 64):
                 bad = copy.deepcopy(report)
@@ -580,6 +607,167 @@ class SchedulerBatchTests(unittest.TestCase):
                 driver.stop.assert_called_once_with(label)
                 self.assertFalse(any(call.args[4] == label and call.args[5] == "disable"
                                      for call in cli_mock.call_args_list))
+
+
+class WindowsDefinitionObservationTests(unittest.TestCase):
+    NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+
+    def xml(self, *, enabled="true", run_level="LeastPrivilege", trigger_enabled="true",
+            foreign=False):
+        def optional(name, value):
+            return "" if value is None else "<" + name + ">" + value + "</" + name + ">"
+        kind = "TimeTrigger" if foreign else "CalendarTrigger"
+        schedule = "" if foreign else "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
+        return ("<Task version='1.2' xmlns='" + self.NS + "'><RegistrationInfo><Description>synthetic</Description>"
+                "</RegistrationInfo><Triggers><" + kind + "><StartBoundary>2099-01-01T03:17:00"
+                "</StartBoundary>" + optional("Enabled", trigger_enabled) + schedule + "</" + kind + "></Triggers>"
+                "<Principals><Principal id='Author'><LogonType>InteractiveToken</LogonType>"
+                + optional("RunLevel", run_level) + "</Principal></Principals><Settings>"
+                + optional("Enabled", enabled) + "</Settings><Actions Context='Author'><Exec>"
+                "<Command>synthetic.exe</Command><Arguments>synthetic arguments</Arguments>"
+                "</Exec></Actions></Task>")
+
+    def observe(self, xml, *, enabled=True, com_updates=None, com_xml=None,
+                after=None, payload=None, com_exit=0, after_exit=0):
+        driver = object.__new__(SCHED._Windows)
+        raw = xml if isinstance(xml, bytes) else xml.encode("utf-8")
+        driver.call = mock.Mock(side_effect=[
+            subprocess.CompletedProcess([], 0, raw, b""),
+            subprocess.CompletedProcess([], after_exit, raw if after is None else after, b"")])
+        com = dict(recorded_windows_definition(enabled=enabled)["observation"]["com"],
+                   xml=com_xml if com_xml is not None else raw.decode("utf-8-sig"))
+        com.update(com_updates or {})
+        driver.ps = mock.Mock(return_value=subprocess.CompletedProcess(
+            [], com_exit, json.dumps(com).encode() if payload is None else payload, b""))
+        driver.task_security = mock.Mock(return_value="f" * 64)
+        value = driver.definition("cg-ccg0170-test" + ("-foreign" if not enabled else ""))
+        return value, driver
+
+    def test_independent_com_proves_all_omission_combinations(self):
+        for enabled in (True, False):
+            for settings in (None, "true" if enabled else "false"):
+                for runlevel in (None, "LeastPrivilege"):
+                    for trigger in (None, "true" if enabled else "false"):
+                        xml = self.xml(enabled=settings, run_level=runlevel,
+                                       trigger_enabled=trigger, foreign=not enabled)
+                        value, driver = self.observe(xml, enabled=enabled)
+                        self.assertEqual(value["enabled"], settings)
+                        self.assertEqual(value["run_level"], runlevel)
+                        self.assertEqual(value["trigger_enabled"], trigger)
+                        self.assertTrue(SCHED._windows_definition_observed(value, enabled))
+                        self.assertEqual(driver.call.call_count, 2)
+                        code = driver.ps.call_args.args[0]
+                        self.assertNotIn("[bool]", code)
+                        self.assertNotIn("[int]", code)
+                        self.assertIn("xml=$t.Xml", code)
+
+    def test_trigger_enabled_never_substitutes_for_settings(self):
+        value, _ = self.observe(self.xml(enabled=None, trigger_enabled="false"),
+                                com_updates={"trigger_enabled": False})
+        self.assertIsNone(value["enabled"])
+        self.assertEqual(value["trigger_enabled"], "false")
+        self.assertFalse(SCHED._windows_definition_observed(value, True))
+        value, _ = self.observe(self.xml(enabled="false", trigger_enabled="true"),
+                                com_updates={"settings_enabled": False})
+        self.assertEqual(value["enabled"], "false")
+        self.assertFalse(SCHED._windows_definition_observed(value, True))
+
+    def test_explicit_xsd_boolean_lexical_forms_agree_with_native_values(self):
+        for enabled, text in ((True, "1"), (False, "0")):
+            value, _ = self.observe(self.xml(enabled=text, trigger_enabled=text, foreign=not enabled),
+                                    enabled=enabled)
+            self.assertTrue(SCHED._windows_definition_observed(value, enabled))
+
+    def test_com_field_missing_wrong_type_or_wrong_value_never_defaults(self):
+        good, _ = self.observe(self.xml(enabled=None, run_level=None, trigger_enabled=None))
+        mutations = {
+            "registered_enabled": (None, False, 1, "true"),
+            "settings_enabled": (None, False, 1, "true"),
+            "trigger_enabled": (None, False, 1, "true"),
+            "principal_run_level": (None, False, 0.0, "0", 1, 2),
+            "trigger_type": (None, True, 2.0, "2", 1, 3),
+            "trigger_count": (None, True, 1.0, "1", 0, 2),
+        }
+        for key, values in mutations.items():
+            for bad in values:
+                value = copy.deepcopy(good)
+                value["observation"]["com"][key] = bad
+                self.assertFalse(SCHED._windows_definition_observed(value, True), (key, bad))
+            value = copy.deepcopy(good)
+            value["observation"]["com"].pop(key)
+            self.assertFalse(SCHED._windows_definition_observed(value, True))
+
+    def test_explicit_invalid_or_conflicting_xml_fields_are_not_omission(self):
+        for key, values in {"enabled": ("", "false", "FALSE", "yes", True, 1),
+                            "trigger_enabled": ("", "false", "yes", True, 1),
+                            "run_level": ("", "HighestAvailable", "unknown", False, 0)}.items():
+            for bad in values:
+                value = recorded_windows_definition()
+                value[key] = bad
+                self.assertFalse(SCHED._windows_definition_observed(value, True), (key, bad))
+
+    def test_missing_observation_or_changed_binding_is_rejected(self):
+        for mutate in (
+            lambda x: x.pop("observation"),
+            lambda x: x.pop("enabled"),
+            lambda x: x.pop("trigger_enabled"),
+            lambda x: x.pop("run_level"),
+            lambda x: x["observation"].update(schema="old"),
+            lambda x: x["observation"].update(xml_after_sha256="d" * 64),
+            lambda x: x["observation"].update(com_xml_semantic_sha256="d" * 64),
+            lambda x: x.update(xml_semantic_sha256=None),
+        ):
+            value = recorded_windows_definition()
+            mutate(value)
+            self.assertFalse(SCHED._windows_definition_observed(value, True))
+
+    def test_malformed_scoped_xml_is_refused(self):
+        namespace = "{" + self.NS + "}"
+        changes = [
+            lambda r: r.append(copy.deepcopy(r.find(namespace + "Settings"))),
+            lambda r: r.find(namespace + "Principals").append(copy.deepcopy(r.find(".//" + namespace + "Principal"))),
+            lambda r: r.find(namespace + "Actions").append(copy.deepcopy(r.find(".//" + namespace + "Exec"))),
+            lambda r: r.find(namespace + "Triggers").append(copy.deepcopy(r.find(".//" + namespace + "CalendarTrigger"))),
+            lambda r: r.find(namespace + "Settings").append(ET.Element(namespace + "Enabled")),
+            lambda r: r.find(".//" + namespace + "Principal").append(ET.Element(namespace + "RunLevel")),
+            lambda r: r.find(".//" + namespace + "RunLevel").clear(),
+            lambda r: r.find(namespace + "Actions").set("Context", "other"),
+            lambda r: r.append(ET.Element(namespace + "Command")),
+            lambda r: r.append(ET.Element(namespace + "Description")),
+            lambda r: setattr(r.find(namespace + "Settings"), "tag", "Settings"),
+            lambda r: setattr(r.find(".//" + namespace + "RunLevel"), "tag", "RunLevel"),
+            lambda r: setattr(r, "tag", "Task"),
+        ]
+        for change in changes:
+            root = ET.fromstring(self.xml())
+            change(root)
+            with self.assertRaises(SCHED.SchedulerBatchError):
+                SCHED._windows_xml_observation(ET.tostring(root))
+
+    def test_com_errors_bad_json_and_xml_drift_are_refused(self):
+        for kwargs in (
+            {"com_exit": 2}, {"after_exit": 1}, {"payload": b"not json"},
+            {"payload": b"null"}, {"payload": b'{"xml":"one","xml":"two"}'},
+            {"com_updates": {"xml": None}},
+            {"com_xml": self.xml().replace("synthetic arguments", "other arguments")},
+            {"after": self.xml().replace("synthetic arguments", "other arguments").encode()},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(SCHED.SchedulerBatchError):
+                self.observe(self.xml(), **kwargs)
+
+    def test_utf16_export_and_utf8_com_bind_same_definition(self):
+        xml = self.xml(enabled=None, run_level=None, trigger_enabled=None)
+        value, _ = self.observe(xml.encode("utf-16"), com_xml=xml)
+        self.assertTrue(SCHED._windows_definition_observed(value, True))
+
+    def test_invalid_label_is_rejected_before_any_command(self):
+        driver = object.__new__(SCHED._Windows)
+        driver.call = mock.Mock()
+        driver.ps = mock.Mock()
+        with self.assertRaises(SCHED.SchedulerBatchError):
+            driver.definition("cg-ccg0170-test';unexpected")
+        driver.call.assert_not_called()
+        driver.ps.assert_not_called()
 
 
 if __name__ == "__main__":
