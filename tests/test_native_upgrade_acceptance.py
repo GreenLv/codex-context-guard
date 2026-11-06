@@ -115,6 +115,22 @@ def lifecycle_facts():
 
 
 class UpgradeControls(unittest.TestCase):
+    def test_lifecycle_markers_refuse_equal_reversed_or_wrong_pid(self):
+        events = ("transition_started", "transition_completed", "disable_completed", "plugin_removed", "marketplace_removed")
+        rows = [{"direction": "local", "event": event, "pid": 123, "monotonic_ns": index + 1}
+                for index, event in enumerate(events)]
+        self.assertEqual(set(events), set(U._marks(rows)))
+        for mutation in ("equal", "reversed", "wrong_pid"):
+            bad = copy.deepcopy(rows)
+            if mutation == "equal":
+                bad[1]["monotonic_ns"] = bad[0]["monotonic_ns"]
+            elif mutation == "reversed":
+                bad[1]["monotonic_ns"] = bad[0]["monotonic_ns"] - 1
+            else:
+                bad[1]["pid"] = 456
+            with self.assertRaises(U.UpgradeError, msg=mutation):
+                U._marks(bad)
+
     def test_old_scope_never_writes_bytecode_in_consumed_carriers(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -192,12 +208,19 @@ class UpgradeControls(unittest.TestCase):
             row["trustStatus"] = "untrusted"
         value = {"data": [{"hooks": old + new}]}
         projection = U._pre_disable_projection(value, old_source, new_source)
-        rows = [{"direction": "local", "event": "transition_completed"},
+        rows = [{"direction": "local", "event": "transition_completed", "pid": 123, "monotonic_ns": 1},
                 {"direction": "request", "message": {"id": 1, "method": "hooks/list", "params": {}}},
                 {"direction": "response", "message": {"id": 1, "result": value}},
                 {"direction": "observation", "event": "pre_disable_sample", "pid": 123, "monotonic_ns": 4},
-                {"direction": "observation", "event": "old_identity_disabled", "pid": 123}]
+                {"direction": "observation", "event": "old_identity_disabled", "pid": 123, "monotonic_ns": 5}]
         U._verify_pre_disable(rows, {"pre_disable_inventory": projection}, old_source, new_source, 0, 4, 123)
+        for index, field, replacement in ((0, "monotonic_ns", 4), (0, "monotonic_ns", 6),
+                                    (3, "monotonic_ns", 5), (3, "monotonic_ns", 999),
+                                    (4, "pid", 124), (0, "pid", 124), (3, "pid", 124)):
+            bad_rows = copy.deepcopy(rows)
+            bad_rows[index][field] = replacement
+            with self.subTest(index=index, field=field, value=replacement), self.assertRaises(U.UpgradeError):
+                U._verify_pre_disable(bad_rows, {"pre_disable_inventory": projection}, old_source, new_source, 0, 4, 123)
         bad = copy.deepcopy(value)
         bad["data"][0]["hooks"][-1]["trustStatus"] = "trusted"
         with self.assertRaises(U.UpgradeError):
@@ -375,7 +398,8 @@ class UpgradeControls(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, json.dumps(value).encode(), b"")
             manager = mock.Mock()
             manager.distribution_manifest.return_value = {"public": "b" * 64}
-            with mock.patch.object(U, "UpgradeClient", FakeClient), \
+            with mock.patch.object(U.time, "monotonic_ns", return_value=275218187000000) as coarse_clock, \
+                 mock.patch.object(U, "UpgradeClient", FakeClient), \
                  mock.patch.object(U, "_sentinel_files", return_value=sentinel_facts), \
                  mock.patch.object(U, "source_files", return_value={"public": "b" * 64}), \
                  mock.patch.object(U, "_cache_identity", return_value="b" * 64), \
@@ -397,6 +421,7 @@ class UpgradeControls(unittest.TestCase):
                     self.assertLess(world["events"].index("live_close"), world["events"].index("cold_start"))
                     if expected != "failed":
                         self.assertEqual(expected, U.verify(plan, output, prepared_path)["status"])
+                coarse_clock.assert_not_called()
 
     def test_historical_inventory_is_limited_to_the_observed_thread(self):
         old_source, new_source = fixture_path("old", "hooks.json"), fixture_path("new", "hooks.json")
@@ -573,20 +598,33 @@ class UpgradeControls(unittest.TestCase):
         reads = []
         for market, row, tick in ((old_market, old, 21), (U.NEW_MARKET, new, 22)):
             reads.append({"argv": [subject["codex"], "plugin", "list", "--marketplace", market, "--json"],
-                          "completed_monotonic_ns": tick, "observation": {"installed": [row]}})
+                          "started_monotonic_ns": tick - 1, "completed_monotonic_ns": tick,
+                          "observation": {"installed": [row]}})
         result = {"commands": reads, "new_inventory": [], "after": {"fresh_thread": "F"}, "old_cache_preservation":
                   {"before": cache, "after_new_install": cache, "after_old_disable": cache}}
-        live = [{"direction": "local", "pid": 1}, {"direction": "local"},
+        live = [{"direction": "local", "pid": 1}, {"direction": "local", "pid": 1, "monotonic_ns": 10},
+                {"direction": "observation", "event": "pre_disable_sample", "pid": 1, "monotonic_ns": 15},
                 {"direction": "observation", "event": "old_identity_disabled", "pid": 1, "monotonic_ns": 30},
-                {"direction": "local"}]
-        marks = {"transition_started": 0, "transition_completed": 1, "disable_completed": 3}
+                {"direction": "local", "pid": 1, "monotonic_ns": 40}]
+        marks = {"transition_started": 0, "transition_completed": 1, "disable_completed": 4}
         installed = Path(fixture_path("old-cache"))
         with mock.patch.object(U, "source_files", return_value={"file": "a" * 64}), \
              mock.patch.object(U, "_cache_identity", return_value="b" * 64), \
-             mock.patch.object(U, "_thread_start_index", return_value=3), \
+                 mock.patch.object(U, "_thread_start_index", return_value=4), \
              mock.patch.object(U, "_verify_pre_disable"), \
              mock.patch.object(U, "_inventory_in_journal"):
             U._verify_old_disable(subject, result, live, marks, fixture_path("new-hook"), installed)
+            for tick in (30, 29):
+                bad_live = copy.deepcopy(live)
+                bad_live[4]["monotonic_ns"] = tick
+                with self.subTest(disable_completed=tick), self.assertRaises(U.UpgradeError):
+                    U._verify_old_disable(subject, result, bad_live, marks, fixture_path("new-hook"), installed)
+            for index in (0, 1):
+                bad = copy.deepcopy(result)
+                bad["commands"][index]["started_monotonic_ns"] = 14
+                bad["commands"][index]["completed_monotonic_ns"] = 15
+                with self.subTest(early_readback=index), self.assertRaises(U.UpgradeError):
+                    U._verify_old_disable(subject, bad, live, marks, fixture_path("new-hook"), installed)
             for change in ("old_enabled", "stable_disabled", "cache_changed", "wrong_source"):
                 bad = copy.deepcopy(result)
                 if change == "old_enabled":
@@ -1288,6 +1326,29 @@ class UpgradeControls(unittest.TestCase):
                 with mock.patch.object(U, "source_files", return_value={"public": "b" * 64}):
                     accepted = U.verify({}, output, prepared_path)
                     self.assertEqual("observation_complete", accepted["status"])
+                    for mutation in ("missing", "negative", "reversed", "cross_command", "late_remove"):
+                        bad = copy.deepcopy(observation)
+                        commands = bad["commands"]
+                        if mutation == "missing":
+                            del commands[-1]["started_monotonic_ns"]
+                        elif mutation == "negative":
+                            commands[-1]["started_monotonic_ns"] = -3
+                            commands[-1]["completed_monotonic_ns"] = -2
+                        elif mutation == "reversed":
+                            commands[-1]["started_monotonic_ns"] = commands[-1]["completed_monotonic_ns"] + 1
+                        elif mutation == "cross_command":
+                            commands[-1]["started_monotonic_ns"] = commands[-2]["completed_monotonic_ns"] - 1
+                        else:
+                            original_times = [(row["started_monotonic_ns"], row["completed_monotonic_ns"]) for row in commands]
+                            remove = next(i for i, row in enumerate(commands) if row["argv"][1:4] == ["plugin", "marketplace", "remove"])
+                            item = commands.pop(remove)
+                            plugin_add = next(i for i, row in enumerate(commands) if row["argv"][1:3] == ["plugin", "add"])
+                            commands.insert(plugin_add + 1, item)
+                            for row, (start, end) in zip(commands, original_times):
+                                row["started_monotonic_ns"], row["completed_monotonic_ns"] = start, end
+                        (output / "result.json").write_text(json.dumps(bad))
+                        with self.subTest(mutation=mutation), self.assertRaises(U.UpgradeError):
+                            U.verify({}, output, prepared_path)
                     contradiction = copy.deepcopy(live_trace)
                     contradiction["after"]["new"] = {"present": True, "state_sha256": "1" * 64, "prompts": []}
                     (output / "live-roots.json").write_text(json.dumps(contradiction))
@@ -1370,7 +1431,7 @@ class UpgradeControls(unittest.TestCase):
                         U.verify({}, output, prepared_path)
                     prepared_path.write_text(json.dumps(prepared))
                     (output / "result.json").write_text(json.dumps(observation))
-                    for mutation in ("missing", "untrusted", "wrong_source", "after_resume"):
+                    for mutation in ("missing", "untrusted", "wrong_source", "after_resume", "wrong_pid"):
                         altered = copy.deepcopy(rows)
                         if mutation == "missing":
                             altered = [row for row in altered if row.get("message", {}).get("id") != 201]
@@ -1382,6 +1443,9 @@ class UpgradeControls(unittest.TestCase):
                                 item["trustStatus"] = "untrusted"
                             else:
                                 item["sourcePath"] = fixture_path("wrong", "hooks.json")
+                        elif mutation == "wrong_pid":
+                            marker_row = next(row for row in altered if row.get("event") == "cold_client_started")
+                            marker_row["pid"] = 999
                         else:
                             pair = [row for row in altered if row.get("message", {}).get("id") == 201]
                             altered = [row for row in altered if row.get("message", {}).get("id") != 201]

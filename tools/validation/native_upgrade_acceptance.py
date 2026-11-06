@@ -62,6 +62,11 @@ def require(value: Any, message: str) -> None:
         raise UpgradeError(message)
 
 
+def _receipt_clock_ns() -> int:
+    """One high-resolution coordinator clock for all receipt timing facts."""
+    return time.perf_counter_ns()
+
+
 def _credential_name(name: str) -> bool:
     folded = name.casefold()
     return (folded in {"auth.json", "credentials", "credentials.json", "credential.json", "tokens",
@@ -1293,7 +1298,7 @@ def _run_official(result: dict[str, Any], argv: list[str], env: dict[str, str],
                   selected: set[str], stage: str) -> Any:
     """Record the attempted operation before launching; never retain process output."""
     fact: dict[str, Any] = {"stage": stage, "argv": argv, "status": "started",
-                            "started_monotonic_ns": time.monotonic_ns()}
+                            "started_monotonic_ns": _receipt_clock_ns()}
     result["commands"].append(fact)
     try:
         run = scheduler._command(native, ROOT, argv, env=env, timeout=90)
@@ -1306,7 +1311,7 @@ def _run_official(result: dict[str, Any], argv: list[str], env: dict[str, str],
         fact.update(status="failed", failure_type=type(exc).__name__)
         raise
     finally:
-        fact["completed_monotonic_ns"] = time.monotonic_ns()
+        fact["completed_monotonic_ns"] = _receipt_clock_ns()
 
 
 def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
@@ -1471,7 +1476,7 @@ def _sample_pre_disable(client: UpgradeClient, old_source: str, new_source: str,
     sample = client.rpc("hooks/list", {"cwds": [client.plan["cwd"]]})
     result["pre_disable_inventory"] = _pre_disable_projection(sample, old_source, new_source)
     client.log.write(json.dumps({"direction": "observation", "event": "pre_disable_sample",
-        "pid": client.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+        "pid": client.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
     client.log.flush()
 
 
@@ -1498,7 +1503,7 @@ def _mark(client: UpgradeClient, event: str) -> None:
     require(client.owned.process.poll() is None, "owned app-server exited")
     client.log.write(json.dumps({"direction": "local", "event": event,
                                  "pid": client.owned.process.pid,
-                                 "monotonic_ns": time.monotonic_ns()}) + "\n")
+                                 "monotonic_ns": _receipt_clock_ns()}) + "\n")
     client.log.flush()
 
 
@@ -1547,7 +1552,7 @@ def _close_observation(client: UpgradeClient, role: str, system: str) -> dict[st
     if system == "Windows":
         require(facts.get("cleanup_complete") is True and facts.get("job_close_confirmed") is True,
                 "observation Job cleanup unknown")
-    return {"role": role, "pid": pid, "closed_monotonic_ns": time.monotonic_ns(), "facts": facts}
+    return {"role": role, "pid": pid, "closed_monotonic_ns": _receipt_clock_ns(), "facts": facts}
 
 
 def _root_snapshots(home: Path, old_root: Path, new_root: Path, thread: str) -> dict[str, Any]:
@@ -1718,7 +1723,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
             require(after_disable == cache_before, "old cache changed during normal disable")
             result["old_cache_preservation"]["after_old_disable"] = after_disable
             live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
-                "pid": live.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+                "pid": live.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
             live.log.flush()
         new_inventory = _reviewed_sources(live, {new_source: "0.17.0"}, new_source)
         result["new_inventory"] = list(new_inventory.values())
@@ -1779,7 +1784,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
         with _launch_environment(home):
             cold = UpgradeClient(cold_plan, cold_dir, sources={new_source: "0.17.0"}, turn_limit=1)
         cold.log.write(json.dumps({"direction": "observation", "event": "cold_client_started",
-            "pid": cold.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+            "pid": cold.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
         cold.log.flush()
         cold.observation_thread = thread
         cold.observation_inventory = {**old_inventory, **cold.approved}
@@ -2081,7 +2086,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                     "stable plugin is not enabled after old disable")
             result["old_cache_preservation"]["after_old_disable"] = after_disable
             live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
-                "pid": live.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+                "pid": live.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
             live.log.flush()
         allowed_sources = {new_source: "0.17.0"}
         if strategy == "observe-open" and old_market != NEW_MARKET:
@@ -2111,7 +2116,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             with _launch_environment(home):
                 cold = UpgradeClient(cold_plan, cold_dir, sources={new_source: "0.17.0"}, turn_limit=2)
             cold.log.write(json.dumps({"direction": "observation", "event": "cold_client_started",
-                "pid": cold.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+                "pid": cold.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
             cold.log.flush()
             begin = len(cold.rows)
             cold.rpc("thread/resume", {"threadId": fresh, "cwd": str(workspace),
@@ -2570,12 +2575,27 @@ def plan_sentinel_from_facts(facts: dict[str, Any]) -> dict[str, Any]:
             "data_marker": _object(facts.get("data_marker")).get("path")}
 
 
+def _command_times(result: dict[str, Any]) -> list[dict[str, Any]]:
+    timed = result.get("commands")
+    require(isinstance(timed, list) and all(isinstance(item, dict)
+            and type(item.get("started_monotonic_ns")) is int
+            and type(item.get("completed_monotonic_ns")) is int
+            and 0 < item["started_monotonic_ns"] <= item["completed_monotonic_ns"] for item in timed),
+            "CLI timing facts unavailable")
+    require(all(left["completed_monotonic_ns"] <= right["started_monotonic_ns"]
+                for left, right in zip(timed, timed[1:])), "CLI command order differs")
+    return timed
+
+
 def _verify_pre_disable(live: list[dict[str, Any]], result: dict[str, Any], old_source: str,
                         new_source: str, transition_end: int, disabled_index: int, pid: int) -> None:
     markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "observation"
                and row.get("event") == "pre_disable_sample"]
     require(len(markers) == 1 and transition_end < markers[0][0] < disabled_index
-            and markers[0][1].get("pid") == pid and type(markers[0][1].get("monotonic_ns")) is int,
+            and all(live[i].get("pid") == pid and type(live[i].get("monotonic_ns")) is int
+                    for i in (transition_end, markers[0][0], disabled_index))
+            and 0 < live[transition_end]["monotonic_ns"] < markers[0][1]["monotonic_ns"]
+            < live[disabled_index]["monotonic_ns"],
             "pre-disable sample marker unavailable")
     reads = [(i, j, value) for i, j, _request, value in _rpc_pairs(live, "hooks/list")
              if transition_end < i < j < markers[0][0]]
@@ -2599,16 +2619,21 @@ def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: l
             and type(markers[0][1].get("monotonic_ns")) is int, "normal old disable marker unavailable")
     marker_index, marker = markers[0]
     require(marker.get("pid") == live[marks["transition_started"]].get("pid"), "app-server identity differs")
+    require(type(live[marks["disable_completed"]].get("monotonic_ns")) is int
+            and marker["monotonic_ns"] < live[marks["disable_completed"]]["monotonic_ns"],
+            "normal old disable timestamp differs")
     _verify_pre_disable(live, result, str(installed / "hooks/hooks.json"), new_source,
                         marks["transition_completed"], marker_index, marker["pid"])
+    sample_stamp = next(row["monotonic_ns"] for row in live if row.get("direction") == "observation"
+                        and row.get("event") == "pre_disable_sample")
     codex = subject["codex"]
     commands = result.get("commands")
     require(isinstance(commands, list), "normal disable command evidence missing")
     def last_read(market: str) -> dict[str, Any]:
         rows = [row for row in commands if isinstance(row, dict) and row.get("argv") ==
                 [codex, "plugin", "list", "--marketplace", market, "--json"]
-                and type(row.get("completed_monotonic_ns")) is int
-                and row["completed_monotonic_ns"] < marker["monotonic_ns"]]
+                and type(row.get("started_monotonic_ns")) is int and type(row.get("completed_monotonic_ns")) is int
+                and sample_stamp < row["started_monotonic_ns"] <= row["completed_monotonic_ns"] < marker["monotonic_ns"]]
         require(rows, "normal disable scoped readback missing")
         return _object(rows[-1].get("observation"))
     old = _selected_plugin(last_read(OLD_MARKETS["0.16.1"]), "context-guard@" + OLD_MARKETS["0.16.1"])
@@ -2768,6 +2793,7 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
     require(isinstance(commands, list) and all(isinstance(row, dict) and type(row.get("exit_code")) is int
             and row.get("exit_code") == 0
             and isinstance(row.get("argv"), list) for row in commands), "observation command facts unavailable")
+    _command_times(result)
     codex = subject["codex"]
     allowed = [[codex, "plugin", "marketplace", "list", "--json"],
                [codex, "plugin", "list", "--marketplace", old_market, "--json"],
@@ -2791,6 +2817,8 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
             and native._official_path_matches(_object(old_row.get("marketplaceSource")).get("source"),
                                                Path(subject["old_artifact"]), windows=platform.system() == "Windows"),
             "old observation identity differs")
+    if old_market == NEW_MARKET:
+        old_list_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", old_market], old_list_index)
     add_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", subject["new_artifact"]], old_list_index)
     add_index, added = _command_index(commands, [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"], add_index)
     _index, new_list = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], add_index)
@@ -2839,11 +2867,14 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
                 and disabled_markers[0][1].get("pid") == before.get("app_server_pid"), "normal old disable missing")
         _verify_pre_disable(live, result, old_source, new_source, transition_end,
                             disabled_markers[0][0], before["app_server_pid"])
+        sample_stamp = next(row["monotonic_ns"] for row in live if row.get("direction") == "observation"
+                            and row.get("event") == "pre_disable_sample")
         stamp = disabled_markers[0][1].get("monotonic_ns")
         require(type(stamp) is int, "normal old disable timestamp unavailable")
         def read_at_marker(market: str) -> dict[str, Any] | None:
             rows = [row for row in commands if row["argv"] == [codex, "plugin", "list", "--marketplace", market, "--json"]
-                    and type(row.get("completed_monotonic_ns")) is int and row["completed_monotonic_ns"] < stamp]
+                    and type(row.get("started_monotonic_ns")) is int and type(row.get("completed_monotonic_ns")) is int
+                    and sample_stamp < row["started_monotonic_ns"] <= row["completed_monotonic_ns"] < stamp]
             return _selected_plugin(_object(rows[-1].get("observation")), "context-guard@" + market) if rows else None
         old_row, new_row = read_at_marker(old_market), read_at_marker(NEW_MARKET)
         require(old_row is not None and old_row.get("version") == subject["old_version"]
@@ -3251,14 +3282,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
             == _selected_states(home, tracked), "selected task data changed or is unavailable")
     _verify_disable_rpc(live, marks, new_source, new_inv, result.get("disabled_inventory"), subject["old_version"])
     _verify_cli_lifecycle(subject, old, result)
-    timed = result.get("commands")
-    require(isinstance(timed, list) and all(isinstance(item, dict)
-            and type(item.get("started_monotonic_ns")) is int
-            and type(item.get("completed_monotonic_ns")) is int
-            and 0 < item["started_monotonic_ns"] <= item["completed_monotonic_ns"] for item in timed),
-            "CLI timing facts unavailable")
-    require(all(left["completed_monotonic_ns"] <= right["started_monotonic_ns"]
-                for left, right in zip(timed, timed[1:])), "CLI command order differs")
+    timed = _command_times(result)
     marker_times = {name: live[index]["monotonic_ns"] for name, index in marks.items()}
     codex = subject["codex"]
     transition_mutations = [[codex, "plugin", "marketplace", "add", subject["new_artifact"]],
