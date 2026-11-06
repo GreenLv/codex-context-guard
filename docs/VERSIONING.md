@@ -1,5 +1,31 @@
 # Versioning policy
 
+## 0.17.0 — Unreleased source candidate
+
+Not published; every statement here is the candidate contract. Schema 13,
+Stop protocol 5.0.0, the nine Hook events and the default business-tool path
+without execution approval are unchanged; no state migration runs. New or
+changed versioned contracts relative to published 0.16.1:
+
+- Clause derivation 1.1.0 (planning-only scope; one current-action rule).
+- Host transcript reading: one strict JSON interpretation for every row
+  size (duplicate member names and non-standard constants are refused;
+  oversized rows are recognized by a complete bounded grammar whose member
+  names are decoded with escape semantics).
+- Retention maintenance: `cg-retention-policy/v1`, `cg-retention-manifest/v1`,
+  `cg-retention-report/v1`, `cg-retention-tombstone/v1`, and the quarantine
+  record `cg-retention-quarantine/v3` with the four-state machine
+  `planned`/`quarantined`/`restore_planned`/`purge_planned`. R1 candidate
+  `v2` records (never published) stay readable for their two states; any
+  other record is treated as unknown and protects its object and name.
+- Opt-in schedule ownership manifest `cg-retention-schedule/v1` under the
+  data root's `.locks`; the macOS entry is a LaunchAgent loaded with
+  `launchctl bootstrap`, the Windows entry a Task Scheduler XML definition.
+- Validation tooling: `cg-retention-native-batch/v2` replaces the R1 `v1`
+  batch (nine per-object scenarios plus a result consumer); `v1` receipts
+  keep their own identity and are not accepted as `v2` evidence.
+- The marketplace identity moves to the stable `codex-context-guard`.
+
 ## 0.16.1 — 2026-11-03
 
 This document describes version 0.16.1. Public availability is determined

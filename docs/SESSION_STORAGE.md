@@ -94,12 +94,47 @@ inspectable maintenance command (`cg-retention-report/v1`):
   Permanent purge runs only after the quarantine grace period, is bounded and
   resumable, and leaves expiring tombstones; a purged object has no restore
   path and the messages say so.
+- Every quarantine object has one record (`cg-retention-quarantine/v3`) whose
+  state is written before the filesystem step it announces: `planned` before
+  the move into quarantine, `restore_planned` before the move back,
+  `purge_planned` before the first deletion. After an interruption the next
+  pass (or the restore command) decides from the record state and the two
+  directory positions: an unfinished move is rolled back or completed, an
+  unprovable combination is reported as indeterminate and left alone.
+  `purge_planned` is the point of no return: from then on the object is never
+  offered for restore, and the record itself blocks a fresh ledger under the
+  same session id until the tombstone replaces it.
+- A restore moves an object back only after proving it is the complete object
+  that left: the same directory identity, the recorded `state.json` digest and
+  a structural digest of every entry in the tree. A damaged or partially
+  removed object stays in quarantine with the reason `content_mismatch`.
+- Destructive steps hold the maintenance lock and the original session's
+  lifecycle lock. The maintenance lock is owned by one thread at a time (a
+  second thread waits exactly like a second process; only true same-thread
+  re-entry nests), and every wait for it consumes the caller's own deadline.
+  Purge, like quarantine, is deferred (`purge_busy`) while a writer or reader
+  of that session holds its lifecycle lock.
 - Active, resumable, unfinished, busy-locked, partial-marker, legacy, linked
-  and out-of-scope objects are protected with a named reason. Enumeration is
-  fair: the decided cursor prefix never starves the tail, and interrupted
-  passes resume through the cursor and pending queue. All 30 retired retention
+  and out-of-scope objects are protected with a named reason. Hooks create no
+  maintenance object until maintenance is adopted. Enabling a policy registers
+  every existing session in one listing, and from then on every session this
+  runtime creates registers itself, so passes reach registered names in a
+  stable order regardless of readdir order or directory size. A budgeted
+  directory backfill finds names created later by older runtimes or lost from
+  a damaged registry; it completes only when a pass's backfill share covers
+  one listing of the namespace. Each pass checks its deadline before every directory
+  entry, adjudication and transition, and a transition cut by the deadline is
+  queued for the next pass instead of being skipped. All 30 retired retention
   test nodes are individually mapped in
   `tests/retention_restoration_mapping.json`.
+- Scheduled maintenance is opt-in: `cleanup --maintenance-enable` registers a
+  daily job that runs the interpreter which executed the command with this
+  exact script (launchd on macOS, a Task Scheduler definition on Windows) and
+  loads or enables it; `--maintenance-status` reads back whether the
+  definition exists, is current, and is actually loaded or enabled;
+  `--maintenance-disable` unloads and removes it. An entry under the label
+  that this data root cannot prove it owns is reported as foreign and is
+  never overwritten, unloaded or deleted.
 
 The disabled-cleanup era of 0.16.0/0.16.1, its retained history and the
 restoration conditions are recorded in

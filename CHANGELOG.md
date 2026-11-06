@@ -10,14 +10,16 @@ Versions are listed from newest to oldest. Public availability is determined by 
 
 - Planning-only requests no longer inherit a file-modification obligation. Another actor's completed work ("a colleague already fixed it"), attributed advice ("an edit suggestion exists"), stated future intent ("planning the modification outline"), and bare verb negation ("do not modify the file", Chinese `不修改`) are interpreted through one clause-action rule (clause derivation 1.1.0): only a current-turn directive stamps the enforced contract or authorizes an action category. Delegation ("my colleague asked me to modify"), mixed planning-plus-directive prompts, and plan-reference prefixes keep their real obligations. Intake, evidence, Stop gating and cold recovery all follow the same derivation.
 - The Desktop `aggregated_output` terminal result is accepted. One authoritative-output rule recognizes the observed field alongside the legacy `stdout` field: an exactly equal pair is accepted, a conflicting pair stays rejected, and identity, working-directory, status and exit-code bindings are unchanged. Success and failure exits are both recognized again on the current Desktop host.
-- An unrelated oversized transcript row no longer disables terminal evidence for later normal commands. A row larger than the line limit is skipped only when a strict anchored head parse proves its outer record type can never carry the terminal candidate; any oversized `event_msg`, unknown type or unparseable head keeps the whole snapshot unavailable rather than shrinking the evidence. No event identifier is ever guessed from an oversized row, and limits are not raised.
-- Session retention cleanup returns under a new versioned contract. `cleanup` is an inspectable maintenance command: preview by default, deletion only with an explicitly enabled policy (`cg-retention-policy/v1`: 30-day minimum age and 7-day quarantine by default, clamped) and an explicit apply bound to an exact manifest. Eligible objects move to recoverable quarantine with a restore command; permanent purge runs only after the grace period, with bounded resume and expiring tombstones. Active, resumable, unfinished, busy-locked, partial, legacy, linked and out-of-scope objects are protected with a named reason. SessionEnd still runs no sweep and the 3-second host budget is unchanged. All 30 retired retention test nodes are individually mapped (see `tests/retention_restoration_mapping.json`).
+- An unrelated oversized transcript row no longer disables terminal evidence for later normal commands. A row larger than the line limit is skipped only when a complete, bounded strict JSON parse proves its single outer record type can never carry the terminal candidate; escaped or duplicate member names, malformed values, any oversized `event_msg` and unknown types keep the whole snapshot unavailable rather than shrinking the evidence. Ordinary rows follow the same strict reading (duplicate member names and non-standard constants are refused). No event identifier is ever guessed from an oversized row, and limits are not raised.
+- Session retention cleanup returns under a new versioned contract. `cleanup` is an inspectable maintenance command: preview by default, deletion only with an explicitly enabled policy (`cg-retention-policy/v1`: 30-day minimum age and 7-day quarantine by default, clamped) and an explicit apply bound to an exact manifest. Eligible objects move to recoverable quarantine with a restore command; permanent purge runs only after the grace period, with bounded resume and expiring tombstones. Active, resumable, unfinished, busy-locked, partial, legacy, linked and out-of-scope objects are protected with a named reason. Quarantine, restore and purge follow one recorded state machine: a restore moves an object back only after proving it complete (identity, state digest and tree digest), purge waits for the original session's lifecycle lock, and once purge has begun the object is never offered as restorable. SessionEnd still runs no sweep and the 3-second host budget is unchanged. All 30 retired retention test nodes are individually mapped (see `tests/retention_restoration_mapping.json`).
 
 ### Changes
 
 - The clause derivation version is now 1.1.0. Prompt action scope and the enforced contract share one negation pattern and one current-action interpretation; previously duplicated inline patterns were unified.
 - `cleanup` without an explicit `--data-dir` still refuses (exit 2) before resolving or creating any default home. The retired direct deletion helper stays refused; the old switch was not simply reopened.
-- The historical incident index and coverage table now bind to the current frozen library snapshot, including the three reproduced 0.17.0 cases, each with executable in-repository oracles.
+- The historical incident index and coverage table now bind to the current frozen library snapshot, including the three reproduced 0.17.0 cases, each with executable in-repository oracles. A rejected library intake is pinned separately by its exact bytes and never counts as a case.
+- The opt-in maintenance schedule (`cleanup --maintenance-enable/--maintenance-status/--maintenance-disable`) now runs the verified interpreter with this exact script, loads and unloads the job through launchd or Task Scheduler (Windows uses a task definition, so long paths are not truncated), reports a prepared definition separately from an enabled job, and never overwrites, unloads or deletes an entry it cannot prove it owns.
+- Maintenance passes bound all of their work — readdir, adjudication, transitions and the lock wait — by the caller's deadline, and once a policy is enabled every existing and newly created session is registered for discovery, so a long protected prefix cannot starve later sessions. Hooks still create no maintenance object before adoption.
 
 ### Compatibility and upgrade
 
@@ -29,10 +31,15 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - Unreleased source candidate: macOS source evidence only. The first
   development candidate failed independent review (11 reproducible
   contract violations across retention lifecycle, policy integrity,
-  fairness, CLI manifest, evidence intake and identity facts); the repair
-  round closed each family at source level, all review probes pass, the
-  historical library record was re-intaked through the official entry,
-  and the review families are covered by repository regressions. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.
+  fairness, CLI manifest, evidence intake and identity facts). Repair R1
+  closed those examples, but the second review found 12 adjacent
+  counterexamples in seven families (transaction and lock ownership,
+  complete JSON semantics, discovery budget, scheduler lifecycle, native
+  harness oracles, history immutability, evidence binding). Repair R2
+  closes each family by its invariant; the historical library record that
+  had been deleted and re-added under the same ID is restored with its
+  original bytes and a hash-bound rejected-intake record, and the
+  corrected facts carry a new ID. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.
 
 ## 0.16.1 — 2026-11-03
 

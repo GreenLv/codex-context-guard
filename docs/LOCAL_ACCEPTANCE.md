@@ -2,6 +2,64 @@
 
 ## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
 
+### Repair round R2 (2026-11-06)
+
+The independent review of R1 (`b65bacc`) confirmed that the original 11
+probes and the 74 owning tests pass, but 12 of 13 new bounded family
+controls failed (one positive control passed). R2 closes the seven families
+by their invariants rather than by example:
+
+- Transactions and locks: one quarantine record state machine
+  (`planned`, `quarantined`, `restore_planned`, `purge_planned`) whose state
+  is written before each move or deletion; recovery derives the original
+  position from the data root (R1 derived it from the record's own folder)
+  and settles every interrupted boundary or reports it indeterminate. Purge
+  takes the original session's lifecycle lock, a lost tombstone write is
+  completed from the record, and a started purge is never restorable. Restore
+  verifies identity, the state digest and a structural tree digest. The
+  maintenance lock is owned per thread, nests only for same-thread re-entry,
+  and every wait consumes the caller's deadline.
+- Oversized transcript rows: a complete bounded RFC 8259 recognizer decodes
+  member names with escape semantics and rejects duplicates, malformed
+  values and trailing content; ordinary rows use the same strict reading.
+  A differential matrix and seeded fuzzing compare it with the strict
+  canonical decoder.
+- Discovery: enabling a policy registers every existing session and later
+  sessions register at creation (hooks create no maintenance object before
+  adoption); passes serve the queue, then a budgeted readdir backfill, then
+  registered names after a stable window cursor, checking the deadline
+  before every unit; a transition cut by the deadline is re-queued.
+- Scheduler: the job runs the verified interpreter with this exact script,
+  is loaded/unloaded through launchd or a Task Scheduler definition (the
+  former `/TR` command line exceeded schtasks' 261-character limit on an
+  ordinary temporary path), and status separates a prepared definition from
+  an enabled job. Unowned entries are refused untouched. Tests reach the
+  scheduler only through an adapter seam; no test registers a real job.
+- Native retention batch (`cg-retention-native-batch/v2`): `--preflight`
+  checks the expected full commit against the clean HEAD, lock capability and
+  a new result path outside the checkout without running scenarios or
+  writing; results are created exclusively and accepted only by
+  `validate_retention_batch_result`. Nine scenarios use per-object oracles
+  (real lock contention on an eligible object, official-reader readback of
+  every should-keep ledger with exact state bytes, verified restore, complete
+  and partial purge, every crash boundary, replacement/link refusal).
+  Meta-tests prove that removing lock protection, destroying kept ledgers or
+  skipping restore verification fails the batch.
+- History: the library record deleted and re-added under the same ID
+  (`b1c33c2`, `9d66fd6`) keeps its original bytes at its original position
+  under the new `cgeval-rejected-intakes/v1` ledger; the re-added bytes are
+  retained under `benchmarks/incidents/rejected/`; the corrected facts carry
+  the new ID `CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected`.
+  The library's `incident lineage` check verifies every case path against its
+  first committed bytes from Git history. The product pin and coverage table
+  are re-frozen and the coverage validator pins rejected intakes outside the
+  denominator.
+
+Gate results, their exact commit and input digests, and which earlier
+performance or batch receipts remain reusable are recorded in the R2 handoff
+outside the source checkout. Native macOS/Windows runs, installed artifacts,
+full-matrix CI and the release gate stay with the coordinator.
+
 ### Repair round R1 (2026-11-06)
 
 The independent review of `cc7714e` returned 11 reproducible contract
@@ -37,12 +95,14 @@ CLI end-to-end manifest test:
   first commit (a 560-character reference over the 500 limit); the
   original bytes stay retrievable at `d874864` in git, the corrected
   registry validates (`incident validate` rc=0), and the product pin is
-  re-frozen at `9d66fd6`.
+  re-frozen at `9d66fd6`. (Corrected in R2: deleting and re-adding a case
+  under the same ID is not a supported revision; see the R2 history item.)
 - B10: the opt-in scheduler entry (enable/status/disable, idempotent,
   same versioned executor on both platforms), the missing perf scenarios
   (terminal_read_large, session_end_busy_locks, A/A noise control) and
   the versioned no-model retention native batch
-  (`cg-retention-native-batch/v1`, 4/4 scenarios passing on macOS) are
+  (`cg-retention-native-batch/v1`, 4/4 scenarios passing on macOS; that
+  receipt is bound to `ceac391` and its oracles were found too weak in R2) are
   implemented; real registration and the two-platform native runs stay
   with the coordinator.
 
