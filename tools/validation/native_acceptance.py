@@ -1581,7 +1581,44 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--retention-batch", type=Path, metavar="OUTPUT",
         help="run the versioned no-model retention scenario batch and write "
              "the result; other acceptance gates are not executed")
+    parser.add_argument("--scheduler-batch", type=Path, metavar="OUTPUT",
+                        help="run the independent system scheduler batch")
+    parser.add_argument("--scheduler-fixture-dir", type=Path)
+    parser.add_argument("--scheduler-label")
+    parser.add_argument("--scheduler-tool-commit")
+    parser.add_argument("--release-zip-sha256")
     args = parser.parse_args(argv)
+    if args.scheduler_batch is not None:
+        required = (args.scheduler_fixture_dir, args.scheduler_label, args.scheduler_tool_commit,
+                    args.installed_plugin_root, args.release_zip, args.release_zip_sha256)
+        if not all(required):
+            parser.error("scheduler batch requires fixture, label, toolkit commit, installed root, ZIP and ZIP SHA")
+        if (args.retention_batch is not None or args.batch_manifest is not None
+                or args.commentary_replay_manifest is not None
+                or args.commentary_control_replay_manifest is not None
+                or args.output is not None or args.profile != "portable_runtime"):
+            parser.error("scheduler batch cannot be combined with another profile or output")
+        path = Path(__file__).with_name("native_scheduler_batch.py")
+        spec = importlib.util.spec_from_file_location("native_scheduler_batch_route", path)
+        if spec is None or spec.loader is None:
+            parser.error("scheduler batch module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        previous_dont_write = sys.dont_write_bytecode
+        try:
+            sys.dont_write_bytecode = True
+            spec.loader.exec_module(module)
+        finally:
+            sys.dont_write_bytecode = previous_dont_write
+        forwarded = ["--repo-root", str(args.repo_root), "--source-commit", args.source_commit,
+                     "--tool-commit", args.scheduler_tool_commit,
+                     "--installed-plugin-root", str(args.installed_plugin_root),
+                     "--release-zip", str(args.release_zip), "--release-zip-sha256", args.release_zip_sha256,
+                     "--scheduler-fixture-dir", str(args.scheduler_fixture_dir),
+                     "--scheduler-label", args.scheduler_label,
+                     "--output", str(args.scheduler_batch)]
+        if args.preflight:
+            forwarded.append("--preflight")
+        return module.main(forwarded)
     if args.retention_batch is not None:
         # The batch shares the formal entry contract: the expected full source
         # commit must equal the clean HEAD, native capability and a new result
