@@ -1,8 +1,18 @@
 # Compatibility and Verification Status
 
+## 0.17.0 — 2026-11-06
+
+Public availability is determined by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Schema 13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path without execution approval remain unchanged. Session data is not migrated.
+
+- Retention maintenance is restored as explicit opt-in policy and scheduling. SessionEnd still performs no sweep. Preview does not authorize deletion; apply binds an exact selection manifest. Defaults are 30 days after session end and seven days in recoverable quarantine.
+- Automatic cleanup requires a readable creation-time identity (macOS/Windows creation-time fields or Linux `statx`). Objects without reliable identity remain in place with `identity_unverifiable`; weak quarantine records from unpublished candidates remain protected. Change time and directory-layout summaries cannot replace this identity. Strong-identity quarantine, restore and incremental purge retain their normal lifecycle.
+- Discovery has an explicit capacity boundary: a complete names-only scan must fit the invocation budget (20 seconds by default). Otherwise `capacity_exceeded` and incomplete status remain visible while registered work continues. No unconditional guarantee covers unregistered objects beyond that capacity.
+- Marketplace identity moves from the 0.16.x experimental `codex-context-guard-v016` to stable `codex-context-guard`. Finish tasks dependent on the old runtime before switching their HOME, or use a separate HOME. Official operations may remove an old experimental cache; retained cache bytes do not prove loaded behavior or task continuity. No consumed cache is rewritten by this product.
+- Source, native Windows/macOS, exact artifact, installation/upgrade, normal Hook trust, performance, CI/HOL and publication remain separate evidence. See [local acceptance](LOCAL_ACCEPTANCE.md) and the [stable identity contract](../tools/validation/STABLE_MARKETPLACE_IDENTITY.md).
+
 ## 0.16.1 — 2026-11-03
 
-This document describes version 0.16.1. Public availability is determined
+This section describes version 0.16.1. Public availability is determined
 independently by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases).
 The 0.16.0 storage and upgrade boundaries below remain in force, with these
 changes:
@@ -23,7 +33,7 @@ changes:
 ## 0.16.0 — 2026-11-01
 
 This document described version 0.16.0; the boundaries below remain current
-except where 0.16.1 changes them.
+except where 0.16.1 or 0.17.0 changes them.
 
 Compatible with schema-13 states written by 0.14–0.15.1; no migration. Schema
 13, Stop protocol 5.0.0, the nine Hooks, and the default business-tool path

@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.17.0 — Unreleased 源码候选。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
+> **0.17.0 — 2026-11-06。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
 
 > **0.16.1 — 2026-11-03。** 文件名或路径中的验收词不再凭空增加义务。本版还新增显式历史覆盖发布门、补全插件上架元数据，并继续停用会话保留清理。修改安装前，请阅读[发布说明](docs/releases/v0.16.1.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
@@ -20,12 +20,12 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 ## 用 Codex 安装
 
-**0.17.0 — Unreleased 源码候选。** 本产品线尚未发布；以下安装/升级行为是候选合同，发布前需要独立的原生验收。市场身份从实验性 `codex-context-guard-v016`（0.16.x）迁移到稳定 `codex-context-guard`。注册稳定市场并安装属于官方市场操作：可能移除旧实验缓存，保留缓存也不能证明旧会话会加载它。请先完成依赖已发布 0.16.1 运行时的任务，或为新任务另行配置独立 HOME；不要删除或手改任何版本缓存。
+**0.17.0 — 2026-11-06。** 公开可用性以 [GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.0) 回读为准。市场身份从实验性 `codex-context-guard-v016`（0.16.x）迁移到稳定 `codex-context-guard`。注册稳定市场并安装属于官方市场操作：可能移除旧实验缓存，保留缓存也不能证明旧会话会加载它。请先完成依赖已发布 0.16.1 运行时的任务，或为新任务另行配置独立 HOME；不要删除或手改任何版本缓存。
 
-目前没有已发布的 0.17.0 制品。源码验证可用 Python 3.10+ 将候选制品构建到检出目录外的新路径：
+在新目录中下载 GitHub Release 附件里具名的 ZIP：
 
 ```shell
-python3 scripts/build_release_artifact.py --output ../context-guard-0.17.0-candidate.zip
+gh release download v0.17.0 --repo GreenLv/codex-context-guard --pattern context-guard-0.17.0.zip
 ```
 
 将发行 ZIP 解压到自己控制的稳定目录并一直保留；官方市场后续读取和刷新仍依赖此来源。
@@ -70,7 +70,7 @@ python3 scripts/artifact_identity.py --compare-to "/path/from/installedPath"
 合成旧缓存额外核对对象身份。
 
 本版本删除项目自有安装器、事务回滚、归档修复和自动解释器绑定，由 Codex
-负责安装。相应原生门完成前，请保留既有 0.15.1 对象和日常配置。新市场名
+负责安装。升级全程请保留既有版本缓存和日常配置。新市场名
 本身不能证明缓存保护或旧任务续接。信任新版 Hook 前，再检查实验性
 `context-guard@codex-context-guard-v016` 标识；若它仍已启用，先结束所有依赖旧版的
 任务，再通过官方 Plugins UI 只禁用该实验身份，保持
@@ -81,7 +81,7 @@ Context Guard 事件显示的来源，应为首次 add 返回的
 `<installedPath>/hooks/hooks.json`，再通过正常界面检查并信任。若条目缺失、
 来源不符或界面不显示来源，请停止。[Hook 浏览器](https://learn.chatgpt.com/docs/hooks)
 展示的是定义和信任状态，不能证明 Hook 已执行或桌面端已加载。真实
-macOS/Windows 切换及旧任务续接仍须独立原生验收。
+macOS/Windows 切换及旧任务观察分别记于[本地验收记录](docs/LOCAL_ACCEPTANCE.md)。
 
 ### Python 与升级
 
@@ -95,7 +95,7 @@ PATH/launcher 或绑定；启动和查找缺失解释器时不再扫描无关 Po
 重启验收。
 
 更改所选插件前，应先在原运行时完成旧任务；旧缓存本身不能固定旧任务 Hook。
-本版本不迁移会话或信任数据，独立 HOME 与旧任务续接仍待原生验收。
+本版本不迁移会话或信任数据，独立 HOME 与旧任务结果分别绑定精确宿主和制品。
 详见[升级边界](docs/SESSION_STORAGE.md)和[安装变更](docs/INSTALLER_REMOVAL.md)。
 
 ## 试用
@@ -236,7 +236,7 @@ flowchart TB
 
 运行时数据写入 Codex 管理的 `PLUGIN_DATA`。提示正文、任务状态、证据摘要和恢复文件都属于本地运行时数据，不属于本仓库。
 
-SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 候选线中，会话保留维护在新版本化合同下恢复，而 SessionEnd 本身仍不执行任何清扫：`cleanup --data-dir <根目录>` 默认只预览，不满足「显式启用的保留策略 + 绑定精确清单的 apply」时不会改动任何会话数据。合格结束会话（默认 30 天）进入可恢复隔离并提供恢复命令；恢复只在证明对象完整后才搬回；永久回收只在再 7 天宽限期后进行，并留下到期退役的墓碑记录。定时维护需要用户显式开启，且不会改动不属于本产品的调度条目。活动、可恢复、未完成、锁占用、部分删除、旧版本、链接与范围外对象都会以明确原因被保护。请保留活动任务、会话数据、生命周期锁和既有插件缓存。停用时代的记录与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
+SessionEnd 保存当前状态，并在启用时保存恢复内容。0.17.0 中，会话保留维护在新版本化合同下恢复，而 SessionEnd 本身仍不执行任何清扫：`cleanup --data-dir <根目录>` 默认只预览，不满足「显式启用的保留策略 + 绑定精确清单的 apply」时不会改动任何会话数据。合格结束会话（默认 30 天）进入可恢复隔离并提供恢复命令；恢复只在证明对象完整后才搬回；永久回收只在再 7 天宽限期后进行，并留下到期退役的墓碑记录。定时维护需要用户显式开启，且不会改动不属于本产品的调度条目。活动、可恢复、未完成、锁占用、部分删除、旧版本、链接与范围外对象都会以明确原因被保护。无法验证创建身份的对象也会保留；自动清理要求文件系统支持读取创建时间。请保留活动任务、会话数据、生命周期锁和既有插件缓存。停用时代的记录与恢复条件见[保留清理跟进说明](docs/RETENTION_CLEANUP_FOLLOWUP.md)。
 
 脱敏导出只在显式请求时创建，绝不覆盖既有文件，并省略原始提示、会话正文、凭据、认证头、URL 查询参数、URL userinfo 和插件私有路径；文档化脱敏域见[隐私说明](docs/PRIVACY.md)。未提供插件数据目录时，直接 CLI 回退状态存放在当前生效的 `CODEX_HOME` 之下。
 

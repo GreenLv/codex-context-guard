@@ -75,7 +75,7 @@ Descriptor/path identity checks harden commits, and a zero inode fails closed.
 Identity checks do not provide a sandbox against arbitrary same-user mutation.
 
 SessionEnd saves current state and, when active, recovery content. In the
-0.17.0 candidate line, session retention maintenance returns under a new
+0.17.0, session retention maintenance returns under a new
 versioned contract while SessionEnd itself still runs no sweep: no full
 enumeration, deletion, scheduling registration or waiting worker happens
 inside the 3-second host budget. The public `cleanup` command is an
@@ -105,9 +105,10 @@ inspectable maintenance command (`cg-retention-report/v1`):
   offered for restore, and the record itself blocks a fresh ledger under the
   same session id until the tombstone replaces it.
 - A restore moves an object back only after proving it is the complete object
-  that left: the same directory identity, the recorded `state.json` digest and
+  that left: the selection-bound creation identity, directory identity, the recorded `state.json` digest and
   a structural digest of every entry in the tree. A damaged or partially
   removed object stays in quarantine with the reason `content_mismatch`.
+- Creation identity must be readable before every quarantine, restore and purge transition. A missing or unreadable creation time protects a new object before any move (`identity_unverifiable`). Earlier-candidate quarantine records bound only to change time or to nothing retain their object and name guard; they are not upgraded or restored by comparing directory layouts. Purge counts them under `purge_identity_unverifiable`.
 - Destructive steps hold the maintenance lock and the original session's
   lifecycle lock. The maintenance lock is owned by one thread at a time (a
   second thread waits exactly like a second process; only true same-thread

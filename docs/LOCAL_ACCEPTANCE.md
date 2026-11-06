@@ -1,109 +1,74 @@
 # Local Release Acceptance
 
-## 0.17.0 — source acceptance (Unreleased source candidate)
+## 0.17.0 — release-source evidence (2026-11-06)
 
-### Repair round R6 (2026-11-06)
+Public availability is determined independently by the GitHub Release. This
+record distinguishes source observations, native platform behavior, exact
+artifact/installation, performance, CI/HOL and publication. A release requires
+separate evidence for every applicable gate; no result transfers to changed
+inputs merely because the version number is unchanged. Final release acceptance
+assets bind the exact source, runtime and artifact identities.
 
-Cross-platform review of the earlier candidate `ffac148` failed, and those
-results remain failed evidence for that commit:
+### Independently reviewed source behavior
 
-- Native Windows (Python 3.12.10): the `cg-retention-native-batch/v3`
-  batch passed 8 of 12 scenarios; `purge_complete`, `purge_partial_resume`,
-  `crash_boundaries` and `fresh_process_capacity_exceeded` failed and the
-  independent consumer rejected the result. The discovery snapshot the
-  product wrote went through text-mode newline translation (CRLF), and the
-  strict snapshot reader rejected its own bytes as `corrupt`.
-- Linux CI (Python 3.10–3.14): `replacement_refusal` and the
-  partial-purge replacement control removed a replacement directory and its
-  sentinel. Purge bound an object only by `(dev, ino)`, which a replacement
-  can reuse.
+At source `71662e3c51b0c5ee63c86fa34add2327a62d7cda`, the five owning retention
+modules passed 206 tests with two platform skips. Independent entrypoint
+replays passed the three post-intent identity controls and four same-shape or
+capability-loss controls. The original failed observations remain retained.
+These are macOS source observations, not native Windows or Linux acceptance.
+The complete source suite and historical-library release gate are bound
+separately to the final release commit in its acceptance assets.
 
-R6 writes the snapshot byte-exact with LF, reopens the records window when
-the same pass's discovery restores record hints, and binds purge to the
-object's creation time (`statx` on Linux, `st_birthtime` on macOS/Windows;
-change time where none is reported, re-recorded after each own partial
-removal). The batch is `v4`: purge outcomes are recorded per object before
-the later dispatch and the consumer re-derives them; `v3` rows, including
-the earlier source's own passing macOS rows, are rejected by the `v4`
-consumer.
-
-Evidence boundary: macOS source only. Emulated Windows newline translation
-reproduces the four Windows failures on `ffac148` and passes on R6; forced
-`(dev, ino)` reuse reproduces the deleted-sentinel failure on `ffac148` and
-is refused on R6, with a modeled no-creation-time filesystem covered too.
-Native Windows, Linux CI, installation and every later gate must run on the
-R6 commit; the source-check figures below describe the earlier candidate.
-
-This section describes local source evidence. Native macOS/Windows behavior,
-normal Hook trust, old-task continuity, exact-artifact installation and upgrade,
-performance, CI, HOL and public release each require their own result. Earlier
-unpublished development results do not certify the current candidate.
-
-### Current source checks
-
-The macOS current-behavior suite completed 3,137 tests with zero failures,
-errors or unexpected successes. Its 94 skips comprise 64 platform/capability
-skips and 30 explicitly retired retention nodes; those nodes remain mapped to
-current controls in `tests/retention_restoration_mapping.json`. The historical
-0.12 defect-pin runner remains separate from this suite and matches its
-versioned transition manifest.
-
-Focused controls cover the original planning-scope and terminal-evidence
-oracles, strict JSON interpretation, retention transactions and locks,
-replacement-object refusal, scheduler ownership through mocked adapters,
-retained-ledger readback and the acceptance result consumer. Fresh-process
-controls exercise discovery, damaged hints, interrupted writes, capacity
-reporting and incremental purge. A 19-child isolated purge progresses to zero
-under repeated short budgets. Four additional controls verify that failed
-discovery-progress writes stop maintenance with an error, that the CLI exits 2,
-and that completed quarantine remains recoverable after a final cursor-write
-failure.
-
-Repository validation, tracked-tree privacy, phase transition, self-test, Ruff,
-compilation and whitespace checks pass. The no-model native-toolchain preflight
-passes 56 synthetic controls with unchanged inputs; it does not establish live
-trust, authentication reuse, model behavior or native acceptance. Subsequent
-packaged-document changes are checked separately before artifact freeze.
+The reviewed contract requires the selection-time creation identity at every
+quarantine, restore and purge transition. An unreadable or absent identity
+protects the object; device/inode pairs, change times and layout summaries
+cannot mint authority for a replacement. Weak earlier-candidate quarantine
+records retain data and name guards. A failed operation cannot become partial
+removal progress or a successful restore. Strong-identity controls cover normal
+quarantine, restore, interruption recovery and incremental purge.
 
 ### Capacity and recovery boundary
 
-The maintenance executor uses persistent generation state, snapshot/journal
-hints and window cursors. Registered sessions and quarantine records advance
-across independent processes. For unregistered names, eventual discovery
-requires a complete names-only scan of both discovery directories plus its
-commit to fit the invocation budget, after other work. A failed full-share
-attempt reports `capacity_exceeded`, backlog and no scan completion; bounded
-backoff leaves budget for registered work. The default budget remains 20
-seconds. This is a conditional liveness guarantee, not a fixed supported
-number of directories or a promise to handle every directory under any budget.
+Registered sessions and quarantine records advance across independent processes.
+Eventual discovery of unregistered names requires a complete names-only scan of
+both discovery directories and its commit to fit the invocation budget, after
+other work. Beyond that capacity, the executor reports `capacity_exceeded`,
+backlog and incomplete status; bounded backoff leaves budget for registered
+work. The default budget remains 20 seconds. This is a conditional liveness
+guarantee, not a fixed supported number of directories.
 
-The original short-budget unregistered-tail oracle remains a retained failure
-under its previous unconditional contract. Its replacement checks the explicit
-capacity state and registered-work progress, while a within-capacity case
-requires fresh processes to reach the tail. No historical verdict is relabeled
-as a pass. Private raw results and full source/runtime bindings remain outside
-the public tree.
+The original unconditional unregistered-tail oracle retains its old verdict.
+Its adopted capacity-bound replacement checks explicit incomplete status and
+registered progress; the within-capacity control requires fresh processes to
+reach the tail. Official-reader lookups refuse when their bounded quarantine
+scan cannot complete, rather than creating a replacement ledger. A started
+purge cannot restore a partial ledger. No legacy data or consumed cache is
+migrated.
 
-Quarantine, restore and purge keep their recorded object identities and original
-lifecycle locks. A started purge cannot be restored into a partial ledger;
-interrupted removal and lost tombstone writes retain recovery authority.
-Official-reader lookups still use a bounded quarantine-directory scan rather
-than an index: if it cannot complete within the caller's budget, the reader
-refuses instead of creating a replacement ledger. Legacy data is not migrated.
+### Retained earlier failures and independent gates
 
-### Release evidence boundaries
-
-- Bind the canonical historical-library release gate to the accepted
-  source and frozen library pin; original bytes and rejected-intake lineage
-  remain immutable.
-- Use the predeclared performance contract. Four A/B cells from an earlier
-  runtime were inconclusive and are not passing evidence; changed runtime
-  inputs require new bound measurements without resampling until green.
-- Bind native macOS/Windows retention, locks, permissions, crash recovery and
-  scheduler lifecycle, plus normal-trust and stable-identity installation,
-  upgrade, disabling/removal and old-task observations in disposable fixtures.
-- Verify the canonical artifact and identical transferred bytes, exact-source
-  CI and HOL, and the eventual tag, Release and assets by public readback.
+- Earlier source `ffac148` failed the native Windows batch (8 of 12 scenarios)
+  and Linux CI replacement refusal. Windows text-mode snapshot writes produced
+  CRLF bytes that its own reader rejected; replacement-directory refusal also
+  lacked a sufficient identity binding. Those observations remain failed for
+  that source. The current snapshot uses LF on every platform, and the native
+  batch is `cg-retention-native-batch/v4`, whose consumer derives per-object
+  facts. Neither source emulation nor a new mapper relabels the old native run.
+- Historical coverage binds the frozen canonical incident-library pin and
+  current runtime inputs. Rejected-intake bytes and successor lineage remain
+  immutable; source coverage is distinct from historical per-case native facts.
+- Performance uses the predeclared fixed-sample contract. Earlier runtime
+  measurements included inconclusive cells; they are not passes and are not
+  reused after the inputs change. A/A noise checks are diagnostic, not A/B
+  acceptance. No resampling-until-green is permitted.
+- Native macOS and Windows retention, filesystem/lock/permission behavior,
+  crash recovery and actual scheduler lifecycle require their own observations.
+  Official installation, strict check-first second no-op, full-file parity,
+  normal nine-Hook trust, stable-identity upgrade and old-task observations
+  remain separately bound. A registered scheduler is not proof its job ran.
+- The canonical CI-produced ZIP has one source and byte identity on both hosts.
+  Exact-source CI/HOL, tag target, Release metadata, notes and downloaded assets
+  are read back separately. Private raw results never enter the public tree.
 
 ## 0.16.1 — acceptance history (2026-11-03)
 

@@ -50,10 +50,9 @@ Source controls for the disabled state live in
 CLI and API early rejections, original-object preservation, permission and
 identity handling, and marker handling.
 
-## Design questions any restoration must answer first
+## Adopted restoration conditions (historical design checklist)
 
-These are requirements for a future cleanup version, not claims that each
-item is broken today, and not authorization to implement anything now.
+The following checklist motivated the 0.17.0 restoration. Its unconditional discovery assumption is replaced by the documented capacity boundary; cleanup also requires reliable creation identity. Current source and native evidence are recorded separately in local acceptance.
 
 | Area | Question that must have a concrete answer and controls |
 | --- | --- |
@@ -94,8 +93,8 @@ item is broken today, and not authorization to implement anything now.
 
 ## Tracking
 
-- Owner for the future cleanup-restoration work: **to be assigned**.
-- Resume event: an independent cleanup-restoration version design is adopted.
+- The 0.17.0 contract restores opt-in maintenance under explicit capacity and creation-identity boundaries.
+- Exact release and native results are tracked in local acceptance and the release acceptance assets.
 - This page is the discoverable public entry point for the gap. It is
   linked from the session storage documentation, the documentation map and
   both READMEs; changelog and release notes for each affected version
