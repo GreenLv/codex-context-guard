@@ -63,6 +63,36 @@ def is_purge_object_unlink(path, dir_fd, quarantine_dir: Path) -> bool:
     return len(parts) > 1
 
 
+def purge_unlink_patch(quarantine_dir: Path, on_unlink, *, use_pathlib: bool):
+    """Observe the actual deletion entrypoint once, including Python 3.10.
+
+    Windows product code calls Path.unlink. Python 3.10 pathlib caches its
+    OS accessor at import, so replacing os.unlink alone cannot observe it.
+    POSIX product code instead calls os.unlink with a held directory fd.
+    Patch only one layer to avoid counting a deletion twice on newer Python.
+    """
+    if use_pathlib:
+        real_path_unlink = Path.unlink
+
+        def path_unlink(path, *args, **kwargs):
+            result = real_path_unlink(path, *args, **kwargs)
+            if is_purge_object_unlink(path, None, quarantine_dir):
+                on_unlink()
+            return result
+
+        return mock.patch.object(Path, "unlink", new=path_unlink)
+
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        result = real_unlink(path, *args, **kwargs)
+        if is_purge_object_unlink(path, kwargs.get("dir_fd"), quarantine_dir):
+            on_unlink()
+        return result
+
+    return mock.patch.object(os, "unlink", new=unlink)
+
+
 def windows_text_tempfile():
     """A ``tempfile`` stand-in whose text-mode NamedTemporaryFile translates
     ``\\n`` to ``\\r\\n`` whenever ``newline`` is None (the default) -- the
@@ -249,16 +279,12 @@ def main(argv=None) -> int:
             return result
         patches.append(mock.patch.object(cg.os, "replace", side_effect=replace))
     elif crash == "purge_unlink":
-        real_unlink = os.unlink
-
-        def unlink(path, *a, **k):
-            result = real_unlink(path, *a, **k)
-            if is_purge_object_unlink(path, k.get("dir_fd"), qdir):
-                seen["count"] += 1
-                if seen["count"] == wanted:
-                    os._exit(137)
-            return result
-        patches.append(mock.patch.object(cg.os, "unlink", side_effect=unlink))
+        def unlinked():
+            seen["count"] += 1
+            if seen["count"] == wanted:
+                os._exit(137)
+        patches.append(purge_unlink_patch(
+            qdir, unlinked, use_pathlib=os.name == "nt"))
     elif crash:
         raise SystemExit(f"unknown crash point {crash}")
 
