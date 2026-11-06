@@ -25,7 +25,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 
 SCHEMA = "cg-windows-retention-native/v1"
-SOURCE = "daff36e8b7855b0c16962f18a419fcb9fca50109"
+SOURCE = "5269d89b84bdb77fdfdf01dbaadf312aa8e2488b"
 RUNTIME = "31399e314f38fb265f2a679a086782bdb17a379c458a64b72dca9951638104de"
 CASES = ("dacl_refusal", "no_delete_share", "case_alias", "long_payload")
 FIELDS = (
@@ -210,7 +210,7 @@ def bindings(args):
         if backend.close_windows_handle(api, handle)["return_value"] != 1:
             raise ValueError("binding handle close failed")
     if git(product, "rev-parse", "HEAD").decode().strip() != SOURCE:
-        raise ValueError("product source is not frozen daff commit")
+        raise ValueError("product source is not the frozen commit")
     if git(product, "status", "--porcelain").strip():
         raise ValueError("product checkout is dirty")
     identity_path = product / "scripts/artifact_identity.py"
