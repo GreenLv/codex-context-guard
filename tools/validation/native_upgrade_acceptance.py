@@ -144,7 +144,10 @@ def source_files(root: Path) -> dict[str, str]:
                 for entry in entries:
                     require(len(objects) < 10000 and not _credential_name(entry.name),
                             "credential-named or oversized artifact tree refused")
-                    info = entry.stat(follow_symlinks=False)
+                    # DirEntry's cached Windows metadata omits dev/ino/nlink.
+                    # Use a fresh no-follow path stat; zero cached fields are
+                    # never evidence that a real single-link file is unsafe.
+                    info = Path(entry.path).lstat()
                     require(not stat.S_ISLNK(info.st_mode) and not getattr(info, "st_file_attributes", 0) & 0x400,
                             "linked artifact object refused")
                     path = Path(entry.path)

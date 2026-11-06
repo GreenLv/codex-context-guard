@@ -115,6 +115,27 @@ def lifecycle_facts():
 
 
 class UpgradeControls(unittest.TestCase):
+    def test_artifact_walk_uses_complete_path_metadata_when_cached_fields_are_zero(self):
+        # Windows DirEntry metadata can omit identity and link count. The
+        # artifact is still a real regular single-link file; never accept or
+        # reject it from those incomplete cached fields.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            target = root / "public.txt"
+            target.write_bytes(b"synthetic public artifact\n")
+            cached = mock.Mock()
+            cached.st_mode = target.lstat().st_mode
+            cached.st_file_attributes = 0
+            cached.st_nlink = cached.st_dev = cached.st_ino = 0
+            entry = mock.Mock(name="cached directory entry")
+            entry.name, entry.path = target.name, str(target)
+            entry.stat.return_value = cached
+            scan = mock.MagicMock()
+            scan.__enter__.return_value = [entry]
+            expected = {"public.txt": U.sha(target)}
+            with mock.patch.object(U.os, "scandir", return_value=scan):
+                self.assertEqual(expected, U.source_files(root))
+
     def test_inventory_requires_nine_trusted_per_exact_source(self):
         source = fixture_path("isolated", "cache", "old", "hooks", "hooks.json")
         good = inventory(source)
@@ -449,7 +470,7 @@ class UpgradeControls(unittest.TestCase):
             for index, item in enumerate(result["commands"]):
                 item["started_monotonic_ns"] = 10 + 10 * index
                 item["completed_monotonic_ns"] = 11 + 10 * index
-            result["artifacts"] = {str(p.relative_to(output)): U.sha(p) for p in output.rglob("*") if p.is_file()}
+            result["artifacts"] = {p.relative_to(output).as_posix(): U.sha(p) for p in output.rglob("*") if p.is_file()}
             (output / "result.json").write_text(json.dumps(result))
             manager = mock.Mock()
             manager.distribution_manifest.return_value = {"public": "b" * 64}
