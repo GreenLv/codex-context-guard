@@ -106,6 +106,38 @@ class RetentionBatchHarnessTests(unittest.TestCase):
         by_name(empty["scenarios"])["purge_complete"]["detail"]["checks"] = {}
         self.assertIn("checks:purge_complete", errors(empty))
 
+    def test_consumer_rederives_fresh_process_facts(self):
+        """v3 (R5, plan D1): the consumer re-derives the fresh-process facts
+        from the recorded runs; a row whose own checks still claim success
+        is rejected when its runs contradict the contract."""
+        result = finish(self.real, self.temp.name)
+
+        def errors(mutated):
+            return native.validate_retention_batch_result(
+                mutated, source_commit=COMMIT, runtime_tree_sha256=DIGEST)
+        self.assertEqual(errors(result), [])
+        claimed = json.loads(json.dumps(result))
+        beyond = by_name(claimed["scenarios"])["fresh_process_capacity_exceeded"]
+        beyond["detail"]["runs"][-1]["scan_complete"] = True
+        self.assertIn("capacity_exceeded_runs", errors(claimed))
+        hidden = json.loads(json.dumps(result))
+        beyond = by_name(hidden["scenarios"])["fresh_process_capacity_exceeded"]
+        beyond["detail"]["runs"][-1]["capacity_exceeded"] = False
+        self.assertIn("capacity_exceeded_runs", errors(hidden))
+        stalled = json.loads(json.dumps(result))
+        purge = by_name(stalled["scenarios"])["fresh_process_purge_progress"]
+        purge["detail"]["remaining"] = [22, 22, 22, 22]
+        self.assertIn("purge_progress_runs", errors(stalled))
+        regressed = json.loads(json.dumps(result))
+        purge = by_name(regressed["scenarios"])["fresh_process_purge_progress"]
+        purge["detail"]["remaining"] = [22, 19, 20, 0]
+        self.assertIn("purge_progress_runs", errors(regressed))
+        late = json.loads(json.dumps(result))
+        within = by_name(late["scenarios"])["fresh_process_discovery_within_capacity"]
+        within["detail"]["tail_reached_run"] = 9
+        self.assertIn("within_capacity_runs", errors(late))
+        self.assertIn("schema", errors(dict(result, schema="cg-retention-native-batch/v2")))
+
     def test_destroyed_should_keep_ledgers_fail_the_batch(self):
         def mutate(module):
             real = module.cleanup_old_sessions

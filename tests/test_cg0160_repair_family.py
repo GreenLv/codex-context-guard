@@ -2950,7 +2950,9 @@ class RV03DiscoveryRegistryAndChunks(IsolatedEnvironment):
                         "no registry append open occurred in the modeled "
                         "Windows capability phase")
         raw_registry = registry_path.read_text(encoding="utf-8")
-        self.assertIn(encoded, raw_registry.splitlines(),
+        # 0.17.0 R5: journal records are `<name>\t<crc32>` (plan D1).
+        self.assertIn(f"{encoded}\t{cg._discovery_crc(encoded)}",
+                      raw_registry.splitlines(),
                       "the fresh session was not durably registered in the "
                       "modeled phase")
         self.assertEqual(

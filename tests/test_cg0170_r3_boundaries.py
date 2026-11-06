@@ -8,9 +8,10 @@ intent, replaced between the final check and the move, put-back impossible,
 parent boundary substituted, recovery of the left state}.
 
 RF-C01-DISCOVERY: every listing (quarantine records, per-name lookups, tree
-digest, purge listings, registry parse, namespace backfill) checks the
-caller's deadline per unit, and resumable listings reach every finite
-entry across passes of one process. Synthetic data only.
+digest, purge listings, registry parse, namespace discovery) checks the
+caller's deadline per unit. Cross-pass reachability follows the approved
+plan D1 capacity contract (R5 migration below; fresh-process proofs in
+``test_cg0170_r5_discovery.py``). Synthetic data only.
 """
 
 from __future__ import annotations
@@ -339,10 +340,28 @@ class EnumerationBudgetTests(_Base):
         partial = cg._read_discovery_registry(self.data_dir, deadline=time.monotonic() - 1)
         full = cg._read_discovery_registry(self.data_dir)
         self.assertLess(len(partial), len(full))
-        self.assertEqual(len(full), 5000)
+        # R5: the hints also carry the adoption snapshot ("reg").
+        self.assertEqual(full - {"reg"}, {f"name-{i}" for i in range(5000)})
 
 
 class UnregisteredTailFairnessTests(_Base):
+    """R3 unregistered-tail fairness, migrated to the approved plan D1
+    capacity contract (amendment to constraint lines 45/47).
+
+    Original R3 oracle (history, kept in the R3 results): with eight
+    registered prefix names, an unregistered eligible tail, 1 ms per listed
+    entry and 3 ms per pass, repeated passes reach the tail. It passed only
+    by resuming one in-process listing; across fresh processes it was
+    violated (20 processes, tail never reached). Under plan D1 that input is
+    beyond capacity (one listing needs about 10 ms): the migrated oracle is
+    an explicit ``capacity_exceeded`` with backlog and never
+    ``scan_complete``. Within capacity (12 ms) the original goal -- the tail
+    is reached, damaged hints included -- still holds; the fresh-process
+    proofs are in ``test_cg0170_r5_discovery.py``.
+    """
+
+    WITHIN = 0.012
+
     def build(self, *, adopt=True, damage=None):
         for index in range(8):
             self.make_session(f"a-prefix-{index:02}", finished=False)
@@ -355,13 +374,14 @@ class UnregisteredTailFairnessTests(_Base):
             cg._compact_discovery_registry(self.data_dir, before)
         if damage == "missing":
             registry.unlink(missing_ok=True)
+            cg._discovery_snapshot_path(self.data_dir, "namespace").unlink(missing_ok=True)
         elif damage == "corrupt":
             registry.write_text("\x00garbage\n../escape\n", encoding="utf-8")
         elif damage == "oversized":
             registry.write_text("x" * 64, encoding="utf-8")  # read with a tiny limit
         return tail
 
-    def passes(self, count, *, apply=True, limit=None):
+    def passes(self, count, *, apply=True, limit=None, budget=0.003):
         clock = [1000.0]
         visited: list = []
         reports = []
@@ -375,18 +395,23 @@ class UnregisteredTailFairnessTests(_Base):
             for _ in range(count):
                 start = clock[0]
                 reports.append(cg.cleanup_old_sessions(
-                    self.data_dir, apply=apply, deadline=start + 0.003))
-                self.assertLessEqual(clock[0] - start, 0.003 + 0.001 + 1e-9)
+                    self.data_dir, apply=apply, deadline=start + budget))
+                self.assertLessEqual(clock[0] - start, budget + 0.001 + 1e-9)
         return visited, reports
 
-    def test_lost_registration_tail_is_reached_within_budget(self):
+    def test_lost_registration_tail_beyond_capacity_is_reported(self):
         tail = self.build()
-        visited, _reports = self.passes(20)
+        _visited, reports = self.passes(20)
+        self.assertTrue(all(report["backlog"] for report in reports))
+        self.assertFalse(any(report["scan_complete"] for report in reports))
+        self.assertTrue(all(report["capacity_exceeded"] for report in reports[2:]))
+        self.assertTrue(tail.exists())  # not promised beyond capacity
+
+    def test_lost_registration_tail_is_reached_within_capacity(self):
+        tail = self.build()
+        _visited, reports = self.passes(4, budget=self.WITHIN)
         self.assertFalse(tail.exists())
-        # The listing resumed instead of re-reading its first entries each
-        # pass: the first generation covers all nine names before repeating.
-        self.assertEqual(sorted(visited[:9]),
-                         [f"a-prefix-{i:02}" for i in range(8)] + ["z-legacy-tail"])
+        self.assertFalse(any(report["capacity_exceeded"] for report in reports))
 
     def test_damaged_registry_variants_still_reach_the_tail(self):
         for damage, limit in (("missing", None), ("corrupt", None), ("oversized", 8)):
@@ -394,24 +419,27 @@ class UnregisteredTailFairnessTests(_Base):
                 self.tearDown()
                 self.setUp()
                 tail = self.build(damage=damage)
-                self.passes(30, limit=limit)
+                self.passes(4, limit=limit, budget=self.WITHIN)
                 self.assertFalse(tail.exists())
 
     def test_unadopted_preview_reports_the_tail_without_writing(self):
         self.build(adopt=False)
         registry = cg._cleanup_registry_path(self.data_dir)
-        visited, reports = self.passes(20, apply=False)
+        _visited, reports = self.passes(1, apply=False, budget=self.WITHIN)
         names = {entry["name"] for report in reports for entry in report["entries"]}
         self.assertIn("z-legacy-tail", names)
+        _visited, beyond = self.passes(1, apply=False)
+        self.assertTrue(beyond[0]["capacity_exceeded"])
         self.assertFalse(registry.exists())
+        self.assertFalse(cg._discovery_state_path(self.data_dir).exists())
 
     def test_generation_completes_and_restarts_for_later_insertions(self):
         tail = self.build()
-        self.passes(20)
+        self.passes(4, budget=self.WITHIN)
         self.assertFalse(tail.exists())
         late = self.make_session("zz-later", ended_days_ago=45)
         cg._compact_discovery_registry(self.data_dir, cg._read_discovery_registry(self.data_dir) - {"zz-later"})
-        self.passes(20)
+        self.passes(4, budget=self.WITHIN)
         self.assertFalse(late.exists())
 
 

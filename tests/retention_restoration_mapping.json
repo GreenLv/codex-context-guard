@@ -249,7 +249,7 @@
       "previous_expected_failure": true,
       "disposition": "restored_expected_failure_converted",
       "replacement_node": "tests.test_cg0170_retention_restored.RetentionFairnessTests.test_long_decided_prefix_still_reaches_the_tail",
-      "reason": "The retained historical expected failure on its original risk: a long decided prefix must not starve the eligible tail. The new algorithm (lazy streaming enumeration, decided-prefix cursor skip without budget cost, FIFO pending queue, and budget-deferred apply re-queue) passes the converted oracle: the tail is quarantined within the pass bound. The old xfail is retired by this passing verification, not deleted.",
+      "reason": "The retained historical expected failure on its original risk: a long decided prefix must not starve the eligible tail. The new algorithm (lazy streaming enumeration, decided-prefix cursor skip without budget cost, FIFO pending queue, and budget-deferred apply re-queue) passes the converted oracle: the tail is quarantined within the pass bound. The old xfail is retired by this passing verification, not deleted. R5 (plan D1): the oracle is the registered prefix plus the durable window cursor, which needs no capacity assumption; fresh-process versions within and beyond listing capacity are tests.test_cg0170_r5_discovery.RegisteredProgressTests.",
       "result": "passed"
     },
     {

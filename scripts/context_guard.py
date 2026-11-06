@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import atexit
 import base64
+import bisect
 import contextlib
 import datetime as dt
 import errno
 import hashlib
+import heapq
 import hmac
 import itertools
 import json
@@ -26,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
@@ -23754,6 +23757,45 @@ def _read_cleanup_cursor(root: Path) -> str:
 CLEANUP_REGISTRY_NAME = ".session-registry"
 _REGISTRY_ENTRIES_THIS_PROCESS: set[tuple[str, str]] = set()
 
+# Durable discovery (0.17.0 plan D1, RF-C01-DISCOVERY).
+#
+# Each discovery directory of a data root -- the v2 session namespace and the
+# retention quarantine directory -- keeps two content-free HINT files under
+# `.locks/`: a sorted, self-checking snapshot rewritten only by maintenance
+# when a discovery generation completes, and an append-only journal whose
+# records carry a CRC so a torn or interleaved append is detected instead of
+# read as a plausible wrong name. A small versioned state file records the
+# last complete generation (directory identity, mtime sampled before its
+# listing, invocation number) and the progress of an incomplete one. Hints
+# never authorize anything: every name is re-adjudicated against the live
+# object, and damage only removes hints (which triggers a new generation).
+# The namespace journal keeps the R3 file name; R3 plain-name lines are read
+# as legacy hints and make the next pass rebuild a checked generation.
+_DISCOVERY_STATE_NAME = "retention-discovery.json"
+_DISCOVERY_STATE_SCHEMA = "cg-retention-discovery/v1"
+_DISCOVERY_SNAPSHOT_SCHEMA = "cg-retention-discovery-snapshot/v1"
+_DISCOVERY_SCOPES = ("records", "namespace")
+_DISCOVERY_FILES = {
+    "namespace": (CLEANUP_REGISTRY_NAME, ".session-registry.snapshot"),
+    "records": ("retention-records.journal", "retention-records.snapshot"),
+}
+_DISCOVERY_MERGING_SUFFIX = ".merging"
+# First listing share of an incomplete generation; a failed generation then
+# takes the whole remaining budget on alternate invocations.
+_DISCOVERY_INITIAL_SHARE = 0.5
+# A complete generation older than this many invocations is re-listed even
+# when the directory mtime looks unchanged (mtime-unreliable filesystems).
+_DISCOVERY_PERIODIC_INVOCATIONS = 8
+# A directory mtime sampled this close to the wall clock may hide a later
+# creation inside the same timestamp tick; such a generation is re-listed.
+_DISCOVERY_RACY_MTIME_NS = 2_000_000_000
+_DISCOVERY_STATE_READ_LIMIT = 64 * 1024
+_DISCOVERY_APPEND_BATCH = 64
+# Hint parsing checks the caller's deadline once per this many lines.
+_DISCOVERY_PARSE_STRIDE = 256
+_DISCOVERY_RECORD_SUFFIXES = (".record.json", ".tombstone.json")
+_DISCOVERY_RECORD_MAX_NAME = _CLEANUP_CURSOR_MAX_NAME + 64
+
 
 def _cleanup_registry_path(root: Path) -> Path:
     return root / V2_NAMESPACE / ".locks" / CLEANUP_REGISTRY_NAME
@@ -23774,80 +23816,289 @@ def _registry_object_is_writable(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and not path.is_symlink()
 
 
-def _read_discovery_registry(root: Path, *, deadline: float | None = None) -> set[str]:
-    """Load the durable discovered-session set (content-free encoded names).
+def _is_record_hint(name: object) -> bool:
+    """A quarantine record or tombstone file name (one component)."""
+    return (isinstance(name, str)
+            and 0 < len(name) <= _DISCOVERY_RECORD_MAX_NAME
+            and name.endswith(_DISCOVERY_RECORD_SUFFIXES)
+            and not any(ch not in _CLEANUP_COMPONENT_ALLOWED for ch in name))
 
-    The registry is a discovery hint, never an authority: entries are
-    component-gated on read and re-verified against the live namespace
-    object at adjudication. A missing, truncated or corrupted file simply
-    falls back to scan discovery at bounded cost; a substituted (link)
-    object — leaf or `.locks` ancestor — is treated as absent rather than
-    read through.
-    """
-    if not (_maintenance_boundary_ok(root)
-            and _registry_object_is_writable(_cleanup_registry_path(root))):
-        return set()
+
+def _discovery_name_ok(scope: str, name: object) -> bool:
+    if scope == "records":
+        return _is_record_hint(name)
+    return _is_session_component(name)
+
+
+def _discovery_journal_path(root: Path, scope: str) -> Path:
+    return root / V2_NAMESPACE / ".locks" / _DISCOVERY_FILES[scope][0]
+
+
+def _discovery_merging_path(root: Path, scope: str) -> Path:
+    journal = _discovery_journal_path(root, scope)
+    return journal.with_name(journal.name + _DISCOVERY_MERGING_SUFFIX)
+
+
+def _discovery_snapshot_path(root: Path, scope: str) -> Path:
+    return root / V2_NAMESPACE / ".locks" / _DISCOVERY_FILES[scope][1]
+
+
+def _discovery_state_path(root: Path) -> Path:
+    return root / V2_NAMESPACE / ".locks" / _DISCOVERY_STATE_NAME
+
+
+def _discovery_directory(root: Path, scope: str) -> Path:
+    if scope == "records":
+        return _retention_quarantine_dir(root)
+    return root / V2_NAMESPACE
+
+
+def _discovery_crc(name: str) -> str:
+    return f"{zlib.crc32(name.encode('utf-8')) & 0xFFFFFFFF:08x}"
+
+
+def _discovery_read_bounded(path: Path, limit: int) -> tuple[bytes | None, str]:
+    """Read one private hint/state file: (bytes, status). The object must be
+    a regular non-link file no larger than ``limit``; the open refuses to
+    follow a link raced into place. Status is ok, missing, boundary,
+    oversized or unreadable."""
     try:
-        path = _cleanup_registry_path(root)
-        if path.lstat().st_size > _RETENTION_REGISTRY_READ_LIMIT:
-            return set()  # oversized: the backfill rebuilds it
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return set()
-    # One bounded read (size-capped above); parsing checks the caller's
-    # deadline every 1024 lines. A cut parse returns a partial hint set,
-    # which only makes the backfill re-register some names.
-    names: set[str] = set()
-    for index, line in enumerate(raw.splitlines()):
-        if (deadline is not None and index % 1024 == 0
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unreadable"
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+        return None, "boundary"
+    if info.st_size > limit:
+        return None, "oversized"
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unreadable"
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return None, "unreadable"
+    if len(data) > limit:
+        return None, "oversized"
+    return data, "ok"
+
+
+class _DiscoveryHints:
+    """The hints of one scope: the validated sorted snapshot plus every
+    journal name (and names this pass discovered). Membership and the
+    sorted window never sort the snapshot again."""
+
+    __slots__ = ("snapshot", "extra", "facts")
+
+    def __init__(self) -> None:
+        self.snapshot: list[str] = []
+        self.extra: set[str] = set()
+        self.facts: dict[str, Any] = {
+            "snapshot": "missing", "journal": "missing", "journal_size": 0,
+            "journal_invalid": 0, "journal_legacy": 0, "cut": False,
+        }
+
+    def __contains__(self, name: object) -> bool:
+        return name in self.extra or _sorted_contains(self.snapshot, name)
+
+    def names(self) -> set[str]:
+        return set(self.snapshot) | self.extra
+
+    def count(self) -> int:
+        return len(self.snapshot) + sum(
+            1 for name in self.extra if not _sorted_contains(self.snapshot, name))
+
+    def with_prefix(self, prefix: str) -> list[str]:
+        """Hints starting with ``prefix`` (a bisect range, no full scan)."""
+        start = bisect.bisect_left(self.snapshot, prefix)
+        found = []
+        for index in range(start, len(self.snapshot)):
+            if not self.snapshot[index].startswith(prefix):
+                break
+            found.append(self.snapshot[index])
+        found.extend(name for name in self.extra if name.startswith(prefix))
+        return sorted(set(found))
+
+    def after(self, cursor: str) -> Iterator[str]:
+        """Every hint strictly after ``cursor`` in stable sorted order: a
+        lazy merge of the (already sorted) snapshot tail and the sorted
+        journal extras, duplicates folded."""
+        start = bisect.bisect_right(self.snapshot, cursor) if cursor else 0
+        tail = (self.snapshot[index] for index in range(start, len(self.snapshot)))
+        extra = sorted(name for name in self.extra if not cursor or name > cursor)
+        previous = None
+        for name in heapq.merge(tail, extra):
+            if name != previous:
+                previous = name
+                yield name
+
+
+def _sorted_contains(items: list[str], name: object) -> bool:
+    if not isinstance(name, str):
+        return False
+    index = bisect.bisect_left(items, name)
+    return index < len(items) and items[index] == name
+
+
+def _discovery_parse_snapshot(raw: bytes, scope: str, deadline: float | None,
+                              hints: _DiscoveryHints) -> str:
+    """Validate and load one snapshot: the header names the schema, the
+    count and the digest of the body; the body is strictly increasing
+    valid names. Any mismatch discards the whole snapshot (hints only
+    shrink). A deadline cut keeps the names parsed so far as hints."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError:
+        return "corrupt"
+    head, newline, body = text.partition("\n")
+    parts = head.split(" ")
+    if (not newline or len(parts) != 3 or parts[0] != _DISCOVERY_SNAPSHOT_SCHEMA
+            or not parts[1].startswith("count=")
+            or not parts[2].startswith("sha256=")):
+        return "corrupt"
+    if body and not body.endswith("\n"):
+        return "corrupt"
+    lines = body.split("\n")[:-1] if body else []
+    if parts[1] != f"count={len(lines)}":
+        return "corrupt"
+    previous = ""
+    for index, name in enumerate(lines):
+        if (deadline is not None and index % _DISCOVERY_PARSE_STRIDE == 0
                 and time.monotonic() >= deadline):
-            break
-        candidate = line.strip()
-        if _is_session_component(candidate):
-            names.add(candidate)
-    return names
+            hints.facts["cut"] = True
+            hints.extra.update(lines[:index])
+            return "cut"
+        if not _discovery_name_ok(scope, name) or (index and name <= previous):
+            return "corrupt"
+        previous = name
+    if parts[2] != "sha256=" + sha256_text("\n".join(lines)):
+        return "corrupt"
+    hints.snapshot = lines
+    return "ok"
 
 
-def _add_cleanup_registry_entries(root: Path, names) -> None:
-    """Best-effort durable discovery: record encoded session names so later
-    passes adjudicate them without depending on readdir order. Duplicates
-    are harmless (set semantics on read) and the file is compacted at
-    generation reset.
+def _discovery_parse_journal(raw: bytes, scope: str, deadline: float | None,
+                             hints: _DiscoveryHints) -> None:
+    """Load journal records ``<name>\\t<crc32>``. A torn final record (no
+    newline), a CRC mismatch or an invalid name is counted as invalid and
+    never becomes a hint; a bare R3 candidate line is a legacy hint."""
+    lines = raw.split(b"\n")
+    if lines.pop():
+        hints.facts["journal_invalid"] += 1  # torn final append
+    for index, line in enumerate(lines):
+        if (deadline is not None and index % _DISCOVERY_PARSE_STRIDE == 0
+                and time.monotonic() >= deadline):
+            hints.facts["cut"] = True
+            return
+        try:
+            text = line.decode("utf-8").rstrip("\r")
+        except UnicodeError:
+            hints.facts["journal_invalid"] += 1
+            continue
+        name, separator, crc = text.partition("\t")
+        if not separator:
+            candidate = name.strip()
+            if not candidate:
+                continue
+            if _discovery_name_ok(scope, candidate):
+                hints.extra.add(candidate)
+                hints.facts["journal_legacy"] += 1
+            else:
+                hints.facts["journal_invalid"] += 1
+            continue
+        if _discovery_name_ok(scope, name) and crc == _discovery_crc(name):
+            hints.extra.add(name)
+        else:
+            hints.facts["journal_invalid"] += 1
+
+
+def _discovery_read_journals(root: Path, scope: str, hints: _DiscoveryHints,
+                             deadline: float | None) -> None:
+    for path in (_discovery_merging_path(root, scope),
+                 _discovery_journal_path(root, scope)):
+        raw, status = _discovery_read_bounded(path, _RETENTION_REGISTRY_READ_LIMIT)
+        if path.name.endswith(_DISCOVERY_MERGING_SUFFIX):
+            if raw is None:
+                if status != "missing":
+                    hints.facts["journal_invalid"] += 1
+                continue
+        else:
+            hints.facts["journal"] = status
+            hints.facts["journal_size"] = len(raw) if raw is not None else 0
+            if raw is None:
+                continue
+        _discovery_parse_journal(raw, scope, deadline, hints)
+
+
+def _discovery_read_hints(root: Path, scope: str, *,
+                          deadline: float | None = None) -> _DiscoveryHints:
+    """Snapshot + journals of one scope, bounded by size and deadline. A
+    substituted `.locks` chain or hint object is treated as absent."""
+    hints = _DiscoveryHints()
+    if not _maintenance_boundary_ok(root):
+        hints.facts["snapshot"] = "boundary"
+        hints.facts["journal"] = "boundary"
+        return hints
+    raw, status = _discovery_read_bounded(
+        _discovery_snapshot_path(root, scope), _RETENTION_REGISTRY_READ_LIMIT)
+    if raw is not None:
+        status = _discovery_parse_snapshot(raw, scope, deadline, hints)
+    hints.facts["snapshot"] = status
+    _discovery_read_journals(root, scope, hints, deadline)
+    return hints
+
+
+def _read_discovery_registry(root: Path, *, deadline: float | None = None) -> set[str]:
+    """The durable namespace hint set (content-free encoded names).
+
+    The hints are discovery hints, never an authority: entries are
+    component-gated on read and re-verified against the live namespace
+    object at adjudication. A missing, truncated, oversized or corrupted
+    hint file contributes nothing (and triggers a new discovery
+    generation); a substituted (link) object — leaf or `.locks` ancestor —
+    is treated as absent rather than read through. Parsing checks the
+    caller's deadline; a cut parse returns a partial hint set.
+    """
+    return _discovery_read_hints(root, "namespace", deadline=deadline).names()
+
+
+def _discovery_append(root: Path, scope: str, names) -> bool:
+    """Append CRC-checked hint records for ``names`` to the scope journal.
 
     The append is boundary- and platform-safe: the maintenance `.locks`
-    root and the registry object itself must both be real (a planted link
+    root and the journal object itself must both be real (a planted link
     skips the registration entirely — the append never follows it, and the
     open uses O_NOFOLLOW so a race cannot redirect it either); on POSIX the
     file mode is verified 0600 with read-back (fchmod when needed); on
     Windows the file boundary comes from the validated parent directory per
-    the product's platform contract (no POSIX mode bits, no fchmod — the
-    registration still happens). When a POSIX boundary cannot be
-    established, the append is SKIPPED: prior registry content is preserved
-    exactly as it is (possibly in a wrong mode — disclosed), the new names
-    are not written, and the backfill sweep still covers them at bounded
-    cost. No truncation ever runs in this path.
+    the product's platform contract. When a POSIX boundary cannot be
+    established the append is SKIPPED and prior content is preserved
+    exactly; the names are then found by the next discovery generation.
+    All records go out in one write; a short or torn write is detected by
+    the per-record CRC. Returns True when the records were written.
     """
-    fresh = sorted(
-        name for name in set(names)
-        if _is_session_component(name)
-        and (str(root), name) not in _REGISTRY_ENTRIES_THIS_PROCESS
-    )
+    fresh = sorted({name for name in names if _discovery_name_ok(scope, name)})
     if not fresh:
-        return
-    if not (_maintenance_boundary_ok(root)
-            and _registry_object_is_writable(_cleanup_registry_path(root))):
-        return
+        return True
+    path = _discovery_journal_path(root, scope)
+    if not (_maintenance_boundary_ok(root) and _registry_object_is_writable(path)):
+        return False
     try:
-        path = _cleanup_registry_path(root)
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        return
+        return False
     flags = (os.O_WRONLY | os.O_APPEND | os.O_CREAT
-             | getattr(os, "O_NOFOLLOW", 0))
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
     try:
         fd = os.open(path, flags, 0o600)
     except OSError:
-        return  # raced into a link (ELOOP) or unusable object: skip
+        return False  # raced into a link (ELOOP) or unusable object: skip
     try:
         if os.name != "nt":
             mode = stat.S_IMODE(os.fstat(fd).st_mode)
@@ -23857,44 +24108,84 @@ def _add_cleanup_registry_entries(root: Path, names) -> None:
                     fchmod(fd, 0o600)
                     mode = stat.S_IMODE(os.fstat(fd).st_mode)
                 if mode != 0o600:
-                    # The boundary could not be established: write nothing.
-                    # Prior registry content is preserved exactly as it is
-                    # (mode disclosed as unverified); the skipped names fall
-                    # back to the deadline-bounded sweep.
-                    return
-        os.write(fd, "".join(name + "\n" for name in fresh).encode("utf-8"))
-        for name in fresh:
-            _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
+                    return False  # boundary not established: write nothing
+        payload = "".join(f"{name}\t{_discovery_crc(name)}\n" for name in fresh)
+        os.write(fd, payload.encode("utf-8"))
     except OSError:
-        return
+        return False
     finally:
         os.close(fd)
+    return True
+
+
+def _add_cleanup_registry_entries(root: Path, names) -> None:
+    """Best-effort durable discovery for the session namespace: record
+    encoded session names as CRC-checked journal hints so later passes
+    adjudicate them without depending on readdir order or one listing.
+    Called after the session directory exists (production order: mkdir,
+    then journal); a failure or a crash between the two is covered by the
+    namespace mtime change and the periodic discovery generation."""
+    fresh = sorted(
+        name for name in set(names)
+        if _is_session_component(name)
+        and (str(root), name) not in _REGISTRY_ENTRIES_THIS_PROCESS
+    )
+    if fresh and _discovery_append(root, "namespace", fresh):
+        for name in fresh:
+            _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
+
+
+def _discovery_write_snapshot(root: Path, scope: str, ordered: list[str],
+                              deadline: float | None = None) -> bool:
+    """Publish one sorted snapshot atomically (0600 via the private write
+    path). ``ordered`` must already be sorted and unique. Building the body
+    checks the deadline per stride; the publication itself is one bounded
+    write. Refuses a substituted (link/non-regular) snapshot object."""
+    path = _discovery_snapshot_path(root, scope)
+    if not (_maintenance_boundary_ok(root) and _registry_object_is_writable(path)):
+        return False
+    digest = hashlib.sha256()
+    chunks: list[str] = []
+    for index, name in enumerate(ordered):
+        if (deadline is not None and index % _DISCOVERY_PARSE_STRIDE == 0
+                and time.monotonic() >= deadline):
+            return False
+        if index:
+            digest.update(b"\n")
+        digest.update(name.encode("utf-8"))
+        chunks.append(name + "\n")
+    head = (f"{_DISCOVERY_SNAPSHOT_SCHEMA} count={len(ordered)} "
+            f"sha256={digest.hexdigest()}\n")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, head + "".join(chunks))
+    except (OSError, PrivateBoundaryError):
+        return False
+    return True
 
 
 def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
-    """Rewrite the registry from a completed scan: exact live names only,
-    duplicates folded, stale entries (deleted sessions) dropped. Refuses a
-    substituted (link/non-regular) registry object instead of replacing it;
-    the published file is written 0600 with the mode verified by the
-    private write path."""
+    """Rewrite the namespace hints to exactly ``live_names``: a fresh
+    snapshot and an empty journal. Refuses a substituted (link/non-regular)
+    hint object instead of replacing it. The discovery state is untouched,
+    so a shrunk journal is itself a reason for the next generation."""
+    journal = _discovery_journal_path(root, "namespace")
     if not (_maintenance_boundary_ok(root)
-            and _registry_object_is_writable(_cleanup_registry_path(root))):
+            and _registry_object_is_writable(journal)
+            and _registry_object_is_writable(_discovery_snapshot_path(root, "namespace"))):
         return
-    valid = sorted(name for name in live_names if _is_session_component(name))
+    valid = sorted({name for name in live_names if _is_session_component(name)})
+    if not _discovery_write_snapshot(root, "namespace", valid):
+        return
     try:
-        atomic_write_text(
-            _cleanup_registry_path(root),
-            "".join(name + "\n" for name in valid))
-        # The rewritten file is now the only truth for this root: forget
-        # cached registrations it no longer carries, so a later append of
-        # such a name really reaches the file.
-        stale = {item for item in _REGISTRY_ENTRIES_THIS_PROCESS
-                 if item[0] == str(root)}
-        _REGISTRY_ENTRIES_THIS_PROCESS.difference_update(stale)
-        for name in valid:
-            _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
+        atomic_write_text(journal, "")
+        _discovery_merging_path(root, "namespace").unlink(missing_ok=True)
     except (OSError, PrivateBoundaryError):
         return
+    stale = {item for item in _REGISTRY_ENTRIES_THIS_PROCESS if item[0] == str(root)}
+    _REGISTRY_ENTRIES_THIS_PROCESS.difference_update(stale)
+    for name in valid:
+        _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
 
 
 # ---------------------------------------------------------------------------
@@ -23928,7 +24219,6 @@ _RETENTION_RECORD_STATES = frozenset({
 _RETENTION_LEGACY_RECORD_STATES = frozenset({"planned", "quarantined"})
 _RETENTION_TREE_ENTRY_CAP = 200_000
 _RETENTION_REGISTRY_READ_LIMIT = 32 * 1024 * 1024
-_RETENTION_BACKFILL_BUDGET_SHARE = 0.5
 # Share of a pass budget the quarantine record listing may use first.
 _RETENTION_RECORD_BUDGET_SHARE = 1 / 3
 _RETENTION_RESTORE_WAIT_SECONDS = 5.0
@@ -24179,22 +24469,474 @@ def write_retention_policy(
 
 
 def _retention_register_existing(root: Path) -> None:
-    """Adoption bootstrap: register every session already in the namespace.
+    """Adoption bootstrap: one complete discovery generation.
 
-    Runs inside the explicit policy command (never a hook), so one complete
-    listing makes the registry cover everything that exists at adoption;
-    sessions created afterwards register themselves at creation. A failed
-    listing only leaves those names to the budgeted backfill.
+    Runs inside the explicit policy command under the maintenance lock
+    (never a hook) and without the scheduled pass budget, so the namespace
+    and quarantine snapshots cover everything that exists at adoption and
+    the discovery state records that generation. Sessions created afterwards
+    append journal hints at creation. A failed listing is recorded as an
+    incomplete generation that the budgeted passes continue.
     """
-    names: list[str] = []
+    context = _discovery_begin(root, deadline=None, adopted=True, force=True)
+    _discovery_finish(root, context)
+
+
+# --- discovery generations (plan D1) ---------------------------------------
+# One generation lists BOTH discovery directories names-only from their first
+# entry, charging every entry (known prefix included) against the pass
+# budget: a listing cannot be resumed across processes, so the design keeps
+# what it reached (journal hints) and escalates the share of later attempts
+# instead. Contract (plan D1): within capacity -- one names-only listing of
+# both directories plus the commit fits one invocation's whole budget --
+# every unregistered name is reached by fresh processes after a bounded
+# number of invocations; beyond capacity the pass reports
+# ``capacity_exceeded`` with backlog and never ``scan_complete``, while
+# registered names keep advancing through the durable window cursors.
+
+
+def _discovery_blank_state() -> dict[str, Any]:
+    return {
+        "schema": _DISCOVERY_STATE_SCHEMA, "invocation": 0, "generation": 0,
+        "complete": None, "attempt_open": None, "attempts": 0, "debt": 0,
+        "max_listed": 0, "capacity_exceeded": False, "last_full_invocation": -2,
+        "journal_size": {scope: 0 for scope in _DISCOVERY_SCOPES},
+        "records_cursor": "", "last_error": None,
+    }
+
+
+def _discovery_int(value: Any, minimum: int = 0) -> bool:
+    return type(value) is int and value >= minimum
+
+
+def _discovery_scope_fact_ok(fact: Any) -> bool:
+    if not isinstance(fact, dict) or set(fact) != {"identity", "mtime_ns", "racy", "entries"}:
+        return False
+    identity = fact["identity"]
+    if identity is not None and not (
+            isinstance(identity, list) and len(identity) == 2
+            and all(type(part) is int for part in identity)):
+        return False
+    if fact["mtime_ns"] is not None and type(fact["mtime_ns"]) is not int:
+        return False
+    if (identity is None) != (fact["mtime_ns"] is None):
+        return False
+    return type(fact["racy"]) is bool and _discovery_int(fact["entries"])
+
+
+def _discovery_read_state(root: Path) -> dict[str, Any] | None:
+    """Strictly validated discovery state; None when absent or damaged
+    (every field typed and in range, no unknown field)."""
+    raw, _status = _discovery_read_bounded(
+        _discovery_state_path(root), _DISCOVERY_STATE_READ_LIMIT)
+    if raw is None:
+        return None
     try:
-        with os.scandir(root / V2_NAMESPACE) as source:
-            for entry in source:
-                if entry.name != ".locks" and _is_session_component(entry.name):
-                    names.append(entry.name)
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return None
+    if (not isinstance(data, dict) or set(data) != set(_discovery_blank_state())
+            or data.get("schema") != _DISCOVERY_STATE_SCHEMA):
+        return None
+    if not all(_discovery_int(data[key]) for key in (
+            "invocation", "generation", "attempts", "debt", "max_listed")):
+        return None
+    if type(data["capacity_exceeded"]) is not bool:
+        return None
+    if not _discovery_int(data["last_full_invocation"], -2):
+        return None
+    if data["attempt_open"] is not None and not _discovery_int(data["attempt_open"]):
+        return None
+    sizes = data["journal_size"]
+    if (not isinstance(sizes, dict) or set(sizes) != set(_DISCOVERY_SCOPES)
+            or not all(_discovery_int(value) for value in sizes.values())):
+        return None
+    cursor = data["records_cursor"]
+    if not isinstance(cursor, str) or (cursor and not _is_record_hint(cursor)):
+        return None
+    error = data["last_error"]
+    if error is not None and not (isinstance(error, str) and len(error) <= 64):
+        return None
+    complete = data["complete"]
+    if complete is not None:
+        if (not isinstance(complete, dict)
+                or set(complete) != {"generation", "invocation", "scopes"}
+                or not _discovery_int(complete["generation"], 1)
+                or not _discovery_int(complete["invocation"])
+                or not isinstance(complete["scopes"], dict)
+                or set(complete["scopes"]) != set(_DISCOVERY_SCOPES)
+                or not all(_discovery_scope_fact_ok(fact)
+                           for fact in complete["scopes"].values())):
+            return None
+    return data
+
+
+def _discovery_write_state(root: Path, state: dict[str, Any]) -> bool:
+    path = _discovery_state_path(root)
+    if not (_maintenance_boundary_ok(root) and _registry_object_is_writable(path)):
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, json.dumps(state, sort_keys=True) + "\n")
+    except (OSError, PrivateBoundaryError):
+        return False
+    return True
+
+
+def _discovery_dir_facts(path: Path) -> dict[str, Any] | None:
+    """{identity, mtime_ns} of a real directory, both None when absent;
+    None when the object is linked, a reparse point or unreadable."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"identity": None, "mtime_ns": None}
     except OSError:
+        return None
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & 0x400):
+        return None
+    return {"identity": [info.st_dev, info.st_ino], "mtime_ns": info.st_mtime_ns}
+
+
+def _discovery_needs(state: dict[str, Any], state_ok: bool,
+                     hints: dict[str, _DiscoveryHints],
+                     facts: dict[str, dict[str, Any] | None]) -> list[str]:
+    """Why this invocation must run a discovery generation (empty: the last
+    complete generation still covers both directories)."""
+    reasons: list[str] = []
+    if not state_ok:
+        reasons.append("state_missing_or_corrupt")
+    complete = state["complete"]
+    if complete is None:
+        reasons.append("no_complete_generation")
+    for scope in _DISCOVERY_SCOPES:
+        hint_facts = hints[scope].facts
+        snapshot = hint_facts["snapshot"]
+        if snapshot in ("corrupt", "oversized", "boundary", "unreadable") or (
+                snapshot == "missing" and complete is not None):
+            reasons.append(f"{scope}_snapshot_{snapshot}")
+        if hint_facts["journal_invalid"] or hint_facts["journal"] in (
+                "oversized", "boundary", "unreadable"):
+            reasons.append(f"{scope}_journal_suspect")
+        if hint_facts["journal_legacy"]:
+            reasons.append(f"{scope}_journal_legacy")
+        if hint_facts["journal_size"] < state["journal_size"][scope]:
+            reasons.append(f"{scope}_journal_shrunk")
+        current = facts[scope]
+        if current is None:
+            reasons.append(f"{scope}_boundary")
+        elif complete is not None:
+            recorded = complete["scopes"][scope]
+            if recorded["identity"] != current["identity"]:
+                reasons.append(f"{scope}_identity_changed")
+            elif recorded["racy"] or recorded["mtime_ns"] != current["mtime_ns"]:
+                reasons.append(f"{scope}_changed")
+    if complete is not None and (
+            state["invocation"] - complete["invocation"]
+            >= _DISCOVERY_PERIODIC_INVOCATIONS):
+        reasons.append("periodic")
+    if state["attempt_open"] is not None:
+        reasons.append("interrupted_attempt")
+    if state["debt"]:
+        reasons.append("generation_in_progress")
+    return reasons
+
+
+def _discovery_list(root: Path, hints: dict[str, _DiscoveryHints], *,
+                    share_end: float | None, adopted: bool) -> dict[str, Any]:
+    """One generation attempt: list the quarantine directory, then the
+    namespace, names only, from their first entry. The share deadline is
+    checked before every entry; names the hints lack are appended to the
+    scope journal in batches (adopted roots only) so a cut or crashed
+    attempt keeps what it reached. A listing error is reported as an error,
+    never as a capacity result."""
+    out: dict[str, Any] = {"listed": 0, "complete": False, "error": None,
+                           "seen": {scope: set() for scope in _DISCOVERY_SCOPES},
+                           "facts": {}}
+    for scope in _DISCOVERY_SCOPES:
+        directory = _discovery_directory(root, scope)
+        before = _discovery_dir_facts(directory)
+        if before is None:
+            out["error"] = f"{scope}_boundary"
+            return out
+        if before["identity"] is None:
+            out["facts"][scope] = {"identity": None, "mtime_ns": None,
+                                   "racy": False, "entries": 0}
+            continue
+        racy = time.time_ns() - before["mtime_ns"] < _DISCOVERY_RACY_MTIME_NS
+        seen = out["seen"][scope]
+        batch: list[str] = []
+        done = False
+        try:
+            with os.scandir(directory) as listing:
+                iterator = iter(listing)
+                while True:
+                    if share_end is not None and time.monotonic() >= share_end:
+                        break
+                    try:
+                        entry = next(iterator)
+                    except StopIteration:
+                        done = True
+                        break
+                    out["listed"] += 1
+                    name = entry.name
+                    if not _discovery_name_ok(scope, name):
+                        continue
+                    seen.add(name)
+                    if name not in hints[scope]:
+                        hints[scope].extra.add(name)
+                        batch.append(name)
+                        if adopted and len(batch) >= _DISCOVERY_APPEND_BATCH:
+                            _discovery_append(root, scope, batch)
+                            batch = []
+        except OSError:
+            out["error"] = f"{scope}_listing"
+        if adopted and batch:
+            _discovery_append(root, scope, batch)
+        if out["error"] or not done:
+            return out
+        after = _discovery_dir_facts(directory)
+        if after is None or after["identity"] != before["identity"]:
+            out["error"] = f"{scope}_replaced"
+            return out
+        out["facts"][scope] = {
+            "identity": before["identity"], "mtime_ns": before["mtime_ns"],
+            "racy": bool(racy or after["mtime_ns"] != before["mtime_ns"]),
+            "entries": len(seen)}
+    out["complete"] = True
+    return out
+
+
+def _discovery_commit(root: Path, scope: str, hints: _DiscoveryHints,
+                      seen: set[str], initial_extra: set[str],
+                      deadline: float | None) -> str:
+    """Publish a completed generation's snapshot for one scope.
+
+    The snapshot keeps every name the complete listing saw, every journal
+    name appended while it ran (a concurrent creation the listing may have
+    passed), and earlier hints that still exist; only names that no longer
+    exist are dropped. The journal is first rotated to ``.merging`` so
+    appends after this point land in a fresh journal; a writer that still
+    appends to the rotated file after it was read loses only a hint, which
+    the namespace mtime change or the periodic generation repairs. Returns
+    "ok", "deadline" or "error"; every loop checks the deadline and the one
+    sort (a C-level step over names this same budget listed) runs only
+    with budget left."""
+    directory = _discovery_directory(root, scope)
+    journal = _discovery_journal_path(root, scope)
+    merging = _discovery_merging_path(root, scope)
+    try:
+        merging.lstat()
+    except FileNotFoundError:
+        try:
+            info = journal.lstat()
+            if stat.S_ISREG(info.st_mode) and not journal.is_symlink():
+                os.replace(journal, merging)  # merging is known absent
+        except OSError:
+            pass  # absent, or held open on Windows: merged next generation
+    except OSError:
+        return "error"
+    late = _DiscoveryHints()
+    _discovery_read_journals(root, scope, late, deadline)
+    if late.facts["cut"]:
+        return "deadline"
+    keep = set(seen)
+    keep.update(late.extra - initial_extra)
+    for index, name in enumerate(itertools.chain(hints.snapshot, initial_extra)):
+        if (deadline is not None and index % _DISCOVERY_PARSE_STRIDE == 0
+                and time.monotonic() >= deadline):
+            return "deadline"
+        if name in keep:
+            continue
+        try:
+            (directory / name).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass  # unreadable: keep the hint
+        keep.add(name)
+    if deadline is not None and time.monotonic() >= deadline:
+        return "deadline"
+    ordered = sorted(keep)
+    if not _discovery_write_snapshot(root, scope, ordered, deadline):
+        return ("deadline" if deadline is not None and time.monotonic() >= deadline
+                else "error")
+    with contextlib.suppress(OSError):
+        merging.unlink(missing_ok=True)
+    hints.snapshot = ordered
+    hints.extra = {name for name in late.extra if name not in keep}
+    return "ok"
+
+
+def _discovery_backoff(debt: int) -> int:
+    """Invocations skipped after a failed full-share listing: 1, 2, 4, ...
+    capped at the periodic bound, so an over-capacity root re-attempts
+    discovery at least every ``_DISCOVERY_PERIODIC_INVOCATIONS + 1``
+    invocations."""
+    return min(2 ** max(0, debt - 2), _DISCOVERY_PERIODIC_INVOCATIONS)
+
+
+def _discovery_load(root: Path, *, deadline: float | None, adopted: bool,
+                    force: bool = False) -> dict[str, Any]:
+    """Load the discovery state and both scopes' hints and decide whether
+    this invocation runs a generation attempt (``_discovery_attempt``).
+
+    Share rule: an attempt uses ``_DISCOVERY_INITIAL_SHARE`` of the budget
+    left when it starts; after a failed attempt (debt) it takes the whole
+    remaining budget unless the previous invocation already did, so the
+    registered windows are served at least every second invocation. A full
+    attempt that still cannot list both directories once reports
+    ``capacity_exceeded`` (a fact about this budget and these run
+    conditions, not a measured permanent limit); later full attempts follow
+    a bounded backoff during which the windows get the whole budget. A
+    process that dies inside an attempt leaves its write-ahead
+    ``attempt_open`` mark, counted as a failed attempt by the next
+    invocation. A listing error is reported separately, never as capacity.
+    Unadopted roots persist nothing and therefore list with the whole
+    remaining budget.
+    """
+    state = _discovery_read_state(root) if adopted else None
+    state_ok = state is not None
+    if state is None:
+        state = _discovery_blank_state()
+    state["invocation"] += 1
+    invocation = state["invocation"]
+    hints = {scope: _discovery_read_hints(root, scope, deadline=deadline)
+             for scope in _DISCOVERY_SCOPES}
+    facts = {scope: _discovery_dir_facts(_discovery_directory(root, scope))
+             for scope in _DISCOVERY_SCOPES}
+    reasons = _discovery_needs(state, state_ok or not adopted, hints, facts)
+    if force:
+        reasons.append("adoption")
+    if state["attempt_open"] is not None:
+        state["debt"] += 1
+        state["attempt_open"] = None
+    info: dict[str, Any] = {"needed": bool(reasons), "reasons": reasons,
+                            "share": 0.0, "listed": 0, "complete": False,
+                            "error": None, "generation_entries": 0,
+                            "skipped": None}
+    plan: float | None = None
+    if (reasons and adopted and deadline is not None and not force
+            and state["capacity_exceeded"]
+            and invocation - state["last_full_invocation"]
+            <= _discovery_backoff(state["debt"])):
+        # Beyond capacity a full listing already failed recently. This
+        # invocation serves the registered windows with the whole budget
+        # instead (registered work must keep advancing, and one transition
+        # may cost more than half a budget). Full listings are retried after
+        # a bounded backoff, so a shrinking directory or a transient
+        # condition still clears ``capacity_exceeded``.
+        info["skipped"] = "capacity_backoff"
+    elif reasons:
+        full = (not adopted or deadline is None or (
+            state["debt"] > 0 and state["last_full_invocation"] != invocation - 1))
+        plan = 1.0 if full else _DISCOVERY_INITIAL_SHARE
+    return {"root": root, "adopted": adopted, "state": state, "hints": hints,
+            "info": info, "plan": plan, "current": not reasons}
+
+
+def _discovery_attempt(context: dict[str, Any], deadline: float | None) -> None:
+    """Run the planned generation attempt (if any) with its share of the
+    budget left now, and commit it when both listings complete."""
+    plan = context["plan"]
+    if plan is None:
         return
-    _add_cleanup_registry_entries(root, names)
+    context["plan"] = None
+    root, adopted = context["root"], context["adopted"]
+    state, hints, info = context["state"], context["hints"], context["info"]
+    invocation = state["invocation"]
+    if plan == 1.0 and adopted:
+        state["last_full_invocation"] = invocation
+    share_end: float | None = None
+    if deadline is not None:
+        now = time.monotonic()
+        share_end = now + max(0.0, deadline - now) * plan
+    state["attempts"] += 1
+    if adopted:
+        state["attempt_open"] = invocation
+        _discovery_write_state(root, state)
+    initial_extra = {scope: set(hints[scope].extra) for scope in _DISCOVERY_SCOPES}
+    attempt = _discovery_list(root, hints, share_end=share_end, adopted=adopted)
+    state["max_listed"] = max(state["max_listed"], attempt["listed"])
+    outcome = "incomplete"
+    if attempt["complete"]:
+        outcome = "ok"
+        if adopted:
+            for scope in _DISCOVERY_SCOPES:
+                outcome = _discovery_commit(
+                    root, scope, hints[scope], attempt["seen"][scope],
+                    initial_extra[scope], deadline)
+                if outcome != "ok":
+                    break
+    state["attempt_open"] = None
+    if outcome == "ok":
+        state["generation"] += 1
+        state["complete"] = {"generation": state["generation"],
+                             "invocation": invocation,
+                             "scopes": attempt["facts"]}
+        state.update(debt=0, attempts=0, max_listed=0,
+                     capacity_exceeded=False, last_error=None)
+    else:
+        state["debt"] += 1
+        error = attempt["error"] or ("commit_failed" if outcome == "error" else None)
+        state["last_error"] = error
+        if plan == 1.0 and error is None:
+            state["capacity_exceeded"] = True
+    info.update(share=plan, listed=attempt["listed"], complete=outcome == "ok",
+                error=state["last_error"],
+                generation_entries=len(attempt["seen"]["namespace"]))
+    context["current"] = outcome == "ok"
+    if adopted:
+        # Close the write-ahead attempt mark now: a crash later in the pass
+        # must not be counted as a failed discovery attempt.
+        _discovery_write_state(root, state)
+
+
+def _discovery_begin(root: Path, *, deadline: float | None, adopted: bool,
+                     force: bool = False) -> dict[str, Any]:
+    """Load, then run the planned attempt immediately (adoption path)."""
+    context = _discovery_load(root, deadline=deadline, adopted=adopted, force=force)
+    _discovery_attempt(context, deadline)
+    return context
+
+
+def _discovery_finish(root: Path, context: dict[str, Any],
+                      records_cursor: str | None = None) -> None:
+    """Persist the invocation's discovery progress (adopted roots only):
+    the records window cursor and each journal's current size, whose later
+    shrinking marks the journal suspect."""
+    if not context["adopted"]:
+        return
+    state = context["state"]
+    if records_cursor is not None:
+        state["records_cursor"] = records_cursor
+    for scope in _DISCOVERY_SCOPES:
+        try:
+            info = _discovery_journal_path(root, scope).lstat()
+            size = info.st_size if stat.S_ISREG(info.st_mode) else 0
+        except OSError:
+            size = 0
+        state["journal_size"][scope] = size
+    _discovery_write_state(root, state)
+
+
+def _discovery_report(context: dict[str, Any]) -> dict[str, Any]:
+    """Stable discovery progress for the report and its consumers."""
+    state, info = context["state"], context["info"]
+    return {
+        "generation": state["generation"],
+        "attempts": state["attempts"],
+        "debt": state["debt"],
+        "max_listed": state["max_listed"],
+        "capacity_exceeded": bool(state["capacity_exceeded"]),
+        "needed": info["needed"],
+        "reasons": list(info["reasons"]),
+        "share": info["share"],
+        "listed": info["listed"],
+        "generation_complete": bool(context["current"]),
+        "error": state["last_error"],
+        "skipped": info["skipped"],
+    }
 
 
 def _retention_quarantine_dir(root: Path) -> Path:
@@ -24616,46 +25358,67 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
         os.close(dir_fd)
 
 
+# Purge removes each entry as soon as the listing yields it (R5, RF-C01
+# DISCOVERY purge progress): a removed entry leaves the directory, so the
+# next pass -- in this process or a fresh one -- lists only what remains and
+# every budgeted pass makes durable progress. Collecting a whole level
+# before the first removal (the R3 shape) let a level larger than one
+# pass's budget stay untouched forever. Removing while listing is allowed by
+# both platforms' listing contracts; an entry a listing skips is found by
+# the next scan of the same level, which repeats until a scan yields
+# nothing. Identity anchoring is unchanged: POSIX descends only through
+# O_NOFOLLOW descriptors whose identity matches the listed entry.
+
+
 def _retention_purge_tree_posix(dir_fd: int, deadline: float | None) -> bool:
-    entries = []
-    try:
-        with os.scandir(dir_fd) as iterator:
-            for entry in iterator:
-                if deadline is not None and time.monotonic() >= deadline:
-                    return False
-                entries.append(entry)
-    except OSError:
-        return False
-    for entry in entries:
-        if deadline is not None and time.monotonic() >= deadline:
-            return False
+    while True:
+        yielded = False
         try:
-            if entry.is_dir(follow_symlinks=False):
-                flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                         | getattr(os, "O_NOFOLLOW", 0))
-                try:
-                    child_fd = os.open(entry.name, flags, dir_fd=dir_fd)
-                except OSError:
-                    return False  # vanished, linked or unreadable: stop, keep record
-                try:
-                    child_after = os.fstat(child_fd)
-                    child_before = entry.stat(follow_symlinks=False)
-                    if ((child_after.st_dev, child_after.st_ino)
-                            != (child_before.st_dev, child_before.st_ino)):
+            with os.scandir(dir_fd) as iterator:
+                while True:
+                    if deadline is not None and time.monotonic() >= deadline:
                         return False
-                    if not _retention_purge_tree_posix(child_fd, deadline):
+                    try:
+                        entry = next(iterator)
+                    except StopIteration:
+                        break
+                    yielded = True
+                    if not _retention_purge_entry_posix(dir_fd, entry, deadline):
                         return False
-                    # Empty child directory is removed by its own recursion's
-                    # caller below via the parent descriptor.
-                    os.rmdir(entry.name, dir_fd=dir_fd)
-                finally:
-                    os.close(child_fd)
-            else:
-                os.unlink(entry.name, dir_fd=dir_fd)
-        except FileNotFoundError:
-            continue
         except OSError:
             return False
+        if not yielded:
+            return True
+
+
+def _retention_purge_entry_posix(dir_fd: int, entry: os.DirEntry,
+                                 deadline: float | None) -> bool:
+    try:
+        if entry.is_dir(follow_symlinks=False):
+            flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                     | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                child_fd = os.open(entry.name, flags, dir_fd=dir_fd)
+            except OSError:
+                return False  # vanished, linked or unreadable: stop, keep record
+            try:
+                child_after = os.fstat(child_fd)
+                child_before = entry.stat(follow_symlinks=False)
+                if ((child_after.st_dev, child_after.st_ino)
+                        != (child_before.st_dev, child_before.st_ino)):
+                    return False
+                if not _retention_purge_tree_posix(child_fd, deadline):
+                    return False
+                # The emptied child is removed through the parent descriptor.
+                os.rmdir(entry.name, dir_fd=dir_fd)
+            finally:
+                os.close(child_fd)
+        else:
+            os.unlink(entry.name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
     return True
 
 
@@ -24669,38 +25432,46 @@ def _retention_purge_tree_windows(path: Path, deadline: float | None) -> bool:
     if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
             or getattr(info, "st_file_attributes", 0) & 0x400):
         return False
-    entries = []
-    try:
-        with os.scandir(path) as iterator:
-            for entry in iterator:
-                if deadline is not None and time.monotonic() >= deadline:
-                    return False
-                entries.append(entry)
-    except OSError:
-        return False
-    for entry in entries:
-        if deadline is not None and time.monotonic() >= deadline:
-            return False
+    while True:
+        yielded = False
         try:
-            child = Path(entry.path)
-            child_info = child.lstat()
-            if stat.S_ISDIR(child_info.st_mode):
-                if (getattr(child_info, "st_file_attributes", 0) & 0x400
-                        or child.is_symlink()):
-                    # A junction or symlink directory is unlinked as an
-                    # object, never descended into.
-                    child.unlink()
-                    continue
-                if not _retention_purge_tree_windows(child, deadline):
-                    return False
-            else:
-                child.unlink()
-        except FileNotFoundError:
-            continue
+            with os.scandir(path) as iterator:
+                while True:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return False
+                    try:
+                        entry = next(iterator)
+                    except StopIteration:
+                        break
+                    yielded = True
+                    if not _retention_purge_entry_windows(entry, deadline):
+                        return False
         except OSError:
             return False
+        if not yielded:
+            break
     try:
         path.rmdir()
+    except OSError:
+        return False
+    return True
+
+
+def _retention_purge_entry_windows(entry: os.DirEntry, deadline: float | None) -> bool:
+    try:
+        child = Path(entry.path)
+        child_info = child.lstat()
+        if stat.S_ISDIR(child_info.st_mode):
+            if (getattr(child_info, "st_file_attributes", 0) & 0x400
+                    or child.is_symlink()):
+                # A junction or symlink directory is unlinked as an
+                # object, never descended into.
+                child.unlink()
+                return True
+            return _retention_purge_tree_windows(child, deadline)
+        child.unlink()
+    except FileNotFoundError:
+        return True
     except OSError:
         return False
     return True
@@ -24820,11 +25591,10 @@ def _retention_read_record(path: Path) -> dict[str, Any] | None:
 # Bounded enumeration (R3, RF-C01-DISCOVERY). Every directory listing in
 # retention maintenance checks its caller's deadline before each entry; no
 # listing is materialized with sorted()/list() ahead of the budget check.
-# The namespace backfill and the per-pass record scan RESUME their open
-# listing across passes in the same process, so a finite directory is
-# eventually covered even when one pass's budget cannot list it once.
-# Across processes a listing restarts (readdir positions are not portable);
-# names it reached are registered, so progress already made is kept.
+# Listings are never resumed: readdir positions are not portable across
+# processes, and scheduled maintenance is a fresh process each time. Cross-
+# process progress comes from the durable discovery hints and window
+# cursors (plan D1, ``_discovery_begin``) instead.
 _RETENTION_ENUMERATIONS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
@@ -25137,6 +25907,10 @@ def _retention_quarantine_object(
             "tree": tree,
             "restore": "context_guard.py cleanup --restore <name>",
         }
+        # Write-ahead discovery hint: the record name is journaled before the
+        # record exists, so the records window reaches it from any later
+        # process without listing the quarantine directory (hint only).
+        _discovery_append(root, "records", [record_path.name])
         _retention_write_record(record_path, record)
     except (OSError, PrivateBoundaryError) as exc:
         outcome.update(action="skipped", reason="quarantine_failed",
@@ -25205,6 +25979,9 @@ def _retention_complete_purge(
     tombstone_path = qdir / (str(record["quarantine_object"]) + ".tombstone.json")
     try:
         if not tombstone_path.exists():
+            # Write-ahead hint so tombstone expiry is reached by the window.
+            _discovery_append(qdir.parent.parent.parent, "records",
+                              [tombstone_path.name])
             _retention_write_record(tombstone_path, {
                 "schema": RETENTION_TOMBSTONE_SCHEMA,
                 "original_name": record["original_name"],
@@ -25314,23 +26091,141 @@ def _retention_empty_purge_summary() -> dict[str, int]:
             "purge_refused": 0, "purge_busy": 0, "tombstone_pending": 0}
 
 
+def _retention_purge_record(
+    root: Path, qdir: Path, record_path: Path, record: dict[str, Any],
+    now: dt.datetime, deadline: float | None, summary: dict[str, int],
+) -> str:
+    """Move one record's object toward permanent reclaim (one window unit).
+
+    The object is purged only while the CURRENT policy authorizes it, the
+    original name's lifecycle lock is held (a live writer or reader of that
+    name defers the purge), and the target is still the record's bound
+    directory. ``purge_planned`` is written before the first unlink -- from
+    then on the object is never restorable -- and the bounded removal
+    resumes on later passes. The tombstone is written before the record is
+    retired; a lost tombstone write is completed from the record next pass.
+    Returns "deadline" when the budget ended before a transition started or
+    cut the bounded removal (the caller keeps its window position, so the
+    next pass resumes this object first), otherwise "done".
+    """
+    state = record.get("state")
+    if state not in {"quarantined", "purge_planned"}:
+        return "done"  # intent states are recovery business
+    current = read_retention_policy(root)
+    if state == "quarantined":
+        quarantined = parse_time(str(record.get("quarantined_at") or ""))
+        if quarantined is None:
+            summary["purge_pending"] += 1
+            return "done"
+        grace = float(current["quarantine_days"])
+        if (now - quarantined).total_seconds() < grace * 86400.0:
+            summary["purge_pending"] += 1
+            return "done"
+    if (not current["enabled"] or not current["purge_enabled"]
+            or current.get("policy_invalid")):
+        summary["purge_disabled"] += 1
+        return "done"
+    home = root / V2_NAMESPACE / str(record["original_name"])
+    release = _retention_acquire_lifecycle_lock(home)
+    if release is None:
+        summary["purge_busy"] += 1
+        return "done"
+    try:
+        fresh = _retention_read_record(record_path)
+        if fresh is None or fresh.get("state") != state:
+            summary["purge_pending"] += 1
+            return "done"
+        record = fresh
+        target = qdir / str(record["quarantine_object"])
+        try:
+            target_info = _retention_lstat(target)
+        except OSError:
+            summary["purge_pending"] += 1
+            return "done"
+        if target_info is None:
+            cause = "purged" if state == "purge_planned" else "object_missing"
+            if _retention_complete_purge(qdir, record_path, record, now,
+                                         cause=cause):
+                summary["purged"] += 1
+            else:
+                summary["tombstone_pending"] += 1
+            return "done"
+        if not _retention_bound_dir(target_info, record):
+            # A replaced or linked quarantine object never authorizes
+            # removal of whatever occupies its name.
+            summary["purge_refused"] += 1
+            return "done"
+        if deadline is not None and time.monotonic() >= deadline:
+            return "deadline"
+        if state == "quarantined":
+            record = dict(record, state="purge_planned",
+                          purge_started_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            try:
+                _retention_write_record(record_path, record)
+            except (OSError, PrivateBoundaryError):
+                summary["purge_pending"] += 1
+                return "done"
+        # Re-bind after the intent is durable, and hand the bound identity
+        # to the removal itself: it opens the root without following links
+        # and refuses unless the opened directory IS the record's object.
+        if not (_retention_parents_ok(root) and _retention_holds(target, record)):
+            summary["purge_refused"] += 1
+            return "done"
+        with _retention_expect_root(record["identity"]):
+            removed = _retention_purge_tree(target, deadline)
+        if not removed:
+            if _retention_lstat_or_marker(target) is None:
+                removed = True  # gone between the removal and this check
+            elif not _retention_holds(target, record):
+                summary["purge_refused"] += 1
+                return "done"
+            else:
+                summary["purge_partial"] += 1
+                if deadline is not None and time.monotonic() >= deadline:
+                    # Cut by the budget: unfinished work keeps the window
+                    # position so the next pass resumes this object first.
+                    return "deadline"
+                return "done"
+        if _retention_complete_purge(qdir, record_path, record, now):
+            summary["purged"] += 1
+        else:
+            summary["tombstone_pending"] += 1
+        return "done"
+    finally:
+        release()
+
+
+def _retention_retire_tombstone(qdir: Path, tombstone: Path, now: dt.datetime,
+                                summary: dict[str, int]) -> None:
+    """Tombstones themselves expire so purge history cannot grow forever."""
+    cutoff = now - dt.timedelta(days=_RETENTION_TOMBSTONE_RETENTION_DAYS)
+    try:
+        if _retention_dir_identity(qdir) is None:
+            return
+        try:
+            record = json.loads(tombstone.read_text(encoding="utf-8"))
+            purged = parse_time(str(record.get("purged_at") or ""))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return
+        if (isinstance(record, dict)
+                and record.get("schema") == RETENTION_TOMBSTONE_SCHEMA
+                and purged is not None and purged < cutoff):
+            tombstone.unlink(missing_ok=True)
+            summary["tombstones_retired"] += 1
+    except OSError:
+        pass
+
+
 def _retention_purge_pass(
     root: Path, policy: dict[str, Any], now: dt.datetime,
     deadline: float | None, *,
     records: list[tuple[Path, dict[str, Any]]] | None = None,
     tombstones: list[Path] | None = None,
 ) -> dict[str, Any]:
-    """Quarantine past its grace period moves to permanent reclaim.
-
-    Each object is purged only while the CURRENT policy authorizes it, the
-    original name's lifecycle lock is held (a live writer or reader of that
-    name defers the purge), and the target is still the record's bound
-    directory. ``purge_planned`` is written before the first unlink — from
-    then on the object is never restorable — and the bounded removal
-    resumes on later passes. The tombstone is written before the record is
-    retired; a lost tombstone write is completed from the record next pass.
-    """
-    del policy  # re-read per object below, inside the held locks
+    """Quarantine past its grace period moves to permanent reclaim, over an
+    explicit record list (or one bounded listing). Maintenance passes drive
+    the same per-record step through the durable records window instead."""
+    del policy  # re-read per object, inside the held locks
     summary = _retention_empty_purge_summary()
     qdir = _retention_quarantine_dir(root)
     if records is None or tombstones is None:
@@ -25340,105 +26235,13 @@ def _retention_purge_pass(
     for record_path, record in records:
         if deadline is not None and time.monotonic() >= deadline:
             break
-        state = record.get("state")
-        if state not in {"quarantined", "purge_planned"}:
-            continue  # intent states are recovery business
-        current = read_retention_policy(root)
-        if state == "quarantined":
-            quarantined = parse_time(str(record.get("quarantined_at") or ""))
-            if quarantined is None:
-                summary["purge_pending"] += 1
-                continue
-            grace = float(current["quarantine_days"])
-            if (now - quarantined).total_seconds() < grace * 86400.0:
-                summary["purge_pending"] += 1
-                continue
-        if (not current["enabled"] or not current["purge_enabled"]
-                or current.get("policy_invalid")):
-            summary["purge_disabled"] += 1
-            continue
-        home = root / V2_NAMESPACE / str(record["original_name"])
-        release = _retention_acquire_lifecycle_lock(home)
-        if release is None:
-            summary["purge_busy"] += 1
-            continue
-        try:
-            fresh = _retention_read_record(record_path)
-            if fresh is None or fresh.get("state") != state:
-                summary["purge_pending"] += 1
-                continue
-            record = fresh
-            target = qdir / str(record["quarantine_object"])
-            try:
-                target_info = _retention_lstat(target)
-            except OSError:
-                summary["purge_pending"] += 1
-                continue
-            if target_info is None:
-                cause = "purged" if state == "purge_planned" else "object_missing"
-                if _retention_complete_purge(qdir, record_path, record, now,
-                                             cause=cause):
-                    summary["purged"] += 1
-                else:
-                    summary["tombstone_pending"] += 1
-                continue
-            if not _retention_bound_dir(target_info, record):
-                # A replaced or linked quarantine object never authorizes
-                # removal of whatever occupies its name.
-                summary["purge_refused"] += 1
-                continue
-            if deadline is not None and time.monotonic() >= deadline:
-                break
-            if state == "quarantined":
-                record = dict(record, state="purge_planned",
-                              purge_started_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-                try:
-                    _retention_write_record(record_path, record)
-                except (OSError, PrivateBoundaryError):
-                    summary["purge_pending"] += 1
-                    continue
-            # Re-bind after the intent is durable, and hand the bound
-            # identity to the removal itself: it opens the root without
-            # following links and refuses unless the opened directory IS
-            # the record's object.
-            if not (_retention_parents_ok(root) and _retention_holds(target, record)):
-                summary["purge_refused"] += 1
-                continue
-            with _retention_expect_root(record["identity"]):
-                removed = _retention_purge_tree(target, deadline)
-            if not removed:
-                if _retention_lstat_or_marker(target) is None:
-                    removed = True  # gone between the removal and this check
-                elif not _retention_holds(target, record):
-                    summary["purge_refused"] += 1
-                    continue
-                else:
-                    summary["purge_partial"] += 1
-                    continue
-            if _retention_complete_purge(qdir, record_path, record, now):
-                summary["purged"] += 1
-            else:
-                summary["tombstone_pending"] += 1
-        finally:
-            release()
-    # Tombstones themselves expire so purge history cannot grow forever.
-    cutoff = now - dt.timedelta(days=_RETENTION_TOMBSTONE_RETENTION_DAYS)
-    try:
-        if _retention_dir_identity(qdir) is not None:
-            for tombstone in tombstones:
-                if deadline is not None and time.monotonic() >= deadline:
-                    break
-                try:
-                    record = json.loads(tombstone.read_text(encoding="utf-8"))
-                    purged = parse_time(str(record.get("purged_at") or ""))
-                except (OSError, UnicodeError, json.JSONDecodeError):
-                    continue
-                if (record.get("schema") == RETENTION_TOMBSTONE_SCHEMA
-                        and purged is not None and purged < cutoff):
-                    tombstone.unlink(missing_ok=True)
-                    summary["tombstones_retired"] += 1
-    except OSError:
-        pass
+        if _retention_purge_record(root, qdir, record_path, record, now,
+                                   deadline, summary) == "deadline":
+            break
+    for tombstone in tombstones:
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        _retention_retire_tombstone(qdir, tombstone, now, summary)
     return summary
 
 
@@ -25627,70 +26430,6 @@ def retention_restore(
         return report
 
 
-def _retention_backfill_discovery(
-    root: Path, deadline: float | None, scan_state: dict[str, Any],
-) -> set[str]:
-    """Phase A of discovery: the candidate names after a budgeted backfill.
-
-    After adoption the registry is the durable, order-independent candidate
-    list (existing sessions are registered when a policy is enabled, later
-    sessions at creation). The backfill finds names the registry does not
-    carry (sessions created by older runtimes; a missing, oversized or
-    corrupted registry) and, once adopted, registers them. Every readdir
-    entry — decided or not — is charged against an explicit share of the
-    pass budget, checked before each entry. The listing is a GENERATION
-    that resumes in the next pass of this process instead of restarting at
-    the directory's first entry, so a finite tail is reached after a bounded
-    number of passes even when no single pass can list the directory once.
-    A completed generation compacts the registry to the names it saw.
-    """
-    namespace = root / V2_NAMESPACE
-    registry = _read_discovery_registry(root, deadline=deadline)
-    share_end: float | None = None
-    if deadline is not None:
-        started = time.monotonic()
-        share_end = started + max(0.0, deadline - started) * _RETENTION_BACKFILL_BUDGET_SHARE
-    key, state, why = _retention_enum_open(namespace, "namespace", resume=True)
-    fresh: list[str] = []
-    read = 0
-    complete = why == "absent"
-    if state is not None:
-        try:
-            while True:
-                if share_end is not None and time.monotonic() >= share_end:
-                    break
-                name = _retention_enum_next(state)
-                if name is None:
-                    complete = True
-                    break
-                read += 1
-                if name == ".locks" or not _is_session_component(name):
-                    continue
-                state["seen"].add(name)
-                if name not in registry:
-                    fresh.append(name)
-        except OSError:
-            _retention_close_enumeration(key)
-            complete = False
-    generation = set(state["seen"]) if state is not None else set()
-    # Maintenance objects are written only after adoption (a policy object
-    # exists); a preview of an unadopted root discovers read-only.
-    adopted = _retention_policy_path(root).exists()
-    if fresh:
-        if adopted:
-            _add_cleanup_registry_entries(root, fresh)
-        registry.update(fresh)
-    scan_state["backfill_complete"] = complete
-    scan_state["backfill_entries"] = read
-    scan_state["backfill_generation_entries"] = len(generation)
-    if complete:
-        _retention_close_enumeration(key)
-        if adopted and registry != generation:
-            _compact_discovery_registry(root, generation)
-        return generation
-    return registry | generation
-
-
 def _retention_apply_object(
     root: Path, candidate: Path, item: dict[str, Any],
     policy: dict[str, Any], now: dt.datetime,
@@ -25791,15 +26530,21 @@ def _retention_maintenance_pass(
     """One bounded maintenance pass.
 
     Work order, every unit checked against the single pass deadline: wait
-    for the maintenance lock (the deadline bounds the wait), settle
-    interrupted transactions, budgeted backfill discovery (Phase A), the
-    persisted pending queue, then the registered names in stable sorted
-    order after the persisted window cursor, wrapping into a new
-    generation when the window completes. A candidate that is not reached
-    stays registered and is reached by a later pass, so every finite set
-    of registered names is adjudicated within a bounded number of passes
-    regardless of readdir order, insertions or deletions. No destructive
-    transition starts after the deadline.
+    for the maintenance lock (the deadline bounds the wait); a discovery
+    generation when one is needed (plan D1, see ``_discovery_begin``); the
+    durable records window -- quarantine records and tombstones in stable
+    sorted order after a persisted cursor: interrupted transactions are
+    settled and, under apply, objects past grace advance toward purge --
+    first within a third of the remaining budget; the persisted pending
+    queue; the registered namespace names in stable sorted order after the
+    persisted window cursor; then the records window again with whatever
+    budget is left. Both windows read the durable hints (snapshot + journal)
+    and portable positions, so registered work advances across fresh
+    processes without listing either directory and regardless of readdir
+    order, insertions or deletions. No destructive transition starts after
+    the deadline. ``scan_complete`` needs a current discovery generation and
+    both windows at their end; beyond capacity the report says
+    ``capacity_exceeded`` with backlog instead.
     """
     started = time.monotonic()
     now = dt.datetime.now(dt.timezone.utc)
@@ -25811,6 +26556,7 @@ def _retention_maintenance_pass(
         "entries": [],
         "backlog": False,
         "scan_complete": False,
+        "capacity_exceeded": False,
     }
     if not _maintenance_boundary_ok(root):
         report["refused"] = "boundary"
@@ -25854,20 +26600,65 @@ def _retention_maintenance_pass(
                 raise RuntimeError(
                     "retention policy changed since the manifest was generated")
 
-        # One budgeted record listing per pass feeds recovery, the unknown
-        # count and the purge stage; it resumes in the next pass of this
-        # process. Interrupted transactions are settled before new work.
+        # Maintenance objects are written only after adoption (a policy
+        # object exists); a preview of an unadopted root discovers read-only.
+        adopted = _retention_policy_path(root).exists()
+        discovery = _discovery_load(root, deadline=deadline, adopted=adopted)
+        ns_hints: _DiscoveryHints = discovery["hints"]["namespace"]
+        record_hints: _DiscoveryHints = discovery["hints"]["records"]
+
+        # The durable records window (settle, purge, tombstone expiry).
         qdir = _retention_quarantine_dir(root)
-        records_end: float | None = None
-        if deadline is not None:
-            started_records = time.monotonic()
-            records_end = started_records + max(
-                0.0, deadline - started_records) * _RETENTION_RECORD_BUDGET_SHARE
-        listing = _retention_collect_records(qdir, records_end, resume=True)
-        report["recovery"] = _retention_recover_records(
-            qdir, now, deadline=deadline, records=listing["valid"])
-        report["unknown_records"] = len(listing["unknown"])
-        report["records_scan_complete"] = listing["complete"]
+        purge_active = bool(apply and policy["enabled"]
+                            and not policy.get("policy_invalid")
+                            and policy["purge_enabled"])
+        purge_summary = _retention_empty_purge_summary()
+        recovery = {"rolled_back": 0, "recovered": 0, "completed": 0,
+                    "indeterminate": 0}
+        records = {"cursor": discovery["state"]["records_cursor"],
+                   "complete": False, "unknown": 0}
+        # One window cycle runs from the persisted cursor to the end of the
+        # hints; reaching the end completes the cycle and resets the cursor.
+        record_names = record_hints.after(records["cursor"])
+        records["resume"] = None
+
+        def next_record() -> str | None:
+            if records["resume"] is not None:
+                name, records["resume"] = records["resume"], None
+                return name
+            return next(record_names, None)
+
+        def records_window(until: float | None) -> None:
+            """Serve records until ``until``. The share only bounds STARTING
+            a unit: a started purge runs to the pass deadline, because a
+            removal re-lists its object's prefix path on every pass and a
+            cut at the share would pay that prefix twice per pass."""
+            if records["complete"]:
+                return
+            while True:
+                if until is not None and time.monotonic() >= until:
+                    return
+                name = next_record()
+                if name is None:
+                    records["complete"] = True
+                    return
+                if _retention_records_step(
+                        root, qdir, name, now, deadline=deadline,
+                        purge_active=purge_active, summary=purge_summary,
+                        recovery=recovery, records=records) == "deadline":
+                    records["resume"] = name
+                    return
+                records["cursor"] = name
+
+        # A full-share discovery attempt keeps the whole remaining budget;
+        # otherwise the records window is served first within its share.
+        if discovery["plan"] != 1.0:
+            records_end: float | None = None
+            if deadline is not None:
+                started_records = time.monotonic()
+                records_end = started_records + max(
+                    0.0, deadline - started_records) * _RETENTION_RECORD_BUDGET_SHARE
+            records_window(records_end)
 
         cursor, pending = _read_cleanup_state(root)
         namespace = root / V2_NAMESPACE
@@ -25914,7 +26705,13 @@ def _retention_maintenance_pass(
                 # transition the deadline cut before it started is re-queued
                 # so the next pass serves it first.
                 if apply and manifest is None:
-                    if _retention_apply_object(
+                    if not _retention_settle_name_intents(
+                            root, qdir, name, record_hints, now, recovery):
+                        report["counts"]["skipped"] += 1
+                        _retention_report_entry(report, {
+                            "name": name, "verdict": "skipped",
+                            "reason": "transaction_indeterminate"})
+                    elif _retention_apply_object(
                             root, candidate, entry, policy, now, report,
                             manifest=None, deadline=deadline) == "deferred":
                         requeue.add(name)
@@ -25930,38 +26727,28 @@ def _retention_maintenance_pass(
             if not visit(name):
                 unserved = queued[index:]
                 break
-        # 2. Budgeted backfill discovery (a share of what remains).
-        scan_state: dict[str, Any] = {}
+        # 2. A discovery generation attempt when one is planned (a share of
+        # what remains). Deferred queue work keeps the budget first, as in
+        # R2/R3; an unserved queue postpones the attempt without debt.
         if not unserved and not progress["interrupted"]:
-            registry = _retention_backfill_discovery(root, deadline, scan_state)
-        else:
-            registry = _read_discovery_registry(root, deadline=deadline)
-            scan_state["backfill_complete"] = False
+            _discovery_attempt(discovery, deadline)
+        elif discovery["plan"] is not None:
+            discovery["plan"] = None
+            discovery["info"]["skipped"] = "queue_backlog"
         # 3. Registered names in stable order after the window cursor.
         queued_set = set(queued)
-        window = sorted(name for name in registry
-                        if name not in queued_set and (not cursor or name > cursor))
         last_window: str | None = None
         window_complete = not unserved
         if window_complete:
-            for name in window:
+            for name in ns_hints.after(cursor):
+                if name in queued_set:
+                    continue
                 if not visit(name):
                     window_complete = False
                     break
                 last_window = name
         interrupted = progress["interrupted"]
-        scan_complete = (bool(scan_state.get("backfill_complete"))
-                         and window_complete and not interrupted)
-        report["scan_complete"] = scan_complete
-        report["discovery"] = {
-            "backfill_complete": bool(scan_state.get("backfill_complete")),
-            "backfill_entries": scan_state.get("backfill_entries", 0),
-            "backfill_generation_entries": scan_state.get("backfill_generation_entries", 0),
-            "registered": len(registry),
-            "window_complete": window_complete,
-            "records_complete": listing["complete"],
-        }
-        report["protected_reasons"] = protected_reasons
+
         if with_manifest:
             binding = _retention_make_manifest(root, policy, eligible_entries, now)
             if binding["entries"]:
@@ -25994,14 +26781,39 @@ def _retention_maintenance_pass(
                  if (namespace / entry["name"]).exists()],
                 now)
             report["manifest_sha256"] = binding["manifest_sha256"]
+
+        # 4. The records window continues with whatever budget is left.
+        records_window(deadline)
+        report["recovery"] = recovery
+        report["unknown_records"] = records["unknown"]
         if apply and policy["enabled"] and not policy.get("policy_invalid"):
-            if policy["purge_enabled"]:
-                report["purge"] = _retention_purge_pass(
-                    root, policy, now, deadline, records=listing["valid"],
-                    tombstones=listing["tombstones"])
-            else:
-                report["purge"] = dict(_retention_empty_purge_summary(),
-                                       purge_disabled=1)
+            report["purge"] = (purge_summary if policy["purge_enabled"] else
+                               dict(_retention_empty_purge_summary(), purge_disabled=1))
+
+        generation_current = bool(discovery["current"])
+        records_complete = records["complete"] and generation_current
+        report["records_scan_complete"] = records_complete
+        scan_complete = (generation_current and window_complete
+                         and records_complete and not interrupted)
+        report["scan_complete"] = scan_complete
+        progress_report = _discovery_report(discovery)
+        report["capacity_exceeded"] = progress_report["capacity_exceeded"]
+        next_cursor = "" if window_complete else (last_window or cursor)
+        records_cursor = "" if records["complete"] else records["cursor"]
+        progress_report.update({
+            # R3 field names stay readable for existing consumers.
+            "backfill_complete": generation_current,
+            "backfill_entries": discovery["info"]["listed"],
+            "backfill_generation_entries": discovery["info"]["generation_entries"],
+            "registered": ns_hints.count(),
+            "records_registered": record_hints.count(),
+            "window_complete": window_complete,
+            "window_cursor": next_cursor,
+            "records_complete": records_complete,
+            "records_cursor": records_cursor,
+        })
+        report["discovery"] = progress_report
+        report["protected_reasons"] = protected_reasons
 
         # Persist progress: the window cursor advances only past processed
         # names and resets when a generation completes; unprocessed queue
@@ -26010,16 +26822,81 @@ def _retention_maintenance_pass(
         if apply:
             remaining |= {name for name in apply_deferred
                           if _is_session_component(name)}
-        next_cursor = "" if window_complete else (last_window or cursor)
-        if not remaining and scan_complete and listing["complete"]:
+        if not remaining and scan_complete:
             _reset_cleanup_state(root, deadline=deadline)
             report["backlog"] = False
         else:
             _write_cleanup_state(root, next_cursor, sorted(remaining),
                                  deadline=deadline)
             report["backlog"] = True
+        _discovery_finish(root, discovery, records_cursor)
     report["elapsed_seconds"] = round(time.monotonic() - started, 4)
     return report
+
+
+def _retention_settle_name_intents(
+    root: Path, qdir: Path, name: str, record_hints: "_DiscoveryHints",
+    now: dt.datetime, recovery: dict[str, int],
+) -> bool:
+    """Settle this name's interrupted transactions before a new quarantine.
+
+    The records hints carry every record maintenance wrote (write-ahead), so
+    the name's records are found by a prefix range without listing the
+    quarantine directory, and an interrupted intent is decided while its
+    home object is still where the intent left it. Returns False when an
+    intent for the name stays unresolved: starting a second transaction for
+    the same name would make the first one indeterminate.
+    """
+    for hint in record_hints.with_prefix(f"{name}."):
+        if not hint.endswith(".record.json"):
+            continue
+        path = qdir / hint
+        record = _retention_read_record(path)
+        if record is None or record.get("original_name") != name:
+            continue
+        if record.get("state") == "quarantined":
+            continue
+        outcome = _retention_settle_record(root, qdir, path, record, now)
+        if outcome in recovery:
+            recovery[outcome] += 1
+        if outcome in ("indeterminate", "unchanged"):
+            return False
+    return True
+
+
+def _retention_records_step(
+    root: Path, qdir: Path, name: str, now: dt.datetime, *,
+    deadline: float | None, purge_active: bool, summary: dict[str, int],
+    recovery: dict[str, int], records: dict[str, Any],
+) -> str:
+    """One records-window unit: a hint names a record or a tombstone, which
+    is read from its own fixed name (no directory listing). A hint whose
+    file no longer exists is skipped; an unreadable or unsupported record
+    is counted as unknown and never becomes a transition input."""
+    path = qdir / name
+    if name.endswith(".tombstone.json"):
+        if purge_active:
+            _retention_retire_tombstone(qdir, path, now, summary)
+        return "done"
+    record = _retention_read_record(path)
+    if record is None:
+        try:
+            present = _retention_lstat(path) is not None
+        except OSError:
+            present = True
+        if present:
+            records["unknown"] += 1
+        return "done"
+    if record.get("state") != "quarantined":
+        outcome = _retention_settle_record(root, qdir, path, record, now)
+        if outcome in recovery:
+            recovery[outcome] += 1
+        if outcome != "unchanged":
+            return "done"
+    if purge_active:
+        return _retention_purge_record(root, qdir, path, record, now,
+                                       deadline, summary)
+    return "done"
 
 
 def cleanup_old_sessions(

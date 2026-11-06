@@ -716,7 +716,7 @@ def portable_acceptance(root: Path, source_commit: str, codex: str,
         "unperformed_actions": ["commit", "push", "merge", "tag", "release", "public_promotion"]}
 
 
-RETENTION_BATCH_SCHEMA = "cg-retention-native-batch/v2"
+RETENTION_BATCH_SCHEMA = "cg-retention-native-batch/v3"
 # The exact scenario set a consumer requires; a missing, renamed or extra
 # scenario fails the batch instead of shrinking it.
 RETENTION_BATCH_SCENARIOS = (
@@ -729,7 +729,81 @@ RETENTION_BATCH_SCENARIOS = (
     "purge_partial_resume",
     "crash_boundaries",
     "replacement_refusal",
+    # v3 (0.17.0 R5, plan D1): every invocation is a fresh process.
+    "fresh_process_discovery_within_capacity",
+    "fresh_process_capacity_exceeded",
+    "fresh_process_purge_progress",
 )
+
+# A fresh interpreter running the real maintenance entry under a modeled
+# clock: each namespace/quarantine entry listed costs LIST ms, each entry
+# listed inside an object being purged costs PURGE ms, each deadline check
+# one microsecond. The order model lists names sorted (a stable adversarial
+# order); costs are charged per yielded entry. Used where a deterministic
+# budget is needed; the within-capacity scenario runs the real CLI instead.
+_RETENTION_FRESH_DRIVER = r"""
+import importlib.util, json, os, sys
+from pathlib import Path
+from unittest import mock
+script, data_dir = sys.argv[1], Path(sys.argv[2])
+budget, list_ms, purge_ms, future = (float(value) for value in sys.argv[3:7])
+spec = importlib.util.spec_from_file_location("context_guard_fresh", script)
+cg = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cg)
+clock = [1000.0]
+def monotonic():
+    clock[0] += 1e-6
+    return clock[0]
+namespace = data_dir / cg.V2_NAMESPACE
+qdir = cg._retention_quarantine_dir(data_dir)
+real_scandir = os.scandir
+class Charged:
+    def __init__(self, source, cost, names=None):
+        self.source, self.cost = source, cost
+        self.names = iter(names) if names is not None else None
+    def __iter__(self):
+        return self
+    def __next__(self):
+        entry = next(self.names) if self.names is not None else next(self.source)
+        clock[0] += self.cost
+        return entry
+    def close(self):
+        self.source.close()
+    def __enter__(self):
+        return self
+    def __exit__(self, *exc):
+        self.close()
+        return False
+def scandir(path):
+    source = real_scandir(path)
+    if isinstance(path, int):
+        return Charged(source, purge_ms / 1000.0)
+    target = Path(path)
+    if target in (namespace, qdir):
+        return Charged(source, list_ms / 1000.0, sorted(source, key=lambda e: e.name))
+    if qdir in target.parents:
+        return Charged(source, purge_ms / 1000.0)
+    return source
+patches = [mock.patch.object(cg.time, "monotonic", side_effect=monotonic),
+           mock.patch.object(cg.os, "scandir", side_effect=scandir)]
+if future:
+    real_datetime = cg.dt.datetime
+    moment = real_datetime.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=future)
+    class Future(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment if tz is not None else moment.replace(tzinfo=None)
+    patches.append(mock.patch.object(cg.dt, "datetime", Future))
+for patch in patches:
+    patch.start()
+start = clock[0]
+report = cg.cleanup_old_sessions(data_dir, apply=True, deadline=start + budget / 1000.0)
+print(json.dumps({"backlog": report.get("backlog"),
+                  "scan_complete": report.get("scan_complete"),
+                  "capacity_exceeded": report.get("capacity_exceeded"),
+                  "purge": report.get("purge"),
+                  "virtual_ms": round((clock[0] - start) * 1000.0, 4)}))
+"""
 _RETENTION_LEDGER_FIELDS = ("requirements", "acceptance_items", "work_units",
                             "open_items", "wait_conditions")
 
@@ -809,6 +883,7 @@ def validate_retention_batch_result(
         if (not isinstance(checks, dict) or not checks
                 or any(value is not True for value in checks.values())):
             errors.append(f"checks:{name}")
+    errors.extend(_validate_fresh_process_rows(by_name))
     kept = by_name.get("kept_ledger_readback", {}).get("detail", {})
     objects = kept.get("objects") if isinstance(kept, dict) else None
     if (not isinstance(objects, list) or len(objects) != 6
@@ -822,6 +897,47 @@ def validate_retention_batch_result(
         errors.append("status_inconsistent")
     if result.get("status") == "passed" and errors:
         errors.append("status_claims_pass")
+    return errors
+
+
+def _validate_fresh_process_rows(by_name: dict[str, Any]) -> list[str]:
+    """Per-run facts of the v3 fresh-process scenarios, re-derived from the
+    recorded runs rather than trusted from the scenario's own checks."""
+    errors: list[str] = []
+
+    def runs_of(name: str) -> list[dict[str, Any]] | None:
+        detail = by_name.get(name, {}).get("detail")
+        runs = detail.get("runs") if isinstance(detail, dict) else None
+        if (not isinstance(runs, list) or not runs
+                or not all(isinstance(run, dict) for run in runs)):
+            return None
+        return runs
+
+    within = runs_of("fresh_process_discovery_within_capacity")
+    if (within is None or len(within) > 6
+            or any(run.get("capacity_exceeded") is not False for run in within)
+            or by_name["fresh_process_discovery_within_capacity"]["detail"].get(
+                "tail_reached_run") not in (1, 2, 3)
+            or within[-1].get("scan_complete") is not True):
+        errors.append("within_capacity_runs")
+    beyond = runs_of("fresh_process_capacity_exceeded")
+    if (beyond is None or len(beyond) < 6
+            or any(run.get("backlog") is not True for run in beyond)
+            or any(run.get("scan_complete") is not False for run in beyond)
+            or any(run.get("capacity_exceeded") is not True for run in beyond[2:])
+            or any(not isinstance(run.get("virtual_ms"), (int, float))
+                   or run["virtual_ms"] > float(run.get("budget_ms", 0)) + 2.0
+                   for run in beyond)):
+        errors.append("capacity_exceeded_runs")
+    purge = by_name.get("fresh_process_purge_progress", {}).get("detail", {})
+    remaining = purge.get("remaining") if isinstance(purge, dict) else None
+    if (not isinstance(remaining, list) or len(remaining) < 3
+            or not all(type(value) is int for value in remaining)
+            or remaining[-1] != 0 or remaining[0] < 19
+            or any(later > earlier for earlier, later in zip(remaining, remaining[1:]))
+            or any(a == b == c for a, b, c in zip(remaining, remaining[1:], remaining[2:])
+                   if c)):
+        errors.append("purge_progress_runs")
     return errors
 
 
@@ -1178,6 +1294,9 @@ def run_retention_batch_scenarios(repo_root: Path) -> list[dict[str, Any]]:
                 and (qdir / (record["quarantine_object"] + ".tombstone.json")).is_file())
             scenario("crash_boundaries", checks)
 
+            _retention_fresh_process_scenarios(
+                cg, repo_root, work, payload, scenario, future_clock)
+
         except Exception as exc:  # noqa: BLE001 - retain failed scenario
             scenarios.append({"name": "batch_error", "status": "failed",
                               "detail": {"error": f"{type(exc).__name__}: {exc}"[:200],
@@ -1190,6 +1309,143 @@ def run_retention_batch_scenarios(repo_root: Path) -> list[dict[str, Any]]:
                 else:
                     os.environ[key] = value
     return scenarios
+
+
+def _retention_fresh_process_scenarios(cg, repo_root: Path, work: Path, payload,
+                                       scenario, future_clock) -> None:
+    """v3 scenarios: every maintenance invocation is a NEW interpreter, the
+    lifetime of the scheduled executor, each on its own synthetic root."""
+    import time as _time
+    script = repo_root / "scripts" / "context_guard.py"
+
+    def make_in(root: Path, name: str, *, ended_days_ago=None, finished=True):
+        previous = os.environ.get("CONTEXT_GUARD_DATA_DIR")
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = str(root)
+        try:
+            cg.dispatch(payload("UserPromptSubmit", name, prompt="请先核对验收说明。"))
+        finally:
+            if previous is None:
+                os.environ.pop("CONTEXT_GUARD_DATA_DIR", None)
+            else:
+                os.environ["CONTEXT_GUARD_DATA_DIR"] = previous
+        home = root / "sessions-v2" / cg.safe_session_id(name)
+        state_path = home / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        if finished:
+            for group in ("requirements", "acceptance_items"):
+                for item in state.get(group, []):
+                    item["status"] = "pass"
+            for unit in state.get("work_units", []):
+                unit["status"] = "completed"
+                unit["closed_at"] = cg.utc_now()
+            state["open_items"] = []
+            state["wait_conditions"] = []
+        if ended_days_ago is not None:
+            state["session"]["ended_at"] = (
+                cg.dt.datetime.now(cg.dt.timezone.utc)
+                - cg.dt.timedelta(days=ended_days_ago)
+            ).isoformat().replace("+00:00", "Z")
+        state["content_hash"] = cg.state_content_hash(state)
+        state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        return home
+
+    def prefix_and_legacy_tail(root: Path, *, registered=None):
+        for index in range(8):
+            make_in(root, f"a-prefix-{index:02d}", finished=False)
+        if registered:
+            make_in(root, registered, ended_days_ago=45)
+        cg.write_retention_policy(root, enabled=True, quarantine_days=1)
+        before = cg._read_discovery_registry(root)
+        tail = make_in(root, "z-legacy-tail", ended_days_ago=45)
+        cg._compact_discovery_registry(root, before)  # an old runtime's creation
+        return tail
+
+    def modeled(root: Path, budget: float, *, list_ms=1.0, purge_ms=0.0, future=0.0):
+        done = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", _RETENTION_FRESH_DRIVER, str(script),
+             str(root), str(budget), str(list_ms), str(purge_ms), str(future)],
+            capture_output=True, text=True, timeout=120, check=True)
+        row = json.loads(done.stdout.strip().splitlines()[-1])
+        row["budget_ms"] = budget
+        return row
+
+    # Within capacity, real executor and real clock: the scheduled command
+    # line (`cleanup --data-dir <root> --apply --json`) in fresh processes.
+    root = work / "fresh-within"
+    (root / "sessions-v2").mkdir(parents=True)
+    tail = prefix_and_legacy_tail(root)
+    hint_lost = cg.safe_session_id("z-legacy-tail") not in cg._read_discovery_registry(root)
+    runs, reached = [], None
+    for index in range(6):
+        done = subprocess.run(
+            [sys.executable, "-B", str(script), "cleanup", "--data-dir", str(root),
+             "--apply", "--json"], capture_output=True, text=True, timeout=120,
+            check=True)
+        report = json.loads(done.stdout)
+        runs.append({"backlog": report.get("backlog"),
+                     "scan_complete": report.get("scan_complete"),
+                     "capacity_exceeded": report.get("capacity_exceeded")})
+        if reached is None and not tail.exists():
+            reached = index + 1
+        if reached is not None and report.get("scan_complete"):
+            break
+        _time.sleep(0.01)
+    scenario("fresh_process_discovery_within_capacity", {
+        "tail_had_no_hint": hint_lost,
+        "tail_reached_within_three": reached is not None and reached <= 3,
+        "never_capacity_exceeded": all(run["capacity_exceeded"] is False for run in runs),
+        "scan_completes": runs[-1]["scan_complete"] is True,
+    }, runs=runs, tail_reached_run=reached)
+
+    # Beyond capacity (modeled 1 ms per listed entry, 4 ms per invocation):
+    # honest capacity report, registered eligible work still advances.
+    root = work / "fresh-beyond"
+    (root / "sessions-v2").mkdir(parents=True)
+    tail = prefix_and_legacy_tail(root, registered="y-registered-eligible")
+    registered = root / "sessions-v2" / cg.safe_session_id("y-registered-eligible")
+    runs = [modeled(root, 4.0) for _ in range(8)]
+    scenario("fresh_process_capacity_exceeded", {
+        "backlog_every_run": all(run["backlog"] is True for run in runs),
+        "never_scan_complete": all(run["scan_complete"] is False for run in runs),
+        "capacity_reported": all(run["capacity_exceeded"] is True for run in runs[2:]),
+        "registered_work_advanced": not registered.exists(),
+        "tail_not_claimed": tail.exists(),
+        "budget_respected": all(run["virtual_ms"] <= run["budget_ms"] + 2.0 for run in runs),
+    }, runs=runs)
+
+    # Purge of a registered quarantined object: 19 children at 1 ms per
+    # listed child, 3 ms per invocation, each invocation a fresh process.
+    root = work / "fresh-purge"
+    (root / "sessions-v2").mkdir(parents=True)
+    home = make_in(root, "purge-finite-wide", ended_days_ago=45)
+    for index in range(16):
+        (home / f"payload-{index:02d}").write_text("synthetic", encoding="utf-8")
+    cg.write_retention_policy(root, enabled=True, quarantine_days=1)
+    cg.cleanup_old_sessions(root, apply=True, deadline=_time.monotonic() + 20.0)
+    qdir = cg._retention_quarantine_dir(root)
+    records = [(path, record) for path, record in cg._retention_iter_records(qdir)]
+    target = qdir / records[0][1]["quarantine_object"] if records else qdir / "missing"
+
+    def remaining_entries() -> int:
+        if not target.exists():
+            return 0
+        return sum(len(dirs) + len(files) for _d, dirs, files in os.walk(target))
+    remaining = [remaining_entries()]
+    runs = []
+    while target.exists() and len(runs) < 20:
+        runs.append(modeled(root, 3.0, purge_ms=1.0, future=2.0))
+        remaining.append(remaining_entries())
+    tombstone = bool(records) and (
+        qdir / (records[0][1]["quarantine_object"] + ".tombstone.json")).is_file()
+    scenario("fresh_process_purge_progress", {
+        "one_bound_record": len(records) == 1,
+        "never_regresses": all(b <= a for a, b in zip(remaining, remaining[1:])),
+        "no_two_idle_runs": not any(a == b == c for a, b, c in zip(
+            remaining, remaining[1:], remaining[2:]) if c),
+        "finished": remaining[-1] == 0 and not target.exists(),
+        "record_retired": bool(records) and not records[0][0].exists(),
+        "tombstone_written": tombstone,
+    }, remaining=remaining, runs=runs)
 
 
 def _finish_retention_batch(output: Path, scenarios: list[dict[str, Any]],
