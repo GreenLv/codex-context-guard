@@ -45,6 +45,24 @@ def load_product():
     return module
 
 
+def is_purge_object_unlink(path, dir_fd, quarantine_dir: Path) -> bool:
+    """Count object removals in both real platform call forms, not records.
+
+    POSIX purges unlink relative to the held directory descriptor; Windows
+    purges use full paths below a quarantine object. Files directly in the
+    quarantine directory are transaction metadata and must not trigger the
+    object-removal crash point.
+    """
+    if dir_fd is not None:
+        return True
+    try:
+        parts = Path(os.fsdecode(path)).absolute().relative_to(
+            quarantine_dir.absolute()).parts
+    except (TypeError, ValueError):
+        return False
+    return len(parts) > 1
+
+
 def windows_text_tempfile():
     """A ``tempfile`` stand-in whose text-mode NamedTemporaryFile translates
     ``\\n`` to ``\\r\\n`` whenever ``newline`` is None (the default) -- the
@@ -235,7 +253,7 @@ def main(argv=None) -> int:
 
         def unlink(path, *a, **k):
             result = real_unlink(path, *a, **k)
-            if k.get("dir_fd") is not None:
+            if is_purge_object_unlink(path, k.get("dir_fd"), qdir):
                 seen["count"] += 1
                 if seen["count"] == wanted:
                     os._exit(137)

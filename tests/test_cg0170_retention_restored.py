@@ -37,6 +37,17 @@ cg = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cg)
 
 
+def symlink_or_skip(test, link: Path, target: Path, **kwargs) -> None:
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as exc:
+        import errno
+        if (getattr(exc, "winerror", None) == 1314
+                or exc.errno in {errno.ENOSYS, errno.ENOTSUP}):
+            test.skipTest("symlink creation capability unavailable")
+        raise
+
+
 def acquire_exclusive_lock(lock_path: Path):
     handle = open(lock_path, "a+b")
     if os.name == "nt":
@@ -249,7 +260,7 @@ class RetentionPolicyTests(RetentionFixtureBase):
         path.unlink()
         outside = self.root / "outside-policy.json"
         outside.write_text("external", encoding="utf-8")
-        (cg._retention_policy_path(self.data_dir)).symlink_to(outside)
+        symlink_or_skip(self, cg._retention_policy_path(self.data_dir), outside)
         self.assertFalse(cg.read_retention_policy(self.data_dir)["enabled"])
         self.assertEqual(outside.read_text(), "external")
 
@@ -348,7 +359,7 @@ class RetentionEligibilityTests(RetentionFixtureBase):
         (outside / "state.json").write_text("external fixture", encoding="utf-8")
         link = self.data_dir / "sessions-v2" / "old-link"
         link.parent.mkdir(parents=True, exist_ok=True)
-        link.symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(self, link, outside, target_is_directory=True)
         report = self.run_preview()
         entry = self.verdicts(report)["old-link"]
         self.assertEqual(entry["verdict"], "protected")
@@ -950,7 +961,7 @@ class RetentionRepairR1Tests(RetentionFixtureBase):
         outside.mkdir()
         sentinel = outside / "must-keep.txt"
         sentinel.write_text("synthetic outside-product bytes")
-        target.symlink_to(outside, target_is_directory=True)
+        symlink_or_skip(self, target, outside, target_is_directory=True)
         future = cg.dt.datetime.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
         purge = cg._retention_purge_pass(
             self.data_dir, cg.read_retention_policy(self.data_dir), future, None)
@@ -958,6 +969,36 @@ class RetentionRepairR1Tests(RetentionFixtureBase):
         self.assertEqual(purge["purge_refused"], 1)
         self.assertEqual(purge["purged"], 0)
         self.assertTrue((qdir / (record["quarantine_object"] + ".retained")).exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows native junction control")
+    def test_purge_refuses_a_real_windows_junction_and_keeps_both_trees(self):
+        self.make_session("old-junction", ended_days_ago=45)
+        self.enable_policy(quarantine_days=1)
+        cg.cleanup_old_sessions(self.data_dir, apply=True)
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        record_path = next(qdir.glob("*.record.json"))
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        target = qdir / record["quarantine_object"]
+        retained = target.with_name(target.name + ".retained")
+        target.rename(retained)
+        outside = self.root / "outside-junction"
+        outside.mkdir()
+        sentinel = outside / "must-keep.txt"
+        sentinel.write_text("junction target must survive", encoding="utf-8")
+        result = subprocess.run(
+            [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "mklink", "/J",
+             str(target), str(outside)], capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        self.assertTrue(target.lstat().st_file_attributes & 0x400)
+        future = cg.dt.datetime.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+        summary = cg._retention_purge_pass(
+            self.data_dir, cg.read_retention_policy(self.data_dir), future, None)
+        self.assertEqual(summary["purged"], 0)
+        self.assertEqual(summary["purge_refused"], 1)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"),
+                         "junction target must survive")
+        self.assertTrue((retained / "state.json").is_file())
+        self.assertTrue(record_path.is_file())
 
     def test_identity_bound_purge_refuses_replaced_directory(self):
         self.make_session("old", ended_days_ago=45)

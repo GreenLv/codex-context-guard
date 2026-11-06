@@ -114,7 +114,21 @@ class QuarantineIdentityTests(_Base):
         self.assertTrue(fired)
         self.assert_replacement_untouched(report)
         qdir = cg._retention_quarantine_dir(self.data_dir)
-        self.assertEqual(cg._retention_iter_records(qdir), [])
+        # D2/R9: a failed post-move check keeps its intent as transaction
+        # evidence, even when compensation put the replacement back.
+        records = cg._retention_iter_records(qdir)
+        self.assertEqual([record["state"] for _path, record in records], ["planned"])
+        record_path, record = records[0]
+        self.assertEqual(record["original_name"], self.old.name)
+        self.assertEqual(record["identity"],
+                         [self.aside.stat().st_dev, self.aside.stat().st_ino])
+        self.assertNotEqual(record["identity"],
+                            [self.old.stat().st_dev, self.old.stat().st_ino])
+        summary = cg._retention_recover_records(
+            qdir, cg.dt.datetime.now(cg.dt.timezone.utc))
+        self.assertEqual(summary["indeterminate"], 1)
+        self.assertTrue(record_path.exists())
+        self.assert_replacement_untouched(report)
         self.assertEqual([p for p in qdir.iterdir() if p.is_dir()], [])
 
     def test_put_back_impossible_keeps_both_objects_and_an_indeterminate_intent(self):
