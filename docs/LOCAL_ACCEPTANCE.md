@@ -2,6 +2,34 @@
 
 ## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
 
+### Repair round R5 (2026-11-06)
+
+The R3 review found that discovery progress did not survive the scheduled
+executor's fresh processes: an unregistered tail listed last was never
+reached in 20 processes (8 registered names plus the tail, 1 ms per listed
+entry, 3 ms per invocation). Design round R4 showed that no design can reach
+such a name when one listing exceeds one invocation's whole budget, and the
+user accepted an explicit capacity boundary (plan D1, amending constraint
+lines 45 and 47). The review of R4 also found that purge listed a whole
+directory level before its first deletion: 19 children at 1 ms each under a
+3 ms budget stayed untouched over 10 passes.
+
+R5 implements plan D1: durable snapshot and CRC journal hints for the
+namespace and the quarantine directory, a versioned discovery state with
+generation, attempts, deepest listing, debt and capacity status, share
+escalation, a bounded backoff beyond capacity, and persisted window cursors
+for registered sessions and quarantine records. Purge deletes entries as it
+lists them. On the literal R3 input the original verdict stays "violated"
+(history); the migrated verdict is an explicit `capacity_exceeded` with
+backlog and no `scan_complete`, while registered eligible work advances. Within
+capacity, fresh processes reach the tail after missing or damaged hints,
+crashes at every persistence boundary and unreliable modification times. The
+19-child purge finishes with a tombstone in fresh processes. The native
+retention batch moves to `cg-retention-native-batch/v3` with three
+fresh-process scenarios. Source checks are recorded in the R5 handoff outside
+the checkout; the full suite, history gate, performance runs and native
+acceptance wait for the coordinator.
+
 ### Repair round R3 (2026-11-06)
 
 The independent review of R2 (`a26f843`) accepted the other families and

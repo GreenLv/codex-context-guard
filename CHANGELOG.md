@@ -19,7 +19,7 @@ Versions are listed from newest to oldest. Public availability is determined by 
 - `cleanup` without an explicit `--data-dir` still refuses (exit 2) before resolving or creating any default home. The retired direct deletion helper stays refused; the old switch was not simply reopened.
 - The historical incident index and coverage table now bind to the current frozen library snapshot, including the three reproduced 0.17.0 cases, each with executable in-repository oracles. A rejected library intake is pinned separately by its exact bytes and never counts as a case.
 - The opt-in maintenance schedule (`cleanup --maintenance-enable/--maintenance-status/--maintenance-disable`) now runs the verified interpreter with this exact script, loads and unloads the job through launchd or Task Scheduler (Windows uses a task definition, so long paths are not truncated), reports a prepared definition separately from an enabled job, and never overwrites, unloads or deletes an entry it cannot prove it owns.
-- Maintenance passes bound all of their work — readdir, adjudication, transitions and the lock wait — by the caller's deadline, and once a policy is enabled every existing and newly created session is registered for discovery, so a long protected prefix cannot starve later sessions. Hooks still create no maintenance object before adoption.
+- Maintenance passes bound all of their work — readdir, adjudication, transitions and the lock wait — by the caller's deadline (20 seconds by default), and their progress survives the fresh process of every scheduled run. Registered sessions and quarantine records advance through persisted cursors, so a long protected prefix cannot starve later sessions. Sessions without a registration (older runtimes, damaged hints) are found by a full names-only listing that must fit one run's budget; when it does not, the report says `capacity_exceeded` with a backlog and never claims a complete scan, while registered work keeps advancing. Purge deletes entries as it lists them, so every short run makes progress. Hooks still create no maintenance object before adoption.
 
 ### Compatibility and upgrade
 
@@ -37,7 +37,9 @@ Versions are listed from newest to oldest. Public availability is determined by 
   complete JSON semantics, discovery budget, scheduler lifecycle, native
   harness oracles, history immutability, evidence binding). Repair R2
   closes each family by its invariant (R3 then closed five remaining
-  root-identity and enumeration-budget boundaries); the historical library record that
+  root-identity and enumeration-budget boundaries; R5 implements the
+  user-approved capacity contract for cross-process discovery and fixes
+  purge progress under short budgets); the historical library record that
   had been deleted and re-added under the same ID is restored with its
   original bytes and a hash-bound rejected-intake record, and the
   corrected facts carry a new ID. Full-matrix CI (three OSes × Python 3.10–3.14), native macOS/Windows retention acceptance, real-lock/permission/crash controls, installed-artifact and identity-switch verification, and the canonical historical-library release gate are separate pending gates for the independent review and native acceptance stage. Nothing in this entry is released evidence.

@@ -116,22 +116,43 @@ inspectable maintenance command (`cg-retention-report/v1`):
   of that session holds its lifecycle lock.
 - Active, resumable, unfinished, busy-locked, partial-marker, legacy, linked
   and out-of-scope objects are protected with a named reason. Hooks create no
-  maintenance object until maintenance is adopted. Enabling a policy registers
-  every existing session in one listing, and from then on every session this
-  runtime creates registers itself, so passes reach registered names in a
-  stable order regardless of readdir order or directory size. A budgeted
-  directory backfill finds names created later by older runtimes or lost from
-  a damaged registry. Each listing (the namespace backfill and the quarantine
-  record scan) resumes in the next pass of the same process instead of
-  restarting at the first entry, so a finite directory is covered after a
-  bounded number of passes even when no single pass can list it once. Across
-  processes a listing restarts, because directory positions are not portable;
-  names it already reached stay registered.
-- Every enumeration charges the caller's deadline before each unit of work:
-  quarantine records are listed once per pass (feeding recovery, the
-  unknown-record count and purge), per-session lookups during resume and
-  restore are bounded and refuse rather than guess when cut, and the tree
-  digest, purge listings and registry parsing stop at the deadline.
+  maintenance object until maintenance is adopted. Discovery is durable
+  across processes (plan D1): the session namespace and the quarantine
+  directory each keep content-free hints under `.locks` -- a sorted,
+  self-checking snapshot and an append-only journal whose records carry a
+  CRC -- plus one versioned state file (`cg-retention-discovery/v1`).
+  Enabling a policy lists both directories once and records that complete
+  generation; every session this runtime creates appends its name after its
+  directory exists, and maintenance journals each quarantine record and
+  tombstone before writing it. Passes reach registered names in a stable
+  sorted order after persisted window cursors, so registered work advances
+  in every fresh process regardless of readdir order or directory size.
+- Names no hint carries (sessions of older runtimes, lost or damaged hints)
+  are found by a discovery generation: a names-only listing of both
+  directories from their first entry, every entry charged to the pass
+  budget. A generation runs when the hints or state are missing, damaged,
+  torn or shrunk, when a directory's identity or modification time changed
+  (or was sampled too close to the clock to be trusted), after eight
+  invocations, or after an interrupted attempt. The first attempt uses half
+  of the remaining budget; after a failed attempt the next one takes all of
+  it. Capacity contract: when one listing of both directories plus its
+  commit fits one invocation's budget (default 20 seconds), every unregistered
+  name is reached after a bounded number of invocations. When a full-budget
+  attempt still cannot finish, the report says `capacity_exceeded=true`,
+  `backlog=true` and never `scan_complete`; later invocations give the
+  registered windows the whole budget and retry the listing after a bounded
+  backoff (at most every nine invocations), which clears the status once a
+  listing completes. This is a fact about the budget and run conditions of
+  that run, not a measured permanent limit; listing errors are reported
+  separately. Unregistered names beyond capacity are not promised.
+- Every enumeration charges the caller's deadline before each unit of work.
+  Per-session lookups during resume and restore still list the quarantine
+  directory filtered by name, bounded and refusing rather than guessing when
+  cut; they are not indexed lookups. Purge removes each entry as soon as the
+  listing yields it, so every budgeted pass makes durable progress on a
+  registered quarantined object, and a purge cut by the budget keeps the
+  window position for the next pass. The tree digest and hint parsing stop
+  at the deadline.
 - Quarantine, restore and purge re-check the record's directory identity
   after each intent is written, immediately before the move or deletion, and
   check the object actually moved or opened. A substituted object is left

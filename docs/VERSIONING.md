@@ -21,9 +21,17 @@ changed versioned contracts relative to published 0.16.1:
 - Opt-in schedule ownership manifest `cg-retention-schedule/v1` under the
   data root's `.locks`; the macOS entry is a LaunchAgent loaded with
   `launchctl bootstrap`, the Windows entry a Task Scheduler XML definition.
-- Validation tooling: `cg-retention-native-batch/v2` replaces the R1 `v1`
-  batch (nine per-object scenarios plus a result consumer); `v1` receipts
-  keep their own identity and are not accepted as `v2` evidence.
+- Durable discovery (plan D1): `cg-retention-discovery/v1` state and
+  `cg-retention-discovery-snapshot/v1` snapshots under `.locks`; journal
+  records are `<name>\t<crc32>` lines. Bare-name lines written by earlier
+  0.17.0 candidates are read as hints and trigger a checked generation; no
+  published release wrote any of these files.
+- Validation tooling: `cg-retention-native-batch/v3` adds three
+  fresh-process scenarios (real-executor discovery within capacity, honest
+  capacity report beyond it, purge progress) to the nine per-object
+  scenarios and re-derives their facts in the consumer; `v2` (R2) and `v1`
+  (R1) receipts keep their own identity and are not accepted as `v3`
+  evidence.
 - The marketplace identity moves to the stable `codex-context-guard`.
 
 ## 0.16.1 — 2026-11-03
