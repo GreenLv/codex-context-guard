@@ -26109,12 +26109,44 @@ def _retention_parents_ok(root: Path) -> bool:
             and _retention_dir_identity(_retention_quarantine_dir(root)) is not None)
 
 
-def _retention_holds(path: Path, record: dict[str, Any]) -> bool:
-    """True when ``path`` currently names the record's bound directory."""
+def _retention_hold_reason(path: Path, record: dict[str, Any]) -> str:
+    """Why ``path`` does or does not hold the record's bound object.
+
+    The final check of every transition (R9, plan D2): "" only when the name
+    holds the bound real directory (file identity) AND the creation-time
+    identity bound at selection still reads back from it. Otherwise
+    ``"other_object"`` (absent, linked, or a different file identity),
+    ``"identity_changed"`` (the creation time differs) or
+    ``"identity_unverifiable"`` (the record carries no creation-time
+    binding, or the creation time cannot be read now). A reusable
+    ``(dev, ino)`` alone never authorizes a move or a removal.
+    """
     try:
-        return _retention_bound_dir(_retention_lstat(path), record)
+        info = _retention_lstat(path)
     except OSError:
-        return False
+        return "identity_unverifiable"
+    if not _retention_bound_dir(info, record):
+        return "other_object"
+    stamp = _retention_birth_identity(record)
+    if stamp is None:
+        return "identity_unverifiable"
+    birth = _retention_birth_ns(path, info)
+    if birth is None:
+        return "identity_unverifiable"
+    return "" if birth == stamp["ns"] else "identity_changed"
+
+
+def _retention_hold_report(reason: str) -> str:
+    """The report reason for a failed hold: a different object and a
+    changed creation time are both ``identity_changed``."""
+    return "identity_unverifiable" if reason == "identity_unverifiable" else "identity_changed"
+
+
+def _retention_holds(path: Path, record: dict[str, Any]) -> bool:
+    """True when ``path`` currently names the record's bound object: the
+    bound directory AND its creation-time identity (see
+    ``_retention_hold_reason``)."""
+    return _retention_hold_reason(path, record) == ""
 
 
 def _retention_move_back(source: Path, destination: Path) -> bool:
@@ -26217,13 +26249,18 @@ def _retention_quarantine_object(
         outcome.update(action="skipped", reason="deadline")
         return outcome
     # Re-bind after the intent is durable: the name must still hold the
-    # authorized object and the parents must still be real directories.
+    # authorized object -- file identity AND the creation-time identity
+    # bound at selection (R9, D2) -- and the parents must still be real
+    # directories. Nothing has moved yet, so a failure honestly rolls the
+    # new intent back and leaves the object where it is.
     if not (_retention_parents_ok(root) and _retention_holds(candidate, record)):
+        why = (_retention_hold_report(_retention_hold_reason(candidate, record))
+               if _retention_parents_ok(root) else "identity_changed")
         try:
             record_path.unlink()
         except OSError:
             outcome["record_pending"] = True  # recovery settles it
-        outcome.update(action="skipped", reason="identity_changed")
+        outcome.update(action="skipped", reason=why)
         return outcome
     try:
         os.rename(candidate, target)
@@ -26236,35 +26273,30 @@ def _retention_quarantine_object(
         outcome.update(action="skipped", reason=reason, error=type(exc).__name__)
         return outcome
     if not _retention_holds(target, record):
-        # Renames are name-based: another object took the name between the
-        # check and the move. Put it back untouched and drop the intent; if
-        # that is impossible, keep the intent for recovery (indeterminate,
-        # both objects preserved) instead of reporting a quarantine.
-        if _retention_move_back(target, candidate):
-            try:
-                record_path.unlink()
-            except OSError:
-                outcome["record_pending"] = True
-            outcome.update(action="skipped", reason="identity_changed")
-        else:
-            outcome.update(action="skipped", reason="identity_changed_unresolved",
-                           record_pending=True)
-        return outcome
-    try:
-        moved_info = target.lstat()
-    except OSError:
-        moved_info = None
-    continuous = False
-    if moved_info is not None:
-        continuous, _upgrade = _retention_continuity_verdict(
-            target, moved_info, record, deadline)
-    if moved_info is None or not continuous:
-        # The name was taken between the intent and the commit -- identity
-        # reuse included (R7). The intent's binding never becomes permission
-        # for whatever occupies the name now, and no binding is minted from
-        # it; the intent stays for recovery, which reports the transaction
-        # indeterminate and preserves both objects.
-        outcome.update(action="skipped", reason="identity_changed_unresolved",
+        why = _retention_hold_reason(target, record)
+        if why == "other_object":
+            # Renames are name-based: another object took the name between
+            # the final check and the move. Put it back untouched (never
+            # over an occupant). A failed post-move check never commits and
+            # never retires the intent: it stays as transaction evidence
+            # for recovery, which preserves every object it cannot prove.
+            if _retention_move_back(target, candidate):
+                outcome.update(action="skipped", reason="identity_changed",
+                               compensated=True, record_pending=True)
+            else:
+                outcome.update(action="skipped", reason="identity_changed_unresolved",
+                               record_pending=True)
+            return outcome
+        # The bound file identity is at the quarantine name but its creation
+        # identity is changed or unreadable -- identity reuse included (R7).
+        # The intent's binding never becomes permission for whatever
+        # occupies the name now, nothing is moved again on a guess, and no
+        # binding is minted; the intent stays as transaction evidence for
+        # recovery, which preserves both objects.
+        outcome.update(action="skipped",
+                       reason=("identity_unverifiable"
+                               if why == "identity_unverifiable"
+                               else "identity_changed_unresolved"),
                        record_pending=True)
         return outcome
     record["state"] = "quarantined"
@@ -26515,12 +26547,17 @@ def _retention_purge_record(
             except (OSError, PrivateBoundaryError):
                 summary["purge_pending"] += 1
                 return "done"
-        # Re-bind after the intent is durable, and hand the bound identity
-        # and stamp to the removal itself: it opens the root without
-        # following links and refuses unless the opened directory IS the
-        # record's object.
+        # Re-bind after the intent is durable -- file identity AND creation
+        # identity (R9) -- and hand the bound identity and stamp to the
+        # removal itself: it opens the root without following links and
+        # refuses unless the opened directory IS the record's object. A
+        # refusal here keeps the record (and its name guard) untouched.
         if not (_retention_parents_ok(root) and _retention_holds(target, record)):
-            summary["purge_refused"] += 1
+            if (_retention_parents_ok(root) and _retention_hold_reason(target, record)
+                    == "identity_unverifiable"):
+                summary["purge_identity_unverifiable"] += 1
+            else:
+                summary["purge_refused"] += 1
             return "done"
         with _retention_expect_root(record["identity"], record=record):
             _retention_purge_progress_reset()
@@ -26544,7 +26581,13 @@ def _retention_purge_record(
                     return "deadline"
                 return "done"
             else:
-                summary["purge_refused"] += 1
+                # Refused, unknown, or the name no longer provably holds the
+                # creation-time-bound object (R9): never partial progress.
+                if (_retention_hold_reason(target, record)
+                        == "identity_unverifiable"):
+                    summary["purge_identity_unverifiable"] += 1
+                else:
+                    summary["purge_refused"] += 1
                 return "done"
         if _retention_complete_purge(qdir, record_path, record, now):
             summary["purged"] += 1
@@ -26760,16 +26803,21 @@ def retention_restore(
                     report["reason"] = "record_write_failed"
                     return report
                 # Re-bind after the intent is durable: the quarantine name
-                # must still hold the bound, unchanged object and the home
-                # position must still be free.
+                # must still hold the bound, unchanged object -- file
+                # identity AND creation identity (R9, D2) -- and the home
+                # position must still be free. Nothing has moved: the record
+                # is written back, so the object and its name guard stay.
                 if (not _retention_parents_ok(root)
                         or not _retention_holds(target, record)
                         or _retention_state_digest(target) != record.get("state_sha256")
                         or _retention_lstat_or_marker(home) is not None):
+                    why = _retention_hold_reason(target, record)
                     with contextlib.suppress(OSError, PrivateBoundaryError):
                         _retention_write_record(record_path, record)
                     report["outcome"] = "refused"
-                    report["reason"] = "identity_changed"
+                    report["reason"] = ("identity_unverifiable"
+                                        if why == "identity_unverifiable"
+                                        else "identity_changed")
                     return report
                 try:
                     os.rename(target, home)
@@ -26781,13 +26829,19 @@ def retention_restore(
                                         else "restore_failed")
                     return report
                 if not _retention_holds(home, record):
-                    # A different object was moved: put it back untouched.
+                    # The moved object cannot be proven to be the bound one
+                    # (a different object, a changed or unreadable creation
+                    # identity): put it back untouched -- never over an
+                    # occupant -- and keep the record; never "restored".
+                    why = _retention_hold_report(_retention_hold_reason(home, record))
                     if _retention_move_back(home, target):
                         with contextlib.suppress(OSError, PrivateBoundaryError):
                             _retention_write_record(record_path, record)
-                        report["reason"] = "identity_changed"
+                        report["reason"] = why
                     else:
-                        report["reason"] = "identity_changed_unresolved"
+                        # The restore_planned record stays as transaction
+                        # evidence; recovery decides it, nothing is retired.
+                        report["reason"] = why + "_unresolved"
                     report["outcome"] = "refused"
                     return report
                 try:

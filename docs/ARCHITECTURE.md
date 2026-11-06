@@ -174,7 +174,14 @@ manifest and the apply path carry and re-verify the selection-time
 creation identity before the intent and the rename; the quarantined
 commit and the `planned` recovery promote only an object whose bound
 creation time still matches — a structural digest rescues nothing, and no
-stamp is ever sampled from the current occupant of a name. Records bound
+stamp is ever sampled from the current occupant of a name. The final
+check immediately before and after every move — quarantine, restore, the
+purge intent and partial-removal progress — re-reads that creation
+identity after the intent is durable: an unreadable or changed identity
+stops the move (an unexecuted quarantine intent is rolled back), and a
+check that fails after a move never commits, never reports `restored`
+and never retires the record, while its compensating move never
+overwrites another object. Records bound
 to a change time or to nothing (earlier candidates) are retained and
 skipped: purge counts them under `purge_identity_unverifiable`, restore
 and the transparent official reader refuse them explicitly, and the

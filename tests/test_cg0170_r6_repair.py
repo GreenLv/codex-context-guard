@@ -805,5 +805,231 @@ class OwnershipProvenanceTests(ReplacementBindingTests):
         self.assertTrue((self.root / "original-preserved").is_dir())
 
 
+class PostIntentIdentityTests(r5.FreshProcessBase):
+    """R9: the final check of every transition carries the creation
+    identity (plan D2), not only ``(dev, ino)``.
+
+    The intent of a quarantine, restore or purge is durable before the
+    final pre-move check; capability loss or a replacement after that point
+    must stop the move. A post-move check that fails never commits, never
+    reports ``restored`` and never retires the record; its compensation
+    never overwrites an occupant. Strong identities keep the full
+    quarantine, restore and purge lifecycle."""
+
+    quarantine_wide = r5.PurgeProgressTests.quarantine_wide
+    children = r5.PurgeProgressTests.children
+
+    def lose_birth_after(self, state):
+        """Patch: the creation time becomes unreadable right after the
+        record of ``state`` is written durably."""
+        real_write, real_birth = cg._retention_write_record, cg._retention_birth_ns
+        lost = {"value": False}
+
+        def write(path, record):
+            real_write(path, record)
+            if record.get("state") == state:
+                lost["value"] = True
+
+        def birth(path, info):
+            return None if lost["value"] else real_birth(path, info)
+        return lost, (mock.patch.object(cg, "_retention_write_record", side_effect=write),
+                      mock.patch.object(cg, "_retention_birth_ns", side_effect=birth))
+
+    def future(self):
+        real = cg.dt.datetime
+        now = real.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+
+        class Clock(real):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+        return mock.patch.object(cg.dt, "datetime", Clock)
+
+    def test_quarantine_intent_then_capability_loss_never_moves(self):
+        home = self.make_session("post-intent", ended_days_ago=45)
+        before = (home / "state.json").read_bytes()
+        self.enable_policy(quarantine_days=1)
+        lost, (write, birth) = self.lose_birth_after("planned")
+        with write, birth:
+            report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertTrue(lost["value"])
+        skipped = [e for e in report["entries"] if e["verdict"] == "skipped"]
+        self.assertEqual([e.get("reason") for e in skipped], ["identity_unverifiable"])
+        self.assertEqual(report["counts"]["quarantined"], 0, report)
+        self.assertEqual((home / "state.json").read_bytes(), before)
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        # Nothing moved: the new intent is honestly rolled back.
+        self.assertEqual([p for p in qdir.iterdir()
+                          if p.name.startswith(home.name + ".")], [])
+
+    def test_restore_intent_then_capability_loss_keeps_the_record(self):
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        home = self.data_dir / cg.V2_NAMESPACE / record["original_name"]
+        before = self.children(target)
+        lost, (write, birth) = self.lose_birth_after("restore_planned")
+        with write, birth:
+            report = cg.retention_restore(self.data_dir, record["original_name"])
+        self.assertTrue(lost["value"])
+        self.assertEqual((report["outcome"], report["reason"]),
+                         ("refused", "identity_unverifiable"))
+        self.assertFalse(home.exists())
+        self.assertEqual(self.children(target), before)
+        persisted = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["state"], "quarantined")
+        self.assertEqual(persisted["object_stamp"], record["object_stamp"])
+
+    def test_restore_intent_then_identity_reusing_replacement_is_refused(self):
+        # The recorded-(dev, ino)-reuse model of R6-R8: the record's file
+        # identity is rebound to the replacement, the creation stamp is not.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        home = self.data_dir / cg.V2_NAMESPACE / record["original_name"]
+        saved = self.root / "original-preserved"
+        real_write, real_holds = cg._retention_write_record, cg._retention_holds
+        swapped = {"value": False}
+
+        def write(path, value):
+            real_write(path, value)
+            if value.get("state") == "restore_planned" and not swapped["value"]:
+                os.rename(target, saved)
+                shutil.copytree(saved, target)  # same layout and state bytes
+                (target / "payload-00").write_bytes(b"R" * 9)
+                swapped["value"] = True
+
+        def holds(path, value):
+            if swapped["value"] and Path(path) == target:
+                info = target.lstat()
+                value["identity"] = [info.st_dev, info.st_ino]
+            return real_holds(path, value)
+
+        with mock.patch.object(cg, "_retention_write_record", side_effect=write), \
+                mock.patch.object(cg, "_retention_holds", side_effect=holds):
+            report = cg.retention_restore(self.data_dir, record["original_name"])
+        self.assertEqual((report["outcome"], report["reason"]),
+                         ("refused", "identity_changed"))
+        self.assertFalse(home.exists())
+        self.assertTrue(record_path.exists())
+        self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["state"],
+                         "quarantined")
+        self.assertEqual((target / "payload-00").read_bytes(), b"R" * 9)
+        self.assertTrue(saved.is_dir())
+
+    def swap_on_restore_rename(self, target, saved, occupy_target=False):
+        """Patch ``os.rename`` so the swap lands between the final check and
+        the restore rename: the original leaves, a replacement with a new
+        creation time takes the quarantine name, and the real rename then
+        moves that replacement home."""
+        real_rename = os.rename
+
+        def rename(source, destination):
+            if Path(source) == target:
+                real_rename(target, saved)
+                target.mkdir()
+                (target / "replacement-sentinel.txt").write_text(
+                    "must survive", encoding="utf-8")
+                real_rename(source, destination)
+                if occupy_target:
+                    target.mkdir()
+                    (target / "third-object.txt").write_text(
+                        "third", encoding="utf-8")
+                return None
+            return real_rename(source, destination)
+        return mock.patch.object(cg.os, "rename", side_effect=rename)
+
+    def test_post_rename_swap_in_restore_is_compensated_and_never_restored(self):
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        home = self.data_dir / cg.V2_NAMESPACE / record["original_name"]
+        saved = self.root / "original-preserved"
+        with self.swap_on_restore_rename(target, saved):
+            report = cg.retention_restore(self.data_dir, record["original_name"])
+        self.assertEqual((report["outcome"], report["reason"]),
+                         ("refused", "identity_changed"))
+        # Compensation put the replacement back; nothing was overwritten
+        # and the record stays (quarantined) with its original binding.
+        self.assertFalse(home.exists())
+        self.assertTrue((target / "replacement-sentinel.txt").is_file())
+        self.assertTrue((saved / "state.json").is_file())
+        persisted = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["state"], "quarantined")
+        self.assertEqual(persisted["object_stamp"], record["object_stamp"])
+
+    def test_post_rename_swap_without_a_free_slot_keeps_the_intent(self):
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        home = self.data_dir / cg.V2_NAMESPACE / record["original_name"]
+        saved = self.root / "original-preserved"
+        with self.swap_on_restore_rename(target, saved, occupy_target=True):
+            report = cg.retention_restore(self.data_dir, record["original_name"])
+        self.assertEqual((report["outcome"], report["reason"]),
+                         ("refused", "identity_changed_unresolved"))
+        # No overwrite: the third object, the moved replacement and the
+        # original all survive; the restore_planned record is not retired.
+        self.assertTrue((target / "third-object.txt").is_file())
+        self.assertTrue((home / "replacement-sentinel.txt").is_file())
+        self.assertTrue((saved / "state.json").is_file())
+        self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["state"],
+                         "restore_planned")
+
+    def test_post_rename_swap_in_quarantine_keeps_the_intent(self):
+        home = self.make_session("swap-at-rename", ended_days_ago=45)
+        self.enable_policy(quarantine_days=1)
+        saved = self.root / "original-preserved"
+        real_rename = os.rename
+
+        def rename(source, destination):
+            if Path(source) == home:
+                real_rename(home, saved)
+                home.mkdir()
+                (home / "replacement-sentinel.txt").write_text(
+                    "must survive", encoding="utf-8")
+            return real_rename(source, destination)
+
+        with mock.patch.object(cg.os, "rename", side_effect=rename):
+            report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(report["counts"]["quarantined"], 0, report)
+        skipped = [e for e in report["entries"] if e["verdict"] == "skipped"]
+        self.assertEqual([(e.get("reason"), e.get("record_pending")) for e in skipped],
+                         [("identity_changed", True)])
+        # The replacement is back at its name, the original is intact, and
+        # the planned intent stays as transaction evidence (never committed).
+        self.assertTrue((home / "replacement-sentinel.txt").is_file())
+        self.assertTrue((saved / "state.json").is_file())
+        qdir = cg._retention_quarantine_dir(self.data_dir)
+        records = [cg._retention_read_record(p) for p in qdir.glob("*.record.json")]
+        self.assertEqual([r["state"] for r in records], ["planned"])
+
+    def test_purge_intent_then_capability_loss_removes_nothing(self):
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        before = self.children(target)
+        lost, (write, birth) = self.lose_birth_after("purge_planned")
+        with self.future(), write, birth:
+            report = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertTrue(lost["value"])
+        self.assertEqual(report["purge"]["purged"], 0, report)
+        self.assertEqual(report["purge"]["purge_partial"], 0, report)
+        self.assertEqual(report["purge"]["purge_identity_unverifiable"], 1, report)
+        self.assertEqual(self.children(target), before)
+        self.assertEqual(json.loads(record_path.read_text(encoding="utf-8"))["state"],
+                         "purge_planned")
+
+    def test_strong_identity_quarantine_restore_and_purge_still_advance(self):
+        # Positive control through every patched final check.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        name = record["original_name"]
+        home = self.data_dir / cg.V2_NAMESPACE / name
+        restored = cg.retention_restore(self.data_dir, name)
+        self.assertEqual(restored["outcome"], "restored", restored)
+        self.assertTrue((home / "state.json").is_file())
+        self.assertFalse(record_path.exists())
+        again = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(again["counts"]["quarantined"], 1, again)
+        new_path, new_record = next(
+            (p, r) for p, r in cg._retention_iter_records(qdir)
+            if r["original_name"] == name)
+        with self.future():
+            purged = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        self.assertEqual(purged["purge"]["purged"], 1, purged)
+        self.assertFalse((qdir / new_record["quarantine_object"]).exists())
+        self.assertFalse(new_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
