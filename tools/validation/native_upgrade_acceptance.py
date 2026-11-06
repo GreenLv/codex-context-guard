@@ -92,10 +92,18 @@ def _stat_identity(info: os.stat_result) -> tuple[Any, ...]:
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _common_identity(info: os.stat_result) -> tuple[Any, ...]:
+def _windows_executable(path: Path) -> bool:
+    return os.name == "nt" and path.suffix.casefold() in {".exe", ".com", ".bat", ".cmd"}
+
+
+def _common_identity(info: os.stat_result, *, windows_executable: bool = False) -> tuple[Any, ...]:
     # Windows path and opened-handle providers can report different ctime for
-    # the same object. Compare it within each provider, never across them.
-    return _stat_identity(info)[:-1]
+    # the same object. Path stat also adds execute bits for known executable
+    # suffixes; preserve the complete mode within each provider separately.
+    values = list(_stat_identity(info)[:-1])
+    if windows_executable:
+        values[2] &= ~0o111
+    return tuple(values)
 
 
 def sha(path: Path, *, expected: tuple[Any, ...] | None = None) -> str:
@@ -110,7 +118,9 @@ def sha(path: Path, *, expected: tuple[Any, ...] | None = None) -> str:
     fd = native.open_snapshot_file(path)
     try:
         opened = os.fstat(fd)
-        require(_common_identity(before) == _common_identity(opened), "digest input changed before open")
+        execute_alias = _windows_executable(path)
+        require(_common_identity(before, windows_executable=execute_alias)
+                == _common_identity(opened, windows_executable=execute_alias), "digest input changed before open")
         output = hashlib.sha256()
         while chunk := os.read(fd, 1024 * 1024):
             output.update(chunk)
@@ -197,7 +207,7 @@ def _old_provenance(product: Path, old: Path, version: str, plan: dict[str, Any]
             "sha256": OLD_0151_EXPORT_SHA256}
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _read_json_with_sha(path: Path) -> tuple[dict[str, Any], str]:
     _reject_credential_path(path)
     _no_link_ancestors(path.absolute())
     before = path.lstat()
@@ -208,7 +218,9 @@ def _read_json(path: Path) -> dict[str, Any]:
     fd = native.open_snapshot_file(path)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        require(_common_identity(opened) == _common_identity(before), "JSON changed before read")
+        execute_alias = _windows_executable(path)
+        require(_common_identity(opened, windows_executable=execute_alias)
+                == _common_identity(before, windows_executable=execute_alias), "JSON changed before read")
         content = stream.read(16 * 1024 * 1024 + 1)
         require(len(content) <= 16 * 1024 * 1024 and
                 _stat_identity(os.fstat(stream.fileno())) == _stat_identity(opened) and
@@ -216,7 +228,11 @@ def _read_json(path: Path) -> dict[str, Any]:
                 "JSON changed during read")
     value = adoption.strict_json(content.decode("utf-8"))
     require(isinstance(value, dict), "JSON object required")
-    return value
+    return value, hashlib.sha256(content).hexdigest()
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return _read_json_with_sha(path)[0]
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -235,7 +251,9 @@ def _zip_metadata(path: Path) -> tuple[Any, ...]:
     fd = native.open_snapshot_file(path)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        require(_common_identity(opened) == _common_identity(before), "ZIP changed before metadata read")
+        execute_alias = _windows_executable(path)
+        require(_common_identity(opened, windows_executable=execute_alias)
+                == _common_identity(before, windows_executable=execute_alias), "ZIP changed before metadata read")
         with zipfile.ZipFile(stream) as archive:
             rows = archive.infolist()
         require(0 < len(rows) <= 10000, "ZIP entry count invalid")
@@ -268,7 +286,9 @@ def _zip_exact(path: Path, identity: tuple[Any, ...], expected: dict[str, str]) 
     fd = native.open_snapshot_file(path)
     with os.fdopen(fd, "rb") as stream:
         opened = os.fstat(stream.fileno())
-        require(_common_identity(opened) == _common_identity(before), "ZIP changed before member read")
+        execute_alias = _windows_executable(path)
+        require(_common_identity(opened, windows_executable=execute_alias)
+                == _common_identity(before, windows_executable=execute_alias), "ZIP changed before member read")
         with zipfile.ZipFile(stream) as archive:
             names = archive.namelist()
             require(len(names) == len(expected) and set(names) == set(expected), "ZIP file set differs")
@@ -350,13 +370,20 @@ def _data_candidate(home: Path, value: Any, label: str) -> Path:
     return resolved
 
 
+def _distinct_homes(homes: list[Path]) -> None:
+    require(all(not _within(first, second) and not _within(second, first)
+                for index, first in enumerate(homes) for second in homes[index + 1:]),
+            "authentication HOMEs overlap")
+
+
 def _invocation_paths(plan_path: Path, output: Path, home_value: Path,
                       other_values: list[Path], prepared: Path | None,
                       verify_output: Path | None = None) -> tuple[Path, list[Path]]:
     """Establish HOME boundaries from CLI args before opening any plan file."""
     home = _absolute_real(str(home_value), "isolated authentication HOME")
-    require(1 <= len(other_values) <= 8, "other authentication HOME arguments required")
+    require(1 <= len(other_values) <= 32, "other authentication HOME arguments required")
     others = [_absolute_real(str(value), "other authentication HOME") for value in other_values]
+    _distinct_homes([home, *others])
     daily = (Path.home() / ".codex").resolve()
     protected = [home, daily, *others]
     inherited = os.environ.get("CODEX_HOME")
@@ -442,7 +469,8 @@ def _inventory(value: Any, sources: dict[str, str]) -> dict[tuple[str, str], dic
                 and item.get("handlerType") == "command" and item.get("enabled") is True
                 and item.get("trustStatus") == "trusted" and isinstance(item.get("key"), str)
                 and bool(item["key"]) and isinstance(item.get("currentHash"), str)
-                and bool(item["currentHash"]), "Hook source or trust differs")
+                and bool(item["currentHash"]) and type(item.get("displayOrder")) is int
+                and item["displayOrder"] >= 0, "Hook source or trust differs")
         key = (event, source)
         require(key not in result, "duplicate Hook event and source")
         result[key] = _hook_projection(item)
@@ -457,6 +485,11 @@ def _source_key(raw: Any, sources: Any) -> str | None:
     matches = [source for source in sources if isinstance(source, str)
                and native._official_path_matches(raw, Path(source), windows=platform.system() == "Windows")]
     return matches[0] if len(matches) == 1 else None
+
+
+def _require_distinct_sources(old_source: str, new_source: str) -> None:
+    require(not native._official_path_matches(new_source, Path(old_source), windows=platform.system() == "Windows"),
+            "old and new Hook definitions have ambiguous source paths")
 
 
 def _hook_projection(item: dict[str, Any]) -> dict[str, Any]:
@@ -511,7 +544,7 @@ def _paired(rows: Any, inventory: dict[tuple[str, str], dict[str, Any]],
     return completed
 
 
-def _pending(state: Any) -> set[tuple[str, str]]:
+def _pending(state: Any, *, allow_empty: bool = False) -> set[tuple[str, str]]:
     rows = _object(state).get("requirements")
     require(isinstance(rows, list), "requirements unavailable")
     pending = [r for r in rows if isinstance(r, dict) and r.get("status") == "pending"]
@@ -519,7 +552,7 @@ def _pending(state: Any) -> set[tuple[str, str]]:
                 for r in pending), "pending requirement identity unavailable")
     values = {(r["id"], r["sha256"]) for r in pending}
     require(len(values) == len(pending), "duplicate pending requirement")
-    require(values, "no verifiable pending requirement")
+    require(allow_empty or values, "no verifiable pending requirement")
     return values
 
 
@@ -534,13 +567,175 @@ def _state_projection(value: Any) -> dict[str, Any]:
     projected = []
     for item in requirements:
         require(isinstance(item, dict) and isinstance(item.get("id"), str)
-                and _sha(item.get("sha256")) and isinstance(item.get("status"), str),
+                and _sha(item.get("sha256")) and isinstance(item.get("status"), str)
+                and (item.get("status") != "pending" or
+                     (isinstance(item.get("work_unit_id"), str) and bool(item["work_unit_id"]))),
                 "requirement projection unavailable")
-        projected.append({key: item[key] for key in ("id", "sha256", "status")})
+        projected.append({key: item.get(key) for key in ("id", "sha256", "status", "work_unit_id")})
     recovery = _object(_object(state.get("pending")).get("recovery"))
     return {"session": {"id": session["id"]}, "requirements": projected,
             "mode": {"active": _object(state.get("mode")).get("active")},
             "compactions_count": len(compactions), "recovery_state": recovery.get("state")}
+
+
+def _pending_bound(state: Any) -> list[dict[str, str]]:
+    ids = _pending(state)
+    all_rows = _object(state).get("requirements", [])
+    require(all(isinstance(row, dict) for row in all_rows), "requirement entries malformed")
+    rows = [row for row in all_rows if row.get("status") == "pending"]
+    require(all(isinstance(row.get("work_unit_id"), str) and row["work_unit_id"] for row in rows),
+            "pending work-unit identity unavailable")
+    result = [{"id": row["id"], "sha256": row["sha256"], "work_unit_id": row["work_unit_id"]} for row in rows]
+    require(len(result) == len(ids) and len({row["work_unit_id"] for row in result}) == 1,
+            "pending task is not uniquely scoped")
+    return sorted(result, key=lambda row: row["id"])
+
+
+def _old_scope(installed: Path, state_path: Path, home: Path) -> dict[str, Any]:
+    """Evaluate only the owned synthetic state with its exact installed old runtime."""
+    code = '''import importlib.util,json,os,stat,sys
+from pathlib import Path
+script=Path(sys.argv[1]);sys.path.insert(0,str(script.parent))
+spec=importlib.util.spec_from_file_location("cg_u01_owned",script)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+path=Path(sys.argv[2]);before=path.lstat()
+if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or getattr(before,"st_file_attributes",0)&0x400:
+ raise ValueError("unsafe state object")
+fd=module._open_windows_committed_state(path) if os.name=="nt" else os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+def ident(s):return (s.st_dev,s.st_ino,s.st_mode,s.st_nlink,s.st_size,s.st_mtime_ns)
+with os.fdopen(fd,"r",encoding="utf-8") as stream:
+ opened=os.fstat(stream.fileno())
+ if ident(opened)!=ident(before):raise ValueError("state identity changed")
+ state=json.load(stream)
+ finished=os.fstat(stream.fileno());after=path.lstat()
+ if ident(opened)!=ident(finished) or opened.st_ctime_ns!=finished.st_ctime_ns or ident(before)!=ident(after) or before.st_ctime_ns!=after.st_ctime_ns:
+  raise ValueError("state changed during read")
+module.validate_state_integrity(state)
+scope=module.current_scope_projection(state)
+print(json.dumps({"current":sorted(scope["current_item_ids"]),
+ "ancestor":sorted(scope["ancestor_constraint_ids"]),"waiting":len(scope["waiting_conditions"])}))'''
+    before = sha(state_path)
+    child = scheduler._command(native, ROOT, [sys.executable, "-I", "-c", code,
+        str(installed / "scripts/context_guard.py"), str(state_path)], env=isolated_env(home), timeout=30)
+    require(child.returncode == 0 and len(child.stdout) <= 4096 and sha(state_path) == before,
+            "old-runtime scope evaluation unavailable")
+    scope = _json_output(child)
+    require(set(scope) == {"current", "ancestor", "waiting"}
+            and isinstance(scope["current"], list) and isinstance(scope["ancestor"], list)
+            and type(scope["waiting"]) is int, "old-runtime scope malformed")
+    return scope
+
+
+def _cancel_evidence(before: Any, after: Any, scope: dict[str, Any]) -> dict[str, Any]:
+    prior = _pending_bound(before)
+    unit = prior[0]["work_unit_id"]
+    state = _object(after)
+    session = _object(state.get("session")).get("id")
+    require(isinstance(session, str) and session == _object(_object(before).get("session")).get("id"),
+            "cancelled task identity changed")
+    cancel_sha = hashlib.sha256("取消当前任务。".encode()).hexdigest()
+    prompts = [row for row in state.get("prompts", []) if isinstance(row, dict) and row.get("sha256") == cancel_sha]
+    require(len(prompts) == 1 and isinstance(prompts[0].get("id"), str), "cancellation prompt unavailable")
+    prompt_id = prompts[0]["id"]
+    earlier = _object(before).get("requirements")
+    later = state.get("requirements")
+    require(isinstance(earlier, list) and isinstance(later, list)
+            and all(isinstance(row, dict) and isinstance(row.get("id"), str) for row in earlier + later),
+            "cancellation requirement records malformed")
+    earlier_by_id = {row["id"]: row for row in earlier}
+    later_by_id = {row["id"]: row for row in later}
+    require(len(earlier_by_id) == len(earlier) and len(later_by_id) == len(later)
+            and set(earlier_by_id) <= set(later_by_id)
+            and all(later_by_id[key].get("sha256") == row.get("sha256")
+                    and later_by_id[key].get("work_unit_id") == row.get("work_unit_id")
+                    for key, row in earlier_by_id.items())
+            and all(row.get("prompt_id") == prompt_id and row.get("status") == "answered"
+                    for key, row in later_by_id.items() if key not in earlier_by_id),
+            "cancellation changed old obligations or introduced unfinished work")
+    controls = [row for row in state.get("root_controls", []) if isinstance(row, dict)
+                and row.get("kind") == "cancel" and row.get("source_prompt_id") == prompt_id
+                and row.get("scope_kind") == "current_unit" and row.get("work_unit_id") == unit]
+    require(len(controls) == 1 and _sha(controls[0].get("catalog_sha256"))
+            and _sha(prompts[0].get("record_sha256")) and prompts[0].get("origin", "human") == "human"
+            and controls[0].get("source_record_sha256") == prompts[0].get("record_sha256")
+            and type(prompts[0].get("core_event_seq")) is int
+            and controls[0].get("source_seq") == prompts[0].get("core_event_seq"),
+            "bound cancellation unavailable")
+    items = controls[0].get("items")
+    require(isinstance(items, list) and all(isinstance(row, dict) for row in items), "cancel catalog malformed")
+    covered = sorted([{"id": row.get("id"), "sha256": row.get("source_sha256"),
+                       "work_unit_id": row.get("work_unit_id")} for row in items], key=lambda row: str(row["id"]))
+    require(covered == prior, "cancel catalog does not cover all original obligations")
+    unit_rows = [row for row in state.get("work_units", []) if isinstance(row, dict) and row.get("id") == unit]
+    cancel_rows = [row for row in state.get("requirements", []) if isinstance(row, dict)
+                   and row.get("prompt_id") == prompt_id]
+    require(len(unit_rows) == 1 and unit_rows[0].get("status") == "historical_unresolved"
+            and cancel_rows and all(row.get("status") == "answered" for row in cancel_rows),
+            "cancellation was not recorded as a closed control")
+    require(scope == {"current": [], "ancestor": [], "waiting": 0}, "unfinished current scope remains")
+    def safe_req(row: dict[str, Any]) -> dict[str, Any]:
+        return {key: row.get(key) for key in ("id", "sha256", "work_unit_id", "status", "prompt_id")}
+    safe_control = {key: controls[0].get(key) for key in
+                    ("kind", "source_prompt_id", "source_record_sha256", "source_seq",
+                     "scope_kind", "work_unit_id", "catalog_sha256")}
+    safe_control["items"] = [{key: row.get(key) for key in ("id", "source_sha256", "work_unit_id")} for row in items]
+    return {"session_id": session, "initial_pending": prior, "covered": covered,
+            "cancel_prompt_sha256": cancel_sha, "catalog_sha256": controls[0]["catalog_sha256"],
+            "work_unit_status": "historical_unresolved", "cancel_control_status": "answered", "scope": scope,
+            "before": {"session": {"id": session}, "requirements": [safe_req(row) for row in earlier]},
+            "after": {"session": {"id": session}, "requirements": [safe_req(row) for row in later],
+                      "prompts": [{"id": prompt_id, "sha256": cancel_sha,
+                                   "record_sha256": prompts[0]["record_sha256"],
+                                   "origin": prompts[0].get("origin", "human"),
+                                   "core_event_seq": prompts[0]["core_event_seq"]}], "root_controls": [safe_control],
+                      "work_units": [{"id": unit, "status": "historical_unresolved"}]}}
+
+
+def _check_cancel_evidence(value: Any, before: Any, session: str) -> None:
+    proof = _object(value)
+    rebuilt = _cancel_evidence(proof.get("before"), proof.get("after"), _object(proof.get("scope")))
+    require({key: val for key, val in proof.items() if key != "state_sha256"} == rebuilt
+            and _pending_bound(proof.get("before")) == _pending_bound(before), "cancel projection or original debt differs")
+    pending = proof.get("initial_pending")
+    require(isinstance(pending, list) and pending and all(isinstance(row, dict)
+            and set(row) == {"id", "sha256", "work_unit_id"}
+            and isinstance(row["id"], str) and _sha(row["sha256"])
+            and isinstance(row["work_unit_id"], str) and bool(row["work_unit_id"]) for row in pending),
+            "cancelled obligation identity malformed")
+    require({(row["id"], row["sha256"]) for row in pending} == _pending(before)
+            and len({row["id"] for row in pending}) == len(pending)
+            and len({row["work_unit_id"] for row in pending}) == 1
+            and proof.get("covered") == pending and proof.get("session_id") == session
+            and proof.get("cancel_prompt_sha256") == hashlib.sha256("取消当前任务。".encode()).hexdigest()
+            and _sha(proof.get("catalog_sha256")) and _sha(proof.get("state_sha256"))
+            and proof.get("work_unit_status") == "historical_unresolved"
+            and proof.get("cancel_control_status") == "answered"
+            and proof.get("scope") == {"current": [], "ancestor": [], "waiting": 0},
+            "cancelled task evidence differs")
+
+
+def _cache_identity(root: Path) -> str:
+    """Bind all owned cache objects without persisting platform object IDs."""
+    _no_link_ancestors(root.absolute())
+    values = []
+    stack = [root]
+    while stack:
+        path = stack.pop()
+        info = path.lstat()
+        require(not stat.S_ISLNK(info.st_mode) and not getattr(info, "st_file_attributes", 0) & 0x400,
+                "linked cache object refused")
+        require(stat.S_ISDIR(info.st_mode) or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1),
+                "invalid cache object")
+        require(type(info.st_dev) is int and info.st_dev >= 0 and type(info.st_ino) is int and info.st_ino > 0,
+                "cache object identity unavailable")
+        values.append((path.relative_to(root).as_posix(), info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)))
+        require(len(values) <= 10000, "cache object limit")
+        if stat.S_ISDIR(info.st_mode):
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    require(not _credential_name(entry.name), "credential-named cache object refused")
+                    stack.append(Path(entry.path))
+    return digest(sorted(values))
 
 
 def validate_continuity(before: Any, after: Any) -> None:
@@ -638,12 +833,18 @@ class UpgradeClient(host.Client):
     """Existing owned app-server transport with source-aware Hook validation."""
 
     def __init__(self, plan: dict[str, Any], directory: Path,
-                 sources: dict[str, str] | None = None):
+                 sources: dict[str, str] | None = None, sequence_base: int = 0, *, turn_limit: int):
+        require(type(turn_limit) is int and 1 <= turn_limit <= 7, "invalid model turn limit")
+        self.turn_limit = turn_limit
         self.approved: dict[tuple[str, str], dict[str, Any]] = {}
         self.initial_sources = sources or {str(Path(plan["plugin_root"]) / "hooks/hooks.json"): "old"}
+        self.observation_old_sources = set(self.initial_sources)
         self.initial_approved: dict[tuple[str, str], dict[str, Any]] = {}
+        self.guard_diagnostic: dict[str, Any] | None = None
+        self.observation_thread: str | None = None
+        self.observation_inventory: dict[tuple[str, str], dict[str, Any]] | None = None
         self.turn_count = 0
-        self.plan, self.rows, self.pending, self.sequence = plan, [], {}, 0
+        self.plan, self.rows, self.pending, self.sequence = plan, [], {}, sequence_base
         self.q = queue.Queue(maxsize=10000)
         self.log = (directory / "rpc.jsonl").open("x", encoding="utf-8")
         self.err = open(os.devnull, "wb")
@@ -749,14 +950,31 @@ class UpgradeClient(host.Client):
         require(not ("reader_error" in message or ("method" in message and "id" in message)),
                 "unexpected app-server input")
         if message.get("method") in ("hook/started", "hook/completed") and self.approved:
-            run = _object(_object(message.get("params")).get("run"))
-            source = _source_key(run.get("sourcePath"), {path for _, path in self.approved})
-            expected = self.approved.get((run.get("eventName"), source))
-            require(expected is not None and all(run.get(k) == expected.get(k) for k in
-                    ("eventName", "source", "handlerType", "displayOrder")),
-                    "unexpected running Hook source")
-            require(run.get("executionMode") == ("async" if expected.get("async") else "sync"),
-                    "unexpected Hook execution mode")
+            params = _object(message.get("params"))
+            run = _object(params.get("run"))
+            inventory = (self.observation_inventory if getattr(self, "observation_inventory", None) is not None
+                         and params.get("threadId") == getattr(self, "observation_thread", None) else self.approved)
+            source = _source_key(run.get("sourcePath"), {path for _, path in inventory})
+            raw_event = run.get("eventName")
+            event = raw_event if isinstance(raw_event, str) and raw_event in EVENTS else "other"
+            expected = inventory.get((event, source))
+            fields = ("eventName", "source", "handlerType", "displayOrder")
+            matches = {key: expected is not None and run.get(key) == expected.get(key) for key in fields}
+            mode_match = expected is not None and run.get("executionMode") == ("async" if expected.get("async") else "sync")
+            if not all(matches.values()) or not mode_match:
+                old = self.initial_approved.get((event, source))
+                self.guard_diagnostic = {"schema": "cg-u01-guard-diagnostic/v1", "stage": "receive",
+                    "method": message["method"],
+                    "event": event,
+                    "source_class": ("old" if source in getattr(self, "observation_old_sources", self.initial_sources)
+                                     else "new" if source else "other"),
+                    "event_source_approved": expected is not None, "source_matches": matches["source"],
+                    "handler_matches": matches["handlerType"], "order_matches": matches["displayOrder"],
+                    "mode_matches": mode_match,
+                    "target_thread_matches": (getattr(self, "observation_thread", None) is not None
+                                              and _object(message.get("params")).get("threadId") == self.observation_thread),
+                    "old_inventory_order_matches": old is not None and run.get("displayOrder") == old.get("displayOrder")}
+                raise UpgradeError("unexpected running Hook")
         projection = self._projection(message)
         if projection is not None:
             self.rows.append(projection)
@@ -778,7 +996,7 @@ class UpgradeClient(host.Client):
         return self.rpc("thread/start", params)["thread"]["id"]
 
     def observed_turn(self, thread: str, prompt: str) -> tuple[str, list[dict[str, Any]]]:
-        require(self.turn_count < 6, "model turn budget exhausted")
+        require(self.turn_count < self.turn_limit, "model turn budget exhausted")
         self.turn_count += 1
         begin = len(self.rows)
         turn = self.rpc("turn/start", {"threadId": thread,
@@ -790,7 +1008,9 @@ class UpgradeClient(host.Client):
                     and _object(_object(row.get("params")).get("turn")).get("id") == turn):
                 require(row["params"]["turn"].get("status") == "completed", "turn failed")
                 rows = [{"direction": "response", "message": item} for item in self.rows[begin:]]
-                require(_paired(rows, self.approved, thread, "stop", turn=turn), "Stop not observed")
+                inventory = (self.observation_inventory if self.observation_inventory is not None
+                             and thread == self.observation_thread else self.approved)
+                require(_paired(rows, inventory, thread, "stop", turn=turn), "Stop not observed")
                 return turn, rows
         raise TimeoutError("turn completion deadline")
 
@@ -827,11 +1047,10 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
                    if version == "0.16.1" else None)
     daily = (Path.home() / ".codex").resolve()
     extra = plan.get("other_homes", [])
-    require(isinstance(extra, list) and 1 <= len(extra) <= 8,
+    require(isinstance(extra, list) and 1 <= len(extra) <= 32,
             "other isolated authentication HOMEs must be listed")
     other_homes = [_absolute_real(value, "other isolated HOME") for value in extra]
-    require(all(not _within(home, other) and not _within(other, home) for other in other_homes),
-            "isolated HOMEs overlap")
+    _distinct_homes([home, *other_homes])
     homes = [home, daily, *other_homes]
     auth_homes = [home, *other_homes]
     inherited = os.environ.get("CODEX_HOME")
@@ -1172,6 +1391,23 @@ def _state_at(home: Path, root_value: Any, thread: str) -> tuple[Path, dict[str,
     return root, state
 
 
+def _state_at_bound(home: Path, root_value: Any, thread: str) -> tuple[Path, dict[str, Any], str]:
+    root, _ = _state_at(home, root_value, thread)
+    candidates = [root / "sessions-v2" / thread / "state.json", root / "sessions" / thread / "state.json"]
+    present = [path for path in candidates if path.exists() or path.is_symlink()]
+    require(len(present) == 1, "ambiguous task state paths")
+    state, raw_sha = _read_json_with_sha(present[0])
+    require([path for path in candidates if path.exists() or path.is_symlink()] == present,
+            "task state path changed during read")
+    require(_object(state.get("session")).get("id") == thread, "state thread identity differs")
+    return root, state, raw_sha
+
+
+def _write_bound_state(path: Path, state: dict[str, Any], raw_sha: str) -> None:
+    require(_sha(raw_sha), "state snapshot digest unavailable")
+    _write_new(path, {"source_state_sha256": raw_sha, "state": _state_projection(state)})
+
+
 def _reviewed_sources(client: UpgradeClient, allowed: dict[str, str], required: str,
                       timeout: float = 300.0) -> dict[tuple[str, str], dict[str, Any]]:
     """Wait for normal external review; an operator signal is never evidence."""
@@ -1195,6 +1431,41 @@ def _reviewed_sources(client: UpgradeClient, allowed: dict[str, str], required: 
     raise UpgradeError("normal Hook review pending: " + last_error)
 
 
+def _pre_disable_projection(value: Any, old_source: str, new_source: str) -> list[dict[str, Any]]:
+    rows = _object(value).get("data")
+    require(isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], dict)
+            and not rows[0].get("errors") and not rows[0].get("warnings")
+            and isinstance(rows[0].get("hooks"), list), "pre-disable Hook inventory unavailable")
+    projected = []
+    for item in rows[0]["hooks"]:
+        require(isinstance(item, dict) and item.get("eventName") in EVENTS
+                and type(item.get("enabled")) is bool and item.get("trustStatus") in ("trusted", "untrusted"),
+                "pre-disable Hook entry malformed")
+        source = _source_key(item.get("sourcePath"), [old_source, new_source])
+        require(source is not None, "unexpected pre-disable Hook source")
+        projected.append({"event": item["eventName"], "source": "old" if source == old_source else "new",
+                          "enabled": item["enabled"], "trust": item["trustStatus"]})
+    for label in ("old", "new"):
+        selected = [item for item in projected if item["source"] == label]
+        require((len(selected) == 9 if label == "old" else len(selected) in (0, 9))
+                and len({item["event"] for item in selected}) == len(selected), "pre-disable Hook family differs")
+        if label == "old":
+            require(all(item["enabled"] and item["trust"] == "trusted" for item in selected),
+                    "old Hooks not trusted before disable")
+        else:
+            require(all(not (item["enabled"] and item["trust"] == "trusted") for item in selected),
+                    "both Hook identities trusted at pre-disable sample")
+    return sorted(projected, key=lambda item: (item["source"], item["event"]))
+
+
+def _sample_pre_disable(client: UpgradeClient, old_source: str, new_source: str, result: dict[str, Any]) -> None:
+    sample = client.rpc("hooks/list", {"cwds": [client.plan["cwd"]]})
+    result["pre_disable_inventory"] = _pre_disable_projection(sample, old_source, new_source)
+    client.log.write(json.dumps({"direction": "observation", "event": "pre_disable_sample",
+        "pid": client.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+    client.log.flush()
+
+
 def _archive_owned(client: UpgradeClient, thread: str) -> None:
     client.rpc("thread/archive", {"threadId": thread})
     deadline = time.monotonic() + 5.0
@@ -1203,7 +1474,9 @@ def _archive_owned(client: UpgradeClient, thread: str) -> None:
         rows = [adoption.strict_json(line) for line in
                 (Path(client.log.name)).read_text(encoding="utf-8").splitlines()]
         try:
-            verify_archive(rows, client.approved, thread)
+            inventory = (client.observation_inventory if client.observation_inventory is not None
+                         and thread == client.observation_thread else client.approved)
+            verify_archive(rows, inventory, thread)
             return
         except UpgradeError:
             client.receive(deadline)
@@ -1225,8 +1498,10 @@ def _wait_hook(client: UpgradeClient, thread: str, event: str, begin: int,
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         rows = [{"direction": "response", "message": x} for x in client.rows[begin:]]
+        inventory = (client.observation_inventory if client.observation_inventory is not None
+                     and thread == client.observation_thread else client.approved)
         try:
-            if _paired(rows, client.approved, thread, event):
+            if _paired(rows, inventory, thread, event):
                 return
         except UpgradeError as exc:
             if str(exc) != "unfinished Hook run":
@@ -1235,12 +1510,366 @@ def _wait_hook(client: UpgradeClient, thread: str, event: str, begin: int,
     raise UpgradeError(event + " not established")
 
 
+def _try_wait_cold_start(client: UpgradeClient, thread: str, begin: int) -> None:
+    """Allow a missing pre-turn notification; it must still occur before Stop."""
+    try:
+        _wait_hook(client, thread, "sessionStart", begin, timeout=3.0)
+    except TimeoutError:
+        return
+    except UpgradeError as exc:
+        if str(exc) != "sessionStart not established":
+            raise
+
+
 def _selected_states(home: Path, roots: list[tuple[str, str]]) -> dict[str, str]:
     facts = {}
     for root, thread in roots:
         actual, state = _state_at(home, root, thread)
         facts[str(actual) + "/" + thread] = digest(state)
     return facts
+
+
+def _close_observation(client: UpgradeClient, role: str, system: str) -> dict[str, Any]:
+    pid = client.owned.process.pid
+    facts = client.close()
+    require(isinstance(facts, dict) and facts.get("owned_process_exited") is True
+            and facts.get("owned_tree_no_running_members") is True
+            and facts.get("process_group_cleanup_error") is None, "observation process cleanup unknown")
+    if system == "Windows":
+        require(facts.get("cleanup_complete") is True and facts.get("job_close_confirmed") is True,
+                "observation Job cleanup unknown")
+    return {"role": role, "pid": pid, "closed_monotonic_ns": time.monotonic_ns(), "facts": facts}
+
+
+def _root_snapshots(home: Path, old_root: Path, new_root: Path, thread: str) -> dict[str, Any]:
+    snapshots = {}
+    for label, root in (("old", old_root), ("new", new_root)):
+        candidates = [root / "sessions-v2" / thread / "state.json", root / "sessions" / thread / "state.json"]
+        present = [path for path in candidates if path.exists() or path.is_symlink()]
+        require(len(present) <= 1, "ambiguous task state paths")
+        if not present:
+            snapshots[label] = {"present": False, "prompts": []}
+            continue
+        _actual_root, state, state_sha = _state_at_bound(home, str(root), thread)
+        rows = state.get("prompts")
+        require(isinstance(rows, list) and len(rows) <= 10000, "task prompt markers unavailable")
+        markers = []
+        for row in rows:
+            require(isinstance(row, dict), "task prompt marker malformed")
+            turn = row.get("turn_id")
+            if turn is None:
+                continue
+            require(isinstance(turn, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", turn)
+                    and isinstance(row.get("id"), str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", row["id"])
+                    and _sha(row.get("sha256")) and _sha(row.get("record_sha256"))
+                    and type(row.get("core_event_seq")) is int and row["core_event_seq"] > 0,
+                    "task prompt marker identity unavailable")
+            markers.append({key: row[key] for key in ("id", "turn_id", "sha256", "record_sha256", "core_event_seq")})
+        snapshots[label] = {"present": True, "state_sha256": state_sha, "prompts": markers}
+    return snapshots
+
+
+def _root_turn_trace(before: Any, after: Any, thread: str, turn: str, *, shared: bool) -> dict[str, Any]:
+    expected = hashlib.sha256("请仅回复观察结束。".encode()).hexdigest()
+    found = []
+    for label in ("old", "new"):
+        prior, later = _object(_object(before).get(label)), _object(_object(after).get(label))
+        require(type(prior.get("present")) is bool and type(later.get("present")) is bool
+                and isinstance(prior.get("prompts"), list) and isinstance(later.get("prompts"), list),
+                "root snapshots malformed")
+        for snapshot in (prior, later):
+            require((_sha(snapshot.get("state_sha256")) if snapshot["present"] else
+                     snapshot.get("state_sha256") is None and not snapshot["prompts"]), "root state marker malformed")
+            require(all(isinstance(row, dict) and set(row) == {"id", "turn_id", "sha256", "record_sha256", "core_event_seq"}
+                    and isinstance(row.get("id"), str) and isinstance(row.get("turn_id"), str)
+                    and _sha(row.get("sha256")) and _sha(row.get("record_sha256"))
+                    and type(row.get("core_event_seq")) is int and row["core_event_seq"] > 0
+                    for row in snapshot["prompts"]), "root markers malformed")
+        require(not any(row.get("turn_id") == turn for row in prior["prompts"]), "turn already existed before observation")
+        matches = [row for row in later["prompts"] if row.get("turn_id") == turn]
+        if matches:
+            require(len(matches) == 1 and matches[0].get("sha256") == expected
+                    and _sha(matches[0].get("record_sha256")) and type(matches[0].get("core_event_seq")) is int,
+                    "observed turn is not bound to the controlled prompt")
+            require(not prior["present"] or prior.get("state_sha256") != later.get("state_sha256"),
+                    "observed turn did not change the data-root state")
+            found.append(label)
+    if shared:
+        require(_object(before).get("old") == _object(before).get("new")
+                and _object(after).get("old") == _object(after).get("new") and found == ["old", "new"],
+                "shared root turn not established")
+        root = "shared"
+    else:
+        require(len(found) == 1, "actual turn data root unknown or ambiguous")
+        root = found[0]
+    return {"thread": thread, "turn": turn, "actual_root": root, "before": before, "after": after}
+
+
+def _validate_root_snapshot_map(value: Any) -> None:
+    snapshots = _object(value)
+    require(set(snapshots) == {"old", "new"}, "root snapshot labels differ")
+    for snapshot in snapshots.values():
+        require(isinstance(snapshot, dict) and type(snapshot.get("present")) is bool
+                and isinstance(snapshot.get("prompts"), list), "root snapshot malformed")
+        require((_sha(snapshot.get("state_sha256")) if snapshot["present"] else
+                 snapshot.get("state_sha256") is None and not snapshot["prompts"]), "root presence marker differs")
+
+
+def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any],
+                     previous: dict[str, Any], installed: Path) -> dict[str, Any]:
+    """Observe one deliberately open old task; never certify safe migration."""
+    home, old, new, workspace, codex = (Path(plan[k]).resolve(strict=True) for k in
+                                        ("home", "old_artifact", "new_artifact", "workspace", "codex"))
+    old_market = OLD_MARKETS[plan["old_version"]]
+    output.mkdir(mode=0o700)
+    live_dir, cold_dir = output / "live", output / "cold"
+    live_dir.mkdir(mode=0o700)
+    cold_dir.mkdir(mode=0o700)
+    result: dict[str, Any] = {"schema": REPORT, "stage": "observe_open", "status": "pending",
+                              "subject": subject, "commands": [], "cleanup": [],
+                              "pending": ["independent_consumer"],
+                              "limitations": ["deliberately open old task is observation only; no safe-upgrade claim"]}
+    env = isolated_env(home)
+    live = cold = None
+    try:
+        def command(argv: list[str]) -> Any:
+            return _run_official(result, argv, env, {old_market, NEW_MARKET,
+                                 _object(plan.get("sentinel")).get("marketplace")}, "observe_open")
+        sentinel = _sentinel_files(home, plan.get("sentinel"))
+        require(sentinel == subject.get("sentinel") == previous.get("sentinel_after"), "sentinel changed")
+        markets = _market_entries(command([str(codex), "plugin", "marketplace", "list", "--json"]))
+        require(sentinel["marketplace"] in markets, "sentinel marketplace missing")
+        _market_source(markets, old_market, old)
+        prior = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
+        require(_official_install_identity(previous.get("official_add"), prior, old, home,
+                                          plan["old_version"]) == installed, "old installation differs")
+        old_files = source_files(installed)
+        require(old_files == source_files(old), "old cache bytes differ")
+        cache_before = {"files_sha256": digest(old_files), "objects_sha256": _cache_identity(installed)}
+        client_plan = {"codex": str(codex), "cwd": str(workspace), "home": str(home),
+                       "plugin_root": str(installed)}
+        with _launch_environment(home):
+            live = UpgradeClient(client_plan, live_dir, turn_limit=2)
+        old_source = str(installed / "hooks/hooks.json")
+        old_inventory = dict(live.approved)
+        result["old_inventory"] = list(old_inventory.values())
+        thread = live.start()
+        read_command = ("Get-Content -LiteralPath native-read.txt" if platform.system() == "Windows"
+                        else "cat native-read.txt")
+        read_file = workspace / "native-read.txt"
+        require(sha(read_file) == subject["read_file_sha256"], "read fixture differs")
+        first, first_rows = live.observed_turn(thread, "$context-guard\n请验证 native-read.txt 的 SHA256，"
+            "收到我的允许后再进行。先仅读取一次，执行精确命令：" + read_command)
+        verify_read_tool(first_rows, old_inventory, thread, first, read_command, workspace)
+        old_data, before, before_state_sha = _state_at_bound(home, plan.get("old_data_root"), thread)
+        _pending(before)
+        _write_bound_state(output / "old-before.json", before, before_state_sha)
+        result["before"] = {"thread": thread, "turn": first, "old_data_root": str(old_data),
+                            "read_command": read_command, "read_file_sha256": sha(read_file),
+                            "state_sha256": before_state_sha,
+                            "app_server_pid": live.owned.process.pid}
+        _mark(live, "transition_started")
+        if old_market == NEW_MARKET:
+            command([str(codex), "plugin", "marketplace", "remove", old_market])
+        command([str(codex), "plugin", "marketplace", "add", str(new)])
+        added = _json_output(command([str(codex), "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]))
+        listed = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
+        new_installed = native.official_identity(listed, added, new, home, "0.17.0")
+        public_files = native.load_artifacts(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
+        native.exact_artifact_parity(new_installed, public_files)
+        require(source_files(new_installed) == public_files, "new cache bytes differ")
+        new_source = str(new_installed / "hooks/hooks.json")
+        _require_distinct_sources(old_source, new_source)
+        result["installed_new"] = {"path": str(new_installed), "source": str(new), "version": "0.17.0",
+                                   "files": public_files, "old_cache_exists": installed.is_dir()}
+        if old_market != NEW_MARKET:
+            after_install = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
+            require(after_install == cache_before, "old cache changed during stable installation")
+            result["old_cache_preservation"] = {"before": cache_before, "after_new_install": after_install}
+        _mark(live, "transition_completed")
+        if old_market != NEW_MARKET:
+            _sample_pre_disable(live, old_source, new_source, result)
+        _write_new(output / "review-required.json", {"message": ("Disable the old experimental plugin normally, "
+            "then review the stable Hooks in the official CLI TUI." if old_market != NEW_MARKET
+            else "Review Hooks normally in the official CLI TUI.")})
+        if old_market != NEW_MARKET:
+            deadline = time.monotonic() + 300
+            while True:
+                old_list = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
+                row = _selected_plugin(old_list, "context-guard@" + old_market)
+                if row is not None and row.get("version") == plan["old_version"] and row.get("installed") is True and row.get("enabled") is False:
+                    break
+                require(time.monotonic() < deadline, "normal old-plugin disable pending")
+                time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+            stable = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
+            row = _selected_plugin(stable, "context-guard@" + NEW_MARKET)
+            require(row is not None and row.get("version") == "0.17.0"
+                    and row.get("installed") is True and row.get("enabled") is True, "stable plugin is not enabled")
+            after_disable = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
+            require(after_disable == cache_before, "old cache changed during normal disable")
+            result["old_cache_preservation"]["after_old_disable"] = after_disable
+            live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
+                "pid": live.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+            live.log.flush()
+        new_inventory = _reviewed_sources(live, {new_source: "0.17.0"}, new_source)
+        result["new_inventory"] = list(new_inventory.values())
+        live.observation_thread = thread
+        live.observation_inventory = {**old_inventory, **new_inventory}
+        new_root = Path(plan["new_data_root"])
+        shared_root = old_data == new_root
+        live_roots_before = _root_snapshots(home, old_data, new_root, thread)
+        require(live_roots_before["old"].get("state_sha256") == before_state_sha,
+                "old baseline state changed before observation")
+        result["live_observation"] = {"status": "pending"}
+        try:
+            turn, rows = live.observed_turn(thread, "请仅回复观察结束。")
+            stops = _paired(rows, live.observation_inventory, thread, "stop", turn=turn)
+            sources = sorted({"old" if _source_key(row.get("sourcePath"), [old_source]) else "new" for row in stops})
+            result["live_observation"] = {"status": "observed", "turn": turn, "stop_sources": sources}
+            live.rpc("thread/unsubscribe", {"threadId": thread})
+        except UpgradeError:
+            require(live.guard_diagnostic is not None and live.guard_diagnostic.get("target_thread_matches") is True,
+                    "live observation failed without a scoped guard reason")
+            _write_new(output / "live-guard.json", live.guard_diagnostic)
+            result["live_observation"] = {"status": "unsupported_guard"}
+        result["cleanup"].append(_close_observation(live, "old_live", subject["platform"]))
+        live = None
+        _, after_live, old_live_sha = _state_at_bound(home, plan.get("old_data_root"), thread)
+        validate_continuity(before, after_live)
+        _write_bound_state(output / "old-after-live.json", after_live, old_live_sha)
+        live_roots_after = _root_snapshots(home, old_data, new_root, thread)
+        require(live_roots_after["old"].get("state_sha256") == old_live_sha, "old live state snapshot changed")
+        if result["live_observation"]["status"] == "observed":
+            try:
+                trace = _root_turn_trace(live_roots_before, live_roots_after, thread,
+                                         result["live_observation"]["turn"], shared=shared_root)
+                result["live_observation"]["actual_root"] = trace["actual_root"]
+            except UpgradeError:
+                trace = {"thread": thread, "turn": result["live_observation"]["turn"], "actual_root": "unknown",
+                         "before": live_roots_before, "after": live_roots_after}
+                result["live_observation"].update(status="root_unobserved", actual_root="unknown")
+        else:
+            trace = {"thread": thread, "turn": None, "actual_root": "unknown",
+                     "before": live_roots_before, "after": live_roots_after}
+            result["live_observation"]["actual_root"] = "unknown"
+        _write_new(output / "live-roots.json", trace)
+        new_path = host.session_state_path(new_root, thread)
+        result["data_observations"] = {"old_root": str(old_data), "new_root": str(new_root), "new_after_live": "absent"}
+        if new_path.exists() or new_path.is_symlink():
+            _, state, new_live_sha = _state_at_bound(home, str(new_root), thread)
+            require(live_roots_after["new"].get("state_sha256") == new_live_sha, "new live state snapshot changed")
+            _write_bound_state(output / "new-after-live.json", state, new_live_sha)
+            result["data_observations"]["new_after_live"] = "observed"
+        if result["live_observation"]["actual_root"] == "unknown":
+            result["live_observation"]["ledger_compatibility"] = "unobserved"
+        else:
+            actual_state = after_live if result["live_observation"]["actual_root"] in ("old", "shared") else state
+            result["live_observation"]["ledger_compatibility"] = (
+                "preserved" if _pending(before) <= _pending(actual_state, allow_empty=True) else "lost")
+        cold_plan = {**client_plan, "plugin_root": str(new_installed)}
+        with _launch_environment(home):
+            cold = UpgradeClient(cold_plan, cold_dir, sources={new_source: "0.17.0"}, turn_limit=1)
+        cold.log.write(json.dumps({"direction": "observation", "event": "cold_client_started",
+            "pid": cold.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+        cold.log.flush()
+        cold.observation_thread = thread
+        cold.observation_inventory = {**old_inventory, **cold.approved}
+        cold.observation_old_sources = {old_source}
+        cold_roots_before = _root_snapshots(home, old_data, new_root, thread)
+        result["cold_observation"] = {"status": "pending"}
+        try:
+            begin = len(cold.rows)
+            try:
+                cold.rpc("thread/resume", {"threadId": thread, "cwd": str(workspace),
+                                           "sandbox": "read-only", "approvalPolicy": "on-request"})
+            except ValueError as exc:
+                if str(exc) != "RPC rejected: thread/resume":
+                    raise
+                result["cold_observation"] = {"status": "unsupported_resume"}
+            if result["cold_observation"]["status"] == "pending":
+                _try_wait_cold_start(cold, thread, begin)
+                turn, rows = cold.observed_turn(thread, "请仅回复观察结束。")
+                stops = _paired(rows, cold.observation_inventory, thread, "stop", turn=turn)
+                cold.log.flush()
+                journal = _journal(cold_dir / "rpc.jsonl")
+                phase = None
+                for candidate, label in ((new_source, "new"), (old_source, "old")):
+                    try:
+                        phase = (*_cold_session_phase(journal, cold.observation_inventory, thread, turn, candidate), label)
+                        break
+                    except UpgradeError:
+                        continue
+                _archive_owned(cold, thread)
+                result["cold_observation"] = {"status": "observed" if phase is not None else "session_start_unobserved", "turn": turn,
+                    "stop_sources": sorted({"old" if _source_key(row.get("sourcePath"), [old_source]) else "new" for row in stops}),
+                    "session_start_phase": phase[0] if phase is not None else None,
+                    "session_started_before_first_turn": phase[1] if phase is not None else None,
+                    "session_start_source": phase[2] if phase is not None else None, "late_archive": "observed"}
+        except UpgradeError:
+            require(cold.guard_diagnostic is not None and cold.guard_diagnostic.get("target_thread_matches") is True,
+                    "cold observation failed without a scoped guard reason")
+            _write_new(output / "cold-guard.json", cold.guard_diagnostic)
+            result["cold_observation"] = {"status": "unsupported_guard"}
+        result["cleanup"].append(_close_observation(cold, "cold", subject["platform"]))
+        cold = None
+        _, after_cold, old_cold_sha = _state_at_bound(home, plan.get("old_data_root"), thread)
+        validate_continuity(before, after_cold)
+        _write_bound_state(output / "old-after-cold.json", after_cold, old_cold_sha)
+        cold_roots_after = _root_snapshots(home, old_data, new_root, thread)
+        require(cold_roots_after["old"].get("state_sha256") == old_cold_sha, "old cold state snapshot changed")
+        if result["cold_observation"]["status"] in ("observed", "session_start_unobserved"):
+            try:
+                trace = _root_turn_trace(cold_roots_before, cold_roots_after, thread,
+                                         result["cold_observation"]["turn"], shared=shared_root)
+                result["cold_observation"]["actual_root"] = trace["actual_root"]
+            except UpgradeError:
+                trace = {"thread": thread, "turn": result["cold_observation"]["turn"], "actual_root": "unknown",
+                         "before": cold_roots_before, "after": cold_roots_after}
+                result["cold_observation"].update(status="root_unobserved", actual_root="unknown")
+        else:
+            trace = {"thread": thread, "turn": None, "actual_root": "unknown",
+                     "before": cold_roots_before, "after": cold_roots_after}
+            result["cold_observation"]["actual_root"] = "unknown"
+        _write_new(output / "cold-roots.json", trace)
+        result["data_observations"]["new_after_cold"] = "absent"
+        if new_path.exists() or new_path.is_symlink():
+            _, state, new_cold_sha = _state_at_bound(home, str(new_root), thread)
+            require(cold_roots_after["new"].get("state_sha256") == new_cold_sha, "new cold state snapshot changed")
+            _write_bound_state(output / "new-after-cold.json", state, new_cold_sha)
+            result["data_observations"]["new_after_cold"] = "observed"
+        if result["cold_observation"]["actual_root"] == "unknown":
+            result["cold_observation"]["ledger_compatibility"] = "unobserved"
+        else:
+            actual_state = after_cold if result["cold_observation"]["actual_root"] in ("old", "shared") else state
+            result["cold_observation"]["ledger_compatibility"] = (
+                "preserved" if _pending(before) <= _pending(actual_state, allow_empty=True) else "lost")
+        result["sentinel_after"] = _sentinel_files(home, plan.get("sentinel"))
+        require(result["sentinel_after"] == sentinel, "sentinel changed during observation")
+        final_markets = _market_entries(command([str(codex), "plugin", "marketplace", "list", "--json"]))
+        require(sentinel["marketplace"] in final_markets, "sentinel marketplace missing after observation")
+        _market_source(final_markets, NEW_MARKET, new)
+        if old_market != NEW_MARKET:
+            _market_source(final_markets, old_market, old)
+        statuses = (result["live_observation"]["status"], result["cold_observation"]["status"])
+        ledgers = (result["live_observation"]["ledger_compatibility"], result["cold_observation"]["ledger_compatibility"])
+        result["status"] = ("observation_complete" if statuses == ("observed", "observed") and ledgers == ("preserved", "preserved") else
+                            "observation_pending" if any(s in ("root_unobserved", "session_start_unobserved") for s in statuses)
+                            else "unsupported_continuity")
+    except BaseException as exc:
+        result["status"], result["failure"] = "failed", type(exc).__name__
+    finally:
+        for role, client in (("cold", cold), ("old_live", live)):
+            if client is not None:
+                try:
+                    result["cleanup"].append(_close_observation(client, role, subject["platform"]))
+                except BaseException as exc:
+                    result["cleanup"].append({"role": role, "cleanup_unknown": type(exc).__name__})
+                    result["status"] = "failed"
+        names = ("live/rpc.jsonl", "cold/rpc.jsonl", "old-before.json", "old-after-live.json", "live-roots.json", "cold-roots.json",
+                 "old-after-cold.json", "new-after-live.json", "new-after-cold.json", "live-guard.json", "cold-guard.json")
+        result["artifacts"] = {name: sha(output / name) for name in names if (output / name).is_file()}
+        _write_new(output / "result.json", result)
+    return result
 
 
 def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]:
@@ -1270,6 +1899,8 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
     old_market = OLD_MARKETS[plan["old_version"]]
     require(_within(installed, home / "plugins/cache" / old_market / "context-guard")
             and source_files(installed) == source_files(old), "old installed cache differs")
+    if plan["transition_strategy"] == "observe-open":
+        return _run_observation(plan, output, subject, previous, installed)
     output.mkdir(mode=0o700)
     live_dir, cold_dir = output / "live", output / "cold"
     live_dir.mkdir(mode=0o700)
@@ -1307,19 +1938,20 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         rechecked = _official_install_identity(previous.get("official_add"), _json_output(prior_list),
                                                 old, home, plan["old_version"])
         require(rechecked == installed, "old official installation changed before execution")
+        old_cache_before = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
         observe_sentinel("after_old_list")
         client_plan = {"codex": str(codex), "cwd": str(workspace), "home": str(home),
                        "plugin_root": str(installed)}
         with _launch_environment(home):
-            live = UpgradeClient(client_plan, live_dir)
+            live = UpgradeClient(client_plan, live_dir, turn_limit=7)
         old_source = str(installed / "hooks/hooks.json")
         result["old_inventory"] = list(live.approved.values())
         task_a = live.start()
         task_b = live.start()
         read_command = ("Get-Content -LiteralPath native-read.txt" if platform.system() == "Windows"
                         else "cat native-read.txt")
-        prompt = ("$context-guard\n请记录一项尚未完成的验收要求：等待我明确同意后再提交。"
-                  "现在不要执行或完成该要求，只回复等待。")
+        prompt = ("$context-guard\n请验证 native-read.txt 的 SHA256，收到我的允许后再进行。"
+                  "现在只回复等待。")
         turn_a, rows_a = live.observed_turn(
             task_a, prompt + " 先仅调用一次只读 shell，执行精确命令：" + read_command)
         verify_read_tool(rows_a, live.approved, task_a, turn_a, read_command, workspace)
@@ -1331,13 +1963,24 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         _pending(before_b)
         _write_new(output / "before-compact.json", _state_projection(before_compact))
         live.observed_compact(task_a)
-        compact_turn, compact_rows = live.observed_turn(task_a, "压缩后保持之前的未完成要求，不执行，只回复等待。")
+        compact_turn, compact_rows = live.observed_turn(task_a, "继续。")
         _, before_a = _state_at(home, plan.get("old_data_root"), task_a)
         host.verify_recovery(before_compact, before_a)
         _write_new(output / "before-a.json", _state_projection(before_a))
         _write_new(output / "before-b.json", _state_projection(before_b))
         strategy = plan.get("transition_strategy")
+        cancel_turns: dict[str, str] = {}
         if strategy == "finish-old":
+            for name, task, old_state in (("a", task_a, before_a), ("b", task_b, before_b)):
+                cancel_turn, cancel_rows = live.observed_turn(task, "取消当前任务。")
+                require(_paired(cancel_rows, live.approved, task, "stop", turn=cancel_turn),
+                        "old cancellation Stop missing")
+                _, after_cancel = _state_at(home, plan.get("old_data_root"), task)
+                path = host.session_state_path(old_data, task)
+                proof = _cancel_evidence(old_state, after_cancel, _old_scope(installed, path, home))
+                proof["state_sha256"] = sha(path)
+                _write_new(output / ("cancel-" + name + ".json"), proof)
+                cancel_turns[name] = cancel_turn
             _archive_owned(live, task_a)
             _archive_owned(live, task_b)
         else:
@@ -1352,6 +1995,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         result["before"] = {"thread_a": task_a, "thread_b": task_b, "turn_a": turn_a,
                             "turn_b": turn_b, "data_root": str(old_data),
                             "post_compact_turn": compact_turn,
+                            "cancel_turns": cancel_turns,
                             "app_server_pid": live.owned.process.pid,
                             "read_file_sha256": read_sha, "read_command": read_command,
                             "state_a_sha256": old_a_bytes, "state_b_sha256": old_b_bytes,
@@ -1359,7 +2003,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                             "old_b_stop_count": len(_paired(rows_b, live.approved, task_b, "stop", turn=turn_b)),
                             "post_compact_stop_count": len(_paired(compact_rows, live.approved, task_a,
                                                                    "stop", turn=compact_turn)),
-                            "scope": ("old tasks archived before transition" if strategy == "finish-old"
+                            "scope": ("old synthetic tasks explicitly cancelled before transition" if strategy == "finish-old"
                                       else "open idle task, no in-flight-upgrade claim")}
         _mark(live, "transition_started")
         if plan["old_version"] == "0.15.1":
@@ -1389,6 +2033,10 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                                    "files": actual_files,
                                    "old_cache_exists": old_still_exists,
                                    "old_cache_files_sha256": digest(source_files(installed)) if old_still_exists else None}
+        if old_market != NEW_MARKET:
+            after_new_install = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
+            require(after_new_install == old_cache_before, "old cache changed during stable installation")
+            result["old_cache_preservation"] = {"before": old_cache_before, "after_new_install": after_new_install}
         _, retained_a = _state_at(home, plan.get("old_data_root"), task_a)
         _, retained_b = _state_at(home, plan.get("old_data_root"), task_b)
         require(sha(host.session_state_path(old_data, task_a)) == old_a_bytes
@@ -1400,24 +2048,92 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         _write_new(output / "retained-b.json", _state_projection(retained_b))
         result["old_data_after_transition"] = {"thread_a_sha256": sha(host.session_state_path(old_data, task_a)),
                                                "thread_b_sha256": sha(host.session_state_path(old_data, task_b))}
-        _write_new(output / "review-required.json", {"message": "Review Hooks normally in the official CLI TUI."})
-        approved = _reviewed_sources(live, {old_source: plan["old_version"], new_source: "0.17.0"}, new_source)
+        if old_market != NEW_MARKET and strategy == "finish-old":
+            _sample_pre_disable(live, old_source, new_source, result)
+        _write_new(output / "review-required.json", {"message": ("Disable the old experimental plugin normally, "
+            "then review the stable Hooks in the official CLI TUI." if old_market != NEW_MARKET and strategy == "finish-old"
+            else "Review Hooks normally in the official CLI TUI.")})
+        if old_market != NEW_MARKET and strategy == "finish-old":
+            deadline = time.monotonic() + 300
+            while True:
+                old_readback = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
+                old_row = _selected_plugin(old_readback, "context-guard@" + old_market)
+                if (old_row is not None and old_row.get("installed") is True and old_row.get("enabled") is False
+                        and old_row.get("version") == plan["old_version"]):
+                    break
+                require(time.monotonic() < deadline, "normal old-plugin disable pending")
+                time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+            after_disable = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
+            require(after_disable == old_cache_before, "old cache changed during normal disable")
+            stable_readback = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
+            stable_row = _selected_plugin(stable_readback, "context-guard@" + NEW_MARKET)
+            require(stable_row is not None and stable_row.get("installed") is True
+                    and stable_row.get("enabled") is True and stable_row.get("version") == "0.17.0",
+                    "stable plugin is not enabled after old disable")
+            result["old_cache_preservation"]["after_old_disable"] = after_disable
+            live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
+                "pid": live.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+            live.log.flush()
+        allowed_sources = {new_source: "0.17.0"}
+        if strategy == "observe-open" and old_market != NEW_MARKET:
+            allowed_sources[old_source] = plan["old_version"]
+        approved = _reviewed_sources(live, allowed_sources, new_source)
         result["new_inventory"] = list(approved.values())
         require(live.owned.process.poll() is None, "original app-server exited during transition")
         continuation = "请继续保留之前未完成的要求，不执行它，只回复等待。"
         if strategy == "finish-old":
             fresh = live.start()
-            fresh_turn, fresh_rows = live.observed_turn(fresh, prompt)
+            fresh_turn, fresh_rows = live.observed_turn(fresh, prompt + " 先仅调用一次只读 shell，执行精确命令：" + read_command)
+            verify_read_tool(fresh_rows, approved, fresh, fresh_turn, read_command, workspace)
+            require(sha(read_file) == read_sha, "fresh read fixture changed")
             new_data, fresh_state = _state_at(home, plan.get("new_data_root"), fresh)
             _pending(fresh_state)
             _write_new(output / "fresh-after-transition.json", _state_projection(fresh_state))
-            _archive_owned(live, fresh)
             fresh_stops = _paired(fresh_rows, approved, fresh, "stop", turn=fresh_turn)
             require(any(_source_key(run.get("sourcePath"), [new_source]) == new_source for run in fresh_stops),
                     "fresh task did not run the stable Hook source")
+            live.observed_compact(fresh)
+            fresh_compact_turn, _ = live.observed_turn(fresh, "继续。")
+            _, compact_state = _state_at(home, plan.get("new_data_root"), fresh)
+            host.verify_recovery(fresh_state, compact_state)
+            _write_new(output / "fresh-after-compact.json", _state_projection(compact_state))
+            live.rpc("thread/unsubscribe", {"threadId": fresh})
+            cold_plan = {**client_plan, "plugin_root": str(new_installed)}
+            with _launch_environment(home):
+                cold = UpgradeClient(cold_plan, cold_dir, sources={new_source: "0.17.0"}, turn_limit=2)
+            cold.log.write(json.dumps({"direction": "observation", "event": "cold_client_started",
+                "pid": cold.owned.process.pid, "monotonic_ns": time.monotonic_ns()}) + "\n")
+            cold.log.flush()
+            begin = len(cold.rows)
+            cold.rpc("thread/resume", {"threadId": fresh, "cwd": str(workspace),
+                                       "sandbox": "read-only", "approvalPolicy": "on-request"})
+            _try_wait_cold_start(cold, fresh, begin)
+            fresh_cold_turn, cold_rows = cold.observed_turn(fresh, "继续。")
+            cold.log.flush()
+            cold_phase, cold_started_before = _cold_session_phase(_journal(cold_dir / "rpc.jsonl"), cold.approved,
+                                                                   fresh, fresh_cold_turn, new_source)
+            _, cold_state = _state_at(home, plan.get("new_data_root"), fresh)
+            validate_continuity(compact_state, cold_state)
+            _write_new(output / "fresh-after-cold.json", _state_projection(cold_state))
+            cold_stops = _paired(cold_rows, cold.approved, fresh, "stop", turn=fresh_cold_turn)
+            require(any(_source_key(run.get("sourcePath"), [new_source]) == new_source for run in cold_stops),
+                    "cold fresh task did not run the stable Hook source")
+            fresh_cancel_turn, fresh_cancel_rows = cold.observed_turn(fresh, "取消当前任务。")
+            require(_paired(fresh_cancel_rows, cold.approved, fresh, "stop", turn=fresh_cancel_turn),
+                    "fresh cancellation Stop missing")
+            _, fresh_cancel_state = _state_at(home, plan.get("new_data_root"), fresh)
+            fresh_state_path = host.session_state_path(new_data, fresh)
+            fresh_cancel = _cancel_evidence(cold_state, fresh_cancel_state, _old_scope(new_installed, fresh_state_path, home))
+            fresh_cancel["state_sha256"] = sha(fresh_state_path)
+            _write_new(output / "fresh-cancel.json", fresh_cancel)
+            _archive_owned(cold, fresh)
             result["after"] = {"fresh_thread": fresh, "fresh_turn": fresh_turn, "data_root": str(new_data),
                                "fresh_stop_sources": sorted({run["sourcePath"] for run in fresh_stops}),
-                               "scope": "old tasks finished before transition; no continuity claim"}
+                               "fresh_compact_turn": fresh_compact_turn, "fresh_cold_turn": fresh_cold_turn,
+                               "fresh_cancel_turn": fresh_cancel_turn,
+                               "cold_session_start_phase": cold_phase,
+                               "cold_session_started_before_first_turn": cold_started_before,
+                               "scope": "old tasks explicitly cancelled before transition; no continuity claim"}
         else:
             turn_after_a, rows_after_a = live.observed_turn(task_a, continuation)
             new_data, after_a = _state_at(home, plan.get("new_data_root"), task_a)
@@ -1427,12 +2143,15 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             with _launch_environment(home):
                 cold = UpgradeClient(cold_plan, cold_dir,
                                      sources={p: ("0.17.0" if p == new_source else plan["old_version"])
-                                              for _, p in approved})
+                                              for _, p in approved}, turn_limit=1)
             begin = len(cold.rows)
             cold.rpc("thread/resume", {"threadId": task_b, "cwd": str(workspace),
                                         "sandbox": "read-only", "approvalPolicy": "on-request"})
-            _wait_hook(cold, task_b, "sessionStart", begin)
+            _try_wait_cold_start(cold, task_b, begin)
             turn_after_b, rows_after_b = cold.observed_turn(task_b, continuation)
+            cold.log.flush()
+            cold_phase, cold_started_before = _cold_session_phase(_journal(cold_dir / "rpc.jsonl"), cold.approved,
+                                                                   task_b, turn_after_b, new_source)
             _, after_b = _state_at(home, plan.get("new_data_root"), task_b)
             validate_continuity(before_b, after_b)
             _write_new(output / "after-b.json", _state_projection(after_b))
@@ -1443,7 +2162,9 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             result["after"] = {"thread_a": task_a, "thread_b": task_b, "turn_a": turn_after_a,
                                "turn_b": turn_after_b, "data_root": str(new_data),
                                "live_stop_sources": sorted({run["sourcePath"] for run in live_stops}),
-                               "cold_stop_sources": sorted({run["sourcePath"] for run in cold_stops})}
+                               "cold_stop_sources": sorted({run["sourcePath"] for run in cold_stops}),
+                               "cold_session_start_phase": cold_phase,
+                               "cold_session_started_before_first_turn": cold_started_before}
         tracked_states = [(str(old_data), task_a), (str(old_data), task_b)]
         tracked_states += ([(str(new_data), fresh)] if strategy == "finish-old"
                            else [(str(new_data), task_a), (str(new_data), task_b)])
@@ -1499,15 +2220,22 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         result["failure"] = type(exc).__name__
     finally:
         result["cleanup"] = []
-        for client in (cold, live):
+        for role, client in (("cold", cold), ("live", live)):
             if client is not None:
                 try:
-                    result["cleanup"].append(client.close())
+                    result["cleanup"].append(_close_observation(client, role, subject["platform"]))
                 except BaseException as exc:
-                    result["cleanup"].append({"cleanup_unknown": type(exc).__name__})
+                    result["cleanup"].append({"role": role, "cleanup_unknown": type(exc).__name__})
+                    result["status"] = "failed"
+        diagnostics = [client.guard_diagnostic for client in (live, cold)
+                       if client is not None and isinstance(getattr(client, "guard_diagnostic", None), dict)]
+        if diagnostics:
+            _write_new(output / "guard-diagnostic.json", {"schema": "cg-u01-guard-diagnostics/v1",
+                                                          "entries": diagnostics})
         artifacts = ("live/rpc.jsonl", "cold/rpc.jsonl", "before-compact.json", "before-a.json",
                      "before-b.json", "retained-a.json", "retained-b.json", "after-a.json", "after-b.json",
-                     "fresh-after-transition.json")
+                     "fresh-after-transition.json", "fresh-after-compact.json", "fresh-after-cold.json", "fresh-cancel.json",
+                     "cancel-a.json", "cancel-b.json", "guard-diagnostic.json")
         result["artifacts"] = {name: sha(output / name) for name in artifacts if (output / name).is_file()}
         _write_new(output / "result.json", result)
     return result
@@ -1576,6 +2304,38 @@ def _turn_bounds(rows: list[dict[str, Any]], thread: str, turn: str) -> tuple[in
     return matches[0][0], completed[0]
 
 
+def _cold_session_phase(rows: list[dict[str, Any]], inventory: dict[tuple[str, str], dict[str, Any]],
+                        thread: str, turn: str, new_source: str) -> tuple[str, bool]:
+    resumes = [(i, j) for i, j, req, _ in _rpc_pairs(rows, "thread/resume")
+               if _object(req.get("params")).get("threadId") == thread]
+    start, end = _turn_bounds(rows, thread, turn)
+    require(len(resumes) == 1 and resumes[0][1] < start < end, "cold turn did not follow resume")
+    stops = []
+    for index in range(start, end + 1):
+        message = _object(rows[index].get("message"))
+        params, run = _object(message.get("params")), _object(_object(message.get("params")).get("run"))
+        if (rows[index].get("direction") == "response" and message.get("method") == "hook/completed"
+                and params.get("threadId") == thread and params.get("turnId") == turn
+                and run.get("eventName") == "stop" and run.get("status") == "completed"):
+            stops.append(index)
+    require(stops, "first cold Stop missing")
+    stop_index = min(stops)
+    paired = _paired(rows[resumes[0][0] + 1:stop_index], inventory, thread, "sessionStart")
+    selected = [run for run in paired if _source_key(run.get("sourcePath"), [new_source]) == new_source]
+    require(len(selected) == 1, "new-source cold SessionStart pair missing or ambiguous")
+    started, completion = [], []
+    for index in range(resumes[0][0] + 1, stop_index):
+        message = _object(rows[index].get("message"))
+        params, run = _object(message.get("params")), _object(_object(message.get("params")).get("run"))
+        if (rows[index].get("direction") == "response" and message.get("method") in ("hook/started", "hook/completed")
+                and params.get("threadId") == thread and run.get("id") == selected[0].get("id")
+                and run.get("eventName") == "sessionStart"
+                and _source_key(run.get("sourcePath"), [new_source]) == new_source):
+            (started if message["method"] == "hook/started" else completion).append(index)
+    require(len(started) == len(completion) == 1 and started[0] < completion[0], "cold SessionStart pair ambiguous")
+    return ("before_first_turn" if completion[0] < start else "during_first_turn", started[0] < start)
+
+
 def _thread_start_index(rows: list[dict[str, Any]], thread: str) -> int:
     starts = [i for i, _j, _request, result in _rpc_pairs(rows, "thread/start")
               if _object(result.get("thread")).get("id") == thread]
@@ -1601,17 +2361,28 @@ def _inventory_in_journal(rows: list[dict[str, Any]], expected: list[Any],
     return matches[-1]
 
 
-def _projected_state(path: Path) -> dict[str, Any]:
-    value = _read_json(path)
+def _validate_projected_state(value: Any, *, allow_empty: bool = False) -> dict[str, Any]:
+    require(isinstance(value, dict), "state projection must be an object")
     require(set(value) == {"session", "requirements", "mode", "compactions_count", "recovery_state"},
             "state output is not a strict projection")
     require(set(_object(value.get("session"))) == {"id"}
             and set(_object(value.get("mode"))) == {"active"}, "state projection shape differs")
     rows = value.get("requirements")
-    require(isinstance(rows, list) and all(isinstance(row, dict) and set(row) == {"id", "sha256", "status"}
+    require(isinstance(rows, list) and all(isinstance(row, dict) and set(row) == {"id", "sha256", "status", "work_unit_id"}
                                            for row in rows), "requirement projection shape differs")
-    _pending(value)
+    _pending(value, allow_empty=allow_empty)
     return value
+
+
+def _projected_state(path: Path, *, allow_empty: bool = False) -> dict[str, Any]:
+    return _validate_projected_state(_read_json(path), allow_empty=allow_empty)
+
+
+def _bound_projection(path: Path, *, allow_empty: bool = False) -> tuple[dict[str, Any], str]:
+    value = _read_json(path)
+    require(set(value) == {"source_state_sha256", "state"} and _sha(value.get("source_state_sha256")),
+            "state source binding unavailable")
+    return _validate_projected_state(value["state"], allow_empty=allow_empty), value["source_state_sha256"]
 
 
 def _command_index(commands: list[Any], expected: list[str], start: int = -1) -> tuple[int, dict[str, Any]]:
@@ -1638,11 +2409,10 @@ def _command_observation(commands: list[Any], index: int) -> dict[str, Any]:
     return _object(item.get("observation"))
 
 
-def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], result: dict[str, Any]) -> None:
+def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
     codex, old_market = subject["codex"], OLD_MARKETS[subject["old_version"]]
-    old_source, new_source = Path(subject["old_artifact"]), Path(subject["new_artifact"])
+    old_source = Path(subject["old_artifact"])
     sentinel = subject["sentinel"]
-    stable_id = "context-guard@" + NEW_MARKET
     old_id = "context-guard@" + old_market
     initial = prepared.get("commands")
     require(isinstance(initial, list), "prepare command facts unavailable")
@@ -1691,6 +2461,14 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     require(set(phases) == {"after_marketplace_add", "after_plugin_add", "after_plugin_list"}
             and all(facts == sentinel for facts in phases.values()), "prepare sentinel phases incomplete")
 
+
+def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], result: dict[str, Any]) -> None:
+    _verify_prepared(subject, prepared)
+    codex, old_market = subject["codex"], OLD_MARKETS[subject["old_version"]]
+    new_source = Path(subject["new_artifact"])
+    sentinel = subject["sentinel"]
+    stable_id = "context-guard@" + NEW_MARKET
+    old_id = "context-guard@" + old_market
     commands = result.get("commands")
     require(isinstance(commands, list), "transition command facts unavailable")
     allowed = [[codex, "plugin", "marketplace", "list", "--json"],
@@ -1732,7 +2510,13 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
             and native._official_path_matches(_object(new_row.get("marketplaceSource")).get("source"), new_source,
                                                windows=platform.system() == "Windows"),
             "new official source differs")
-    index, disabled = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], index)
+    disabled_reads = [(i, _object(item.get("observation"))) for i, item in enumerate(commands)
+                      if i > index and isinstance(item, dict) and item.get("argv") ==
+                      [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"]
+                      and (row := _selected_plugin(_object(item.get("observation")), stable_id)) is not None
+                      and row.get("enabled") is False]
+    require(len(disabled_reads) == 1, "official disabled plugin readback ambiguous")
+    index, disabled = disabled_reads[0]
     selected = _selected_plugin(disabled, stable_id)
     require(selected is not None and selected.get("installed") is True and selected.get("enabled") is False,
             "official disabled plugin readback missing")
@@ -1777,6 +2561,74 @@ def plan_sentinel_from_facts(facts: dict[str, Any]) -> dict[str, Any]:
             "data_marker": _object(facts.get("data_marker")).get("path")}
 
 
+def _verify_pre_disable(live: list[dict[str, Any]], result: dict[str, Any], old_source: str,
+                        new_source: str, transition_end: int, disabled_index: int, pid: int) -> None:
+    markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "observation"
+               and row.get("event") == "pre_disable_sample"]
+    require(len(markers) == 1 and transition_end < markers[0][0] < disabled_index
+            and markers[0][1].get("pid") == pid and type(markers[0][1].get("monotonic_ns")) is int,
+            "pre-disable sample marker unavailable")
+    reads = [(i, j, value) for i, j, _request, value in _rpc_pairs(live, "hooks/list")
+             if transition_end < i < j < markers[0][0]]
+    require(len(reads) == 1 and _pre_disable_projection(reads[0][2], old_source, new_source) ==
+            result.get("pre_disable_inventory"), "pre-disable sampled Hook identities differ")
+
+
+def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: list[dict[str, Any]],
+                        marks: dict[str, int], new_source: str, installed: Path) -> None:
+    if subject["old_version"] != "0.16.1" or subject["transition_strategy"] != "finish-old":
+        return
+    evidence = _object(result.get("old_cache_preservation"))
+    original = _object(evidence.get("before"))
+    require(set(original) == {"files_sha256", "objects_sha256"} and all(_sha(v) for v in original.values())
+            and evidence.get("after_new_install") == original and evidence.get("after_old_disable") == original
+            and digest(source_files(installed)) == original["files_sha256"]
+            and _cache_identity(installed) == original["objects_sha256"], "old cache preservation not proved")
+    markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "observation"
+               and row.get("event") == "old_identity_disabled"]
+    require(len(markers) == 1 and marks["transition_completed"] < markers[0][0] < marks["disable_completed"]
+            and type(markers[0][1].get("monotonic_ns")) is int, "normal old disable marker unavailable")
+    marker_index, marker = markers[0]
+    require(marker.get("pid") == live[marks["transition_started"]].get("pid"), "app-server identity differs")
+    _verify_pre_disable(live, result, str(installed / "hooks/hooks.json"), new_source,
+                        marks["transition_completed"], marker_index, marker["pid"])
+    codex = subject["codex"]
+    commands = result.get("commands")
+    require(isinstance(commands, list), "normal disable command evidence missing")
+    def last_read(market: str) -> dict[str, Any]:
+        rows = [row for row in commands if isinstance(row, dict) and row.get("argv") ==
+                [codex, "plugin", "list", "--marketplace", market, "--json"]
+                and type(row.get("completed_monotonic_ns")) is int
+                and row["completed_monotonic_ns"] < marker["monotonic_ns"]]
+        require(rows, "normal disable scoped readback missing")
+        return _object(rows[-1].get("observation"))
+    old = _selected_plugin(last_read(OLD_MARKETS["0.16.1"]), "context-guard@" + OLD_MARKETS["0.16.1"])
+    new = _selected_plugin(last_read(NEW_MARKET), "context-guard@" + NEW_MARKET)
+    require(old is not None and old.get("version") == "0.16.1" and old.get("installed") is True
+            and old.get("marketplaceName") == OLD_MARKETS["0.16.1"] and old.get("enabled") is False
+            and new is not None and new.get("version") == "0.17.0" and new.get("marketplaceName") == NEW_MARKET
+            and new.get("installed") is True and new.get("enabled") is True, "normal old disable not observed")
+    require(_object(old.get("source")).get("source") == "local"
+            and _object(new.get("source")).get("source") == "local"
+            and _object(old.get("marketplaceSource")).get("sourceType") == "local"
+            and _object(new.get("marketplaceSource")).get("sourceType") == "local"
+            and native._official_path_matches(_object(old.get("source")).get("path"), Path(subject["old_artifact"]),
+                                          windows=platform.system() == "Windows")
+            and native._official_path_matches(_object(new.get("source")).get("path"), Path(subject["new_artifact"]),
+                                               windows=platform.system() == "Windows")
+            and native._official_path_matches(_object(old.get("marketplaceSource")).get("source"),
+                                               Path(subject["old_artifact"]), windows=platform.system() == "Windows")
+            and native._official_path_matches(_object(new.get("marketplaceSource")).get("source"),
+                                               Path(subject["new_artifact"]), windows=platform.system() == "Windows"),
+            "plugin source differs after disable")
+    fresh = _object(result.get("after")).get("fresh_thread")
+    require(isinstance(fresh, str), "fresh task identity missing")
+    fresh_start = _thread_start_index(live, fresh)
+    require(marker_index < fresh_start, "fresh task preceded normal old disable")
+    _inventory_in_journal(live, result.get("new_inventory"), {new_source: "0.17.0"},
+                          after=marker_index, before=fresh_start)
+
+
 def _verify_disable_rpc(live: list[dict[str, Any]], marks: dict[str, int],
                         new_source: str, new_inv: dict[tuple[str, str], dict[str, Any]],
                         disabled_inventory: Any, version: str) -> None:
@@ -1811,6 +2663,352 @@ def _marks(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {name: index for name, (index, _row) in zip(expected, matches)}
 
 
+def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], result: dict[str, Any],
+                        output: Path, prepared_path: Path) -> dict[str, Any]:
+    require(subject.get("transition_strategy") == "observe-open" and prepared.get("schema") == REPORT
+            and prepared.get("stage") == "prepare" and prepared.get("status") == "pending"
+            and prepared.get("subject") == subject and result.get("schema") == REPORT
+            and result.get("stage") == "observe_open" and result.get("subject") == subject
+            and result.get("status") in ("observation_complete", "observation_pending", "unsupported_continuity")
+            and "failure" not in result and result.get("pending") == ["independent_consumer"],
+            "observation receipt is incomplete")
+    _verify_prepared(subject, prepared)
+    artifacts = _object(result.get("artifacts"))
+    required = {"live/rpc.jsonl", "cold/rpc.jsonl", "old-before.json", "old-after-live.json", "old-after-cold.json",
+                "live-roots.json", "cold-roots.json"}
+    data = _object(result.get("data_observations"))
+    for phase in ("live", "cold"):
+        value = data.get("new_after_" + phase)
+        require(value in ("observed", "absent"), "new data-root observation missing")
+        if value == "observed":
+            required.add("new-after-" + phase + ".json")
+        else:
+            name = "new-after-" + phase + ".json"
+            require(name not in artifacts and not (output / name).exists() and not (output / name).is_symlink(),
+                    "absent new data root has a conflicting projection")
+    for phase in ("live", "cold"):
+        if _object(result.get(phase + "_observation")).get("status") == "unsupported_guard":
+            required.add(phase + "-guard.json")
+    require(required <= set(artifacts) and all(_sha(artifacts.get(name))
+            and sha(_evidence_path(output, name)) == artifacts[name] for name in required),
+            "observation artifacts differ")
+    live = _journal(_evidence_path(output, "live/rpc.jsonl"))
+    cold = _journal(_evidence_path(output, "cold/rpc.jsonl"))
+    _validate_rpc_requests(live, cold=False)
+    _validate_rpc_requests(cold, cold=True)
+    require(sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                for row in live) == 2
+            and sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                    for row in cold) <= 1, "observation model turn budget differs")
+    before = _object(result.get("before"))
+    thread, first = before.get("thread"), before.get("turn")
+    require(isinstance(thread, str) and isinstance(first, str) and before.get("old_data_root") == subject["old_data_root"]
+            and data.get("old_root") == subject["old_data_root"] and data.get("new_root") == subject["new_data_root"]
+            and before.get("read_file_sha256") == subject["read_file_sha256"] and _sha(before.get("state_sha256")),
+            "observation subject differs")
+    old_installed = _object(prepared.get("installed")).get("path")
+    new_installed = _object(result.get("installed_new")).get("path")
+    require(isinstance(old_installed, str) and isinstance(new_installed, str), "observation installation missing")
+    old_market = OLD_MARKETS[subject["old_version"]]
+    old_cache = Path(subject["home"]) / "plugins/cache" / old_market / "context-guard"
+    new_cache = Path(subject["home"]) / "plugins/cache" / NEW_MARKET / "context-guard"
+    require(any(native._official_path_matches(old_installed, old_cache / part, windows=os.name == "nt")
+                for part in (subject["old_version"], "local"))
+            and any(native._official_path_matches(new_installed, new_cache / part, windows=os.name == "nt")
+                    for part in ("0.17.0", "local")), "observation cache path differs")
+    public = native.load_artifacts(Path(subject["product_root"])).distribution_manifest(Path(subject["product_root"]))
+    require(_object(result.get("installed_new")).get("files") == public
+            and source_files(Path(new_installed)) == public, "observation stable cache differs")
+    old_exists = _object(result.get("installed_new")).get("old_cache_exists")
+    require(type(old_exists) is bool and old_exists == Path(old_installed).is_dir(),
+            "observed old cache availability changed or is unknown")
+    old_source = str(Path(old_installed) / "hooks/hooks.json")
+    new_source = str(Path(new_installed) / "hooks/hooks.json")
+    _require_distinct_sources(old_source, new_source)
+    markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "local"]
+    require(len(markers) == 2 and [row.get("event") for _, row in markers] ==
+            ["transition_started", "transition_completed"] and all(row.get("pid") == before.get("app_server_pid")
+            and type(row.get("monotonic_ns")) is int for _, row in markers)
+            and markers[0][1]["monotonic_ns"] < markers[1][1]["monotonic_ns"], "observation transition timing differs")
+    transition_start, transition_end = markers[0][0], markers[1][0]
+    old_inv = _inventory_in_journal(live, result.get("old_inventory"), {old_source: subject["old_version"]},
+                                    before=transition_start)
+    new_inv = _inventory_in_journal(live, result.get("new_inventory"), {new_source: "0.17.0"}, after=transition_end)
+    start, end = _turn_bounds(live, thread, first)
+    require(_thread_start_index(live, thread) < start < end < transition_start
+            and _paired(live[start:end + 1], old_inv, thread, "stop", turn=first), "old baseline not observed")
+    expected_read = "Get-Content -LiteralPath native-read.txt" if subject["platform"] == "Windows" else "cat native-read.txt"
+    require(before.get("read_command") == expected_read, "observation read command differs")
+    verify_read_tool(live[start:end + 1], old_inv, thread, first, expected_read, Path(subject["workspace"]))
+    initial, initial_sha = _bound_projection(_evidence_path(output, "old-before.json"))
+    require(_object(initial.get("session")).get("id") == thread and initial_sha == before["state_sha256"],
+            "old baseline task or state binding differs")
+    old_bound = {phase: _bound_projection(_evidence_path(output, "old-after-" + phase + ".json"))
+                 for phase in ("live", "cold")}
+    old_states = {phase: pair[0] for phase, pair in old_bound.items()}
+    for state in old_states.values():
+        validate_continuity(initial, state)
+    new_states, new_shas = {}, {}
+    for phase in ("live", "cold"):
+        if data["new_after_" + phase] == "observed":
+            state, raw_sha = _bound_projection(_evidence_path(output, "new-after-" + phase + ".json"), allow_empty=True)
+            require(_object(state.get("session")).get("id") == thread, "new data-root task differs")
+            new_states[phase] = state
+            new_shas[phase] = raw_sha
+    commands = result.get("commands")
+    require(isinstance(commands, list) and all(isinstance(row, dict) and type(row.get("exit_code")) is int
+            and row.get("exit_code") == 0
+            and isinstance(row.get("argv"), list) for row in commands), "observation command facts unavailable")
+    codex = subject["codex"]
+    allowed = [[codex, "plugin", "marketplace", "list", "--json"],
+               [codex, "plugin", "list", "--marketplace", old_market, "--json"],
+               [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"],
+               [codex, "plugin", "marketplace", "add", subject["new_artifact"]],
+               [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]]
+    if old_market == NEW_MARKET:
+        allowed.append([codex, "plugin", "marketplace", "remove", old_market])
+    require(all(row["argv"] in allowed for row in commands), "unexpected observation command")
+    old_list_index, old_list = _command_index(commands, [codex, "plugin", "list", "--marketplace", old_market, "--json"])
+    old_row = _selected_plugin(old_list, "context-guard@" + old_market)
+    require(old_row is not None and old_row.get("version") == subject["old_version"]
+            and old_row.get("installed") is True and old_row.get("enabled") is True
+            and _object(old_row.get("source")).get("source") == "local"
+            and _object(old_row.get("marketplaceSource")).get("sourceType") == "local"
+            and _object(prepared.get("official_add")).get("installedPath") == old_installed
+            and type(commands[old_list_index].get("completed_monotonic_ns")) is int
+            and commands[old_list_index]["completed_monotonic_ns"] < markers[0][1]["monotonic_ns"]
+            and native._official_path_matches(_object(old_row.get("source")).get("path"), Path(subject["old_artifact"]),
+                                               windows=platform.system() == "Windows")
+            and native._official_path_matches(_object(old_row.get("marketplaceSource")).get("source"),
+                                               Path(subject["old_artifact"]), windows=platform.system() == "Windows"),
+            "old observation identity differs")
+    add_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", subject["new_artifact"]], old_list_index)
+    add_index, added = _command_index(commands, [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"], add_index)
+    _index, new_list = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], add_index)
+    new_row = _selected_plugin(new_list, "context-guard@" + NEW_MARKET)
+    require(added.get("pluginId") == "context-guard@" + NEW_MARKET and added.get("version") == "0.17.0"
+            and added.get("installedPath") == new_installed and new_row is not None
+            and new_row.get("installed") is True and new_row.get("enabled") is True and new_row.get("version") == "0.17.0"
+            and _object(new_row.get("source")).get("source") == "local"
+            and _object(new_row.get("marketplaceSource")).get("sourceType") == "local"
+            and native._official_path_matches(_object(new_row.get("source")).get("path"), Path(subject["new_artifact"]),
+                                               windows=platform.system() == "Windows")
+            and native._official_path_matches(_object(new_row.get("marketplaceSource")).get("source"),
+                                               Path(subject["new_artifact"]), windows=platform.system() == "Windows"),
+            "new observation identity differs")
+    for argv in ([codex, "plugin", "marketplace", "add", subject["new_artifact"]],
+                 [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"],
+                 *([[codex, "plugin", "marketplace", "remove", old_market]] if old_market == NEW_MARKET else [])):
+        matches = [row for row in commands if row["argv"] == argv]
+        require(len(matches) == 1 and type(matches[0].get("started_monotonic_ns")) is int
+                and type(matches[0].get("completed_monotonic_ns")) is int
+                and markers[0][1]["monotonic_ns"] < matches[0]["started_monotonic_ns"]
+                <= matches[0]["completed_monotonic_ns"] < markers[1][1]["monotonic_ns"], "observation mutation timing differs")
+    sentinel = subject["sentinel"]
+    require(result.get("sentinel_after") == sentinel
+            and _sentinel_files(Path(subject["home"]), plan_sentinel_from_facts(sentinel)) == sentinel,
+            "observation sentinel changed")
+    market_reads = [_object(row.get("observation")) for row in commands if row["argv"] ==
+                    [codex, "plugin", "marketplace", "list", "--json"]]
+    require(len(market_reads) >= 2 and all(isinstance(row.get("marketplaces"), list)
+            and any(_object(item).get("name") == sentinel["marketplace"] for item in row["marketplaces"])
+            for row in market_reads), "unrelated marketplace not preserved")
+    for entries, market, source in ((market_reads[0]["marketplaces"], old_market, Path(subject["old_artifact"])),
+                                    (market_reads[-1]["marketplaces"], NEW_MARKET, Path(subject["new_artifact"]))):
+        _market_source({row["name"]: row for row in entries if isinstance(row, dict) and isinstance(row.get("name"), str)},
+                       market, source)
+    if old_market != NEW_MARKET:
+        preserved = _object(result.get("old_cache_preservation"))
+        original = _object(preserved.get("before"))
+        require(set(original) == {"files_sha256", "objects_sha256"} and all(_sha(x) for x in original.values())
+                and preserved.get("after_new_install") == preserved.get("after_old_disable") == original
+                and digest(source_files(Path(old_installed))) == original["files_sha256"]
+                and _cache_identity(Path(old_installed)) == original["objects_sha256"], "old cache not preserved")
+        disabled_markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "observation"
+                            and row.get("event") == "old_identity_disabled"]
+        require(len(disabled_markers) == 1 and transition_end < disabled_markers[0][0]
+                and disabled_markers[0][1].get("pid") == before.get("app_server_pid"), "normal old disable missing")
+        _verify_pre_disable(live, result, old_source, new_source, transition_end,
+                            disabled_markers[0][0], before["app_server_pid"])
+        stamp = disabled_markers[0][1].get("monotonic_ns")
+        require(type(stamp) is int, "normal old disable timestamp unavailable")
+        def read_at_marker(market: str) -> dict[str, Any] | None:
+            rows = [row for row in commands if row["argv"] == [codex, "plugin", "list", "--marketplace", market, "--json"]
+                    and type(row.get("completed_monotonic_ns")) is int and row["completed_monotonic_ns"] < stamp]
+            return _selected_plugin(_object(rows[-1].get("observation")), "context-guard@" + market) if rows else None
+        old_row, new_row = read_at_marker(old_market), read_at_marker(NEW_MARKET)
+        require(old_row is not None and old_row.get("version") == subject["old_version"]
+                and old_row.get("installed") is True and old_row.get("enabled") is False
+                and new_row is not None and new_row.get("version") == "0.17.0"
+                and new_row.get("installed") is True and new_row.get("enabled") is True
+                and native._official_path_matches(_object(old_row.get("source")).get("path"), Path(subject["old_artifact"]),
+                                                   windows=platform.system() == "Windows")
+                and native._official_path_matches(_object(new_row.get("source")).get("path"), Path(subject["new_artifact"]),
+                                                   windows=platform.system() == "Windows"),
+                "normal plugin disable or stable enable unproved")
+        _inventory_in_journal(live, result.get("new_inventory"), {new_source: "0.17.0"}, after=disabled_markers[0][0])
+    combined = {**old_inv, **new_inv}
+    traces = {phase: _read_json(_evidence_path(output, phase + "-roots.json")) for phase in ("live", "cold")}
+    require(traces["live"].get("after") == traces["cold"].get("before"), "observation root snapshots are discontinuous")
+    shared_root = Path(subject["old_data_root"]) == Path(subject["new_data_root"])
+    for phase, trace in traces.items():
+        _validate_root_snapshot_map(trace.get("before"))
+        _validate_root_snapshot_map(trace.get("after"))
+        after_roots = trace["after"]
+        require(after_roots["old"]["present"] is True
+                and after_roots["new"]["present"] == (data["new_after_" + phase] == "observed"),
+                "data-root presence contradicts turn snapshots")
+        require(after_roots["old"].get("state_sha256") == old_bound[phase][1]
+                and (phase not in new_shas or after_roots["new"].get("state_sha256") == new_shas[phase]),
+                "turn trace and projected state came from different source bytes")
+        if shared_root:
+            require(trace["before"]["old"] == trace["before"]["new"]
+                    and trace["after"]["old"] == trace["after"]["new"], "shared root snapshots differ")
+    require(traces["live"]["before"]["old"].get("state_sha256") == initial_sha,
+            "old baseline and pre-observation snapshot differ")
+    outcomes = []
+    ledgers = []
+    for role, rows in (("live", live), ("cold", cold)):
+        observation = _object(result.get(role + "_observation"))
+        status = observation.get("status")
+        require(status in ({"observed", "root_unobserved", "unsupported_guard"} if role == "live" else
+                           {"observed", "root_unobserved", "session_start_unobserved", "unsupported_guard",
+                            "unsupported_resume"}), "invalid observation status")
+        if status == "unsupported_guard":
+            diagnostic = _read_json(_evidence_path(output, role + "-guard.json"))
+            require(set(diagnostic) == {"schema", "stage", "method", "event", "source_class", "event_source_approved",
+                    "source_matches", "handler_matches", "order_matches", "mode_matches", "target_thread_matches",
+                    "old_inventory_order_matches"} and diagnostic.get("schema") == "cg-u01-guard-diagnostic/v1"
+                    and diagnostic.get("stage") == "receive" and diagnostic.get("target_thread_matches") is True
+                    and diagnostic.get("method") in ("hook/started", "hook/completed")
+                    and diagnostic.get("event") in EVENTS | {"other"}
+                    and diagnostic.get("source_class") in ("old", "new", "other")
+                    and all(type(diagnostic.get(key)) is bool for key in
+                            ("event_source_approved", "source_matches", "handler_matches", "order_matches",
+                             "mode_matches", "target_thread_matches", "old_inventory_order_matches"))
+                    and any(diagnostic.get(key) is False for key in
+                            ("event_source_approved", "source_matches", "handler_matches", "order_matches", "mode_matches")),
+                    "unsupported guard evidence missing")
+        if role == "live":
+            requests = [(i, _object(row.get("message"))) for i, row in enumerate(rows)
+                        if i > transition_end and row.get("direction") == "request"
+                        and _object(row.get("message")).get("method") == "turn/start"
+                        and _object(_object(row.get("message")).get("params")).get("threadId") == thread]
+            require(len(requests) == 1, "same-server old task observation was not attempted")
+            require(_object(requests[0][1].get("params")).get("input") ==
+                    [{"type": "text", "text": "请仅回复观察结束。"}], "live observation prompt differs")
+            _inventory_in_journal(live, result.get("new_inventory"), {new_source: "0.17.0"},
+                                  after=transition_end, before=requests[0][0])
+            if old_market != NEW_MARKET:
+                require(disabled_markers[0][0] < requests[0][0], "live observation preceded old disable")
+                _inventory_in_journal(live, result.get("new_inventory"), {new_source: "0.17.0"},
+                                      after=disabled_markers[0][0], before=requests[0][0])
+        else:
+            requests = [(i, _object(row.get("message"))) for i, row in enumerate(rows)
+                        if row.get("direction") == "request" and _object(row.get("message")).get("method") == "thread/resume"
+                        and _object(_object(row.get("message")).get("params")).get("threadId") == thread]
+            require(len(requests) == 1, "cold old task observation was not attempted")
+            _inventory_in_journal(cold, result.get("new_inventory"), {new_source: "0.17.0"}, before=requests[0][0])
+            if status == "unsupported_resume":
+                request_id = requests[0][1].get("id")
+                require(any(row.get("direction") == "response" and _object(row.get("message")).get("id") == request_id
+                            and _object(row.get("message")).get("error") == {"redacted": True} for row in rows),
+                        "unsupported resume was not observed")
+        if status in ("observed", "root_unobserved", "session_start_unobserved"):
+            turn = observation.get("turn")
+            require(isinstance(turn, str), "observation turn missing")
+            trace = traces[role]
+            if status == "root_unobserved":
+                require(trace.get("thread") == thread and trace.get("turn") == turn
+                        and trace.get("actual_root") == "unknown" and observation.get("actual_root") == "unknown",
+                        "unknown root observation differs")
+                try:
+                    _root_turn_trace(trace.get("before"), trace.get("after"), thread, turn, shared=shared_root)
+                except UpgradeError:
+                    pass
+                else:
+                    raise UpgradeError("observed root was incorrectly labeled unknown")
+            else:
+                require(trace == _root_turn_trace(trace.get("before"), trace.get("after"), thread, turn, shared=shared_root)
+                        and observation.get("actual_root") == trace.get("actual_root"),
+                        "actual data-root observation not bound to turn")
+            start, end = _turn_bounds(rows, thread, turn)
+            require((start == requests[0][0] if role == "live" else start > requests[0][0])
+                    and _object(_object(rows[start].get("message")).get("params")).get("input") ==
+                    [{"type": "text", "text": "请仅回复观察结束。"}], "observation turn order or prompt differs")
+            stops = _paired(rows[start:end + 1], combined, thread, "stop", turn=turn)
+            sources = sorted({"old" if _source_key(run.get("sourcePath"), [old_source]) else "new" for run in stops})
+            require(bool(stops) and observation.get("stop_sources") == sources, "actual observation Hook source differs")
+            if role == "cold":
+                if status == "session_start_unobserved" or observation.get("session_start_source") is None:
+                    require(status in ("session_start_unobserved", "root_unobserved")
+                            and observation.get("session_start_source") is None
+                            and observation.get("session_start_phase") is None
+                            and observation.get("session_started_before_first_turn") is None,
+                            "unobserved SessionStart has a claimed phase")
+                    for candidate in (old_source, new_source):
+                        try:
+                            _cold_session_phase(rows, combined, thread, turn, candidate)
+                        except UpgradeError:
+                            continue
+                        raise UpgradeError("SessionStart was incorrectly labeled unobserved")
+                else:
+                    require(observation.get("session_start_source") in ("old", "new")
+                            and type(observation.get("session_started_before_first_turn")) is bool,
+                            "cold SessionStart source or phase missing")
+                    source = new_source if observation.get("session_start_source") == "new" else old_source
+                    phase = _cold_session_phase(rows, combined, thread, turn, source)
+                    require((observation.get("session_start_phase"), observation.get("session_started_before_first_turn")) == phase,
+                            "cold SessionStart observation differs")
+                require(observation.get("late_archive") == "observed", "late archive missing")
+                verify_archive(rows, combined, thread)
+        else:
+            require(traces[role].get("thread") == thread and traces[role].get("turn") is None
+                    and traces[role].get("actual_root") == "unknown" and observation.get("actual_root") == "unknown",
+                    "unsupported observation claimed a data root")
+        actual_root = observation.get("actual_root")
+        if actual_root == "unknown":
+            compatibility = "unobserved"
+        else:
+            require(actual_root in ("old", "new", "shared"), "invalid observed data root")
+            require(actual_root != "new" or role in new_states, "actual new root state unavailable")
+            state = old_states[role] if actual_root in ("old", "shared") else new_states[role]
+            compatibility = "preserved" if _pending(initial) <= _pending(state, allow_empty=True) else "lost"
+        require(observation.get("ledger_compatibility") == compatibility, "actual-root ledger compatibility differs")
+        ledgers.append(compatibility)
+        outcomes.append(status)
+    cleanup = result.get("cleanup")
+    require(isinstance(cleanup, list) and len(cleanup) == 2 and {x.get("role") for x in cleanup if isinstance(x, dict)} ==
+            {"old_live", "cold"} and all(isinstance(x, dict) and type(x.get("pid")) is int
+            and _object(x.get("facts")).get("owned_process_exited") is True
+            and _object(x.get("facts")).get("owned_tree_no_running_members") is True
+            and _object(x.get("facts")).get("process_group_cleanup_error") is None for x in cleanup),
+            "observation process cleanup incomplete")
+    if subject["platform"] == "Windows":
+        require(all(_object(row.get("facts")).get("cleanup_complete") is True
+                    and _object(row.get("facts")).get("job_close_confirmed") is True for row in cleanup),
+                "observation Job cleanup incomplete")
+    old_cleanup = next(row for row in cleanup if row["role"] == "old_live")
+    cold_cleanup = next(row for row in cleanup if row["role"] == "cold")
+    cold_markers = [row for row in cold if row.get("direction") == "observation"
+                    and row.get("event") == "cold_client_started"]
+    require(old_cleanup["pid"] == before.get("app_server_pid") and len(cold_markers) == 1
+            and cold_markers[0].get("pid") == cold_cleanup["pid"]
+            and type(old_cleanup.get("closed_monotonic_ns")) is int
+            and type(cold_cleanup.get("closed_monotonic_ns")) is int
+            and type(cold_markers[0].get("monotonic_ns")) is int
+            and old_cleanup["closed_monotonic_ns"] < cold_markers[0]["monotonic_ns"] < cold_cleanup["closed_monotonic_ns"],
+            "observation process identity or cleanup order differs")
+    status = ("observation_complete" if outcomes == ["observed", "observed"] and ledgers == ["preserved", "preserved"] else
+              "observation_pending" if any(s in ("root_unobserved", "session_start_unobserved") for s in outcomes)
+              else "unsupported_continuity")
+    require(result.get("status") == status, "observation status differs from facts")
+    return {"schema": REPORT, "status": status, "observed_boundary": status, "subject": subject,
+            "execution_result_sha256": sha(_evidence_path(output, "result.json")),
+            "prepare_result_sha256": sha(prepared_path), "artifact_sha256": artifacts,
+            "limitations": ["deliberately open old task was observed; no safe-upgrade or in-flight claim"]}
+
+
 def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]:
     """Derive the bounded result from official projections, RPC and readback."""
     require(output.is_absolute() and not output.is_symlink() and output.is_dir(), "result directory unavailable")
@@ -1829,6 +3027,10 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     _no_link_ancestors(prepared)
     old = _read_json(prepared)
     result = _read_json(_evidence_path(output, "result.json"))
+    if subject["transition_strategy"] == "observe-open":
+        return _verify_observation(subject, old, result, output, prepared)
+    require(not (output / "guard-diagnostic.json").exists()
+            and not (output / "guard-diagnostic.json").is_symlink(), "rejected Hook diagnostic present")
     require(old.get("schema") == REPORT and old.get("stage") == "prepare"
             and old.get("subject") == subject and old.get("status") == "pending", "prepare subject differs")
     require(result.get("schema") == REPORT and result.get("stage") == "open_transition"
@@ -1841,11 +3043,14 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     if strategy == "observe-open":
         required_files |= {"cold/rpc.jsonl", "after-a.json", "after-b.json"}
     else:
-        required_files.add("fresh-after-transition.json")
+        required_files |= {"fresh-after-transition.json", "fresh-after-compact.json", "fresh-after-cold.json", "fresh-cancel.json",
+                           "cold/rpc.jsonl", "cancel-a.json", "cancel-b.json"}
     require(required_files <= set(artifacts) and all(_sha(artifacts.get(name))
             and sha(_evidence_path(output, name)) == artifacts[name] for name in required_files), "artifact digest differs")
     live = _journal(_evidence_path(output, "live/rpc.jsonl"))
     _validate_rpc_requests(live, cold=False)
+    require(sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                for row in live) == 7, "supported lifecycle model turn budget differs")
     marks = _marks(live)
     before, after = _object(result.get("before")), _object(result.get("after"))
     require(type(before.get("app_server_pid")) is int and before["app_server_pid"] > 0
@@ -1879,6 +3084,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     new_inv = _inventory_in_journal(live, new_hooks,
                                     {p: ("0.17.0" if p == new_source else subject["old_version"])
                                      for p in new_paths}, after=marks["transition_completed"])
+    _verify_old_disable(subject, result, live, marks, new_source, Path(old_installed))
     for thread, field in ((task_a, "turn_a"), (task_b, "turn_b"), (task_a, "post_compact_turn")):
         turn = before.get(field)
         require(isinstance(turn, str), "old turn missing")
@@ -1916,6 +3122,21 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     require(_object(a_before["session"]).get("id") == task_a
             and _object(b_before["session"]).get("id") == task_b, "saved old task differs")
     if strategy == "finish-old":
+        turns = _object(before.get("cancel_turns"))
+        for name, thread, old_state in (("a", task_a, a_before), ("b", task_b, b_before)):
+            _check_cancel_evidence(_read_json(_evidence_path(output, "cancel-" + name + ".json")), old_state, thread)
+            cancel_turn = turns.get(name)
+            require(isinstance(cancel_turn, str), "cancel turn missing")
+            start, end = _turn_bounds(live, thread, cancel_turn)
+            request = _object(_object(live[start]).get("message"))
+            require(_object(request.get("params")).get("input") == [{"type": "text", "text": "取消当前任务。"}]
+                    and end < marks["transition_started"]
+                    and _paired(live[start:end + 1], old_inv, thread, "stop", turn=cancel_turn),
+                    "old cancellation turn was not completed")
+            archive = [(i, j) for i, j, req, _ in _rpc_pairs(live, "thread/archive")
+                       if _object(req.get("params")).get("threadId") == thread]
+            require(len(archive) == 1 and end < archive[0][0] < archive[0][1] < marks["transition_started"],
+                    "cancellation did not precede old task archive")
         verify_archive(live[:marks["transition_started"]], old_inv, task_a)
         verify_archive(live[:marks["transition_started"]], old_inv, task_b)
         fresh, turn = after.get("fresh_thread"), after.get("fresh_turn")
@@ -1926,12 +3147,62 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
         stops = _paired(live[start:end + 1], new_inv, fresh, "stop", turn=turn)
         require(any(_source_key(run.get("sourcePath"), [new_source]) == new_source for run in stops),
                 "fresh stable Hook did not run")
-        require(_object(_projected_state(_evidence_path(output, "fresh-after-transition.json"))["session"]).get("id") == fresh,
-                "fresh state belongs to another task")
-        verify_archive(live[:marks["disable_completed"]], new_inv, fresh)
+        verify_read_tool(live[start:end + 1], new_inv, fresh, turn, expected_command, Path(subject["workspace"]))
+        initial_fresh = _projected_state(_evidence_path(output, "fresh-after-transition.json"))
+        compact_fresh = _projected_state(_evidence_path(output, "fresh-after-compact.json"))
+        cold_fresh = _projected_state(_evidence_path(output, "fresh-after-cold.json"))
+        require(all(_object(state["session"]).get("id") == fresh for state in
+                    (initial_fresh, compact_fresh, cold_fresh)), "fresh state belongs to another task")
+        require(compact_fresh["compactions_count"] > initial_fresh["compactions_count"]
+                and compact_fresh.get("recovery_state") == "consumed", "fresh compact recovery not proved")
+        validate_continuity(initial_fresh, compact_fresh)
+        validate_continuity(compact_fresh, cold_fresh)
+        compact_turn, cold_turn = after.get("fresh_compact_turn"), after.get("fresh_cold_turn")
+        require(isinstance(compact_turn, str) and isinstance(cold_turn, str), "fresh continuation missing")
+        compact_start, compact_end = _turn_bounds(live, fresh, compact_turn)
+        require(end < compact_start < compact_end < marks["disable_completed"]
+                and _paired(live[compact_start:compact_end + 1], new_inv, fresh, "stop", turn=compact_turn),
+                "fresh compact continuation missing")
+        fresh_messages = [row["message"] for row in live[end:compact_end + 1] if row.get("direction") == "response"]
+        require(host.compact_complete(fresh_messages, fresh, {event: item for (event, path), item in new_inv.items()
+                                                               if path == new_source}), "fresh compact not proved")
+        unsubs = [(i, j) for i, j, req, _ in _rpc_pairs(live, "thread/unsubscribe")
+                  if _object(req.get("params")).get("threadId") == fresh]
+        require(len(unsubs) == 1 and compact_end < unsubs[0][0] < unsubs[0][1] < marks["disable_completed"],
+                "fresh unsubscribe not proved")
+        cold = _journal(_evidence_path(output, "cold/rpc.jsonl"))
+        _validate_rpc_requests(cold, cold=True)
+        require(sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                    for row in cold) == 2, "supported cold model turn budget differs")
+        resumes = [(i, j) for i, j, req, _ in _rpc_pairs(cold, "thread/resume")
+                   if _object(req.get("params")).get("threadId") == fresh]
+        require(len(resumes) == 1, "fresh cold resume missing")
+        cold_inv = _inventory_in_journal(cold, new_hooks, {new_source: "0.17.0"}, before=resumes[0][0])
+        cold_start, cold_end = _turn_bounds(cold, fresh, cold_turn)
+        require(resumes[0][1] < cold_start < cold_end
+                and _paired(cold[cold_start:cold_end + 1], cold_inv, fresh, "stop", turn=cold_turn),
+                "fresh cold Stop missing")
+        require(type(after.get("cold_session_started_before_first_turn")) is bool
+                and (after.get("cold_session_start_phase"), after.get("cold_session_started_before_first_turn")) ==
+                _cold_session_phase(cold, cold_inv, fresh, cold_turn, new_source),
+                "fresh cold SessionStart phase differs")
+        _check_cancel_evidence(_read_json(_evidence_path(output, "fresh-cancel.json")), cold_fresh, fresh)
+        fresh_cancel_turn = after.get("fresh_cancel_turn")
+        require(isinstance(fresh_cancel_turn, str), "fresh cancellation turn missing")
+        cancel_start, cancel_end = _turn_bounds(cold, fresh, fresh_cancel_turn)
+        require(cold_end < cancel_start < cancel_end
+                and _object(_object(cold[cancel_start].get("message")).get("params")).get("input") ==
+                    [{"type": "text", "text": "取消当前任务。"}]
+                and _paired(cold[cancel_start:cancel_end + 1], cold_inv, fresh, "stop", turn=fresh_cancel_turn),
+                "fresh cancellation turn not established")
+        fresh_archives = [(i, j) for i, j, req, _ in _rpc_pairs(cold, "thread/archive")
+                          if _object(req.get("params")).get("threadId") == fresh]
+        require(len(fresh_archives) == 1 and cancel_end < fresh_archives[0][0] < fresh_archives[0][1],
+                "fresh task archive preceded cancellation")
+        verify_archive(cold, cold_inv, fresh)
         tracked = [(subject["old_data_root"], task_a), (subject["old_data_root"], task_b),
                    (subject["new_data_root"], fresh)]
-        boundary = "finish_old_before_transition"
+        boundary = "cancelled_old_before_transition"
     else:
         require(after.get("thread_a") == task_a and after.get("thread_b") == task_b, "resumed task IDs differ")
         unsubscribed = [i for i, j, request, _ in _rpc_pairs(live, "thread/unsubscribe")
@@ -1953,9 +3224,12 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
         resumes = [(i, j) for i, j, request, _ in _rpc_pairs(cold, "thread/resume")
                    if _object(request.get("params")).get("threadId") == task_b]
         require(len(resumes) == 1, "cold resume not proved")
-        require(_paired(cold[resumes[0][0]:], cold_inv, task_b, "sessionStart"), "cold SessionStart missing")
         cold_start, cold_end = _turn_bounds(cold, task_b, turn_b)
-        require(cold_start > resumes[0][0], "cold turn preceded resume")
+        require(cold_start > resumes[0][1]
+                and type(after.get("cold_session_started_before_first_turn")) is bool
+                and (after.get("cold_session_start_phase"), after.get("cold_session_started_before_first_turn")) ==
+                _cold_session_phase(cold, cold_inv, task_b, turn_b, new_source),
+                "cold SessionStart phase differs")
         require(_paired(cold[cold_start:cold_end + 1], cold_inv, task_b, "stop", turn=turn_b), "cold Stop missing")
         validate_continuity(b_before, _projected_state(_evidence_path(output, "after-b.json")))
         verify_archive(cold, cold_inv, task_b)
@@ -1996,18 +3270,33 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                 "removal command timing not proved")
     require(not Path(new_installed).exists(), "removed selected cache reappeared")
     cleanup = result.get("cleanup")
-    require(isinstance(cleanup, list) and len(cleanup) == (2 if strategy == "observe-open" else 1)
-            and all(isinstance(item, dict) and item.get("owned_process_exited") is True
-                    and item.get("owned_tree_no_running_members") is True
-                    and item.get("process_group_cleanup_error") is None for item in cleanup),
+    require(isinstance(cleanup, list) and len(cleanup) == 2
+            and {item.get("role") for item in cleanup if isinstance(item, dict)} == {"live", "cold"}
+            and all(isinstance(item, dict) and type(item.get("pid")) is int
+                    and type(item.get("closed_monotonic_ns")) is int
+                    and _object(item.get("facts")).get("owned_process_exited") is True
+                    and _object(item.get("facts")).get("owned_tree_no_running_members") is True
+                    and _object(item.get("facts")).get("process_group_cleanup_error") is None for item in cleanup),
             "owned app-server cleanup incomplete")
+    live_close = next(item for item in cleanup if item["role"] == "live")
+    cold_close = next(item for item in cleanup if item["role"] == "cold")
+    cold_markers = [(i, row) for i, row in enumerate(cold) if row.get("direction") == "observation"
+                    and row.get("event") == "cold_client_started"]
+    require(len(cold_markers) == 1 and cold_markers[0][0] < resumes[0][0]
+            and cold_markers[0][1].get("pid") == cold_close["pid"]
+            and live_close["pid"] == before.get("app_server_pid") and live_close["pid"] != cold_close["pid"]
+            and type(cold_markers[0][1].get("monotonic_ns")) is int
+            and cold_markers[0][1]["monotonic_ns"] < cold_close["closed_monotonic_ns"]
+            and cold_markers[0][1]["monotonic_ns"] < live_close["closed_monotonic_ns"],
+            "cold and live app-server identities are not independently bound")
     if subject["platform"] == "Windows":
-        require(all(item.get("cleanup_complete") is True and item.get("job_close_confirmed") is True
+        require(all(_object(item.get("facts")).get("cleanup_complete") is True
+                    and _object(item.get("facts")).get("job_close_confirmed") is True
                     for item in cleanup), "Windows owned Job cleanup incomplete")
     return {"schema": REPORT, "status": "passed", "observed_boundary": boundary,
             "subject": subject, "execution_result_sha256": sha(_evidence_path(output, "result.json")),
             "prepare_result_sha256": sha(prepared), "artifact_sha256": artifacts,
-            "limitations": [("old tasks finished before transition; no continuity claim" if strategy == "finish-old"
+            "limitations": [("old tasks explicitly cancelled before transition; no continuity claim" if strategy == "finish-old"
                              else "open task was idle during transition; no in-flight claim"),
                             "literal PLUGIN_DATA and transient executed script path were not observed",
                             "this verifies one host and one starting version, not the whole matrix"]}
@@ -2055,7 +3344,7 @@ def main(argv: list[str] | None = None) -> int:
             _new_outside(args.verify_output, roots)
             _write_new(args.verify_output, result)
             print(json.dumps({"status": result["status"], "observed_boundary": result["observed_boundary"]}))
-            return 0
+            return 0 if result["status"] in ("passed", "observation_complete") else 1
         if args.prepare:
             result = prepare(plan, args.output)
         else:

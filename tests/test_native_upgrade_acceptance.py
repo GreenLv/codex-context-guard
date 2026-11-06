@@ -115,6 +115,442 @@ def lifecycle_facts():
 
 
 class UpgradeControls(unittest.TestCase):
+    def test_pre_disable_sample_rejects_dual_trust_and_replays_order(self):
+        old_source, new_source = fixture_path("old", "hooks.json"), fixture_path("new", "hooks.json")
+        old = inventory(old_source)["data"][0]["hooks"]
+        new = inventory(new_source)["data"][0]["hooks"]
+        for row in new:
+            row["trustStatus"] = "untrusted"
+        value = {"data": [{"hooks": old + new}]}
+        projection = U._pre_disable_projection(value, old_source, new_source)
+        rows = [{"direction": "local", "event": "transition_completed"},
+                {"direction": "request", "message": {"id": 1, "method": "hooks/list", "params": {}}},
+                {"direction": "response", "message": {"id": 1, "result": value}},
+                {"direction": "observation", "event": "pre_disable_sample", "pid": 123, "monotonic_ns": 4},
+                {"direction": "observation", "event": "old_identity_disabled", "pid": 123}]
+        U._verify_pre_disable(rows, {"pre_disable_inventory": projection}, old_source, new_source, 0, 4, 123)
+        bad = copy.deepcopy(value)
+        bad["data"][0]["hooks"][-1]["trustStatus"] = "trusted"
+        with self.assertRaises(U.UpgradeError):
+            U._pre_disable_projection(bad, old_source, new_source)
+        with self.assertRaises(U.UpgradeError):
+            U._verify_pre_disable(rows, {"pre_disable_inventory": projection}, old_source, new_source, 0, 3, 123)
+        bad_rows = copy.deepcopy(rows)
+        bad_rows[2]["message"]["result"] = bad
+        with self.assertRaises(U.UpgradeError):
+            U._verify_pre_disable(bad_rows, {"pre_disable_inventory": projection}, old_source, new_source, 0, 4, 123)
+
+    def test_observe_producer_to_independent_consumer_with_fake_transport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home, old, new, workspace = (root / name for name in ("home", "old", "new", "workspace"))
+            for path in (home, old, new, workspace):
+                path.mkdir()
+            product = root / "product"
+            product.mkdir()
+            codex = root / "codex"
+            codex.write_text("synthetic")
+            (workspace / "native-read.txt").write_text("synthetic read")
+            market, stable = "codex-context-guard", "context-guard@codex-context-guard"
+            installed = home / "plugins/cache" / market / "context-guard/0.15.1"
+            new_installed = home / "plugins/cache" / market / "context-guard/0.17.0"
+            installed.mkdir(parents=True)
+            new_installed.mkdir(parents=True)
+            data = home / "plugins/data/context-guard-codex-context-guard"
+            state_path = data / "sessions-v2/C/state.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text("synthetic state")
+            old_source, new_source = str(installed / "hooks/hooks.json"), str(new_installed / "hooks/hooks.json")
+            old_hooks, new_hooks = inventory(old_source)["data"][0]["hooks"], inventory(new_source)["data"][0]["hooks"]
+            sentinel_facts = {"marketplace": "cg-u01-sentinel-test", "cache_marker": {"path": fixture_path("cache")},
+                              "data_marker": {"path": fixture_path("data")}}
+            subject = {"home": str(home), "workspace": str(workspace), "old_artifact": str(old),
+                       "new_artifact": str(new), "product_root": str(product), "codex": str(codex),
+                       "old_data_root": str(data), "new_data_root": str(data), "old_version": "0.15.1",
+                       "transition_strategy": "observe-open", "platform": "Darwin", "sentinel": sentinel_facts,
+                       "read_file_sha256": U.sha(workspace / "native-read.txt")}
+            prepared = {"schema": U.REPORT, "stage": "prepare", "status": "pending", "subject": subject,
+                        "sentinel_after": sentinel_facts, "installed": {"path": str(installed)},
+                        "official_add": {"installedPath": str(installed)}}
+            prepared_path = root / "prepare.json"
+            prepared_path.write_text(json.dumps(prepared))
+            plan = {**subject, "sentinel": {}}
+            state = {"session": {"id": "C"}, "requirements": [
+                {"id": "R1", "sha256": "a" * 64, "status": "pending", "work_unit_id": "WU1"}],
+                "mode": {"active": True}, "compactions": [], "pending": {}}
+            state_path.write_text(json.dumps(state))
+            world = {"new": False, "snapshots": 0, "instances": 0, "scenario": "pass", "turns": [], "events": []}
+
+            def marker(turn, seq):
+                return {"id": "P" + str(seq), "turn_id": turn,
+                        "sha256": hashlib.sha256("请仅回复观察结束。".encode()).hexdigest(),
+                        "record_sha256": "f" * 64, "core_event_seq": seq}
+            def snapshots(_home, _old_root, _new_root, _thread):
+                world["snapshots"] += 1
+                turns = ["T0"] + list(world["turns"])
+                snap = {"present": True, "state_sha256": U.sha(state_path),
+                        "prompts": [marker(turn, index + 1) for index, turn in enumerate(turns)]}
+                return {"old": snap, "new": copy.deepcopy(snap)}
+
+            class FakeClient:
+                def __init__(self, _plan, outdir, sources=None, **_kwargs):
+                    world["instances"] += 1
+                    self.plan = _plan
+                    self.is_cold = world["instances"] == 2
+                    world["events"].append("cold_start" if self.is_cold else "live_start")
+                    self.owned = mock.Mock()
+                    self.owned.process.pid = 456 if self.is_cold else 123
+                    self.owned.process.poll.return_value = None
+                    self.log = (outdir / "rpc.jsonl").open("x", encoding="utf-8")
+                    self.rows = []
+                    self.approved = U._inventory(inventory(new_source if self.is_cold else old_source),
+                                                 {new_source if self.is_cold else old_source: "0.17.0" if self.is_cold else "0.15.1"})
+                    self.initial_approved = dict(self.approved)
+                    self.observation_thread = self.observation_inventory = self.guard_diagnostic = None
+                    self.seq = 0
+                    self.rpc("hooks/list", {})
+
+                def emit(self, direction, message):
+                    self.log.write(json.dumps({"direction": direction, "message": message}) + "\n")
+                    self.log.flush()
+                    if direction == "response":
+                        self.rows.append(message)
+
+                def hooks(self, event, turn=None, source=None):
+                    for phase in ("started", "completed"):
+                        run = hook(event, source or new_source, event, "completed", 1) if phase == "completed" else hook(event, source or new_source, event)
+                        params = {"threadId": "C", "run": run}
+                        if turn:
+                            params["turnId"] = turn
+                        self.emit("response", {"method": "hook/" + phase, "params": params})
+
+                def rpc(self, method, params):
+                    self.seq += 1
+                    request_id = self.seq
+                    self.emit("request", {"id": request_id, "method": method, "params": params})
+                    value = {"data": [{"hooks": new_hooks if world["new"] else old_hooks}]} if method == "hooks/list" else {}
+                    if method == "thread/resume" and world["scenario"] == "resume_rejected":
+                        self.emit("response", {"id": request_id, "error": {"redacted": True}})
+                        raise ValueError("RPC rejected: thread/resume")
+                    self.emit("response", {"id": request_id, "result": value})
+                    if method == "thread/resume":
+                        self.hooks("sessionStart")
+                    if method == "thread/archive" and world["scenario"] != "missing_end":
+                        self.hooks("sessionEnd")
+                    return value
+
+                def start(self):
+                    self.seq += 1
+                    self.emit("request", {"id": self.seq, "method": "thread/start", "params": {}})
+                    self.emit("response", {"id": self.seq, "result": {"thread": {"id": "C"}}})
+                    return "C"
+
+                def observed_turn(self, _thread, prompt):
+                    turn = "T2" if self.is_cold else "T1" if world["new"] else "T0"
+                    source = new_source if world["new"] else old_source
+                    self.seq += 1
+                    self.emit("request", {"id": self.seq, "method": "turn/start", "params": {
+                        "threadId": "C", "input": [{"type": "text", "text": prompt}]}})
+                    self.emit("response", {"id": self.seq, "result": {"turn": {"id": turn}}})
+                    if turn == "T1" and world["scenario"] == "live_guard":
+                        self.guard_diagnostic = {"schema": "cg-u01-guard-diagnostic/v1", "stage": "receive",
+                            "method": "hook/started", "event": "userPromptSubmit", "source_class": "old",
+                            "event_source_approved": False, "source_matches": False, "handler_matches": False,
+                            "order_matches": False, "mode_matches": False, "target_thread_matches": True,
+                            "old_inventory_order_matches": False}
+                        raise U.UpgradeError("synthetic guard")
+                    begin = len(self.rows)
+                    if turn == "T0":
+                        self.hooks("preToolUse", turn, source)
+                        item = {"id": "read", "type": "commandExecution", "command": "cat native-read.txt", "cwd": str(workspace)}
+                        for phase in ("started", "completed"):
+                            self.emit("response", {"method": "item/" + phase, "params": {"threadId": "C", "turnId": turn,
+                                "item": {**item, **({"exitCode": 0} if phase == "completed" else {})}}})
+                        self.hooks("postToolUse", turn, source)
+                    self.hooks("stop", turn, source)
+                    self.emit("response", {"method": "turn/completed", "params": {"threadId": "C", "turn": {"id": turn, "status": "completed"}}})
+                    if turn != "T0":
+                        world["turns"].append(turn)
+                        state_path.write_text(json.dumps({**state, "synthetic_turns": world["turns"]}))
+                    return turn, [{"direction": "response", "message": message} for message in self.rows[begin:]]
+
+                def close(self):
+                    world["events"].append("cold_close" if self.is_cold else "live_close")
+                    self.log.close()
+                    return {"owned_process_exited": True, "owned_tree_no_running_members": True,
+                            "process_group_cleanup_error": None}
+
+            old_row = {"pluginId": stable, "name": "context-guard", "marketplaceName": market, "version": "0.15.1",
+                       "installed": True, "enabled": True, "source": {"source": "local", "path": str(old)},
+                       "marketplaceSource": {"sourceType": "local", "source": str(old)}}
+            new_row = {**old_row, "version": "0.17.0", "source": {"source": "local", "path": str(new)},
+                       "marketplaceSource": {"sourceType": "local", "source": str(new)}}
+            def command(_native, _root, argv, **_kwargs):
+                if argv[1:4] == ["plugin", "marketplace", "remove"]:
+                    value = {}
+                elif argv[1:4] == ["plugin", "marketplace", "add"]:
+                    world["new"] = True
+                    value = {}
+                elif argv[1:4] == ["plugin", "marketplace", "list"]:
+                    source = str(new if world["new"] else old)
+                    value = {"marketplaces": [{"name": sentinel_facts["marketplace"]}, {"name": market,
+                        "root": source, "marketplaceSource": {"sourceType": "local", "source": source}}]}
+                elif argv[1:3] == ["plugin", "add"]:
+                    value = {"pluginId": stable, "name": "context-guard", "marketplaceName": market,
+                             "version": "0.17.0", "installedPath": str(new_installed)}
+                else:
+                    value = {"installed": [new_row if world["new"] else old_row]}
+                return subprocess.CompletedProcess(argv, 0, json.dumps(value).encode(), b"")
+            manager = mock.Mock()
+            manager.distribution_manifest.return_value = {"public": "b" * 64}
+            with mock.patch.object(U, "UpgradeClient", FakeClient), \
+                 mock.patch.object(U, "_sentinel_files", return_value=sentinel_facts), \
+                 mock.patch.object(U, "source_files", return_value={"public": "b" * 64}), \
+                 mock.patch.object(U, "_cache_identity", return_value="b" * 64), \
+                 mock.patch.object(U, "_official_install_identity", return_value=installed), \
+                 mock.patch.object(U, "_state_at", return_value=(data, state)), \
+                 mock.patch.object(U, "_root_snapshots", side_effect=snapshots), \
+                 mock.patch.object(U.native, "official_identity", return_value=new_installed), \
+                 mock.patch.object(U.native, "exact_artifact_parity"), \
+                 mock.patch.object(U.native, "load_artifacts", return_value=manager), \
+                 mock.patch.object(U.scheduler, "_command", side_effect=command), \
+                 mock.patch.object(U, "preflight", return_value=subject), \
+                 mock.patch.object(U, "_verify_prepared"):
+                for scenario, expected in (("pass", "observation_complete"), ("live_guard", "unsupported_continuity"),
+                                           ("resume_rejected", "unsupported_continuity"), ("missing_end", "failed")):
+                    world.update(new=False, snapshots=0, instances=0, scenario=scenario, turns=[], events=[])
+                    output = root / ("output-" + scenario)
+                    result = U._run_observation(plan, output, subject, prepared, installed)
+                    self.assertEqual(expected, result["status"], (scenario, result.get("failure")))
+                    self.assertLess(world["events"].index("live_close"), world["events"].index("cold_start"))
+                    if expected != "failed":
+                        self.assertEqual(expected, U.verify(plan, output, prepared_path)["status"])
+
+    def test_historical_inventory_is_limited_to_the_observed_thread(self):
+        old_source, new_source = fixture_path("old", "hooks.json"), fixture_path("new", "hooks.json")
+        old = U._inventory(inventory(old_source), {old_source: "0.16.1"})
+        new = U._inventory(inventory(new_source), {new_source: "0.17.0"})
+        client = object.__new__(U.UpgradeClient)
+        client.rows, client.pending, client.log, client.q = [], {}, io.StringIO(), U.queue.Queue()
+        client.approved, client.initial_approved = new, old
+        client.initial_sources, client.guard_diagnostic = {old_source: "0.16.1"}, None
+        client.observation_thread, client.observation_inventory = "C", {**old, **new}
+        def notification(thread):
+            return {"method": "hook/started", "params": {"threadId": thread,
+                    "run": hook("run", old_source, "stop")}}
+        client.q.put(notification("C"))
+        client.receive(U.time.monotonic() + 1)
+        client.q.put(notification("other"))
+        with self.assertRaises(U.UpgradeError):
+            client.receive(U.time.monotonic() + 1)
+        self.assertFalse(client.guard_diagnostic["target_thread_matches"])
+        self.assertEqual(1, len(client.rows))
+
+    def test_root_trace_requires_new_turn_marker_and_handles_shared_roots(self):
+        marker = {"id": "P1", "turn_id": "TURN", "sha256": hashlib.sha256("请仅回复观察结束。".encode()).hexdigest(),
+                  "record_sha256": "a" * 64, "core_event_seq": 1}
+        empty = {"present": True, "state_sha256": "b" * 64, "prompts": []}
+        with_turn = {"present": True, "state_sha256": "c" * 64, "prompts": [marker]}
+        absent = {"present": False, "prompts": []}
+        before, after = {"old": empty, "new": absent}, {"old": with_turn, "new": absent}
+        self.assertEqual("old", U._root_turn_trace(before, after, "T", "TURN", shared=False)["actual_root"])
+        self.assertEqual("shared", U._root_turn_trace({"old": empty, "new": empty},
+            {"old": with_turn, "new": with_turn}, "T", "TURN", shared=True)["actual_root"])
+        for a, b, shared in ((before, before, False), (before, {"old": with_turn, "new": with_turn}, False),
+                             (after, after, False), ({"old": empty, "new": absent},
+                                                     {"old": with_turn, "new": absent}, True)):
+            with self.assertRaises(U.UpgradeError):
+                U._root_turn_trace(a, b, "T", "TURN", shared=shared)
+        wrong = copy.deepcopy(with_turn)
+        wrong["prompts"][0]["sha256"] = "e" * 64
+        with self.assertRaises(U.UpgradeError):
+            U._root_turn_trace(before, {"old": wrong, "new": absent}, "T", "TURN", shared=False)
+
+    def test_all_auth_homes_bound_before_plan_read_with_limit_32(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            homes = [root / ("home-" + str(index)) for index in range(34)]
+            for home in homes:
+                home.mkdir()
+            with mock.patch.object(U, "_read_json", side_effect=AssertionError("must not read")) as reader:
+                for count in (9, 32):
+                    chosen, others = U._invocation_paths(root / "plan.json", root / "result", homes[0],
+                                                         homes[1:count + 1], None)
+                    self.assertEqual(homes[0], chosen)
+                    self.assertEqual(count, len(others))
+                with self.assertRaises(U.UpgradeError):
+                    U._invocation_paths(root / "plan.json", root / "result", homes[0], homes[1:34], None)
+                with self.assertRaises(U.UpgradeError):
+                    U._invocation_paths(root / "plan.json", root / "result", homes[0], [homes[1], homes[1]], None)
+                child = homes[1] / "nested"
+                child.mkdir()
+                with self.assertRaises(U.UpgradeError):
+                    U._invocation_paths(root / "plan.json", root / "result", homes[0], [homes[1], child], None)
+                with self.assertRaises(U.UpgradeError):
+                    U._invocation_paths(homes[9] / "plan.json", root / "result", homes[0], homes[1:10], None)
+                reader.assert_not_called()
+
+    def test_cold_session_start_must_be_real_new_source_pair_before_first_stop(self):
+        source = fixture_path("new", "hooks", "hooks.json")
+        inv = U._inventory(inventory(source), {source: "0.17.0"})
+        def pair(event_name, turn=None):
+            result = []
+            for phase in ("started", "completed"):
+                run = hook(event_name, source, event_name, "completed", 1) if phase == "completed" else hook(event_name, source, event_name)
+                params = {"threadId": "T", "run": run}
+                if turn is not None:
+                    params["turnId"] = turn
+                result.append({"direction": "response", "message": {"method": "hook/" + phase, "params": params}})
+            return result
+        resume = [{"direction": "request", "message": {"id": 1, "method": "thread/resume", "params": {"threadId": "T"}}},
+                  {"direction": "response", "message": {"id": 1, "result": {}}}]
+        turn = [{"direction": "request", "message": {"id": 2, "method": "turn/start", "params": {"threadId": "T"}}},
+                {"direction": "response", "message": {"id": 2, "result": {"turn": {"id": "U"}}}}]
+        stop = pair("stop", "U")
+        end = [{"direction": "response", "message": {"method": "turn/completed", "params": {
+            "threadId": "T", "turn": {"id": "U", "status": "completed"}}}}]
+        self.assertEqual(("before_first_turn", True), U._cold_session_phase(
+            resume + pair("sessionStart") + turn + stop + end, inv, "T", "U", source))
+        self.assertEqual(("during_first_turn", False), U._cold_session_phase(
+            resume + turn + pair("sessionStart") + stop + end, inv, "T", "U", source))
+        cross = pair("sessionStart")
+        self.assertEqual(("during_first_turn", True), U._cold_session_phase(
+            resume + cross[:1] + turn + cross[1:] + stop + end, inv, "T", "U", source))
+        bad_cases = [resume + turn + stop + end, resume + turn + stop + pair("sessionStart") + end,
+                     resume + turn + pair("sessionStart")[:1] + stop + end]
+        wrong_thread = pair("sessionStart")
+        wrong_thread[0]["message"]["params"]["threadId"] = "other"
+        wrong_thread[1]["message"]["params"]["threadId"] = "other"
+        bad_cases.append(resume + turn + wrong_thread + stop + end)
+        wrong_source = pair("sessionStart")
+        for row in wrong_source:
+            row["message"]["params"]["run"]["sourcePath"] = fixture_path("other", "hooks.json")
+        bad_cases.append(resume + turn + wrong_source + stop + end)
+        for bad in bad_cases:
+            with self.assertRaises(U.UpgradeError):
+                U._cold_session_phase(bad, inv, "T", "U", source)
+
+    def test_cancelled_scope_requires_exact_bound_controls_and_no_new_debt(self):
+        original = {"id": "R1", "sha256": "a" * 64, "work_unit_id": "WU1", "status": "pending", "prompt_id": "P1"}
+        cancel_sha = hashlib.sha256("取消当前任务。".encode()).hexdigest()
+        before = {"session": {"id": "T"}, "requirements": [original]}
+        after = {"session": {"id": "T"}, "requirements": [copy.deepcopy(original),
+            {"id": "R2", "sha256": cancel_sha, "work_unit_id": "WU1", "prompt_id": "P2", "status": "answered"}],
+            "prompts": [{"id": "P2", "sha256": cancel_sha, "record_sha256": "f" * 64,
+                         "core_event_seq": 4, "origin": "human"}],
+            "root_controls": [{"kind": "cancel", "source_prompt_id": "P2", "scope_kind": "current_unit",
+                "source_record_sha256": "f" * 64, "source_seq": 4,
+                "work_unit_id": "WU1", "catalog_sha256": "c" * 64,
+                "items": [{"id": "R1", "source_sha256": "a" * 64, "work_unit_id": "WU1"}]}],
+            "work_units": [{"id": "WU1", "status": "historical_unresolved"}]}
+        scope = {"current": [], "ancestor": [], "waiting": 0}
+        proof = U._cancel_evidence(before, after, scope)
+        proof["state_sha256"] = "d" * 64
+        U._check_cancel_evidence(proof, before, "T")
+        for change in ("wrong_id", "wrong_hash", "wrong_unit", "wrong_prompt", "wrong_sequence",
+                       "new_debt", "no_cancel", "open_scope"):
+            bad, bad_scope = copy.deepcopy(after), copy.deepcopy(scope)
+            if change == "wrong_id":
+                bad["root_controls"][0]["items"][0]["id"] = "R9"
+            elif change == "wrong_hash":
+                bad["root_controls"][0]["items"][0]["source_sha256"] = "b" * 64
+            elif change == "wrong_unit":
+                bad["work_units"][0]["status"] = "active"
+            elif change == "wrong_prompt":
+                bad["root_controls"][0]["source_record_sha256"] = "e" * 64
+            elif change == "wrong_sequence":
+                bad["root_controls"][0]["source_seq"] = 5
+            elif change == "new_debt":
+                bad["requirements"].append({"id": "R3", "sha256": "e" * 64, "work_unit_id": "WU1",
+                                            "prompt_id": "P3", "status": "pending"})
+            elif change == "no_cancel":
+                bad["root_controls"] = []
+            else:
+                bad_scope["current"] = ["R1"]
+            with self.assertRaises(U.UpgradeError, msg=change):
+                U._cancel_evidence(before, bad, bad_scope)
+        forged = copy.deepcopy(proof)
+        forged["after"]["root_controls"][0]["items"][0]["source_sha256"] = "b" * 64
+        with self.assertRaises(U.UpgradeError):
+            U._check_cancel_evidence(forged, before, "T")
+        changed_before, changed_after = copy.deepcopy(before), copy.deepcopy(after)
+        changed_before["requirements"][0]["work_unit_id"] = "WU9"
+        for row in changed_after["requirements"]:
+            row["work_unit_id"] = "WU9"
+        changed_after["root_controls"][0]["work_unit_id"] = "WU9"
+        changed_after["root_controls"][0]["items"][0]["work_unit_id"] = "WU9"
+        changed_after["work_units"][0]["id"] = "WU9"
+        forged = U._cancel_evidence(changed_before, changed_after, scope)
+        forged["state_sha256"] = "d" * 64
+        with self.assertRaises(U.UpgradeError):
+            U._check_cancel_evidence(forged, before, "T")
+
+    def test_old_disable_requires_both_scoped_readbacks_and_cache_identity(self):
+        subject, _prepared, _ = lifecycle_facts()
+        subject.update(old_version="0.16.1", transition_strategy="finish-old")
+        old_market = U.OLD_MARKETS["0.16.1"]
+        old = {"pluginId": "context-guard@" + old_market, "version": "0.16.1", "installed": True,
+               "marketplaceName": old_market, "enabled": False,
+               "source": {"source": "local", "path": subject["old_artifact"]},
+               "marketplaceSource": {"sourceType": "local", "source": subject["old_artifact"]}}
+        new = {"pluginId": "context-guard@" + U.NEW_MARKET, "version": "0.17.0", "installed": True,
+               "marketplaceName": U.NEW_MARKET, "enabled": True,
+               "source": {"source": "local", "path": subject["new_artifact"]},
+               "marketplaceSource": {"sourceType": "local", "source": subject["new_artifact"]}}
+        cache = {"files_sha256": U.digest({"file": "a" * 64}), "objects_sha256": "b" * 64}
+        reads = []
+        for market, row, tick in ((old_market, old, 21), (U.NEW_MARKET, new, 22)):
+            reads.append({"argv": [subject["codex"], "plugin", "list", "--marketplace", market, "--json"],
+                          "completed_monotonic_ns": tick, "observation": {"installed": [row]}})
+        result = {"commands": reads, "new_inventory": [], "after": {"fresh_thread": "F"}, "old_cache_preservation":
+                  {"before": cache, "after_new_install": cache, "after_old_disable": cache}}
+        live = [{"direction": "local", "pid": 1}, {"direction": "local"},
+                {"direction": "observation", "event": "old_identity_disabled", "pid": 1, "monotonic_ns": 30},
+                {"direction": "local"}]
+        marks = {"transition_started": 0, "transition_completed": 1, "disable_completed": 3}
+        installed = Path(fixture_path("old-cache"))
+        with mock.patch.object(U, "source_files", return_value={"file": "a" * 64}), \
+             mock.patch.object(U, "_cache_identity", return_value="b" * 64), \
+             mock.patch.object(U, "_thread_start_index", return_value=3), \
+             mock.patch.object(U, "_verify_pre_disable"), \
+             mock.patch.object(U, "_inventory_in_journal"):
+            U._verify_old_disable(subject, result, live, marks, fixture_path("new-hook"), installed)
+            for change in ("old_enabled", "stable_disabled", "cache_changed", "wrong_source"):
+                bad = copy.deepcopy(result)
+                if change == "old_enabled":
+                    bad["commands"][0]["observation"]["installed"][0]["enabled"] = True
+                elif change == "stable_disabled":
+                    bad["commands"][1]["observation"]["installed"][0]["enabled"] = False
+                elif change == "cache_changed":
+                    bad["old_cache_preservation"]["after_old_disable"]["objects_sha256"] = "d" * 64
+                else:
+                    bad["commands"][0]["observation"]["installed"][0]["source"]["path"] = fixture_path("other")
+                with self.assertRaises(U.UpgradeError, msg=change):
+                    U._verify_old_disable(subject, bad, live, marks, fixture_path("new-hook"), installed)
+
+    def test_rejected_hook_emits_only_bounded_diagnostic(self):
+        source = fixture_path("isolated", "cache", "old", "hooks", "hooks.json")
+        original = U._inventory(inventory(source), {source: "0.16.1"})
+        updated = copy.deepcopy(original)
+        updated[("userPromptSubmit", source)]["displayOrder"] += 9
+        client = object.__new__(U.UpgradeClient)
+        client.rows, client.pending, client.log, client.q = [], {}, io.StringIO(), U.queue.Queue()
+        client.approved, client.initial_approved = updated, original
+        client.initial_sources, client.guard_diagnostic = {source: "0.16.1"}, None
+        run = hook("private-run-id", source, "userPromptSubmit")
+        run.update(displayOrder=original[("userPromptSubmit", source)]["displayOrder"],
+                   secret="do-not-keep", prompt="do-not-keep")
+        client.q.put({"method": "hook/started", "params": {"threadId": "private-thread-id", "run": run}})
+        with self.assertRaises(U.UpgradeError):
+            client.receive(U.time.monotonic() + 1)
+        diagnostic = client.guard_diagnostic
+        self.assertFalse(diagnostic["order_matches"])
+        self.assertTrue(diagnostic["old_inventory_order_matches"])
+        self.assertEqual("old", diagnostic["source_class"])
+        for secret in ("private-run-id", "private-thread-id", "do-not-keep", source):
+            self.assertNotIn(secret, json.dumps(diagnostic))
+        self.assertEqual("", client.log.getvalue())
+
     def test_artifact_walk_uses_complete_path_metadata_when_cached_fields_are_zero(self):
         # Windows DirEntry metadata can omit identity and link count. The
         # artifact is still a real regular single-link file; never accept or
@@ -157,6 +593,8 @@ class UpgradeControls(unittest.TestCase):
         with mock.patch.object(U.platform, "system", return_value="Windows"):
             self.assertEqual(expected, U._source_key(r"c:\fixture\CACHE\hooks\hooks.json", [expected]))
             self.assertIsNone(U._source_key(r"C:\fixture\cache\..\hooks\hooks.json", [expected]))
+            with self.assertRaises(U.UpgradeError):
+                U._require_distinct_sources(expected, r"c:\fixture\CACHE\hooks\hooks.json")
 
     def test_archive_requires_real_same_thread_paired_end_with_3s_budget(self):
         source, thread = fixture_path("isolated", "cache", "old", "hooks", "hooks.json"), "thread-1"
@@ -207,7 +645,7 @@ class UpgradeControls(unittest.TestCase):
 
     def test_state_projection_never_persists_prompt_or_private_fields(self):
         state = {"session": {"id": "thread", "private": "do-not-keep"},
-                 "requirements": [{"id": "R1", "sha256": "a" * 64, "status": "pending",
+                 "requirements": [{"id": "R1", "sha256": "a" * 64, "status": "pending", "work_unit_id": "WU1",
                                    "text": "do-not-keep"}],
                  "mode": {"active": True}, "compactions": [{"private": "do-not-keep"}],
                  "pending": {"recovery": {"state": "consumed", "packet": "do-not-keep"}},
@@ -466,8 +904,11 @@ class UpgradeControls(unittest.TestCase):
                 event("hook/started", thread, turn, {"run": hook(event_name + thread, source, event_name)})
                 event("hook/completed", thread, turn, {"run": hook(event_name + thread, source, event_name, "completed", 1)})
 
-            def turn(i, thread, turn_id, source, read=False):
-                request(i, "turn/start", {"threadId": thread}, {"turn": {"id": turn_id}})
+            def turn(i, thread, turn_id, source, read=False, prompt=None):
+                params = {"threadId": thread}
+                if prompt is not None:
+                    params["input"] = [{"type": "text", "text": prompt}]
+                request(i, "turn/start", params, {"turn": {"id": turn_id}})
                 if read:
                     hook_pair(thread, turn_id, "preToolUse", source)
                     item = {"id": "read", "type": "commandExecution", "command": "cat native-read.txt",
@@ -499,14 +940,23 @@ class UpgradeControls(unittest.TestCase):
             event("item/completed", "A", "C1", {"item": {"id": "compact", "type": "contextCompaction"}})
             event("thread/status/changed", "A", None, {"status": {"type": "idle"}})
             turn(5, "A", "A2", old_source)
+            turn(50, "A", "AC", old_source, prompt="取消当前任务。")
+            turn(51, "B", "BC", old_source, prompt="取消当前任务。")
             archive(6, "A", old_source)
             archive(7, "B", old_source)
             mark("transition_started", 35)
             mark("transition_completed", 115)
             request(8, "hooks/list", {}, {"data": [{"hooks": new_hooks}]})
             request(102, "thread/start", {}, {"thread": {"id": "F"}})
-            turn(9, "F", "F1", new_source)
-            archive(10, "F", new_source)
+            turn(9, "F", "F1", new_source, read=True)
+            request(52, "thread/compact/start", {"threadId": "F"})
+            event("turn/started", "F", None, {"turn": {"id": "FC"}})
+            hook_pair("F", "FC", "preCompact", new_source)
+            event("item/started", "F", "FC", {"item": {"id": "compact-f", "type": "contextCompaction"}})
+            event("item/completed", "F", "FC", {"item": {"id": "compact-f", "type": "contextCompaction"}})
+            event("thread/status/changed", "F", None, {"status": {"type": "idle"}})
+            turn(53, "F", "F2", new_source)
+            request(54, "thread/unsubscribe", {"threadId": "F"})
             disable = {"edits": [{"keyPath": 'plugins."context-guard@codex-context-guard".enabled',
                                   "value": False, "mergeStrategy": "upsert"}], "reloadUserConfig": True}
             request(11, "config/batchWrite", disable)
@@ -516,7 +966,19 @@ class UpgradeControls(unittest.TestCase):
             mark("marketplace_removed", 185)
             journal = output / "live/rpc.jsonl"
             journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
-            pending = [{"id": "R1", "sha256": "a" * 64, "status": "pending"}]
+            live_rows = rows
+            rows = []
+            request(201, "hooks/list", {}, {"data": [{"hooks": new_hooks}]})
+            rows.append({"direction": "observation", "event": "cold_client_started", "pid": 456, "monotonic_ns": 120})
+            request(202, "thread/resume", {"threadId": "F"})
+            hook_pair("F", None, "sessionStart", new_source)
+            turn(203, "F", "F3", new_source)
+            turn(205, "F", "F4", new_source, prompt="取消当前任务。")
+            archive(204, "F", new_source)
+            (output / "cold").mkdir()
+            (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+            rows = live_rows
+            pending = [{"id": "R1", "sha256": "a" * 64, "status": "pending", "work_unit_id": "WU1"}]
 
             def snapshot(thread, count, recovery):
                 return {"session": {"id": thread}, "requirements": pending, "mode": {"active": True},
@@ -525,23 +987,50 @@ class UpgradeControls(unittest.TestCase):
             for name, value in {"before-compact.json": snapshot("A", 0, None),
                 "before-a.json": snapshot("A", 1, "consumed"), "before-b.json": snapshot("B", 0, None),
                 "retained-a.json": snapshot("A", 1, "consumed"), "retained-b.json": snapshot("B", 0, None),
-                "fresh-after-transition.json": snapshot("F", 0, None)}.items():
+                "fresh-after-transition.json": snapshot("F", 0, None),
+                "fresh-after-compact.json": snapshot("F", 1, "consumed"),
+                "fresh-after-cold.json": snapshot("F", 1, "consumed")}.items():
                 (output / name).write_text(json.dumps(value))
+            for name, thread in (("a", "A"), ("b", "B"), ("fresh", "F")):
+                original = {"id": "R1", "sha256": "a" * 64, "work_unit_id": "WU1", "status": "pending"}
+                cancel_sha = hashlib.sha256("取消当前任务。".encode()).hexdigest()
+                before_state = {"session": {"id": thread}, "requirements": [original]}
+                after_state = {"session": {"id": thread}, "requirements": [original,
+                    {"id": "R2", "sha256": cancel_sha, "work_unit_id": "WU1", "prompt_id": "P2", "status": "answered"}],
+                    "prompts": [{"id": "P2", "sha256": cancel_sha, "record_sha256": "f" * 64,
+                                 "core_event_seq": 4, "origin": "human"}],
+                    "root_controls": [{"kind": "cancel", "source_prompt_id": "P2", "scope_kind": "current_unit",
+                        "source_record_sha256": "f" * 64, "source_seq": 4,
+                        "work_unit_id": "WU1", "catalog_sha256": "c" * 64,
+                        "items": [{"id": "R1", "source_sha256": "a" * 64, "work_unit_id": "WU1"}]}],
+                    "work_units": [{"id": "WU1", "status": "historical_unresolved"}]}
+                proof = U._cancel_evidence(before_state, after_state, {"current": [], "ancestor": [], "waiting": 0})
+                proof["state_sha256"] = "d" * 64
+                filename = "fresh-cancel.json" if name == "fresh" else "cancel-" + name + ".json"
+                (output / filename).write_text(json.dumps(proof))
             data_facts = {"synthetic": "a" * 64}
             result.update({"schema": U.REPORT, "status": "pending", "stage": "open_transition",
                 "subject": subject, "pending": ["independent_consumer"], "old_inventory": old_hooks,
                 "new_inventory": new_hooks, "disabled_inventory": [],
                 "before": {"thread_a": "A", "thread_b": "B", "turn_a": "A1", "turn_b": "B1",
-                    "post_compact_turn": "A2", "data_root": subject["old_data_root"], "app_server_pid": 123,
+                    "post_compact_turn": "A2", "cancel_turns": {"a": "AC", "b": "BC"},
+                    "data_root": subject["old_data_root"], "app_server_pid": 123,
                     "read_command": "cat native-read.txt", "read_file_sha256": "c" * 64,
                     "state_a_sha256": "d" * 64, "state_b_sha256": "e" * 64},
                 "old_data_after_transition": {"thread_a_sha256": "d" * 64, "thread_b_sha256": "e" * 64},
-                "after": {"fresh_thread": "F", "fresh_turn": "F1", "data_root": subject["new_data_root"]},
+                "after": {"fresh_thread": "F", "fresh_turn": "F1", "fresh_compact_turn": "F2",
+                          "fresh_cold_turn": "F3", "fresh_cancel_turn": "F4", "cold_session_start_phase": "before_first_turn",
+                          "cold_session_started_before_first_turn": True,
+                          "data_root": subject["new_data_root"]},
                 "installed_new": {"path": new_path, "source": subject["new_artifact"], "version": "0.17.0",
                                   "files": {"public": "b" * 64}},
                 "selected_data_before_removal": data_facts, "selected_data_after_removal": data_facts,
-                "cleanup": [{"owned_process_exited": True, "owned_tree_no_running_members": True,
-                             "process_group_cleanup_error": None}]})
+                "cleanup": [{"role": "live", "pid": 123, "closed_monotonic_ns": 140,
+                             "facts": {"owned_process_exited": True, "owned_tree_no_running_members": True,
+                                       "process_group_cleanup_error": None}},
+                            {"role": "cold", "pid": 456, "closed_monotonic_ns": 130,
+                             "facts": {"owned_process_exited": True, "owned_tree_no_running_members": True,
+                                       "process_group_cleanup_error": None}}]})
             for index, item in enumerate(result["commands"]):
                 item["started_monotonic_ns"] = 10 + 10 * index
                 item["completed_monotonic_ns"] = 11 + 10 * index
@@ -554,7 +1043,77 @@ class UpgradeControls(unittest.TestCase):
                  mock.patch.object(U, "_selected_states", return_value=data_facts), \
                  mock.patch.object(U, "_sentinel_files", return_value=subject["sentinel"]):
                 accepted = U.verify({}, output, prepared_path)
-                self.assertEqual("finish_old_before_transition", accepted["observed_boundary"])
+                self.assertEqual("cancelled_old_before_transition", accepted["observed_boundary"])
+                for mutation in ("same_pid", "role_swap"):
+                    bad = copy.deepcopy(result)
+                    if mutation == "same_pid":
+                        bad["cleanup"][1]["pid"] = bad["cleanup"][0]["pid"]
+                    else:
+                        bad["cleanup"][0]["role"], bad["cleanup"][1]["role"] = "cold", "live"
+                    (output / "result.json").write_text(json.dumps(bad))
+                    with self.assertRaises(U.UpgradeError, msg=mutation):
+                        U.verify({}, output, prepared_path)
+                cold_path = output / "cold/rpc.jsonl"
+                original_cold = cold_path.read_text()
+                without_marker = [json.loads(line) for line in original_cold.splitlines()
+                                  if json.loads(line).get("event") != "cold_client_started"]
+                cold_path.write_text("".join(json.dumps(row) + "\n" for row in without_marker))
+                bad = copy.deepcopy(result)
+                bad["artifacts"]["cold/rpc.jsonl"] = U.sha(cold_path)
+                (output / "result.json").write_text(json.dumps(bad))
+                with self.assertRaises(U.UpgradeError):
+                    U.verify({}, output, prepared_path)
+                cold_path.write_text(original_cold)
+                moved = [json.loads(line) for line in original_cold.splitlines()]
+                pair = [row for row in moved if row.get("message", {}).get("id") == 201]
+                moved = [row for row in moved if row.get("message", {}).get("id") != 201]
+                resume_end = next(i for i, row in enumerate(moved) if row.get("direction") == "response"
+                                  and row.get("message", {}).get("id") == 202)
+                moved[resume_end + 1:resume_end + 1] = pair
+                cold_path.write_text("".join(json.dumps(row) + "\n" for row in moved))
+                bad = copy.deepcopy(result)
+                bad["artifacts"]["cold/rpc.jsonl"] = U.sha(cold_path)
+                (output / "result.json").write_text(json.dumps(bad))
+                with self.assertRaises(U.UpgradeError):
+                    U.verify({}, output, prepared_path)
+                cold_path.write_text(original_cold)
+                original_cancel = (output / "cancel-a.json").read_text()
+                forged_cancel = json.loads(original_cancel)
+                forged_cancel["after"]["root_controls"][0]["items"][0]["source_sha256"] = "e" * 64
+                (output / "cancel-a.json").write_text(json.dumps(forged_cancel))
+                bad = copy.deepcopy(result)
+                bad["artifacts"]["cancel-a.json"] = U.sha(output / "cancel-a.json")
+                (output / "result.json").write_text(json.dumps(bad))
+                with self.assertRaises(U.UpgradeError):
+                    U.verify({}, output, prepared_path)
+                (output / "cancel-a.json").write_text(original_cancel)
+                forged_cancel = json.loads(original_cancel)
+                for section in ("before", "after"):
+                    for row in forged_cancel[section]["requirements"]:
+                        row["work_unit_id"] = "WU9"
+                forged_cancel["after"]["root_controls"][0]["work_unit_id"] = "WU9"
+                forged_cancel["after"]["root_controls"][0]["items"][0]["work_unit_id"] = "WU9"
+                forged_cancel["after"]["work_units"][0]["id"] = "WU9"
+                forged_cancel["initial_pending"][0]["work_unit_id"] = "WU9"
+                forged_cancel["covered"][0]["work_unit_id"] = "WU9"
+                (output / "cancel-a.json").write_text(json.dumps(forged_cancel))
+                bad = copy.deepcopy(result)
+                bad["artifacts"]["cancel-a.json"] = U.sha(output / "cancel-a.json")
+                (output / "result.json").write_text(json.dumps(bad))
+                with self.assertRaises(U.UpgradeError):
+                    U.verify({}, output, prepared_path)
+                (output / "cancel-a.json").write_text(original_cancel)
+                missing_fresh_hook = [row for row in rows if not (row.get("direction") == "response"
+                    and row.get("message", {}).get("method") == "hook/completed"
+                    and row["message"].get("params", {}).get("threadId") == "F"
+                    and row["message"]["params"].get("run", {}).get("eventName") == "postToolUse")]
+                journal.write_text("".join(json.dumps(row) + "\n" for row in missing_fresh_hook))
+                bad = copy.deepcopy(result)
+                bad["artifacts"]["live/rpc.jsonl"] = U.sha(journal)
+                (output / "result.json").write_text(json.dumps(bad))
+                with self.assertRaises(U.UpgradeError):
+                    U.verify({}, output, prepared_path)
+                journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
                 for value in ("failed", None, "arbitrary"):
                     bad = copy.deepcopy(result)
                     bad["status"] = value
@@ -589,50 +1148,221 @@ class UpgradeControls(unittest.TestCase):
                 with self.assertRaises(U.UpgradeError):
                     U.verify({}, output, prepared_path)
 
-                # A second synthetic receipt exercises an open A and a cold B;
-                # it must never be conflated with the quiescent boundary above.
-                old_archive_start = next(i for i, row in enumerate(rows)
-                    if row.get("direction") == "request" and row.get("message", {}).get("method") == "thread/archive")
-                rows[:] = rows[:old_archive_start]
-                request(103, "thread/unsubscribe", {"threadId": "B"})
+                # Independent observation of one deliberately open task is not
+                # allowed to masquerade as the supported cancellation boundary.
+                rows[:] = []
+                request(301, "hooks/list", {}, {"data": [{"hooks": old_hooks}]})
+                request(302, "thread/start", {}, {"thread": {"id": "A"}})
+                turn(303, "A", "A1", old_source, read=True)
                 mark("transition_started", 35)
                 mark("transition_completed", 115)
                 request(104, "hooks/list", {}, {"data": [{"hooks": new_hooks}]})
-                turn(105, "A", "A3", new_source)
-                archive(106, "A", new_source)
-                request(107, "config/batchWrite", disable)
-                request(108, "hooks/list", {}, {"data": [{"hooks": []}]})
-                mark("disable_completed", 125)
-                mark("plugin_removed", 155)
-                mark("marketplace_removed", 185)
+                turn(105, "A", "A3", new_source, prompt="请仅回复观察结束。")
+                request(106, "thread/unsubscribe", {"threadId": "A"})
                 journal.write_text("".join(json.dumps(row) + "\n" for row in rows))
                 rows[:] = []
                 request(201, "hooks/list", {}, {"data": [{"hooks": new_hooks}]})
-                request(202, "thread/resume", {"threadId": "B"})
-                hook_pair("B", None, "sessionStart", new_source)
-                turn(203, "B", "B2", new_source)
-                archive(204, "B", new_source)
-                (output / "cold").mkdir()
+                rows.append({"direction": "observation", "event": "cold_client_started", "pid": 456, "monotonic_ns": 120})
+                request(202, "thread/resume", {"threadId": "A"})
+                hook_pair("A", None, "sessionStart", new_source)
+                turn(203, "A", "A4", new_source, prompt="请仅回复观察结束。")
+                archive(204, "A", new_source)
+                (output / "cold").mkdir(exist_ok=True)
                 (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
-                (output / "after-a.json").write_text(json.dumps(snapshot("A", 1, "consumed")))
-                (output / "after-b.json").write_text(json.dumps(snapshot("B", 0, None)))
+                for name in ("old-before.json", "old-after-live.json", "old-after-cold.json"):
+                    (output / name).write_text(json.dumps(snapshot("A", 0, None)))
                 subject["transition_strategy"] = "observe-open"
                 prepared["subject"] = subject
                 prepared_path.write_text(json.dumps(prepared))
-                result["subject"] = subject
-                result["after"] = {"thread_a": "A", "thread_b": "B", "turn_a": "A3", "turn_b": "B2",
-                                   "data_root": subject["new_data_root"]}
-                result["cleanup"].append(dict(result["cleanup"][0]))
-                required = ("live/rpc.jsonl", "cold/rpc.jsonl", "before-compact.json", "before-a.json",
-                            "before-b.json", "retained-a.json", "retained-b.json", "after-a.json", "after-b.json")
-                result["artifacts"] = {name: U.sha(output / name) for name in required}
-                (output / "result.json").write_text(json.dumps(result))
-                accepted = U.verify({}, output, prepared_path)
-                self.assertEqual("observed_open_and_cold_continuity", accepted["observed_boundary"])
-                result["after"]["thread_b"] = "other"
-                (output / "result.json").write_text(json.dumps(result))
-                with self.assertRaises(U.UpgradeError):
-                    U.verify({}, output, prepared_path)
+                observation_commands = [copy.deepcopy(result["commands"][i]) for i in (0, 1, 3, 5, 7, 9, 15)]
+                def marker(turn, seq):
+                    return {"id": "P" + str(seq), "turn_id": turn,
+                            "sha256": hashlib.sha256("请仅回复观察结束。".encode()).hexdigest(),
+                            "record_sha256": "f" * 64, "core_event_seq": seq}
+                def roots(turns):
+                    return {"old": {"present": True, "state_sha256": hashlib.sha256(str(turns).encode()).hexdigest(),
+                                    "prompts": [marker(turn, i + 1) for i, turn in enumerate(turns)]},
+                            "new": {"present": False, "prompts": []}}
+                live_trace = U._root_turn_trace(roots(["A1"]), roots(["A1", "A3"]), "A", "A3", shared=False)
+                cold_trace = U._root_turn_trace(roots(["A1", "A3"]), roots(["A1", "A3", "A4"]), "A", "A4", shared=False)
+                (output / "live-roots.json").write_text(json.dumps(live_trace))
+                (output / "cold-roots.json").write_text(json.dumps(cold_trace))
+                for name, raw_sha in (("old-before.json", live_trace["before"]["old"]["state_sha256"]),
+                                      ("old-after-live.json", live_trace["after"]["old"]["state_sha256"]),
+                                      ("old-after-cold.json", cold_trace["after"]["old"]["state_sha256"])):
+                    (output / name).write_text(json.dumps({"source_state_sha256": raw_sha, "state": snapshot("A", 0, None)}))
+                observation = {"schema": U.REPORT, "stage": "observe_open", "status": "observation_complete",
+                    "subject": subject, "pending": ["independent_consumer"], "commands": observation_commands,
+                    "old_inventory": old_hooks, "new_inventory": new_hooks, "sentinel_after": subject["sentinel"],
+                    "before": {"thread": "A", "turn": "A1", "old_data_root": subject["old_data_root"],
+                        "read_command": "cat native-read.txt", "read_file_sha256": "c" * 64,
+                        "state_sha256": live_trace["before"]["old"]["state_sha256"], "app_server_pid": 123},
+                    "installed_new": result["installed_new"],
+                    "data_observations": {"old_root": subject["old_data_root"], "new_root": subject["new_data_root"],
+                        "new_after_live": "absent", "new_after_cold": "absent"},
+                    "live_observation": {"status": "observed", "turn": "A3", "stop_sources": ["new"],
+                                         "actual_root": "old", "ledger_compatibility": "preserved"},
+                    "cold_observation": {"status": "observed", "turn": "A4", "stop_sources": ["new"],
+                        "session_start_source": "new", "session_start_phase": "before_first_turn",
+                        "session_started_before_first_turn": True, "late_archive": "observed", "actual_root": "old",
+                        "ledger_compatibility": "preserved"},
+                    "cleanup": [{"role": "old_live", "pid": 123, "closed_monotonic_ns": 119, "facts": result["cleanup"][0]["facts"]},
+                                {"role": "cold", "pid": 456, "closed_monotonic_ns": 130, "facts": result["cleanup"][1]["facts"]}]}
+                observation["installed_new"] = {**result["installed_new"], "old_cache_exists": False}
+                required = ("live/rpc.jsonl", "cold/rpc.jsonl", "old-before.json", "old-after-live.json", "old-after-cold.json",
+                            "live-roots.json", "cold-roots.json")
+                observation["artifacts"] = {name: U.sha(output / name) for name in required}
+                (output / "result.json").write_text(json.dumps(observation))
+                with mock.patch.object(U, "source_files", return_value={"public": "b" * 64}):
+                    accepted = U.verify({}, output, prepared_path)
+                    self.assertEqual("observation_complete", accepted["status"])
+                    contradiction = copy.deepcopy(live_trace)
+                    contradiction["after"]["new"] = {"present": True, "state_sha256": "1" * 64, "prompts": []}
+                    (output / "live-roots.json").write_text(json.dumps(contradiction))
+                    bad = copy.deepcopy(observation)
+                    bad["artifacts"]["live-roots.json"] = U.sha(output / "live-roots.json")
+                    (output / "result.json").write_text(json.dumps(bad))
+                    with self.assertRaises(U.UpgradeError):
+                        U.verify({}, output, prepared_path)
+                    (output / "live-roots.json").write_text(json.dumps(live_trace))
+                    mismatched_live, mismatched_cold = copy.deepcopy(live_trace), copy.deepcopy(cold_trace)
+                    mismatched_live["after"]["old"]["state_sha256"] = "1" * 64
+                    mismatched_cold["before"] = copy.deepcopy(mismatched_live["after"])
+                    (output / "live-roots.json").write_text(json.dumps(mismatched_live))
+                    (output / "cold-roots.json").write_text(json.dumps(mismatched_cold))
+                    bad = copy.deepcopy(observation)
+                    for phase in ("live", "cold"):
+                        bad["artifacts"][phase + "-roots.json"] = U.sha(output / (phase + "-roots.json"))
+                    (output / "result.json").write_text(json.dumps(bad))
+                    with self.assertRaises(U.UpgradeError):
+                        U.verify({}, output, prepared_path)
+                    (output / "live-roots.json").write_text(json.dumps(live_trace))
+                    (output / "cold-roots.json").write_text(json.dumps(cold_trace))
+                    new_live_after = {"old": roots(["A1"])["old"], "new": {
+                        "present": True, "state_sha256": "1" * 64, "prompts": [marker("A3", 1)]}}
+                    new_cold_after = copy.deepcopy(new_live_after)
+                    new_cold_after["new"] = {"present": True, "state_sha256": "2" * 64,
+                                              "prompts": [marker("A3", 1), marker("A4", 2)]}
+                    live_new_trace = U._root_turn_trace(roots(["A1"]), new_live_after, "A", "A3", shared=False)
+                    cold_new_trace = U._root_turn_trace(new_live_after, new_cold_after, "A", "A4", shared=False)
+                    (output / "live-roots.json").write_text(json.dumps(live_new_trace))
+                    (output / "cold-roots.json").write_text(json.dumps(cold_new_trace))
+                    for phase, raw_sha in (("live", "1" * 64), ("cold", "2" * 64)):
+                        (output / ("new-after-" + phase + ".json")).write_text(json.dumps(
+                            {"source_state_sha256": raw_sha, "state": snapshot("A", 0, None)}))
+                        (output / ("old-after-" + phase + ".json")).write_text(json.dumps(
+                            {"source_state_sha256": roots(["A1"])["old"]["state_sha256"], "state": snapshot("A", 0, None)}))
+                    new_root = copy.deepcopy(observation)
+                    for phase in ("live", "cold"):
+                        new_root["data_observations"]["new_after_" + phase] = "observed"
+                        new_root[phase + "_observation"]["actual_root"] = "new"
+                        new_root["artifacts"]["new-after-" + phase + ".json"] = U.sha(output / ("new-after-" + phase + ".json"))
+                        new_root["artifacts"]["old-after-" + phase + ".json"] = U.sha(output / ("old-after-" + phase + ".json"))
+                        new_root["artifacts"][phase + "-roots.json"] = U.sha(output / (phase + "-roots.json"))
+                    (output / "result.json").write_text(json.dumps(new_root))
+                    self.assertEqual("observation_complete", U.verify({}, output, prepared_path)["status"])
+                    for lost in ([], [{"id": "R1", "sha256": "e" * 64, "status": "pending", "work_unit_id": "WU1"}]):
+                        missing_new = snapshot("A", 0, None)
+                        missing_new["requirements"] = lost
+                        (output / "new-after-live.json").write_text(json.dumps(
+                            {"source_state_sha256": "1" * 64, "state": missing_new}))
+                        bad = copy.deepcopy(new_root)
+                        bad["live_observation"]["ledger_compatibility"] = "lost"
+                        bad["status"] = "unsupported_continuity"
+                        bad["artifacts"]["new-after-live.json"] = U.sha(output / "new-after-live.json")
+                        (output / "result.json").write_text(json.dumps(bad))
+                        self.assertEqual("unsupported_continuity", U.verify({}, output, prepared_path)["status"])
+                        bad["status"] = "observation_complete"
+                        (output / "result.json").write_text(json.dumps(bad))
+                        with self.assertRaises(U.UpgradeError):
+                            U.verify({}, output, prepared_path)
+                    (output / "live-roots.json").write_text(json.dumps(live_trace))
+                    (output / "cold-roots.json").write_text(json.dumps(cold_trace))
+                    for phase, trace in (("live", live_trace), ("cold", cold_trace)):
+                        (output / ("old-after-" + phase + ".json")).write_text(json.dumps(
+                            {"source_state_sha256": trace["after"]["old"]["state_sha256"], "state": snapshot("A", 0, None)}))
+                    (output / "new-after-live.json").unlink()
+                    (output / "new-after-cold.json").unlink()
+                    (output / "result.json").write_text(json.dumps(observation))
+                    ambiguous_prepared, ambiguous_result = copy.deepcopy(prepared), copy.deepcopy(observation)
+                    local_path = str(Path(subject["home"]) / "plugins/cache/codex-context-guard/context-guard/local")
+                    ambiguous_prepared["installed"]["path"] = local_path
+                    ambiguous_prepared["official_add"]["installedPath"] = local_path
+                    ambiguous_prepared["commands"][5]["observation"]["installedPath"] = local_path
+                    ambiguous_result["installed_new"]["path"] = local_path
+                    add_row = next(row for row in ambiguous_result["commands"] if row["argv"][1:3] == ["plugin", "add"])
+                    add_row["observation"]["installedPath"] = local_path
+                    prepared_path.write_text(json.dumps(ambiguous_prepared))
+                    (output / "result.json").write_text(json.dumps(ambiguous_result))
+                    with self.assertRaises(U.UpgradeError):
+                        U.verify({}, output, prepared_path)
+                    prepared_path.write_text(json.dumps(prepared))
+                    (output / "result.json").write_text(json.dumps(observation))
+                    for mutation in ("missing", "untrusted", "wrong_source", "after_resume"):
+                        altered = copy.deepcopy(rows)
+                        if mutation == "missing":
+                            altered = [row for row in altered if row.get("message", {}).get("id") != 201]
+                        elif mutation in ("untrusted", "wrong_source"):
+                            response = next(row for row in altered if row.get("direction") == "response"
+                                            and row.get("message", {}).get("id") == 201)
+                            item = response["message"]["result"]["data"][0]["hooks"][0]
+                            if mutation == "untrusted":
+                                item["trustStatus"] = "untrusted"
+                            else:
+                                item["sourcePath"] = fixture_path("wrong", "hooks.json")
+                        else:
+                            pair = [row for row in altered if row.get("message", {}).get("id") == 201]
+                            altered = [row for row in altered if row.get("message", {}).get("id") != 201]
+                            resume_index = next(i for i, row in enumerate(altered)
+                                                if row.get("direction") == "request" and row.get("message", {}).get("id") == 202)
+                            altered[resume_index + 1:resume_index + 1] = pair
+                        (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in altered))
+                        bad = copy.deepcopy(observation)
+                        bad["artifacts"]["cold/rpc.jsonl"] = U.sha(output / "cold/rpc.jsonl")
+                        (output / "result.json").write_text(json.dumps(bad))
+                        with self.assertRaises(U.UpgradeError, msg=mutation):
+                            U.verify({}, output, prepared_path)
+                    (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+                    missing_start = [row for row in rows if not (row.get("direction") == "response"
+                        and row.get("message", {}).get("params", {}).get("run", {}).get("eventName") == "sessionStart")]
+                    (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in missing_start))
+                    pending_observation = copy.deepcopy(observation)
+                    pending_observation["cold_observation"].update(status="session_start_unobserved",
+                        session_start_source=None, session_start_phase=None, session_started_before_first_turn=None)
+                    pending_observation["status"] = "observation_pending"
+                    pending_observation["artifacts"]["cold/rpc.jsonl"] = U.sha(output / "cold/rpc.jsonl")
+                    (output / "result.json").write_text(json.dumps(pending_observation))
+                    self.assertEqual("observation_pending", U.verify({}, output, prepared_path)["status"])
+                    pending_observation["status"] = "observation_complete"
+                    (output / "result.json").write_text(json.dumps(pending_observation))
+                    with self.assertRaises(U.UpgradeError):
+                        U.verify({}, output, prepared_path)
+                    (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+                    observation["cold_observation"]["turn"] = "other"
+                    (output / "result.json").write_text(json.dumps(observation))
+                    with self.assertRaises(U.UpgradeError):
+                        U.verify({}, output, prepared_path)
+                    rejected_rows = copy.deepcopy(rows[:next(i for i, row in enumerate(rows)
+                        if row.get("direction") == "response" and row.get("message", {}).get("id") == 202) + 1])
+                    rejected_rows[-1]["message"] = {"id": 202, "error": {"redacted": True}}
+                    (output / "cold/rpc.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rejected_rows))
+                    unsupported_trace = {"thread": "A", "turn": None, "actual_root": "unknown",
+                                         "before": live_trace["after"], "after": live_trace["after"]}
+                    (output / "cold-roots.json").write_text(json.dumps(unsupported_trace))
+                    (output / "old-after-cold.json").write_text(json.dumps({"source_state_sha256":
+                        live_trace["after"]["old"]["state_sha256"], "state": snapshot("A", 0, None)}))
+                    observation["cold_observation"] = {"status": "unsupported_resume", "actual_root": "unknown",
+                                                       "ledger_compatibility": "unobserved"}
+                    observation["status"] = "unsupported_continuity"
+                    observation["artifacts"]["cold/rpc.jsonl"] = U.sha(output / "cold/rpc.jsonl")
+                    observation["artifacts"]["cold-roots.json"] = U.sha(output / "cold-roots.json")
+                    observation["artifacts"]["old-after-cold.json"] = U.sha(output / "old-after-cold.json")
+                    (output / "result.json").write_text(json.dumps(observation))
+                    self.assertEqual("unsupported_continuity", U.verify({}, output, prepared_path)["status"])
+                    observation["status"] = "observation_complete"
+                    (output / "result.json").write_text(json.dumps(observation))
+                    with self.assertRaises(U.UpgradeError):
+                        U.verify({}, output, prepared_path)
 
     def test_protected_output_rejected_without_creation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -759,6 +1489,38 @@ class UpgradeControls(unittest.TestCase):
                  mock.patch.object(Path, "lstat", autospec=True, side_effect=changed_path):
                 with self.assertRaises(U.UpgradeError):
                     U.sha(document)
+
+    def test_windows_executable_path_mode_alias_preserves_other_identity_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            paths = [root / ("public" + suffix) for suffix in (".exe", ".com", ".bat", ".cmd", ".json")]
+            with mock.patch.object(U.os, "name", "nt"):
+                self.assertEqual([True, True, True, True, False], [U._windows_executable(path) for path in paths])
+            path = paths[0]
+            path.write_bytes(b"synthetic public binary")
+            path.chmod(0o700)
+            real_fstat = os.fstat
+            def make_mode_alias(fd):
+                actual = real_fstat(fd)
+                result = types.SimpleNamespace(**{name: getattr(actual, name) for name in
+                    ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")})
+                result.st_mode &= ~0o111
+                return result
+            with mock.patch.object(U, "_windows_executable", return_value=True), \
+                 mock.patch.object(U.os, "fstat", side_effect=make_mode_alias):
+                self.assertEqual(hashlib.sha256(b"synthetic public binary").hexdigest(), U.sha(path))
+            actual = path.lstat()
+            for field, change in (("st_dev", 1), ("st_ino", 1), ("st_nlink", 1), ("st_size", 1),
+                                  ("st_mtime_ns", 1), ("st_mode", 0o200), ("st_mode", 0o10000)):
+                altered = types.SimpleNamespace(**{name: getattr(actual, name) for name in
+                    ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")})
+                setattr(altered, field, getattr(altered, field) ^ change)
+                self.assertNotEqual(U._common_identity(actual, windows_executable=True),
+                                    U._common_identity(altered, windows_executable=True), field)
+            other = types.SimpleNamespace(**{name: getattr(actual, name) for name in
+                ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")})
+            other.st_mode &= ~0o111
+            self.assertNotEqual(U._common_identity(actual), U._common_identity(other))
 
     def test_json_hardlink_alias_refused_before_open(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -993,7 +1755,7 @@ class UpgradeControls(unittest.TestCase):
                                             "official_add": {}}))
             plan = {"home": str(home), "old_artifact": str(old), "new_artifact": str(new),
                     "workspace": str(workspace), "codex": str(codex), "old_version": "0.15.1",
-                    "old_data_root": str(home / "old-data")}
+                    "old_data_root": str(home / "old-data"), "transition_strategy": "finish-old"}
             process = mock.Mock(pid=123)
             process.poll.return_value = None
             client = mock.Mock()
