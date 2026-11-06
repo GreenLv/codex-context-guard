@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import contextlib
 import datetime as dt
@@ -23773,7 +23774,7 @@ def _registry_object_is_writable(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and not path.is_symlink()
 
 
-def _read_discovery_registry(root: Path) -> set[str]:
+def _read_discovery_registry(root: Path, *, deadline: float | None = None) -> set[str]:
     """Load the durable discovered-session set (content-free encoded names).
 
     The registry is a discovery hint, never an authority: entries are
@@ -23793,10 +23794,18 @@ def _read_discovery_registry(root: Path) -> set[str]:
         raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return set()
-    return {
-        line.strip() for line in raw.splitlines()
-        if _is_session_component(line.strip())
-    }
+    # One bounded read (size-capped above); parsing checks the caller's
+    # deadline every 1024 lines. A cut parse returns a partial hint set,
+    # which only makes the backfill re-register some names.
+    names: set[str] = set()
+    for index, line in enumerate(raw.splitlines()):
+        if (deadline is not None and index % 1024 == 0
+                and time.monotonic() >= deadline):
+            break
+        candidate = line.strip()
+        if _is_session_component(candidate):
+            names.add(candidate)
+    return names
 
 
 def _add_cleanup_registry_entries(root: Path, names) -> None:
@@ -23876,6 +23885,12 @@ def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
         atomic_write_text(
             _cleanup_registry_path(root),
             "".join(name + "\n" for name in valid))
+        # The rewritten file is now the only truth for this root: forget
+        # cached registrations it no longer carries, so a later append of
+        # such a name really reaches the file.
+        stale = {item for item in _REGISTRY_ENTRIES_THIS_PROCESS
+                 if item[0] == str(root)}
+        _REGISTRY_ENTRIES_THIS_PROCESS.difference_update(stale)
         for name in valid:
             _REGISTRY_ENTRIES_THIS_PROCESS.add((str(root), name))
     except (OSError, PrivateBoundaryError):
@@ -23914,6 +23929,8 @@ _RETENTION_LEGACY_RECORD_STATES = frozenset({"planned", "quarantined"})
 _RETENTION_TREE_ENTRY_CAP = 200_000
 _RETENTION_REGISTRY_READ_LIMIT = 32 * 1024 * 1024
 _RETENTION_BACKFILL_BUDGET_SHARE = 0.5
+# Share of a pass budget the quarantine record listing may use first.
+_RETENTION_RECORD_BUDGET_SHARE = 1 / 3
 _RETENTION_RESTORE_WAIT_SECONDS = 5.0
 _RETENTION_MAINTENANCE_LOCK_DEFAULT_WAIT = 30.0
 RETENTION_POLICY_NAME = "retention-policy.json"
@@ -24215,8 +24232,17 @@ def _retention_recreation_guard(session_dir: Path, *, deadline: float | None = N
     if not _maintenance_boundary_ok(root):
         return
     qdir = _retention_quarantine_dir(root)
-    records, unknown = _retention_scan_records(qdir)
-    mine = [record for _p, record in records if record.get("original_name") == name]
+    wait = deadline if deadline is not None else (
+        time.monotonic() + _RETENTION_RESTORE_WAIT_SECONDS)
+    lookup = _retention_collect_records(qdir, wait, prefix=f"{name}.")
+    if not lookup["complete"]:
+        raise RetentionRecreationRefused(
+            "the retention quarantine could not be fully inspected for this "
+            "session within the hook budget; retry, or run "
+            "'context_guard.py cleanup --data-dir <root>' to inspect it")
+    mine = [record for _p, record in lookup["valid"]
+            if record.get("original_name") == name]
+    unknown = lookup["unknown"]
     if any(record.get("state") == "purge_planned" for record in mine):
         raise RetentionRecreationRefused(
             "session is being permanently purged by retention maintenance; "
@@ -24227,8 +24253,6 @@ def _retention_recreation_guard(session_dir: Path, *, deadline: float | None = N
             "an unreadable retention record names this session; inspect the "
             "retention quarantine before continuing this session id")
     if mine:
-        wait = deadline if deadline is not None else (
-            time.monotonic() + _RETENTION_RESTORE_WAIT_SECONDS)
         restored = retention_restore(
             root, name, assume_lifecycle_lock_held=True, deadline=wait)
         if restored.get("outcome") == "restored":
@@ -24242,13 +24266,14 @@ def _retention_recreation_guard(session_dir: Path, *, deadline: float | None = N
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
         days=_RETENTION_TOMBSTONE_RETENTION_DAYS)
     try:
-        for tombstone_path in qdir.glob(f"{name}.*.tombstone.json"):
+        for tombstone_path in lookup["tombstones"]:
             try:
                 tombstone = json.loads(
                     tombstone_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError):
                 continue
-            if tombstone.get("schema") != RETENTION_TOMBSTONE_SCHEMA:
+            if (tombstone.get("schema") != RETENTION_TOMBSTONE_SCHEMA
+                    or tombstone.get("original_name") != name):
                 continue
             purged = parse_time(str(tombstone.get("purged_at") or ""))
             if purged is None or purged >= cutoff:
@@ -24520,6 +24545,22 @@ def _retention_reverify_entry(
     return ""
 
 
+# The identity a purge is bound to, handed to ``_retention_purge_tree``
+# without changing its two-argument seam (existing fault-injection controls
+# replace that function with two-parameter doubles).
+_RETENTION_PURGE_EXPECTED = threading.local()
+
+
+@contextlib.contextmanager
+def _retention_expect_root(identity: list[int]):
+    previous = getattr(_RETENTION_PURGE_EXPECTED, "identity", None)
+    _RETENTION_PURGE_EXPECTED.identity = list(identity)
+    try:
+        yield
+    finally:
+        _RETENTION_PURGE_EXPECTED.identity = previous
+
+
 def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
     """Bounded recursive removal of one identity-verified quarantined object.
 
@@ -24535,12 +24576,21 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
     stays authoritative so the next pass resumes without enlarging the
     set).
     """
+    expected = getattr(_RETENTION_PURGE_EXPECTED, "identity", None)
     if os.name == "nt":
+        try:
+            root_info = path.lstat()
+        except OSError:
+            return False
+        if expected is not None and [root_info.st_dev, root_info.st_ino] != expected:
+            return False  # the name no longer holds the bound object
         return _retention_purge_tree_windows(path, deadline)
     try:
         before = os.lstat(path)
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
             return False
+        if expected is not None and [before.st_dev, before.st_ino] != expected:
+            return False  # the name no longer holds the bound object
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         dir_fd = os.open(path, flags)
     except OSError:
@@ -24567,8 +24617,13 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
 
 
 def _retention_purge_tree_posix(dir_fd: int, deadline: float | None) -> bool:
+    entries = []
     try:
-        entries = list(os.scandir(dir_fd))
+        with os.scandir(dir_fd) as iterator:
+            for entry in iterator:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return False
+                entries.append(entry)
     except OSError:
         return False
     for entry in entries:
@@ -24614,8 +24669,13 @@ def _retention_purge_tree_windows(path: Path, deadline: float | None) -> bool:
     if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
             or getattr(info, "st_file_attributes", 0) & 0x400):
         return False
+    entries = []
     try:
-        entries = list(os.scandir(path))
+        with os.scandir(path) as iterator:
+            for entry in iterator:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return False
+                entries.append(entry)
     except OSError:
         return False
     for entry in entries:
@@ -24666,11 +24726,18 @@ def _retention_tree_digest(path: Path, deadline: float | None) -> dict[str, Any]
     stack: list[tuple[str, Path]] = [("", path)]
     while stack:
         prefix, current = stack.pop()
+        children = []
         try:
             with os.scandir(current) as iterator:
-                children = sorted(iterator, key=lambda entry: entry.name)
+                for child in iterator:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        return None
+                    if len(lines) + len(children) >= _RETENTION_TREE_ENTRY_CAP:
+                        return None
+                    children.append(child)
         except OSError:
             return None
+        children.sort(key=lambda entry: entry.name)
         for entry in children:
             if deadline is not None and time.monotonic() >= deadline:
                 return None
@@ -24750,46 +24817,176 @@ def _retention_read_record(path: Path) -> dict[str, Any] | None:
     return record
 
 
-def _retention_scan_records(
-    qdir: Path,
-) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, str | None]]]:
-    """Every record file under the verified quarantine directory.
+# Bounded enumeration (R3, RF-C01-DISCOVERY). Every directory listing in
+# retention maintenance checks its caller's deadline before each entry; no
+# listing is materialized with sorted()/list() ahead of the budget check.
+# The namespace backfill and the per-pass record scan RESUME their open
+# listing across passes in the same process, so a finite directory is
+# eventually covered even when one pass's budget cannot list it once.
+# Across processes a listing restarts (readdir positions are not portable);
+# names it reached are registered, so progress already made is kept.
+_RETENTION_ENUMERATIONS: dict[tuple[str, str], dict[str, Any]] = {}
 
-    Returns (valid, unknown). An unknown record (unreadable, unsupported
-    schema or state, inconsistent fields) is never a transition input: its
-    object is neither purged nor restored, and when it still names a
-    session that name is protected from silent recreation.
+
+def _retention_dir_identity(path: Path) -> tuple[int, int] | None:
+    """(dev, ino) of a real directory; None when absent, linked or reparse."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & 0x400):
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _retention_close_enumeration(key: tuple[str, str]) -> None:
+    state = _RETENTION_ENUMERATIONS.pop(key, None)
+    if state is not None:
+        with contextlib.suppress(Exception):
+            state["handle"].close()
+
+
+def _retention_close_all_enumerations() -> None:
+    for key in list(_RETENTION_ENUMERATIONS):
+        _retention_close_enumeration(key)
+
+
+atexit.register(_retention_close_all_enumerations)
+
+
+def _retention_enum_open(
+    path: Path, purpose: str, *, resume: bool,
+) -> tuple[tuple[str, str], dict[str, Any] | None, str]:
+    """Open (or resume) one listing. Returns (key, state, why) where why is
+    "" for a usable state, "absent" when the directory does not exist, or
+    "boundary" when it is not a real directory or cannot be opened."""
+    key = (purpose, str(path))
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        _retention_close_enumeration(key)
+        return key, None, "absent"
+    except OSError:
+        _retention_close_enumeration(key)
+        return key, None, "boundary"
+    identity = _retention_dir_identity(path)
+    if identity is None:
+        _retention_close_enumeration(key)
+        return key, None, "boundary"
+    state = _RETENTION_ENUMERATIONS.get(key) if resume else None
+    if state is not None and state["identity"] != identity:
+        _retention_close_enumeration(key)
+        state = None
+    if state is None:
+        try:
+            handle = os.scandir(path)
+        except OSError:
+            return key, None, "boundary"
+        state = {"identity": identity, "handle": handle,
+                 "iterator": iter(handle), "seen": set()}
+        if resume:
+            _RETENTION_ENUMERATIONS[key] = state
+    return key, state, ""
+
+
+def _retention_enum_next(state: dict[str, Any]) -> str | None:
+    """The next entry name, or None at the end of the listing."""
+    try:
+        return next(state["iterator"]).name
+    except StopIteration:
+        return None
+
+
+def _retention_enum_end(key: tuple[str, str], state: dict[str, Any] | None,
+                        *, resume: bool, complete: bool) -> None:
+    if state is None:
+        return
+    if not resume:
+        with contextlib.suppress(Exception):
+            state["handle"].close()
+    elif complete:
+        _retention_close_enumeration(key)
+
+
+def _retention_collect_records(
+    qdir: Path, deadline: float | None, *, resume: bool = False,
+    prefix: str | None = None,
+) -> dict[str, Any]:
+    """Budgeted listing of the quarantine directory.
+
+    One unit of work is "take the next entry and read it": the deadline is
+    checked before every unit, so at most the unit in flight ends past it.
+    Returns valid records, unknown records (with the session they still
+    name, when readable), tombstone paths, and whether the listing reached
+    its end. ``resume`` continues the per-pass listing from where the last
+    pass in this process stopped; ``prefix`` restricts a lookup to one
+    session's objects (product object names start with ``<name>.``).
     """
+    out: dict[str, Any] = {"valid": [], "unknown": [], "tombstones": [],
+                           "complete": False}
+    key, state, why = _retention_enum_open(qdir, "records", resume=resume)
+    if state is None:
+        out["complete"] = why == "absent"
+        return out
+    complete = False
     try:
-        qinfo = qdir.lstat()
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            name = _retention_enum_next(state)
+            if name is None:
+                complete = True
+                break
+            if prefix is not None and not name.startswith(prefix):
+                continue
+            path = qdir / name
+            if name.endswith(".tombstone.json"):
+                out["tombstones"].append(path)
+                continue
+            if not name.endswith(".record.json"):
+                continue
+            record = _retention_read_record(path)
+            if record is not None:
+                out["valid"].append((path, record))
+                continue
+            label = None
+            with contextlib.suppress(OSError, UnicodeError, ValueError):
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict) and _is_session_component(raw.get("original_name")):
+                    label = raw["original_name"]
+            out["unknown"].append((path, label))
     except OSError:
-        return [], []
-    if (not stat.S_ISDIR(qinfo.st_mode) or qdir.is_symlink()
-            or getattr(qinfo, "st_file_attributes", 0) & 0x400):
-        return [], []
-    try:
-        paths = sorted(qdir.glob("*.record.json"))
-    except OSError:
-        return [], []
-    valid: list[tuple[Path, dict[str, Any]]] = []
-    unknown: list[tuple[Path, str | None]] = []
-    for record_path in paths:
-        record = _retention_read_record(record_path)
-        if record is not None:
-            valid.append((record_path, record))
-            continue
-        label = None
-        with contextlib.suppress(OSError, UnicodeError, ValueError):
-            raw = json.loads(record_path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict) and _is_session_component(raw.get("original_name")):
-                label = raw["original_name"]
-        unknown.append((record_path, label))
-    return valid, unknown
+        _retention_close_enumeration(key)
+        _retention_enum_end(key, state, resume=False, complete=False)
+        return out
+    _retention_enum_end(key, state, resume=resume, complete=complete)
+    if not resume:
+        out["valid"].sort(key=lambda item: item[0].name)
+        out["tombstones"].sort(key=lambda item: item.name)
+    out["complete"] = complete
+    return out
 
 
-def _retention_iter_records(qdir: Path) -> list[tuple[Path, dict[str, Any]]]:
-    """Read every strictly valid quarantine record under the verified qdir."""
-    return _retention_scan_records(qdir)[0]
+def _retention_scan_records(
+    qdir: Path, deadline: float | None = None,
+) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, str | None]], bool]:
+    """Every record under the quarantine directory within the deadline.
+
+    Returns (valid, unknown, complete). An unknown record (unreadable,
+    unsupported schema or state, inconsistent fields) is never a transition
+    input: its object is neither purged nor restored, and when it still
+    names a session that name is protected from silent recreation.
+    """
+    out = _retention_collect_records(qdir, deadline)
+    return out["valid"], out["unknown"], out["complete"]
+
+
+def _retention_iter_records(
+    qdir: Path, deadline: float | None = None,
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Valid quarantine records under the verified qdir (bounded)."""
+    return _retention_collect_records(qdir, deadline)["valid"]
 
 
 def _retention_lstat(path: Path) -> os.stat_result | None:
@@ -24857,6 +25054,34 @@ def _retention_acquire_lifecycle_lock(candidate: Path):
     return release
 
 
+def _retention_parents_ok(root: Path) -> bool:
+    """The data root chain, the v2 namespace and the quarantine directory are
+    still real directories (no link or reparse point substituted)."""
+    return (_maintenance_boundary_ok(root)
+            and _retention_dir_identity(root / V2_NAMESPACE) is not None
+            and _retention_dir_identity(_retention_quarantine_dir(root)) is not None)
+
+
+def _retention_holds(path: Path, record: dict[str, Any]) -> bool:
+    """True when ``path`` currently names the record's bound directory."""
+    try:
+        return _retention_bound_dir(_retention_lstat(path), record)
+    except OSError:
+        return False
+
+
+def _retention_move_back(source: Path, destination: Path) -> bool:
+    """Compensating move after a mismatch: put a wrongly moved object back
+    without replacing anything that now occupies ``destination``."""
+    try:
+        if _retention_lstat(destination) is not None:
+            return False
+        os.rename(source, destination)
+    except OSError:
+        return False
+    return True
+
+
 def _retention_quarantine_object(
     root: Path, candidate: Path, item: dict[str, Any], manifest: dict[str, Any],
     now: dt.datetime, *, policy: dict[str, Any], deadline: float | None = None,
@@ -24891,12 +25116,19 @@ def _retention_quarantine_object(
             outcome.update(action="skipped", reason="boundary")
             return outcome
         candidate_info = candidate.lstat()
+        authorized = item.get("identity")
+        if not (isinstance(authorized, list) and len(authorized) == 2
+                and all(type(part) is int for part in authorized)):
+            authorized = [candidate_info.st_dev, candidate_info.st_ino]
+        if [candidate_info.st_dev, candidate_info.st_ino] != authorized:
+            outcome.update(action="skipped", reason="identity_changed")
+            return outcome
         record = {
             "schema": RETENTION_QUARANTINE_RECORD_SCHEMA,
             "state": "planned",
             "original_name": candidate.name,
             "quarantine_object": target.name,
-            "identity": [candidate_info.st_dev, candidate_info.st_ino],
+            "identity": authorized,
             "planned_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "quarantined_at": None,
             "policy_version": manifest["policy_version"],
@@ -24918,6 +25150,15 @@ def _retention_quarantine_object(
             outcome["record_pending"] = True  # recovery rolls it back
         outcome.update(action="skipped", reason="deadline")
         return outcome
+    # Re-bind after the intent is durable: the name must still hold the
+    # authorized object and the parents must still be real directories.
+    if not (_retention_parents_ok(root) and _retention_holds(candidate, record)):
+        try:
+            record_path.unlink()
+        except OSError:
+            outcome["record_pending"] = True  # recovery settles it
+        outcome.update(action="skipped", reason="identity_changed")
+        return outcome
     try:
         os.rename(candidate, target)
     except OSError as exc:
@@ -24927,6 +25168,21 @@ def _retention_quarantine_object(
             outcome["record_pending"] = True  # recovery rolls it back
         reason = "cross_device" if exc.errno == errno.EXDEV else "quarantine_failed"
         outcome.update(action="skipped", reason=reason, error=type(exc).__name__)
+        return outcome
+    if not _retention_holds(target, record):
+        # Renames are name-based: another object took the name between the
+        # check and the move. Put it back untouched and drop the intent; if
+        # that is impossible, keep the intent for recovery (indeterminate,
+        # both objects preserved) instead of reporting a quarantine.
+        if _retention_move_back(target, candidate):
+            try:
+                record_path.unlink()
+            except OSError:
+                outcome["record_pending"] = True
+            outcome.update(action="skipped", reason="identity_changed")
+        else:
+            outcome.update(action="skipped", reason="identity_changed_unresolved",
+                           record_pending=True)
         return outcome
     record["state"] = "quarantined"
     record["quarantined_at"] = record["planned_at"]
@@ -25026,6 +25282,7 @@ def _retention_settle_record(
 
 def _retention_recover_records(
     qdir: Path, now: dt.datetime, *, deadline: float | None = None,
+    records: list[tuple[Path, dict[str, Any]]] | None = None,
 ) -> dict[str, int]:
     """Settle every interrupted transaction under the quarantine directory.
 
@@ -25038,7 +25295,9 @@ def _retention_recover_records(
     root = qdir.parent.parent.parent
     if _retention_quarantine_dir(root) != qdir:
         return summary
-    for record_path, record in _retention_iter_records(qdir):
+    if records is None:
+        records = _retention_iter_records(qdir, deadline)
+    for record_path, record in records:
         if deadline is not None and time.monotonic() >= deadline:
             break
         if record.get("state") == "quarantined":
@@ -25057,7 +25316,9 @@ def _retention_empty_purge_summary() -> dict[str, int]:
 
 def _retention_purge_pass(
     root: Path, policy: dict[str, Any], now: dt.datetime,
-    deadline: float | None,
+    deadline: float | None, *,
+    records: list[tuple[Path, dict[str, Any]]] | None = None,
+    tombstones: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Quarantine past its grace period moves to permanent reclaim.
 
@@ -25072,7 +25333,11 @@ def _retention_purge_pass(
     del policy  # re-read per object below, inside the held locks
     summary = _retention_empty_purge_summary()
     qdir = _retention_quarantine_dir(root)
-    for record_path, record in _retention_iter_records(qdir):
+    if records is None or tombstones is None:
+        listing = _retention_collect_records(qdir, deadline)
+        records = listing["valid"] if records is None else records
+        tombstones = listing["tombstones"] if tombstones is None else tombstones
+    for record_path, record in records:
         if deadline is not None and time.monotonic() >= deadline:
             break
         state = record.get("state")
@@ -25132,9 +25397,24 @@ def _retention_purge_pass(
                 except (OSError, PrivateBoundaryError):
                     summary["purge_pending"] += 1
                     continue
-            if not _retention_purge_tree(target, deadline):
-                summary["purge_partial"] += 1
+            # Re-bind after the intent is durable, and hand the bound
+            # identity to the removal itself: it opens the root without
+            # following links and refuses unless the opened directory IS
+            # the record's object.
+            if not (_retention_parents_ok(root) and _retention_holds(target, record)):
+                summary["purge_refused"] += 1
                 continue
+            with _retention_expect_root(record["identity"]):
+                removed = _retention_purge_tree(target, deadline)
+            if not removed:
+                if _retention_lstat_or_marker(target) is None:
+                    removed = True  # gone between the removal and this check
+                elif not _retention_holds(target, record):
+                    summary["purge_refused"] += 1
+                    continue
+                else:
+                    summary["purge_partial"] += 1
+                    continue
             if _retention_complete_purge(qdir, record_path, record, now):
                 summary["purged"] += 1
             else:
@@ -25144,9 +25424,8 @@ def _retention_purge_pass(
     # Tombstones themselves expire so purge history cannot grow forever.
     cutoff = now - dt.timedelta(days=_RETENTION_TOMBSTONE_RETENTION_DAYS)
     try:
-        qinfo = qdir.lstat()
-        if (stat.S_ISDIR(qinfo.st_mode) and not qdir.is_symlink()):
-            for tombstone in qdir.glob("*.tombstone.json"):
+        if _retention_dir_identity(qdir) is not None:
+            for tombstone in tombstones:
                 if deadline is not None and time.monotonic() >= deadline:
                     break
                 try:
@@ -25161,6 +25440,25 @@ def _retention_purge_pass(
     except OSError:
         pass
     return summary
+
+
+def _retention_state_digest(directory: Path) -> str | None:
+    state_path = directory / "state.json"
+    try:
+        info = state_path.lstat()
+        if not stat.S_ISREG(info.st_mode) or state_path.is_symlink():
+            return None
+        return hashlib.sha256(state_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _retention_lstat_or_marker(path: Path) -> object | None:
+    """None only when nothing (not even a link) occupies ``path``."""
+    try:
+        return _retention_lstat(path)
+    except OSError:
+        return path
 
 
 def _retention_verify_restorable(
@@ -25235,12 +25533,22 @@ def retention_restore(
                     report["reason"] = "busy_lock"
                     return report
             try:
-                for record_path, record in _retention_iter_records(qdir):
+                first = _retention_collect_records(qdir, deadline, prefix=f"{name}.")
+                if not first["complete"]:
+                    report["outcome"] = "refused"
+                    report["reason"] = "records_unverified"
+                    return report
+                for record_path, record in first["valid"]:
                     if (record.get("original_name") == name
                             and record.get("state") != "quarantined"):
                         _retention_settle_record(root, qdir, record_path, record, now)
+                lookup = _retention_collect_records(qdir, deadline, prefix=f"{name}.")
+                if not lookup["complete"]:
+                    report["outcome"] = "refused"
+                    report["reason"] = "records_unverified"
+                    return report
                 mine = [(record_path, record)
-                        for record_path, record in _retention_iter_records(qdir)
+                        for record_path, record in lookup["valid"]
                         if record.get("original_name") == name]
                 if any(record.get("state") == "purge_planned" for _p, record in mine):
                     report["outcome"] = "unavailable"
@@ -25273,6 +25581,18 @@ def retention_restore(
                     report["outcome"] = "failed"
                     report["reason"] = "record_write_failed"
                     return report
+                # Re-bind after the intent is durable: the quarantine name
+                # must still hold the bound, unchanged object and the home
+                # position must still be free.
+                if (not _retention_parents_ok(root)
+                        or not _retention_holds(target, record)
+                        or _retention_state_digest(target) != record.get("state_sha256")
+                        or _retention_lstat_or_marker(home) is not None):
+                    with contextlib.suppress(OSError, PrivateBoundaryError):
+                        _retention_write_record(record_path, record)
+                    report["outcome"] = "refused"
+                    report["reason"] = "identity_changed"
+                    return report
                 try:
                     os.rename(target, home)
                 except OSError as exc:
@@ -25281,6 +25601,16 @@ def retention_restore(
                     report["outcome"] = "failed"
                     report["reason"] = ("cross_device" if exc.errno == errno.EXDEV
                                         else "restore_failed")
+                    return report
+                if not _retention_holds(home, record):
+                    # A different object was moved: put it back untouched.
+                    if _retention_move_back(home, target):
+                        with contextlib.suppress(OSError, PrivateBoundaryError):
+                            _retention_write_record(record_path, record)
+                        report["reason"] = "identity_changed"
+                    else:
+                        report["reason"] = "identity_changed_unresolved"
+                    report["outcome"] = "refused"
                     return report
                 try:
                     record_path.unlink()
@@ -25300,50 +25630,49 @@ def retention_restore(
 def _retention_backfill_discovery(
     root: Path, deadline: float | None, scan_state: dict[str, Any],
 ) -> set[str]:
-    """Phase A of discovery: return the registered candidate names after a
-    budgeted readdir backfill.
+    """Phase A of discovery: the candidate names after a budgeted backfill.
 
-    Sessions created by this runtime are registered at creation (see
-    ``_prepare_session_directory``), so the registry is the durable,
-    order-independent candidate list. The backfill only finds names the
-    registry does not carry yet (sessions created by older runtimes, a
-    missing, oversized or corrupted registry) and, once maintenance is
-    adopted, registers them. Every
-    readdir entry — decided or not — is charged against an explicit share
-    of the pass budget, checked before each entry; a cut backfill is
-    reported incomplete and resumes on a later pass. A completed backfill
-    compacts the registry to the live names. Readdir itself is one
-    non-preemptible system call per entry batch; the budget bounds how
-    many entries a pass consumes, not the latency of a single call.
+    After adoption the registry is the durable, order-independent candidate
+    list (existing sessions are registered when a policy is enabled, later
+    sessions at creation). The backfill finds names the registry does not
+    carry (sessions created by older runtimes; a missing, oversized or
+    corrupted registry) and, once adopted, registers them. Every readdir
+    entry — decided or not — is charged against an explicit share of the
+    pass budget, checked before each entry. The listing is a GENERATION
+    that resumes in the next pass of this process instead of restarting at
+    the directory's first entry, so a finite tail is reached after a bounded
+    number of passes even when no single pass can list the directory once.
+    A completed generation compacts the registry to the names it saw.
     """
     namespace = root / V2_NAMESPACE
-    registry = _read_discovery_registry(root)
+    registry = _read_discovery_registry(root, deadline=deadline)
     share_end: float | None = None
     if deadline is not None:
         started = time.monotonic()
         share_end = started + max(0.0, deadline - started) * _RETENTION_BACKFILL_BUDGET_SHARE
-    seen: set[str] = set()
+    key, state, why = _retention_enum_open(namespace, "namespace", resume=True)
     fresh: list[str] = []
-    complete = True
-    try:
-        with os.scandir(namespace) as source:
-            iterator = iter(source)
+    read = 0
+    complete = why == "absent"
+    if state is not None:
+        try:
             while True:
                 if share_end is not None and time.monotonic() >= share_end:
-                    complete = False
                     break
-                try:
-                    entry = next(iterator)
-                except StopIteration:
+                name = _retention_enum_next(state)
+                if name is None:
+                    complete = True
                     break
-                name = entry.name
+                read += 1
                 if name == ".locks" or not _is_session_component(name):
                     continue
-                seen.add(name)
+                state["seen"].add(name)
                 if name not in registry:
                     fresh.append(name)
-    except OSError:
-        complete = False
+        except OSError:
+            _retention_close_enumeration(key)
+            complete = False
+    generation = set(state["seen"]) if state is not None else set()
     # Maintenance objects are written only after adoption (a policy object
     # exists); a preview of an unadopted root discovers read-only.
     adopted = _retention_policy_path(root).exists()
@@ -25352,12 +25681,14 @@ def _retention_backfill_discovery(
             _add_cleanup_registry_entries(root, fresh)
         registry.update(fresh)
     scan_state["backfill_complete"] = complete
-    scan_state["backfill_entries"] = len(seen)
+    scan_state["backfill_entries"] = read
+    scan_state["backfill_generation_entries"] = len(generation)
     if complete:
-        if adopted and registry != seen:
-            _compact_discovery_registry(root, seen)
-        return seen
-    return registry
+        _retention_close_enumeration(key)
+        if adopted and registry != generation:
+            _compact_discovery_registry(root, generation)
+        return generation
+    return registry | generation
 
 
 def _retention_apply_object(
@@ -25523,10 +25854,20 @@ def _retention_maintenance_pass(
                 raise RuntimeError(
                     "retention policy changed since the manifest was generated")
 
-        # Settle interrupted transactions before any new work.
+        # One budgeted record listing per pass feeds recovery, the unknown
+        # count and the purge stage; it resumes in the next pass of this
+        # process. Interrupted transactions are settled before new work.
         qdir = _retention_quarantine_dir(root)
-        report["recovery"] = _retention_recover_records(qdir, now, deadline=deadline)
-        report["unknown_records"] = len(_retention_scan_records(qdir)[1])
+        records_end: float | None = None
+        if deadline is not None:
+            started_records = time.monotonic()
+            records_end = started_records + max(
+                0.0, deadline - started_records) * _RETENTION_RECORD_BUDGET_SHARE
+        listing = _retention_collect_records(qdir, records_end, resume=True)
+        report["recovery"] = _retention_recover_records(
+            qdir, now, deadline=deadline, records=listing["valid"])
+        report["unknown_records"] = len(listing["unknown"])
+        report["records_scan_complete"] = listing["complete"]
 
         cursor, pending = _read_cleanup_state(root)
         namespace = root / V2_NAMESPACE
@@ -25594,7 +25935,7 @@ def _retention_maintenance_pass(
         if not unserved and not progress["interrupted"]:
             registry = _retention_backfill_discovery(root, deadline, scan_state)
         else:
-            registry = _read_discovery_registry(root)
+            registry = _read_discovery_registry(root, deadline=deadline)
             scan_state["backfill_complete"] = False
         # 3. Registered names in stable order after the window cursor.
         queued_set = set(queued)
@@ -25615,8 +25956,10 @@ def _retention_maintenance_pass(
         report["discovery"] = {
             "backfill_complete": bool(scan_state.get("backfill_complete")),
             "backfill_entries": scan_state.get("backfill_entries", 0),
+            "backfill_generation_entries": scan_state.get("backfill_generation_entries", 0),
             "registered": len(registry),
             "window_complete": window_complete,
+            "records_complete": listing["complete"],
         }
         report["protected_reasons"] = protected_reasons
         if with_manifest:
@@ -25654,7 +25997,8 @@ def _retention_maintenance_pass(
         if apply and policy["enabled"] and not policy.get("policy_invalid"):
             if policy["purge_enabled"]:
                 report["purge"] = _retention_purge_pass(
-                    root, policy, now, deadline)
+                    root, policy, now, deadline, records=listing["valid"],
+                    tombstones=listing["tombstones"])
             else:
                 report["purge"] = dict(_retention_empty_purge_summary(),
                                        purge_disabled=1)
@@ -25667,7 +26011,7 @@ def _retention_maintenance_pass(
             remaining |= {name for name in apply_deferred
                           if _is_session_component(name)}
         next_cursor = "" if window_complete else (last_window or cursor)
-        if not remaining and scan_complete:
+        if not remaining and scan_complete and listing["complete"]:
             _reset_cleanup_state(root, deadline=deadline)
             report["backlog"] = False
         else:

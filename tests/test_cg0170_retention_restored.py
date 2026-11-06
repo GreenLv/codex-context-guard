@@ -82,6 +82,11 @@ class RetentionFixtureBase(unittest.TestCase):
         self.project.mkdir()
 
     def tearDown(self) -> None:
+        # Resumable listings are per process; never carry one into the next
+        # test's temporary root.
+        close = getattr(cg, "_retention_close_all_enumerations", None)
+        if close is not None:
+            close()
         os.environ.clear()
         os.environ.update(self._env)
         self.temporary.cleanup()
