@@ -25180,6 +25180,13 @@ def _retention_adjudicate(
     if (getattr(info, "st_file_attributes", 0) & 0x400):
         entry["reason"] = "linked_object"
         return entry
+    # Eligibility requires a reliable creation identity (plan D2): without
+    # it the object can never be re-proven between selection, intent,
+    # commit and purge, so it is protected here and stays in the namespace.
+    creation = _retention_object_stamp(candidate, info)
+    if creation is None:
+        entry["reason"] = "identity_unverifiable"
+        return entry
     state, reason = _retention_state_facts(candidate)
     if state is None:
         entry["reason"] = reason
@@ -25226,6 +25233,7 @@ def _retention_adjudicate(
         "verdict": "eligible",
         "state_sha256": state_digest,
         "identity": [info.st_dev, info.st_ino],
+        "object_stamp": creation,
         "age_days": round(age_days, 2),
     })
     return entry
@@ -25250,7 +25258,7 @@ def _retention_make_manifest(
         "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "entries": [
             {"name": entry["name"], "state_sha256": entry["state_sha256"],
-             "identity": entry["identity"]}
+             "identity": entry["identity"], "object_stamp": entry["object_stamp"]}
             for entry in entries if entry.get("verdict") == "eligible"
         ],
     }
@@ -25279,6 +25287,18 @@ def _retention_reverify_entry(
     if not stat.S_ISDIR(info.st_mode) or candidate.is_symlink():
         return "not_directory"
     if [info.st_dev, info.st_ino] != item.get("identity"):
+        return "identity_changed"
+    # The manifest authorizes exactly the object selected when it was
+    # written: a missing or non-creation-time binding is unverifiable (an
+    # older manifest shape protects rather than mints), and a creation time
+    # that no longer matches means the name holds a different object.
+    stamp = item.get("object_stamp")
+    if not (_retention_stamp_ok(stamp) and stamp["kind"] == "birth"):
+        return "identity_unverifiable"
+    birth = _retention_birth_ns(candidate, info)
+    if birth is None:
+        return "identity_unverifiable"  # capability unreadable: protect
+    if birth != stamp["ns"]:
         return "identity_changed"
     state, reason = _retention_state_facts(candidate)
     if state is None:
@@ -25321,25 +25341,23 @@ def _retention_expect_root(identity: list[int], *,
 # What one purge attempt actually proved (R7, N2 ownership provenance). A
 # ``False`` return alone cannot distinguish "the opened root was refused"
 # from "entries of the verified object were removed and the budget stopped
-# us", and only the second may re-bind a fresh change time. The removal
-# reports what it observed on this thread; a caller that patches
-# ``_retention_purge_tree`` resets the channel first, so a double that
-# emulates a real partial removal reports its removals the same way the
-# real helper does.
+# us", and only the second counts as this attempt's own partial progress.
+# The creation-time binding is invariant under removals, so no stamp is
+# ever re-sampled. The removal reports what it observed on this thread; a
+# caller that patches ``_retention_purge_tree`` resets the channel first,
+# so a double that emulates a real partial removal reports its removals
+# the same way the real helper does.
 _RETENTION_PURGE_PROGRESS = threading.local()
 
 
 def _retention_purge_progress_reset() -> None:
     _RETENTION_PURGE_PROGRESS.removed = 0
     _RETENTION_PURGE_PROGRESS.continuous = False
-    _RETENTION_PURGE_PROGRESS.observed_stamp_ns = None
 
 
 def _retention_purge_progress() -> dict[str, Any]:
     return {"removed": getattr(_RETENTION_PURGE_PROGRESS, "removed", 0),
-            "continuous": getattr(_RETENTION_PURGE_PROGRESS, "continuous", False),
-            "observed_stamp_ns": getattr(_RETENTION_PURGE_PROGRESS,
-                                         "observed_stamp_ns", None)}
+            "continuous": getattr(_RETENTION_PURGE_PROGRESS, "continuous", False)}
 
 
 def _retention_purge_note_removal() -> None:
@@ -25348,13 +25366,9 @@ def _retention_purge_note_removal() -> None:
                                                  "removed", 0) + 1)
 
 
-def _retention_purge_note_continuous(observed_stamp_ns: int | None = None) -> None:
-    """The name still holds the object this attempt removed from; carry the
-    change time observed on the held object so the caller never has to
-    re-read the name (which a replacement could have taken)."""
+def _retention_purge_note_continuous() -> None:
+    """The name still holds the object this attempt removed from."""
     _RETENTION_PURGE_PROGRESS.continuous = True
-    if observed_stamp_ns is not None:
-        _RETENTION_PURGE_PROGRESS.observed_stamp_ns = observed_stamp_ns
 
 
 def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
@@ -25388,10 +25402,9 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
         removed = _retention_purge_tree_windows(path, deadline)
         if not removed and _retention_purge_progress()["removed"]:
             # Prove the name still holds the object whose entries this
-            # attempt removed before any re-bind may trust the name again
-            # (R7). Windows has no descriptor to carry, so the re-check is
-            # the recorded identity plus, for birth stamps, the invariant
-            # creation time.
+            # attempt removed before the progress counts as this attempt's
+            # own (R7). Windows has no descriptor to carry, so the re-check
+            # is the recorded identity plus the invariant creation time.
             try:
                 current = path.lstat()
             except OSError:
@@ -25401,8 +25414,7 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
                     and not (bound is not None
                              and (bound.get("object_stamp") or {}).get("kind") == "birth"
                              and not _retention_stamp_matches(path, current, bound))):
-                _retention_purge_note_continuous(
-                    getattr(current, "st_ctime_ns", None))
+                _retention_purge_note_continuous()
         return removed
     try:
         before = os.lstat(path)
@@ -25425,15 +25437,12 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
         if not emptied:
             # Entries of the opened object may already be gone (R5 budget
             # progress). The name must still hold the opened object before
-            # that progress may re-bind its change time (R7): observe the
-            # change time on the held descriptor, never on the name.
+            # that progress counts as this attempt's own (R7).
             try:
                 current = os.lstat(path)
                 if ((current.st_dev, current.st_ino)
                         == (before.st_dev, before.st_ino)):
-                    held = os.fstat(dir_fd)
-                    _retention_purge_note_continuous(
-                        getattr(held, "st_ctime_ns", None))
+                    _retention_purge_note_continuous()
             except OSError:
                 pass
             return False
@@ -25444,15 +25453,10 @@ def _retention_purge_tree(path: Path, deadline: float | None) -> bool:
             return False
         # The name provably holds the opened object; removals so far were
         # ours on that object, so a failed rmdir below stays a continuous
-        # partial removal (R7). Observe the change time on the descriptor
-        # again: it moved with this attempt's own removals.
+        # partial removal (R7). The creation-time binding is invariant
+        # under removals, so no re-bind is needed.
         if _retention_purge_progress()["removed"]:
-            try:
-                held = os.fstat(dir_fd)
-                _retention_purge_note_continuous(
-                    getattr(held, "st_ctime_ns", None))
-            except OSError:
-                pass
+            _retention_purge_note_continuous()
         try:
             os.rmdir(path)
         except OSError:
@@ -25887,22 +25891,23 @@ def _retention_bound_dir(info: os.stat_result | None, record: dict[str, Any]) ->
             and [info.st_dev, info.st_ino] == record.get("identity"))
 
 
-# Replacement binding (R6, N2). ``(dev, ino)`` alone cannot tell a bound
+# Replacement binding (R6, N2; tightened by the user-approved identity
+# capability boundary, plan D2). ``(dev, ino)`` alone cannot tell a bound
 # object from a replacement that reuses the freed inode number (observed on
 # Linux CI: remove the quarantined tree, create a directory at the same
 # name, and the new directory can carry the old identity). The record
-# therefore also binds an ``object_stamp`` sampled when the object became
-# quarantined, compared on every purge step across processes without
-# holding any descriptor and without adding any entry to the object:
-#
-# * ``birth``: the object's creation time (``st_birthtime`` on macOS and
-#   Windows, ``statx`` STATX_BTIME on Linux). A replacement is a new object
-#   with a new creation time; removing entries never changes it, so partial
-#   removal, crashes and restarts keep the binding.
-# * ``ctime`` (a filesystem without creation time): the change time of the
-#   untouched quarantined root. Every purge step re-records it after its
-#   own removal; a change the record does not explain -- a replacement, or
-#   a crash inside a removal -- is refused, never guessed.
+# therefore also binds an ``object_stamp`` -- the object's CREATION time
+# (``st_birthtime`` on macOS and Windows, ``statx`` STATX_BTIME on Linux) --
+# sampled from the selected object before any move, compared on every step
+# across processes without holding any descriptor and without adding any
+# entry to the object. A replacement is a new object with a new creation
+# time; removing entries never changes it, so partial removal, crashes and
+# restarts keep the binding. A change-time stamp is NOT an identity: paths,
+# reusable ``(dev, ino)`` numbers, change times and path/kind/size
+# inventories never combine into deletion authority, and records that carry
+# no creation-time stamp (``ctime``-bound or stampless earlier-candidate
+# records) are retained and skipped -- never upgraded, never purged, never
+# restored by resampling whatever now occupies their names.
 _RETENTION_STAMP_KINDS = ("birth", "ctime")
 _STATX_BTIME = 0x800
 _STATX_INO = 0x100
@@ -25967,11 +25972,16 @@ def _retention_birth_ns(path: Path | int, info: os.stat_result) -> int | None:
 
 
 def _retention_object_stamp(path: Path, info: os.stat_result) -> dict[str, Any] | None:
+    """The creation time of ``path`` (stat ``info``) as an identity stamp.
+
+    Creation time is the only reliable object identity (the user-approved
+    capability boundary, plan D2). None -- a platform or filesystem that
+    cannot report it, or a temporarily unreadable field -- means the object
+    cannot be verified, so it is protected: no quarantine, no binding, and
+    never a change-time or structural resampling in its place.
+    """
     birth = _retention_birth_ns(path, info)
-    if birth is not None:
-        return {"kind": "birth", "ns": birth}
-    ctime = getattr(info, "st_ctime_ns", None)
-    return {"kind": "ctime", "ns": ctime} if type(ctime) is int else None
+    return {"kind": "birth", "ns": birth} if birth is not None else None
 
 
 def _retention_stamp_ok(value: Any) -> bool:
@@ -25989,51 +25999,57 @@ def _retention_stamp_matches(path: Path | int, info: os.stat_result | None,
     return getattr(info, "st_ctime_ns", None) == expected["ns"]
 
 
+def _retention_birth_identity(record: dict[str, Any]) -> dict[str, Any] | None:
+    """A record's bound identity when it is a CREATION-time stamp, else
+    None. Only this kind can prove "still the originally selected object";
+    change-time and stampless bindings cannot, and are never upgraded."""
+    stamp = record.get("object_stamp")
+    if _retention_stamp_ok(stamp) and stamp["kind"] == "birth":
+        return stamp
+    return None
+
+
 def _retention_object_bound(
     target: Path, info: os.stat_result, record: dict[str, Any],
     deadline: float | None,
 ) -> str:
     """Is the bound name still the object that was quarantined? Returns
-    "" (yes), "deadline" or "refused". A quarantined record without a stamp
-    (written before R6) is verified by its structural tree digest instead;
-    an unstamped ``purge_planned`` object has no remaining proof."""
-    if "object_stamp" in record:
-        return "" if _retention_stamp_matches(target, info, record) else "refused"
-    expected_tree = record.get("tree")
-    if record.get("state") != "quarantined" or expected_tree is None:
-        return "refused"
-    actual = _retention_tree_digest(target, deadline)
-    if actual is None:
-        return ("deadline" if deadline is not None and time.monotonic() >= deadline
-                else "refused")
-    return "" if actual == expected_tree else "refused"
+    "" (yes), "deadline", "refused" (a DIFFERENT object provably occupies
+    the name) or "identity_unverifiable" (identity cannot be proven, so
+    the object is retained and destructive work is skipped).
+
+    Only a creation-time stamp bound at quarantine authorizes anything
+    (plan D2). A ``ctime``-bound or stampless record (earlier candidates)
+    can never prove it: the object is kept and skipped. A structural tree
+    digest never rescues a bound identity that is missing, unreadable or
+    mismatched."""
+    del deadline  # no tree walk: the verdict never blocks on the budget
+    stamp = _retention_birth_identity(record)
+    if stamp is None:
+        return "identity_unverifiable"
+    birth = _retention_birth_ns(target, info)
+    if birth is None:
+        return "identity_unverifiable"  # capability unreadable: protect
+    return "" if birth == stamp["ns"] else "refused"
 
 
 def _retention_continuity_verdict(
     target: Path, info: os.stat_result, record: dict[str, Any],
     deadline: float | None,
-) -> tuple[bool, dict[str, Any] | None]:
+) -> tuple[bool, None]:
     """Does the object at ``target`` provably descend from the object an
-    intent was written for (R7)? Returns ``(continuous, binding_upgrade)``.
+    intent was written for (R7, D2)? Returns ``(continuous, None)``.
 
     The intent binds the stamp observed on the verified object before the
-    move. A creation-time stamp survives the rename, so a match is the
-    continuity proof. A change-time stamp may have moved with the rename
-    itself: a mismatch then falls back to the structural tree digest bound
-    in the intent, and only a digest-proven object may carry an upgraded
-    binding sampled from itself. Current-path metadata never becomes
-    authority without one of those two proofs."""
-    if "object_stamp" in record and _retention_stamp_matches(target, info, record):
-        return True, None
-    expected_tree = record.get("tree")
-    if expected_tree is None:
-        return False, None
-    actual = _retention_tree_digest(target, deadline)
-    if actual is None or actual != expected_tree:
-        return False, None
-    if "object_stamp" not in record:
-        return True, None  # legacy intent: the purge pass binds a stamp
-    return True, _retention_object_stamp(target, info)
+    move, and only that binding decides: a creation-time stamp that still
+    matches is the continuity proof; a change-time stamp that still matches
+    proves the object is unchanged since the intent (bookkeeping only --
+    such a record can never advance to purge); anything missing, unreadable
+    or mismatched is not continuous. A structural digest never rescues an
+    unmatched or absent binding, and no stamp is ever sampled from the
+    current occupant of the name."""
+    del deadline  # no tree walk: the verdict never blocks on the budget
+    return _retention_stamp_matches(target, info, record), None
 
 
 def _retention_acquire_lifecycle_lock(candidate: Path):
@@ -26154,6 +26170,17 @@ def _retention_quarantine_object(
         if [candidate_info.st_dev, candidate_info.st_ino] != authorized:
             outcome.update(action="skipped", reason="identity_changed")
             return outcome
+        # Creation-identity gate BEFORE the intent and the rename (plan D2):
+        # the move is authorized only by the stamp bound to this object at
+        # selection, and only when this filesystem can still verify it.
+        bound_stamp = item.get("object_stamp")
+        if not (_retention_stamp_ok(bound_stamp)
+                and bound_stamp["kind"] == "birth"):
+            outcome.update(action="skipped", reason="identity_unverifiable")
+            return outcome
+        if _retention_birth_ns(candidate, candidate_info) != bound_stamp["ns"]:
+            outcome.update(action="skipped", reason="identity_changed")
+            return outcome
         record = {
             "schema": RETENTION_QUARANTINE_RECORD_SCHEMA,
             "state": "planned",
@@ -26166,14 +26193,12 @@ def _retention_quarantine_object(
             "manifest_sha256": manifest["manifest_sha256"],
             "state_sha256": item["state_sha256"],
             "tree": tree,
+            # The selection-time creation identity, unchanged (R7/D2): the
+            # intent's authority is the selected object's, never whatever
+            # occupies the quarantine name afterwards.
+            "object_stamp": bound_stamp,
             "restore": "context_guard.py cleanup --restore <name>",
         }
-        # Bind the stamp observed on the verified object BEFORE the move
-        # (R7): the intent's authority is sampled from the selected object,
-        # never from whatever occupies the quarantine name afterwards.
-        pre_stamp = _retention_object_stamp(candidate, candidate_info)
-        if pre_stamp is not None:
-            record["object_stamp"] = pre_stamp
         # Write-ahead discovery hint: the record name is journaled before the
         # record exists, so the records window reaches it from any later
         # process without listing the quarantine directory (hint only).
@@ -26230,9 +26255,8 @@ def _retention_quarantine_object(
     except OSError:
         moved_info = None
     continuous = False
-    upgrade = None
     if moved_info is not None:
-        continuous, upgrade = _retention_continuity_verdict(
+        continuous, _upgrade = _retention_continuity_verdict(
             target, moved_info, record, deadline)
     if moved_info is None or not continuous:
         # The name was taken between the intent and the commit -- identity
@@ -26243,10 +26267,6 @@ def _retention_quarantine_object(
         outcome.update(action="skipped", reason="identity_changed_unresolved",
                        record_pending=True)
         return outcome
-    if upgrade is not None:
-        # Digest-proven upgrade of a change-time binding the rename itself
-        # moved; the birth binding never needs it.
-        record["object_stamp"] = upgrade
     record["state"] = "quarantined"
     record["quarantined_at"] = record["planned_at"]
     try:
@@ -26296,12 +26316,15 @@ def _retention_settle_record(
     ``planned``: home is the bound object and target absent -> the rename
     never landed, roll the intent back; target is the bound object and home
     is not -> the rename landed, promote to ``quarantined`` -- but only if
-    the target provably descends from the intent's object (stamp, or the
-    intent's tree digest); otherwise the promotion is indeterminate and no
-    binding is minted from the occupant (R7).
-    ``restore_planned``: home bound and target absent -> the rename back
-    landed, retire the record; target bound and home absent -> it never
-    landed, revert to ``quarantined``.
+    the target provably descends from the intent's object by the intent's
+    binding (creation time, or an unchanged change-time stamp for an
+    earlier-candidate record, which can never advance to purge); otherwise
+    the promotion is indeterminate and no binding is minted from the
+    occupant (R7, D2).
+    ``restore_planned``: home bound, target absent and the record's
+    creation identity still proven on the moved-back object -> the rename
+    back landed, retire the record; target bound and home absent -> it
+    never landed, revert to ``quarantined``.
     ``purge_planned`` with the target gone -> the data is already removed,
     complete the tombstone and retire the record. A partially removed
     target stays ``purge_planned`` for the purge pass (it needs current
@@ -26325,26 +26348,30 @@ def _retention_settle_record(
                 record_path.unlink()
                 return "rolled_back"
             if target_bound and not home_bound:
-                continuous, upgrade = _retention_continuity_verdict(
+                continuous, _upgrade = _retention_continuity_verdict(
                     target, target_info, record, deadline)
                 if not continuous:
+                    # The intent's binding is missing, unreadable or
+                    # mismatched: no structural digest rescues it and no
+                    # stamp is sampled from the occupant (D2). Both objects
+                    # are preserved; the record stays for exactly this
+                    # explicit verdict.
                     return "indeterminate"
                 record = dict(record, state="quarantined",
                               quarantined_at=record.get("planned_at"),
                               recovered_at=stamp)
-                if upgrade is not None:
-                    record["object_stamp"] = upgrade
-                elif "object_stamp" not in record:
-                    # A legacy intent without a stamp: the tree digest just
-                    # proved this is the moved object; bind it now.
-                    object_stamp = _retention_object_stamp(target, target_info)
-                    if object_stamp is not None:
-                        record["object_stamp"] = object_stamp
                 _retention_write_record(record_path, record)
                 return "recovered"
             return "indeterminate"
         if state == "restore_planned":
             if home_bound and target_info is None:
+                # Completing the restore retires the record: only proven
+                # with the creation identity bound at quarantine (D2); a
+                # weaker record cannot prove the moved-back object and
+                # stays for the explicit indeterminate verdict.
+                if _retention_birth_identity(record) is None or not \
+                        _retention_stamp_matches(home, home_info, record):
+                    return "indeterminate"
                 record_path.unlink()
                 return "completed"
             if target_bound and home_info is None:
@@ -26393,7 +26420,8 @@ def _retention_recover_records(
 def _retention_empty_purge_summary() -> dict[str, int]:
     return {"purged": 0, "purge_pending": 0, "purge_partial": 0,
             "tombstones_retired": 0, "purge_disabled": 0,
-            "purge_refused": 0, "purge_busy": 0, "tombstone_pending": 0}
+            "purge_refused": 0, "purge_busy": 0, "tombstone_pending": 0,
+            "purge_identity_unverifiable": 0}
 
 
 def _retention_purge_record(
@@ -26411,7 +26439,10 @@ def _retention_purge_record(
     retired; a lost tombstone write is completed from the record next pass.
     Returns "deadline" when the budget ended before a transition started or
     cut the bounded removal (the caller keeps its window position, so the
-    next pass resumes this object first), otherwise "done".
+    next pass resumes this object first), otherwise "done". A record whose
+    binding is not a proven creation-time stamp is retained and skipped:
+    it is counted as ``purge_identity_unverifiable`` and its object, data
+    and name protection stay exactly where they are (plan D2).
     """
     state = record.get("state")
     if state not in {"quarantined", "purge_planned"}:
@@ -26461,10 +26492,16 @@ def _retention_purge_record(
             summary["purge_refused"] += 1
             return "done"
         # (dev, ino) can be reused by a replacement: the object must also
-        # carry the stamp bound when it was quarantined (R6).
+        # carry the creation-time stamp bound when it was quarantined (R6).
+        # A ctime-bound or stampless record cannot prove it is the selected
+        # object: it is retained and skipped, never upgraded from whatever
+        # its tree or its name now holds (plan D2).
         verdict = _retention_object_bound(target, target_info, record, deadline)
         if verdict == "deadline":
             return "deadline"
+        if verdict == "identity_unverifiable":
+            summary["purge_identity_unverifiable"] += 1
+            return "done"
         if verdict:
             summary["purge_refused"] += 1
             return "done"
@@ -26473,14 +26510,6 @@ def _retention_purge_record(
         if state == "quarantined":
             record = dict(record, state="purge_planned",
                           purge_started_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-            if "object_stamp" not in record:
-                # A pre-R6 record whose object the tree digest just proved:
-                # bind the stamp before the first removal changes the tree.
-                upgraded = _retention_object_stamp(target, target_info)
-                if upgraded is None:
-                    summary["purge_refused"] += 1
-                    return "done"
-                record["object_stamp"] = upgraded
             try:
                 _retention_write_record(record_path, record)
             except (OSError, PrivateBoundaryError):
@@ -26502,13 +26531,12 @@ def _retention_purge_record(
                 removed = True  # gone between the removal and this check
             elif (progress["removed"] and progress["continuous"]
                     and _retention_holds(target, record)):
-                # This attempt itself removed entries of the verified object
-                # and the name still provably holds it: the change time it
-                # observed on the held object is this removal's own effect
-                # (R7). A refusal, an unknown result or a budget stop before
-                # any removal never becomes "I partially removed it".
-                _retention_rebind_ctime(record_path, record, target,
-                                        observed_stamp_ns=progress["observed_stamp_ns"])
+                # This attempt itself removed entries of the verified
+                # creation-time-bound object and the name still provably
+                # holds it (R7). The creation time is invariant under
+                # removals, so no re-bind is needed; a refusal, an unknown
+                # result or a budget stop before any removal never becomes
+                # "I partially removed it".
                 summary["purge_partial"] += 1
                 if deadline is not None and time.monotonic() >= deadline:
                     # Cut by the budget: unfinished work keeps the window
@@ -26525,30 +26553,6 @@ def _retention_purge_record(
         return "done"
     finally:
         release()
-
-
-def _retention_rebind_ctime(record_path: Path, record: dict[str, Any],
-                            target: Path, *,
-                            observed_stamp_ns: int | None = None) -> None:
-    """A ``ctime``-stamped object's own verified partial removal changed its
-    change time: re-record it so the next step accepts exactly this object.
-    The caller hands the value the purge observed on the held object; only a
-    caller that has proved the path still holds the removed-from object may
-    fall back to reading the name. A crash before this write leaves an
-    unexplained change, which is refused."""
-    stamp = record.get("object_stamp")
-    if not (_retention_stamp_ok(stamp) and stamp["kind"] == "ctime"):
-        return
-    try:
-        if observed_stamp_ns is None:
-            info = _retention_lstat(target)
-            if info is None or not _retention_bound_dir(info, record):
-                return
-            observed_stamp_ns = info.st_ctime_ns
-        record["object_stamp"] = {"kind": "ctime", "ns": observed_stamp_ns}
-        _retention_write_record(record_path, record)
-    except (OSError, PrivateBoundaryError):
-        return
 
 
 def _retention_retire_tombstone(qdir: Path, tombstone: Path, now: dt.datetime,
@@ -26624,8 +26628,13 @@ def _retention_verify_restorable(
     target: Path, record: dict[str, Any], deadline: float | None,
 ) -> str:
     """Prove the quarantined object is the complete object that was moved
-    out: bound identity, the recorded state digest, and (for v3 records)
-    the structural tree digest. Returns "" or the refusal reason."""
+    out: the creation-time identity bound at quarantine, the bound file
+    identity, the recorded state digest, and (for v3 records) the
+    structural tree digest. Returns "" or the refusal reason. A record
+    whose binding is not a creation-time stamp (``ctime``-bound or
+    stampless earlier-candidate records) cannot prove which object it
+    guards: it is refused as ``identity_unverifiable`` and everything stays
+    where it is (plan D2)."""
     try:
         info = _retention_lstat(target)
     except OSError:
@@ -26633,6 +26642,12 @@ def _retention_verify_restorable(
     if info is None:
         return "purged_or_removed"
     if not _retention_bound_dir(info, record):
+        return "identity_mismatch"
+    stamp = _retention_birth_identity(record)
+    if stamp is None:
+        return "identity_unverifiable"
+    birth = _retention_birth_ns(target, info)
+    if birth is None or birth != stamp["ns"]:
         return "identity_mismatch"
     state_path = target / "state.json"
     try:
@@ -26664,9 +26679,12 @@ def retention_restore(
     (the transparent official-reader path already holds the latter and
     passes ``assume_lifecycle_lock_held``). Interrupted transactions for
     this name are settled first. Only a ``quarantined`` object that is
-    provably complete (identity, state digest, tree digest) is moved back,
-    behind a ``restore_planned`` intent; a ``purge_planned`` object is
-    never restorable, and a live successor is never overwritten.
+    provably complete (creation identity bound at quarantine, file
+    identity, state digest, tree digest) is moved back, behind a
+    ``restore_planned`` intent; a ``purge_planned`` object is never
+    restorable, a live successor is never overwritten, and a record whose
+    binding is not a creation-time stamp is refused as
+    ``identity_unverifiable`` -- everything stays where it is (plan D2).
     """
     report: dict[str, Any] = {"schema": RETENTION_REPORT_SCHEMA,
                               "mode": "restore", "name": name}

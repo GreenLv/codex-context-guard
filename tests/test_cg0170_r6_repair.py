@@ -23,10 +23,25 @@ R7 closes the same ownership-provenance invariant at the two remaining
 entries that minted a binding from whatever occupied the quarantine name
 (the commit after the rename and the ``planned`` recovery) and at the
 outer write-back that turned a refused opened-root check into "I
-partially removed it". ``OwnershipProvenanceTests`` and the change-time
-refusal test force the identity-reuse model with real timestamps or the
-modeled no-creation-time filesystem; a refused, unknown or not-executed
-removal never becomes authority. Synthetic data only.
+partially removed it". ``OwnershipProvenanceTests`` and the creation-
+identity boundary tests force the identity-reuse model with real
+timestamps or the modeled no-creation-time filesystem; a refused, unknown
+or not-executed removal never becomes authority. Synthetic data only.
+
+R8 binds the user-approved identity capability boundary (plan D2) to this
+revision: creation time is the only reliable object identity, so a path,
+a reusable ``(dev, ino)``, a change time, or a path/kind/size inventory --
+alone or combined -- never becomes new deletion authority. A new object
+whose creation time cannot be read is protected before any intent or
+rename (``identity_unverifiable``); a record bound to a change time or to
+nothing (earlier candidates) is retained, skipped by purge, refused by
+restore and by the transparent official reader, and never upgraded from
+its directory layout or from whatever now occupies its name. The former
+``ChangeTimeBindingTests`` battery quarantined on a modeled
+no-creation-time filesystem, which the adopted boundary no longer allows;
+its protection halves migrate into ``CreationIdentityBoundaryTests`` as
+explicit protection verdicts -- never as skips, harness errors or
+not-executed passes.
 """
 
 from __future__ import annotations
@@ -244,9 +259,10 @@ class ReplacementBindingTests(r5.FreshProcessBase):
     def state(self, record_path):
         return json.loads(record_path.read_text(encoding="utf-8"))["state"]
 
-    def assert_refused(self, runs, sentinel, record_path, state):
+    def assert_refused(self, runs, sentinel, record_path, state,
+                       counter="purge_refused"):
         self.assertTrue(sentinel.is_file())
-        self.assertTrue(any(run["purge"]["purge_refused"] >= 1 for run in runs), runs)
+        self.assertTrue(any(run["purge"][counter] >= 1 for run in runs), runs)
         self.assertFalse(any(run["purge"]["purged"] for run in runs), runs)
         self.assertTrue(record_path.exists())
         self.assertEqual(self.state(record_path), state)
@@ -331,16 +347,15 @@ class ReplacementBindingTests(r5.FreshProcessBase):
         self.assertTrue((qdir / (record["quarantine_object"] + ".tombstone.json")).is_file())
 
     def test_the_stamp_is_bound_at_quarantine_and_survives_partial_removal(self):
+        # Quarantine requires a creation-time identity (plan D2), so the
+        # bound stamp is always a birth stamp, and removals never change it.
         qdir, record_path, record, target = self.quarantine_wide()
         stamp = record["object_stamp"]
-        self.assertIn(stamp["kind"], ("birth", "ctime"))
-        if os.name == "nt" or sys.platform == "darwin":
-            self.assertEqual(stamp["kind"], "birth")
+        self.assertEqual(stamp["kind"], "birth")
         self.purge_run()
         self.assertEqual(self.state(record_path), "purge_planned")
         after = json.loads(record_path.read_text(encoding="utf-8"))["object_stamp"]
-        if stamp["kind"] == "birth":
-            self.assertEqual(after, stamp)
+        self.assertEqual(after, stamp)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux statx path")
     def test_linux_creation_time_is_read_consistently_or_reported_absent(self):
@@ -358,16 +373,30 @@ class ReplacementBindingTests(r5.FreshProcessBase):
             self.assertLess(abs(by_path - info.st_mtime_ns), 5_000_000_000)
             self.assertIsNone(cg._retention_linux_birth_ns(probe, info.st_ino + 1))
 
-    def test_a_record_without_the_stamp_is_verified_by_its_tree(self):
+    def test_a_stampless_record_is_retained_and_never_purged(self):
+        # A record whose binding is missing (an earlier candidate's shape)
+        # cannot prove which object it guards: its object is retained and
+        # purge skips it -- no structural digest mints a replacement
+        # authority (plan D2).
         qdir, record_path, record, target = self.quarantine_wide(payload=2)
         legacy = json.loads(record_path.read_text(encoding="utf-8"))
         legacy.pop("object_stamp", None)
         record_path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
-        run = self.purge_run(budget=40.0)
-        self.assertEqual(run["purge"]["purged"], 1, run)
-        self.assertFalse(target.exists())
+        before = self.children(target)
+        runs = [self.purge_run(budget=40.0) for _ in range(2)]
+        for run in runs:
+            self.assertEqual(run["purge"]["purged"], 0, run)
+        self.assertTrue(any(run["purge"]["purge_identity_unverifiable"] >= 1
+                            for run in runs), runs)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(self.children(target), before)
+        self.assertTrue(record_path.exists())
+        self.assertEqual(self.state(record_path), "quarantined")
+        self.assertNotIn("object_stamp",
+                         json.loads(record_path.read_text(encoding="utf-8")))
         # Negative: the same legacy shape over an identity-reusing
-        # replacement is refused by the tree comparison.
+        # replacement keeps the replacement AND the original exactly where
+        # they are; nothing is minted from the layout.
         qdir, record_path, record, target = self.quarantine_wide(
             name="legacy-replaced", payload=2)
         legacy = json.loads(record_path.read_text(encoding="utf-8"))
@@ -376,55 +405,140 @@ class ReplacementBindingTests(r5.FreshProcessBase):
         sentinel = self.replace(target)
         self.reuse_identity(record_path, target)
         runs = [self.purge_run(budget=40.0) for _ in range(2)]
-        self.assert_refused(runs, sentinel, record_path, "quarantined")
+        self.assert_refused(runs, sentinel, record_path, "quarantined",
+                            counter="purge_identity_unverifiable")
 
 
-class ChangeTimeBindingTests(ReplacementBindingTests):
-    """The same family on a modeled filesystem without creation time: the
-    binding is the change time, re-recorded after each own partial removal.
-    A crash inside a removal leaves an unexplained change, which is refused
-    (data kept) -- the documented boundary of such filesystems."""
+class CreationIdentityBoundaryTests(r5.FreshProcessBase):
+    """The user-approved identity capability boundary (plan D2), bound to
+    this revision: creation time is the only reliable object identity.
 
-    def setUp(self):
-        super().setUp()
-        patcher = mock.patch.object(cg, "_retention_birth_ns", return_value=None)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    A filesystem that reports no creation time -- or a temporarily
+    unreadable field -- can never re-prove an object between selection,
+    intent, commit and purge. A NEW object is therefore protected before
+    any intent or rename; a record already bound (built here on a capable
+    filesystem, then read under modeled capability loss) keeps its object
+    exactly where it is; and nothing -- no structural digest, no change
+    time, no current-occupant metadata -- is minted into a binding. The
+    fixtures are built with the capability present and the maintenance
+    under test runs with it lost (``--no-birth-time`` or the in-process
+    patch), so a protection verdict here is the verdict of a real, decided
+    transition path -- never a skip, a harness error or a not-executed
+    pass."""
 
-    def purge_run(self, budget=3.0, crash=None):
+    quarantine_wide = r5.PurgeProgressTests.quarantine_wide
+    children = r5.PurgeProgressTests.children
+
+    def purge_run(self, budget=3.0, crash=None, no_birth=False):
+        extra = ["--future-days", "2"]
+        if no_birth:
+            extra.append("--no-birth-time")
         return self.fresh(budget, list_ms=1.0, purge_ms=1.0,
-                          extra=["--future-days", "2", "--no-birth-time"], crash=crash)
+                          extra=extra, crash=crash)
 
-    def test_the_stamp_is_bound_at_quarantine_and_survives_partial_removal(self):
-        qdir, record_path, record, target = self.quarantine_wide()
-        self.assertEqual(record["object_stamp"]["kind"], "ctime")
-        runs = 0
-        while target.exists() and runs < 15:
-            self.purge_run()
-            runs += 1
-        self.assertFalse(target.exists())
-        self.assertTrue((qdir / (record["quarantine_object"] + ".tombstone.json")).is_file())
+    def reuse_identity(self, record_path, target):
+        info = target.lstat()
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["identity"] = [info.st_dev, info.st_ino]
+        record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-    def test_crash_inside_a_removal_is_refused_and_keeps_the_data(self):
-        qdir, record_path, record, target = self.quarantine_wide()
-        self.purge_run(budget=40.0, crash="purge_unlink#3")
-        middle = self.children(target)
-        runs = [self.purge_run(budget=40.0) for _ in range(2)]
-        self.assertEqual(self.children(target), middle)
-        self.assertTrue(all(run["purge"]["purge_refused"] for run in runs), runs)
-        self.assertEqual(self.state(record_path), "purge_planned")
-        refused = cg.retention_restore(self.data_dir, record["original_name"])
-        self.assertNotEqual(refused.get("outcome"), "restored")
+    def replace(self, target):
+        shutil.rmtree(target)
+        target.mkdir()
+        sentinel = target / "replacement-sentinel.txt"
+        sentinel.write_text("must survive", encoding="utf-8")
+        return sentinel
+
+    def state(self, record_path):
+        return json.loads(record_path.read_text(encoding="utf-8"))["state"]
+
+    def test_a_new_object_without_creation_time_is_protected_before_any_move(self):
+        # The independent positive control for "a new object is not
+        # quarantined": preview AND apply name the exact protection, and
+        # the object's bytes never change -- no rename, no record, no
+        # quarantine directory.
+        old = self.make_session("unverifiable-new", ended_days_ago=45)
+        (old / "payload.bin").write_text("untouched", encoding="utf-8")
+        state_bytes = (old / "state.json").read_bytes()
+        self.enable_policy(quarantine_days=1)
+        with mock.patch.object(cg, "_retention_birth_ns", return_value=None):
+            preview = cg.cleanup_old_sessions(self.data_dir)
+        entry = next(e for e in preview["entries"] if e["name"] == old.name)
+        self.assertEqual((entry["verdict"], entry.get("reason")),
+                         ("protected", "identity_unverifiable"))
+        self.assertEqual(preview["counts"]["eligible"], 0, preview)
+        with mock.patch.object(cg, "_retention_birth_ns", return_value=None):
+            applied = cg.cleanup_old_sessions(self.data_dir, apply=True)
+        entry = next(e for e in applied["entries"] if e["name"] == old.name)
+        self.assertEqual((entry["verdict"], entry.get("reason")),
+                         ("protected", "identity_unverifiable"))
+        self.assertEqual(applied["counts"]["eligible"], 0, applied)
+        self.assertEqual(applied["counts"]["quarantined"], 0, applied)
+        self.assertTrue(old.is_dir())
+        self.assertEqual((old / "state.json").read_bytes(), state_bytes)
+        self.assertEqual((old / "payload.bin").read_text(), "untouched")
+        self.assertFalse(cg._retention_quarantine_dir(self.data_dir).exists())
+
+    def test_the_fresh_driver_protects_a_new_object_without_creation_time(self):
+        old = self.make_session("unverifiable-fresh", ended_days_ago=45)
+        state_bytes = (old / "state.json").read_bytes()
+        self.enable_policy(quarantine_days=1)
+        run = self.purge_run(budget=200.0, no_birth=True)
+        entry = next(e for e in run["entries"] if e[0] == old.name)
+        self.assertEqual((entry[1], entry[2]),
+                         ("protected", "identity_unverifiable"))
+        self.assertEqual(run["counts"]["quarantined"], 0, run)
+        self.assertTrue(old.is_dir())
+        self.assertEqual((old / "state.json").read_bytes(), state_bytes)
+        self.assertFalse(cg._retention_quarantine_dir(self.data_dir).exists())
+
+    def test_capability_loss_after_quarantine_retains_the_bound_object(self):
+        # The record is bound on a capable filesystem; the maintenance that
+        # follows cannot read creation times. The object, its data, the
+        # record and its binding stay exactly where they are.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        stamp = record["object_stamp"]
+        self.assertEqual(stamp["kind"], "birth")
+        before = self.children(target)
+        runs = [self.purge_run(budget=40.0, no_birth=True) for _ in range(3)]
+        for run in runs:
+            self.assertEqual(run["purge"]["purged"], 0, run)
+        self.assertTrue(any(run["purge"]["purge_identity_unverifiable"] >= 1
+                            for run in runs), runs)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(self.children(target), before)
+        persisted = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["state"], "quarantined")
+        self.assertEqual(persisted["object_stamp"], stamp)
+
+    def test_a_same_shape_replacement_is_never_purged_when_capability_is_lost(self):
+        # The R8 counterexample shape under capability loss: the
+        # replacement has the same layout with different payload bytes and
+        # the record is rebound to its (dev, ino). Nothing purges, no
+        # stamp is minted, and both objects survive.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        original_stamp = record["object_stamp"]
+        sentinel = self.replace(target)
+        (target / "payload-00").write_bytes(b"R" * 9)  # different payload
+        self.reuse_identity(record_path, target)
+        runs = [self.purge_run(budget=40.0, no_birth=True) for _ in range(3)]
+        for run in runs:
+            self.assertEqual(run["purge"]["purged"], 0, run)
+        self.assertTrue(any(run["purge"]["purge_identity_unverifiable"] >= 1
+                            for run in runs), runs)
+        self.assertTrue(sentinel.is_file())
+        self.assertTrue(target.is_dir())
+        persisted = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["object_stamp"], original_stamp)
 
     def test_refusal_before_any_removal_never_adopts_the_current_stamp(self):
-        # R7 entry 1: the real opened-root check refuses a replacement
-        # (identity-reuse model, no creation time on this modeled
-        # filesystem); the outer pass must count a refusal and must not
-        # write the replacement's change time as the record's binding --
-        # which the next pass would then purge.
+        # R7 entry 1, migrated to the creation-identity model: the swap
+        # with identity rebind lands before the opened-root check. The
+        # readable creation-time mismatch is a refusal -- never partial
+        # progress -- and the persisted binding stays the selected
+        # object's.
         qdir, record_path, record, target = self.quarantine_wide()
         original_stamp = dict(record["object_stamp"])
-        self.assertEqual(original_stamp["kind"], "ctime")
         real_purge = cg._retention_purge_tree
         sentinel = target / "replacement-sentinel.txt"
 
@@ -437,7 +551,7 @@ class ChangeTimeBindingTests(ReplacementBindingTests):
             info = target.lstat()
             current["identity"] = [info.st_dev, info.st_ino]
             cg._retention_write_record(record_path, current)
-            # The real helper refuses this different change time and has
+            # The real helper refuses this different creation time and has
             # removed nothing of the replacement.
             removed = real_purge(path, deadline)
             self.assertFalse(removed)
@@ -465,6 +579,87 @@ class ChangeTimeBindingTests(ReplacementBindingTests):
             self.assertEqual(second["purge"]["purge_refused"], 1, second)
         self.assertTrue(sentinel.is_file())
         self.assertTrue((self.root / "original-preserved").is_dir())
+
+    def test_crash_inside_a_removal_then_capability_loss_keeps_the_data(self):
+        qdir, record_path, record, target = self.quarantine_wide()
+        self.purge_run(budget=40.0, crash="purge_unlink#3")
+        self.assertEqual(self.state(record_path), "purge_planned")
+        middle = self.children(target)
+        runs = [self.purge_run(budget=40.0, no_birth=True) for _ in range(2)]
+        self.assertEqual(self.children(target), middle)
+        for run in runs:
+            self.assertEqual(run["purge"]["purged"], 0, run)
+        self.assertTrue(any(run["purge"]["purge_identity_unverifiable"] >= 1
+                            for run in runs), runs)
+        self.assertEqual(self.state(record_path), "purge_planned")
+        refused = cg.retention_restore(self.data_dir, record["original_name"])
+        self.assertNotEqual(refused.get("outcome"), "restored")
+
+    def test_a_change_time_record_is_retained_and_never_restorable(self):
+        # An earlier candidate bound this object to its change time. Under
+        # the adopted boundary that binding cannot prove identity: the
+        # object stays quarantined, purge skips it even with the capability
+        # fully present, restore refuses by name, and the official reader
+        # keeps refusing a new ledger for the session.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        info = target.lstat()
+        record["object_stamp"] = {"kind": "ctime", "ns": info.st_ctime_ns}
+        record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        before = self.children(target)
+        runs = [self.purge_run(budget=40.0) for _ in range(2)]
+        for run in runs:
+            self.assertEqual(run["purge"]["purged"], 0, run)
+        self.assertTrue(any(run["purge"]["purge_identity_unverifiable"] >= 1
+                            for run in runs), runs)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(self.children(target), before)
+        report = cg.retention_restore(self.data_dir, record["original_name"])
+        self.assertEqual((report["outcome"], report["reason"]),
+                         ("refused", "identity_unverifiable"), report)
+        self.assertTrue(target.is_dir())
+        self.assertTrue(record_path.exists())
+        guard_dir = (self.data_dir / cg.V2_NAMESPACE / record["original_name"])
+        with self.assertRaises(cg.RetentionRecreationRefused):
+            cg._retention_recreation_guard(guard_dir)
+
+    def test_a_promoted_change_time_intent_cannot_advance_to_purge(self):
+        # A planned intent bound to a change time whose rename landed and
+        # whose change time is unchanged: the promotion is accurate
+        # bookkeeping, never purge authority -- the quarantined record it
+        # produces is skipped by every later purge pass.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        info = target.lstat()
+        record.update(state="planned", quarantined_at=None,
+                      object_stamp={"kind": "ctime", "ns": info.st_ctime_ns})
+        record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        verdict = cg._retention_settle_record(
+            self.data_dir, qdir, record_path, record,
+            cg.dt.datetime.now(cg.dt.timezone.utc))
+        self.assertEqual(verdict, "recovered")
+        settled = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(settled["state"], "quarantined")
+        self.assertEqual(settled["object_stamp"]["kind"], "ctime")
+        before = self.children(target)
+        self.future_pass()
+        runs = [self.purge_run(budget=40.0) for _ in range(2)]
+        for run in runs:
+            self.assertEqual(run["purge"]["purged"], 0, run)
+        self.assertTrue(any(run["purge"]["purge_identity_unverifiable"] >= 1
+                            for run in runs), runs)
+        self.assertTrue(target.is_dir())
+        self.assertEqual(self.children(target), before)
+
+    def future_pass(self):
+        real = cg.dt.datetime
+        now = real.now(cg.dt.timezone.utc) + cg.dt.timedelta(days=2)
+
+        class Clock(real):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz else now.replace(tzinfo=None)
+
+        with mock.patch.object(cg.dt, "datetime", Clock):
+            return cg.cleanup_old_sessions(self.data_dir, apply=True)
 
 
 class OwnershipProvenanceTests(ReplacementBindingTests):
@@ -575,6 +770,39 @@ class OwnershipProvenanceTests(ReplacementBindingTests):
         later = self.future_pass()
         self.assertEqual(later["purge"]["purged"], 1, later)
         self.assertFalse(target.exists())
+
+    def test_a_same_shape_replacement_is_indeterminate_and_never_purged(self):
+        # The R8 counterexample, as a durable regression: the replacement
+        # has the same path/kind/size inventory (so the recorded structural
+        # digest matches it) with different payload bytes, and the record
+        # is rebound to its (dev, ino). The birth mismatch decides: the
+        # recovery is indeterminate, the digest rescues nothing, no stamp
+        # is minted, and the replacement, its payload and the original all
+        # survive every later pass.
+        qdir, record_path, record, target = self.quarantine_wide(payload=2)
+        original_stamp = record["object_stamp"]
+        record.update(state="planned", quarantined_at=None)
+        os.rename(target, self.root / "original-preserved")
+        shutil.copytree(self.root / "original-preserved", target)
+        payload = target / "payload-00"
+        payload.write_bytes(b"R" * len(payload.read_bytes()))
+        self.assertEqual(cg._retention_tree_digest(target, None),
+                         record["tree"])  # the shape really does match
+        info = target.lstat()
+        record["identity"] = [info.st_dev, info.st_ino]
+        record_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        verdict = cg._retention_settle_record(
+            self.data_dir, qdir, record_path, record,
+            cg.dt.datetime.now(cg.dt.timezone.utc))
+        self.assertEqual(verdict, "indeterminate")
+        persisted = json.loads(record_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted.get("object_stamp"), original_stamp)
+        self.assertEqual(persisted["state"], "planned")
+        later = self.future_pass()
+        self.assertEqual(later["purge"]["purged"], 0, later)
+        self.assertTrue(payload.exists())
+        self.assertEqual(payload.read_bytes(), b"R" * 9)
+        self.assertTrue((self.root / "original-preserved").is_dir())
 
 
 if __name__ == "__main__":

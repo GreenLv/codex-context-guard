@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -511,6 +512,65 @@ class RetentionApplyTests(RetentionFixtureBase):
             self.data_dir, apply=True, manifest=manifest)
         self.assertEqual(report["counts"]["quarantined"], 1)
         self.assertTrue(fresh.exists())
+
+    def test_manifest_entries_carry_the_selection_creation_identity(self):
+        # Plan D2: the manifest keeps the creation identity bound at
+        # selection, so apply re-verifies the selected object and never
+        # re-samples identity from whatever the path holds at execution.
+        old = self.make_session("old", ended_days_ago=45)
+        self.enable_policy()
+        preview = cg.cleanup_old_sessions(self.data_dir, with_manifest=True)
+        entry = preview["manifest"]["entries"][0]
+        self.assertEqual(entry["object_stamp"]["kind"], "birth")
+        self.assertEqual(cg._retention_birth_ns(old, old.lstat()),
+                         entry["object_stamp"]["ns"])
+
+    def test_a_same_shape_replacement_never_extends_a_manifest(self):
+        # The replacement reuses the recorded (dev, ino) and has byte-
+        # identical state (same shape, same digest): only the creation
+        # identity differs, and that refusal is exactly what stops the
+        # apply from re-sampling the current occupant.
+        old = self.make_session("old", ended_days_ago=45)
+        self.enable_policy()
+        manifest = cg.cleanup_old_sessions(
+            self.data_dir, with_manifest=True)["manifest"]
+        retained = self.root / "retained-original"
+        os.rename(old, retained)
+        old.mkdir()
+        shutil.copy2(retained / "state.json", old / "state.json")
+        info = old.lstat()
+        entry = manifest["entries"][0]
+        entry["identity"] = [info.st_dev, info.st_ino]
+        manifest["manifest_sha256"] = cg._retention_manifest_digest(manifest)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, apply=True, manifest=manifest)
+        self.assertEqual(report["counts"]["quarantined"], 0, report)
+        self.assertEqual(report["counts"]["skipped"], 1, report)
+        skipped = [e for e in report["entries"]
+                   if e["name"] == "old" and e["verdict"] == "skipped"]
+        self.assertEqual(len(skipped), 1, report["entries"])
+        self.assertEqual(skipped[0].get("reason"), "identity_changed")
+        self.assertTrue(old.is_dir())
+        self.assertTrue((retained / "state.json").exists())
+
+    def test_a_manifest_entry_without_a_creation_stamp_is_unverifiable(self):
+        # An older manifest shape whose entries carry no creation identity
+        # protects instead of minting one at apply time (plan D2).
+        self.make_session("old", ended_days_ago=45)
+        self.enable_policy()
+        manifest = cg.cleanup_old_sessions(
+            self.data_dir, with_manifest=True)["manifest"]
+        for entry in manifest["entries"]:
+            entry.pop("object_stamp", None)
+        manifest["manifest_sha256"] = cg._retention_manifest_digest(manifest)
+        report = cg.cleanup_old_sessions(
+            self.data_dir, apply=True, manifest=manifest)
+        self.assertEqual(report["counts"]["quarantined"], 0, report)
+        skipped = [e for e in report["entries"]
+                   if e["name"] == "old" and e["verdict"] == "skipped"]
+        self.assertEqual(len(skipped), 1, report["entries"])
+        self.assertEqual(skipped[0].get("reason"), "identity_unverifiable")
+        self.assertTrue(self.session_dir("old").is_dir())
 
     def test_identity_replacement_under_the_lock_is_skipped(self):
         old = self.make_session("old", ended_days_ago=45)

@@ -161,26 +161,33 @@ re-verifies each selected object's identity, state and lifecycle lock. Eligible
 objects first move into recoverable quarantine. Separate restore and purge
 intents preserve interrupted operations; a purged name retains a bounded
 anti-resurrection tombstone. Purge binds a quarantined object by its file
-identity and by the creation time recorded at quarantine (change time where
-the filesystem reports none), so a replacement directory that reuses a freed
-inode is refused rather than removed. The binding is ownership provenance
-across the whole chain: the intent records the stamp observed on the verified
-object before the move; the quarantined commit and the `planned` recovery
-promote only an object proven continuous with that intent — by the surviving
-creation time, or by the intent's structural tree digest when the rename
-itself moved the change time (which then upgrades the binding). A partially
-removed object re-records its change time only from the value the same attempt
-observed on the object it held open and only after the name still provably
-holds that object; a refused, unknown, budget-expired-without-removal or
-otherwise unexecuted result never becomes "partially removed by me", and the
-next pass never deletes by metadata written for a different occupant. On a
-filesystem without creation times this has one exact boundary: a hard
-interruption between the first entry removal and the durable re-bind write
-leaves a change time the record cannot explain, so that object stays refused
-and its remaining data is kept — never deleted further, never restorable.
-Budget-cut removals re-bind before the attempt ends and resume; creation-time
-filesystems keep one invariant stamp and resume across such interruptions.
-SessionEnd only saves current state and recovery;
+identity and by the creation time recorded at quarantine, so a replacement
+directory that reuses a freed inode is refused rather than removed.
+Creation time is the only reliable object identity — the user-approved
+capability boundary: a path, a reusable `(dev, ino)`, a change time, or a
+path/kind/size inventory, alone or combined, never becomes new deletion
+authority, and an identity that is already mismatched is never rescued by
+resampling whatever now occupies the name. The binding is ownership
+provenance across the whole chain: adjudication protects any object whose
+creation time cannot be read (`identity_unverifiable`); the selection
+manifest and the apply path carry and re-verify the selection-time
+creation identity before the intent and the rename; the quarantined
+commit and the `planned` recovery promote only an object whose bound
+creation time still matches — a structural digest rescues nothing, and no
+stamp is ever sampled from the current occupant of a name. Records bound
+to a change time or to nothing (earlier candidates) are retained and
+skipped: purge counts them under `purge_identity_unverifiable`, restore
+and the transparent official reader refuse them explicitly, and the
+record keeps protecting the object and its name. A partial removal counts
+only when this attempt itself removed entries of the verified object and
+the name still provably holds it; a refused, unknown,
+budget-expired-without-removal or otherwise unexecuted result never
+becomes "partially removed by me". The creation-time binding is invariant
+under removals, so budget-cut removals, crashes and restarts resume
+without any re-sampling. Filesystems without creation times keep their
+data and lose only automatic cleanup; capable platforms keep the full
+quarantine, restore and purge lifecycle. SessionEnd only saves current
+state and recovery;
 it does not scan, delete, register or wait for maintenance.
 
 An adopted root records content-free discovery hints in private journals,

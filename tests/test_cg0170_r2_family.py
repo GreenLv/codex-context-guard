@@ -391,10 +391,10 @@ class RetentionTransactionR2Tests(RetentionFixtureBase):
         def interrupted(path, deadline):
             (path / "state.json").unlink()
             # Emulate the removal contract the real helper reports (R7):
-            # one entry of the verified object left, and the held object's
-            # own change time moved with it.
+            # one entry of the verified object left, and the name still
+            # provably holds the object this attempt removed from.
             cg._retention_purge_note_removal()
-            cg._retention_purge_note_continuous(path.lstat().st_ctime_ns)
+            cg._retention_purge_note_continuous()
             return False
         with mock.patch.object(cg, "_retention_purge_tree", side_effect=interrupted):
             partial = cg._retention_purge_pass(self.data_dir, policy, moment, None)
