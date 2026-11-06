@@ -184,13 +184,35 @@ def _mac_fields(raw: bytes) -> dict[str, Any]:
         text = raw.decode("utf-8", errors="strict")
     except UnicodeError:
         return result
+    seen: set[str] = set()
+    never_exited = False
     for line in text.splitlines():
-        match = re.fullmatch(r"\s*(runs|state|pid|last exit code)\s*=\s*(.*?)\s*", line)
+        # This observed launchctl representation uses one tab for job fields.
+        # Resource coalitions and environments have deeper indentation; their
+        # state/pid/runs must never overwrite the job's own execution facts.
+        match = re.fullmatch(r"\t(runs|state|pid|last exit code)\s*=\s*(.*?)\s*", line)
         if match:
             key = {"last exit code": "last_exit_code"}.get(match.group(1), match.group(1))
+            if key in seen:
+                return {field: None for field in result}
+            seen.add(key)
             val = match.group(2)
-            result[key] = int(val) if key != "state" and val.isdecimal() else (
-                val if key == "state" else None)
+            if key == "state":
+                result[key] = val
+            elif key == "last_exit_code" and val == "(never exited)":
+                never_exited = True
+            elif not val.isascii() or not val.isdecimal() or len(val) > 20:
+                return {field: None for field in result}
+            else:
+                result[key] = int(val)
+                if key == "pid" and result[key] <= 0:
+                    return {field: None for field in result}
+    if not {"state", "runs", "last_exit_code"} <= seen:
+        return {field: None for field in result}
+    if result["runs"] == 0 and not never_exited:
+        return {field: None for field in result}
+    if never_exited and result["runs"] != 0 and result["state"] != "running":
+        return {field: None for field in result}
     return result
 
 
@@ -778,7 +800,8 @@ def consume(report: Any, *, expected_subject: dict[str, Any], fixture: Path,
         errors.append("strict_noop")
     before, after = _dict(scene.get("job_before")), _dict(scene.get("job_after"))
     if report.get("platform") == "macos":
-        if (type(before.get("runs")) is not int or before.get("runs") != 0
+        if (not _job_nonrunning(before, "Darwin") or not _job_nonrunning(after, "Darwin")
+                or type(before.get("runs")) is not int or before.get("runs") != 0
                 or type(after.get("runs")) is not int
                 or after["runs"] != before["runs"] + 1
                 or type(after.get("last_exit_code")) is not int or after.get("last_exit_code") != 0
@@ -949,7 +972,7 @@ def _completed_job(before: dict[str, Any], after: dict[str, Any], system: str) -
     if system == "Darwin":
         return (type(before.get("runs")) is int and type(after.get("runs")) is int
                 and after["runs"] > before["runs"] and after.get("last_exit_code") is not None
-                and after.get("state") in ("waiting", "exited", "not running"))
+                and _job_nonrunning(after, system))
     return (type(before.get("last_run_ticks")) is int
             and type(after.get("last_run_ticks")) is int
             and after["last_run_ticks"] > before["last_run_ticks"]
@@ -959,10 +982,12 @@ def _completed_job(before: dict[str, Any], after: dict[str, Any], system: str) -
 def _job_nonrunning(job: dict[str, Any], system: str) -> bool:
     if system == "Darwin":
         runs = job.get("runs")
-        return (type(runs) is int and runs >= 0
+        return ({"runs", "state", "pid", "last_exit_code"} <= set(job)
+                and type(runs) is int and runs >= 0
                 and job.get("state") in ("waiting", "exited", "not running")
                 and job.get("pid") is None
-                and (runs == 0 or type(job.get("last_exit_code")) is int))
+                and ((runs == 0 and job.get("last_exit_code") is None)
+                     or (runs > 0 and type(job.get("last_exit_code")) is int)))
     return (system == "Windows" and job.get("state") == "Ready"
             and type(job.get("last_run_ticks")) is int
             and type(job.get("last_result")) is int)

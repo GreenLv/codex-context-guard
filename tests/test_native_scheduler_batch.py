@@ -63,7 +63,8 @@ def passing_macos():
              "status": command("read_back", "enabled"),
              "second_enable": command("already_enabled", "enabled", no_op=True),
              "before_second": snapshot, "after_second": copy.deepcopy(snapshot),
-             "job_before": {"runs": 0}, "job_after": {"runs": 1, "last_exit_code": 0, "state": "waiting"},
+             "job_before": {"runs": 0, "last_exit_code": None, "state": "waiting", "pid": None},
+             "job_after": {"runs": 1, "last_exit_code": 0, "state": "waiting", "pid": None},
              "trigger": {"exit_code": 0, "pid": 123, "trigger_attempted": True,
                          "job_stdout": "unavailable", "job_stderr": "unavailable"},
              "observation_seconds": 0.1,
@@ -80,7 +81,7 @@ def passing_macos():
               "foreign": foreign, "scene": scene,
               "cleanup": {"job_absent": True, "foreign_absent": True,
                           "command_process_unknown": False, "job_process_unknown": False,
-                          "job_before_disable": {"runs": 1, "last_exit_code": 0, "state": "waiting"},
+                          "job_before_disable": {"runs": 1, "last_exit_code": 0, "state": "waiting", "pid": None},
                           "unrelated_before": inventory, "unrelated_after": dict(inventory)}}
     return report, subject, fixture
 
@@ -140,6 +141,58 @@ class SchedulerBatchTests(unittest.TestCase):
         driver.call.assert_called_once_with("kickstart", "-p", "gui/501/cg-ccg0170-test")
         self.assertEqual(result["pid"], 123)
         self.assertEqual(result["job_stdout"], "unavailable")
+
+    def test_mac_fields_ignore_nested_resource_and_environment_values(self):
+        nested = ("\tresource coalition = {\n\t\tstate = active\n"
+                  "\t\tpid = 999\n\t\truns = 8\n\t\tlast exit code = 99\n\t}\n")
+        raw = ("gui/1/cg-example = {\n\tstate = not running\n\truns = 1\n"
+               "\tlast exit code = 0\n" + nested + "}\n").encode()
+        fields = SCHED._mac_fields(raw)
+        self.assertEqual(fields, {"state": "not running", "runs": 1,
+                                  "last_exit_code": 0, "pid": None})
+        self.assertTrue(SCHED._completed_job({"runs": 0}, fields, "Darwin"))
+        self.assertTrue(SCHED._job_nonrunning(fields, "Darwin"))
+        running = ("gui/1/cg-example = {\n\tstate = running\n\tpid = 33\n"
+                   "\truns = 1\n\tlast exit code = (never exited)\n"
+                   "\tenvironment = {\n\t\tstate = not running\n"
+                   "\t\tlast exit code = 0\n\t}\n}\n").encode()
+        fields = SCHED._mac_fields(running)
+        self.assertEqual(fields["state"], "running")
+        self.assertEqual(fields["pid"], 33)
+        self.assertFalse(SCHED._completed_job({"runs": 0}, fields, "Darwin"))
+        self.assertFalse(SCHED._job_nonrunning(fields, "Darwin"))
+
+    def test_mac_duplicate_or_missing_job_fields_fail_closed(self):
+        raw = b"x = {\n\tstate = not running\n\tstate = running\n\truns = 1\n}\n"
+        fields = SCHED._mac_fields(raw)
+        self.assertTrue(all(value is None for value in fields.values()))
+        self.assertFalse(SCHED._job_nonrunning(fields, "Darwin"))
+        nested_only = b"x = {\n\tcoalition = {\n\t\tstate = not running\n\t\truns = 1\n\t}\n}\n"
+        fields = SCHED._mac_fields(nested_only)
+        self.assertFalse(SCHED._job_nonrunning(fields, "Darwin"))
+
+    def test_mac_malformed_or_contradictory_pid_cannot_prove_exit(self):
+        for key, value in (("pid", "malformed"), ("pid", "-1"), ("pid", "0"),
+                           ("runs", "unknown"), ("pid", "1" * 30), ("last exit code", "?")):
+            raw = {"state": "not running", "runs": "1", "last exit code": "0"}
+            raw[key] = value
+            data = ("job = {\n" + "".join("\t" + k + " = " + v + "\n" for k, v in raw.items()) + "}\n").encode()
+            fields = SCHED._mac_fields(data)
+            self.assertFalse(SCHED._job_nonrunning(fields, "Darwin"))
+            self.assertFalse(SCHED._completed_job({"runs": 0}, fields, "Darwin"))
+        fields = {"state": "not running", "runs": 1, "last_exit_code": 0, "pid": 33}
+        self.assertFalse(SCHED._job_nonrunning(fields, "Darwin"))
+        self.assertFalse(SCHED._completed_job({"runs": 0}, fields, "Darwin"))
+        fields.pop("pid")
+        self.assertFalse(SCHED._job_nonrunning(fields, "Darwin"))
+        never = b"job = {\n\tstate = not running\n\truns = 0\n\tlast exit code = (never exited)\n}\n"
+        self.assertTrue(SCHED._job_nonrunning(SCHED._mac_fields(never), "Darwin"))
+        contradictory = never.replace(b"runs = 0", b"runs = 1")
+        self.assertFalse(SCHED._job_nonrunning(SCHED._mac_fields(contradictory), "Darwin"))
+        missing = b"job = {\n\tstate = not running\n\truns = 0\n}\n"
+        self.assertTrue(all(value is None for value in SCHED._mac_fields(missing).values()))
+        false_exit = never.replace(b"(never exited)", b"0")
+        self.assertTrue(all(value is None for value in SCHED._mac_fields(false_exit).values()))
 
     def test_valid_facts_and_cli_success_without_movement(self):
         report, subject, fixture = passing_macos()
@@ -424,7 +477,7 @@ class SchedulerBatchTests(unittest.TestCase):
                           "calendar": {"Hour": 3, "Minute": 17}}
             foreign_definition = {**file_facts, "program_arguments": ["/usr/bin/true"],
                                   "run_at_load": False, "calendar": None}
-            job = {"runs": 0, "state": "waiting", "last_exit_code": None}
+            job = {"runs": 0, "state": "waiting", "last_exit_code": None, "pid": None}
             driver = mock.Mock()
             driver.inventory.return_value = {"count": 1, "sha256": "d" * 64, "scope": "synthetic names"}
             driver.foreign_create.return_value = {"definition": foreign_definition}
