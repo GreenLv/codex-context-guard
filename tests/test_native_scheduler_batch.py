@@ -307,16 +307,18 @@ class SchedulerBatchTests(unittest.TestCase):
 
     def test_preflight_label_and_capability_do_not_register(self):
         native = mock.Mock()
-        with mock.patch.object(SCHED, "subject_identity", return_value={}), \
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(SCHED, "subject_identity", return_value={}), \
              mock.patch.object(SCHED, "_driver") as make_driver, \
              mock.patch.object(SCHED, "_safe_new_path"), \
              mock.patch.object(SCHED, "_private_parent"):
+            parent = Path(directory).resolve()
             driver = make_driver.return_value
             driver.absent.return_value = True
             with mock.patch.object(SCHED, "_safe_time", return_value=True):
                 SCHED.preflight(native, ROOT, "a" * 40, "b" * 40, ROOT,
-                                ROOT / "x.zip", "c" * 64, Path("/private/tmp/out"),
-                                Path("/private/tmp/fixture"), "cg-ccg0170-unique")
+                                ROOT / "x.zip", "c" * 64, parent / "out.json",
+                                parent / "fixture", "cg-ccg0170-unique")
             driver.foreign_create.assert_not_called()
             driver.trigger.assert_not_called()
             driver.foreign_remove.assert_not_called()
