@@ -551,6 +551,15 @@ def validate_continuity(before: Any, after: Any) -> None:
     require(_pending(old) <= _pending(new), "unfinished requirements not preserved")
 
 
+def _approved_read_command(raw: Any, expected: str) -> bool:
+    """Accept only the precise controlled read and its known visible wrapper."""
+    if expected == "cat native-read.txt":
+        return raw in (expected, "/bin/zsh -c 'cat native-read.txt'", "/bin/zsh -lc 'cat native-read.txt'")
+    if expected == "Get-Content -LiteralPath native-read.txt":
+        return raw == expected
+    return False
+
+
 def verify_read_tool(rows: Any, inventory: dict[tuple[str, str], dict[str, Any]],
                      thread: str, turn: str, command: str, cwd: Path) -> None:
     """Require the same real read-only command and corresponding Hook pair."""
@@ -579,7 +588,7 @@ def verify_read_tool(rows: Any, inventory: dict[tuple[str, str], dict[str, Any]]
                     "unrelated or unsupported item observed in read turn")
         if item.get("type") != "commandExecution":
             continue
-        require(item.get("command") == command, "unapproved command observed in read turn")
+        require(_approved_read_command(item.get("command"), command), "unapproved command observed in read turn")
         item_id = item.get("id")
         require(isinstance(item_id, str) and bool(item_id)
                 and native._official_path_matches(item.get("cwd"), cwd, windows=platform.system() == "Windows"),
@@ -592,6 +601,8 @@ def verify_read_tool(rows: Any, inventory: dict[tuple[str, str], dict[str, Any]]
         elif message.get("method") == "item/completed":
             require(item_id in starts and type(item.get("exitCode")) is int and item["exitCode"] == 0,
                     "read command did not complete")
+            require(item.get("command") == starts[item_id].get("command")
+                    and item.get("cwd") == starts[item_id].get("cwd"), "read command changed during execution")
             starts.pop(item_id)
             completed.append(item_id)
             item_end = index
@@ -694,7 +705,10 @@ class UpgradeClient(host.Client):
                                  "warnings": ["redacted"] if row.get("warnings") else []})
                 result = {"data": rows}
             elif method == "thread/start":
-                result = {"thread": {"id": _object(result.get("thread")).get("id")}}
+                permitted = {"model": {"gpt-6.1-sol", "gpt-6-astra"}, "modelProvider": {"openai"}}
+                values = {key: value for key, allowed in permitted.items() if
+                          isinstance((value := result.get(key)), str) and value in allowed}
+                result = {"thread": {"id": _object(result.get("thread")).get("id")}, **values}
             elif method == "turn/start":
                 result = {"turn": {"id": _object(result.get("turn")).get("id")}}
             else:
@@ -718,7 +732,8 @@ class UpgradeClient(host.Client):
             if item.get("type") == "commandExecution":
                 expected = ("Get-Content -LiteralPath native-read.txt" if platform.system() == "Windows"
                             else "cat native-read.txt")
-                common["item"]["command"] = expected if item.get("command") == expected else "<unapproved>"
+                command = item.get("command")
+                common["item"]["command"] = command if _approved_read_command(command, expected) else "<unapproved>"
         elif method == "thread/status/changed":
             common["status"] = {"type": _object(params.get("status")).get("type")}
         else:

@@ -223,6 +223,19 @@ class UpgradeControls(unittest.TestCase):
         response = client._projection({"id": 1, "result": {"thread": {"id": "t", "secret": "do-not-keep"},
                                                             "auth": "do-not-keep"}})
         self.assertEqual({"id": 1, "result": {"thread": {"id": "t"}}}, response)
+        client.pending[3] = "thread/start"
+        response = client._projection({"id": 3, "result": {"thread": {"id": "t", "private": "do-not-keep"},
+            "model": "gpt-6.1-sol", "modelProvider": "openai", "extra": "do-not-keep"}})
+        self.assertEqual({"id": 3, "result": {"thread": {"id": "t"}, "model": "gpt-6.1-sol",
+                                               "modelProvider": "openai"}}, response)
+        client.pending[4] = "thread/start"
+        response = client._projection({"id": 4, "result": {"thread": {"id": "t"},
+                                                            "model": "do-not-keep\nprivate"}})
+        self.assertNotIn("model", response["result"])
+        client.pending[5] = "thread/start"
+        response = client._projection({"id": 5, "result": {"thread": {"id": "t"},
+            "model": ("sk-" + "syntheticSecretExample123456"), "modelProvider": ("sk-" + "syntheticSecretExample123456")}})
+        self.assertEqual({"id": 5, "result": {"thread": {"id": "t"}}}, response)
         event = client._projection({"method": "item/completed", "params": {"threadId": "t",
             "turnId": "u", "item": {"id": "i", "type": "commandExecution", "cwd": "/w",
                                       "command": "do-not-keep", "exitCode": 0, "output": "do-not-keep"}}})
@@ -254,6 +267,68 @@ class UpgradeControls(unittest.TestCase):
         bad[3]["message"]["params"]["item"]["exitCode"] = 1
         with self.assertRaises(U.UpgradeError):
             U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
+
+    def test_actual_posix_wrapper_is_projected_and_verified_without_widening(self):
+        expected = "cat native-read.txt"
+        wrapper = "/bin/zsh -c 'cat native-read.txt'"
+        # The preceding candidate projected the expected string only on exact
+        # equality, so this observed wrapper was rejected by that decoder.
+        self.assertNotEqual(wrapper, expected)
+        source, thread, turn = fixture_path("old", "hooks", "hooks.json"), "t", "u"
+        cwd = fixture_path("workspace")
+        inv = U._inventory(inventory(source), {source: "0.16.1"})
+        client = object.__new__(U.UpgradeClient)
+        client.pending = {}
+        def hook_rows(event):
+            return [{"direction": "response", "message": {"method": "hook/" + phase,
+                "params": {"threadId": thread, "turnId": turn, "run":
+                    hook(event, source, event, "completed", 1) if phase == "completed" else hook(event, source, event)}}}
+                    for phase in ("started", "completed")]
+        def projected(phase, raw, *, item_id="read", workdir=cwd):
+            item = {"id": item_id, "type": "commandExecution", "cwd": workdir, "command": raw,
+                    "aggregatedOutput": "do-not-keep"}
+            if phase == "completed":
+                item["exitCode"] = 0
+            with mock.patch.object(U.platform, "system", return_value="Darwin"):
+                value = client._projection({"method": "item/" + phase,
+                    "params": {"threadId": thread, "turnId": turn, "item": item}})
+            self.assertNotIn("do-not-keep", json.dumps(value))
+            return {"direction": "response", "message": value}
+        prefix, suffix = hook_rows("preToolUse"), hook_rows("postToolUse")
+        for raw in (expected, wrapper, "/bin/zsh -lc 'cat native-read.txt'"):
+            a, b = projected("started", raw), projected("completed", raw)
+            self.assertEqual(raw, a["message"]["params"]["item"]["command"])
+            U.verify_read_tool(prefix + [a, b] + suffix, inv, thread, turn, expected, Path(cwd))
+        bad_commands = (wrapper + "; whoami", wrapper + " > file", wrapper + " $(whoami)",
+                        "/bin/zsh -c 'cat native-read.txt; whoami'", "/bin/zsh -c 'cat other.txt'",
+                        "/bin/zsh -c 'cat native-read.txt > file'", "/bin/zsh -c 'cat $(whoami)'",
+                        "zsh -c 'cat native-read.txt'", "/tmp/zsh -c 'cat native-read.txt'",
+                        "/bin/zsh -c \"/bin/zsh -c 'cat native-read.txt'\"", "do-not-keep")
+        for raw in bad_commands:
+            a = projected("started", raw)
+            self.assertEqual("<unapproved>", a["message"]["params"]["item"]["command"])
+            with self.assertRaises(U.UpgradeError, msg=raw):
+                U.verify_read_tool(prefix + [a, projected("completed", raw)] + suffix,
+                                   inv, thread, turn, expected, Path(cwd))
+            tampered = [projected("started", expected), projected("completed", expected)]
+            for row in tampered:
+                row["message"]["params"]["item"]["command"] = raw
+            with self.assertRaises(U.UpgradeError, msg=raw):
+                U.verify_read_tool(prefix + tampered + suffix, inv, thread, turn, expected, Path(cwd))
+        for b in (projected("completed", expected), projected("completed", wrapper, item_id="other"),
+                  projected("completed", wrapper, workdir=fixture_path("different"))):
+            with self.assertRaises(U.UpgradeError):
+                U.verify_read_tool(prefix + [projected("started", wrapper), b] + suffix,
+                                   inv, thread, turn, expected, Path(cwd))
+        windows_read = "Get-Content -LiteralPath native-read.txt"
+        self.assertTrue(U._approved_read_command(windows_read, windows_read))
+        self.assertFalse(U._approved_read_command("powershell -Command '" + windows_read + "'", windows_read))
+        with mock.patch.object(U.platform, "system", return_value="Windows"):
+            for raw, accepted in ((windows_read, True), ("powershell -Command '" + windows_read + "'", False)):
+                item = {"type": "commandExecution", "id": "read", "cwd": cwd, "command": raw}
+                projected_item = client._projection({"method": "item/started", "params": {"item": item}})
+                self.assertEqual(raw if accepted else "<unapproved>", projected_item["params"]["item"]["command"])
+        rows = prefix + [projected("started", expected), projected("completed", expected)] + suffix
         client = object.__new__(U.UpgradeClient)
         client.pending = {}
         projected = client._projection({"method": "item/started", "params": {
