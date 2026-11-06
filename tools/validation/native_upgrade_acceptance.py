@@ -178,13 +178,22 @@ def source_files(root: Path) -> dict[str, str]:
     return files
 
 
+def _load_artifacts_no_pyc(root: Path) -> Any:
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        return native.load_artifacts(root)
+    finally:
+        sys.dont_write_bytecode = previous
+
+
 def _old_provenance(product: Path, old: Path, version: str, plan: dict[str, Any],
                     expected_files: dict[str, str], old_zip_identity: tuple[Any, ...] | None = None) -> dict[str, str]:
     if version == "0.16.1":
         archive = _absolute_real(plan.get("old_release_zip"), "old release ZIP", file=True)
         identity = old_zip_identity if old_zip_identity is not None else _zip_metadata(archive)
         require(sha(archive, expected=identity) == OLD_0161_ZIP_SHA256, "old published ZIP digest differs")
-        manager = native.load_artifacts(old)
+        manager = _load_artifacts_no_pyc(old)
         require(manager.distribution_manifest(old) == expected_files, "old release manifest differs")
         _zip_exact(archive, identity, expected_files)
         return {"kind": "published_release_zip", "sha256": OLD_0161_ZIP_SHA256}
@@ -615,7 +624,7 @@ scope=module.current_scope_projection(state)
 print(json.dumps({"current":sorted(scope["current_item_ids"]),
  "ancestor":sorted(scope["ancestor_constraint_ids"]),"waiting":len(scope["waiting_conditions"])}))'''
     before = sha(state_path)
-    child = scheduler._command(native, ROOT, [sys.executable, "-I", "-c", code,
+    child = scheduler._command(native, ROOT, [sys.executable, "-I", "-B", "-c", code,
         str(installed / "scripts/context_guard.py"), str(state_path)], env=isolated_env(home), timeout=30)
     require(child.returncode == 0 and len(child.stdout) <= 4096 and sha(state_path) == before,
             "old-runtime scope evaluation unavailable")
@@ -1110,7 +1119,7 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
     native.verify_exact_source(product, plan["product_commit"])
     native.verify_exact_source(tool_root, plan["toolkit_commit"])
     provenance = _old_provenance(product, old, version, plan, old_files, old_zip_identity)
-    manager = native.load_artifacts(product)
+    manager = _load_artifacts_no_pyc(product)
     runtime = native.runtime_digest(manager, product)
     require(_sha(plan.get("runtime_sha256")) and runtime == plan["runtime_sha256"], "runtime differs")
     require(adoption.VERSION == plan.get("cli_version"), "explicit CLI capability adoption required")
@@ -1675,7 +1684,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
         added = _json_output(command([str(codex), "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]))
         listed = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
         new_installed = native.official_identity(listed, added, new, home, "0.17.0")
-        public_files = native.load_artifacts(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
+        public_files = _load_artifacts_no_pyc(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
         native.exact_artifact_parity(new_installed, public_files)
         require(source_files(new_installed) == public_files, "new cache bytes differ")
         new_source = str(new_installed / "hooks/hooks.json")
@@ -2023,7 +2032,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         observe_sentinel("after_new_plugin_list")
         _mark(live, "transition_completed")
         new_installed = native.official_identity(listed, added, new, home, "0.17.0")
-        public_files = native.load_artifacts(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
+        public_files = _load_artifacts_no_pyc(Path(plan["product_root"])).distribution_manifest(Path(plan["product_root"]))
         native.exact_artifact_parity(new_installed, public_files)
         actual_files = source_files(new_installed)
         require(actual_files == public_files, "new full-file parity differs")
@@ -2716,7 +2725,7 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
                 for part in (subject["old_version"], "local"))
             and any(native._official_path_matches(new_installed, new_cache / part, windows=os.name == "nt")
                     for part in ("0.17.0", "local")), "observation cache path differs")
-    public = native.load_artifacts(Path(subject["product_root"])).distribution_manifest(Path(subject["product_root"]))
+    public = _load_artifacts_no_pyc(Path(subject["product_root"])).distribution_manifest(Path(subject["product_root"]))
     require(_object(result.get("installed_new")).get("files") == public
             and source_files(Path(new_installed)) == public, "observation stable cache differs")
     old_exists = _object(result.get("installed_new")).get("old_cache_exists")
@@ -3068,7 +3077,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     cache = home / "plugins/cache" / NEW_MARKET / "context-guard"
     require(any(native._official_path_matches(new_installed, cache / name, windows=os.name == "nt")
                 for name in ("0.17.0", "local")), "new installed path outside trusted cache")
-    manager = native.load_artifacts(Path(subject["product_root"]))
+    manager = _load_artifacts_no_pyc(Path(subject["product_root"]))
     require(installed.get("source") == subject["new_artifact"] and installed.get("version") == "0.17.0"
             and installed.get("files") == manager.distribution_manifest(Path(subject["product_root"])),
             "new installed file evidence differs")

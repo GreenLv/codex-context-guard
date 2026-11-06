@@ -115,6 +115,75 @@ def lifecycle_facts():
 
 
 class UpgradeControls(unittest.TestCase):
+    def test_old_scope_never_writes_bytecode_in_consumed_carriers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            home = root / "synthetic-home"
+            home.mkdir()
+            state_path = root / "synthetic-state.json"
+            state_path.write_text(json.dumps({"marker": "synthetic", "pending": ["R1"],
+                                              "ancestor": ["A1"], "waiting": ["W1"]}))
+            state_before = U.sha(state_path)
+            carriers = []
+            for name in ("fixed-one", "fixed-two", "old-negative"):
+                carrier = root / name
+                scripts = carrier / "scripts"
+                scripts.mkdir(parents=True)
+                (scripts / "context_guard.py").write_text(
+                    "import os\nimport cg_eager\n"
+                    "def _open_windows_committed_state(path):\n"
+                    "    return os.open(path, os.O_RDONLY | getattr(os, 'O_BINARY', 0))\n"
+                    "def validate_state_integrity(state):\n"
+                    "    assert state['marker'] == 'synthetic' and cg_eager.VALUE == 1\n"
+                    "def current_scope_projection(state):\n"
+                    "    import cg_lazy\n"
+                    "    assert cg_lazy.VALUE == 2\n"
+                    "    return {'current_item_ids': set(state['pending']), "
+                    "'ancestor_constraint_ids': set(state['ancestor']), "
+                    "'waiting_conditions': state['waiting']}\n")
+                (scripts / "cg_eager.py").write_text("VALUE = 1\n")
+                (scripts / "cg_lazy.py").write_text("VALUE = 2\n")
+                carriers.append(carrier)
+            expected = {"current": ["R1"], "ancestor": ["A1"], "waiting": 1}
+            for carrier in carriers[:2]:
+                files_before = U.source_files(carrier)
+                objects_before = U._cache_identity(carrier)
+                self.assertEqual(expected, U._old_scope(carrier, state_path, home))
+                self.assertEqual(files_before, U.source_files(carrier))
+                self.assertEqual(objects_before, U._cache_identity(carrier))
+                self.assertEqual([], list(carrier.rglob("*.pyc")))
+                self.assertEqual(state_before, U.sha(state_path))
+            real_command = U.scheduler._command
+            def old_without_b(native, source, argv, **kwargs):
+                self.assertEqual(["-I", "-B", "-c"], argv[1:4])
+                self.assertEqual("1", kwargs["env"].get("PYTHONDONTWRITEBYTECODE"))
+                return real_command(native, source, [argv[0], "-I", *argv[3:]], **kwargs)
+            old_files = U.source_files(carriers[2])
+            old_objects = U._cache_identity(carriers[2])
+            with mock.patch.object(U.scheduler, "_command", side_effect=old_without_b):
+                self.assertEqual(expected, U._old_scope(carriers[2], state_path, home))
+            self.assertGreaterEqual(len(list(carriers[2].rglob("*.pyc"))), 2)
+            self.assertNotEqual(old_files, U.source_files(carriers[2]))
+            self.assertNotEqual(old_objects, U._cache_identity(carriers[2]))
+            self.assertEqual(state_before, U.sha(state_path))
+
+    def test_artifact_loader_never_writes_bytecode_in_reviewed_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            fixed, old = root / "fixed", root / "old-negative"
+            for carrier in (fixed, old):
+                (carrier / "scripts").mkdir(parents=True)
+                (carrier / "scripts/artifact_identity.py").write_text("VALUE = 42\n")
+            before_files, before_objects = U.source_files(fixed), U._cache_identity(fixed)
+            with mock.patch.object(U.sys, "dont_write_bytecode", False):
+                self.assertEqual(42, U._load_artifacts_no_pyc(fixed).VALUE)
+                self.assertFalse(U.sys.dont_write_bytecode)
+                self.assertEqual(42, U.native.load_artifacts(old).VALUE)
+            self.assertEqual(before_files, U.source_files(fixed))
+            self.assertEqual(before_objects, U._cache_identity(fixed))
+            self.assertEqual([], list(fixed.rglob("*.pyc")))
+            self.assertEqual(1, len(list(old.rglob("*.pyc"))))
+
     def test_pre_disable_sample_rejects_dual_trust_and_replays_order(self):
         old_source, new_source = fixture_path("old", "hooks.json"), fixture_path("new", "hooks.json")
         old = inventory(old_source)["data"][0]["hooks"]
@@ -164,10 +233,13 @@ class UpgradeControls(unittest.TestCase):
             old_hooks, new_hooks = inventory(old_source)["data"][0]["hooks"], inventory(new_source)["data"][0]["hooks"]
             sentinel_facts = {"marketplace": "cg-u01-sentinel-test", "cache_marker": {"path": fixture_path("cache")},
                               "data_marker": {"path": fixture_path("data")}}
+            platform_name = "Windows" if U.platform.system() == "Windows" else "Darwin"
+            expected_read = ("Get-Content -LiteralPath native-read.txt" if platform_name == "Windows"
+                             else "cat native-read.txt")
             subject = {"home": str(home), "workspace": str(workspace), "old_artifact": str(old),
                        "new_artifact": str(new), "product_root": str(product), "codex": str(codex),
                        "old_data_root": str(data), "new_data_root": str(data), "old_version": "0.15.1",
-                       "transition_strategy": "observe-open", "platform": "Darwin", "sentinel": sentinel_facts,
+                       "transition_strategy": "observe-open", "platform": platform_name, "sentinel": sentinel_facts,
                        "read_file_sha256": U.sha(workspace / "native-read.txt")}
             prepared = {"schema": U.REPORT, "stage": "prepare", "status": "pending", "subject": subject,
                         "sentinel_after": sentinel_facts, "installed": {"path": str(installed)},
@@ -262,7 +334,7 @@ class UpgradeControls(unittest.TestCase):
                     begin = len(self.rows)
                     if turn == "T0":
                         self.hooks("preToolUse", turn, source)
-                        item = {"id": "read", "type": "commandExecution", "command": "cat native-read.txt", "cwd": str(workspace)}
+                        item = {"id": "read", "type": "commandExecution", "command": expected_read, "cwd": str(workspace)}
                         for phase in ("started", "completed"):
                             self.emit("response", {"method": "item/" + phase, "params": {"threadId": "C", "turnId": turn,
                                 "item": {**item, **({"exitCode": 0} if phase == "completed" else {})}}})
@@ -278,7 +350,7 @@ class UpgradeControls(unittest.TestCase):
                     world["events"].append("cold_close" if self.is_cold else "live_close")
                     self.log.close()
                     return {"owned_process_exited": True, "owned_tree_no_running_members": True,
-                            "process_group_cleanup_error": None}
+                            "process_group_cleanup_error": None, "cleanup_complete": True, "job_close_confirmed": True}
 
             old_row = {"pluginId": stable, "name": "context-guard", "marketplaceName": market, "version": "0.15.1",
                        "installed": True, "enabled": True, "source": {"source": "local", "path": str(old)},
