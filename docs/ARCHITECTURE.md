@@ -154,16 +154,26 @@ caller deadline. Existing directories use the unchanged lifecycle lock alone.
 Descriptor/path identity, nonzero object identity and private-permission checks
 remain mandatory. No elapsed lock age authorizes displacing a writer.
 
-Session retention deletion is disabled. SessionEnd saves current state and
-active recovery content without entering a sweep. The CLI reports unavailable
-with exit 2; direct deletion APIs reject before reading or modifying a supplied
-path. Existing cleanup records and old sessions remain untouched by retention
-work, with no automatic 30-day deletion or storage cap. State saves no longer
-append discovery entries; existing registry bytes and objects remain intact.
-After each successful state write, the writer still attempts to retire its own
-old in-session partial marker under the lifecycle lock.
-See [session storage](SESSION_STORAGE.md) for the storage-growth and upgrade
-boundary. No tombstone or new persistent deletion authority is introduced.
+Version 0.17.0 restores opt-in retention maintenance. Installation
+and upgrades do not adopt a policy or register a scheduler. `cleanup` previews
+by default; an explicit apply requires an enabled versioned policy and
+re-verifies each selected object's identity, state and lifecycle lock. Eligible
+objects first move into recoverable quarantine. Separate restore and purge
+intents preserve interrupted operations; a purged name retains a bounded
+anti-resurrection tombstone. SessionEnd only saves current state and recovery;
+it does not scan, delete, register or wait for maintenance.
+
+An adopted root records content-free discovery hints in private journals,
+snapshots and generation state. Independent maintenance processes use durable
+window cursors to advance registered work. Within capacity, repeated runs
+discover unregistered names; when a complete names-only discovery scan cannot
+fit the remaining invocation budget, the report says `capacity_exceeded` with
+backlog and never reports completion. Registered work continues. Failure to
+save discovery progress stops the command with an error rather than reporting
+a successful attempt. After a successful session state write, the writer still
+attempts to retire its own old partial marker under the lifecycle lock.
+See [session storage](SESSION_STORAGE.md) for policy, capacity and upgrade
+boundaries; source behavior does not establish native scheduler acceptance.
 
 Legacy `sessions` remain read-only to this runtime. There is no migration or
 legacy cleanup: continue an existing task with its original loaded runtime.
@@ -242,11 +252,11 @@ edit/readback/report or run/report closure persists its bounded Host and
 delivery references so resume does not restore a completed business item.
 Enforced proof, Goal, and adopted release contracts retain their own gates.
 
-In version 0.16.0, SessionEnd uses the lightweight Hook entry and loads the
+SessionEnd uses the lightweight Hook entry and loads the
 stateful core in that same Python process. A fresh monotonic anchor precedes
 stdin parsing and the heavy import; the core does not reset it after loading
-or locking. Current state and recovery remain mandatory. Retention deletion is
-disabled, so no cleanup sweep runs after persistence. The current-session lock
+or locking. Current state and recovery remain mandatory. Retention maintenance
+runs separately, so no cleanup sweep runs after persistence. The current-session lock
 budget remains bounded; mandatory writes and synchronous filesystem calls are
 not preemptible. The complete installed command must separately pass the
 three-second native gate; this Python anchor does not measure prior shell or
@@ -729,7 +739,7 @@ record, and an ambiguous prompt boundary remains an integrity failure.
 | `SubagentStart` | record delegated lifecycle and inject contract | bounded delegated contract |
 | `SubagentStop` | record bounded result envelope | warnings only when needed |
 | `Stop` | apply work-unit completion truthfulness, waiting-owner facts, integrity, and one-visible-interruption priority | correction only for verified hard gates, at most once per turn |
-| `SessionEnd` | mark session ended, write final recovery; retention deletion disabled | none |
+| `SessionEnd` | mark session ended, write final recovery; no retention sweep | none |
 
 Normal success paths are invisible: the nine Hook definitions carry no
 persistent `statusMessage`, every allow path returns the plain empty object

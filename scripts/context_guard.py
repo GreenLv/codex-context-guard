@@ -24854,7 +24854,8 @@ def _discovery_attempt(context: dict[str, Any], deadline: float | None) -> None:
     state["attempts"] += 1
     if adopted:
         state["attempt_open"] = invocation
-        _discovery_write_state(root, state)
+        if not _discovery_write_state(root, state):
+            raise RuntimeError("retention discovery progress write failed; maintenance stopped")
     initial_extra = {scope: set(hints[scope].extra) for scope in _DISCOVERY_SCOPES}
     attempt = _discovery_list(root, hints, share_end=share_end, adopted=adopted)
     state["max_listed"] = max(state["max_listed"], attempt["listed"])
@@ -24889,7 +24890,8 @@ def _discovery_attempt(context: dict[str, Any], deadline: float | None) -> None:
     if adopted:
         # Close the write-ahead attempt mark now: a crash later in the pass
         # must not be counted as a failed discovery attempt.
-        _discovery_write_state(root, state)
+        if not _discovery_write_state(root, state):
+            raise RuntimeError("retention discovery progress write failed; maintenance stopped")
 
 
 def _discovery_begin(root: Path, *, deadline: float | None, adopted: bool,
@@ -24917,7 +24919,8 @@ def _discovery_finish(root: Path, context: dict[str, Any],
         except OSError:
             size = 0
         state["journal_size"][scope] = size
-    _discovery_write_state(root, state)
+    if not _discovery_write_state(root, state):
+        raise RuntimeError("retention discovery progress write failed; maintenance stopped")
 
 
 def _discovery_report(context: dict[str, Any]) -> dict[str, Any]:

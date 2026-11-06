@@ -1,19 +1,14 @@
 # Session retention cleanup: disabled gap and restoration conditions
 
-Status: **restoration implemented in the 0.17.0 Unreleased source candidate;
-not released, and not native-accepted.** The 0.16.0 release disabled session
-retention cleanup by an adopted scope decision, and 0.16.1 kept it disabled.
-The 0.17.0 candidate implements the restoration conditions listed below under
-a new versioned contract (`cg-retention-report/v1`, `cg-retention-policy/v1`,
-`cg-retention-manifest/v1`): preview by default, policy-gated apply bound to
-an exact manifest, recoverable quarantine with a restore command, bounded
-purge after a grace period, and per-object protection with named reasons. The
-disabled-era record below is retained as history; native macOS/Windows
-acceptance, real-lock/permission/crash controls, installed-artifact and
-identity-switch verification, and the release gates remain pending for the
-independent review stage.
+Status: **opt-in restoration in 0.17.0**. Native, artifact and public-release
+evidence is recorded separately in [local acceptance](LOCAL_ACCEPTANCE.md) and
+the release assets.
 
-## Current behavior and user impact
+Version 0.17.0 implements preview by default, policy-gated apply, recoverable
+quarantine and bounded purge. The disabled-era record below is historical;
+current behavior and capacity limits are defined in [session storage](SESSION_STORAGE.md).
+
+## 0.16.x disabled-era behavior and user impact (historical)
 
 - SessionEnd saves current state and, when the guard is active, recovery
   content. No retention sweep runs at SessionEnd or anywhere else.

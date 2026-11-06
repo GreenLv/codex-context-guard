@@ -12,7 +12,7 @@ disabled-cleanup gap, its user impact and the conditions for restoring it.
 Shared contracts are in [core alignment](CORE_ALIGNMENT_CONTRACT_V2.md),
 [wire semantics](CORE_V2_WIRE.md), [host capabilities](CORE_V2_HOST_CAPABILITIES.md)
 and [semantic compatibility](SEMANTIC_COMPATIBILITY.md). Maintainer validation
-follows [CI policy](CI_POLICY.md). [Release notes](releases/v0.16.1.md) explain
+follows [CI policy](CI_POLICY.md). [Release notes](releases/v0.17.0.md) explain
 the current version's changes and upgrade actions.
 
 Superseded development plans and intermediate reviews are retained in

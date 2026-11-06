@@ -1,8 +1,8 @@
 # Versioning policy
 
-## 0.17.0 — Unreleased source candidate
+## 0.17.0 — 2026-11-06
 
-Not published; every statement here is the candidate contract. Schema 13,
+Schema 13,
 Stop protocol 5.0.0, the nine Hook events and the default business-tool path
 without execution approval are unchanged; no state migration runs. New or
 changed versioned contracts relative to published 0.16.1:

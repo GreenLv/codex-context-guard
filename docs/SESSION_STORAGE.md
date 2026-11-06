@@ -75,7 +75,7 @@ Descriptor/path identity checks harden commits, and a zero inode fails closed.
 Identity checks do not provide a sandbox against arbitrary same-user mutation.
 
 SessionEnd saves current state and, when active, recovery content. In the
-0.17.0 candidate line, session retention maintenance returns under a new
+0.17.0 release line, session retention maintenance returns under a new
 versioned contract while SessionEnd itself still runs no sweep: no full
 enumeration, deletion, scheduling registration or waiting worker happens
 inside the 3-second host budget. The public `cleanup` command is an

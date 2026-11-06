@@ -317,3 +317,68 @@ jobs:
           ALL_NEEDS: ${{ toJSON(needs) }}
           PORTABLE_REQUIRED: ${{ needs.classify.outputs.profile == 'full' || contains(needs.classify.outputs.invalidates, 'native_artifact') || contains(needs.classify.outputs.invalidates, 'native_runtime') }}
         run: python -m tools.validation.ci_policy verify --profile "$CI_PROFILE" --portable "$PORTABLE_REQUIRED" --needs-json "$ALL_NEEDS"
+
+  release_artifact:
+    name: Manifest-exact candidate artifact
+    needs: required
+    if: github.event_name == 'workflow_dispatch' && inputs.profile == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - name: Build and bind the canonical candidate ZIP
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import sys
+          import zipfile
+
+          root = Path.cwd()
+          sys.path.insert(0, str(root / "scripts"))
+          sys.path.insert(0, str(root / "tools" / "validation"))
+          from build_release_artifact import build
+          from acceptance_identity import runtime_tree_digest
+
+          source = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if source != os.environ["GITHUB_SHA"] or subprocess.check_output(
+                  ["git", "status", "--porcelain", "--untracked-files=all"]):
+              raise SystemExit("candidate source is not the clean workflow commit")
+          version = json.loads((root / ".codex-plugin/plugin.json").read_text())["version"]
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+              raise SystemExit("candidate version is not a stable numeric version")
+          output = Path(os.environ["RUNNER_TEMP"]) / "context-guard-artifact"
+          output.mkdir()
+          archive = output / f"context-guard-{version}.zip"
+          repeat = output / "repeat.zip"
+          build(root, archive)
+          build(root, repeat)
+          body = archive.read_bytes()
+          if body != repeat.read_bytes():
+              raise SystemExit("repeat pack differs from candidate ZIP")
+          repeat.unlink()
+          with zipfile.ZipFile(archive) as zipped:
+              count = len(zipped.namelist())
+          receipt = {
+              "schema": "cg-candidate-artifact/v1", "source_commit": source,
+              "runtime_tree_sha256": runtime_tree_digest(root),
+              "filename": archive.name, "sha256": hashlib.sha256(body).hexdigest(),
+              "size_bytes": len(body), "file_count": count, "repeat_pack_equal": True,
+          }
+          (output / "artifact.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: context-guard-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/context-guard-artifact/
+          if-no-files-found: error
+          retention-days: 30

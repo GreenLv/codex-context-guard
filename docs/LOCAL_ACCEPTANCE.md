@@ -1,205 +1,77 @@
 # Local Release Acceptance
 
-## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
+## 0.17.0 — source acceptance (2026-11-06)
 
-### Repair round R5 (2026-11-06)
+This section describes local source evidence. Native macOS/Windows behavior,
+normal Hook trust, old-task continuity, exact-artifact installation and upgrade,
+performance, CI, HOL and public release each require their own result. Earlier
+unpublished development results do not certify the current candidate.
 
-The R3 review found that discovery progress did not survive the scheduled
-executor's fresh processes: an unregistered tail listed last was never
-reached in 20 processes (8 registered names plus the tail, 1 ms per listed
-entry, 3 ms per invocation). Design round R4 showed that no design can reach
-such a name when one listing exceeds one invocation's whole budget, and the
-user accepted an explicit capacity boundary (plan D1, amending constraint
-lines 45 and 47). The review of R4 also found that purge listed a whole
-directory level before its first deletion: 19 children at 1 ms each under a
-3 ms budget stayed untouched over 10 passes.
+### Current source checks
 
-R5 implements plan D1: durable snapshot and CRC journal hints for the
-namespace and the quarantine directory, a versioned discovery state with
-generation, attempts, deepest listing, debt and capacity status, share
-escalation, a bounded backoff beyond capacity, and persisted window cursors
-for registered sessions and quarantine records. Purge deletes entries as it
-lists them. On the literal R3 input the original verdict stays "violated"
-(history); the migrated verdict is an explicit `capacity_exceeded` with
-backlog and no `scan_complete`, while registered eligible work advances. Within
-capacity, fresh processes reach the tail after missing or damaged hints,
-crashes at every persistence boundary and unreliable modification times. The
-19-child purge finishes with a tombstone in fresh processes. The native
-retention batch moves to `cg-retention-native-batch/v3` with three
-fresh-process scenarios. Source checks are recorded in the R5 handoff outside
-the checkout; the full suite, history gate, performance runs and native
-acceptance wait for the coordinator.
+The macOS current-behavior suite completed 3,137 tests with zero failures,
+errors or unexpected successes. Its 94 skips comprise 64 platform/capability
+skips and 30 explicitly retired retention nodes; those nodes remain mapped to
+current controls in `tests/retention_restoration_mapping.json`. The historical
+0.12 defect-pin runner remains separate from this suite and matches its
+versioned transition manifest.
 
-### Repair round R3 (2026-11-06)
+Focused controls cover the original planning-scope and terminal-evidence
+oracles, strict JSON interpretation, retention transactions and locks,
+replacement-object refusal, scheduler ownership through mocked adapters,
+retained-ledger readback and the acceptance result consumer. Fresh-process
+controls exercise discovery, damaged hints, interrupted writes, capacity
+reporting and incremental purge. A 19-child isolated purge progresses to zero
+under repeated short budgets. Four additional controls verify that failed
+discovery-progress writes stop maintenance with an error, that the CLI exits 2,
+and that completed quarantine remains recoverable after a final cursor-write
+failure.
 
-The independent review of R2 (`a26f843`) accepted the other families and
-found five boundary violations in two: quarantine, restore and purge acted
-on whatever object held the name after their intent was written, and the
-record scan and namespace backfill ignored the pass budget (100 records read
-twice in a 3 ms budget; an unregistered tail never reached in 20 passes).
-R3 re-binds the recorded identity after every intent, checks the object
-actually moved or opened and puts a substituted object back untouched;
-purge passes the bound identity into the removal. All listings charge the
-deadline per unit; the backfill and record scan resume across passes of one
-process. Source checks for this round are recorded in the R3 handoff outside
-the checkout; the full suite, history gate and performance runs wait for the
-coordinator's source review. Across processes a listing restarts, which is
-a remaining platform boundary for names no runtime registered.
+Repository validation, tracked-tree privacy, phase transition, self-test, Ruff,
+compilation and whitespace checks pass. The no-model native-toolchain preflight
+passes 56 synthetic controls with unchanged inputs; it does not establish live
+trust, authentication reuse, model behavior or native acceptance. Subsequent
+packaged-document changes are checked separately before artifact freeze.
 
-### Repair round R2 (2026-11-06)
+### Capacity and recovery boundary
 
-The independent review of R1 (`b65bacc`) confirmed that the original 11
-probes and the 74 owning tests pass, but 12 of 13 new bounded family
-controls failed (one positive control passed). R2 closes the seven families
-by their invariants rather than by example:
+The maintenance executor uses persistent generation state, snapshot/journal
+hints and window cursors. Registered sessions and quarantine records advance
+across independent processes. For unregistered names, eventual discovery
+requires a complete names-only scan of both discovery directories plus its
+commit to fit the invocation budget, after other work. A failed full-share
+attempt reports `capacity_exceeded`, backlog and no scan completion; bounded
+backoff leaves budget for registered work. The default budget remains 20
+seconds. This is a conditional liveness guarantee, not a fixed supported
+number of directories or a promise to handle every directory under any budget.
 
-- Transactions and locks: one quarantine record state machine
-  (`planned`, `quarantined`, `restore_planned`, `purge_planned`) whose state
-  is written before each move or deletion; recovery derives the original
-  position from the data root (R1 derived it from the record's own folder)
-  and settles every interrupted boundary or reports it indeterminate. Purge
-  takes the original session's lifecycle lock, a lost tombstone write is
-  completed from the record, and a started purge is never restorable. Restore
-  verifies identity, the state digest and a structural tree digest. The
-  maintenance lock is owned per thread, nests only for same-thread re-entry,
-  and every wait consumes the caller's deadline.
-- Oversized transcript rows: a complete bounded RFC 8259 recognizer decodes
-  member names with escape semantics and rejects duplicates, malformed
-  values and trailing content; ordinary rows use the same strict reading.
-  A differential matrix and seeded fuzzing compare it with the strict
-  canonical decoder.
-- Discovery: enabling a policy registers every existing session and later
-  sessions register at creation (hooks create no maintenance object before
-  adoption); passes serve the queue, then a budgeted readdir backfill, then
-  registered names after a stable window cursor, checking the deadline
-  before every unit; a transition cut by the deadline is re-queued.
-- Scheduler: the job runs the verified interpreter with this exact script,
-  is loaded/unloaded through launchd or a Task Scheduler definition (the
-  former `/TR` command line exceeded schtasks' 261-character limit on an
-  ordinary temporary path), and status separates a prepared definition from
-  an enabled job. Unowned entries are refused untouched. Tests reach the
-  scheduler only through an adapter seam; no test registers a real job.
-- Native retention batch (`cg-retention-native-batch/v2`): `--preflight`
-  checks the expected full commit against the clean HEAD, lock capability and
-  a new result path outside the checkout without running scenarios or
-  writing; results are created exclusively and accepted only by
-  `validate_retention_batch_result`. Nine scenarios use per-object oracles
-  (real lock contention on an eligible object, official-reader readback of
-  every should-keep ledger with exact state bytes, verified restore, complete
-  and partial purge, every crash boundary, replacement/link refusal).
-  Meta-tests prove that removing lock protection, destroying kept ledgers or
-  skipping restore verification fails the batch.
-- History: the library record deleted and re-added under the same ID
-  (`b1c33c2`, `9d66fd6`) keeps its original bytes at its original position
-  under the new `cgeval-rejected-intakes/v1` ledger; the re-added bytes are
-  retained under `benchmarks/incidents/rejected/`; the corrected facts carry
-  the new ID `CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected`.
-  The library's `incident lineage` check verifies every case path against its
-  first committed bytes from Git history. The product pin and coverage table
-  are re-frozen and the coverage validator pins rejected intakes outside the
-  denominator.
+The original short-budget unregistered-tail oracle remains a retained failure
+under its previous unconditional contract. Its replacement checks the explicit
+capacity state and registered-work progress, while a within-capacity case
+requires fresh processes to reach the tail. No historical verdict is relabeled
+as a pass. Private raw results and full source/runtime bindings remain outside
+the public tree.
 
-Gate results, their exact commit and input digests, and which earlier
-performance or batch receipts remain reusable are recorded in the R2 handoff
-outside the source checkout. Native macOS/Windows runs, installed artifacts,
-full-matrix CI and the release gate stay with the coordinator.
+Quarantine, restore and purge keep their recorded object identities and original
+lifecycle locks. A started purge cannot be restored into a partial ledger;
+interrupted removal and lost tombstone writes retain recovery authority.
+Official-reader lookups still use a bounded quarantine-directory scan rather
+than an index: if it cannot complete within the caller's budget, the reader
+refuses instead of creating a replacement ledger. Legacy data is not migrated.
 
-### Repair round R1 (2026-11-06)
+### Release evidence boundaries
 
-The independent review of `cc7714e` returned 11 reproducible contract
-violations (B01-B10 families). The repair re-closed each family at source
-level; all 11 review probes now pass (0 violations), and the probe families
-are migrated into the repository suite as `RetentionRepairR1Tests`,
-the policy-validation table, the transparent-resume ledger test and the
-CLI end-to-end manifest test:
-
-- B01/B02: the quarantine became a two-phase transaction (intent record
-  before the rename, commit after), with recovery/rollback on the next
-  pass, an identity-bound fd-anchored purge that refuses replaced or
-  linked targets, transparent official-reader restore of a quarantined
-  session (the ledger continues), tombstone anti-resurrection, and one
-  re-entrant maintenance lock serializing passes, policy writes and
-  restore.
-- B03: the policy is strictly validated (invalid = disabled, failing fact
-  named); every destructive transition re-reads the policy inside the
-  maintenance lock.
-- B04: the enumeration cap counts only undecided candidates, so a decided
-  prefix can never starve the tail; the pass deadline still bounds work.
-- B05: the public CLI produces an appliable manifest; end-to-end
-  preview/save/apply/restore runs through the real command.
-- B06/B07: every action span is interpreted individually (later current
-  directives survive earlier history), and oversized-row isolation scans
-  the whole line (repeated outer type members and malformed rows are
-  never skippable).
-- B08: the published 0.16.0/0.16.1 packages keep their experimental
-  marketplace identity in the native mapper; the 0.17.0 line uses the
-  stable identity and both transitions are separate scenarios.
-- B09: the plan-only repair record was re-intaked through the official
-  library entry (`incident add --reviewed`) after an intake error of the
-  first commit (a 560-character reference over the 500 limit); the
-  original bytes stay retrievable at `d874864` in git, the corrected
-  registry validates (`incident validate` rc=0), and the product pin is
-  re-frozen at `9d66fd6`. (Corrected in R2: deleting and re-adding a case
-  under the same ID is not a supported revision; see the R2 history item.)
-- B10: the opt-in scheduler entry (enable/status/disable, idempotent,
-  same versioned executor on both platforms), the missing perf scenarios
-  (terminal_read_large, session_end_busy_locks, A/A noise control) and
-  the versioned no-model retention native batch
-  (`cg-retention-native-batch/v1`, 4/4 scenarios passing on macOS; that
-  receipt is bound to `ceac391` and its oracles were found too weak in R2) are
-  implemented; real registration and the two-platform native runs stay
-  with the coordinator.
-
-The pre-registered performance addendum results (A/A and the two new
-cells) are recorded with their raw outputs outside the source checkout
-and referenced from the repair handoff. Still pending: full-matrix CI,
-native macOS/Windows retention acceptance including crash injection and
-DACL/junction adversarial cases, installed artifacts, the identity
-transition and the release gate.
-
-## 0.17.0 — development-stage evidence (2026-11-06; Unreleased source candidate)
-
-This section records 0.17.0 development-stage observations on the
-`codex/0.17.0-candidate` branch. They are macOS source evidence only: full
-CI, native macOS/Windows retention acceptance, installed artifacts, the
-identity switch and the release gate are separate pending stages, and nothing
-here is release evidence.
-
-- Historical incident oracles: the canonical library
-  (`context-guard-effectiveness` at `d874864`) carries three reproduced
-  0.17.0 cases. On the 0.16.1 baseline (`b636930`) their oracles reproduce
-  exactly as recorded (3 failing / 2 controls; 3 failing / 5 controls). On the
-  candidate the same oracles pass 5/5 and 8/8 with unchanged fixtures and
-  replay scripts; candidate results are registered in the library as
-  retained `source_fixed` successors, leaving the original records and
-  failure receipts byte-identical.
-- The pre-registered scoped performance contract
-  (`docs/perf-contracts/v0.17.0-scoped.json`, budgets fixed before
-  measurement) compared the candidate against a baseline worktree at
-  `b636930` with the formal interleaved driver (20 attempts per side, both
-  sides zero failures). All four gated cells are WITHIN-DECLARED-BUDGET with
-  zero declared regressions and zero inconclusive pairs:
-  `user_prompt_active` median ratio 0.558 (p95 LoCI 0.429),
-  `posttool_active` 0.544 (p95 LoCI 0.423), `session_end` 0.565 (p95 LoCI
-  0.392), `memory_stop` median ratio 1.007 / p95 0.981 with tracemalloc peak
-  ratio 1.001. The large Hook-cell speedup relative to 0.16.1 reflects the
-  candidate's overall dispatch work on this host; the predeclared gate treats
-  it as within budget, not as a guarantee.
-- The retention maintenance worker ran its standalone predeclared budget
-  (20 samples over the fixed twelve-session backlog): 20/20 completed, median
-  0.063 s, p95 0.076 s against the registered 2.0 s / 4.0 s budgets, with the
-  exact six-quarantined/six-protected count oracle. The worker keeps its own
-  budget and is never folded into Hook cells. Raw A/B and worker results are
-  retained outside the source checkout; their digests are recorded in the
-  development handoff package.
-- The canonical historical-library release gate
-  (`check_incident_coverage . --execute --release-gate`, fresh report outside
-  the repository) was executed by the development thread against the frozen
-  library `d874864` and the candidate tree; its receipt inventory, per-row
-  verdicts and report digests are recorded in the handoff package. Native
-  Windows rows, native macOS model observations and release-stage gates keep
-  their separate pending status; a source-suite pass never substitutes for
-  them.
+- Bind the canonical historical-library release gate to the accepted
+  source and frozen library pin; original bytes and rejected-intake lineage
+  remain immutable.
+- Use the predeclared performance contract. Four A/B cells from an earlier
+  runtime were inconclusive and are not passing evidence; changed runtime
+  inputs require new bound measurements without resampling until green.
+- Bind native macOS/Windows retention, locks, permissions, crash recovery and
+  scheduler lifecycle, plus normal-trust and stable-identity installation,
+  upgrade, disabling/removal and old-task observations in disposable fixtures.
+- Verify the canonical artifact and identical transferred bytes, exact-source
+  CI and HOL, and the eventual tag, Release and assets by public readback.
 
 ## 0.16.1 — acceptance history (2026-11-03)
 

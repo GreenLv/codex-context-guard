@@ -230,7 +230,24 @@ prompt as an unverified obligation; it does not infer a missing unit binding.
   work unit's pending-item count, one reason, and one next step — never
   requirement, acceptance, or evidence IDs, which stay in `diagnose` and
   explicit audit views.
-- Session retention deletion is disabled in 0.16.0. SessionEnd still saves state and recovery, but neither automatic sweeps nor the `cleanup` CLI delete sessions. Existing v2/legacy sessions and private cursor, pending chunks and registry remain on disk without migration, as do partial markers for sessions without a later state write. Storage can grow, with no automatic 30-day deletion or storage cap. These content-free maintenance records are not exported. State saves no longer append discovery entries. After each successful state write, the writer still attempts to retire its own old partial marker under the lifecycle lock. No supported manual reclamation tool is provided.
+- Version 0.17.0 restores opt-in retention maintenance. Installation
+  and upgrades leave the policy disabled; `cleanup` previews by default.
+  Explicitly authorized maintenance can quarantine eligible v2 sessions and
+  later permanently purge them. SessionEnd performs no sweep. Legacy sessions,
+  unfinished work and unverifiable objects remain protected, and no session or
+  consumed-cache migration is introduced. See [session storage](SESSION_STORAGE.md).
+- Retention policy, selection manifests, quarantine transaction records,
+  anti-resurrection tombstones and discovery hints stay under the private data
+  root. Discovery journals and snapshots contain encoded object names,
+  checksums and progress metadata, without copying prompt or tool content.
+  Transaction records retain object identities, state/tree hashes, timestamps
+  and policy bindings needed for recovery. Opt-in scheduler ownership records
+  additionally retain local interpreter and script paths. Explicit maintenance
+  JSON/status output can include object names or local scheduler paths; it is
+  operator evidence, not a public export. Default redacted diagnostics do not
+  publish these private records. After each successful session state write,
+  the writer still attempts to retire its own old partial marker under the
+  lifecycle lock.
 
 ## Redaction
 

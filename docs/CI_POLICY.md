@@ -1,5 +1,13 @@
 # CI coverage policy
 
+A manual full-profile run builds a manifest-exact candidate ZIP only after
+the required candidate jobs pass. The artifact includes a source-commit,
+runtime-digest, checksum, size and inventory receipt; repeat-pack equality is
+checked before upload. Its name binds the workflow commit. Native executors
+download and acknowledge these same bytes rather than rebuilding the release
+on each platform. This Actions artifact is escrow, not a tag or GitHub Release;
+routine pushes and tag creation do not produce another canonical ZIP.
+
 Routine changes need quick feedback without repeating the entire test suite on
 every interpreter. Release candidates receive a risk-selected portability screen.
 The runtime minimum remains Python 3.10; this policy changes where tests run,

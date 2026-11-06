@@ -1,16 +1,14 @@
-# Future stable marketplace identity
+# Stable marketplace identity
 
-This is the upgrade contract that the 0.17.0 Unreleased source candidate
-implements. The published 0.16.1 package still declares the experimental
-`codex-context-guard-v016`; installed consumer wrappers and previous
-acceptance evidence retain their own identities. Until the 0.17.0 line is
-actually released and installed, the published runtime validator and Hook
-fallbacks still enforce the experimental identity; this candidate's source
-switch (marketplace manifest, validator and both Hook fallback paths) needs
-its own native acceptance before release.
+Version 0.17.0 uses the stable marketplace identity. The published 0.16.1
+package declares the experimental `codex-context-guard-v016`; installed
+consumer wrappers and historical acceptance results retain their own identities.
+An identity change does not migrate private state or establish which runtime
+an existing task loads. Native observations are recorded separately in the
+acceptance record and release assets.
 
-A future release should use the single marketplace identity
-`context-guard@codex-context-guard` across subsequent versions. The next
+Subsequent releases use the single marketplace identity
+`context-guard@codex-context-guard` across versions. The next
 candidate must first inspect existing ownership and registration of that name,
 including historical installations, before choosing its exact transition.
 A source manifest, an indexed desired identity or a disabled old entry does not
