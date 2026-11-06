@@ -1,6 +1,6 @@
 {
   "schema": "incident-case-coverage/v2",
-  "library_commit": "9d66fd6ff18100bcaec8d68168f8844af3b24f94",
+  "library_commit": "c3d4f0cf0429658657d6aeea02a8dfc8cc58aebf",
   "denominator": {
     "case_registry": {
       "records": 79,
@@ -1500,7 +1500,7 @@
       "runtime": "codex",
       "platform": "macos",
       "family": "planning-scope-operation-and-completion-evidence",
-      "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+      "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected",
       "note": "superseded by the retained source_fixed successor; adjudication lives on the successor row"
     },
     {
@@ -1526,7 +1526,7 @@
       "note": "superseded by the retained source_fixed successor; adjudication lives on the successor row"
     },
     {
-      "id": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+      "id": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected",
       "lineage": "case-registry",
       "status": "active",
       "title": "规划范围误判已在 0.17.0 候选源码修复（原生验收待做）",
@@ -1545,7 +1545,7 @@
       "windows_result": "not_required",
       "missing_evidence": [],
       "owner": "development (0.17.0 candidate)",
-      "note": "macOS source evidence only: the executed oracles are source-level semantic and adapter executions, not native Host turns. Native cross-platform acceptance and the release gate remain separate pending stages; this row never waives them."
+      "note": "macOS source evidence only: the executed oracles are source-level semantic and adapter executions, not native Host turns. Native cross-platform acceptance and the release gate remain separate pending stages; this row never waives them. R2: adjudicated under the corrected successor ID; the rejected original intake keeps its bytes under the library's rejected-intake ledger."
     },
     {
       "id": "CGI-20261106-codex-host-aggregated-output-source-fixed",

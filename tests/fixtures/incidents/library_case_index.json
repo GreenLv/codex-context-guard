@@ -1,8 +1,8 @@
 {
   "schema": "incident-library-index/v3",
-  "library_commit": "9d66fd6ff18100bcaec8d68168f8844af3b24f94",
+  "library_commit": "c3d4f0cf0429658657d6aeea02a8dfc8cc58aebf",
   "frozen_at": "2026-11-06",
-  "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone.",
+  "description": "Per-record identity pins for the anonymized historical incident corpus (bound to the frozen source snapshot). Generated verbatim from the library files; the coverage validator compares case ids, titles, families, runtimes, statuses and successor lineages record by record, never by count alone. Rejected intakes (cgeval-rejected-intakes/v1) are pinned separately by exact SHA-256: they are never coverage rows or denominator members, and each names an active successor.",
   "case_registry": {
     "raw_record_count": 79,
     "active_case_count": 59,
@@ -699,7 +699,7 @@
         "supersedes": null,
         "record_sha256": "49537d5762e115e061df2f953acb36b58457dfb98ec664058e9dc3de4b3c0f6b",
         "status": "superseded",
-        "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed"
+        "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected"
       },
       "CGI-20261105-codex-transcript-large-row-poisoning": {
         "title": "无关超大历史输出使后续正常命令的终端证据全部不可用",
@@ -720,13 +720,13 @@
         "record_sha256": "6fa5f4c30212e3217ef1108c27835f239cf450147008aee1dc4391098d3d2bdc",
         "status": "active"
       },
-      "CGI-20261106-codex-plan-only-edit-obligation-source-fixed": {
+      "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected": {
         "title": "规划范围误判已在 0.17.0 候选源码修复（原生验收待做）",
         "family": "planning-scope-operation-and-completion-evidence",
         "runtime": "codex",
         "platform": "macos",
         "supersedes": "CGI-20261105-codex-plan-only-edit-obligation",
-        "record_sha256": "0d9644a50ad1d9d579bedc3fc1134780656dd9841d71e6e35654bb0270859046",
+        "record_sha256": "2e4443d82528cdd4cb66e873fa67c1e277555a0c7b3b1b15b25a7fdcf1f90c58",
         "status": "active"
       },
       "CGI-20261106-codex-transcript-large-row-poisoning-source-fixed": {
@@ -896,7 +896,23 @@
     "CGI-20261105-codex-plan-only-edit-obligation",
     "CGI-20261105-codex-transcript-large-row-poisoning",
     "CGI-20261106-codex-host-aggregated-output-source-fixed",
-    "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+    "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected",
     "CGI-20261106-codex-transcript-large-row-poisoning-source-fixed"
+  ],
+  "rejected_intakes": [
+    {
+      "case_id": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+      "path": "benchmarks/incidents/cases/CGI-20261106-codex-plan-only-edit-obligation-source-fixed.json",
+      "sha256": "9609532b06622bf0d16ae0da64b65aa5231bd7cadafd77e1219d3afe1a273f27",
+      "kind": "invalid_intake",
+      "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected"
+    },
+    {
+      "case_id": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed",
+      "path": "benchmarks/incidents/rejected/CGI-20261106-codex-plan-only-edit-obligation-source-fixed.0d9644a50ad1.json",
+      "sha256": "0d9644a50ad1d9d579bedc3fc1134780656dd9841d71e6e35654bb0270859046",
+      "kind": "unsupported_same_id_replacement",
+      "successor": "CGI-20261106-codex-plan-only-edit-obligation-source-fixed-corrected"
+    }
   ]
 }

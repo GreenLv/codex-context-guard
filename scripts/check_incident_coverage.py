@@ -25,6 +25,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -236,6 +237,41 @@ def validate_coverage(index: dict, coverage: dict) -> list[str]:
             if row.get("successor") != pin.get("successor"):
                 errors.append(
                     f"{lid}: legacy successor is not the registry's real one")
+    errors.extend(validate_rejected_intakes(index, case_ids))
+    return errors
+
+
+REJECTED_INTAKE_FIELDS = {"case_id", "path", "sha256", "kind", "successor"}
+REJECTED_INTAKE_KINDS = {"invalid_intake", "unsupported_same_id_replacement"}
+
+
+def validate_rejected_intakes(index: dict, case_ids: list) -> list[str]:
+    """Library rejected intakes (cgeval-rejected-intakes/v1) are pinned by
+    exact bytes and stay outside the denominator: a rejected id is never a
+    registry record or coverage row, and its successor is a real record."""
+    errors: list[str] = []
+    entries = index.get("rejected_intakes", [])
+    registry = index["case_registry"]["records"]
+    if not isinstance(entries, list):
+        return ["rejected_intakes must be a list"]
+    seen_paths: set = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != REJECTED_INTAKE_FIELDS:
+            errors.append("rejected intake fields must match exactly")
+            continue
+        cid = entry["case_id"]
+        if entry["kind"] not in REJECTED_INTAKE_KINDS:
+            errors.append(f"{cid}: unknown rejected intake kind")
+        if not (isinstance(entry["sha256"], str)
+                and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+            errors.append(f"{cid}: rejected intake must pin an exact SHA-256")
+        if entry["path"] in seen_paths:
+            errors.append(f"{cid}: duplicate rejected intake path")
+        seen_paths.add(entry["path"])
+        if cid in registry or cid in case_ids:
+            errors.append(f"{cid}: a rejected intake cannot be a case or coverage row")
+        if entry["successor"] not in registry or entry["successor"] == cid:
+            errors.append(f"{cid}: rejected intake successor is not a frozen record")
     return errors
 
 

@@ -720,3 +720,44 @@ class ReleaseGateConsumerControls(unittest.TestCase):
                           consumer["failures"])
             self.assertTrue(any("closes_release_gate is not true" in item
                                 for item in consumer["failures"]))
+
+
+class RejectedIntakeControls(unittest.TestCase):
+    """R2 RF-HISTORY: rejected library intakes stay pinned outside the
+    denominator; a forged or re-admitted rejected id is refused."""
+
+    def setUp(self):
+        self.index, self.coverage = load_pair()
+
+    def errors(self):
+        return cic.validate_coverage(self.index, self.coverage)
+
+    def test_frozen_pair_pins_the_rejected_plan_only_intake(self):
+        self.assertEqual(self.errors(), [])
+        rejected = {entry["path"]: entry for entry in self.index["rejected_intakes"]}
+        original = rejected["benchmarks/incidents/cases/"
+                            "CGI-20261106-codex-plan-only-edit-obligation-source-fixed.json"]
+        self.assertEqual(original["sha256"],
+                         "9609532b06622bf0d16ae0da64b65aa5231bd7cadafd77e1219d3afe1a273f27")
+        self.assertIn(original["successor"], self.index["case_registry"]["records"])
+        self.assertNotIn(original["case_id"], self.index["case_registry"]["records"])
+
+    def test_readmitted_rejected_id_is_refused(self):
+        entry = self.index["rejected_intakes"][0]
+        self.index["case_registry"]["records"][entry["case_id"]] = dict(
+            self.index["case_registry"]["records"][entry["successor"]])
+        self.assertTrue(any("cannot be a case" in e for e in self.errors()))
+
+    def test_missing_successor_and_forged_fields_are_refused(self):
+        for mutation in ({"successor": "CGI-20260101-codex-absent"},
+                         {"sha256": "abc"}, {"kind": "exempt"}):
+            with self.subTest(mutation=mutation):
+                index = copy.deepcopy(self.index)
+                index["rejected_intakes"][0].update(mutation)
+                self.assertTrue(cic.validate_coverage(index, self.coverage))
+        index = copy.deepcopy(self.index)
+        index["rejected_intakes"][0]["note"] = "extra"
+        self.assertTrue(cic.validate_coverage(index, self.coverage))
+        index = copy.deepcopy(self.index)
+        index["rejected_intakes"].append(dict(index["rejected_intakes"][0]))
+        self.assertTrue(any("duplicate" in e for e in cic.validate_coverage(index, self.coverage)))
