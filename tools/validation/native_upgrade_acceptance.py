@@ -92,6 +92,12 @@ def _stat_identity(info: os.stat_result) -> tuple[Any, ...]:
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _common_identity(info: os.stat_result) -> tuple[Any, ...]:
+    # Windows path and opened-handle providers can report different ctime for
+    # the same object. Compare it within each provider, never across them.
+    return _stat_identity(info)[:-1]
+
+
 def sha(path: Path, *, expected: tuple[Any, ...] | None = None) -> str:
     _reject_credential_path(path)
     _no_link_ancestors(path.absolute())
@@ -104,11 +110,12 @@ def sha(path: Path, *, expected: tuple[Any, ...] | None = None) -> str:
     fd = native.open_snapshot_file(path)
     try:
         opened = os.fstat(fd)
-        require(_stat_identity(before) == _stat_identity(opened), "digest input changed before open")
+        require(_common_identity(before) == _common_identity(opened), "digest input changed before open")
         output = hashlib.sha256()
         while chunk := os.read(fd, 1024 * 1024):
             output.update(chunk)
-        require(_stat_identity(opened) == _stat_identity(os.fstat(fd)) == _stat_identity(path.lstat()),
+        require(_stat_identity(opened) == _stat_identity(os.fstat(fd))
+                and _stat_identity(before) == _stat_identity(path.lstat()),
                 "digest input changed during read")
         return output.hexdigest()
     finally:
@@ -169,7 +176,8 @@ def _old_provenance(product: Path, old: Path, version: str, plan: dict[str, Any]
         _zip_exact(archive, identity, expected_files)
         return {"kind": "published_release_zip", "sha256": OLD_0161_ZIP_SHA256}
     process = scheduler._command(native, product,
-                                 ["git", "archive", "--format=tar", OLD_0151_COMMIT], timeout=90)
+                                 ["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                                  "archive", "--format=tar", OLD_0151_COMMIT], timeout=90)
     require(process.returncode == 0 and hashlib.sha256(process.stdout).hexdigest() == OLD_0151_EXPORT_SHA256,
             "old published commit export differs")
     archived = {}
@@ -196,10 +204,12 @@ def _read_json(path: Path) -> dict[str, Any]:
     _reject_credential_path(path.resolve(strict=True))
     fd = native.open_snapshot_file(path)
     with os.fdopen(fd, "rb") as stream:
-        require(_stat_identity(os.fstat(stream.fileno())) == _stat_identity(before), "JSON changed before read")
+        opened = os.fstat(stream.fileno())
+        require(_common_identity(opened) == _common_identity(before), "JSON changed before read")
         content = stream.read(16 * 1024 * 1024 + 1)
         require(len(content) <= 16 * 1024 * 1024 and
-                _stat_identity(os.fstat(stream.fileno())) == _stat_identity(path.lstat()) == _stat_identity(before),
+                _stat_identity(os.fstat(stream.fileno())) == _stat_identity(opened) and
+                _stat_identity(path.lstat()) == _stat_identity(before),
                 "JSON changed during read")
     value = adoption.strict_json(content.decode("utf-8"))
     require(isinstance(value, dict), "JSON object required")
@@ -220,9 +230,11 @@ def _zip_metadata(path: Path) -> tuple[Any, ...]:
             and before.st_size <= 512 * 1024 * 1024,
             "ZIP input unavailable or oversized")
     fd = native.open_snapshot_file(path)
-    with os.fdopen(fd, "rb") as stream, zipfile.ZipFile(stream) as archive:
-        require(_stat_identity(os.fstat(stream.fileno())) == _stat_identity(before), "ZIP changed before metadata read")
-        rows = archive.infolist()
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        require(_common_identity(opened) == _common_identity(before), "ZIP changed before metadata read")
+        with zipfile.ZipFile(stream) as archive:
+            rows = archive.infolist()
         require(0 < len(rows) <= 10000, "ZIP entry count invalid")
         names: set[str] = set()
         total = 0
@@ -240,21 +252,27 @@ def _zip_metadata(path: Path) -> tuple[Any, ...]:
             total += item.file_size
             require(item.file_size <= 256 * 1024 * 1024 and total <= 512 * 1024 * 1024,
                     "ZIP expanded size exceeds bound")
-        require(_stat_identity(os.fstat(stream.fileno())) == _stat_identity(path.lstat()) == _stat_identity(before),
+        require(_stat_identity(os.fstat(stream.fileno())) == _stat_identity(opened)
+                and _stat_identity(path.lstat()) == _stat_identity(before),
                 "ZIP changed during metadata read")
     return _stat_identity(before)
 
 
 def _zip_exact(path: Path, identity: tuple[Any, ...], expected: dict[str, str]) -> None:
     """Read only members of a previously metadata-reviewed, unchanged ZIP."""
+    before = path.lstat()
+    require(_stat_identity(before) == identity, "ZIP changed before member open")
     fd = native.open_snapshot_file(path)
-    with os.fdopen(fd, "rb") as stream, zipfile.ZipFile(stream) as archive:
-        require(_stat_identity(os.fstat(stream.fileno())) == identity, "ZIP changed before member read")
-        names = archive.namelist()
-        require(len(names) == len(expected) and set(names) == set(expected), "ZIP file set differs")
-        for name, expected_sha in expected.items():
-            require(hashlib.sha256(archive.read(name)).hexdigest() == expected_sha, "ZIP member bytes differ")
-        require(_stat_identity(os.fstat(stream.fileno())) == _stat_identity(path.lstat()) == identity,
+    with os.fdopen(fd, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        require(_common_identity(opened) == _common_identity(before), "ZIP changed before member read")
+        with zipfile.ZipFile(stream) as archive:
+            names = archive.namelist()
+            require(len(names) == len(expected) and set(names) == set(expected), "ZIP file set differs")
+            for name, expected_sha in expected.items():
+                require(hashlib.sha256(archive.read(name)).hexdigest() == expected_sha, "ZIP member bytes differ")
+        require(_stat_identity(os.fstat(stream.fileno())) == _stat_identity(opened)
+                and _stat_identity(path.lstat()) == identity,
                 "ZIP changed during member read")
 
 
@@ -989,12 +1007,15 @@ def _project_cli(argv: list[str], result: Any, selected: set[str]) -> Any:
             rows.append(item)
         return {"marketplaces": rows}
     if argv[1:3] == ["plugin", "list"]:
+        require(len(argv) == 6 and argv[3] == "--marketplace" and argv[5] == "--json",
+                "plugin inventory must be marketplace scoped")
         value = _json_output(result)
         entries = value.get("installed")
         require(isinstance(entries, list), "official plugin inventory unavailable")
         rows = []
         for entry in entries:
-            require(isinstance(entry, dict) and isinstance(entry.get("pluginId"), str),
+            require(isinstance(entry, dict) and isinstance(entry.get("pluginId"), str)
+                    and entry.get("marketplaceName") == argv[4],
                     "official plugin entry malformed")
             item = {"pluginId": entry["pluginId"]}
             if entry.get("marketplaceName") in selected:
@@ -1022,6 +1043,26 @@ def _write_new(path: Path, value: dict[str, Any]) -> None:
         stream.write("\n")
 
 
+def _run_official(result: dict[str, Any], argv: list[str], env: dict[str, str],
+                  selected: set[str], stage: str) -> Any:
+    """Record the attempted operation before launching; never retain process output."""
+    fact: dict[str, Any] = {"stage": stage, "argv": argv, "status": "started",
+                            "started_monotonic_ns": time.monotonic_ns()}
+    result["commands"].append(fact)
+    try:
+        run = scheduler._command(native, ROOT, argv, env=env, timeout=90)
+        fact.update(exit_code=run.returncode, stderr_nonempty=bool(run.stderr))
+        require(run.returncode == 0, "official command failed")
+        fact["observation"] = _project_cli(argv, run, selected)
+        fact["status"] = "completed"
+        return run
+    except BaseException as exc:
+        fact.update(status="failed", failure_type=type(exc).__name__)
+        raise
+    finally:
+        fact["completed_monotonic_ns"] = time.monotonic_ns()
+
+
 def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
     """Install only the old official fixture; pause for normal Hook review."""
     subject = preflight(plan, output)
@@ -1031,9 +1072,9 @@ def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
     market = OLD_MARKETS[plan["old_version"]]
     # A normally opened HOME can already have non-target config/user state.
     # Check only our target cache; official readback below checks registrations.
-    for relative in ("plugins/cache/" + market + "/context-guard",):
-        require(not (home / relative).exists() and not (home / relative).is_symlink(),
-                "fresh isolated HOME required before installation")
+    target_cache = home / "plugins/cache" / market / "context-guard"
+    require(not target_cache.exists() and not target_cache.is_symlink(),
+            "fresh isolated HOME required before installation")
     output.mkdir(mode=0o700)
     result: dict[str, Any] = {"schema": REPORT, "status": "pending", "subject": subject,
                               "stage": "prepare", "commands": [],
@@ -1042,12 +1083,8 @@ def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
     env = isolated_env(home)
     try:
         def run_command(argv: list[str]) -> Any:
-            run = scheduler._command(native, ROOT, argv, env=env, timeout=90)
-            fact = {"argv": argv, "exit_code": run.returncode, "stderr_nonempty": bool(run.stderr)}
-            result["commands"].append(fact)
-            require(run.returncode == 0, "official command failed")
-            fact["observation"] = _project_cli(argv, run, {market, NEW_MARKET, _object(plan.get("sentinel")).get("marketplace")})
-            return run
+            return _run_official(result, argv, env, {market, NEW_MARKET,
+                                 _object(plan.get("sentinel")).get("marketplace")}, "prepare")
 
         version = run_command([str(codex), "--version"])
         require(version.stdout.decode("utf-8-sig").strip() == plan["cli_version"],
@@ -1056,14 +1093,14 @@ def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
         require(market not in markets, "target marketplace already registered")
         result["sentinel_before"] = _sentinel_files(home, plan.get("sentinel"))
         require(result["sentinel_before"]["marketplace"] in markets, "sentinel marketplace missing")
-        before = _json_output(run_command([str(codex), "plugin", "list", "--json"]))
+        sentinel_market = result["sentinel_before"]["marketplace"]
+        before = _json_output(run_command([str(codex), "plugin", "list", "--marketplace", sentinel_market, "--json"]))
         entries = before.get("installed")
         require(isinstance(entries, list) and all(isinstance(x, dict) for x in entries),
                 "official plugin inventory unavailable")
-        require(all(x.get("pluginId") != "context-guard@" + market for x in entries),
-                "target plugin already installed")
-        result["before"] = {"marketplace_count": len(markets), "installed_count": len(entries),
-                            "target_marketplace_absent": True, "target_plugin_absent": True}
+        result["before"] = {"marketplace_count": len(markets), "sentinel_installed_count": len(entries),
+                            "target_marketplace_absent": True, "target_cache_absent": True,
+                            "target_cache_path": str(target_cache)}
         result["sentinel_phases"] = {}
 
         def observe_sentinel(stage: str) -> None:
@@ -1231,15 +1268,8 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
     live = cold = None
     try:
         def command(argv: list[str]) -> Any:
-            started_ns = time.monotonic_ns()
-            value = scheduler._command(native, ROOT, argv, env=env, timeout=90)
-            fact = {"argv": argv, "exit_code": value.returncode, "stderr_nonempty": bool(value.stderr),
-                    "started_monotonic_ns": started_ns, "completed_monotonic_ns": time.monotonic_ns()}
-            result["commands"].append(fact)
-            require(value.returncode == 0, "official lifecycle command failed")
-            fact["observation"] = _project_cli(argv, value, {old_market, NEW_MARKET,
-                                               _object(plan.get("sentinel")).get("marketplace")})
-            return value
+            return _run_official(result, argv, env, {old_market, NEW_MARKET,
+                                 _object(plan.get("sentinel")).get("marketplace")}, "open_transition")
 
         sentinel = _sentinel_files(home, plan.get("sentinel"))
         require(sentinel == subject.get("sentinel") == previous.get("sentinel_after"),
@@ -1428,7 +1458,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         require(_selected_states(home, tracked_states) == before_removal, "selected data changed on disable")
         observe_sentinel("after_disable")
         command([str(codex), "plugin", "remove", stable_id])
-        after_remove = _json_output(command([str(codex), "plugin", "list", "--json"]))
+        after_remove = _json_output(command([str(codex), "plugin", "list", "--marketplace", NEW_MARKET, "--json"]))
         remaining_installed = after_remove.get("installed")
         require(isinstance(remaining_installed, list)
                 and not any(isinstance(x, dict) and x.get("pluginId") == stable_id for x in remaining_installed),
@@ -1448,7 +1478,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         result["pending"] = ["independent_consumer"]
     except BaseException as exc:
         result["status"] = "failed"
-        result["failure"] = type(exc).__name__ + ": " + str(exc)[:300]
+        result["failure"] = type(exc).__name__
     finally:
         result["cleanup"] = []
         for client in (cold, live):
@@ -1599,7 +1629,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     initial = prepared.get("commands")
     require(isinstance(initial, list), "prepare command facts unavailable")
     expected_prepare = [[codex, "--version"], [codex, "plugin", "marketplace", "list", "--json"],
-                        [codex, "plugin", "list", "--json"],
+                        [codex, "plugin", "list", "--marketplace", sentinel["marketplace"], "--json"],
                         [codex, "plugin", "marketplace", "add", str(old_source)],
                         [codex, "plugin", "marketplace", "list", "--json"],
                         [codex, "plugin", "add", old_id, "--json"],
@@ -1610,6 +1640,20 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
             and all(isinstance(item, dict) and item.get("argv") == expected
                     and type(item.get("exit_code")) is int and item["exit_code"] == 0
                     for item, expected in zip(initial, expected_prepare)), "prepare command sequence differs")
+    initial_markets = _object(initial[1].get("observation")).get("marketplaces")
+    sentinel_plugins = _object(initial[2].get("observation")).get("installed")
+    before = _object(prepared.get("before"))
+    require(isinstance(initial_markets, list) and all(isinstance(row, dict) and isinstance(row.get("name"), str)
+                                                       for row in initial_markets)
+            and old_market not in [row["name"] for row in initial_markets]
+            and sentinel["marketplace"] in [row["name"] for row in initial_markets]
+            and isinstance(sentinel_plugins, list)
+            and all(isinstance(row, dict) and isinstance(row.get("pluginId"), str)
+                    and row.get("marketplaceName") == sentinel["marketplace"] for row in sentinel_plugins)
+            and before.get("sentinel_installed_count") == len(sentinel_plugins)
+            and before.get("target_marketplace_absent") is True and before.get("target_cache_absent") is True
+            and before.get("target_cache_path") == str(Path(subject["home"]) / "plugins/cache" / old_market / "context-guard"),
+            "initial scoped marketplace or target cache evidence missing")
     index, _ = _command_index(initial, [codex, "plugin", "marketplace", "add", str(old_source)])
     index, old_add = _command_index(initial, [codex, "plugin", "add", old_id, "--json"], index)
     index, old_list = _command_index(initial, [codex, "plugin", "list", "--marketplace", old_market, "--json"], index)
@@ -1636,7 +1680,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
                [codex, "plugin", "marketplace", "add", str(new_source)],
                [codex, "plugin", "add", stable_id, "--json"],
                [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"],
-               [codex, "plugin", "remove", stable_id], [codex, "plugin", "list", "--json"],
+               [codex, "plugin", "remove", stable_id],
                [codex, "plugin", "marketplace", "remove", NEW_MARKET]]
     require(all(isinstance(item, dict) and item.get("argv") in allowed
                 and type(item.get("exit_code")) is int and item["exit_code"] == 0 for item in commands),
@@ -1675,7 +1719,11 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     require(selected is not None and selected.get("installed") is True and selected.get("enabled") is False,
             "official disabled plugin readback missing")
     index, _ = _command_index(commands, [codex, "plugin", "remove", stable_id], index)
-    index, removed = _command_index(commands, [codex, "plugin", "list", "--json"], index)
+    index, removed = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], index)
+    removed_rows = removed.get("installed")
+    require(isinstance(removed_rows, list) and all(isinstance(row, dict)
+            and isinstance(row.get("pluginId"), str) and row.get("marketplaceName") == NEW_MARKET
+            for row in removed_rows), "scoped removal readback malformed")
     require(_selected_plugin(removed, stable_id) is None, "plugin removal not observed")
     index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", NEW_MARKET], index)
     market_lists = [(i, _object(item.get("observation"))) for i, item in enumerate(commands)

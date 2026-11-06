@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 import tempfile
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -49,16 +53,21 @@ def command_fact(argv, observation=None):
     return {"argv": argv, "exit_code": 0, "stderr_nonempty": False, "observation": observation}
 
 
+def fixture_path(*parts):
+    return str(Path(tempfile.gettempdir()).resolve() / "cg-upgrade-synthetic" / Path(*parts))
+
+
 def lifecycle_facts():
-    codex, old, new = "/fixture/codex", "/fixture/old", "/fixture/new"
+    codex, old, new = (fixture_path(name) for name in ("codex", "old", "new"))
     market, sentinel_name = "codex-context-guard", "cg-u01-sentinel-test"
     plugin = "context-guard@" + market
-    baseline = {"marketplace": sentinel_name, "cache_marker": {"path": "/safe/cache"},
-                "data_marker": {"path": "/safe/data"}}
+    baseline = {"marketplace": sentinel_name, "cache_marker": {"path": fixture_path("safe", "cache")},
+                "data_marker": {"path": fixture_path("safe", "data")}}
+    home = fixture_path("home")
     subject = {"codex": codex, "old_version": "0.15.1", "old_artifact": old,
-               "new_artifact": new, "home": "/fixture/home", "sentinel": baseline}
-    old_path, new_path = "/fixture/home/plugins/cache/codex-context-guard/context-guard/0.15.1", \
-                         "/fixture/home/plugins/cache/codex-context-guard/context-guard/0.17.0"
+               "new_artifact": new, "home": home, "sentinel": baseline}
+    cache = Path(home) / "plugins/cache/codex-context-guard/context-guard"
+    old_path, new_path = str(cache / "0.15.1"), str(cache / "0.17.0")
     old_add = {"pluginId": plugin, "name": "context-guard", "marketplaceName": market,
                "version": "0.15.1", "installedPath": old_path}
     new_add = {**old_add, "version": "0.17.0", "installedPath": new_path}
@@ -79,11 +88,14 @@ def lifecycle_facts():
     ml = [codex, "plugin", "marketplace", "list", "--json"]
     old_pl = [codex, "plugin", "list", "--marketplace", market, "--json"]
     prepared_commands = [command_fact([codex, "--version"], {"version": "codex-cli 0.165.0"}),
-        command_fact(ml, markets_empty), command_fact([codex, "plugin", "list", "--json"], {"installed": []}),
+        command_fact(ml, markets_empty),
+        command_fact([codex, "plugin", "list", "--marketplace", sentinel_name, "--json"], {"installed": []}),
         command_fact([codex, "plugin", "marketplace", "add", old]), command_fact(ml, markets_old),
         command_fact([codex, "plugin", "add", plugin, "--json"], old_add), command_fact(ml, markets_old),
         command_fact(old_pl, old_list), command_fact(ml, markets_old)]
     prepared = {"commands": prepared_commands, "official_add": old_add, "sentinel_before": baseline,
+        "before": {"sentinel_installed_count": 0, "target_marketplace_absent": True,
+                   "target_cache_absent": True, "target_cache_path": str(cache)},
         "sentinel_after": baseline, "sentinel_phases": {name: baseline for name in
             ("after_marketplace_add", "after_plugin_add", "after_plugin_list")}}
     commands = [command_fact(ml, markets_old), command_fact(old_pl, old_list), command_fact(ml, markets_old),
@@ -92,7 +104,7 @@ def lifecycle_facts():
         command_fact([codex, "plugin", "add", plugin, "--json"], new_add), command_fact(ml, markets_new),
         command_fact(old_pl, new_list), command_fact(ml, markets_new), command_fact(old_pl, disabled),
         command_fact(ml, markets_new), command_fact([codex, "plugin", "remove", plugin]),
-        command_fact([codex, "plugin", "list", "--json"], {"installed": []}), command_fact(ml, markets_new),
+        command_fact(old_pl, {"installed": []}), command_fact(ml, markets_new),
         command_fact([codex, "plugin", "marketplace", "remove", market]), command_fact(ml, markets_empty)]
     phases = ("before", "after_old_list", "after_old_marketplace_remove", "after_new_marketplace_add",
               "after_new_plugin_add", "after_new_plugin_list", "after_disable", "after_plugin_remove",
@@ -104,7 +116,7 @@ def lifecycle_facts():
 
 class UpgradeControls(unittest.TestCase):
     def test_inventory_requires_nine_trusted_per_exact_source(self):
-        source = "/isolated/cache/old/hooks/hooks.json"
+        source = fixture_path("isolated", "cache", "old", "hooks", "hooks.json")
         good = inventory(source)
         self.assertEqual(9, len(U._inventory(good, {source: "0.16.1"})))
         for change in ("untrusted", "source", "duplicate"):
@@ -126,7 +138,7 @@ class UpgradeControls(unittest.TestCase):
             self.assertIsNone(U._source_key(r"C:\fixture\cache\..\hooks\hooks.json", [expected]))
 
     def test_archive_requires_real_same_thread_paired_end_with_3s_budget(self):
-        source, thread = "/isolated/cache/old/hooks/hooks.json", "thread-1"
+        source, thread = fixture_path("isolated", "cache", "old", "hooks", "hooks.json"), "thread-1"
         inv = U._inventory(inventory(source), {source: "0.16.1"})
         rows = [{"direction": "request", "message": {"id": 1, "method": "thread/archive", "params": {"threadId": thread}}},
                 {"direction": "response", "message": {"method": "hook/started", "params": {"threadId": thread,
@@ -200,7 +212,7 @@ class UpgradeControls(unittest.TestCase):
         self.assertNotIn("do-not-keep", json.dumps(message))
 
     def test_read_tool_requires_exact_completed_command_and_real_hooks(self):
-        source, thread, turn = "/isolated/cache/old/hooks/hooks.json", "thread-1", "turn-1"
+        source, thread, turn = fixture_path("isolated", "cache", "old", "hooks", "hooks.json"), "thread-1", "turn-1"
         inv = U._inventory(inventory(source), {source: "0.16.1"})
         rows = []
         def add_hook(event):
@@ -210,17 +222,17 @@ class UpgradeControls(unittest.TestCase):
                     "params": {"threadId": thread, "turnId": turn, "run": run}}})
         add_hook("preToolUse")
         for phase in ("started", "completed"):
-            item = {"id": "read", "type": "commandExecution", "command": "cat native-read.txt", "cwd": "/workspace"}
+            item = {"id": "read", "type": "commandExecution", "command": "cat native-read.txt", "cwd": fixture_path("workspace")}
             if phase == "completed":
                 item["exitCode"] = 0
             rows.append({"direction": "response", "message": {"method": "item/" + phase,
                 "params": {"threadId": thread, "turnId": turn, "item": item}}})
         add_hook("postToolUse")
-        U.verify_read_tool(rows, inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+        U.verify_read_tool(rows, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
         bad = copy.deepcopy(rows)
         bad[3]["message"]["params"]["item"]["exitCode"] = 1
         with self.assertRaises(U.UpgradeError):
-            U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+            U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
         client = object.__new__(U.UpgradeClient)
         client.pending = {}
         projected = client._projection({"method": "item/started", "params": {
@@ -230,25 +242,25 @@ class UpgradeControls(unittest.TestCase):
         journal = copy.deepcopy(rows)
         journal.insert(4, {"direction": "response", "message": projected})
         with self.assertRaises(U.UpgradeError):
-            U.verify_read_tool(journal, inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+            U.verify_read_tool(journal, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
         with self.assertRaises(U.UpgradeError):
-            U.verify_read_tool(rows[2:], inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+            U.verify_read_tool(rows[2:], inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
         reordered = rows[0:2] + rows[4:6] + rows[2:4]
         with self.assertRaises(U.UpgradeError):
-            U.verify_read_tool(reordered, inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+            U.verify_read_tool(reordered, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
         bad = copy.deepcopy(rows)
         bad[2]["message"]["params"]["item"]["command"] = "cat other.txt"
         with self.assertRaises(U.UpgradeError):
-            U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+            U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
         bad = copy.deepcopy(rows)
         bad.insert(4, {"direction": "response", "message": {"method": "item/started",
                    "params": {"threadId": thread, "turnId": turn,
                               "item": {"type": "unknownTool", "id": "other"}}}})
         with self.assertRaises(U.UpgradeError):
-            U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path("/workspace"))
+            U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
 
     def test_disable_requires_official_write_and_post_write_empty_inventory(self):
-        source = "/isolated/cache/new/hooks/hooks.json"
+        source = fixture_path("isolated", "cache", "new", "hooks", "hooks.json")
         new_inv = U._inventory(inventory(source), {source: "0.17.0"})
         params = {"edits": [{"keyPath": 'plugins."context-guard@codex-context-guard".enabled',
                              "value": False, "mergeStrategy": "upsert"}], "reloadUserConfig": True}
@@ -293,6 +305,37 @@ class UpgradeControls(unittest.TestCase):
                     bad["commands"].pop(16)
                 with self.assertRaises(U.UpgradeError, msg=mutation):
                     U._verify_cli_lifecycle(subject, prepared, bad)
+            for mutation in ("unscoped_prepare", "missing_cache", "registered_old", "unscoped_remove", "wrong_scope"):
+                bad_prepare, bad_result = copy.deepcopy(prepared), copy.deepcopy(result)
+                if mutation == "unscoped_prepare":
+                    bad_prepare["commands"][2]["argv"] = [subject["codex"], "plugin", "list", "--json"]
+                elif mutation == "missing_cache":
+                    del bad_prepare["before"]["target_cache_absent"]
+                elif mutation == "registered_old":
+                    bad_prepare["commands"][1]["observation"]["marketplaces"].append({"name": "codex-context-guard"})
+                elif mutation == "unscoped_remove":
+                    bad_result["commands"][14]["argv"] = [subject["codex"], "plugin", "list", "--json"]
+                else:
+                    bad_result["commands"][14]["observation"]["installed"] = [
+                        {"pluginId": "other@other", "marketplaceName": "other"}]
+                with self.assertRaises(U.UpgradeError, msg=mutation):
+                    U._verify_cli_lifecycle(subject, bad_prepare, bad_result)
+
+    def test_official_command_records_failure_before_return_without_output(self):
+        argv = ["/safe/codex", "plugin", "list", "--marketplace", "cg-u01-sentinel-test", "--json"]
+        for response in (U.scheduler.SchedulerBatchError("synthetic timeout"),
+                         subprocess.CompletedProcess(argv, 4, b"synthetic private stdout", b"synthetic private stderr")):
+            result = {"commands": []}
+            with mock.patch.object(U.scheduler, "_command", side_effect=response if isinstance(response, Exception)
+                                   else None, return_value=response):
+                with self.assertRaises((U.scheduler.SchedulerBatchError, U.UpgradeError)):
+                    U._run_official(result, argv, {}, {"cg-u01-sentinel-test"}, "prepare")
+            fact = result["commands"][0]
+            self.assertEqual(argv, fact["argv"])
+            self.assertEqual("prepare", fact["stage"])
+            self.assertEqual("failed", fact["status"])
+            self.assertIn("failure_type", fact)
+            self.assertNotIn("synthetic", json.dumps(fact))
 
     def test_complete_finish_old_consumer_and_missing_session_end_negative(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -302,11 +345,12 @@ class UpgradeControls(unittest.TestCase):
             subject, prepared, result = lifecycle_facts()
             old_path = prepared["official_add"]["installedPath"]
             new_path = result["installed_new"]["path"]
-            old_source, new_source = old_path + "/hooks/hooks.json", new_path + "/hooks/hooks.json"
+            old_source, new_source = str(Path(old_path) / "hooks/hooks.json"), str(Path(new_path) / "hooks/hooks.json")
             old_hooks, new_hooks = inventory(old_source)["data"][0]["hooks"], inventory(new_source)["data"][0]["hooks"]
             subject.update({"product_commit": "a" * 40, "toolkit_commit": "b" * 40,
-                            "product_root": "/fixture/product", "workspace": "/fixture/workspace",
-                            "old_data_root": "/fixture/home/old-data", "new_data_root": "/fixture/home/new-data",
+                            "product_root": fixture_path("product"), "workspace": fixture_path("workspace"),
+                            "old_data_root": str(Path(subject["home"]) / "old-data"),
+                            "new_data_root": str(Path(subject["home"]) / "new-data"),
                             "transition_strategy": "finish-old", "platform": "Darwin", "read_file_sha256": "c" * 64})
             prepared.update({"schema": U.REPORT, "status": "pending", "stage": "prepare", "subject": subject,
                              "installed": {"path": old_path}})
@@ -539,6 +583,87 @@ class UpgradeControls(unittest.TestCase):
                     U._zip_metadata(archive)
                 file_hash.assert_not_called()
 
+    def test_old_git_export_pins_line_endings_and_exact_payload(self):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            item = tarfile.TarInfo("public.txt")
+            item.size = len(b"public\n")
+            archive.addfile(item, io.BytesIO(b"public\n"))
+        payload = buffer.getvalue()
+        response = subprocess.CompletedProcess([], 0, payload, b"")
+        with mock.patch.object(U.scheduler, "_command", return_value=response) as command, \
+             mock.patch.object(U, "OLD_0151_EXPORT_SHA256", hashlib.sha256(payload).hexdigest()):
+            result = U._old_provenance(Path(fixture_path("product")), Path(fixture_path("old")),
+                                       "0.15.1", {}, {"public.txt": hashlib.sha256(b"public\n").hexdigest()})
+            self.assertEqual("published_tag_source_export", result["kind"])
+            self.assertEqual(["git", "-c", "core.autocrlf=false", "-c", "core.eol=lf",
+                              "archive", "--format=tar", U.OLD_0151_COMMIT], command.call_args.args[2])
+            with self.assertRaises(U.UpgradeError):
+                U._old_provenance(Path(fixture_path("product")), Path(fixture_path("old")),
+                                  "0.15.1", {}, {"public.txt": hashlib.sha256(b"public\r\n").hexdigest()})
+
+    def test_snapshot_provider_ctime_differs_but_per_provider_changes_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            document, archive = root / "data.json", root / "public.zip"
+            document.write_text('{"synthetic":true}')
+            with zipfile.ZipFile(archive, "w") as z:
+                z.writestr("data.txt", "public")
+            real_fstat = os.fstat
+
+            def copy_stat(actual):
+                return types.SimpleNamespace(**{name: getattr(actual, name) for name in
+                    ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")})
+
+            def shifted(change_second=False, replace=False):
+                count = 0
+                def read(fd):
+                    nonlocal count
+                    count += 1
+                    actual = real_fstat(fd)
+                    result = copy_stat(actual)
+                    result.st_ctime_ns = actual.st_ctime_ns + 100 + (1 if change_second and count > 1 else 0)
+                    if replace:
+                        result.st_ino = actual.st_ino + 1
+                    return result
+                return read
+
+            with mock.patch.object(U.os, "fstat", side_effect=shifted()):
+                self.assertEqual(hashlib.sha256(document.read_bytes()).hexdigest(), U.sha(document))
+                self.assertTrue(U._read_json(document)["synthetic"])
+                identity = U._zip_metadata(archive)
+                U._zip_exact(archive, identity, {"data.txt": hashlib.sha256(b"public").hexdigest()})
+            for provider in (shifted(change_second=True), shifted(replace=True)):
+                with mock.patch.object(U.os, "fstat", side_effect=provider):
+                    with self.assertRaises(U.UpgradeError):
+                        U.sha(document)
+            with mock.patch.object(U.os, "fstat", side_effect=shifted(replace=True)), \
+                 mock.patch.object(U.zipfile, "ZipFile", side_effect=AssertionError("must not read")) as reader:
+                with self.assertRaises(U.UpgradeError):
+                    U._zip_metadata(archive)
+                with self.assertRaises(U.UpgradeError):
+                    U._zip_exact(archive, identity, {})
+                reader.assert_not_called()
+            real_read, real_lstat = os.read, Path.lstat
+            read_finished = False
+            def tracked_read(fd, size):
+                nonlocal read_finished
+                value = real_read(fd, size)
+                if not value:
+                    read_finished = True
+                return value
+            def changed_path(path, *args, **kwargs):
+                actual = real_lstat(path, *args, **kwargs)
+                if path == document and read_finished:
+                    result = copy_stat(actual)
+                    result.st_ctime_ns = actual.st_ctime_ns + 1
+                    return result
+                return actual
+            with mock.patch.object(U.os, "read", side_effect=tracked_read), \
+                 mock.patch.object(Path, "lstat", autospec=True, side_effect=changed_path):
+                with self.assertRaises(U.UpgradeError):
+                    U.sha(document)
+
     def test_json_hardlink_alias_refused_before_open(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -627,6 +752,7 @@ class UpgradeControls(unittest.TestCase):
             manager = mock.Mock()
             manager.distribution_manifest.return_value = old_files
             with mock.patch.object(U.platform, "system", return_value="Darwin"), \
+                 mock.patch.object(U, "_private_directory"), \
                  mock.patch.object(U.native, "verify_exact_source") as verify, \
                  mock.patch.object(U.native, "load_artifacts", return_value=manager), \
                  mock.patch.object(U.native, "runtime_digest", return_value="d" * 64), \
@@ -708,7 +834,7 @@ class UpgradeControls(unittest.TestCase):
                         markets.append({"name": market, "root": str(old),
                                         "marketplaceSource": {"sourceType": "local", "source": str(old)}})
                     value = {"marketplaces": markets}
-                elif argv[2:4] == ["list", "--json"]:
+                elif argv[2:6] == ["list", "--marketplace", sentinel_spec["marketplace"], "--json"]:
                     value = {"installed": []}
                 elif argv[2:4] == ["marketplace", "add"]:
                     registered.append(True)
@@ -727,6 +853,9 @@ class UpgradeControls(unittest.TestCase):
                  mock.patch.object(U.scheduler, "_command", side_effect=run):
                 result = U.prepare(plan, out)
             self.assertEqual("pending", result["status"], result)
+            self.assertEqual(0, result["before"]["sentinel_installed_count"])
+            self.assertTrue(result["before"]["target_cache_absent"])
+            self.assertTrue(all("--marketplace" in argv for argv in calls if argv[1:3] == ["plugin", "list"]))
             self.assertIn("normal_hook_review", result["pending"])
             self.assertEqual("synthetic = true\n", (home / "config.toml").read_text())
             self.assertEqual(9, len(calls))
