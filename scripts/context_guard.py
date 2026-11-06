@@ -8655,10 +8655,20 @@ def _prepare_session_directory(session_dir: Path, deadline: float) -> None:
             admission, max(0.0, deadline - time.monotonic())
         ):
             _reject_casefold_sibling(session_dir)
-            _retention_recreation_guard(session_dir)
+            _retention_recreation_guard(session_dir, deadline=deadline)
             secure_directory(session_dir)
     finally:
         process_lock.release()
+    if session_dir.parent.name == V2_NAMESPACE:
+        # Durable discovery once maintenance is adopted: with a policy object
+        # present, retention maintenance reaches every session this runtime
+        # creates through the registry, independent of readdir order or
+        # directory size. Without one, hooks create no maintenance object.
+        # Best effort; the budgeted backfill covers a failure.
+        root = session_dir.parent.parent
+        with contextlib.suppress(OSError, ValueError, PrivateBoundaryError):
+            if _retention_policy_path(root).exists():
+                _add_cleanup_registry_entries(root, [session_dir.name])
 
 
 @contextlib.contextmanager
@@ -19911,137 +19921,203 @@ HOST_TRANSCRIPT_LINE_LIMIT = 1024 * 1024
 # F03 bounded unrelated-record isolation. Only an ``event_msg`` record can
 # carry the terminal ``item_completed`` candidate this snapshot selects, so an
 # oversized row whose outer type is provably one of the never-candidate types
-# is skippable. Everything else — unparseable heads, unknown types, and any
-# oversized ``event_msg`` — keeps the whole snapshot unavailable so a
-# conflicting terminal record can never hide behind the byte budget. The head
-# read is a strict anchored member-sequence scan, never a substring search,
-# and no event identifier is ever guessed from an oversized row.
+# is skippable. Everything else — malformed rows, unknown or non-string types,
+# duplicate outer members, and any oversized ``event_msg`` — keeps the whole
+# snapshot unavailable so a conflicting terminal record can never hide behind
+# the byte budget. No event identifier is ever guessed from an oversized row.
+#
+# R2 (RF-F03-JSON): the recognizer below is a complete RFC 8259 grammar
+# check, not a depth counter. Strings, numbers and literals are matched by
+# exact token grammars, member keys are DECODED with JSON escape semantics
+# (``"\u0074ype"`` is the key ``type``), and the same strictness — no
+# duplicate member names, no NaN/Infinity — applies to ordinary rows through
+# ``_host_strict_json_loads`` so both size classes share one interpretation.
 _HOST_OVERSIZED_SKIP_TYPES = frozenset({
     "response_item", "turn_context", "session_meta", "compacted",
 })
-def _oversized_host_record_skippable(line: bytes) -> bool:
-    """Structural read of an oversized record's outer members.
+HOST_JSON_MAX_DEPTH = 256
+_JSON_WS_RE = re.compile(r"[ \t\n\r]*")
+_JSON_STRING_RE = re.compile(
+    r'"[^"\\\x00-\x1f]*(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})[^"\\\x00-\x1f]*)*"')
+_JSON_NUMBER_RE = re.compile(
+    r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
+_JSON_LITERALS = ("true", "false", "null")
 
-    The scan walks the WHOLE line with a byte-level JSON lexer that is
-    escape- and string-aware and tracks nesting depth, so a later outer
-    ``type`` member cannot hide behind an earlier one, a ``type`` inside a
-    string payload is never mistaken for an outer member, and a malformed
-    (unclosed, stray-brace) line is never provably skippable. Only a line
-    with exactly one depth-1 ``type`` string member whose value can never
-    carry the terminal candidate is skipped; anything else — repeated
-    outer type members, unknown values, ambiguity, malformed structure —
-    keeps the whole snapshot unavailable. The scan is O(n) time and O(1)
-    memory over the already-bounded line; no identifier is guessed.
+
+class HostJsonAmbiguity(ValueError):
+    """A row that a canonical reader could resolve two ways (duplicate member
+    names, non-standard constants). Treated exactly like malformed input."""
+
+
+def _host_json_reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise HostJsonAmbiguity("duplicate JSON member name")
+        result[key] = value
+    return result
+
+
+def _host_json_reject_constant(name: str) -> Any:
+    raise HostJsonAmbiguity(f"non-standard JSON constant {name}")
+
+
+def _host_strict_json_loads(text: str) -> Any:
+    """The one production interpretation of an ordinary transcript row.
+
+    Python's decoder silently keeps the LAST duplicate member and accepts
+    NaN/Infinity; either would let a row mean something other than what an
+    independent strict reader sees, so both are refused (ValueError)."""
+    return json.loads(text, object_pairs_hook=_host_json_reject_duplicates,
+                      parse_constant=_host_json_reject_constant)
+
+
+def _host_json_outer_members(text: str) -> dict[str, Any] | None:
+    """Validate ``text`` as exactly one JSON object and return its decoded
+    outer members, or None.
+
+    Complete grammar: every string, number, literal, separator and container
+    is checked; control characters and invalid escapes in strings, leading
+    zeros, bare signs, mismatched or unclosed containers, trailing commas and
+    trailing content all reject. Member names are decoded with JSON escape
+    semantics and must be unique within each object (the same rule
+    ``_host_strict_json_loads`` applies); an outer string value is decoded,
+    any other outer value is reported as ``...`` (Ellipsis) without being
+    materialized. Bounded: depth <= HOST_JSON_MAX_DEPTH, one forward pass,
+    memory bounded by the open objects' member names; nested payload values
+    are never built into objects.
+    """
+    n = len(text)
+    i = _JSON_WS_RE.match(text, 0).end()
+    if i >= n or text[i] != "{":
+        return None
+    members: dict[str, Any] = {}
+    stack: list[str] = []  # container kinds: "{" or "["
+    names: list[set[str]] = []  # decoded member names per open object
+    # expect: "key_or_end" | "key" | "colon" | "value" | "value_or_end" | "sep"
+    expect = "value"
+    pending_key: str | None = None
+    while True:
+        i = _JSON_WS_RE.match(text, i).end()
+        if not stack and expect == "sep":
+            # The top-level object closed: only whitespace may follow.
+            return members if i == n else None
+        if i >= n:
+            return None  # ran out inside a container
+        ch = text[i]
+        depth = len(stack)
+        if expect in ("key_or_end", "key"):
+            if ch == "}" and expect == "key_or_end":
+                stack.pop()
+                names.pop()
+                i += 1
+                expect = "sep"
+            elif ch == '"':
+                match = _JSON_STRING_RE.match(text, i)
+                if match is None:
+                    return None
+                token = match.group(0)
+                if "\\" in token:
+                    try:
+                        key = json.loads(token)
+                    except ValueError:
+                        return None
+                else:
+                    key = token[1:-1]
+                if key in names[-1]:
+                    return None  # duplicate member (any depth): ambiguous
+                names[-1].add(key)
+                if depth == 1:
+                    pending_key = key
+                i = match.end()
+                expect = "colon"
+            else:
+                return None
+        elif expect == "colon":
+            if ch != ":":
+                return None
+            i += 1
+            expect = "value"
+        elif expect in ("value", "value_or_end"):
+            if ch == "]" and expect == "value_or_end":
+                stack.pop()
+                i += 1
+                expect = "sep"
+                continue
+            if ch in "{[":
+                if len(stack) >= HOST_JSON_MAX_DEPTH:
+                    return None
+                if depth == 1 and pending_key is not None:
+                    members[pending_key] = ...
+                    pending_key = None
+                stack.append(ch)
+                if ch == "{":
+                    names.append(set())
+                i += 1
+                expect = "key_or_end" if ch == "{" else "value_or_end"
+                continue
+            if not stack:
+                return None  # only the top-level object may start here
+            if ch == '"':
+                match = _JSON_STRING_RE.match(text, i)
+                if match is None:
+                    return None
+                if depth == 1 and pending_key is not None:
+                    try:
+                        members[pending_key] = json.loads(match.group(0))
+                    except ValueError:
+                        return None
+                i = match.end()
+            elif ch == "-" or "0" <= ch <= "9":
+                match = _JSON_NUMBER_RE.match(text, i)
+                if match is None:
+                    return None
+                i = match.end()
+                if depth == 1 and pending_key is not None:
+                    members[pending_key] = ...
+            else:
+                for literal in _JSON_LITERALS:
+                    if text.startswith(literal, i):
+                        i += len(literal)
+                        break
+                else:
+                    return None
+                if depth == 1 and pending_key is not None:
+                    members[pending_key] = ...
+            pending_key = None
+            expect = "sep"
+        else:  # "sep": after a complete value inside a container
+            kind = stack[-1]
+            if ch == ",":
+                i += 1
+                expect = "key" if kind == "{" else "value"
+            elif (ch == "}" and kind == "{") or (ch == "]" and kind == "["):
+                stack.pop()
+                if kind == "{":
+                    names.pop()
+                i += 1
+            else:
+                return None
+
+
+def _oversized_host_record_skippable(line: bytes) -> bool:
+    """True only when a complete strict parse proves the oversized row's
+    single outer ``type`` member is a never-candidate string.
+
+    Anything the recognizer cannot prove — invalid UTF-8 or JSON, a
+    non-object, duplicate (including escape-equivalent) outer members, a
+    missing or non-string type, an unknown type, or a depth beyond the
+    bound — keeps the snapshot unavailable.
     """
     try:
         text = line.decode("utf-8")
     except UnicodeDecodeError:
         return False
-    if not text.lstrip().startswith("{"):
-        return False  # transcript records are JSON objects
-    depth = 0
-    type_values: list[str] = []
-    i = 0
-    n = len(text)
-    # State: at depth 1, record member keys and string values of the outer
-    # object. Everything below depth 1 is payload and skipped wholesale;
-    # a nested container consumed as a member value clears the pending key
-    # when it closes.
-    expect_key = False
-    after_key = None  # pending key awaiting ':'
-    in_value_container = False  # a depth>=2 container is a member value
-    while i < n:
-        ch = text[i]
-        if ch == '"':
-            # Read one JSON string token (escape-aware).
-            j = i + 1
-            while j < n:
-                c = text[j]
-                if c == "\\":
-                    j += 2
-                    continue
-                if c == '"':
-                    break
-                j += 1
-            if j >= n:
-                return False  # unterminated string: malformed
-            token = text[i + 1:j]
-            if depth == 1 and after_key is None and expect_key:
-                after_key = token
-            elif depth == 1 and after_key is not None:
-                if after_key == "type":
-                    type_values.append(token)
-                after_key = None
-            i = j + 1
-            continue
-        if ch in "{[":
-            depth += 1
-            if depth == 1:
-                expect_key = True
-            elif depth == 2 and not in_value_container:
-                # A container in a member-value position: its contents are
-                # payload until it closes back to depth 1.
-                in_value_container = True
-                after_key = None
-            i += 1
-            continue
-        if ch in "}]":
-            if (depth == 1 and after_key is not None
-                    and not in_value_container):
-                return False  # key without a value: malformed
-            depth -= 1
-            if depth == 0:
-                expect_key = False
-            if depth == 1:
-                in_value_container = False
-                after_key = None
-            if depth < 0:
-                return False
-            i += 1
-            continue
-        if depth == 1:
-            if ch == ":":
-                if after_key is None:
-                    return False  # value position without a key
-                expect_key = False
-            elif ch == ",":
-                if after_key is not None:
-                    return False  # key without a value
-                expect_key = True
-            elif not ch.isspace():
-                # Non-string scalar at member position: numbers/bools/null
-                # are valid values; a bare scalar in a key position is not.
-                if after_key is not None:
-                    j = i
-                    while j < n and text[j] not in ",}":
-                        j += 1
-                    after_key = None
-                    i = j
-                    continue
-                if ch not in "-0123456789tfn" and not ch.isspace():
-                    return False
-        elif ch in "-0123456789tfn" and depth >= 2:
-            # Scalar payload below depth 1: skip to the next structural char.
-            j = i
-            while j < n and text[j] not in ",}]":
-                j += 1
-            i = j
-            continue
-        elif depth >= 2:
-            # Below depth 1 the payload is skipped wholesale: only JSON
-            # structural characters, whitespace and scalar values are
-            # legal there, so anything else (and any structure that runs
-            # past the line) is malformed rather than skippable.
-            if ch not in ",:{}[] \t\r\n" and ch not in "-0123456789tfn":
-                return False
-        i += 1
-    if depth != 0:
-        return False  # unclosed structure: malformed
-    if after_key is not None:
+    members = _host_json_outer_members(text)
+    if members is None:
         return False
-    if len(type_values) != 1:
-        return False  # zero or repeated outer type members: ambiguity
-    return type_values[0] in _HOST_OVERSIZED_SKIP_TYPES
+    value = members.get("type")
+    return isinstance(value, str) and value in _HOST_OVERSIZED_SKIP_TYPES
 
 
 def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -20108,8 +20184,8 @@ def _host_transcript_items(state: dict[str, Any], payload: dict[str, Any]) -> li
                     continue
                 return []
             try:
-                records.append(json.loads(line.decode("utf-8")))
-            except (UnicodeError, json.JSONDecodeError):
+                records.append(_host_strict_json_loads(line.decode("utf-8")))
+            except (UnicodeError, ValueError, RecursionError):
                 return []
     except (OSError, ValueError):
         return []
@@ -23711,7 +23787,10 @@ def _read_discovery_registry(root: Path) -> set[str]:
             and _registry_object_is_writable(_cleanup_registry_path(root))):
         return set()
     try:
-        raw = _cleanup_registry_path(root).read_text(encoding="utf-8")
+        path = _cleanup_registry_path(root)
+        if path.lstat().st_size > _RETENTION_REGISTRY_READ_LIMIT:
+            return set()  # oversized: the backfill rebuilds it
+        raw = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return set()
     return {
@@ -23815,14 +23894,28 @@ def _compact_discovery_registry(root: Path, live_names: set[str]) -> None:
 RETENTION_POLICY_SCHEMA = "cg-retention-policy/v1"
 RETENTION_MANIFEST_SCHEMA = "cg-retention-manifest/v1"
 RETENTION_REPORT_SCHEMA = "cg-retention-report/v1"
-RETENTION_QUARANTINE_RECORD_SCHEMA = "cg-retention-quarantine/v2"
+RETENTION_QUARANTINE_RECORD_SCHEMA = "cg-retention-quarantine/v3"
+# R1 candidate records (never published) stay readable for their two states.
+_RETENTION_LEGACY_RECORD_SCHEMAS = frozenset({"cg-retention-quarantine/v2"})
 RETENTION_TOMBSTONE_SCHEMA = "cg-retention-tombstone/v1"
 
-# Same-process re-entrancy for the maintenance lock: nested policy writes
-# and nested passes share the held kernel lock instead of deadlocking on a
-# second descriptor of the same file.
-_RETENTION_MAINTENANCE_LOCK_REGISTRY: dict[str, int] = {}
-_RETENTION_MAINTENANCE_LOCK_REGISTRY_LOCK = threading.Lock()
+# Quarantine record state machine (R2, RF-C01-TXN). Every transition writes
+# its durable record BEFORE the filesystem operation it announces:
+#   live --planned--> rename --> quarantined
+#   quarantined --restore_planned--> rename back --> record retired
+#   quarantined --purge_planned--> bounded removal --> tombstone --> retired
+# ``purge_planned`` is the point of no return: from the first unlink on the
+# object is never restorable, and the record itself blocks recreation of the
+# name until the tombstone takes over. ``_retention_settle_record`` decides
+# every interrupted state from (record state, home object, quarantine object).
+_RETENTION_RECORD_STATES = frozenset({
+    "planned", "quarantined", "restore_planned", "purge_planned"})
+_RETENTION_LEGACY_RECORD_STATES = frozenset({"planned", "quarantined"})
+_RETENTION_TREE_ENTRY_CAP = 200_000
+_RETENTION_REGISTRY_READ_LIMIT = 32 * 1024 * 1024
+_RETENTION_BACKFILL_BUDGET_SHARE = 0.5
+_RETENTION_RESTORE_WAIT_SECONDS = 5.0
+_RETENTION_MAINTENANCE_LOCK_DEFAULT_WAIT = 30.0
 RETENTION_POLICY_NAME = "retention-policy.json"
 _RETENTION_QUARANTINE_DIR_NAME = "retention-quarantine"
 _RETENTION_MIN_AGE_DAYS_RANGE = (1, 3650)
@@ -23925,68 +24018,96 @@ def read_retention_policy(root: Path) -> dict[str, Any]:
     return policy
 
 
-def _retention_maintenance_lock(root: Path):
-    """Serialize maintenance passes and policy changes on one stable lock.
+class _MaintenanceLockState:
+    """In-process ownership of one maintenance lock file.
 
-    Writers and readers never take this lock; every destructive retention
-    transition (quarantine rename, restore, purge, policy write) holds it,
-    so a policy revocation can never land between an authorization check
-    and the rename it authorizes. The lock file is a product maintenance
-    object under `.locks`, created like the registry, never deleted.
+    ``rlock`` makes the owner a THREAD, not the process: a second thread
+    blocks exactly like a second process blocks on the kernel lock, while
+    true same-thread re-entry (a policy write issued from inside a held
+    pass) only deepens ``depth``. The kernel lock is taken by the outermost
+    entry and released by the matching outermost exit.
+    """
+
+    __slots__ = ("rlock", "depth", "fd")
+
+    def __init__(self) -> None:
+        self.rlock = threading.RLock()
+        self.depth = 0
+        self.fd: int | None = None
+
+
+_RETENTION_MAINTENANCE_LOCKS: dict[str, _MaintenanceLockState] = {}
+_RETENTION_MAINTENANCE_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _retention_maintenance_lock(root: Path, *, deadline: float | None = None):
+    """Serialize maintenance passes, restores and policy changes.
+
+    Ordinary writers and readers never take this lock; every destructive
+    retention transition (quarantine rename, restore, purge, policy write)
+    holds it, so a policy revocation can never land between an
+    authorization check and the transition it authorizes. Ownership is
+    per thread (see ``_MaintenanceLockState``) plus the kernel lock for
+    other processes. Waiting consumes the caller's own deadline; only a
+    caller without one gets the bounded default wait. The lock file is a
+    product maintenance object under `.locks`, never deleted.
     """
     if not _maintenance_boundary_ok(root):
         raise RuntimeError("retention maintenance boundary failed")
     path = root / V2_NAMESPACE / ".locks" / "retention-maintenance.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
+    limit = (deadline if deadline is not None
+             else time.monotonic() + _RETENTION_MAINTENANCE_LOCK_DEFAULT_WAIT)
     key = str(path)
-    with _RETENTION_MAINTENANCE_LOCK_REGISTRY_LOCK:
-        if key in _RETENTION_MAINTENANCE_LOCK_REGISTRY:
-            # Re-entrant within this process: a policy revocation issued
-            # from inside a held pass must linearize, not deadlock.
-            _RETENTION_MAINTENANCE_LOCK_REGISTRY[key] += 1
-            depth_held = True
-        else:
-            depth_held = False
-    if depth_held:
-        @contextlib.contextmanager
-        def _nested():
-            yield path
-        return _nested()
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(path, flags, 0o600)
-    deadline = time.monotonic() + 30.0
-    while True:
-        try:
-            if _msvcrt is not None:
-                _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
-            elif _fcntl is not None:
-                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-            break
-        except OSError:
-            if time.monotonic() >= deadline:
-                os.close(fd)
-                raise TimeoutError(
-                    "timed out waiting for the retention maintenance lock")
-            time.sleep(0.02)
-    with _RETENTION_MAINTENANCE_LOCK_REGISTRY_LOCK:
-        _RETENTION_MAINTENANCE_LOCK_REGISTRY[key] = 1
-
-    @contextlib.contextmanager
-    def _held():
-        try:
-            yield path
-        finally:
-            with _RETENTION_MAINTENANCE_LOCK_REGISTRY_LOCK:
-                _RETENTION_MAINTENANCE_LOCK_REGISTRY.pop(key, None)
+    with _RETENTION_MAINTENANCE_LOCKS_GUARD:
+        state = _RETENTION_MAINTENANCE_LOCKS.setdefault(key, _MaintenanceLockState())
+    remaining = limit - time.monotonic()
+    if remaining <= 0 or not state.rlock.acquire(timeout=remaining):
+        raise TimeoutError("timed out waiting for the retention maintenance lock")
+    try:
+        if state.depth == 0:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+                         0o600)
             try:
-                if _msvcrt is not None:
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
-                elif _fcntl is not None:
-                    _fcntl.flock(fd, _fcntl.LOCK_UN)
-            finally:
+                while True:
+                    try:
+                        if _msvcrt is not None:
+                            _msvcrt.locking(fd, _msvcrt.LK_NBLCK, 1)
+                        elif _fcntl is not None:
+                            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                        break
+                    except OSError:
+                        if time.monotonic() >= limit:
+                            raise TimeoutError(
+                                "timed out waiting for the retention maintenance lock"
+                            ) from None
+                        time.sleep(0.02)
+            except BaseException:
                 os.close(fd)
-    return _held()
+                raise
+            state.fd = fd
+        state.depth += 1
+    except BaseException:
+        state.rlock.release()
+        raise
+    try:
+        yield path
+    finally:
+        state.depth -= 1
+        try:
+            if state.depth == 0 and state.fd is not None:
+                fd, state.fd = state.fd, None
+                try:
+                    if _msvcrt is not None:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        _msvcrt.locking(fd, _msvcrt.LK_UNLCK, 1)
+                    elif _fcntl is not None:
+                        _fcntl.flock(fd, _fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+        finally:
+            state.rlock.release()
 
 
 def write_retention_policy(
@@ -24035,7 +24156,28 @@ def write_retention_policy(
                 current, json.dumps(policy, ensure_ascii=False) + "\n")
         except (OSError, PrivateBoundaryError) as exc:
             raise RuntimeError(f"retention policy write failed: {exc}") from exc
+        if policy["enabled"]:
+            _retention_register_existing(root)
     return policy
+
+
+def _retention_register_existing(root: Path) -> None:
+    """Adoption bootstrap: register every session already in the namespace.
+
+    Runs inside the explicit policy command (never a hook), so one complete
+    listing makes the registry cover everything that exists at adoption;
+    sessions created afterwards register themselves at creation. A failed
+    listing only leaves those names to the budgeted backfill.
+    """
+    names: list[str] = []
+    try:
+        with os.scandir(root / V2_NAMESPACE) as source:
+            for entry in source:
+                if entry.name != ".locks" and _is_session_component(entry.name):
+                    names.append(entry.name)
+    except OSError:
+        return
+    _add_cleanup_registry_entries(root, names)
 
 
 def _retention_quarantine_dir(root: Path) -> Path:
@@ -24051,18 +24193,20 @@ class RetentionRecreationRefused(RuntimeError):
     """
 
 
-def _retention_recreation_guard(session_dir: Path) -> None:
-    """Keep a quarantined name from silently re-initializing.
+def _retention_recreation_guard(session_dir: Path, *, deadline: float | None = None) -> None:
+    """Keep a retained name from silently re-initializing.
 
     Called only on the fresh-creation path (no state on disk) under the
-    session lock. A live quarantine record means the predecessor ledger is
-    recoverable: the official reader transparently restores it, so a late
-    resume or a new prompt continues the original task instead of losing
-    it (the 0.17.0 continuity requirement; the quarantine is a maintenance
-    staging area, never a user-visible deletion). When the transparent
-    restore cannot complete, the refusal names the supported path. An
-    unexpired purge tombstone blocks recreation for its bounded
-    anti-resurrection window.
+    session lifecycle lock. A recoverable record (``quarantined``, or an
+    interrupted ``planned``/``restore_planned`` transaction) means the
+    predecessor ledger still exists: the official reader settles the
+    transaction and transparently restores it, so a late resume or a new
+    prompt continues the original task (the 0.17.0 continuity requirement).
+    When that restore cannot complete, the refusal names the supported
+    path. A ``purge_planned`` record, an unreadable record that names this
+    session, or an unexpired purge tombstone blocks recreation: the
+    predecessor is (being) permanently removed and must not be replaced by
+    a silent fresh ledger.
     """
     name = session_dir.name
     if not _is_session_component(name):
@@ -24071,14 +24215,22 @@ def _retention_recreation_guard(session_dir: Path) -> None:
     if not _maintenance_boundary_ok(root):
         return
     qdir = _retention_quarantine_dir(root)
-    records = _retention_iter_records(qdir)
-    if any(record.get("original_name") == name for _p, record in records):
-        # Settle any interrupted transaction first, then restore the
-        # recoverable object through the official restore transaction.
-        _retention_recover_records(
-            qdir, dt.datetime.now(dt.timezone.utc))
+    records, unknown = _retention_scan_records(qdir)
+    mine = [record for _p, record in records if record.get("original_name") == name]
+    if any(record.get("state") == "purge_planned" for record in mine):
+        raise RetentionRecreationRefused(
+            "session is being permanently purged by retention maintenance; "
+            "this session id cannot start a new ledger until its "
+            "anti-resurrection tombstone expires")
+    if any(label == name for _p, label in unknown):
+        raise RetentionRecreationRefused(
+            "an unreadable retention record names this session; inspect the "
+            "retention quarantine before continuing this session id")
+    if mine:
+        wait = deadline if deadline is not None else (
+            time.monotonic() + _RETENTION_RESTORE_WAIT_SECONDS)
         restored = retention_restore(
-            root, name, assume_lifecycle_lock_held=True)
+            root, name, assume_lifecycle_lock_held=True, deadline=wait)
         if restored.get("outcome") == "restored":
             return
         raise RetentionRecreationRefused(
@@ -24498,22 +24650,86 @@ def _retention_write_record(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _retention_tree_digest(path: Path, deadline: float | None) -> dict[str, Any] | None:
+    """Structural digest of one session tree: every entry's relative path,
+    kind and (for regular files) size, links and reparse points recorded as
+    objects and never followed.
+
+    The quarantine record stores this digest so a restore can prove the
+    object it moves back is the complete object it moved out — an
+    unchanged root inode alone cannot show that nothing inside was removed.
+    Returns None when the walk cannot be completed within the deadline or
+    the entry cap, or any entry cannot be read; callers treat None as
+    "not verifiable" and keep the object where it is.
+    """
+    lines: list[str] = []
+    stack: list[tuple[str, Path]] = [("", path)]
+    while stack:
+        prefix, current = stack.pop()
+        try:
+            with os.scandir(current) as iterator:
+                children = sorted(iterator, key=lambda entry: entry.name)
+        except OSError:
+            return None
+        for entry in children:
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            if len(lines) >= _RETENTION_TREE_ENTRY_CAP:
+                return None
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                return None
+            reparse = bool(getattr(info, "st_file_attributes", 0) & 0x400)
+            if stat.S_ISLNK(info.st_mode) or reparse:
+                kind, size = "l", 0
+            elif stat.S_ISDIR(info.st_mode):
+                kind, size = "d", 0
+                stack.append((relative, Path(entry.path)))
+            elif stat.S_ISREG(info.st_mode):
+                kind, size = "f", info.st_size
+            else:
+                kind, size = "o", 0
+            lines.append(f"{kind}\t{size}\t{relative}")
+    lines.sort()
+    return {"sha256": sha256_text("\n".join(lines)), "entries": len(lines)}
+
+
 def _retention_read_record(path: Path) -> dict[str, Any] | None:
-    """Strictly validate one quarantine transaction record."""
+    """Strictly validate one quarantine transaction record.
+
+    Current records use ``cg-retention-quarantine/v3`` and the four-state
+    machine; R1 candidate records (v2) stay readable for their two states.
+    The quarantine object must be a single component that belongs to the
+    record's own original name, so a record can never point a transition
+    at another record's object.
+    """
     try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+            return None
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     if not isinstance(record, dict):
         return None
-    if record.get("schema") != RETENTION_QUARANTINE_RECORD_SCHEMA:
+    schema = record.get("schema")
+    if schema == RETENTION_QUARANTINE_RECORD_SCHEMA:
+        states = _RETENTION_RECORD_STATES
+    elif schema in _RETENTION_LEGACY_RECORD_SCHEMAS:
+        states = _RETENTION_LEGACY_RECORD_STATES
+    else:
         return None
-    if record.get("state") not in {"planned", "quarantined"}:
+    if record.get("state") not in states:
         return None
-    if not _is_session_component(record.get("original_name")):
+    original = record.get("original_name")
+    if not _is_session_component(original):
         return None
     object_name = record.get("quarantine_object")
-    if (not isinstance(object_name, str) or not object_name
+    if (not isinstance(object_name, str)
+            or not object_name.startswith(f"{original}.")
+            or len(object_name) <= len(original) + 1
             or "/" in object_name or "\\" in object_name
             or object_name in {".", ".."}):
         return None
@@ -24521,7 +24737,75 @@ def _retention_read_record(path: Path) -> dict[str, Any] | None:
     if (not isinstance(identity, list) or len(identity) != 2
             or any(type(part) is not int for part in identity)):
         return None
+    digest = record.get("state_sha256")
+    if not (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+        return None
+    tree = record.get("tree")
+    if tree is not None and not (
+            isinstance(tree, dict)
+            and isinstance(tree.get("sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", tree["sha256"])
+            and type(tree.get("entries")) is int and tree["entries"] >= 0):
+        return None
     return record
+
+
+def _retention_scan_records(
+    qdir: Path,
+) -> tuple[list[tuple[Path, dict[str, Any]]], list[tuple[Path, str | None]]]:
+    """Every record file under the verified quarantine directory.
+
+    Returns (valid, unknown). An unknown record (unreadable, unsupported
+    schema or state, inconsistent fields) is never a transition input: its
+    object is neither purged nor restored, and when it still names a
+    session that name is protected from silent recreation.
+    """
+    try:
+        qinfo = qdir.lstat()
+    except OSError:
+        return [], []
+    if (not stat.S_ISDIR(qinfo.st_mode) or qdir.is_symlink()
+            or getattr(qinfo, "st_file_attributes", 0) & 0x400):
+        return [], []
+    try:
+        paths = sorted(qdir.glob("*.record.json"))
+    except OSError:
+        return [], []
+    valid: list[tuple[Path, dict[str, Any]]] = []
+    unknown: list[tuple[Path, str | None]] = []
+    for record_path in paths:
+        record = _retention_read_record(record_path)
+        if record is not None:
+            valid.append((record_path, record))
+            continue
+        label = None
+        with contextlib.suppress(OSError, UnicodeError, ValueError):
+            raw = json.loads(record_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and _is_session_component(raw.get("original_name")):
+                label = raw["original_name"]
+        unknown.append((record_path, label))
+    return valid, unknown
+
+
+def _retention_iter_records(qdir: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Read every strictly valid quarantine record under the verified qdir."""
+    return _retention_scan_records(qdir)[0]
+
+
+def _retention_lstat(path: Path) -> os.stat_result | None:
+    """lstat that maps only a missing object to None; other errors raise."""
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _retention_bound_dir(info: os.stat_result | None, record: dict[str, Any]) -> bool:
+    """True when ``info`` is the real directory the record is bound to."""
+    return (info is not None and stat.S_ISDIR(info.st_mode)
+            and not stat.S_ISLNK(info.st_mode)
+            and not getattr(info, "st_file_attributes", 0) & 0x400
+            and [info.st_dev, info.st_ino] == record.get("identity"))
 
 
 def _retention_acquire_lifecycle_lock(candidate: Path):
@@ -24544,6 +24828,7 @@ def _retention_acquire_lifecycle_lock(candidate: Path):
         return None
     flags = (os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0))
     try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(lock_path, flags, 0o600)
     except OSError:
         return None
@@ -24574,21 +24859,30 @@ def _retention_acquire_lifecycle_lock(candidate: Path):
 
 def _retention_quarantine_object(
     root: Path, candidate: Path, item: dict[str, Any], manifest: dict[str, Any],
-    now: dt.datetime, *, policy: dict[str, Any],
+    now: dt.datetime, *, policy: dict[str, Any], deadline: float | None = None,
 ) -> dict[str, Any]:
     """Move one re-verified object into recoverable quarantine.
 
-    Transaction order: intent record (``planned``) first, then the rename,
-    then the ``quarantined`` commit. A failure at any point leaves a
-    determinate state the next pass recovers or rolls back; the original
-    object is only gone after a rename whose intent record already exists.
+    Called under the maintenance lock and the object's held lifecycle lock.
+    Transaction order: structural digest, ``planned`` intent record, rename,
+    ``quarantined`` commit. The deadline is re-checked after the intent is
+    durable and before the rename, so an expired budget rolls the intent
+    back instead of starting the move. Every interruption leaves a state
+    ``_retention_settle_record`` decides deterministically.
     """
+    del policy  # the caller already linearized the policy under the lock
     qdir = _retention_quarantine_dir(root)
     stamp = str(now.strftime("%Y%m%dT%H%M%S")) + "q" + \
         sha256_text(f"{candidate.name}:{time.time_ns():d}")[:8]
     target = qdir / f"{candidate.name}.{stamp}"
     record_path = qdir / f"{target.name}.record.json"
     outcome: dict[str, Any] = {"name": candidate.name, "action": "quarantine"}
+    tree = _retention_tree_digest(candidate, deadline)
+    if tree is None:
+        expired = deadline is not None and time.monotonic() >= deadline
+        outcome.update(action="skipped",
+                       reason="deadline" if expired else "tree_unverifiable")
+        return outcome
     try:
         qdir.mkdir(parents=True, exist_ok=True)
         qinfo = qdir.lstat()
@@ -24608,17 +24902,29 @@ def _retention_quarantine_object(
             "policy_version": manifest["policy_version"],
             "manifest_sha256": manifest["manifest_sha256"],
             "state_sha256": item["state_sha256"],
+            "tree": tree,
             "restore": "context_guard.py cleanup --restore <name>",
         }
-        # Intent record first: a crash before the rename rolls back, a
-        # crash after the rename is recovered by promotion.
         _retention_write_record(record_path, record)
+    except (OSError, PrivateBoundaryError) as exc:
+        outcome.update(action="skipped", reason="quarantine_failed",
+                       error=type(exc).__name__)
+        return outcome
+    if deadline is not None and time.monotonic() >= deadline:
+        # Budget expired between intent and move: never start the rename.
+        try:
+            record_path.unlink()
+        except OSError:
+            outcome["record_pending"] = True  # recovery rolls it back
+        outcome.update(action="skipped", reason="deadline")
+        return outcome
+    try:
         os.rename(candidate, target)
     except OSError as exc:
-        if record_path.exists():
-            # The rename never landed (or failed): roll the intent back.
-            with contextlib.suppress(OSError):
-                record_path.unlink()
+        try:
+            record_path.unlink()
+        except OSError:
+            outcome["record_pending"] = True  # recovery rolls it back
         reason = "cross_device" if exc.errno == errno.EXDEV else "quarantine_failed"
         outcome.update(action="skipped", reason=reason, error=type(exc).__name__)
         return outcome
@@ -24626,82 +24932,127 @@ def _retention_quarantine_object(
     record["quarantined_at"] = record["planned_at"]
     try:
         _retention_write_record(record_path, record)
-    except OSError:
-        # The rename landed; the commit record stays pending and the
-        # recovery pass promotes it. The object is safely in quarantine.
+    except (OSError, PrivateBoundaryError):
+        # The rename landed; the recovery pass promotes the intent.
         outcome["record_pending"] = True
     outcome["quarantine_object"] = target.name
     return outcome
 
 
-def _retention_iter_records(qdir: Path) -> list[tuple[Path, dict[str, Any]]]:
-    """Read every strictly valid quarantine record under the verified qdir."""
+def _retention_complete_purge(
+    qdir: Path, record_path: Path, record: dict[str, Any], now: dt.datetime,
+    *, cause: str = "purged",
+) -> bool:
+    """Finish a purge whose data is gone: tombstone first, then retire the
+    record. Idempotent; a failure leaves the ``purge_planned`` record (which
+    itself still blocks recreation) for the next pass."""
+    tombstone_path = qdir / (str(record["quarantine_object"]) + ".tombstone.json")
     try:
-        qinfo = qdir.lstat()
-        if (not stat.S_ISDIR(qinfo.st_mode) or qdir.is_symlink()
-                or getattr(qinfo, "st_file_attributes", 0) & 0x400):
-            return []
-        records = []
-        for record_path in sorted(qdir.glob("*.record.json")):
-            record = _retention_read_record(record_path)
-            if record is not None:
-                records.append((record_path, record))
-        return records
+        if not tombstone_path.exists():
+            _retention_write_record(tombstone_path, {
+                "schema": RETENTION_TOMBSTONE_SCHEMA,
+                "original_name": record["original_name"],
+                "purged_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "quarantined_at": record.get("quarantined_at"),
+                "policy_version": record.get("policy_version"),
+                "cause": cause,
+                "restore": "unavailable_after_purge",
+                "tombstone_retention_days": _RETENTION_TOMBSTONE_RETENTION_DAYS,
+            })
+        record_path.unlink(missing_ok=True)
+    except (OSError, PrivateBoundaryError):
+        return False
+    return True
+
+
+def _retention_settle_record(
+    root: Path, qdir: Path, record_path: Path, record: dict[str, Any],
+    now: dt.datetime,
+) -> str:
+    """Decide one interrupted transaction from (state, home, target).
+
+    ``planned``: home is the bound object and target absent -> the rename
+    never landed, roll the intent back; target is the bound object and home
+    is not -> the rename landed, promote to ``quarantined``.
+    ``restore_planned``: home bound and target absent -> the rename back
+    landed, retire the record; target bound and home absent -> it never
+    landed, revert to ``quarantined``.
+    ``purge_planned`` with the target gone -> the data is already removed,
+    complete the tombstone and retire the record. A partially removed
+    target stays ``purge_planned`` for the purge pass (it needs current
+    policy and the held locks). Anything else is reported indeterminate and
+    left untouched — never silently resolved, never restorable by guess.
+    """
+    state = record["state"]
+    home = root / V2_NAMESPACE / str(record["original_name"])
+    target = qdir / str(record["quarantine_object"])
+    try:
+        home_info = _retention_lstat(home)
+        target_info = _retention_lstat(target)
     except OSError:
-        return []
+        return "indeterminate"
+    home_bound = _retention_bound_dir(home_info, record)
+    target_bound = _retention_bound_dir(target_info, record)
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        if state == "planned":
+            if home_bound and target_info is None:
+                record_path.unlink()
+                return "rolled_back"
+            if target_bound and not home_bound:
+                record = dict(record, state="quarantined",
+                              quarantined_at=record.get("planned_at"),
+                              recovered_at=stamp)
+                _retention_write_record(record_path, record)
+                return "recovered"
+            return "indeterminate"
+        if state == "restore_planned":
+            if home_bound and target_info is None:
+                record_path.unlink()
+                return "completed"
+            if target_bound and home_info is None:
+                record = dict(record, state="quarantined", recovered_at=stamp)
+                record.pop("restore_started_at", None)
+                _retention_write_record(record_path, record)
+                return "rolled_back"
+            return "indeterminate"
+        if state == "purge_planned" and target_info is None:
+            return ("completed" if _retention_complete_purge(
+                qdir, record_path, record, now) else "indeterminate")
+    except (OSError, PrivateBoundaryError):
+        return "indeterminate"
+    return "unchanged"
 
 
 def _retention_recover_records(
-    qdir: Path, now: dt.datetime,
+    qdir: Path, now: dt.datetime, *, deadline: float | None = None,
 ) -> dict[str, int]:
-    """Promote or roll back records left pending by an interrupted pass.
+    """Settle every interrupted transaction under the quarantine directory.
 
-    ``planned`` + original present + no target: the rename never landed —
-    roll back. ``planned`` + original gone + verified target present: the
-    rename landed and the commit write failed — promote to ``quarantined``.
-    Anything indeterminate stays visible as pending and is never silently
-    resolved.
+    ``qdir`` is the data root's quarantine directory; the namespace position
+    of each original object is derived from that root (never from the
+    record's own location). Bounded by the caller's deadline.
     """
-    summary = {"rolled_back": 0, "recovered": 0, "indeterminate": 0}
+    summary = {"rolled_back": 0, "recovered": 0, "completed": 0,
+               "indeterminate": 0}
+    root = qdir.parent.parent.parent
+    if _retention_quarantine_dir(root) != qdir:
+        return summary
     for record_path, record in _retention_iter_records(qdir):
-        if record.get("state") != "planned":
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        if record.get("state") == "quarantined":
             continue
-        home = (record_path.parent.parent / V2_NAMESPACE
-                / str(record["original_name"]))
-        target = qdir / str(record["quarantine_object"])
-        try:
-            home_exists = home.exists() or home.is_symlink()
-            target_info = target.lstat()
-        except OSError:
-            summary["indeterminate"] += 1
-            continue
-        target_ok = (stat.S_ISDIR(target_info.st_mode)
-                     and [target_info.st_dev, target_info.st_ino]
-                     == record.get("identity"))
-        if not home_exists and target_ok:
-            record["state"] = "quarantined"
-            record["quarantined_at"] = record.get("planned_at")
-            record["recovered_at"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-            try:
-                _retention_write_record(record_path, record)
-                summary["recovered"] += 1
-            except OSError:
-                summary["indeterminate"] += 1
-            continue
-        if not home_exists and not target_ok:
-            # Neither the original nor a verified target exists: the record
-            # stays visible as pending instead of being silently dropped.
-            summary["indeterminate"] += 1
-            continue
-        if home_exists and not target.exists():
-            try:
-                record_path.unlink()
-                summary["rolled_back"] += 1
-            except OSError:
-                summary["indeterminate"] += 1
-            continue
-        summary["indeterminate"] += 1
+        outcome = _retention_settle_record(root, qdir, record_path, record, now)
+        if outcome in summary:
+            summary[outcome] += 1
     return summary
+
+
+def _retention_empty_purge_summary() -> dict[str, int]:
+    return {"purged": 0, "purge_pending": 0, "purge_partial": 0,
+            "tombstones_retired": 0, "purge_disabled": 0,
+            "purge_refused": 0, "purge_busy": 0, "tombstone_pending": 0}
 
 
 def _retention_purge_pass(
@@ -24710,76 +25061,86 @@ def _retention_purge_pass(
 ) -> dict[str, Any]:
     """Quarantine past its grace period moves to permanent reclaim.
 
-    Every target is verified against its record's bound identity before an
-    fd-anchored removal; a replaced, linked or foreign object is never
-    purged (the record stays pending with the reason visible). Restore is
-    no longer possible after purge; the tombstone is written before the
-    record is retired, so a crash between the two completes the tombstone
-    on the next pass instead of losing the anti-resurrection record.
+    Each object is purged only while the CURRENT policy authorizes it, the
+    original name's lifecycle lock is held (a live writer or reader of that
+    name defers the purge), and the target is still the record's bound
+    directory. ``purge_planned`` is written before the first unlink — from
+    then on the object is never restorable — and the bounded removal
+    resumes on later passes. The tombstone is written before the record is
+    retired; a lost tombstone write is completed from the record next pass.
     """
-    summary = {"purged": 0, "purge_pending": 0, "purge_partial": 0,
-               "tombstones_retired": 0, "purge_disabled": 0,
-               "purge_refused": 0}
+    del policy  # re-read per object below, inside the held locks
+    summary = _retention_empty_purge_summary()
     qdir = _retention_quarantine_dir(root)
     for record_path, record in _retention_iter_records(qdir):
         if deadline is not None and time.monotonic() >= deadline:
             break
-        if record.get("state") != "quarantined":
-            continue  # planned records are recovery business, not purge input
-        quarantined = parse_time(str(record.get("quarantined_at") or ""))
-        if quarantined is None:
-            summary["purge_pending"] += 1
-            continue
-        grace = float(policy["quarantine_days"])
-        if (now - quarantined).total_seconds() < grace * 86400.0:
-            summary["purge_pending"] += 1
-            continue
-        if not policy["purge_enabled"]:
+        state = record.get("state")
+        if state not in {"quarantined", "purge_planned"}:
+            continue  # intent states are recovery business
+        current = read_retention_policy(root)
+        if state == "quarantined":
+            quarantined = parse_time(str(record.get("quarantined_at") or ""))
+            if quarantined is None:
+                summary["purge_pending"] += 1
+                continue
+            grace = float(current["quarantine_days"])
+            if (now - quarantined).total_seconds() < grace * 86400.0:
+                summary["purge_pending"] += 1
+                continue
+        if (not current["enabled"] or not current["purge_enabled"]
+                or current.get("policy_invalid")):
             summary["purge_disabled"] += 1
             continue
-        object_name = str(record.get("quarantine_object"))
-        target = qdir / object_name
-        tombstone_path = qdir / (
-            object_name + ".tombstone.json")
+        home = root / V2_NAMESPACE / str(record["original_name"])
+        release = _retention_acquire_lifecycle_lock(home)
+        if release is None:
+            summary["purge_busy"] += 1
+            continue
         try:
-            target_info = target.lstat()
-        except FileNotFoundError:
-            # The object is gone but the record survived: the tombstone
-            # (already written or not) completes idempotently.
-            if tombstone_path.exists():
-                record_path.unlink(missing_ok=True)
+            fresh = _retention_read_record(record_path)
+            if fresh is None or fresh.get("state") != state:
+                summary["purge_pending"] += 1
+                continue
+            record = fresh
+            target = qdir / str(record["quarantine_object"])
+            try:
+                target_info = _retention_lstat(target)
+            except OSError:
+                summary["purge_pending"] += 1
+                continue
+            if target_info is None:
+                cause = "purged" if state == "purge_planned" else "object_missing"
+                if _retention_complete_purge(qdir, record_path, record, now,
+                                             cause=cause):
+                    summary["purged"] += 1
+                else:
+                    summary["tombstone_pending"] += 1
+                continue
+            if not _retention_bound_dir(target_info, record):
+                # A replaced or linked quarantine object never authorizes
+                # removal of whatever occupies its name.
+                summary["purge_refused"] += 1
+                continue
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            if state == "quarantined":
+                record = dict(record, state="purge_planned",
+                              purge_started_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+                try:
+                    _retention_write_record(record_path, record)
+                except (OSError, PrivateBoundaryError):
+                    summary["purge_pending"] += 1
+                    continue
+            if not _retention_purge_tree(target, deadline):
+                summary["purge_partial"] += 1
+                continue
+            if _retention_complete_purge(qdir, record_path, record, now):
                 summary["purged"] += 1
             else:
-                summary["purge_pending"] += 1
-            continue
-        except OSError:
-            summary["purge_pending"] += 1
-            continue
-        if (not stat.S_ISDIR(target_info.st_mode) or target.is_symlink()
-                or getattr(target_info, "st_file_attributes", 0) & 0x400
-                or [target_info.st_dev, target_info.st_ino] != record.get("identity")):
-            # A replaced or linked quarantine object never authorizes
-            # removal of whatever occupies its name.
-            summary["purge_refused"] += 1
-            continue
-        if not _retention_purge_tree(target, deadline):
-            summary["purge_partial"] += 1
-            continue
-        try:
-            _retention_write_record(tombstone_path, {
-                "schema": RETENTION_TOMBSTONE_SCHEMA,
-                "original_name": record["original_name"],
-                "purged_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "quarantined_at": record.get("quarantined_at"),
-                "policy_version": record.get("policy_version"),
-                "restore": "unavailable_after_purge",
-                "tombstone_retention_days": _RETENTION_TOMBSTONE_RETENTION_DAYS,
-            })
-        except (OSError, PrivateBoundaryError):
-            summary["purge_partial"] += 1
-            continue
-        record_path.unlink(missing_ok=True)
-        summary["purged"] += 1
+                summary["tombstone_pending"] += 1
+        finally:
+            release()
     # Tombstones themselves expire so purge history cannot grow forever.
     cutoff = now - dt.timedelta(days=_RETENTION_TOMBSTONE_RETENTION_DAYS)
     try:
@@ -24802,18 +25163,53 @@ def _retention_purge_pass(
     return summary
 
 
+def _retention_verify_restorable(
+    target: Path, record: dict[str, Any], deadline: float | None,
+) -> str:
+    """Prove the quarantined object is the complete object that was moved
+    out: bound identity, the recorded state digest, and (for v3 records)
+    the structural tree digest. Returns "" or the refusal reason."""
+    try:
+        info = _retention_lstat(target)
+    except OSError:
+        return "unreadable"
+    if info is None:
+        return "purged_or_removed"
+    if not _retention_bound_dir(info, record):
+        return "identity_mismatch"
+    state_path = target / "state.json"
+    try:
+        state_info = state_path.lstat()
+        if not stat.S_ISREG(state_info.st_mode) or state_path.is_symlink():
+            return "content_mismatch"
+        digest = hashlib.sha256(state_path.read_bytes()).hexdigest()
+    except OSError:
+        return "content_mismatch"
+    if digest != record.get("state_sha256"):
+        return "content_mismatch"
+    expected_tree = record.get("tree")
+    if expected_tree is not None:
+        actual_tree = _retention_tree_digest(target, deadline)
+        if actual_tree is None:
+            return "content_unverifiable"
+        if actual_tree != expected_tree:
+            return "content_mismatch"
+    return ""
+
+
 def retention_restore(
     root: Path, name: str, *, assume_lifecycle_lock_held: bool = False,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Restore one quarantined object to its original namespace position.
 
-    Only a ``quarantined`` record whose target still matches its bound
-    identity can be restored, under the maintenance lock and the shared
-    lifecycle lock; a purged object has no restore path, and a name that
-    already has a live successor or a fresh tombstone is never
-    overwritten. The transparent official-reader path passes
-    ``assume_lifecycle_lock_held`` because the dispatch caller already
-    holds that exact session lock.
+    Runs under the maintenance lock and the original name's lifecycle lock
+    (the transparent official-reader path already holds the latter and
+    passes ``assume_lifecycle_lock_held``). Interrupted transactions for
+    this name are settled first. Only a ``quarantined`` object that is
+    provably complete (identity, state digest, tree digest) is moved back,
+    behind a ``restore_planned`` intent; a ``purge_planned`` object is
+    never restorable, and a live successor is never overwritten.
     """
     report: dict[str, Any] = {"schema": RETENTION_REPORT_SCHEMA,
                               "mode": "restore", "name": name}
@@ -24826,38 +25222,10 @@ def retention_restore(
         report["reason"] = "boundary"
         return report
     qdir = _retention_quarantine_dir(root)
-    matches = [
-        (record_path, record)
-        for record_path, record in _retention_iter_records(qdir)
-        if record.get("original_name") == name
-        and record.get("state") == "quarantined"
-    ]
-    if len(matches) != 1:
-        report["outcome"] = "not_found" if not matches else "ambiguous"
-        return report
-    record_path, record = matches[0]
-    object_name = str(record["quarantine_object"])
-    target_object = qdir / object_name
     home = root / V2_NAMESPACE / name
+    now = dt.datetime.now(dt.timezone.utc)
     try:
-        target_info = target_object.lstat()
-    except OSError:
-        report["outcome"] = "unavailable"
-        report["reason"] = "purged_or_removed"
-        return report
-    if (not stat.S_ISDIR(target_info.st_mode) or target_object.is_symlink()
-            or getattr(target_info, "st_file_attributes", 0) & 0x400
-            or [target_info.st_dev, target_info.st_ino] != record.get("identity")):
-        report["outcome"] = "refused"
-        report["reason"] = "identity_mismatch"
-        return report
-    if home.exists() or home.is_symlink():
-        report["outcome"] = "refused"
-        report["reason"] = "live_successor_exists"
-        return report
-    held = _retention_maintenance_lock(root)
-    try:
-        with held:
+        with _retention_maintenance_lock(root, deadline=deadline):
             if assume_lifecycle_lock_held:
                 release = None
             else:
@@ -24867,31 +25235,57 @@ def retention_restore(
                     report["reason"] = "busy_lock"
                     return report
             try:
-                # Re-check under the held locks; the home position must
-                # still be free and the target must still be the bound
-                # object before the rename.
+                for record_path, record in _retention_iter_records(qdir):
+                    if (record.get("original_name") == name
+                            and record.get("state") != "quarantined"):
+                        _retention_settle_record(root, qdir, record_path, record, now)
+                mine = [(record_path, record)
+                        for record_path, record in _retention_iter_records(qdir)
+                        if record.get("original_name") == name]
+                if any(record.get("state") == "purge_planned" for _p, record in mine):
+                    report["outcome"] = "unavailable"
+                    report["reason"] = "purge_in_progress"
+                    return report
+                if any(record.get("state") != "quarantined" for _p, record in mine):
+                    report["outcome"] = "refused"
+                    report["reason"] = "transaction_indeterminate"
+                    return report
+                if len(mine) != 1:
+                    report["outcome"] = "not_found" if not mine else "ambiguous"
+                    return report
+                record_path, record = mine[0]
+                target = qdir / str(record["quarantine_object"])
                 if home.exists() or home.is_symlink():
                     report["outcome"] = "refused"
                     report["reason"] = "live_successor_exists"
                     return report
-                try:
-                    recheck = target_object.lstat()
-                except OSError:
-                    report["outcome"] = "unavailable"
-                    report["reason"] = "purged_or_removed"
+                reason = _retention_verify_restorable(target, record, deadline)
+                if reason:
+                    report["outcome"] = ("unavailable" if reason == "purged_or_removed"
+                                         else "refused")
+                    report["reason"] = reason
                     return report
-                if [recheck.st_dev, recheck.st_ino] != record.get("identity"):
-                    report["outcome"] = "refused"
-                    report["reason"] = "identity_mismatch"
+                intent = dict(record, state="restore_planned",
+                              restore_started_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+                try:
+                    _retention_write_record(record_path, intent)
+                except (OSError, PrivateBoundaryError):
+                    report["outcome"] = "failed"
+                    report["reason"] = "record_write_failed"
                     return report
                 try:
-                    os.rename(target_object, home)
+                    os.rename(target, home)
                 except OSError as exc:
+                    with contextlib.suppress(OSError, PrivateBoundaryError):
+                        _retention_write_record(record_path, record)
                     report["outcome"] = "failed"
                     report["reason"] = ("cross_device" if exc.errno == errno.EXDEV
                                         else "restore_failed")
                     return report
-                record_path.unlink(missing_ok=True)
+                try:
+                    record_path.unlink()
+                except OSError:
+                    report["record_pending"] = True  # recovery retires it
                 report["outcome"] = "restored"
                 return report
             finally:
@@ -24903,71 +25297,75 @@ def retention_restore(
         return report
 
 
-def _retention_iter_candidates(
-    root: Path, deadline: float | None, cursor: str, pending: list[str],
-    scan_state: dict[str, bool],
-) -> Iterator[str]:
-    """Lazily yield candidate session names for one maintenance pass.
+def _retention_backfill_discovery(
+    root: Path, deadline: float | None, scan_state: dict[str, Any],
+) -> set[str]:
+    """Phase A of discovery: return the registered candidate names after a
+    budgeted readdir backfill.
 
-    The persisted pending queue is drained first (FIFO progress that never
-    depends on readdir order); the live scan then yields names after the
-    decided cursor prefix. The deadline is checked per directory entry, so
-    enumeration and adjudication share one bounded budget, and every
-    pulled-but-unprocessed name re-enters the pending queue instead of
-    being skipped. The registry and queue are discovery hints only: each
-    candidate is re-verified against the live namespace before use.
+    Sessions created by this runtime are registered at creation (see
+    ``_prepare_session_directory``), so the registry is the durable,
+    order-independent candidate list. The backfill only finds names the
+    registry does not carry yet (sessions created by older runtimes, a
+    missing, oversized or corrupted registry) and, once maintenance is
+    adopted, registers them. Every
+    readdir entry — decided or not — is charged against an explicit share
+    of the pass budget, checked before each entry; a cut backfill is
+    reported incomplete and resumes on a later pass. A completed backfill
+    compacts the registry to the live names. Readdir itself is one
+    non-preemptible system call per entry batch; the budget bounds how
+    many entries a pass consumes, not the latency of a single call.
     """
     namespace = root / V2_NAMESPACE
-    queued = sorted(
-        name for name in pending
-        if _is_session_component(name) and (namespace / name).exists()
-    )
-    queued_set = set(queued)
-    for name in queued:
-        yield name
     registry = _read_discovery_registry(root)
+    share_end: float | None = None
+    if deadline is not None:
+        started = time.monotonic()
+        share_end = started + max(0.0, deadline - started) * _RETENTION_BACKFILL_BUDGET_SHARE
+    seen: set[str] = set()
     fresh: list[str] = []
-    adjudicated = 0
+    complete = True
     try:
         with os.scandir(namespace) as source:
-            for entry in source:
-                # The readdir walk itself is not clock-budgeted and the cap
-                # counts only undecided candidates: a long decided prefix is
-                # skipped without consuming either budget, so a finite
-                # namespace's tail is always reached (the retained RV03
-                # starvation risk). The pass deadline is still enforced by
-                # the consumer before every adjudication and destructive
-                # action, so total work stays bounded.
+            iterator = iter(source)
+            while True:
+                if share_end is not None and time.monotonic() >= share_end:
+                    complete = False
+                    break
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    break
                 name = entry.name
                 if name == ".locks" or not _is_session_component(name):
                     continue
-                if name in queued_set or (cursor and name <= cursor):
-                    continue  # queued or already-decided prefix
-                if adjudicated >= _RETENTION_SCAN_ENTRY_CAP:
-                    scan_state["complete"] = False
-                    return
-                adjudicated += 1
-                fresh.append(name)
+                seen.add(name)
                 if name not in registry:
-                    # Register before adjudication so a later pass can find
-                    # this name even if this pass is interrupted first.
-                    _add_cleanup_registry_entries(root, [name])
-                yield name
+                    fresh.append(name)
     except OSError:
-        scan_state["complete"] = False
-        return
+        complete = False
+    # Maintenance objects are written only after adoption (a policy object
+    # exists); a preview of an unadopted root discovers read-only.
+    adopted = _retention_policy_path(root).exists()
     if fresh:
-        # Batch-append any names registered one-by-one above (duplicates are
-        # harmless set semantics on read); a failed append costs discovery
-        # convenience only, never correctness.
-        _add_cleanup_registry_entries(root, fresh)
+        if adopted:
+            _add_cleanup_registry_entries(root, fresh)
+        registry.update(fresh)
+    scan_state["backfill_complete"] = complete
+    scan_state["backfill_entries"] = len(seen)
+    if complete:
+        if adopted and registry != seen:
+            _compact_discovery_registry(root, seen)
+        return seen
+    return registry
 
 
 def _retention_apply_object(
     root: Path, candidate: Path, item: dict[str, Any],
     policy: dict[str, Any], now: dt.datetime,
     report: dict[str, Any], manifest: dict[str, Any] | None,
-) -> None:
+    *, deadline: float | None = None,
+) -> str:
     """Re-verify one bound object under its lifecycle lock and quarantine it.
 
     Called with either a just-adjudicated entry (same-pass apply) or an
@@ -24976,44 +25374,50 @@ def _retention_apply_object(
     version change linearizes against every object; the object is held
     under a created-or-opened lifecycle lock from the final identity
     re-verification through the rename. Nothing here can widen the
-    deletion set beyond the recorded binding.
+    deletion set beyond the recorded binding. Returns "quarantined",
+    "deferred" (the deadline cut the transition before it started; the
+    caller re-queues the name) or the skip reason.
     """
     item = dict(item)
     if "identity" not in item and manifest is None:
         # Same-pass binding carries the adjudicated identity explicitly.
         item["identity"] = item.get("identity")
 
-    def skip(reason: str) -> None:
+    def skip(reason: str) -> str:
+        if reason == "deadline":
+            report["counts"]["deferred"] = report["counts"].get("deferred", 0) + 1
+            _retention_report_entry(report, {"name": candidate.name,
+                                             "verdict": "deferred",
+                                             "reason": reason})
+            return "deferred"
         report["counts"]["skipped"] += 1
         _retention_report_entry(report, {"name": candidate.name,
                                          "verdict": "skipped",
                                          "reason": reason})
+        return reason
 
     # Linearization point: re-read the policy while holding the maintenance
     # lock; a corrupted, revoked or changed policy never authorizes.
     current_policy = read_retention_policy(root)
     if not current_policy["enabled"]:
-        skip("policy_disabled")
-        return
+        return skip("policy_disabled")
     binding_version = (manifest["policy_version"] if manifest is not None
                        else policy["policy_version"])
     if current_policy["policy_version"] != binding_version:
-        skip("policy_changed")
-        return
+        return skip("policy_changed")
     reason = _retention_reverify_entry(candidate, item, current_policy, now)
     if reason:
-        skip(reason)
-        return
+        return skip(reason)
+    if deadline is not None and time.monotonic() >= deadline:
+        return skip("deadline")
     release = _retention_acquire_lifecycle_lock(candidate)
     if release is None:
-        skip("busy_lock")
-        return
+        return skip("busy_lock")
     try:
         # Final identity binding under the held lifecycle lock.
         reason = _retention_reverify_entry(candidate, item, current_policy, now)
         if reason:
-            skip(reason)
-            return
+            return skip(reason)
         binding_manifest = manifest if manifest is not None else {
             "schema": RETENTION_MANIFEST_SCHEMA,
             "policy_version": current_policy["policy_version"],
@@ -25021,9 +25425,11 @@ def _retention_apply_object(
         }
         outcome = _retention_quarantine_object(
             root, candidate, item, binding_manifest, now,
-            policy=current_policy)
+            policy=current_policy, deadline=deadline)
     finally:
         release()
+    if outcome.get("action") != "quarantine" and outcome.get("reason") == "deadline":
+        return skip("deadline")
     if outcome.get("action") == "quarantine":
         report["counts"]["quarantined"] += 1
     else:
@@ -25038,6 +25444,8 @@ def _retention_apply_object(
     if outcome.get("record_pending"):
         applied["record_pending"] = True
     _retention_report_entry(report, applied)
+    return applied["verdict"] if applied["verdict"] == "quarantined" else str(
+        outcome.get("reason") or "skipped")
 
 
 def _retention_report_entry(report: dict[str, Any], entry: dict[str, Any]) -> None:
@@ -25049,6 +25457,19 @@ def _retention_maintenance_pass(
     root: Path, *, deadline: float | None, apply: bool,
     manifest: dict[str, Any] | None, with_manifest: bool = False,
 ) -> dict[str, Any]:
+    """One bounded maintenance pass.
+
+    Work order, every unit checked against the single pass deadline: wait
+    for the maintenance lock (the deadline bounds the wait), settle
+    interrupted transactions, budgeted backfill discovery (Phase A), the
+    persisted pending queue, then the registered names in stable sorted
+    order after the persisted window cursor, wrapping into a new
+    generation when the window completes. A candidate that is not reached
+    stays registered and is reached by a later pass, so every finite set
+    of registered names is adjudicated within a bounded number of passes
+    regardless of readdir order, insertions or deletions. No destructive
+    transition starts after the deadline.
+    """
     started = time.monotonic()
     now = dt.datetime.now(dt.timezone.utc)
     report: dict[str, Any] = {
@@ -25077,11 +25498,17 @@ def _retention_maintenance_pass(
         # object, no locks directory, no cursor write on a fresh root).
         report["refused"] = "missing_data_root"
         return report
-    # One maintenance lock serializes the whole pass against policy writes
-    # and other maintenance processes; every destructive transition below
-    # also re-reads the policy inside this lock.
-    held = _retention_maintenance_lock(root)
-    with held:
+    if deadline is not None and time.monotonic() >= deadline:
+        report["backlog"] = True
+        report["deadline_reached"] = "before_lock"
+        if apply:
+            report["purge"] = _retention_empty_purge_summary()
+        report["elapsed_seconds"] = round(time.monotonic() - started, 4)
+        return report
+    # One maintenance lock serializes the whole pass against policy writes,
+    # restores and other maintenance threads/processes; every destructive
+    # transition below also re-reads the policy inside this lock.
+    with _retention_maintenance_lock(root, deadline=deadline):
         policy = read_retention_policy(root)
         report["policy"] = {key: policy[key] for key in (
             "schema", "enabled", "min_age_days", "quarantine_days",
@@ -25096,67 +25523,101 @@ def _retention_maintenance_pass(
                 raise RuntimeError(
                     "retention policy changed since the manifest was generated")
 
-        # Recover quarantine transactions interrupted by an earlier crash
-        # before any new work; promotion, rollback and indeterminate records
-        # are visible in the report.
+        # Settle interrupted transactions before any new work.
         qdir = _retention_quarantine_dir(root)
-        report["recovery"] = _retention_recover_records(qdir, now)
+        report["recovery"] = _retention_recover_records(qdir, now, deadline=deadline)
+        report["unknown_records"] = len(_retention_scan_records(qdir)[1])
 
         cursor, pending = _read_cleanup_state(root)
-        scan_state = {"complete": True}
-        candidates = _retention_iter_candidates(
-            root, deadline, cursor, pending, scan_state)
+        namespace = root / V2_NAMESPACE
+        queued = sorted({name for name in pending if _is_session_component(name)})
         eligible_entries: list[dict[str, Any]] = []
         protected_reasons: dict[str, int] = {}
-        processed: list[str] = []
-        pulled_unprocessed: list[str] = []
-        interrupted = False
-        current: str | None = None
-        while True:
+        requeue: set[str] = set()
+        progress = {"adjudicated": 0, "interrupted": False}
+
+        def visit(name: str) -> bool:
+            """Adjudicate (and in same-pass apply, transition) one name.
+            Returns False when the pass must stop (deadline or cap); the
+            name is then NOT consumed."""
             if deadline is not None and time.monotonic() >= deadline:
-                interrupted = True
-                break
+                progress["interrupted"] = True
+                return False
+            if progress["adjudicated"] >= _RETENTION_SCAN_ENTRY_CAP:
+                return False
+            candidate = namespace / name
+            entry: dict[str, Any] | None = None
             try:
-                current = next(candidates)
-            except StopIteration:
-                current = None
-                break
-            processed.append(current)
+                if _retention_lstat(candidate) is None:
+                    return True  # registered or queued name no longer exists
+            except OSError:
+                # An unreadable identity protects; it is retried next pass.
+                entry = {"name": name, "verdict": "protected", "reason": "boundary"}
+            progress["adjudicated"] += 1
             report["counts"]["scanned"] += 1
-            candidate = root / V2_NAMESPACE / current
-            entry = _retention_adjudicate(candidate, policy, now)
+            if entry is None:
+                entry = _retention_adjudicate(candidate, policy, now)
             compact = {"name": entry["name"], "verdict": entry["verdict"]}
             if entry.get("reason"):
                 compact["reason"] = entry["reason"]
             if "age_days" in entry:
                 compact["age_days"] = entry["age_days"]
+            if len(report["entries"]) < _RETENTION_REPORT_ENTRY_LIMIT:
+                report["entries"].append(compact)
             if entry["verdict"] == "eligible":
                 report["counts"]["eligible"] += 1
                 eligible_entries.append(entry)
-                # Same-pass apply is atomic per object: the object just
-                # adjudicated is immediately re-verified under its held
-                # lifecycle lock against its own recorded identity and state
-                # digest, after a fresh in-lock policy re-read, and then
-                # quarantined behind an intent record. An external manifest
-                # apply uses the same per-object re-verification.
+                # Same-pass apply is atomic per object: re-verified under its
+                # held lifecycle lock against its own recorded identity and
+                # state digest after a fresh in-lock policy re-read. A
+                # transition the deadline cut before it started is re-queued
+                # so the next pass serves it first.
                 if apply and manifest is None:
-                    _retention_apply_object(
-                        root, candidate, entry, policy, now, report,
-                        manifest=None)
+                    if _retention_apply_object(
+                            root, candidate, entry, policy, now, report,
+                            manifest=None, deadline=deadline) == "deferred":
+                        requeue.add(name)
             else:
                 report["counts"]["protected"] += 1
                 protected_reasons[entry.get("reason", "unknown")] = \
                     protected_reasons.get(entry.get("reason", "unknown"), 0) + 1
-            if len(report["entries"]) < _RETENTION_REPORT_ENTRY_LIMIT:
-                report["entries"].append(compact)
-            current = None
-        if current is not None:
-            # A pulled-but-unprocessed candidate re-enters the queue.
-            pulled_unprocessed.append(current)
-            processed.remove(current)
-        if interrupted:
-            scan_state["complete"] = False
-        report["scan_complete"] = scan_state["complete"]
+            return True
+
+        # 1. The persisted queue first: deferred work gets the budget first.
+        unserved: list[str] = []
+        for index, name in enumerate(queued):
+            if not visit(name):
+                unserved = queued[index:]
+                break
+        # 2. Budgeted backfill discovery (a share of what remains).
+        scan_state: dict[str, Any] = {}
+        if not unserved and not progress["interrupted"]:
+            registry = _retention_backfill_discovery(root, deadline, scan_state)
+        else:
+            registry = _read_discovery_registry(root)
+            scan_state["backfill_complete"] = False
+        # 3. Registered names in stable order after the window cursor.
+        queued_set = set(queued)
+        window = sorted(name for name in registry
+                        if name not in queued_set and (not cursor or name > cursor))
+        last_window: str | None = None
+        window_complete = not unserved
+        if window_complete:
+            for name in window:
+                if not visit(name):
+                    window_complete = False
+                    break
+                last_window = name
+        interrupted = progress["interrupted"]
+        scan_complete = (bool(scan_state.get("backfill_complete"))
+                         and window_complete and not interrupted)
+        report["scan_complete"] = scan_complete
+        report["discovery"] = {
+            "backfill_complete": bool(scan_state.get("backfill_complete")),
+            "backfill_entries": scan_state.get("backfill_entries", 0),
+            "registered": len(registry),
+            "window_complete": window_complete,
+        }
         report["protected_reasons"] = protected_reasons
         if with_manifest:
             binding = _retention_make_manifest(root, policy, eligible_entries, now)
@@ -25166,10 +25627,8 @@ def _retention_maintenance_pass(
 
         apply_deferred: list[str] = []
         if apply and manifest is not None:
-            # External manifest apply: consume exactly the saved binding. Each
-            # object is re-verified against its recorded identity and digest
-            # under the lifecycle lock; a budget cut defers the remaining names
-            # into the pending queue instead of dropping them.
+            # External manifest apply: consume exactly the saved binding. A
+            # budget cut defers the remaining names into the pending queue.
             report["manifest_sha256"] = manifest["manifest_sha256"]
             for item_index, item in enumerate(manifest["entries"]):
                 if deadline is not None and time.monotonic() >= deadline:
@@ -25179,18 +25638,17 @@ def _retention_maintenance_pass(
                         if isinstance(planned, dict))
                     report["backlog"] = True
                     break
-                candidate = root / V2_NAMESPACE / str(item.get("name") or "")
+                candidate = namespace / str(item.get("name") or "")
                 _retention_apply_object(
                     root, candidate, item if isinstance(item, dict) else {},
-                    policy, now, report, manifest)
+                    policy, now, report, manifest, deadline=deadline)
             if apply_deferred:
                 report["apply_deferred"] = apply_deferred
         if apply and manifest is None and eligible_entries:
-            # Record the same-pass binding digest for auditability.
             binding = _retention_make_manifest(
                 root, policy,
                 [entry for entry in eligible_entries
-                 if (root / V2_NAMESPACE / entry["name"]).exists()],
+                 if (namespace / entry["name"]).exists()],
                 now)
             report["manifest_sha256"] = binding["manifest_sha256"]
         if apply and policy["enabled"] and not policy.get("policy_invalid"):
@@ -25198,31 +25656,23 @@ def _retention_maintenance_pass(
                 report["purge"] = _retention_purge_pass(
                     root, policy, now, deadline)
             else:
-                report["purge"] = {"purge_disabled": 1, "purged": 0,
-                                   "purge_pending": 0, "purge_partial": 0,
-                                   "purge_refused": 0,
-                                   "tombstones_retired": 0}
+                report["purge"] = dict(_retention_empty_purge_summary(),
+                                       purge_disabled=1)
 
-        # Persist enumeration progress: a completed generation resets the
-        # cursor, an interrupted one resumes exactly where it stopped. The
-        # pending queue carries pulled-but-unprocessed names so no candidate is
-        # ever lost to a budget cut.
-        queued_pending = [
-            name for name in pending if _is_session_component(name)
-            and name not in set(processed)
-        ]
-        remaining = set(queued_pending) | set(pulled_unprocessed)
+        # Persist progress: the window cursor advances only past processed
+        # names and resets when a generation completes; unprocessed queue
+        # names and budget-deferred apply items stay queued.
+        remaining = set(unserved) | requeue
         if apply:
-            # Budget-deferred apply items re-enter the queue for the next pass.
             remaining |= {name for name in apply_deferred
                           if _is_session_component(name)}
-        remaining = sorted(remaining)
-        if not remaining and scan_state["complete"] and not interrupted:
+        next_cursor = "" if window_complete else (last_window or cursor)
+        if not remaining and scan_complete:
             _reset_cleanup_state(root, deadline=deadline)
             report["backlog"] = False
         else:
-            next_cursor = processed[-1] if processed else cursor
-            _write_cleanup_state(root, next_cursor, remaining, deadline=deadline)
+            _write_cleanup_state(root, next_cursor, sorted(remaining),
+                                 deadline=deadline)
             report["backlog"] = True
     report["elapsed_seconds"] = round(time.monotonic() - started, 4)
     return report
@@ -25706,20 +26156,102 @@ def _print_retention_summary(report: dict[str, Any]) -> None:
           f"backlog={report.get('backlog')}")
 
 
-# --- opt-in scheduled maintenance (0.17.0 B10) ------------------------------
-# Both platforms share one versioned executor: the platform scheduler entry
-# invokes `context_guard.py cleanup --data-dir <root> --apply --json`, so the
-# same policy-gated, manifest-bound pass runs everywhere and registration is
-# always an explicit user action. The product never creates a schedule on its
-# own; enable/disable/status are inspectable and idempotent.
+# --- opt-in scheduled maintenance (0.17.0 B10, R2 RF-SCHED) ----------------
+# Both platforms run one versioned executor: the verified interpreter that
+# executed the explicit enable command runs this exact script as
+# `cleanup --data-dir <root> --apply --json`. Registration is always an
+# explicit user action; the product never schedules on its own.
+#
+# Lifecycle contract (same on both platforms): enable/disable/status act only
+# on a MANAGED entry — a label under the managed prefix whose live definition
+# matches the ownership manifest this data root recorded. An existing entry
+# that is not provably ours is reported as foreign and never overwritten,
+# unloaded or deleted. "prepared" (a definition exists) and "enabled" (the
+# platform scheduler has it loaded/enabled) are different, read-back facts.
+# Every platform command goes through `_retention_scheduler_run`, the single
+# adapter seam tests replace; no test reaches the real launchd or Task
+# Scheduler.
 
-_RETENTION_MACOS_PLIST_NAME = "com.context-guard.retention.plist"
+_RETENTION_SCHEDULE_SCHEMA = "cg-retention-schedule/v1"
+# A label becomes a file name (macOS) or task path (Windows): one safe
+# component. Ownership is proven by the definition/manifest match, not by name.
+_RETENTION_SCHEDULE_LABEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+
+
+def _retention_schedule_platform() -> str | None:
+    """The scheduler family for this host: launchd, Task Scheduler or none."""
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform == "win32":
+        return "windows"
+    return None
+
+
+def _retention_scheduler_run(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+    """The only path to a platform scheduler command (adapter seam)."""
+    return subprocess.run(argv, capture_output=True, stdin=subprocess.DEVNULL,
+                          check=False, timeout=60)
+
+
+def _retention_schedule_manifest_path(data_dir: Path) -> Path:
+    return data_dir / V2_NAMESPACE / ".locks" / "retention-schedule.json"
+
+
+def _retention_schedule_identity() -> dict[str, Any]:
+    """Interpreter and script that a scheduled run will execute.
+
+    The interpreter is the one running this enable command (an absolute,
+    existing file of a supported version); the script is this exact file,
+    bound by digest so a status read can tell a stale entry from a current
+    one after the plugin cache moves.
+    """
+    # absolute(), not resolve(): a virtual environment's interpreter link
+    # must stay the program that runs, or the environment is lost.
+    interpreter = Path(sys.executable).absolute()
+    if not interpreter.is_file() or sys.version_info < (3, 10):
+        raise RuntimeError("scheduled maintenance requires a verified Python 3.10+ interpreter")
+    script = Path(__file__).resolve()
+    return {"interpreter": str(interpreter), "script": str(script),
+            "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest()}
 
 
 def _retention_maintenance_executor_command(data_dir: Path) -> list[str]:
-    return ["/usr/bin/env", "python3", "-B", str(
-        Path(__file__).resolve()), "cleanup",
-        "--data-dir", str(data_dir), "--apply", "--json"]
+    identity = _retention_schedule_identity()
+    return [identity["interpreter"], "-B", identity["script"], "cleanup",
+            "--data-dir", str(data_dir), "--apply", "--json"]
+
+
+def _retention_read_schedule_manifest(data_dir: Path) -> dict[str, Any]:
+    path = _retention_schedule_manifest_path(data_dir)
+    try:
+        if path.is_symlink():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict) or data.get("schema") != _RETENTION_SCHEDULE_SCHEMA:
+        return {}
+    entries = data.get("entries")
+    return entries if isinstance(entries, dict) else {}
+
+
+def _retention_write_schedule_manifest(data_dir: Path, entries: dict[str, Any]) -> None:
+    path = _retention_schedule_manifest_path(data_dir)
+    if not _maintenance_boundary_ok(data_dir) or not _registry_object_is_writable(path):
+        raise RuntimeError("schedule ownership manifest is not a private regular file")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, json.dumps({"schema": _RETENTION_SCHEDULE_SCHEMA,
+                                        "entries": entries},
+                                       ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _retention_record_schedule(data_dir: Path, key: str, value: dict[str, Any] | None) -> None:
+    entries = _retention_read_schedule_manifest(data_dir)
+    if value is None:
+        entries.pop(key, None)
+    else:
+        entries[key] = value
+    _retention_write_schedule_manifest(data_dir, entries)
 
 
 def _retention_macos_plist_path(label: str) -> Path:
@@ -25738,110 +26270,340 @@ def _retention_macos_plist_body(label: str, data_dir: Path) -> str:
     return plistlib.dumps(body).decode("utf-8")
 
 
-def _retention_windows_schtasks_command(label: str, data_dir: Path) -> list[str]:
-    executor = " ".join(_retention_maintenance_executor_command(data_dir))
-    return ["schtasks", "/Create", "/F", "/SC", "DAILY", "/ST", "03:17",
-            "/TN", label, "/TR", executor]
+def _retention_windows_task_parts(data_dir: Path) -> tuple[str, str]:
+    """(Command, Arguments) of the managed task action.
+
+    Command is the verified interpreter path as its own XML element (no
+    shell or quoting layer); Arguments is one Windows command line built
+    with the platform's own argv quoting rules (spaces, quotes, trailing
+    backslashes), so the scheduled process receives exactly the executor
+    argv. A task definition has no ``/TR`` 261-character limit.
+    """
+    argv = _retention_maintenance_executor_command(data_dir)
+    return argv[0], subprocess.list2cmdline(argv[1:])
 
 
-def _retention_macos_entry_registered(label: str, data_dir: Path) -> bool:
+def _retention_windows_task_marker(data_dir: Path) -> str:
+    return ("Context Guard retention maintenance; data root "
+            + sha256_text(str(data_dir))[:16])
+
+
+def _retention_windows_task_xml(data_dir: Path) -> str:
+    from xml.sax.saxutils import escape
+    command, arguments = _retention_windows_task_parts(data_dir)
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+        f"<RegistrationInfo><Description>{escape(_retention_windows_task_marker(data_dir))}"
+        "</Description></RegistrationInfo>"
+        "<Triggers><CalendarTrigger><StartBoundary>2026-01-01T03:17:00</StartBoundary>"
+        "<Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval>"
+        "</ScheduleByDay></CalendarTrigger></Triggers>"
+        "<Principals><Principal id=\"Author\"><LogonType>InteractiveToken</LogonType>"
+        "<RunLevel>LeastPrivilege</RunLevel></Principal></Principals>"
+        "<Settings><Enabled>true</Enabled><MultipleInstancesPolicy>IgnoreNew"
+        "</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false"
+        "</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false"
+        "</StopIfGoingOnBatteries><ExecutionTimeLimit>PT10M</ExecutionTimeLimit>"
+        "</Settings>"
+        f"<Actions Context=\"Author\"><Exec><Command>{escape(command)}</Command>"
+        f"<Arguments>{escape(arguments)}</Arguments></Exec></Actions></Task>\n")
+
+
+def _retention_windows_schtasks_command(
+    label: str, xml_path: Path, *, replace: bool = False,
+) -> list[str]:
+    """``schtasks /Create`` from the task definition file. ``/F`` (replace)
+    is only added when the caller proved the existing task is ours."""
+    command = ["schtasks", "/Create", "/TN", label, "/XML", str(xml_path)]
+    if replace:
+        command.append("/F")
+    return command
+
+
+def _retention_launchd_target(label: str) -> tuple[str, str]:
+    domain = f"gui/{os.getuid()}"
+    return domain, f"{domain}/{label}"
+
+
+def _retention_macos_loaded(label: str) -> bool:
+    _domain, target = _retention_launchd_target(label)
+    return _retention_scheduler_run(["launchctl", "print", target]).returncode == 0
+
+
+def _retention_macos_facts(label: str, data_dir: Path) -> dict[str, Any]:
+    """Read back the macOS entry: file, ownership, freshness, loaded state."""
     path = _retention_macos_plist_path(label)
+    expected = _retention_macos_plist_body(label, data_dir)
+    owned_record = _retention_read_schedule_manifest(data_dir).get(f"macos:{label}")
+    facts: dict[str, Any] = {"platform": "macos", "label": label, "entry": str(path)}
     try:
-        return (path.is_file() and not path.is_symlink()
-                and path.read_text(encoding="utf-8").strip()
-                == _retention_macos_plist_body(label, data_dir).strip())
-    except OSError:
-        return False
+        if path.is_symlink():
+            facts["file"] = "foreign"
+            current = None
+        else:
+            current = path.read_text(encoding="utf-8")
+            facts["file"] = "present"
+    except FileNotFoundError:
+        current = None
+        facts["file"] = "absent"
+    except (OSError, UnicodeError):
+        current = None
+        facts["file"] = "foreign"
+    current_sha = sha256_text(current) if current is not None else None
+    facts["current"] = current is not None and current.strip() == expected.strip()
+    facts["owned"] = facts["file"] == "present" and (
+        facts["current"] or (isinstance(owned_record, dict)
+                             and owned_record.get("body_sha256") == current_sha))
+    facts["loaded"] = _retention_macos_loaded(label)
+    return facts
+
+
+def _retention_schedule_state(facts: dict[str, Any]) -> str:
+    if facts.get("file") in {"foreign"} or (facts.get("file") == "present" and not facts.get("owned")):
+        return "foreign"
+    if facts.get("file") == "absent":
+        return "loaded_unmanaged" if facts.get("loaded") else "disabled"
+    if not facts.get("current"):
+        return "stale"
+    return "enabled" if facts.get("loaded") else "prepared"
+
+
+def _retention_windows_query(label: str) -> tuple[bool, dict[str, Any]]:
+    """Query the task definition as XML (language independent)."""
+    completed = _retention_scheduler_run(["schtasks", "/Query", "/TN", label, "/XML"])
+    if completed.returncode != 0:
+        return False, {}
+    raw = completed.stdout or b""
+    for encoding in ("utf-16", "utf-8-sig", "utf-8"):
+        try:
+            text = raw.decode(encoding)
+            if "<" in text:
+                break
+        except UnicodeError:
+            continue
+    else:
+        return True, {"unparseable": True}
+    import xml.etree.ElementTree as ElementTree
+    try:
+        tree = ElementTree.fromstring(text.lstrip("\ufeff").strip())
+    except ElementTree.ParseError:
+        return True, {"unparseable": True}
+
+    def find(tag: str) -> str | None:
+        for element in tree.iter():
+            if element.tag.rsplit("}", 1)[-1] == tag:
+                return (element.text or "").strip()
+        return None
+    command = find("Command") or ""
+    if len(command) >= 2 and command[0] == command[-1] == '"':
+        command = command[1:-1]
+    return True, {"action": [command, find("Arguments") or ""],
+                  "description": find("Description") or "",
+                  "enabled": (find("Enabled") or "true").lower() != "false"}
+
+
+def _retention_windows_facts(label: str, data_dir: Path) -> dict[str, Any]:
+    expected = list(_retention_windows_task_parts(data_dir))
+    owned_record = _retention_read_schedule_manifest(data_dir).get(f"windows:{label}")
+    exists, task = _retention_windows_query(label)
+    facts: dict[str, Any] = {"platform": "windows", "label": label}
+    if not exists:
+        facts.update(file="absent", owned=False, current=False, loaded=False)
+        return facts
+    action = task.get("action")
+    facts["file"] = "present"
+    facts["current"] = (action == expected and task.get("description")
+                        == _retention_windows_task_marker(data_dir))
+    facts["owned"] = action is not None and (
+        facts["current"] or (isinstance(owned_record, dict)
+                             and owned_record.get("action") == action))
+    facts["loaded"] = bool(task.get("enabled"))
+    return facts
+
+
+def _retention_schedule_report(code: int, facts: dict[str, Any], status: str,
+                               data_dir: Path, **extra: Any) -> tuple[int, dict[str, Any]]:
+    result = dict(facts)
+    result["state"] = _retention_schedule_state(facts)
+    result["status"] = status
+    result["registered"] = result["state"] == "enabled"
+    result["policy_enabled"] = read_retention_policy(data_dir)["enabled"]
+    result.update(extra)
+    return code, result
+
+
+def _retention_schedule_label_ok(label: str) -> bool:
+    return isinstance(label, str) and bool(_RETENTION_SCHEDULE_LABEL_RE.fullmatch(label))
 
 
 def _retention_maintenance_enable(
     data_dir: Path, label: str,
 ) -> tuple[int, dict[str, Any]]:
-    """Register the platform schedule entry idempotently (opt-in only)."""
-    platform_name = sys.platform
-    if platform_name == "darwin":
+    """Create or adopt-in-place the managed entry and enable it; idempotent.
+
+    A second enable of a current, enabled entry is a strict no-op. A
+    foreign entry under the label is refused untouched. A failed load rolls
+    back the definition this call created.
+    """
+    if not _retention_schedule_label_ok(label):
+        return 2, {"status": "refused", "reason": "invalid_label", "label": label}
+    platform_name = _retention_schedule_platform()
+    if platform_name == "macos":
+        facts = _retention_macos_facts(label, data_dir)
+        state = _retention_schedule_state(facts)
+        if state in {"foreign", "loaded_unmanaged"}:
+            return _retention_schedule_report(2, facts, "refused", data_dir,
+                                              reason="foreign_entry")
+        if state == "enabled":
+            return _retention_schedule_report(0, facts, "already_enabled", data_dir,
+                                              no_op=True)
         path = _retention_macos_plist_path(label)
         body = _retention_macos_plist_body(label, data_dir)
-        if _retention_macos_entry_registered(label, data_dir):
-            return 0, {"platform": "macos", "label": label,
-                       "entry": str(path), "status": "already_registered",
-                       "no_op": True}
+        domain, target = _retention_launchd_target(label)
+        created = facts["file"] == "absent"
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(path, body + "\n")
-        except (OSError, PrivateBoundaryError) as exc:
-            return 2, {"platform": "macos", "label": label,
-                       "status": "failed", "error": str(exc)[:200]}
-        # Registration is file creation only; loading the agent into
-        # launchd is a separate explicit host action, reported as such.
-        return 0, {"platform": "macos", "label": label, "entry": str(path),
-                   "status": "registered",
-                   "note": "plist written; 'launchctl load <entry>' activates it"}
-    if os.name == "nt":
-        command = _retention_windows_schtasks_command(label, data_dir)
-        completed = subprocess.run(command, capture_output=True, text=True,
-                                   check=False)
-        result = {"platform": "windows", "label": label,
-                  "status": "registered" if completed.returncode == 0
-                  else "failed",
-                  "exit_code": completed.returncode}
-        if completed.returncode != 0:
-            result["error"] = completed.stderr.strip()[:200]
-        return (0 if completed.returncode == 0 else 2), result
-    return 2, {"status": "unsupported_platform",
-               "platform": platform_name}
+            if facts["loaded"]:
+                _retention_scheduler_run(["launchctl", "bootout", target])
+            if not facts["current"]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_text(path, body + "\n")
+                _retention_record_schedule(data_dir, f"macos:{label}", {
+                    "body_sha256": sha256_text(body + "\n"), "entry": str(path),
+                    **_retention_schedule_identity()})
+            _retention_scheduler_run(["launchctl", "enable", target])
+            loaded = _retention_scheduler_run(["launchctl", "bootstrap", domain, str(path)])
+        except (OSError, RuntimeError, PrivateBoundaryError, subprocess.SubprocessError) as exc:
+            return _retention_schedule_report(
+                2, _retention_macos_facts(label, data_dir), "failed", data_dir,
+                error=str(exc)[:200])
+        after = _retention_macos_facts(label, data_dir)
+        if loaded.returncode != 0 or not after["loaded"]:
+            if created:
+                with contextlib.suppress(OSError, RuntimeError, PrivateBoundaryError):
+                    path.unlink()
+                    _retention_record_schedule(data_dir, f"macos:{label}", None)
+                after = _retention_macos_facts(label, data_dir)
+            return _retention_schedule_report(
+                2, after, "failed", data_dir, reason="load_failed",
+                exit_code=loaded.returncode)
+        return _retention_schedule_report(0, after, "enabled", data_dir)
+    if platform_name == "windows":
+        facts = _retention_windows_facts(label, data_dir)
+        state = _retention_schedule_state(facts)
+        if state == "foreign":
+            return _retention_schedule_report(2, facts, "refused", data_dir,
+                                              reason="foreign_entry")
+        if state == "enabled":
+            return _retention_schedule_report(0, facts, "already_enabled", data_dir,
+                                              no_op=True)
+        try:
+            if facts["file"] == "absent" or not facts["current"]:
+                xml_path = (data_dir / V2_NAMESPACE / ".locks"
+                            / f"retention-task-{label}.xml")
+                xml_path.parent.mkdir(parents=True, exist_ok=True)
+                xml_path.write_text(_retention_windows_task_xml(data_dir),
+                                    encoding="utf-16")
+                try:
+                    created = _retention_scheduler_run(_retention_windows_schtasks_command(
+                        label, xml_path, replace=facts["file"] == "present"))
+                finally:
+                    xml_path.unlink(missing_ok=True)
+                if created.returncode == 0:
+                    _retention_record_schedule(data_dir, f"windows:{label}", {
+                        "action": list(_retention_windows_task_parts(data_dir)),
+                        **_retention_schedule_identity()})
+            else:
+                created = _retention_scheduler_run(
+                    ["schtasks", "/Change", "/TN", label, "/ENABLE"])
+        except (OSError, RuntimeError, PrivateBoundaryError, subprocess.SubprocessError) as exc:
+            return _retention_schedule_report(
+                2, _retention_windows_facts(label, data_dir), "failed", data_dir,
+                error=str(exc)[:200])
+        after = _retention_windows_facts(label, data_dir)
+        if created.returncode != 0 or _retention_schedule_state(after) != "enabled":
+            return _retention_schedule_report(2, after, "failed", data_dir,
+                                              exit_code=created.returncode)
+        return _retention_schedule_report(0, after, "enabled", data_dir)
+    return 2, {"status": "unsupported_platform", "platform": sys.platform}
 
 
 def _retention_maintenance_disable(
     data_dir: Path, label: str,
 ) -> tuple[int, dict[str, Any]]:
-    platform_name = sys.platform
-    if platform_name == "darwin":
-        path = _retention_macos_plist_path(label)
-        if not path.exists():
-            return 0, {"platform": "macos", "label": label,
-                       "status": "already_absent", "no_op": True}
+    """Stop and remove the managed entry; a foreign entry is never touched."""
+    if not _retention_schedule_label_ok(label):
+        return 2, {"status": "refused", "reason": "invalid_label", "label": label}
+    platform_name = _retention_schedule_platform()
+    if platform_name == "macos":
+        facts = _retention_macos_facts(label, data_dir)
+        state = _retention_schedule_state(facts)
+        if state == "disabled":
+            return _retention_schedule_report(0, facts, "already_disabled", data_dir,
+                                              no_op=True)
+        if state in {"foreign", "loaded_unmanaged"}:
+            return _retention_schedule_report(2, facts, "refused", data_dir,
+                                              reason="foreign_entry")
+        _domain, target = _retention_launchd_target(label)
         try:
-            path.unlink()
-        except OSError as exc:
-            return 2, {"platform": "macos", "label": label,
-                       "status": "failed", "error": str(exc)[:200]}
-        return 0, {"platform": "macos", "label": label,
-                   "entry": str(path), "status": "removed"}
-    if os.name == "nt":
-        completed = subprocess.run(
-            ["schtasks", "/Delete", "/F", "/TN", label],
-            capture_output=True, text=True, check=False)
-        result = {"platform": "windows", "label": label,
-                  "status": "removed" if completed.returncode == 0
-                  else "failed",
-                  "exit_code": completed.returncode}
-        if completed.returncode != 0:
-            result["error"] = completed.stderr.strip()[:200]
-        return (0 if completed.returncode == 0 else 2), result
-    return 2, {"status": "unsupported_platform", "platform": platform_name}
+            if facts["loaded"]:
+                _retention_scheduler_run(["launchctl", "bootout", target])
+            if _retention_macos_loaded(label):
+                return _retention_schedule_report(
+                    2, _retention_macos_facts(label, data_dir), "failed", data_dir,
+                    reason="still_loaded")
+            _retention_macos_plist_path(label).unlink(missing_ok=True)
+            _retention_record_schedule(data_dir, f"macos:{label}", None)
+        except (OSError, RuntimeError, PrivateBoundaryError, subprocess.SubprocessError) as exc:
+            return _retention_schedule_report(
+                2, _retention_macos_facts(label, data_dir), "failed", data_dir,
+                error=str(exc)[:200])
+        after = _retention_macos_facts(label, data_dir)
+        code = 0 if _retention_schedule_state(after) == "disabled" else 2
+        return _retention_schedule_report(code, after,
+                                          "disabled" if code == 0 else "failed", data_dir)
+    if platform_name == "windows":
+        facts = _retention_windows_facts(label, data_dir)
+        state = _retention_schedule_state(facts)
+        if state == "disabled":
+            return _retention_schedule_report(0, facts, "already_disabled", data_dir,
+                                              no_op=True)
+        if state == "foreign":
+            return _retention_schedule_report(2, facts, "refused", data_dir,
+                                              reason="foreign_entry")
+        try:
+            deleted = _retention_scheduler_run(["schtasks", "/Delete", "/TN", label, "/F"])
+            if deleted.returncode == 0:
+                _retention_record_schedule(data_dir, f"windows:{label}", None)
+        except (OSError, RuntimeError, PrivateBoundaryError, subprocess.SubprocessError) as exc:
+            return _retention_schedule_report(
+                2, _retention_windows_facts(label, data_dir), "failed", data_dir,
+                error=str(exc)[:200])
+        after = _retention_windows_facts(label, data_dir)
+        code = 0 if _retention_schedule_state(after) == "disabled" else 2
+        return _retention_schedule_report(code, after,
+                                          "disabled" if code == 0 else "failed", data_dir,
+                                          exit_code=deleted.returncode)
+    return 2, {"status": "unsupported_platform", "platform": sys.platform}
 
 
 def _retention_maintenance_status(
     data_dir: Path, label: str,
 ) -> tuple[int, dict[str, Any]]:
-    platform_name = sys.platform
-    if platform_name == "darwin":
-        registered = _retention_macos_entry_registered(label, data_dir)
-        path = _retention_macos_plist_path(label)
-        return 0, {"platform": "macos", "label": label,
-                   "entry": str(path),
-                   "registered": registered,
-                   "policy_enabled": read_retention_policy(data_dir)["enabled"]}
-    if os.name == "nt":
-        completed = subprocess.run(
-            ["schtasks", "/Query", "/TN", label],
-            capture_output=True, text=True, check=False)
-        return 0, {"platform": "windows", "label": label,
-                   "registered": completed.returncode == 0,
-                   "exit_code": completed.returncode,
-                   "policy_enabled": read_retention_policy(data_dir)["enabled"]}
-    return 2, {"status": "unsupported_platform", "platform": platform_name}
+    """Read back definition, ownership, freshness and loaded/enabled state."""
+    if not _retention_schedule_label_ok(label):
+        return 2, {"status": "refused", "reason": "invalid_label", "label": label}
+    try:
+        platform_name = _retention_schedule_platform()
+        if platform_name == "macos":
+            facts = _retention_macos_facts(label, data_dir)
+        elif platform_name == "windows":
+            facts = _retention_windows_facts(label, data_dir)
+        else:
+            return 2, {"status": "unsupported_platform", "platform": sys.platform}
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        return 2, {"status": "failed", "label": label, "error": str(exc)[:200]}
+    return _retention_schedule_report(0, facts, "read_back", data_dir)
 
 
 def command_cleanup(args: argparse.Namespace) -> int:

@@ -676,17 +676,40 @@ class RetentionPurgeTests(RetentionFixtureBase):
 
 class RetentionFairnessTests(RetentionFixtureBase):
     def _fake_clock_pass(self, *, per_pass_entries: int, **pass_kwargs):
-        """Run passes with a scan stub that charges fake monotonic time."""
+        """Run passes with a fake monotonic clock that charges 1 ms for
+        every readdir entry AND every adjudication, so a pass's budget
+        bounds all of its work (R2: registry-driven discovery is not free)."""
         clock = [0.0]
         visited: list = []
         base = time.monotonic()
         stub = self.scan_stub(self.data_dir / "sessions-v2", visited, clock)
+        real_adjudicate = cg._retention_adjudicate
+
+        def charged_adjudicate(*args, **kwargs):
+            clock[0] += 0.001
+            return real_adjudicate(*args, **kwargs)
+
+        deadline = base + per_pass_entries * 0.001 + 0.0005
+        renames: list[float] = []
+        real_rename = cg.os.rename
+
+        def timed_rename(*args, **kwargs):
+            renames.append(base + clock[0])
+            return real_rename(*args, **kwargs)
+
         with stub, mock.patch.object(cg.time, "monotonic",
-                                     side_effect=lambda: base + clock[0]):
+                                     side_effect=lambda: base + clock[0]), \
+                mock.patch.object(cg, "_retention_adjudicate",
+                                  side_effect=charged_adjudicate), \
+                mock.patch.object(cg.os, "rename", side_effect=timed_rename):
             report = cg.cleanup_old_sessions(
-                self.data_dir,
-                deadline=base + per_pass_entries * 0.001 + 0.0005,
-                **pass_kwargs)
+                self.data_dir, deadline=deadline, **pass_kwargs)
+        # No destructive transition STARTS after the deadline, and the whole
+        # pass overshoots by at most the one candidate in flight (adjudicate
+        # plus its two locked re-verifications = 3 charged units).
+        self.assertTrue(all(at < deadline for at in renames), renames)
+        self.assertLessEqual(base + clock[0], deadline + 0.003 + 1e-9)
+        self.assertLessEqual(report["counts"]["scanned"], per_pass_entries + 1)
         return report
 
     def test_repeated_short_passes_complete_a_large_backlog(self):
@@ -1040,51 +1063,8 @@ class RetentionRepairR1Tests(RetentionFixtureBase):
         self.assertTrue(old.exists())
 
 
-class RetentionMaintenanceScheduleTests(RetentionFixtureBase):
-    """B10: the opt-in scheduler entry is inspectable and idempotent.
-
-    Tests run in the process-isolated temporary HOME, never the daily one;
-    real platform registration stays a native-stage host action.
-    """
-
-    def run_cli(self, *args):
-        return subprocess.run(
-            [sys.executable, "-B", str(MODULE_PATH), "cleanup",
-             "--data-dir", str(self.data_dir), *args],
-            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
-            text=True, capture_output=True, check=False)
-
-    @unittest.skipUnless(sys.platform == "darwin", "launchd entry contract")
-    def test_macos_maintenance_enable_status_disable_round_trip(self):
-        result = self.run_cli("--maintenance-enable")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        body = json.loads(result.stdout)
-        self.assertEqual(body["status"], "registered")
-        plist = Path(body["entry"])
-        self.assertTrue(plist.is_file())
-        # The registered executor is the same versioned CLI pass.
-        content = plist.read_text(encoding="utf-8")
-        self.assertIn("cleanup", content)
-        self.assertIn("--apply", content)
-        # Second enable is a no-op with the same file bytes.
-        before = plist.read_bytes()
-        again = self.run_cli("--maintenance-enable")
-        self.assertEqual(again.returncode, 0)
-        self.assertEqual(json.loads(again.stdout).get("no_op"), True)
-        self.assertEqual(plist.read_bytes(), before)
-        # Status reads back the registration.
-        status = self.run_cli("--maintenance-status")
-        self.assertEqual(status.returncode, 0)
-        self.assertTrue(json.loads(status.stdout)["registered"])
-        # Disable removes the entry; a second disable is a no-op.
-        removed = self.run_cli("--maintenance-disable")
-        self.assertEqual(removed.returncode, 0)
-        self.assertFalse(plist.exists())
-        gone = self.run_cli("--maintenance-disable")
-        self.assertEqual(gone.returncode, 0)
-        self.assertEqual(json.loads(gone.stdout).get("no_op"), True)
-
-    def test_maintenance_status_unregistered_reads_back_false(self):
-        result = self.run_cli("--maintenance-status")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(json.loads(result.stdout)["registered"])
+# The opt-in scheduler lifecycle (B10) moved to
+# tests/test_cg0170_r2_family.py::RetentionScheduleLifecycleTests in R2: the
+# entry now drives the platform loader, so its contract is exercised through
+# the scheduler adapter seam and never against the host's real launchd or
+# Task Scheduler (an isolated HOME does not isolate launchd).
