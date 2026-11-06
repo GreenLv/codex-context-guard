@@ -521,6 +521,8 @@ def cell_specs() -> dict:
                                   "timeout": 30.0, "payload": None},
         "terminal_read_large": {"event": "maintenance", "seed": None,
                                 "timeout": 30.0, "payload": None},
+        "terminal_read_small": {"event": "maintenance", "seed": None,
+                                "timeout": 30.0, "payload": None},
         "session_end_busy_locks": {"event": "maintenance", "seed": None,
                                    "timeout": 30.0, "payload": None},
         "lifecycle_matched": {"event": "PreToolUse", "seed": "perf-life",
@@ -709,6 +711,68 @@ def run_terminal_read_attempt(tree: Path, data_dir: Path) -> dict:
                 "error": None,
                 "fixture": {"rows": len(rows),
                             "unrelated_oversized_rows": 1}}
+    except Exception as exc:  # noqa: BLE001 - retain failed attempt
+        return {"elapsed": round(_time.perf_counter() - started, 4),
+                "outcome_class": "failed",
+                "assertion": "terminal_read_cell_error",
+                "error": f"{type(exc).__name__}: {exc}"[:200]}
+    finally:
+        _retention_restore_import(old_path, old_modules, old_env)
+
+
+def run_terminal_read_small_attempt(tree: Path, data_dir: Path) -> dict:
+    """One host-terminal read over an ordinary-size transcript (R2).
+
+    The fixture is 200 ordinary unrelated rows of about 2 KB in the legacy
+    ``stdout`` shape both the 0.16.1 baseline and the candidate accept, plus
+    the real terminal event; the measured work is one host_terminal_result
+    call that must recognize the success. It measures the cost of reading
+    every ordinary row through the production interpretation.
+    """
+    import time as _time
+    started = _time.perf_counter()
+    cg, old_path, old_modules, old_env = _retention_import_tree(tree)
+    try:
+        os.environ["CONTEXT_GUARD_DATA_DIR"] = str(data_dir)
+        session_id = "perf-terminal-small"
+        code_home = data_dir / "codex-home"
+        transcript = code_home / "sessions" / "2026" / "01" / "01" / "s.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        work = data_dir / "work"
+        work.mkdir(exist_ok=True)
+        command = "echo sample"
+        invocation = (["pwsh.exe", "-Command", command] if os.name == "nt"
+                      else ["/bin/zsh", "-lc", command])
+        item = {"type": "CommandExecution", "id": "synthetic-read",
+                "command": invocation,
+                "parsed_cmd": [{"type": "unknown", "cmd": command}],
+                "cwd": work.as_uri(), "exit_code": 0,
+                "status": "completed", "stdout": "sample\n"}
+        rows = [{"type": "session_meta", "payload": {
+            "id": session_id, "session_id": session_id}}]
+        rows += [{"type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": f"other-{index}",
+            "output": "x" * 2048}} for index in range(200)]
+        rows.append({"type": "event_msg", "payload": {
+            "type": "item_completed", "thread_id": session_id,
+            "turn_id": "perf-turn", "item": item}})
+        transcript.write_bytes(
+            ("\n".join(json.dumps(r) for r in rows) + "\n").encode())
+        state = {"session": {"id": session_id,
+                             "transcript_path": str(transcript)}}
+        payload = {"session_id": session_id, "turn_id": "perf-turn",
+                   "transcript_path": str(transcript), "cwd": str(work),
+                   "tool_use_id": "synthetic-read", "tool_name": "Bash",
+                   "tool_input": {"command": command},
+                   "tool_response": "sample\n"}
+        os.environ["CODEX_HOME"] = str(code_home)
+        started = _time.perf_counter()  # measured work: the read call only
+        value = cg.host_terminal_result(state, payload)
+        ok = (value is not None and value.get("outcome") == "success")
+        return {"elapsed": round(_time.perf_counter() - started, 4),
+                "outcome_class": "completed" if ok else "failed",
+                "assertion": "ok" if ok else "terminal_read_semantics_failed",
+                "error": None, "fixture": {"rows": len(rows)}}
     except Exception as exc:  # noqa: BLE001 - retain failed attempt
         return {"elapsed": round(_time.perf_counter() - started, 4),
                 "outcome_class": "failed",
@@ -1139,7 +1203,7 @@ def main() -> int:
                     budget = spec["timeout"] if args.timeout is None else min(args.timeout, spec["timeout"])
                     wrapper = None if cell in {
                         "retention_maintenance", "terminal_read_large",
-                        "session_end_busy_locks"} else (
+                        "terminal_read_small", "session_end_busy_locks"} else (
                         args.wrapper_override or load_wrapper(tree, spec["event"]))
                     seeded = True
                     if spec.get("seed"):
@@ -1172,6 +1236,8 @@ def main() -> int:
                             result = run_retention_attempt(tree, data_dir)
                         elif cell == "terminal_read_large":
                             result = run_terminal_read_attempt(tree, data_dir)
+                        elif cell == "terminal_read_small":
+                            result = run_terminal_read_small_attempt(tree, data_dir)
                         elif cell == "session_end_busy_locks":
                             result = run_busy_lock_session_end_attempt(
                                 tree, data_dir)

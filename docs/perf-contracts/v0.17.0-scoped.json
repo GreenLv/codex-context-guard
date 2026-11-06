@@ -77,5 +77,50 @@
       "acceptance": "no declared regression against the same budgets; the A/A run validates the noise floor, it is not a pass substitute for A/B"
     },
     "aa_observation": "A/A run (20 attempts, same tree both sides): 0 declared regressions; 2 inconclusive pairs (session_end, memory_stop) — the observed noise floor at n=20. Inconclusive is retained as inconclusive; declared regressions in A/B runs remain the gate."
+  },
+  "repair_r2_addendum": {
+    "registered_before_measurement": "2026-11-06",
+    "reason": "R2 changes the transcript interpretation for every row, the retention transaction/discovery code and the runtime bytes. Earlier receipts are bound to other runtimes (four-cell A/B: first candidate; A/A: runtime 61139e68; busy-lock A/B: runtime 9297124a; standalone cells: earlier trees) and are not reused for the final candidate; they keep their own identities.",
+    "ab_runs": {
+      "registered_cells": [
+        "user_prompt_active",
+        "posttool_active",
+        "session_end",
+        "memory_stop"
+      ],
+      "plan_scenario_cells": {
+        "session_start_resume": "cold resume after compaction (the plan's cold-resume scenario; the cell existed but had never been executed)",
+        "terminal_read_small": "ordinary-size transcript read: 200 unrelated rows of about 2 KB in the legacy stdout shape both sides accept, plus the terminal event; measured work is one host_terminal_result call",
+        "session_end_busy_locks": "re-run on the final input"
+      },
+      "baseline": "b636930ed356c1dda86405d64819b1f1b2ca5831",
+      "attempts": 20,
+      "budgets": {
+        "elapsed": {
+          "relative": 0.1,
+          "absolute": 0.05
+        },
+        "peak_bytes": {
+          "relative": 0.1,
+          "absolute": 2000000
+        }
+      }
+    },
+    "standalone_runs": {
+      "runner": "tools/validation/perf_standalone.py (budgets read from this contract, never from the command line; every failure retained)",
+      "retention_maintenance": "retention_worker budgets",
+      "terminal_read_large": "repair_r1_addendum.new_cells.terminal_read_large budgets"
+    },
+    "aa_control": {
+      "cells": [
+        "user_prompt_active",
+        "posttool_active",
+        "session_end",
+        "memory_stop"
+      ],
+      "mode": "same final tree on both sides, 20 attempts",
+      "role": "noise-floor diagnostic: a declared regression in A/A blocks acceptance because the method would be unreliable; inconclusive pairs are reported as inconclusive and neither pass nor block; A/A never substitutes for an A/B verdict"
+    },
+    "rule": "Cells, attempts and budgets are fixed here before measurement. No sample count is increased after seeing results; failed and inconclusive results are retained as they are."
   }
 }

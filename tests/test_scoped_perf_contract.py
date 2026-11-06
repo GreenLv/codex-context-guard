@@ -141,3 +141,88 @@ class RetentionMaintenanceCellTests(unittest.TestCase):
                 rows = [driver.run_retention_attempt(self.ROOT, data_dir)]
             self.assertEqual(rows[0]["outcome_class"], "failed")
             self.assertNotEqual(rows[0]["assertion"], "ok")
+
+
+class RepairR2PerformanceTests(unittest.TestCase):
+    """R2 RF-EVIDENCE-PERF: the plan's small-record and cold-resume cells and
+    the standalone runner are executable, contract-bound and fail closed."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+    CONTRACT = ROOT / "docs" / "perf-contracts" / "v0.17.0-scoped.json"
+
+    def test_r2_addendum_registers_only_executable_cells(self):
+        contract = json.loads(self.CONTRACT.read_text(encoding="utf-8"))
+        addendum = contract["repair_r2_addendum"]
+        cells = (addendum["ab_runs"]["registered_cells"]
+                 + list(addendum["ab_runs"]["plan_scenario_cells"])
+                 + addendum["aa_control"]["cells"])
+        for cell in cells:
+            self.assertIn(cell, driver.cell_specs())
+        self.assertEqual(addendum["ab_runs"]["attempts"], 20)
+        from tools.validation import perf_standalone
+        for cell in ("retention_maintenance", "terminal_read_large"):
+            budgets, samples = perf_standalone.contract_budgets(contract, cell)
+            self.assertGreaterEqual(samples, 20)
+            self.assertGreater(budgets["median_elapsed_seconds"], 0)
+
+    def test_terminal_read_small_cell_positive_and_negative_controls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "private"
+            data_dir.mkdir()
+            result = driver.run_terminal_read_small_attempt(self.ROOT, data_dir)
+            self.assertEqual((result["outcome_class"], result["assertion"]), ("completed", "ok"))
+            self.assertEqual(result["fixture"]["rows"], 202)
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "private"
+            data_dir.mkdir()
+            real_import = driver._retention_import_tree
+
+            def broken_import(tree):
+                cg, *rest = real_import(tree)
+                cg.host_terminal_result = lambda state, payload: None
+                return (cg, *rest)
+            with patch.object(driver, "_retention_import_tree", side_effect=broken_import):
+                failed = driver.run_terminal_read_small_attempt(self.ROOT, data_dir)
+            self.assertEqual(failed["outcome_class"], "failed")
+
+    def run_standalone(self, rows, *, contract=None):
+        from tools.validation import perf_standalone
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contract_path = root / "contract.json"
+            contract_path.write_text(json.dumps(contract or json.loads(
+                self.CONTRACT.read_text(encoding="utf-8"))), encoding="utf-8")
+            out = root / "out.json"
+            calls = iter(rows)
+            runner = lambda tree, data_dir: dict(next(calls))  # noqa: E731
+            with patch.dict(perf_standalone.STANDALONE, {
+                    "terminal_read_large": (perf_standalone.STANDALONE["terminal_read_large"][0], runner)}):
+                rc = perf_standalone.main(["--candidate", str(self.ROOT), "--cell",
+                                           "terminal_read_large", "--contract",
+                                           str(contract_path), "--out", str(out)])
+            report = json.loads(out.read_text(encoding="utf-8"))
+            with self.assertRaises(SystemExit):
+                with patch("sys.stderr"):
+                    perf_standalone.main(["--candidate", str(self.ROOT), "--cell",
+                                          "terminal_read_large", "--contract",
+                                          str(contract_path), "--out", str(out)])
+            return rc, report
+
+    def test_standalone_runner_accepts_only_complete_in_budget_runs(self):
+        ok = {"outcome_class": "completed", "assertion": "ok", "elapsed": 0.05}
+        rc, report = self.run_standalone([ok] * 20)
+        self.assertEqual((rc, report["accepted"], report["completed"]), (0, True, 20))
+        failed = {"outcome_class": "failed", "assertion": "terminal_read_semantics_failed",
+                  "elapsed": 0.05}
+        rc, report = self.run_standalone([ok] * 19 + [failed])
+        self.assertEqual((rc, report["accepted"], report["failures"]), (1, False, 1))
+        slow = dict(ok, elapsed=1.5)
+        rc, report = self.run_standalone([slow] * 20)
+        self.assertEqual((rc, report["accepted"]), (1, False))
+
+    def test_standalone_runner_refuses_unregistered_budgets(self):
+        from tools.validation import perf_standalone
+        contract = json.loads(self.CONTRACT.read_text(encoding="utf-8"))
+        del contract["repair_r1_addendum"]["new_cells"]["terminal_read_large"]["budgets"]
+        with self.assertRaises(ValueError):
+            perf_standalone.contract_budgets(contract, "terminal_read_large")
