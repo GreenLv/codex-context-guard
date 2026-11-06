@@ -1231,11 +1231,45 @@ def _market_entries(result: Any) -> dict[str, dict[str, Any]]:
 
 def _market_source(entries: dict[str, dict[str, Any]], name: str, source: Path) -> None:
     entry = _object(entries.get(name))
-    origin = _object(entry.get("marketplaceSource"))
-    require(origin.get("sourceType") == "local"
-            and native._official_path_matches(entry.get("root"), source, windows=os.name == "nt")
-            and native._official_path_matches(origin.get("source"), source, windows=os.name == "nt"),
-            "official marketplace source differs")
+    require(native._official_path_matches(entry.get("root"), source, windows=os.name == "nt"),
+            "official marketplace root differs")
+    if "marketplaceSource" in entry:
+        origin = entry["marketplaceSource"]
+        require(isinstance(origin, dict) and origin.get("sourceType") == "local"
+                and native._official_path_matches(origin.get("source"), source, windows=os.name == "nt"),
+                "official marketplace source differs")
+
+
+def _verify_market_sequence(commands: list[dict[str, Any]], subject: dict[str, Any], *, prepared: bool) -> None:
+    """Recheck each selected market against this run's actual add/remove sequence."""
+    codex = subject["codex"]
+    old_market = OLD_MARKETS[subject["old_version"]]
+    old, new = Path(subject["old_artifact"]), Path(subject["new_artifact"])
+    selected = {old_market, NEW_MARKET}
+    active = {} if prepared else {old_market: old}
+    sentinel = subject["sentinel"]["marketplace"]
+    for fact in commands:
+        argv = fact.get("argv")
+        if argv == [codex, "plugin", "marketplace", "add", str(old)]:
+            require(prepared and old_market not in active, "old market add sequence differs")
+            active[old_market] = old
+        elif argv == [codex, "plugin", "marketplace", "add", str(new)]:
+            require(not prepared and NEW_MARKET not in active, "new market add sequence differs")
+            active[NEW_MARKET] = new
+        elif argv == [codex, "plugin", "marketplace", "remove", NEW_MARKET]:
+            require(not prepared and NEW_MARKET in active, "market removal sequence differs")
+            del active[NEW_MARKET]
+        elif argv == [codex, "plugin", "marketplace", "list", "--json"]:
+            rows = _object(fact.get("observation")).get("marketplaces")
+            require(isinstance(rows, list) and all(isinstance(row, dict) and isinstance(row.get("name"), str)
+                                                   for row in rows), "market source readback malformed")
+            entries = {row["name"]: row for row in rows}
+            require(len(entries) == len(rows) and sentinel in entries, "market identities differ")
+            for name in selected:
+                if name in active:
+                    _market_source(entries, name, active[name])
+                else:
+                    require(name not in entries, "unexpected selected market registration")
 
 
 def _project_cli(argv: list[str], result: Any, selected: set[str]) -> Any:
@@ -1251,10 +1285,14 @@ def _project_cli(argv: list[str], result: Any, selected: set[str]) -> Any:
             entry = entries[name]
             item = {"name": name}
             if name in selected:
-                source = _object(entry.get("marketplaceSource"))
-                if source.get("sourceType") == "local":
-                    item.update(root=entry.get("root"),
-                                marketplaceSource={"sourceType": "local", "source": source.get("source")})
+                if "root" in entry:
+                    require(isinstance(entry["root"], str), "market root malformed")
+                    item["root"] = entry["root"]
+                if "marketplaceSource" in entry:
+                    source = entry["marketplaceSource"]
+                    require(isinstance(source, dict) and source.get("sourceType") == "local"
+                            and isinstance(source.get("source"), str), "market source malformed")
+                    item["marketplaceSource"] = {"sourceType": "local", "source": source["source"]}
             rows.append(item)
         return {"marketplaces": rows}
     if argv[1:3] == ["plugin", "list"]:
@@ -2416,6 +2454,14 @@ def _selected_plugin(observation: dict[str, Any], plugin_id: str) -> dict[str, A
     return matches[0] if matches else None
 
 
+def _plugin_source(row: dict[str, Any], expected: Path) -> None:
+    source, market = _object(row.get("source")), _object(row.get("marketplaceSource"))
+    require(source.get("source") == "local" and market.get("sourceType") == "local"
+            and native._official_path_matches(source.get("path"), expected, windows=platform.system() == "Windows")
+            and native._official_path_matches(market.get("source"), expected, windows=platform.system() == "Windows"),
+            "official plugin source differs")
+
+
 def _command_observation(commands: list[Any], index: int) -> dict[str, Any]:
     require(0 <= index < len(commands) and isinstance(commands[index], dict), "command fact missing")
     item = commands[index]
@@ -2442,6 +2488,7 @@ def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
             and all(isinstance(item, dict) and item.get("argv") == expected
                     and type(item.get("exit_code")) is int and item["exit_code"] == 0
                     for item, expected in zip(initial, expected_prepare)), "prepare command sequence differs")
+    _verify_market_sequence(initial, subject, prepared=True)
     initial_markets = _object(initial[1].get("observation")).get("marketplaces")
     sentinel_plugins = _object(initial[2].get("observation")).get("installed")
     before = _object(prepared.get("before"))
@@ -2464,11 +2511,7 @@ def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
             and old_entry.get("version") == subject["old_version"]
             and old_entry.get("installed") is True and old_entry.get("enabled") is True,
             "old official installation readback differs")
-    require(native._official_path_matches(_object(old_entry.get("source")).get("path"), old_source,
-                                          windows=platform.system() == "Windows")
-            and native._official_path_matches(_object(old_entry.get("marketplaceSource")).get("source"), old_source,
-                                               windows=platform.system() == "Windows"),
-            "old official source differs")
+    _plugin_source(old_entry, old_source)
     require(prepared.get("sentinel_before") == prepared.get("sentinel_after") == sentinel,
             "prepare sentinel changed")
     phases = _object(prepared.get("sentinel_phases"))
@@ -2495,6 +2538,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     require(all(isinstance(item, dict) and item.get("argv") in allowed
                 and type(item.get("exit_code")) is int and item["exit_code"] == 0 for item in commands),
             "unexpected or failed official command")
+    _verify_market_sequence(commands, subject, prepared=False)
     for argv, count in (([codex, "plugin", "marketplace", "add", str(new_source)], 1),
                         ([codex, "plugin", "add", stable_id, "--json"], 1),
                         ([codex, "plugin", "remove", stable_id], 1),
@@ -2507,6 +2551,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     require(old_row is not None and old_row.get("version") == subject["old_version"]
             and old_row.get("installed") is True and old_row.get("enabled") is True,
             "old pre-transition identity not observed")
+    _plugin_source(old_row, Path(subject["old_artifact"]))
     if subject["old_version"] == "0.15.1":
         index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", old_market], index)
     index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", str(new_source)], index)
@@ -2519,11 +2564,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
             and new_row is not None and new_row.get("version") == "0.17.0"
             and new_row.get("installed") is True and new_row.get("enabled") is True,
             "new official installation readback differs")
-    require(native._official_path_matches(_object(new_row.get("source")).get("path"), new_source,
-                                          windows=platform.system() == "Windows")
-            and native._official_path_matches(_object(new_row.get("marketplaceSource")).get("source"), new_source,
-                                               windows=platform.system() == "Windows"),
-            "new official source differs")
+    _plugin_source(new_row, new_source)
     disabled_reads = [(i, _object(item.get("observation"))) for i, item in enumerate(commands)
                       if i > index and isinstance(item, dict) and item.get("argv") ==
                       [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"]
@@ -2534,6 +2575,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     selected = _selected_plugin(disabled, stable_id)
     require(selected is not None and selected.get("installed") is True and selected.get("enabled") is False,
             "official disabled plugin readback missing")
+    _plugin_source(selected, new_source)
     index, _ = _command_index(commands, [codex, "plugin", "remove", stable_id], index)
     index, removed = _command_index(commands, [codex, "plugin", "list", "--marketplace", NEW_MARKET, "--json"], index)
     removed_rows = removed.get("installed")
@@ -2803,6 +2845,7 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
     if old_market == NEW_MARKET:
         allowed.append([codex, "plugin", "marketplace", "remove", old_market])
     require(all(row["argv"] in allowed for row in commands), "unexpected observation command")
+    _verify_market_sequence(commands, subject, prepared=False)
     old_list_index, old_list = _command_index(commands, [codex, "plugin", "list", "--marketplace", old_market, "--json"])
     old_row = _selected_plugin(old_list, "context-guard@" + old_market)
     require(old_row is not None and old_row.get("version") == subject["old_version"]
@@ -2886,6 +2929,8 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
                 and native._official_path_matches(_object(new_row.get("source")).get("path"), Path(subject["new_artifact"]),
                                                    windows=platform.system() == "Windows"),
                 "normal plugin disable or stable enable unproved")
+        _plugin_source(old_row, Path(subject["old_artifact"]))
+        _plugin_source(new_row, Path(subject["new_artifact"]))
         _inventory_in_journal(live, result.get("new_inventory"), {new_source: "0.17.0"}, after=disabled_markers[0][0])
     combined = {**old_inv, **new_inv}
     traces = {phase: _read_json(_evidence_path(output, phase + "-roots.json")) for phase in ("live", "cold")}

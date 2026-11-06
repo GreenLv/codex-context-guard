@@ -964,6 +964,86 @@ class UpgradeControls(unittest.TestCase):
                         {"pluginId": "other@other", "marketplaceName": "other"}]
                 with self.assertRaises(U.UpgradeError, msg=mutation):
                     U._verify_cli_lifecycle(subject, bad_prepare, bad_result)
+            for target, index in (("prepare", 7), ("run", 1), ("run", 9), ("run", 11)):
+                for field in ("source", "marketplaceSource"):
+                    bad_prepare, bad_result = copy.deepcopy(prepared), copy.deepcopy(result)
+                    receipt = bad_prepare if target == "prepare" else bad_result
+                    entry = receipt["commands"][index]["observation"]["installed"][0]
+                    entry[field]["source" if field == "source" else "sourceType"] = "remote"
+                    with self.subTest(target=target, index=index, field=field), self.assertRaises(U.UpgradeError):
+                        U._verify_cli_lifecycle(subject, bad_prepare, bad_result)
+
+    def test_market_root_only_projection_and_all_lifecycle_readbacks(self):
+        subject, prepared, result = lifecycle_facts()
+        codex = subject["codex"]
+        argv = [codex, "plugin", "marketplace", "list", "--json"]
+        selected = {U.NEW_MARKET}
+        for receipt in (prepared, result):
+            for fact in receipt["commands"]:
+                if fact["argv"] == argv:
+                    for entry in fact["observation"]["marketplaces"]:
+                        entry.pop("marketplaceSource", None)
+                    raw = subprocess.CompletedProcess(argv, 0, json.dumps(fact["observation"]).encode(), b"")
+                    fact["observation"] = U._project_cli(argv, raw, selected)
+        with mock.patch.object(U, "_sentinel_files", return_value=subject["sentinel"]):
+            U._verify_cli_lifecycle(subject, prepared, result)
+            for receipt_name, original in (("prepare", prepared), ("run", result)):
+                for index, fact in enumerate(original["commands"]):
+                    if fact["argv"] != argv:
+                        continue
+                    selected_entries = [entry for entry in fact["observation"]["marketplaces"]
+                                        if entry["name"] == U.NEW_MARKET]
+                    if not selected_entries:
+                        continue
+                    for mutation in ("missing_root", "wrong_root", "duplicate", "null", "empty", "remote", "conflict"):
+                        bad_prepare, bad_result = copy.deepcopy(prepared), copy.deepcopy(result)
+                        target = bad_prepare if receipt_name == "prepare" else bad_result
+                        entries = target["commands"][index]["observation"]["marketplaces"]
+                        entry = next(item for item in entries if item["name"] == U.NEW_MARKET)
+                        if mutation == "missing_root":
+                            del entry["root"]
+                        elif mutation == "wrong_root":
+                            entry["root"] = fixture_path("other")
+                        elif mutation == "duplicate":
+                            entries.append(copy.deepcopy(entry))
+                        else:
+                            entry["marketplaceSource"] = {"null": None, "empty": {},
+                                "remote": {"sourceType": "git", "source": entry["root"]},
+                                "conflict": {"sourceType": "local", "source": fixture_path("other")}}[mutation]
+                        with self.subTest(receipt=receipt_name, index=index, mutation=mutation), self.assertRaises(U.UpgradeError):
+                            U._verify_cli_lifecycle(subject, bad_prepare, bad_result)
+        for origin in (None, {}, {"sourceType": "git", "source": "remote"}):
+            data = {"marketplaces": [{"name": U.NEW_MARKET, "root": subject["old_artifact"],
+                                      "marketplaceSource": origin}]}
+            raw = subprocess.CompletedProcess(argv, 0, json.dumps(data).encode(), b"")
+            with self.assertRaises(U.UpgradeError):
+                U._project_cli(argv, raw, selected)
+
+    def test_market_sequence_preserves_old_0161_identity(self):
+        subject, _, _ = lifecycle_facts()
+        subject["old_version"] = "0.16.1"
+        codex, old, new = subject["codex"], subject["old_artifact"], subject["new_artifact"]
+        sentinel_name, old_market = subject["sentinel"]["marketplace"], U.OLD_MARKETS["0.16.1"]
+        listing = [codex, "plugin", "marketplace", "list", "--json"]
+        def read(markets):
+            return command_fact(listing, {"marketplaces": [{"name": sentinel_name}] + markets})
+        old_row = {"name": old_market, "root": old}
+        new_row = {"name": U.NEW_MARKET, "root": new}
+        commands = [read([old_row]), command_fact([codex, "plugin", "marketplace", "add", new]),
+                    read([old_row, new_row]), command_fact([codex, "plugin", "marketplace", "remove", U.NEW_MARKET]),
+                    read([old_row])]
+        U._verify_market_sequence(commands, subject, prepared=False)
+        for index, mutation in ((0, "preexisting"), (2, "missing_old"), (2, "wrong_old"), (4, "missing_old")):
+            bad = copy.deepcopy(commands)
+            entries = bad[index]["observation"]["marketplaces"]
+            if mutation == "preexisting":
+                entries.append(new_row)
+            elif mutation == "missing_old":
+                entries[:] = [row for row in entries if row["name"] != old_market]
+            else:
+                next(row for row in entries if row["name"] == old_market)["root"] = new
+            with self.subTest(index=index, mutation=mutation), self.assertRaises(U.UpgradeError):
+                U._verify_market_sequence(bad, subject, prepared=False)
 
     def test_official_command_records_failure_before_return_without_output(self):
         argv = ["/safe/codex", "plugin", "list", "--marketplace", "cg-u01-sentinel-test", "--json"]
@@ -1825,8 +1905,7 @@ class UpgradeControls(unittest.TestCase):
                 if argv[2:5] == ["marketplace", "list", "--json"]:
                     markets = [{"name": sentinel_spec["marketplace"]}]
                     if registered:
-                        markets.append({"name": market, "root": str(old),
-                                        "marketplaceSource": {"sourceType": "local", "source": str(old)}})
+                        markets.append({"name": market, "root": str(old)})
                     value = {"marketplaces": markets}
                 elif argv[2:6] == ["list", "--marketplace", sentinel_spec["marketplace"], "--json"]:
                     value = {"installed": []}
