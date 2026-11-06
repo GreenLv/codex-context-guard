@@ -169,6 +169,22 @@ class PublicContractTests(unittest.TestCase):
                 findings,
             )
 
+    def test_candidate_artifact_survives_unselected_lanes_but_requires_success(self) -> None:
+        """Explicit status handling prevents optional skips propagating to packing."""
+        caller = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        artifact = caller.split("  release_artifact:\n", 1)[1]
+        self.assertIn("    needs: required\n", artifact)
+        condition = re.search(r"^    if: (.+)$", artifact, re.M).group(1)
+        clauses = condition.removeprefix("${{ ").removesuffix(" }}").split(" && ")
+        self.assertEqual(set(clauses), {
+            "!cancelled()",
+            "needs.required.result == 'success'",
+            "github.event_name == 'workflow_dispatch'",
+            "inputs.profile == 'full'",
+        })
+
     def test_validation_tools_reject_stale_lock_or_unlocked_resolution(self) -> None:
         self.assertEqual(workflow.validate_locked_tools('uv sync --locked --only-group validation'), [])
         for command in ('uv sync --frozen --only-group validation',

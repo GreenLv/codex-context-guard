@@ -321,7 +321,7 @@ jobs:
   release_artifact:
     name: Manifest-exact candidate artifact
     needs: required
-    if: github.event_name == 'workflow_dispatch' && inputs.profile == 'full'
+    if: ${{ !cancelled() && needs.required.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.profile == 'full' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
