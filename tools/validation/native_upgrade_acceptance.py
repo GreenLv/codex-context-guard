@@ -855,6 +855,7 @@ class UpgradeClient(host.Client):
         self.observation_old_sources = set(self.initial_sources)
         self.initial_approved: dict[tuple[str, str], dict[str, Any]] = {}
         self.guard_diagnostic: dict[str, Any] | None = None
+        self.last_rpc_failure: dict[str, Any] | None = None
         self.observation_thread: str | None = None
         self.observation_inventory: dict[tuple[str, str], dict[str, Any]] | None = None
         self.turn_count = 0
@@ -906,7 +907,13 @@ class UpgradeClient(host.Client):
             method = self.pending.pop(request_id, None)
             require(isinstance(method, str), "unmatched RPC response")
             if "error" in message:
-                return {"id": request_id, "error": {"redacted": True}}
+                raw = _object(message.get("error"))
+                code = raw.get("code")
+                failure: dict[str, Any] = {"redacted": True}
+                if type(code) is int and -32768 <= code <= -32000:
+                    failure["code"] = code
+                    self.last_rpc_failure = {"method": method, "code": code}
+                return {"id": request_id, "error": failure}
             result = _object(message.get("result"))
             if method == "hooks/list":
                 data = result.get("data")
@@ -1593,6 +1600,36 @@ def _close_observation(client: UpgradeClient, role: str, system: str) -> dict[st
     return {"role": role, "pid": pid, "closed_monotonic_ns": _receipt_clock_ns(), "facts": facts}
 
 
+def _finish_live_for_cold(client: UpgradeClient, result: dict[str, Any], system: str) -> None:
+    result["cleanup"].append(_close_observation(client, "live", system))
+
+
+def _start_finished_cold(plan: dict[str, Any], directory: Path, home: Path, source: str,
+                         result: dict[str, Any]) -> UpgradeClient:
+    cleanup = result.get("cleanup")
+    require(isinstance(cleanup, list) and len(cleanup) == 1 and cleanup[0].get("role") == "live"
+            and _object(cleanup[0].get("facts")).get("owned_process_exited") is True
+            and _object(cleanup[0].get("facts")).get("owned_tree_no_running_members") is True,
+            "live shutdown must finish before cold start")
+    started = _receipt_clock_ns()
+    require(type(cleanup[0].get("closed_monotonic_ns")) is int and cleanup[0]["closed_monotonic_ns"] < started,
+            "cold startup preceded live exit")
+    with _launch_environment(home):
+        cold = UpgradeClient(plan, directory, sources={source: "0.17.0"}, turn_limit=2)
+    try:
+        cold.log.write(json.dumps({"direction": "observation", "event": "cold_client_started",
+            "pid": cold.owned.process.pid, "started_monotonic_ns": started,
+            "monotonic_ns": _receipt_clock_ns()}) + "\n")
+        cold.log.flush()
+    except BaseException:
+        try:
+            result["cleanup"].append(_close_observation(cold, "cold", platform.system()))
+        except BaseException as exc:
+            result["cleanup"].append({"role": "cold", "cleanup_unknown": type(exc).__name__})
+        raise
+    return cold
+
+
 def _root_snapshots(home: Path, old_root: Path, new_root: Path, thread: str) -> dict[str, Any]:
     snapshots = {}
     for label, root in (("old", old_root), ("new", new_root)):
@@ -1833,7 +1870,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
             begin = len(cold.rows)
             try:
                 cold.rpc("thread/resume", {"threadId": thread, "cwd": str(workspace),
-                                           "sandbox": "read-only", "approvalPolicy": "on-request"})
+                                           "sandbox": "read-only", "approvalPolicy": "on-request", "excludeTurns": True})
             except ValueError as exc:
                 if str(exc) != "RPC rejected: thread/resume":
                     raise
@@ -1909,6 +1946,10 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
                             else "unsupported_continuity")
     except BaseException as exc:
         result["status"], result["failure"] = "failed", type(exc).__name__
+        diagnostic = next((getattr(client, "last_rpc_failure", None) for client in (cold, live)
+                           if isinstance(getattr(client, "last_rpc_failure", None), dict)), None)
+        if diagnostic is not None:
+            result["rpc_failure"] = diagnostic
     finally:
         for role, client in (("cold", cold), ("old_live", live)):
             if client is not None:
@@ -1963,7 +2004,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                                               "literal PLUGIN_DATA and transient executed script path are not observed",
                                               "owned app-server stderr is discarded to avoid credential retention",
                                               "all task content is synthetic and state outputs are redacted projections"],
-                              "pending": ["transition", "open_task", "cold_resume", "session_end",
+                              "cleanup": [], "pending": ["transition", "open_task", "cold_resume", "session_end",
                                           "disable", "removal", "unrelated_sentinel"]}
     env = isolated_env(home)
     live = cold = None
@@ -2150,15 +2191,13 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             host.verify_recovery(fresh_state, compact_state)
             _write_new(output / "fresh-after-compact.json", _state_projection(compact_state))
             live.rpc("thread/unsubscribe", {"threadId": fresh})
+            _finish_live_for_cold(live, result, subject["platform"])
+            live = None
             cold_plan = {**client_plan, "plugin_root": str(new_installed)}
-            with _launch_environment(home):
-                cold = UpgradeClient(cold_plan, cold_dir, sources={new_source: "0.17.0"}, turn_limit=2)
-            cold.log.write(json.dumps({"direction": "observation", "event": "cold_client_started",
-                "pid": cold.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
-            cold.log.flush()
+            cold = _start_finished_cold(cold_plan, cold_dir, home, new_source, result)
             begin = len(cold.rows)
             cold.rpc("thread/resume", {"threadId": fresh, "cwd": str(workspace),
-                                       "sandbox": "read-only", "approvalPolicy": "on-request"})
+                                       "sandbox": "read-only", "approvalPolicy": "on-request", "excludeTurns": True})
             _try_wait_cold_start(cold, fresh, begin)
             fresh_cold_turn, cold_rows = cold.observed_turn(fresh, "继续。")
             cold.log.flush()
@@ -2198,7 +2237,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                                               for _, p in approved}, turn_limit=1)
             begin = len(cold.rows)
             cold.rpc("thread/resume", {"threadId": task_b, "cwd": str(workspace),
-                                        "sandbox": "read-only", "approvalPolicy": "on-request"})
+                                        "sandbox": "read-only", "approvalPolicy": "on-request", "excludeTurns": True})
             _try_wait_cold_start(cold, task_b, begin)
             turn_after_b, rows_after_b = cold.observed_turn(task_b, continuation)
             cold.log.flush()
@@ -2223,9 +2262,10 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         before_removal = _selected_states(home, tracked_states)
         result["selected_data_before_removal"] = before_removal
         stable_id = "context-guard@" + NEW_MARKET
-        live.rpc("config/batchWrite", {"edits": [{"keyPath": 'plugins."' + stable_id + '".enabled',
+        controller = cold if strategy == "finish-old" else live
+        controller.rpc("config/batchWrite", {"edits": [{"keyPath": 'plugins."' + stable_id + '".enabled',
                       "value": False, "mergeStrategy": "upsert"}], "reloadUserConfig": True})
-        disabled = live.rpc("hooks/list", {"cwds": [str(workspace)]})
+        disabled = controller.rpc("hooks/list", {"cwds": [str(workspace)]})
         rows = disabled.get("data") if isinstance(disabled, dict) else None
         require(isinstance(rows, list) and len(rows) == 1 and not _object(rows[0]).get("errors")
                 and not _object(rows[0]).get("warnings"), "disabled Hook readback unavailable")
@@ -2245,7 +2285,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         selected = [x for x in disabled_entries if isinstance(x, dict) and x.get("pluginId") == stable_id]
         require(len(selected) == 1 and selected[0].get("installed") is True
                 and selected[0].get("enabled") is False, "selected plugin did not disable")
-        _mark(live, "disable_completed")
+        _mark(controller, "disable_completed")
         require(_selected_states(home, tracked_states) == before_removal, "selected data changed on disable")
         observe_sentinel("after_disable")
         command([str(codex), "plugin", "remove", stable_id])
@@ -2255,13 +2295,13 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                 and not any(isinstance(x, dict) and x.get("pluginId") == stable_id for x in remaining_installed),
                 "selected plugin remains installed")
         require(not new_installed.exists(), "selected plugin cache remains after removal")
-        _mark(live, "plugin_removed")
+        _mark(controller, "plugin_removed")
         require(_selected_states(home, tracked_states) == before_removal, "selected data changed on removal")
         observe_sentinel("after_plugin_remove")
         command([str(codex), "plugin", "marketplace", "remove", NEW_MARKET])
         after_market_remove = observe_sentinel("after_marketplace_remove")
         require(NEW_MARKET not in after_market_remove, "selected marketplace remains registered")
-        _mark(live, "marketplace_removed")
+        _mark(controller, "marketplace_removed")
         if old_market != NEW_MARKET:
             _market_source(after_market_remove, old_market, old)
         require(_selected_states(home, tracked_states) == before_removal, "selected data changed on marketplace removal")
@@ -2270,8 +2310,11 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
     except BaseException as exc:
         result["status"] = "failed"
         result["failure"] = type(exc).__name__
+        diagnostic = next((getattr(client, "last_rpc_failure", None) for client in (cold, live)
+                           if isinstance(getattr(client, "last_rpc_failure", None), dict)), None)
+        if diagnostic is not None:
+            result["rpc_failure"] = diagnostic
     finally:
-        result["cleanup"] = []
         for role, client in (("cold", cold), ("live", live)):
             if client is not None:
                 try:
@@ -2304,10 +2347,24 @@ def _journal(path: Path) -> list[dict[str, Any]]:
 
 def _validate_rpc_requests(rows: list[dict[str, Any]], *, cold: bool) -> None:
     allowed = {"initialize", "initialized", "hooks/list", "turn/start", "thread/archive"}
-    allowed |= ({"thread/resume"} if cold else
+    allowed |= ({"thread/resume", "config/batchWrite"} if cold else
                 {"thread/start", "thread/compact/start", "thread/unsubscribe", "config/batchWrite"})
     require(all(_object(row.get("message")).get("method") in allowed
                 for row in rows if row.get("direction") == "request"), "unexpected RPC request")
+    require(all(_object(_object(row.get("message")).get("params")).get("excludeTurns") is True
+                for row in rows if row.get("direction") == "request"
+                and _object(row.get("message")).get("method") == "thread/resume"), "resume metadata-only flag missing")
+
+
+def _check_resume(request: dict[str, Any], thread: str, cwd: str) -> None:
+    require(_object(request.get("params")) == {"threadId": thread, "cwd": cwd, "sandbox": "read-only",
+            "approvalPolicy": "on-request", "excludeTurns": True}, "resume request parameters differ")
+
+
+def _redacted_rpc_error(value: Any) -> bool:
+    return (isinstance(value, dict) and value.get("redacted") is True
+            and (set(value) == {"redacted"} or (set(value) == {"redacted", "code"}
+                 and type(value["code"]) is int and -32768 <= value["code"] <= -32000)))
 
 
 def _evidence_path(directory: Path, relative: str) -> Path:
@@ -2646,7 +2703,8 @@ def _verify_pre_disable(live: list[dict[str, Any]], result: dict[str, Any], old_
 
 
 def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: list[dict[str, Any]],
-                        marks: dict[str, int], new_source: str, installed: Path) -> None:
+                        marks: dict[str, int], new_source: str, installed: Path,
+                        *, disable_completed_ns: int | None = None) -> None:
     if subject["old_version"] != "0.16.1" or subject["transition_strategy"] != "finish-old":
         return
     evidence = _object(result.get("old_cache_preservation"))
@@ -2657,12 +2715,14 @@ def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: l
             and _cache_identity(installed) == original["objects_sha256"], "old cache preservation not proved")
     markers = [(i, row) for i, row in enumerate(live) if row.get("direction") == "observation"
                and row.get("event") == "old_identity_disabled"]
-    require(len(markers) == 1 and marks["transition_completed"] < markers[0][0] < marks["disable_completed"]
+    disable_index = marks.get("disable_completed", len(live))
+    require(len(markers) == 1 and marks["transition_completed"] < markers[0][0] < disable_index
             and type(markers[0][1].get("monotonic_ns")) is int, "normal old disable marker unavailable")
     marker_index, marker = markers[0]
     require(marker.get("pid") == live[marks["transition_started"]].get("pid"), "app-server identity differs")
-    require(type(live[marks["disable_completed"]].get("monotonic_ns")) is int
-            and marker["monotonic_ns"] < live[marks["disable_completed"]]["monotonic_ns"],
+    end_stamp = (disable_completed_ns if disable_completed_ns is not None else
+                 live[marks["disable_completed"]].get("monotonic_ns"))
+    require(type(end_stamp) is int and marker["monotonic_ns"] < end_stamp,
             "normal old disable timestamp differs")
     _verify_pre_disable(live, result, str(installed / "hooks/hooks.json"), new_source,
                         marks["transition_completed"], marker_index, marker["pid"])
@@ -2739,6 +2799,21 @@ def _marks(rows: list[dict[str, Any]]) -> dict[str, int]:
     return {name: index for name, (index, _row) in zip(expected, matches)}
 
 
+def _split_marks(live: list[dict[str, Any]], cold: list[dict[str, Any]]) -> tuple[dict[str, int], dict[str, int]]:
+    def select(rows: list[dict[str, Any]], names: tuple[str, ...]) -> dict[str, int]:
+        found = [(i, row) for i, row in enumerate(rows) if row.get("direction") == "local"]
+        require([row.get("event") for _, row in found] == list(names), "lifecycle timing markers incomplete")
+        stamps = [row.get("monotonic_ns") for _, row in found]
+        pids = [row.get("pid") for _, row in found]
+        require(all(type(x) is int and x > 0 for x in stamps + pids)
+                and len(set(pids)) == 1 and all(a < b for a, b in zip(stamps, stamps[1:])),
+                "lifecycle timing facts differ")
+        return {name: index for name, (index, _) in zip(names, found)}
+    old = select(live, ("transition_started", "transition_completed"))
+    new = select(cold, ("disable_completed", "plugin_removed", "marketplace_removed"))
+    return old, new
+
+
 def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], result: dict[str, Any],
                         output: Path, prepared_path: Path) -> dict[str, Any]:
     require(subject.get("transition_strategy") == "observe-open" and prepared.get("schema") == REPORT
@@ -2772,6 +2847,8 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
     cold = _journal(_evidence_path(output, "cold/rpc.jsonl"))
     _validate_rpc_requests(live, cold=False)
     _validate_rpc_requests(cold, cold=True)
+    require(not any(row.get("direction") == "request" and _object(row.get("message")).get("method") == "config/batchWrite"
+                    for rows in (live, cold) for row in rows), "observation cannot modify configuration")
     require(sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
                 for row in live) == 2
             and sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
@@ -2993,11 +3070,12 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
                         if row.get("direction") == "request" and _object(row.get("message")).get("method") == "thread/resume"
                         and _object(_object(row.get("message")).get("params")).get("threadId") == thread]
             require(len(requests) == 1, "cold old task observation was not attempted")
+            _check_resume(requests[0][1], thread, subject["workspace"])
             _inventory_in_journal(cold, result.get("new_inventory"), {new_source: "0.17.0"}, before=requests[0][0])
             if status == "unsupported_resume":
                 request_id = requests[0][1].get("id")
                 require(any(row.get("direction") == "response" and _object(row.get("message")).get("id") == request_id
-                            and _object(row.get("message")).get("error") == {"redacted": True} for row in rows),
+                            and _redacted_rpc_error(_object(row.get("message")).get("error")) for row in rows),
                         "unsupported resume was not observed")
         if status in ("observed", "root_unobserved", "session_start_unobserved"):
             turn = observation.get("turn")
@@ -3133,10 +3211,14 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     require(required_files <= set(artifacts) and all(_sha(artifacts.get(name))
             and sha(_evidence_path(output, name)) == artifacts[name] for name in required_files), "artifact digest differs")
     live = _journal(_evidence_path(output, "live/rpc.jsonl"))
+    cold = _journal(_evidence_path(output, "cold/rpc.jsonl"))
     _validate_rpc_requests(live, cold=False)
+    _validate_rpc_requests(cold, cold=True)
+    require(not any(row.get("direction") == "request" and _object(row.get("message")).get("method") == "config/batchWrite"
+                    for row in live), "disable cannot use closed live app-server")
     require(sum(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
                 for row in live) == 7, "supported lifecycle model turn budget differs")
-    marks = _marks(live)
+    marks, cold_marks = _split_marks(live, cold)
     before, after = _object(result.get("before")), _object(result.get("after"))
     require(type(before.get("app_server_pid")) is int and before["app_server_pid"] > 0
             and live[marks["transition_started"]].get("pid") == before["app_server_pid"],
@@ -3169,7 +3251,8 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     new_inv = _inventory_in_journal(live, new_hooks,
                                     {p: ("0.17.0" if p == new_source else subject["old_version"])
                                      for p in new_paths}, after=marks["transition_completed"])
-    _verify_old_disable(subject, result, live, marks, new_source, Path(old_installed))
+    _verify_old_disable(subject, result, live, marks, new_source, Path(old_installed),
+                        disable_completed_ns=cold[cold_marks["disable_completed"]]["monotonic_ns"])
     for thread, field in ((task_a, "turn_a"), (task_b, "turn_b"), (task_a, "post_compact_turn")):
         turn = before.get(field)
         require(isinstance(turn, str), "old turn missing")
@@ -3228,7 +3311,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
         require(isinstance(fresh, str) and fresh not in (task_a, task_b) and isinstance(turn, str), "fresh task missing")
         start, end = _turn_bounds(live, fresh, turn)
         require(marks["transition_completed"] < _thread_start_index(live, fresh) < start
-                and end < marks["disable_completed"], "fresh turn order differs")
+                and end < len(live), "fresh turn order differs")
         stops = _paired(live[start:end + 1], new_inv, fresh, "stop", turn=turn)
         require(any(_source_key(run.get("sourcePath"), [new_source]) == new_source for run in stops),
                 "fresh stable Hook did not run")
@@ -3245,7 +3328,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
         compact_turn, cold_turn = after.get("fresh_compact_turn"), after.get("fresh_cold_turn")
         require(isinstance(compact_turn, str) and isinstance(cold_turn, str), "fresh continuation missing")
         compact_start, compact_end = _turn_bounds(live, fresh, compact_turn)
-        require(end < compact_start < compact_end < marks["disable_completed"]
+        require(end < compact_start < compact_end < len(live)
                 and _paired(live[compact_start:compact_end + 1], new_inv, fresh, "stop", turn=compact_turn),
                 "fresh compact continuation missing")
         fresh_messages = [row["message"] for row in live[end:compact_end + 1] if row.get("direction") == "response"]
@@ -3253,7 +3336,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                                                                if path == new_source}), "fresh compact not proved")
         unsubs = [(i, j) for i, j, req, _ in _rpc_pairs(live, "thread/unsubscribe")
                   if _object(req.get("params")).get("threadId") == fresh]
-        require(len(unsubs) == 1 and compact_end < unsubs[0][0] < unsubs[0][1] < marks["disable_completed"],
+        require(len(unsubs) == 1 and compact_end < unsubs[0][0] < unsubs[0][1] < len(live),
                 "fresh unsubscribe not proved")
         cold = _journal(_evidence_path(output, "cold/rpc.jsonl"))
         _validate_rpc_requests(cold, cold=True)
@@ -3262,6 +3345,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
         resumes = [(i, j) for i, j, req, _ in _rpc_pairs(cold, "thread/resume")
                    if _object(req.get("params")).get("threadId") == fresh]
         require(len(resumes) == 1, "fresh cold resume missing")
+        _check_resume(_object(cold[resumes[0][0]].get("message")), fresh, subject["workspace"])
         cold_inv = _inventory_in_journal(cold, new_hooks, {new_source: "0.17.0"}, before=resumes[0][0])
         cold_start, cold_end = _turn_bounds(cold, fresh, cold_turn)
         require(resumes[0][1] < cold_start < cold_end
@@ -3284,7 +3368,13 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                           if _object(req.get("params")).get("threadId") == fresh]
         require(len(fresh_archives) == 1 and cancel_end < fresh_archives[0][0] < fresh_archives[0][1],
                 "fresh task archive preceded cancellation")
-        verify_archive(cold, cold_inv, fresh)
+        verify_archive(cold[:cold_marks["disable_completed"]], cold_inv, fresh)
+        session_ends = [i for i, row in enumerate(cold) if row.get("direction") == "response"
+                        and _object(row.get("message")).get("method") == "hook/completed"
+                        and _object(_object(row.get("message")).get("params")).get("threadId") == fresh
+                        and _object(_object(_object(row.get("message")).get("params")).get("run")).get("eventName") == "sessionEnd"]
+        require(session_ends and fresh_archives[0][0] < max(session_ends) < cold_marks["disable_completed"],
+                "fresh SessionEnd did not precede disable")
         tracked = [(subject["old_data_root"], task_a), (subject["old_data_root"], task_b),
                    (subject["new_data_root"], fresh)]
         boundary = "cancelled_old_before_transition"
@@ -3325,10 +3415,14 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
             "observed data root differs")
     require(result.get("selected_data_before_removal") == result.get("selected_data_after_removal")
             == _selected_states(home, tracked), "selected task data changed or is unavailable")
-    _verify_disable_rpc(live, marks, new_source, new_inv, result.get("disabled_inventory"), subject["old_version"])
+    _verify_disable_rpc(cold, {"transition_completed": max(session_ends), **cold_marks}, new_source, cold_inv,
+                        result.get("disabled_inventory"), subject["old_version"])
+    require(not any(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                    for row in cold[cold_marks["disable_completed"] + 1:]), "model turn after disable")
     _verify_cli_lifecycle(subject, old, result)
     timed = _command_times(result)
-    marker_times = {name: live[index]["monotonic_ns"] for name, index in marks.items()}
+    marker_times = {**{name: live[index]["monotonic_ns"] for name, index in marks.items()},
+                    **{name: cold[index]["monotonic_ns"] for name, index in cold_marks.items()}}
     codex = subject["codex"]
     transition_mutations = [[codex, "plugin", "marketplace", "add", subject["new_artifact"]],
                             [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]]
@@ -3364,8 +3458,13 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
             and cold_markers[0][1].get("pid") == cold_close["pid"]
             and live_close["pid"] == before.get("app_server_pid") and live_close["pid"] != cold_close["pid"]
             and type(cold_markers[0][1].get("monotonic_ns")) is int
+            and type(cold_markers[0][1].get("started_monotonic_ns")) is int
             and cold_markers[0][1]["monotonic_ns"] < cold_close["closed_monotonic_ns"]
-            and cold_markers[0][1]["monotonic_ns"] < live_close["closed_monotonic_ns"],
+            and marker_times["transition_completed"] < live_close["closed_monotonic_ns"]
+            < cold_markers[0][1]["started_monotonic_ns"] <= cold_markers[0][1]["monotonic_ns"]
+            < marker_times["disable_completed"]
+            and cold[cold_marks["disable_completed"]].get("pid") == cold_close["pid"]
+            and marker_times["marketplace_removed"] < cold_close["closed_monotonic_ns"],
             "cold and live app-server identities are not independently bound")
     if subject["platform"] == "Windows":
         require(all(_object(item.get("facts")).get("cleanup_complete") is True
