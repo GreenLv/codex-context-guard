@@ -11,7 +11,7 @@ class HolWorkflowContractTests(unittest.TestCase):
 
     def test_scan_gate_and_pinned_inputs_are_preserved(self):
         for expected in (
-            "hashgraph-online/ai-plugin-scanner-action@3220f5fedcd269533a6275738b2ab5d5f9753e8e",
+            "hashgraph-online/ai-plugin-scanner-action@a18c14cfbf6b787db97e6aa4207d5d469a5672a0",
             'plugin_dir: "."', "mode: scan", "install_cisco: true",
             'cisco_skill_scan: "on"', "min_score: 80", "fail_on_severity: high",
             "format: sarif", "upload_sarif: true", "output: ai-plugin-scanner.sarif",
