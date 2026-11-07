@@ -115,6 +115,116 @@ def lifecycle_facts():
 
 
 class UpgradeControls(unittest.TestCase):
+    def test_compact_consumer_uses_only_paired_same_thread_window(self):
+        source, thread = fixture_path("hooks.json"), "T"
+        inv = {row["eventName"]: row for row in inventory(source)["data"][0]["hooks"]}
+        rows = []
+        def rpc(i, method, params, result):
+            rows.extend([{"direction": "request", "message": {"id": i, "method": method, "params": params}},
+                         {"direction": "response", "message": {"id": i, "result": result}}])
+        def event(method, params):
+            rows.append({"direction": "response", "message": {"method": method, "params": params}})
+        def turn(i, value):
+            rpc(i, "turn/start", {"threadId": thread}, {"turn": {"id": value}})
+            event("turn/started", {"threadId": thread, "turn": {"id": value}})
+            event("turn/completed", {"threadId": thread, "turn": {"id": value, "status": "completed"}})
+        turn(1, "baseline")
+        rpc(2, "thread/compact/start", {"threadId": thread}, {})
+        event("turn/started", {"threadId": thread, "turn": {"id": "C"}})
+        for phase in ("started", "completed"):
+            event("hook/" + phase, {"threadId": thread, "turnId": "C", "run":
+                hook("hc", source, "preCompact", "completed", 1) if phase == "completed"
+                else hook("hc", source, "preCompact")})
+        for phase in ("started", "completed"):
+            event("item/" + phase, {"threadId": thread, "turnId": "C", "item": {"id": "I", "type": "contextCompaction"}})
+        event("thread/status/changed", {"threadId": thread, "status": {"type": "idle"}})
+        turn(3, "recovery")
+        rows = [json.loads(json.dumps(row)) for row in rows]
+        with self.assertRaises(ValueError):
+            U.host.compact_complete([r["message"] for r in rows if r["direction"] == "response"], thread, inv)
+        U._verify_compact_window(rows, thread, "baseline", "recovery", inv)
+        notifications_first = copy.deepcopy(rows)
+        response_index = next(i for i, row in enumerate(notifications_first)
+                              if row.get("direction") == "response" and row.get("message", {}).get("id") == 2)
+        response = notifications_first.pop(response_index)
+        recovery_index = next(i for i, row in enumerate(notifications_first)
+                              if row.get("direction") == "request" and row.get("message", {}).get("id") == 3)
+        notifications_first.insert(recovery_index, response)
+        U._verify_compact_window(notifications_first, thread, "baseline", "recovery", inv)
+        for mutation in ("wrong_thread", "duplicate_compact", "missing_idle", "missing_response", "extra_turn", "late_compact"):
+            bad = copy.deepcopy(rows)
+            request_index = next(i for i, row in enumerate(bad) if row.get("message", {}).get("method") == "thread/compact/start")
+            if mutation == "wrong_thread":
+                bad[request_index]["message"]["params"]["threadId"] = "other"
+            elif mutation == "duplicate_compact":
+                duplicate = copy.deepcopy(bad[request_index:request_index + 2])
+                duplicate[0]["message"]["id"] = duplicate[1]["message"]["id"] = 99
+                bad[request_index:request_index] = duplicate
+            elif mutation == "missing_idle":
+                bad = [row for row in bad if row.get("message", {}).get("method") != "thread/status/changed"]
+            elif mutation == "missing_response":
+                bad.pop(request_index + 1)
+            elif mutation == "extra_turn":
+                bad.insert(request_index, {"direction": "request", "message": {"id": 99, "method": "turn/start", "params": {"threadId": thread}}})
+            else:
+                pair = bad[request_index:request_index + 2]
+                del bad[request_index:request_index + 2]
+                bad.extend(pair)
+            with self.subTest(mutation=mutation), self.assertRaises(U.UpgradeError):
+                U._verify_compact_window(bad, thread, "baseline", "recovery", inv)
+
+    def test_verify_replay_requires_ancestor_consumer_only_and_current_preflight(self):
+        old_commit, new_commit = "a" * 40, "b" * 40
+        old = b"import os\nVALUE=1\ndef prepare(): pass\ndef verify(): pass\ndef main(): pass\n"
+        new = b"import os\nVALUE=1\ndef prepare(): pass\ndef _verify_compact_window(): pass\ndef _verify_replay_subject(): pass\ndef verify(): return True\ndef main(): pass\n"
+        state = {"old": old, "new": new, "paths": b"tools/validation/native_upgrade_acceptance.py\ntests/test_native_upgrade_acceptance.py\n", "ancestor": True}
+        def git(argv, **_kwargs):
+            args = argv[3:]
+            if args == ["rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(argv, 0, (new_commit + "\n").encode(), b"")
+            if args[:2] == ["merge-base", "--is-ancestor"]:
+                return subprocess.CompletedProcess(argv, 0 if state["ancestor"] else 1, b"", b"")
+            if args[0] == "diff":
+                return subprocess.CompletedProcess(argv, 0, state["paths"], b"")
+            if args[0] == "show":
+                return subprocess.CompletedProcess(argv, 0, state["old"] if args[1].startswith(old_commit) else state["new"], b"")
+            raise AssertionError("unexpected git request")
+        subject = {"toolkit_commit": new_commit, "tool_sha256": "c" * 64}
+        with mock.patch.object(U.subprocess, "run", side_effect=git), mock.patch.object(U, "preflight", side_effect=lambda *_: subject.copy()) as preflight:
+            actual, verifier, verifier_sha = U._verify_replay_subject({"toolkit_commit": old_commit}, Path(fixture_path("probe")))
+            self.assertEqual(old_commit, actual["toolkit_commit"])
+            self.assertEqual(hashlib.sha256(old).hexdigest(), actual["tool_sha256"])
+            self.assertEqual((new_commit, "c" * 64), (verifier, verifier_sha))
+            self.assertEqual(new_commit, preflight.call_args.args[0]["toolkit_commit"])
+            with mock.patch.object(U, "preflight", side_effect=U.UpgradeError("current preflight refused")):
+                with self.assertRaises(U.UpgradeError):
+                    U._verify_replay_subject({"toolkit_commit": old_commit}, Path(fixture_path("probe")))
+            same, verifier, verifier_sha = U._verify_replay_subject({"toolkit_commit": new_commit}, Path(fixture_path("probe")))
+            self.assertEqual((new_commit, new_commit, "c" * 64), (same["toolkit_commit"], verifier, verifier_sha))
+            for mutation in ("not_ancestor", "extra_path", "producer_changed", "imports_changed", "duplicate", "shadow",
+                             "decorator", "default", "keyword_default"):
+                state.update(old=old, new=new, paths=b"tools/validation/native_upgrade_acceptance.py\n", ancestor=True)
+                if mutation == "not_ancestor":
+                    state["ancestor"] = False
+                elif mutation == "extra_path":
+                    state["paths"] += b"tools/validation/stop_host_acceptance.py\n"
+                elif mutation == "producer_changed":
+                    state["new"] = new.replace(b"def prepare(): pass", b"def prepare(): return 1")
+                elif mutation == "imports_changed":
+                    state["new"] = new.replace(b"import os", b"import sys")
+                elif mutation == "duplicate":
+                    state["new"] += b"def verify(): pass\n"
+                elif mutation == "shadow":
+                    state["new"] += b"verify = 1\n"
+                elif mutation == "decorator":
+                    state["new"] = new.replace(b"def _verify_compact_window", b"@alter_producer()\ndef _verify_compact_window")
+                elif mutation == "default":
+                    state["new"] = new.replace(b"def _verify_compact_window():", b"def _verify_compact_window(x=alter_producer()):")
+                else:
+                    state["new"] = new.replace(b"def _verify_compact_window():", b"def _verify_compact_window(*, x=alter_producer()):")
+                with self.subTest(mutation=mutation), self.assertRaises(U.UpgradeError):
+                    U._verify_replay_subject({"toolkit_commit": old_commit}, Path(fixture_path("probe")))
+
     def test_live_close_must_precede_actual_cold_constructor(self):
         events = []
         live = mock.Mock()
@@ -469,6 +579,7 @@ class UpgradeControls(unittest.TestCase):
                  mock.patch.object(U.native, "load_artifacts", return_value=manager), \
                  mock.patch.object(U.scheduler, "_command", side_effect=command), \
                  mock.patch.object(U, "preflight", return_value=subject), \
+                 mock.patch.object(U, "_verify_replay_subject", side_effect=lambda plan, probe: (U.preflight(plan, probe), "c" * 40, "d" * 64)), \
                  mock.patch.object(U, "_verify_prepared"):
                 for scenario, expected in (("pass", "observation_complete"), ("live_guard", "unsupported_continuity"),
                                            ("resume_rejected", "unsupported_continuity"), ("missing_end", "failed")):
@@ -1165,6 +1276,7 @@ class UpgradeControls(unittest.TestCase):
                 if prompt is not None:
                     params["input"] = [{"type": "text", "text": prompt}]
                 request(i, "turn/start", params, {"turn": {"id": turn_id}})
+                event("turn/started", thread, None, {"turn": {"id": turn_id}})
                 if read:
                     hook_pair(thread, turn_id, "preToolUse", source)
                     item = {"id": "read", "type": "commandExecution", "command": "cat native-read.txt",
@@ -1297,6 +1409,7 @@ class UpgradeControls(unittest.TestCase):
             manager = mock.Mock()
             manager.distribution_manifest.return_value = {"public": "b" * 64}
             with mock.patch.object(U, "preflight", return_value=subject), \
+                 mock.patch.object(U, "_verify_replay_subject", side_effect=lambda plan, probe: (U.preflight(plan, probe), "c" * 40, "d" * 64)), \
                  mock.patch.object(U.native, "load_artifacts", return_value=manager), \
                  mock.patch.object(U, "_selected_states", return_value=data_facts), \
                  mock.patch.object(U, "_sentinel_files", return_value=subject["sentinel"]):
@@ -2435,6 +2548,7 @@ class FakeSafeTransport(unittest.TestCase):
                             {"id": self.seq, "result": {"turn": {"id": turn}}},
                         )
                         begin = len(self.rows)
+                        self.event("turn/started", thread, None, {"turn": {"id": turn}})
                         if turn in ("A1", "F1"):
                             self.hooks(thread, turn, "preToolUse")
                             item = {
@@ -2539,6 +2653,7 @@ class FakeSafeTransport(unittest.TestCase):
                 files = {"public": "b" * 64}
                 with (
                     mock.patch.object(U, "preflight", return_value=subject),
+                    mock.patch.object(U, "_verify_replay_subject", side_effect=lambda plan, probe: (U.preflight(plan, probe), "c" * 40, "d" * 64)),
                     mock.patch.object(U, "UpgradeClient", FakeClient),
                     mock.patch.object(
                         U.scheduler, "_command", side_effect=fake_command

@@ -2814,6 +2814,77 @@ def _split_marks(live: list[dict[str, Any]], cold: list[dict[str, Any]]) -> tupl
     return old, new
 
 
+def _verify_compact_window(rows: list[dict[str, Any]], thread: str, baseline: str, recovery: str,
+                           inventory: dict[str, dict[str, Any]]) -> None:
+    _, baseline_end = _turn_bounds(rows, thread, baseline)
+    recovery_start, _ = _turn_bounds(rows, thread, recovery)
+    compacts = [(i, j) for i, j, req, _ in _rpc_pairs(rows, "thread/compact/start")
+                if _object(req.get("params")).get("threadId") == thread]
+    require(len(compacts) == 1 and baseline_end < compacts[0][0] < compacts[0][1] < recovery_start,
+            "compact request or ordering differs")
+    require(not any(row.get("direction") == "request" and _object(row.get("message")).get("method") == "turn/start"
+                    and _object(_object(row.get("message")).get("params")).get("threadId") == thread
+                    for row in rows[baseline_end + 1:recovery_start]), "unexpected turn before compact recovery")
+    messages = [row["message"] for row in rows[compacts[0][0] + 1:recovery_start]
+                if row.get("direction") == "response"]
+    require(host.compact_complete(messages, thread, inventory), "real compact not proved")
+
+
+def _verify_replay_subject(plan: dict[str, Any], probe: Path) -> tuple[dict[str, Any], str, str]:
+    import ast
+
+    producer = plan.get("toolkit_commit")
+    require(isinstance(producer, str) and HEX40.fullmatch(producer), "producer toolkit commit invalid")
+    def git(*args: str) -> bytes:
+        result = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, check=False)
+        require(result.returncode == 0, "toolkit replay Git check failed")
+        return result.stdout
+    current = git("rev-parse", "HEAD").decode("ascii").strip()
+    require(HEX40.fullmatch(current) is not None, "current toolkit commit invalid")
+    if producer == current:
+        subject = preflight(plan, probe)
+        return subject, current, subject["tool_sha256"]
+    git("merge-base", "--is-ancestor", producer, current)
+    allowed = {"tools/validation/native_upgrade_acceptance.py", "tests/test_native_upgrade_acceptance.py"}
+    changed = set(git("diff", "--name-only", "--no-renames", producer, current, "--").decode("utf-8").splitlines())
+    require(changed and changed <= allowed and "tools/validation/native_upgrade_acceptance.py" in changed,
+            "toolkit replay changed unsupported paths")
+    old_bytes = git("show", producer + ":tools/validation/native_upgrade_acceptance.py")
+    new_bytes = git("show", current + ":tools/validation/native_upgrade_acceptance.py")
+    old_tree, new_tree = ast.parse(old_bytes), ast.parse(new_bytes)
+    skip = {"verify", "_verify_compact_window", "_verify_replay_subject"}
+    for tree in (old_tree, new_tree):
+        definitions = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        require(len(definitions) == len(set(definitions)), "duplicate toolkit definition")
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                require(not any(isinstance(child, ast.Name) and child.id in skip
+                                for target in targets for child in ast.walk(target)), "toolkit helper shadowed")
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                require(not any((alias.asname or alias.name.split(".")[0]) in skip for alias in node.names),
+                        "toolkit helper import shadowed")
+    require(sum(isinstance(node, ast.FunctionDef) and node.name == "verify" for node in old_tree.body) == 1
+            and all(sum(isinstance(node, ast.FunctionDef) and node.name == name for node in new_tree.body) == 1
+                    for name in skip)
+            and not any(isinstance(node, ast.FunctionDef) and node.name in skip - {"verify"} for node in old_tree.body),
+            "toolkit replay helper identity differs")
+    require(all(not node.decorator_list and not node.args.defaults and not getattr(node, "type_params", [])
+                and all(value is None for value in node.args.kw_defaults)
+                for node in new_tree.body if isinstance(node, ast.FunctionDef) and node.name in skip),
+            "toolkit replay helper executes code during import")
+    def normalized(tree: ast.Module) -> list[str]:
+        return [ast.dump(node, include_attributes=False) for node in tree.body
+                if not (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in skip)]
+    require(normalized(old_tree) == normalized(new_tree), "toolkit replay producer code differs")
+    current_plan = {**plan, "toolkit_commit": current}
+    subject = preflight(current_plan, probe)
+    verifier_sha = subject["tool_sha256"]
+    subject["toolkit_commit"] = producer
+    subject["tool_sha256"] = hashlib.sha256(old_bytes).hexdigest()
+    return subject, current, verifier_sha
+
+
 def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], result: dict[str, Any],
                         output: Path, prepared_path: Path) -> dict[str, Any]:
     require(subject.get("transition_strategy") == "observe-open" and prepared.get("schema") == REPORT
@@ -3177,7 +3248,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     require(output.is_absolute() and not output.is_symlink() and output.is_dir(), "result directory unavailable")
     _reject_credential_path(output)
     probe = output.parent / (".cg-u01-verify-" + str(os.getpid()))
-    subject = preflight(plan, probe)
+    subject, verifier_commit, verifier_sha = _verify_replay_subject(plan, probe)
     home = Path(subject["home"])
     daily = (Path.home() / ".codex").resolve()
     require(all(not _within(output.resolve(strict=True), root) for root in
@@ -3191,7 +3262,9 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     old = _read_json(prepared)
     result = _read_json(_evidence_path(output, "result.json"))
     if subject["transition_strategy"] == "observe-open":
-        return _verify_observation(subject, old, result, output, prepared)
+        observed = _verify_observation(subject, old, result, output, prepared)
+        observed.update(verifier_toolkit_commit=verifier_commit, verifier_tool_sha256=verifier_sha)
+        return observed
     require(not (output / "guard-diagnostic.json").exists()
             and not (output / "guard-diagnostic.json").is_symlink(), "rejected Hook diagnostic present")
     require(old.get("schema") == REPORT and old.get("stage") == "prepare"
@@ -3267,10 +3340,8 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                         else "cat native-read.txt")
     require(before.get("read_command") == expected_command
             and before.get("read_file_sha256") == subject["read_file_sha256"], "read fixture differs")
-    compact_rows = [row["message"] for row in live[:marks["transition_started"]]
-                    if row.get("direction") == "response"]
-    require(host.compact_complete(compact_rows, task_a, {event: item for (event, _), item in old_inv.items()}),
-            "real compact not proved")
+    _verify_compact_window(live[:marks["transition_started"]], task_a, before["turn_a"], before["post_compact_turn"],
+                           {event: item for (event, _), item in old_inv.items()})
     compact_before = _projected_state(_evidence_path(output, "before-compact.json"))
     a_before, b_before = (_projected_state(_evidence_path(output, "before-a.json")),
                           _projected_state(_evidence_path(output, "before-b.json")))
@@ -3331,9 +3402,8 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
         require(end < compact_start < compact_end < len(live)
                 and _paired(live[compact_start:compact_end + 1], new_inv, fresh, "stop", turn=compact_turn),
                 "fresh compact continuation missing")
-        fresh_messages = [row["message"] for row in live[end:compact_end + 1] if row.get("direction") == "response"]
-        require(host.compact_complete(fresh_messages, fresh, {event: item for (event, path), item in new_inv.items()
-                                                               if path == new_source}), "fresh compact not proved")
+        _verify_compact_window(live, fresh, turn, compact_turn,
+                               {event: item for (event, path), item in new_inv.items() if path == new_source})
         unsubs = [(i, j) for i, j, req, _ in _rpc_pairs(live, "thread/unsubscribe")
                   if _object(req.get("params")).get("threadId") == fresh]
         require(len(unsubs) == 1 and compact_end < unsubs[0][0] < unsubs[0][1] < len(live),
@@ -3471,6 +3541,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
                     and _object(item.get("facts")).get("job_close_confirmed") is True
                     for item in cleanup), "Windows owned Job cleanup incomplete")
     return {"schema": REPORT, "status": "passed", "observed_boundary": boundary,
+            "verifier_toolkit_commit": verifier_commit, "verifier_tool_sha256": verifier_sha,
             "subject": subject, "execution_result_sha256": sha(_evidence_path(output, "result.json")),
             "prepare_result_sha256": sha(prepared), "artifact_sha256": artifacts,
             "limitations": [("old tasks explicitly cancelled before transition; no continuity claim" if strategy == "finish-old"
