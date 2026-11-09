@@ -33,6 +33,7 @@ pinned by the modules named here, not duplicated):
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import tempfile
@@ -116,6 +117,21 @@ class WindowsRegressionControls(unittest.TestCase):
                 self.assertEqual(Path(reported), root)
             # Separation: the caller's working directory was never the target.
             self.assertNotEqual(Path.cwd(), root)
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows handle sharing")
+    def test_directory_list_handle_without_delete_share_blocks_delete_open(self):
+        from tools.validation import incident_readonly_child as backend
+
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp).resolve() / "held"
+            directory.mkdir()
+            self.assertEqual(0, RETENTION.delete_access_probe(directory)["winerror"])
+            api, handle = backend.open_windows_handle(directory, 0x20081)
+            try:
+                self.assertEqual(32, RETENTION.delete_access_probe(directory)["winerror"])
+            finally:
+                self.assertEqual(1, backend.close_windows_handle(api, handle)["return_value"])
+            self.assertEqual(0, RETENTION.delete_access_probe(directory)["winerror"])
 
     def test_private_dacl_classifier_refuses_owner_rights_trustee(self):
         user = "S-1-5-21-9999999999-8888888888-7777777777-1001"

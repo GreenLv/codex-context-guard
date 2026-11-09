@@ -864,7 +864,8 @@ def scenario(name, f):
                         raise AssertionError("DACL recovery handle close failed")
         elif name == "no_delete_share":
             try:
-                api, handle = backend.open_windows_handle(home, 0x20080)
+                # FILE_LIST_DIRECTORY makes the open participate in sharing checks.
+                api, handle = backend.open_windows_handle(home, 0x20081)
             except OSError as exc:
                 raise Unavailable(
                     "no-delete handle setup unavailable; winerror="

@@ -160,18 +160,20 @@ class HandleOperationError(OSError):
 def open_windows_handle(path, access):
     from ctypes import wintypes
     info = Path(path).lstat()
-    if (not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode))
+    directory = stat.S_ISDIR(info.st_mode)
+    if (not (stat.S_ISREG(info.st_mode) or directory)
             or getattr(info, 'st_file_attributes', 0) & 0x400
             or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)):
         raise ValueError('linked or special handle target')
-    if access not in (0x20080, 0x60080):
+    allowed_access = (0x20080, 0x60080, 0x20081) if directory else (0x20080, 0x60080)
+    if access not in allowed_access:
         raise ValueError('unsupported handle access mask')
     api = ctypes.WinDLL('kernel32', use_last_error=True)
     create = api.CreateFileW
     create.argtypes = [wintypes.LPCWSTR, ctypes.c_uint32, ctypes.c_uint32,
                       ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, wintypes.HANDLE]
     create.restype = wintypes.HANDLE
-    flags = 0x00200000 | (0x02000000 if stat.S_ISDIR(info.st_mode) else 0)
+    flags = 0x00200000 | (0x02000000 if directory else 0)
     handle = create(str(path), access, 3, None, 3, flags, None)
     if not handle or handle == ctypes.c_void_p(-1).value:
         raise HandleOperationError('open', ctypes.get_last_error())
