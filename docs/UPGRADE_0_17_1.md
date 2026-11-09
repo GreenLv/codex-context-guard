@@ -1,11 +1,9 @@
 # Upgrading to 0.17.1
 
-This guide covers the 0.17.1 maintenance upgrade for existing users. It
-explains what changes in your daily entry, what happens to old tasks and
-private state, what you must do, what to expect, and how to recover — before
-any implementation detail. Public availability of 0.17.1 is determined by the
-[GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)
-readback; until then this version is a source candidate.
+First identify the Context Guard entry your Codex installation uses. Finish
+work that still needs the old runtime, then follow the matching route below.
+Download the official ZIP for your installation from the release assets.
+[GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.1)
 
 Also read this guide in
 [Simplified Chinese](UPGRADE_0_17_1.zh-CN.md).
@@ -52,7 +50,7 @@ uses a different directory and needs the migration below to find that state.
 If you want your old sessions visible under the stable identity's data root
 (for example, so recovery and status queries find them after the daily
 cutover), use the repository migration tool
-([documentation](../tools/GUARD_STATE_MIGRATION.md)):
+([documentation](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md)):
 
 - It is read-only by default. `inventory` and `plan` never write state.
 - `apply` copies sessions byte-exact into the target data root while holding
@@ -69,19 +67,37 @@ Run the tool with an explicit HOME, outside the repository, and keep its
 workspace and results on your host; private state never belongs in Git or
 attachments.
 
-## What you must do
+## Upgrade in your current HOME
 
-1. Read back the release assets and verify the ZIP digest published with the
-   release.
-2. Use official marketplace operations in your HOME (register the stable
-   marketplace source, `codex plugin add`, normal enablement). Never register
-   a Git checkout or a hand-copied cache.
-3. Review Hook trust normally when the host asks — there is no custom
-   approval string, no re-login, and no trust bypass in this upgrade.
-4. After installation, check the loaded state: the plugin row for
-   `context-guard@codex-context-guard` with the new version, all nine Hooks
-   enabled and trusted, and your ordinary tasks still running. A real task
-   that triggers Hooks is the only loaded-behavior evidence.
+1. Download `context-guard-0.17.1.zip` from the release assets and verify its
+   SHA-256 against the published digest. Extract it in a directory you control
+   and keep that directory as the marketplace source.
+2. Run `codex plugin list --json` to identify the current entry and confirm
+   that tasks requiring the old runtime have finished. If you are upgrading
+   within the stable identity, save the old marketplace source and its ZIP,
+   then remove the old registration with
+   `codex plugin marketplace remove codex-context-guard`. This can remove
+   the old version cache. For a switch from a differently named market,
+   keep the old registration.
+3. From the new extracted directory, run these commands. Save the add
+   response so you can use its `installedPath` in the next step.
+
+   ```shell
+   codex plugin marketplace add .
+   codex plugin add context-guard@codex-context-guard --json
+   codex plugin list --json
+   ```
+
+4. Check that the stable entry is installed and enabled at version `0.17.1`.
+   Compare the release files with `installedPath` using
+   `python3 scripts/artifact_identity.py --compare-to "<installedPath>"`
+   (`py -3` on Windows). For an identity switch, disable only the old
+   entry through the official Plugins UI before trusting the new Hooks.
+5. Open `/hooks` in a fresh Codex CLI session. Review the nine Hooks from
+   the new cache through the normal interface. In the entry you actually
+   use, run a fresh task that triggers the Hooks and check that it loads
+   the new version. Restart Codex Desktop if it still shows the old
+   plugin after the switch.
 
 ## What to expect
 
@@ -106,8 +122,8 @@ attachments.
 
 ## Implementation notes
 
-The [native upgrade toolkit](../tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)
+The [native upgrade toolkit](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)
 records the versions, package hashes and tool commit used on each host. The
-[migration tool reference](../tools/GUARD_STATE_MIGRATION.md) explains the
-copy, conflict and recovery checks. Native macOS and Windows acceptance,
-CI, the HOL plugin scan and publication are pending for this candidate.
+[migration tool reference](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md) explains the
+copy, conflict and recovery checks. The acceptance record separates native
+checks, exact artifacts, CI and publication. [Acceptance record](LOCAL_ACCEPTANCE.md)

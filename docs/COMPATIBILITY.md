@@ -1,6 +1,6 @@
 # Compatibility and Verification Status
 
-## 0.17.1 — source candidate (unreleased)
+## 0.17.1 — 2026-11-09
 
 Compatible with schema-13 states written by 0.14–0.17.0; no migration. Schema
 13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path
@@ -24,10 +24,10 @@ stable `codex-context-guard`; no new versioned identity is introduced.
   legacy task finishes under its original loaded runtime before its HOME's
   daily entry changes. State copy success alone is not loaded-behavior
   evidence.
-- The performance contract and thresholds are unchanged. Native macOS and
-  Windows behavior, exact-artifact installation and upgrade, migration and
-  recovery drills, CI, HOL and publication remain separate pending gates for
-  this candidate; see [local acceptance](LOCAL_ACCEPTANCE.md).
+- The performance contract and thresholds are unchanged. The local acceptance record
+  separates native macOS and Windows, exact-artifact installation and upgrade,
+  migration and recovery drills, CI, HOL and public release evidence.
+  [Local acceptance](LOCAL_ACCEPTANCE.md).
 
 ## 0.17.0 — 2026-11-06
 

@@ -1,8 +1,8 @@
 # 升级到 0.17.1
 
-如果你正在使用 Context Guard，先确认当前入口，再处理仍依赖旧版本的任务。0.17.1 目前是未发布的源码候选版。发布状态见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)。
+先确认当前 Codex 安装使用哪个 Context Guard 入口，并结束仍依赖旧运行时的任务。再按下面对应的路线升级。从发布附件下载正式 ZIP。[GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.1)
 
-英文版见 [English](UPGRADE_0_17_1.md)。
+[English](UPGRADE_0_17_1.md)
 
 ## 谁需要关注本次升级
 
@@ -27,7 +27,7 @@
 安装 0.17.1 后，私有会话仍留在原身份的数据目录。0.16.1 包装身份的目录是
 `plugins/data/context-guard-codex-context-guard-v0161/`。稳定身份使用另一个目录，切换后需要按下文迁移才能在新入口找到这些状态。
 
-如果希望旧会话在稳定身份的数据根下可见（例如日常切换后恢复与状态查询能直接找到它们），使用仓库迁移工具（[说明](../tools/GUARD_STATE_MIGRATION.md)）：
+如果希望旧会话在稳定身份的数据根下可见（例如日常切换后恢复与状态查询能直接找到它们），使用仓库迁移工具（[说明](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md)）：
 
 - 默认只读：`inventory` 与 `plan` 不写任何状态。
 - `apply` 在运行时自己的生命周期锁保护下按字节精确复制会话到目标数据根；已存在的目标会话绝不覆盖。两侧同 ID 但内容不同的会话隔离到数据根之外等待人工决定——时间戳永远不会决定覆盖。
@@ -36,12 +36,20 @@
 
 用显式 HOME 在仓库之外运行该工具，工作区与结果留在本机；私有状态不进 Git、不进附件。
 
-## 用户必须做的事
+## 在当前 HOME 中升级
 
-1. 读回发布资产，核对发布页公布的 ZIP 摘要。
-2. 在你的 HOME 里使用官方市场操作（注册稳定市场源、`codex plugin add`、正常启用）。绝不把 Git 检出或手拷缓存注册为市场。
-3. 宿主询问时正常复核 Hook 信任——本次升级没有自定义审批字符串、不重新登录、不绕过信任。
-4. 安装后核对加载状态：`context-guard@codex-context-guard` 的插件行显示新版本、九个 Hook 全部启用且受信、普通任务照常运行。真实触发 Hook 的任务才是加载行为的证据。
+1. 从发布附件下载 `context-guard-0.17.1.zip`，按发布页公布的 SHA-256 校验。将 ZIP 解压到自己控制的目录，并保留该目录作为市场来源。
+2. 运行 `codex plugin list --json` 核对当前入口，确认依赖旧运行时的任务已结束。若已使用稳定入口，保留旧市场来源及其 ZIP，再运行 `codex plugin marketplace remove codex-context-guard` 移除原注册。这个操作可能移除旧版本缓存。若旧市场使用不同名称，保留旧注册。
+3. 从新解压目录运行以下命令。保存 add 的返回结果，下一步用其中的 `installedPath` 核对缓存。
+
+   ```shell
+   codex plugin marketplace add .
+   codex plugin add context-guard@codex-context-guard --json
+   codex plugin list --json
+   ```
+
+4. 确认稳定入口已安装、已启用，版本为 `0.17.1`。运行 `python3 scripts/artifact_identity.py --compare-to "<installedPath>"` 逐文件核对，Windows 上用 `py -3`。若从不同身份切换，先在官方插件界面停用旧入口，再信任新版 Hook。
+5. 新开一个 Codex CLI 会话，在 `/hooks` 中审核来自新缓存的九项 Hook。回到实际使用的入口，用一个会触发 Hook 的新任务验证它加载了新版。切换后如果 Desktop 仍显示旧插件，重启 Desktop 再核对。
 
 ## 预期结果
 
@@ -57,4 +65,4 @@
 
 ## 实现说明
 
-[原生升级工具](../tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)记录每台主机使用的版本、包摘要和工具提交。[状态迁移工具说明](../tools/GUARD_STATE_MIGRATION.md)列出复制、冲突和恢复检查。当前候选仍待 macOS 和 Windows 原生验收、CI、HOL 插件扫描及正式发布。
+[原生升级工具](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)记录每台主机使用的版本、包摘要和工具提交。[状态迁移工具说明](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md)列出复制、冲突和恢复检查。原生检查、制品、CI 和发布结果分别记录。[验收记录](LOCAL_ACCEPTANCE.md)

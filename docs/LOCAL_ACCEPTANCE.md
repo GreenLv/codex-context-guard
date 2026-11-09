@@ -1,5 +1,28 @@
 # Local Release Acceptance
 
+## 0.17.1 — release-source evidence (2026-11-09)
+
+The final release acceptance assets identify the source commit, the full ZIP
+and its file inventory. The GitHub Release is the independent public record.
+
+The pre-release artifact built from `865a2a0` completed the 0.16.1 wrapper,
+0.17.0 stable in-place and 0.15.1 historical upgrade routes on macOS and
+Windows. The native runner ended the old test tasks before the switch. The
+independent verifier checked the new Hook source, compact and cold recovery,
+and the uninstall boundary on each host. These runs covered isolated CLI
+homes. They establish neither automatic continuation of a running old task
+nor adoption by an existing daily Desktop profile.
+
+The state migration tool uses the original lifecycle locks and records what
+it copied. Read-only planning, digest checks, conflicts, and rollback are
+tested separately from runtime loading. The acceptance assets distinguish the
+fixture exercises from any subsequent migration of a daily profile.
+
+Source tests, historical-incident execution, performance measurements,
+native runs, package parity, CI and the HOL scan each retain their own
+inputs and results. Earlier failures and timeouts keep their original
+verdicts. A passing run on the earlier ZIP does not identify the final ZIP.
+
 ## 0.17.0 — release-source evidence (2026-11-06)
 
 Public availability is determined independently by the GitHub Release. This

@@ -12,7 +12,7 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 它与 Codex 的 Plan、Goal、记忆、子 Agent、工作树和会话记录配合工作。普通编辑、提交和推送仍使用 Codex 的现有权限机制。
 
-> **0.17.1 — source candidate（未发布）。** 开发中的维护版本：维护到稳定市场身份的受支持升级路线（0.16.1 公开包和包装入口 → 稳定身份、稳定身份原地 0.17.0 → 0.17.1，以及历史 0.15.1 合同），配套仓库自有原生测试与升级工具，并新增默认只读的私有任务状态跨身份数据根迁移路径。Schema、协议、Hook 与性能合同不变。原生验收、CI 与发布待完成；公开可用性以 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) 读回为准。修改安装前，请阅读[发布说明](docs/releases/v0.17.1.md)与[升级指南](docs/UPGRADE_0_17_1.zh-CN.md)。
+> **0.17.1 — 2026-11-09。** 可升级到稳定市场入口，并按需复制本机其他插件身份下的私有任务状态。迁移工具默认只预览。同 ID 的会话内容有冲突时，保留目标原件并将源副本隔离。更改日常入口前，请先结束仍依赖旧运行时的任务。[发布说明](docs/releases/v0.17.1.md) · [升级指南](docs/UPGRADE_0_17_1.zh-CN.md)
 
 > **0.17.0 — 2026-11-06。** 只规划内容的任务不再因历史修改、建议引用或否定表述被推导出文件修改义务；当前 Desktop 的 `aggregated_output` 终端结果按身份与退出码绑定接入；无关超大历史输出不再使后续终端证据失效；会话保留清理在新版本化合同下恢复——默认只预览，策略授权后进入可恢复隔离，宽限期后才永久回收。修改安装前，请阅读[发布说明](docs/releases/v0.17.0.md)、[升级边界](docs/SESSION_STORAGE.md)与[验收记录](docs/LOCAL_ACCEPTANCE.md)。本产品线市场身份从实验性 `codex-context-guard-v016` 切换到稳定 `codex-context-guard`，见[稳定身份合同](tools/validation/STABLE_MARKETPLACE_IDENTITY.md)。
 
@@ -22,12 +22,12 @@ Context Guard 防止长时间 Codex 任务在上下文压缩后漏掉关键要�
 
 ## 用 Codex 安装
 
-**0.17.0 — 2026-11-06。** 公开可用性以 [GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.0) 回读为准。市场身份从实验性 `codex-context-guard-v016`（0.16.x）迁移到稳定 `codex-context-guard`。注册稳定市场并安装属于官方市场操作：可能移除旧实验缓存，保留缓存也不能证明旧会话会加载它。请先完成依赖已发布 0.16.1 运行时的任务，或为新任务另行配置独立 HOME；不要删除或手改任何版本缓存。
+**0.17.1 — 2026-11-09。** 首次安装请按下列命令操作。已有安装时，先核对当前启用的入口，再按对应路线升级。稳定入口为 `context-guard@codex-context-guard`。[发布 ZIP](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.1) · [升级指南](docs/UPGRADE_0_17_1.zh-CN.md)
 
 在新目录中下载 GitHub Release 附件里具名的 ZIP：
 
 ```shell
-gh release download v0.17.0 --repo GreenLv/codex-context-guard --pattern context-guard-0.17.0.zip
+gh release download v0.17.1 --repo GreenLv/codex-context-guard --pattern context-guard-0.17.1.zip
 ```
 
 将发行 ZIP 解压到自己控制的稳定目录并一直保留；官方市场后续读取和刷新仍依赖此来源。
@@ -56,7 +56,7 @@ codex plugin list --json
 
 请保存首次 add 的返回结果，用其中的 `installedPath` 确认待核验缓存。
 `plugin list` 提供身份、版本、已安装/已启用状态及市场来源，不提供缓存路径。
-必须恰好有一条完整身份匹配的记录，版本为 `0.17.0`，两项状态均为 true，
+必须恰好有一条完整身份匹配的记录，版本为 `0.17.1`，两项状态均为 true，
 来源是该稳定解压目录。请把下例双引号内的占位路径替换为完整的
 `installedPath` 返回值，并保留双引号，以支持路径中的空格：
 

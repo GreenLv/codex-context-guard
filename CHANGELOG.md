@@ -4,25 +4,22 @@
 
 Versions are listed from newest to oldest. Public availability is determined by the [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases) readback, independently of the release-line source. The earlier `0.12.1` release is tagged at `5dcbcf2709febbfc7eb48db8fe9879062cb1acda`. Detailed schema and protocol history lives in [the versioning policy](docs/VERSIONING.md), while test runs and platform limits live in [the local acceptance record](docs/LOCAL_ACCEPTANCE.md).
 
-## Unreleased — 0.17.1 source candidate
+## 0.17.1 — 2026-11-09
 
 ### Highlights
 
-- The supported upgrade routes to the stable marketplace identity are covered by the candidate's verification toolkit: the 0.16.1 public and wrapper identities move to the stable identity, the stable identity upgrades in place (0.17.0 → 0.17.1), and the historical 0.15.1 route stays covered by its declared contract. The repository now maintains the native upgrade acceptance toolkit and the Windows fixed regression suite that verify these routes, so the next native round reuses reviewed tools instead of archived scripts. See [the upgrade guide](docs/UPGRADE_0_17_1.md).
-- Guard private task state gains a supported, read-only-by-default migration path (`inventory → plan → apply → verify → restore`): sessions move copy-only into the stable identity's data root, a same-id conflict with different content is isolated outside the data root instead of being overwritten by timestamps, and a compensating restore removes exactly what one run created. Legacy `sessions` trees are never migrated; they stay with their original runtime. See [the migration tool](tools/GUARD_STATE_MIGRATION.md).
-- Compatibility boundaries are unchanged: schema 13, Stop protocol 5.0.0, the nine Hook events, and the default business-tool path without execution approval stay as released in 0.17.0, and installing or upgrading still migrates no session data or consumed cache.
+- Copy private task state into the stable entry when you choose to move it. The migration tool starts with a read-only plan. If two sessions share an ID but contain different data, it keeps the existing target and isolates the source copy. Restore removes only unchanged copies created by that run. Legacy sessions stay with their original runtime. [Migration tool](https://github.com/GreenLv/codex-context-guard/blob/v0.17.1/tools/GUARD_STATE_MIGRATION.md)
+- Use the stable entry after upgrading from the 0.16.1 public ZIP or its local wrapper, or upgrade an existing 0.17.0 stable entry in place. The 0.15.1 route follows its historical compatibility contract. Finish tasks that still need their old runtime before switching. [Upgrade guide](docs/UPGRADE_0_17_1.md)
+- Installation leaves private task state where it is. The nine Hook events, schema 13, Stop protocol 5.0.0 and ordinary tool behavior carry forward from 0.17.0.
 
 ### Changes
 
-- Version metadata advances to 0.17.1. Changed metadata bytes require a fresh artifact identity; consumed 0.17.0 caches stay immutable.
-- The native upgrade acceptance toolkit binds the exact old/new pair a round verifies through explicit module constants (`NEW_VERSION`, per-version old market and ZIP provenance), including the stable-identity in-place route whose old marketplace name equals the target's. A release round rebinds them in its own tool commit, so every recorded run names what it exercised.
-- Thin POSIX sh and PowerShell 5.1/7 launchers dispatch to the same testable toolkit cores, and the Windows fixed regression suite now covers the process-cwd/PowerShell-location separation and the OWNER-RIGHTS versus explicit-user-SID distinction alongside the previously pinned cases.
-- The performance contract and its thresholds are unchanged; no gate is relaxed and no new performance-sensitive runtime behavior is introduced.
+- The repository maintains the native upgrade toolkit. POSIX sh and PowerShell 5.1/7 launch the same Python implementation and record the exact source, artifact and host inputs.
+- Windows regressions cover separate process and PowerShell working directories, and access-control entries for an explicit user versus the owner-rights principal.
 
 ### Validation
 
-- Source-level acceptance on the candidate commit: full behavior suite, repository and privacy audits, phase-transition audit, runtime self-test, Ruff, compile and whitespace checks, plus the historical error library executed case by case on the development platform.
-- Native macOS and Windows behavior, exact-artifact installation and upgrade, the state migration and recovery drills, CI, HOL and publication remain separate pending gates for this candidate. The source candidate is not a release.
+- Source checks, the historical incident library, macOS and Windows native tests, package parity, performance, CI and the HOL scan each bind to their own inputs. Exact release evidence and tested boundaries are recorded separately. [Acceptance record](docs/LOCAL_ACCEPTANCE.md)
 
 ## 0.17.0 — 2026-11-06
 

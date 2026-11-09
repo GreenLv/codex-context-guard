@@ -12,17 +12,13 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
-> **0.17.1 — source candidate (unreleased).** A maintenance release in
-> development: it maintains the supported upgrade routes to the stable
-> marketplace identity (0.16.1 public and wrapper entries → stable, 0.17.0 →
-> 0.17.1, and the historical 0.15.1 contract) with repository-owned native
-> test and upgrade tooling, and adds a read-only-by-default path for moving
-> private task state between identity data roots. Schema, protocols, Hooks
-> and the performance contract are unchanged. Native acceptance, CI, and
-> publication are pending; public availability is determined by the
-> [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)
-> readback. Read the [release notes](docs/releases/v0.17.1.md) and the
-> [upgrade guide](docs/UPGRADE_0_17_1.md) before changing an installation.
+> **0.17.1 — 2026-11-09.** Upgrade to the stable marketplace entry and
+> optionally copy private task state from a different identity on the same
+> machine. The migration tool previews changes by default and preserves the
+> existing state when two sessions have the same ID but different contents.
+> Finish work that still needs the old runtime before changing your daily
+> installation. Read the [release notes](docs/releases/v0.17.1.md) and the
+> [upgrade guide](docs/UPGRADE_0_17_1.md).
 
 > **0.17.0 — 2026-11-06.** Planning-only requests no longer inherit a file-modification duty from history, advice or negation; the Desktop `aggregated_output` terminal result is accepted with identity and exit-code bindings intact; an unrelated oversized transcript row no longer disables later terminal evidence; and session retention cleanup returns under a new versioned contract — preview by default, policy-gated quarantine with restore, purge only after a grace period. Read the [release notes](docs/releases/v0.17.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation. The marketplace identity switches from the experimental `codex-context-guard-v016` to the stable `codex-context-guard` in this line; see the [stable identity contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md).
 
@@ -32,19 +28,16 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcr
 
 ## Install with Codex
 
-**0.17.0 — 2026-11-06.** Check the [GitHub Release](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.0) for public availability. The marketplace identity moves from the
-experimental `codex-context-guard-v016` (0.16.x) to the stable
-`codex-context-guard`. Registering a marketplace under the stable identity and
-installing from it are official marketplace operations: they may remove the
-old experimental cache, and keeping a cache never proves an old session loads
-it. Finish tasks that depend on the published 0.16.1 runtime first, or use a
-separately configured HOME for new work; do not delete or hand-modify any
-versioned cache.
+**0.17.1 — 2026-11-09.** Follow the commands below for a fresh install.
+If Context Guard is already installed, first identify the entry it uses and
+follow the matching upgrade route. The stable entry is
+`context-guard@codex-context-guard`. [Release ZIP](https://github.com/GreenLv/codex-context-guard/releases/tag/v0.17.1) ·
+[Upgrade guide](docs/UPGRADE_0_17_1.md)
 
 Download the named ZIP from the GitHub Release assets into a new directory:
 
 ```shell
-gh release download v0.17.0 --repo GreenLv/codex-context-guard --pattern context-guard-0.17.0.zip
+gh release download v0.17.1 --repo GreenLv/codex-context-guard --pattern context-guard-0.17.1.zip
 ```
 
 Extract the release ZIP into a stable directory you control and keep that
@@ -83,7 +76,7 @@ codex plugin list --json
 Keep the first add response: its `installedPath` identifies the cache to inspect.
 `plugin list` reports identity, version, enabled/installed flags and marketplace
 source, but does not provide that path. Require exactly one matching record,
-version `0.17.0`, both flags true, and this stable extracted directory as source.
+version `0.17.1`, both flags true, and this stable extracted directory as source.
 Compare every release file by replacing the quoted example with the complete
 `installedPath` value, keeping the quotes for paths containing spaces:
 
