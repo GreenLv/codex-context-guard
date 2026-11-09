@@ -36,11 +36,15 @@ def write_session(root: Path, session_id: str, *, schema=13, marker="a",
     session = root / session_id
     (session / "prompts").mkdir(parents=True)
     (session / "state.json").write_text(
-        json.dumps({"schema": schema, "session_id": session_id,
+        json.dumps({"schema_version": schema, "session": {"id": session_id},
                     "marker": marker * 32}),
         encoding="utf-8")
     if prompts:
         (session / "prompts" / "units.json").write_text("[]", encoding="utf-8")
+    if root.name == "sessions-v2":
+        locks = root / ".locks"
+        locks.mkdir(exist_ok=True)
+        (locks / f"{session_id}.lock").touch()
     return session
 
 
@@ -238,7 +242,7 @@ class ApplyControls(unittest.TestCase):
             self.assertIn("target identical", reasons)
             # Source mutated after plan -> that row fails closed, nothing written.
             session = ns(home, V0161) / "0dd00000-0000-0000-0000-000000000001"
-            (session / "state.json").write_text('{"schema": 13, "marker": "mutated"}',
+            (session / "state.json").write_text('{"schema_version": 13, "marker": "mutated"}',
                                                 encoding="utf-8")
             plan3 = base / "plan3.json"
             code = run(["plan", "--source-home", str(home),
@@ -259,19 +263,17 @@ class ApplyControls(unittest.TestCase):
             base = Path(tmp).resolve()
             home, plan_path, target_root = self.plan_for(base)
             workspace = base / "workspace"
-            import fcntl
-
             lock = home / "plugins" / "data" / V0161 / "sessions-v2" / ".locks" \
                 / "0dd00000-0000-0000-0000-000000000001.lock"
             lock.parent.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            GSM._flock_nonblocking(descriptor)
             try:
                 with mock.patch.object(GSM, "LOCK_DEADLINE_SECONDS", 0.4):
                     code = run(["apply", "--plan", str(plan_path),
                                 "--workspace", str(workspace)])
             finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                GSM._funlock(descriptor)
                 os.close(descriptor)
             self.assertEqual(1, code)
             manifest = json.loads((workspace / "apply-manifest.json").read_text(
@@ -281,6 +283,52 @@ class ApplyControls(unittest.TestCase):
             self.assertFalse((target_root /
                               "0dd00000-0000-0000-0000-000000000001").exists())
 
+    def test_apply_preserves_a_target_that_appeared_after_planning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            _, plan_path, target_root = self.plan_for(base)
+            session = write_session(target_root, "0dd00000-0000-0000-0000-000000000001",
+                                    marker="newly created")
+            original = (session / "state.json").read_bytes()
+            self.assertEqual(1, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(base / "workspace")]))
+            self.assertEqual(original, (session / "state.json").read_bytes())
+
+    def test_apply_refuses_traversal_before_creating_a_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            _, plan_path, _ = self.plan_for(base)
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            plan["sessions"][0]["id"] = "../unrelated"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            workspace = base / "workspace"
+            self.assertEqual(2, run(["apply", "--plan", str(plan_path),
+                                     "--workspace", str(workspace)]))
+            self.assertFalse(workspace.exists())
+
+    def test_interruption_keeps_prior_receipt_and_restores_only_the_first_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            _, plan_path, target_root = self.plan_for(base)
+            workspace = base / "workspace"
+            copy_tree = GSM._copy_tree
+
+            def interrupt_conflict(source, target):
+                if target.parent.name == "conflicts":
+                    (target / "state.json").write_text("partial", encoding="utf-8")
+                    raise KeyboardInterrupt
+                return copy_tree(source, target)
+
+            with mock.patch.object(GSM, "_copy_tree", side_effect=interrupt_conflict):
+                self.assertEqual(1, run(["apply", "--plan", str(plan_path),
+                                         "--workspace", str(workspace)]))
+            manifest = json.loads((workspace / "apply-manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual("interrupted", manifest["status"])
+            self.assertEqual(1, len(manifest["created"]))
+            self.assertEqual([], list((workspace / "conflicts").iterdir()))
+            self.assertEqual(0, run(["restore", "--workspace", str(workspace)]))
+            self.assertFalse((target_root / manifest["created"][0]["id"]).exists())
+
     def test_interrupted_copy_is_cleaned_and_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp).resolve()
@@ -288,11 +336,10 @@ class ApplyControls(unittest.TestCase):
             workspace = base / "workspace"
 
             def exploding_copy(source, target):
-                target.mkdir(mode=0o700)
                 (target / "state.json").write_text("partial", encoding="utf-8")
                 raise OSError("simulated interruption")
 
-            with mock.patch.object(GSM, "_copy_tree_exclusive",
+            with mock.patch.object(GSM, "_copy_tree",
                                    side_effect=exploding_copy):
                 code = run(["apply", "--plan", str(plan_path),
                             "--workspace", str(workspace)])
@@ -322,7 +369,10 @@ class ApplyControls(unittest.TestCase):
             outside = base / "outside"
             outside.mkdir()
             link = source / "0ee00000-0000-0000-0000-000000000001"
-            os.symlink(outside, link)
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError:
+                self.skipTest("native symbolic link capability unavailable")
             plan_symlink = base / "plan-symlink.json"
             self.assertEqual(0, run(["plan", "--source-home", str(home),
                                      "--source-identity", V0161_ID,
@@ -373,16 +423,10 @@ class VerifyRestoreControls(unittest.TestCase):
             created = target_root / "0ff00000-0000-0000-0000-000000000001"
             (created / "state.json").write_text('{"schema": 13, "marker": "edited"}',
                                                 encoding="utf-8")
-            workspace2 = base / "workspace2"
-            # Re-verify the same apply manifest through a fresh workspace copy.
-            manifest_path = workspace / "apply-manifest.json"
-            workspace2.mkdir()
-            (workspace2 / "apply-manifest.json").write_text(
-                manifest_path.read_text(encoding="utf-8"), encoding="utf-8")
             code = run(["verify", "--plan", str(plan_path),
-                        "--workspace", str(workspace2)])
+                        "--workspace", str(workspace)])
             self.assertEqual(1, code)
-            result = json.loads((workspace2 / "verify-result.json").read_text(
+            result = json.loads((workspace / "verify-result.json").read_text(
                 encoding="utf-8"))
             self.assertEqual("problems", result["status"])
 
@@ -417,6 +461,48 @@ class VerifyRestoreControls(unittest.TestCase):
             result = json.loads((workspace / "restore-result.json").read_text(
                 encoding="utf-8"))
             self.assertEqual("partial_refused", result["status"])
+
+    def test_restore_refuses_a_manifest_redirected_to_an_unrelated_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            _, _, workspace, target_root = self.full_cycle(base)
+            unrelated = target_root / "0ff00000-0000-0000-0000-000000000002"
+            manifest_path = workspace / "apply-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["created"][0].update(path=str(unrelated), tree_sha256=GSM._tree_digest(unrelated)[0])
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            self.assertEqual(2, run(["restore", "--workspace", str(workspace)]))
+            self.assertTrue((unrelated / "state.json").is_file())
+
+    def test_current_hook_state_remains_readable_after_migration(self):
+        from tools.validation.perf_ab import seed_active_session
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            home = make_home(base)
+            source = ns(home, V0161)
+            target = ns(home, STABLE)
+            session = "migration-readback"
+            seed_active_session(ROOT, source.parent, session)
+            before = (source / session / "state.json").read_bytes()
+            plan = base / "plan.json"
+            workspace = base / "workspace"
+            self.assertEqual(0, run(["plan", "--source-home", str(home), "--source-identity", V0161_ID,
+                                     "--target-home", str(home), "--target-identity", STABLE_ID,
+                                     "--output", str(plan)]))
+            self.assertEqual(0, run(["apply", "--plan", str(plan), "--workspace", str(workspace)]))
+            self.assertEqual(before, (target / session / "state.json").read_bytes())
+            process = subprocess.run(
+                [sys.executable, "-B", str(ROOT / "scripts/context_guard.py"), "recovery-page",
+                 "--session-id", session],
+                cwd=base, env={**os.environ, "CONTEXT_GUARD_DATA_DIR": str(target.parent)},
+                capture_output=True, text=True, timeout=20,
+            )
+            self.assertEqual(0, process.returncode, process.stderr)
+            self.assertNotIn("error", json.loads(process.stdout))
+            self.assertEqual(0, run(["restore", "--workspace", str(workspace)]))
+            self.assertEqual(before, (source / session / "state.json").read_bytes())
+            self.assertFalse((target / session).exists())
 
 
 class SubprocessWire(unittest.TestCase):

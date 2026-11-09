@@ -21,9 +21,9 @@ runtime-tree roots.
   generation finds newly arrived session names; nothing is injected.
 - Migration creates no new completion facts, treats no historical message as
   current authority, and copies no credentials. Outputs contain object names,
-  digests, counts and structural facts only; requirement and prompt text is
-  never read or emitted. Nothing enters Git, cross-host transfers, or public
-  attachments.
+  digests, counts and structural facts only. State is read to check its
+  structure. The tool emits no requirement or prompt text. Keep its results
+  on the host that owns the data.
 
 ## Stages
 
@@ -42,23 +42,23 @@ runtime-tree roots.
    decide), `excluded_unsupported_state` (missing/unreadable/unsupported
    `state.json`), `excluded_symlink` (linked entries are never followed and
    always recorded). The plan writes nothing into either data root.
-3. `apply --plan PATH --workspace NEW_DIR` — copy-only execution. For each
-   `copy` row: re-verify the source tree digest, take a non-blocking read
-   window on the existing source lifecycle lock (a busy lock fails the row
-   instead of copying torn state), hold the target lifecycle lock before the
-   target directory exists, create the target exclusively, verify the copied
-   digest, then release. Conflicts isolate under `workspace/conflicts/<id>/`,
-   never inside a data root. A failed or interrupted copy is removed before
-   the row is reported; an existing target session is never overwritten, and
-   a target that appeared with different content mid-apply fails the row.
-   Every created path with its digest lands in
-   `workspace/apply-manifest.json`.
+3. `apply --plan PATH --workspace NEW_DIR` — copy-only execution. Apply
+   takes the existing source lifecycle lock before it rechecks source bytes.
+   A missing or busy lock leaves the row pending for another run. The tool
+   also locks the target session before creating it exclusively. If a target
+   appeared after planning, it checks for identical bytes or records a
+   conflict and leaves the target in place. Planned conflicts are copied to
+   `workspace/conflicts/<id>/`. Apply records each row in
+   `workspace/apply-manifest.json` and cleans up a failed copy only when
+   it can still identify the directory it created.
 4. `verify --plan PATH --workspace DIR` — re-derives every created and
    isolated digest against the plan and manifest.
-5. `restore --workspace DIR` — the compensating action: removes exactly the
-   paths this apply created, each only while its digest still matches the
-   manifest; a path that changed after apply (for example, a resumed session)
-   is refused and reported, never removed. Unrelated target data is untouched.
+5. `restore --workspace DIR` — keep the original plan beside the workspace
+   so restore can check its digest and reconstruct the permitted paths.
+   Restore locks each target session and checks its directory identity and
+   contents before removing a recorded copy. If a forced process stop left
+   a row in progress, restore reports that row for review and can still
+   remove earlier copies with valid records.
 
 Refused inputs exit `2`; executed rows failing close exit `1`. All stage
 records stay in the workspace; prior `verify`/`restore` results rotate aside

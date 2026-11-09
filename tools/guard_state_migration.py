@@ -16,7 +16,8 @@ This tool is repository tooling, not plugin runtime: it lives outside the
 runtime-tree roots, changes no Hook, schema or installed artifact, and writes
 nothing into the repository. Private state never enters Git, cross-host
 transfers or public attachments. Outputs contain object names, digests and
-counts; prompt and requirement text is never read or emitted.
+counts. The tool reads state for structural checks and emits no prompt or
+requirement text.
 """
 from __future__ import annotations
 
@@ -24,13 +25,15 @@ import argparse
 import contextlib
 import hashlib
 import json
+import ntpath
 import os
 import platform
 import re
 import shutil
+import stat
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 SCHEMA = "cg-guard-state-migration/v1"
@@ -38,8 +41,8 @@ PLAN_SCHEMA = "cg-guard-state-migration-plan/v1"
 STABLE_DATA_ROOT = "context-guard-codex-context-guard"
 DATA_ROOT_PREFIX = "context-guard-"
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
-UUID_SHAPE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
-                        r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\Z")
+SESSION_NAME = re.compile(r"[A-Za-z0-9._~-]{1,120}\Z")
+IDENTITY_NAME = re.compile(r"[A-Za-z0-9_-]{1,120}\Z")
 # Maintenance and bookkeeping namespaces that are never session scope and
 # never copied: they are per-root runtime state, not task state.
 EXCLUDED_SESSION_NAMES = frozenset({".locks"})
@@ -67,14 +70,20 @@ def _digest_file(path: Path) -> str:
 def _no_link_ancestors(path: Path) -> None:
     """Refuse symlinked or reparse ancestors before any read or write."""
     current = path.absolute()
+    require(".." not in current.parts, "parent traversal refused")
     for parent in (current, *current.parents):
-        if parent.is_symlink():
+        try:
+            info = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
             raise MigrationError(f"link ancestor refused: {parent}")
 
 
 def _absolute_real(value: Any, name: str, *, file: bool = False) -> Path:
     require(isinstance(value, str) and value, f"{name} must be a path string")
-    path = Path(value).expanduser()
+    path = Path(value).expanduser().absolute()
+    _no_link_ancestors(path)
     try:
         path = path.resolve(strict=True)
     except OSError as exc:
@@ -85,14 +94,32 @@ def _absolute_real(value: Any, name: str, *, file: bool = False) -> Path:
     return path
 
 
-def _new_directory(value: Any, name: str) -> Path:
+def _new_directory(value: Any, name: str, *protected: Path) -> Path:
     require(isinstance(value, str) and value, f"{name} must be a path string")
     path = Path(value).expanduser().absolute()
+    _no_link_ancestors(path)
+    require(all(not _within(root, path) and not _within(path, root) for root in protected),
+            f"{name} overlaps a protected root")
     if path.exists() or path.is_symlink():
         raise MigrationError(f"{name} must be a new path: {path}")
     _no_link_ancestors(path.parent)
-    path.mkdir(parents=True)
+    path.mkdir(mode=0o700, parents=True)
+    _protect_created_directory(path)
     return path
+
+
+def _protect_created_directory(path: Path) -> None:
+    if os.name == "nt":
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        sys.path.insert(0, str(scripts))
+        try:
+            from context_guard import PrivateBoundaryError, secure_directory
+
+            secure_directory(path)
+        except PrivateBoundaryError as exc:
+            raise MigrationError("new directory could not be made private") from exc
+        finally:
+            sys.path.pop(0)
 
 
 def _exclusive_json(path: Path, payload: dict[str, Any]) -> None:
@@ -102,6 +129,8 @@ def _exclusive_json(path: Path, payload: dict[str, Any]) -> None:
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
         json.dump(payload, stream, ensure_ascii=False, indent=2, sort_keys=True)
         stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _supersede_then_write(path: Path, payload: dict[str, Any]) -> None:
@@ -122,14 +151,23 @@ def _sha(value: Any) -> bool:
 
 def _tree_digest(root: Path) -> tuple[str, int, list[str]]:
     """Sorted relative-path digest inventory of a session tree."""
+    _no_link_ancestors(root)
+    require(root.is_dir(), "session directory unavailable")
     entries: dict[str, str] = {}
     bytes_total = 0
-    for base, dirnames, filenames in os.walk(root):
+    def fail_walk(exc: OSError) -> None:
+        raise exc
+
+    for base, dirnames, filenames in os.walk(root, onerror=fail_walk):
         dirnames[:] = sorted(dirnames)
+        for dirname in dirnames:
+            _no_link_ancestors(Path(base) / dirname)
         for filename in sorted(filenames):
             path = Path(base) / filename
             relative = path.relative_to(root).as_posix()
-            if path.is_symlink() or not path.is_file():
+            require(filename.casefold() != "auth.json", "credential-named session entry refused")
+            _no_link_ancestors(path)
+            if not path.is_file() or path.stat().st_nlink != 1:
                 raise MigrationError(f"unsupported session entry: {relative}")
             entries[relative] = _digest_file(path)
             bytes_total += path.stat().st_size
@@ -157,23 +195,23 @@ def _session_identity(directory: Path) -> dict[str, Any]:
             facts["state_readable"] = False
             return facts
         facts["state_readable"] = True
-        facts["state_schema"] = payload.get("schema")
-        for key in ("session_id", "id", "session"):
-            value = payload.get(key)
-            if isinstance(value, str) and value:
-                facts["state_session_id"] = value
-                break
+        schema = payload.get("schema_version")
+        facts["state_schema"] = schema if type(schema) is int else None
+        session = payload.get("session")
+        if isinstance(session, dict) and isinstance(session.get("id"), str):
+            facts["state_session_id"] = session["id"]
         facts["state_top_level_keys"] = sorted(str(k) for k in payload)
     return facts
 
 
 def _lock_probe(lock_path: Path) -> str:
     """Non-blocking writer probe on the lifecycle lock; no data writes."""
-    if not lock_path.is_file():
-        return "absent"
     try:
-        descriptor = os.open(lock_path, os.O_RDONLY)
-    except OSError:
+        _no_link_ancestors(lock_path)
+        if not lock_path.is_file():
+            return "absent"
+        descriptor = os.open(lock_path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except (MigrationError, OSError):
         return "unknown"
     try:
         _flock_nonblocking(descriptor)
@@ -214,28 +252,45 @@ def _funlock(descriptor: int) -> None:
 class _LifecycleLock:
     """Bounded exclusive hold on one session lifecycle lock file."""
 
-    def __init__(self, lock_path: Path, deadline: float) -> None:
+    def __init__(self, lock_path: Path, deadline: float, *, create: bool = True) -> None:
         self._path = lock_path
         self._deadline = deadline
+        self._create = create
         self._descriptor: int | None = None
 
     def __enter__(self) -> "_LifecycleLock":
+        _no_link_ancestors(self._path)
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        if self._create:
+            flags |= os.O_CREAT
         while True:
             try:
-                self._descriptor = os.open(self._path,
-                                           os.O_RDWR | os.O_CREAT, 0o600)
+                self._descriptor = os.open(self._path, flags, 0o600)
             except OSError as exc:
                 raise MigrationError(f"lifecycle lock unavailable: {self._path}") from exc
             try:
+                info = os.fstat(self._descriptor)
+                require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_ino,
+                        "lifecycle lock must be a single regular file")
                 _flock_nonblocking(self._descriptor)
+                self.verify()
                 return self
-            except OSError:
+            except (OSError, MigrationError) as exc:
                 os.close(self._descriptor)
                 self._descriptor = None
+                if isinstance(exc, MigrationError):
+                    raise
                 if time.monotonic() >= self._deadline:
                     raise MigrationError(
                         f"session writer still active past deadline: {self._path}")
                 time.sleep(0.2)
+
+    def verify(self) -> None:
+        _no_link_ancestors(self._path)
+        current = self._path.lstat()
+        held = os.fstat(self._descriptor)
+        require((current.st_dev, current.st_ino) == (held.st_dev, held.st_ino),
+                "lifecycle lock replaced during migration")
 
     def __exit__(self, *_exc: Any) -> None:
         if self._descriptor is not None:
@@ -259,6 +314,7 @@ def _data_roots(home: Path) -> dict[str, Path]:
     """Identity name -> data root inside one HOME; names are classified, not guessed."""
     roots: dict[str, Path] = {}
     plugin_data = home / "plugins" / "data"
+    _no_link_ancestors(plugin_data)
     if plugin_data.is_dir():
         for entry in sorted(plugin_data.iterdir()):
             if not entry.is_dir() or entry.is_symlink():
@@ -283,9 +339,11 @@ def _session_roots(data_root: Path) -> dict[str, Path]:
 def _inventory_home(home: Path) -> dict[str, Any]:
     installed_versions: dict[str, str] = {}
     cache = home / "plugins" / "cache"
+    _no_link_ancestors(cache)
     if cache.is_dir():
         for market_dir in sorted(cache.iterdir()):
             plugin_dir = market_dir / "context-guard"
+            _no_link_ancestors(plugin_dir)
             if plugin_dir.is_dir():
                 versions = sorted(entry.name for entry in plugin_dir.iterdir()
                                   if entry.is_dir())
@@ -293,6 +351,7 @@ def _inventory_home(home: Path) -> dict[str, Any]:
                     installed_versions[market_dir.name] = versions[-1]
     roots: list[dict[str, Any]] = []
     for identity, data_root in _data_roots(home).items():
+        _no_link_ancestors(data_root)
         root_facts: dict[str, Any] = {
             "identity": identity,
             "path": str(data_root),
@@ -300,6 +359,7 @@ def _inventory_home(home: Path) -> dict[str, Any]:
             "namespaces": {},
         }
         for namespace, session_root in _session_roots(data_root).items():
+            _no_link_ancestors(session_root)
             sessions: list[dict[str, Any]] = []
             for entry in sorted(session_root.iterdir()):
                 if entry.name in EXCLUDED_SESSION_NAMES or not entry.is_dir() \
@@ -362,7 +422,9 @@ def _conflict_summary(index: dict[str, str]) -> list[dict[str, Any]]:
 
 
 def cmd_inventory(args: argparse.Namespace) -> int:
-    homes = [_inventory_home(home) for home in _codex_homes(args)]
+    home_paths = _codex_homes(args)
+    destination = _output_path(args.output, *home_paths)
+    homes = [_inventory_home(home) for home in home_paths]
     inventory = {"schema": SCHEMA, "stage": "inventory", "read_only": True,
                  "platform": platform.system(), "homes": homes}
     index = _session_index(inventory)
@@ -373,10 +435,6 @@ def cmd_inventory(args: argparse.Namespace) -> int:
     inventory["legacy_sessions_policy"] = (
         "retain_in_place: legacy sessions stay under their original runtime; "
         "finish active legacy tasks before changing that HOME's entry")
-    destination = Path(args.output).expanduser().absolute()
-    if destination.exists() or destination.is_symlink():
-        raise MigrationError(f"output must be a new path: {destination}")
-    _no_link_ancestors(destination.parent)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _exclusive_json(destination, inventory)
     print(json.dumps({"unique_session_ids": inventory["unique_session_ids"],
@@ -408,6 +466,8 @@ def _resolve_identity_root(home: Path, identity: str) -> Path:
     if identity == "<direct>":
         root = home / "context-guard"
     else:
+        require(isinstance(identity, str) and IDENTITY_NAME.fullmatch(identity),
+                "unsupported data-root identity")
         root = home / "plugins" / "data" / (DATA_ROOT_PREFIX + identity)
     require(root.is_dir() and not root.is_symlink(),
             f"data root for identity {identity} not found in {home}")
@@ -423,12 +483,20 @@ def _within(parent: Path, child: Path) -> bool:
         return False
 
 
+def _output_path(value: str, *protected: Path) -> Path:
+    path = Path(value).expanduser().absolute()
+    _no_link_ancestors(path)
+    require(not path.exists(), "result path already exists")
+    require(all(not _within(root, path) for root in (*protected, Path(__file__).resolve().parents[1])),
+            "result path is inside a protected root")
+    return path
+
+
 def _casefold_safe(target_root: Path, name: str) -> None:
     probe = target_root / name
-    if probe.exists():
-        return
-    folded = {entry.name.casefold() for entry in target_root.iterdir()}
-    if name.casefold() in folded:
+    _no_link_ancestors(probe)
+    if any(entry.name != name and entry.name.casefold() == name.casefold()
+           for entry in target_root.iterdir()):
         raise MigrationError(f"case-only sibling collision for {name}")
 
 
@@ -442,6 +510,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             "source identity has no sessions-v2 namespace; legacy trees are "
             "never migrated (retain_in_place under the original runtime)")
     target_session_root = target_root / "sessions-v2"
+    _no_link_ancestors(source_session_root)
+    _no_link_ancestors(target_session_root)
     for entry in sorted(source_session_root.iterdir()):
         if entry.name in EXCLUDED_SESSION_NAMES or not entry.is_dir():
             continue
@@ -472,7 +542,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
             row["schema_supported"] = False
             row["note"] = "missing or unreadable state.json; not migrated by default"
         target_entry = target_session_root / entry.name
-        if target_session_root.is_dir() and target_entry.exists():
+        _no_link_ancestors(target_entry)
+        if not row["schema_supported"]:
+            row["decision"] = "excluded_unsupported_state"
+        elif target_session_root.is_dir() and target_entry.exists():
             target_digest, _, _ = _tree_digest(target_entry)
             if target_digest == digest:
                 row["decision"] = "idempotent_skip"
@@ -484,8 +557,6 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     "target_tree_sha256": target_digest,
                     "decision": "isolate_outside_data_root",
                 })
-        elif not row["schema_supported"]:
-            row["decision"] = "excluded_unsupported_state"
         else:
             row["decision"] = "copy"
         sessions.append(row)
@@ -498,6 +569,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     plan = {
         "schema": PLAN_SCHEMA,
         "source_identity": args.source_identity,
+        "source_home": str(Path(args.source_home).expanduser().resolve(strict=True)),
         "target_home": str(target_home),
         "target_identity": args.target_identity,
         "source_data_root": str(source_root),
@@ -511,10 +583,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 "digest is isolated outside the data root; timestamps never "
                 "overwrite; no new completion facts are created",
     }
-    destination = Path(args.output).expanduser().absolute()
-    if destination.exists() or destination.is_symlink():
-        raise MigrationError(f"plan output must be a new path: {destination}")
-    _no_link_ancestors(destination.parent)
+    destination = _output_path(args.output, source_root, target_root)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _exclusive_json(destination, plan)
     counts: dict[str, int] = {}
@@ -529,11 +598,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
-def _copy_tree_exclusive(source: Path, target: Path) -> list[str]:
-    """Create target exclusively; copy byte-exact; return created relative paths."""
-    created: list[str] = []
-    target.mkdir(mode=0o700)
-    created.append(".")
+def _copy_tree(source: Path, target: Path) -> list[str]:
+    """Fill an owned directory and return the copied relative paths."""
+    created = ["."]
     for base, dirnames, filenames in os.walk(source):
         dirnames[:] = sorted(dirnames)
         relative_base = Path(base).relative_to(source)
@@ -541,14 +608,52 @@ def _copy_tree_exclusive(source: Path, target: Path) -> list[str]:
             (target / relative_base / dirname).mkdir(mode=0o700)
         for filename in sorted(filenames):
             source_file = Path(base) / filename
-            if source_file.is_symlink():
-                raise MigrationError(f"symlink refused in session source: {filename}")
+            _no_link_ancestors(source_file)
+            require(source_file.is_file() and source_file.stat().st_nlink == 1,
+                    f"unsupported session source: {filename}")
             target_file = target / relative_base / filename
             descriptor = os.open(target_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "wb") as sink, source_file.open("rb") as reader:
                 shutil.copyfileobj(reader, sink, 1024 * 1024)
             created.append((target_file.relative_to(target)).as_posix())
     return created
+
+
+def _directory_identity(path: Path) -> list[int]:
+    _no_link_ancestors(path)
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_ino, "session directory identity unavailable")
+    return [info.st_dev, info.st_ino]
+
+
+def _copy_tree_exclusive(source: Path, target: Path, expected: str) -> dict[str, Any]:
+    """Remove a partial copy only when this call exclusively created its inode."""
+    target.mkdir(mode=0o700)
+    identity = _directory_identity(target)
+    try:
+        _protect_created_directory(target)
+        created = _copy_tree(source, target)
+        require(_tree_digest(target)[0] == expected, "copied digest differs")
+        require(_directory_identity(target) == identity, "copy directory replaced")
+    except BaseException:
+        if _directory_identity(target) == identity:
+            shutil.rmtree(target)
+        raise
+    return {"path": str(target), "tree_sha256": expected, "created": created,
+            "directory_identity": identity}
+
+
+def _validate_session_name(value: Any) -> None:
+    require(isinstance(value, str) and SESSION_NAME.fullmatch(value)
+            and value.casefold() not in {".", "..", ".locks"}
+            and not _windows_reserved(value),
+            "unsupported session directory name")
+
+
+def _windows_reserved(value: str) -> bool:
+    if hasattr(ntpath, "isreserved"):
+        return ntpath.isreserved(value)
+    return value.endswith(".") or PureWindowsPath(value).is_reserved()
 
 
 def _check_apply_plan(plan_path: Path) -> dict[str, Any]:
@@ -561,6 +666,24 @@ def _check_apply_plan(plan_path: Path) -> dict[str, Any]:
     require(plan.get("conflict_policy") in ("isolate", "skip"),
             "conflict policy must be isolate or skip")
     require(isinstance(plan.get("sessions"), list), "plan sessions missing")
+    source, target, _ = _validate_plan_inputs(argparse.Namespace(**{
+        key: plan.get(key) for key in ("source_home", "source_identity", "target_home", "target_identity")
+    }))
+    require(str(source) == plan.get("source_data_root") and str(target) == plan.get("target_data_root"),
+            "plan data roots differ from the declared HOME and identity")
+    names: set[str] = set()
+    for row in plan["sessions"]:
+        require(isinstance(row, dict), "plan session row is invalid")
+        name = row.get("id")
+        _validate_session_name(name)
+        require(name.casefold() not in names, "duplicate or case-alias session in plan")
+        names.add(name.casefold())
+        require(row.get("source") == str(source / "sessions-v2" / name), "plan session source differs")
+        decision = row.get("decision")
+        require(isinstance(decision, str) and decision in {"copy", "isolate", "idempotent_skip",
+                             "excluded_unsupported_state", "excluded_symlink"}, "invalid migration decision")
+        if decision in {"copy", "isolate", "idempotent_skip"}:
+            require(_sha(row.get("tree_sha256")), "plan session digest is invalid")
     return plan
 
 
@@ -568,7 +691,7 @@ def _apply_copy_row(row: dict[str, Any], source_entry: Path,
                     target_session_root: Path, lock_path: Path, deadline: float,
                     manifest: dict[str, Any]) -> None:
     """Copy one planned session into the target under its lifecycle lock."""
-    with _LifecycleLock(lock_path, deadline):
+    with _LifecycleLock(lock_path, deadline) as lock:
         _casefold_safe(target_session_root, row["id"])
         target_entry = target_session_root / row["id"]
         if target_entry.exists():
@@ -580,122 +703,100 @@ def _apply_copy_row(row: dict[str, Any], source_entry: Path,
             raise MigrationError(
                 "target session appeared with different content during apply; "
                 f"isolated decisions only: {row['id']}")
-        created = _copy_tree_exclusive(source_entry, target_entry)
-        copied_digest = _tree_digest(target_entry)[0]
-        if copied_digest != row["tree_sha256"]:
-            raise MigrationError("copied digest differs; failing closed")
-    manifest["created"].append({
-        "id": row["id"], "path": str(target_entry),
-        "tree_sha256": copied_digest, "created": created,
-    })
+        admission_dir = lock_path.parent / ".identity"
+        _no_link_ancestors(admission_dir)
+        admission_dir.mkdir(mode=0o700, exist_ok=True)
+        admission = admission_dir / f"{row['id'].casefold()}.lock"
+        with _LifecycleLock(admission, deadline):
+            _casefold_safe(target_session_root, row["id"])
+            legacy = target_session_root.parent / "sessions"
+            quarantine = lock_path.parent / "retention-quarantine"
+            for directory in (legacy, quarantine):
+                _no_link_ancestors(directory)
+            name = row["id"].casefold()
+            require(not legacy.is_dir() or all(item.name.casefold() != name for item in legacy.iterdir()),
+                    "target has a legacy session with this identity")
+            require(not quarantine.is_dir() or all(not item.name.casefold().startswith(name + ".")
+                    for item in quarantine.iterdir()), "target has retention history for this identity")
+            receipt = _copy_tree_exclusive(source_entry, target_entry, row["tree_sha256"])
+            manifest["created"].append({"id": row["id"], **receipt})
+            lock.verify()
 
 
-def _discard_partial_target(target_entry: Path) -> None:
-    """Remove only a partially copied target created by this failing attempt.
+def _apply_session(row: dict[str, Any], source_root: Path, target_root: Path,
+                   workspace: Path, policy: str, manifest: dict[str, Any]) -> None:
+    name, decision = row["id"], row["decision"]
+    if decision not in {"copy", "idempotent_skip", "isolate"} or (decision == "isolate" and policy == "skip"):
+        manifest["skipped"].append({"id": name, "reason": decision})
+        return
+    source_entry = source_root / name
+    deadline = time.monotonic() + LOCK_DEADLINE_SECONDS
+    with _LifecycleLock(source_root / ".locks" / f"{name}.lock", deadline, create=False) as source_lock:
+        require(_tree_digest(source_entry)[0] == row["tree_sha256"], "source changed since plan; rerun plan")
+        require(_session_identity(source_entry).get("state_schema") in SUPPORTED_SCHEMAS,
+                "source state schema cannot be migrated")
+        source_lock.verify()
+        if decision == "isolate":
+            destination = workspace / "conflicts" / name
+            destination.parent.mkdir(mode=0o700, exist_ok=True)
+            copied = _copy_tree_exclusive(source_entry, destination, row["tree_sha256"])
+            manifest["isolated"].append({"id": name, **copied})
+        else:
+            lock_dir = target_root / ".locks"
+            _no_link_ancestors(lock_dir)
+            lock_dir.mkdir(mode=0o700, exist_ok=True)
+            lock = lock_dir / f"{name}.lock"
+            if decision == "idempotent_skip":
+                with _LifecycleLock(lock, deadline, create=False):
+                    require(_tree_digest(target_root / name)[0] == row["tree_sha256"],
+                            "target changed since plan; rerun plan")
+                    manifest["skipped"].append({"id": name, "reason": "same digest"})
+            else:
+                _apply_copy_row(row, source_entry, target_root, lock, deadline, manifest)
 
-    The apply path creates target sessions exclusively while holding the
-    lifecycle lock, so a directory present after a failed copy is this run's
-    own partial work; anything a concurrent writer could have produced is
-    refused before any copy starts.
-    """
-    if target_entry.is_dir() and not target_entry.is_symlink():
-        with contextlib.suppress(OSError):
-            shutil.rmtree(target_entry)
+
+def _persist_apply_result(path: Path, manifest: dict[str, Any]) -> None:
+    temporary = path.with_suffix(".next")
+    _exclusive_json(temporary, manifest)
+    os.replace(temporary, path)
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
     plan_path = _absolute_real(args.plan, "plan", file=True)
     plan = _check_apply_plan(plan_path)
-    workspace = _new_directory(args.workspace, "workspace")
     source_root = Path(plan["source_data_root"])
     target_root = Path(plan["target_data_root"])
-    _no_link_ancestors(source_root)
-    _no_link_ancestors(target_root)
-    require(source_root.is_dir() and target_root.is_dir(),
-            "plan data roots must both exist before apply")
+    source_sessions = source_root / "sessions-v2"
+    target_sessions = target_root / "sessions-v2"
+    _no_link_ancestors(source_sessions)
+    _no_link_ancestors(target_sessions)
+    workspace = _new_directory(args.workspace, "workspace", source_root, target_root,
+                               Path(__file__).resolve().parents[1])
+    result_path = workspace / "apply-manifest.json"
     manifest: dict[str, Any] = {
         "schema": SCHEMA, "stage": "apply", "plan": str(plan_path),
-        "workspace": str(workspace),
+        "plan_sha256": _digest_file(plan_path), "workspace": str(workspace),
+        "status": "running", "in_progress": None,
         "created": [], "skipped": [], "isolated": [], "failed": [],
     }
-    deadline = time.monotonic() + LOCK_DEADLINE_SECONDS
-    target_session_root = target_root / "sessions-v2"
-    target_session_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _exclusive_json(result_path, manifest)
+    target_sessions.mkdir(mode=0o700, exist_ok=True)
     for row in plan["sessions"]:
-        decision = row["decision"]
-        if decision == "idempotent_skip":
-            manifest["skipped"].append({"id": row["id"], "reason": "same digest"})
-            continue
-        if decision != "copy":
-            try:
-                if decision == "isolate" and plan["conflict_policy"] == "isolate":
-                    conflicts_dir = workspace / "conflicts" / row["id"]
-                    conflicts_dir.parent.mkdir(parents=True, exist_ok=True)
-                    if conflicts_dir.exists():
-                        manifest["failed"].append(
-                            {"id": row["id"], "reason": "conflict copy path exists"})
-                        continue
-                    created = _copy_tree_exclusive(
-                        source_root / "sessions-v2" / row["id"], conflicts_dir)
-                    digest = _tree_digest(conflicts_dir)[0]
-                    manifest["isolated"].append({
-                        "id": row["id"], "path": str(conflicts_dir),
-                        "tree_sha256": digest,
-                        "expected_tree_sha256": row["tree_sha256"],
-                        "created": created,
-                    })
-                    if digest != row["tree_sha256"]:
-                        manifest["failed"].append(
-                            {"id": row["id"], "reason": "isolated copy digest differs"})
-                else:
-                    manifest["skipped"].append({"id": row["id"], "reason": decision})
-            except (MigrationError, OSError) as exc:
-                conflicts_dir = workspace / "conflicts" / row["id"]
-                if conflicts_dir.is_dir() and not conflicts_dir.is_symlink():
-                    with contextlib.suppress(OSError):
-                        shutil.rmtree(conflicts_dir)
-                manifest["failed"].append(
-                    {"id": row["id"], "reason": str(exc)})
-            continue
-        # Controlled write window: hold the source lifecycle read window and
-        # the target lifecycle lock before the session directory exists,
-        # mirroring the runtime's own lifecycle-before-admission ordering.
-        lock_path = target_root / "sessions-v2" / ".locks" / f"{row['id']}.lock"
-        lock_path.parent.mkdir(mode=0o700, exist_ok=lock_path.parent.is_dir())
-        source_lock = source_root / "sessions-v2" / ".locks" / f"{row['id']}.lock"
-        source_entry = source_root / "sessions-v2" / row["id"]
+        manifest["in_progress"] = row["id"]
+        _persist_apply_result(result_path, manifest)
         try:
-            digest_now = _tree_digest(source_entry)[0]
-            require(digest_now == row["tree_sha256"],
-                    "source changed since plan; rerun plan")
-            source_descriptor = None
-            if source_lock.is_file():
-                # An existing source lock file means a runtime writer may hold
-                # it; a busy lock fails the row instead of copying torn state.
-                source_descriptor = os.open(source_lock, os.O_RDONLY)
-                try:
-                    _flock_nonblocking(source_descriptor)
-                except OSError:
-                    raise MigrationError(
-                        f"source writer still active: {source_lock}")
-            try:
-                _apply_copy_row(row, source_entry, target_session_root, lock_path,
-                                deadline, manifest)
-            finally:
-                if source_descriptor is not None:
-                    with contextlib.suppress(OSError, ValueError):
-                        _funlock(source_descriptor)
-                    with contextlib.suppress(OSError):
-                        os.close(source_descriptor)
-        except MigrationError as exc:
-            _discard_partial_target(target_session_root / row["id"])
+            _apply_session(row, source_sessions, target_sessions, workspace, plan["conflict_policy"], manifest)
+        except (MigrationError, OSError) as exc:
             manifest["failed"].append({"id": row["id"], "reason": str(exc)})
-        except OSError as exc:
-            _discard_partial_target(target_session_root / row["id"])
-            manifest["failed"].append(
-                {"id": row["id"], "reason": f"oserror: {exc}"})
-    manifest["finished_at_epoch"] = time.time()
-    _exclusive_json(workspace / "apply-manifest.json", manifest)
+        except KeyboardInterrupt:
+            manifest["failed"].append({"id": row["id"], "reason": "interrupted"})
+            manifest.update(status="interrupted", in_progress=None)
+            _persist_apply_result(result_path, manifest)
+            return 1
+        manifest["in_progress"] = None
+        _persist_apply_result(result_path, manifest)
+    manifest.update(status="failed" if manifest["failed"] else "applied", finished_at_epoch=time.time())
+    _persist_apply_result(result_path, manifest)
     print(json.dumps({"created": len(manifest["created"]),
                       "skipped": len(manifest["skipped"]),
                       "isolated": len(manifest["isolated"]),
@@ -704,27 +805,65 @@ def cmd_apply(args: argparse.Namespace) -> int:
     return 0 if not manifest["failed"] else 1
 
 
+def _checked_manifest(workspace: Path, plan_path: Path | None = None) -> dict[str, Any]:
+    manifest_path = _absolute_real(str(workspace / "apply-manifest.json"), "apply manifest", file=True)
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise MigrationError("apply manifest unreadable") from exc
+    require(isinstance(manifest, dict) and manifest.get("schema") == SCHEMA
+            and manifest.get("stage") == "apply" and manifest.get("workspace") == str(workspace)
+            and manifest.get("status") in ("running", "interrupted", "failed", "applied"),
+            "apply manifest does not bind this workspace")
+    original_plan = _absolute_real(manifest.get("plan"), "apply plan", file=True)
+    require(plan_path is None or original_plan == plan_path, "verify requires the original apply plan")
+    require(_digest_file(original_plan) == manifest.get("plan_sha256"), "apply plan changed")
+    plan = _check_apply_plan(original_plan)
+    source, target = (Path(plan[key]) for key in ("source_data_root", "target_data_root"))
+    require(all(not _within(root, workspace) and not _within(workspace, root) for root in (source, target)),
+            "apply workspace overlaps a data root")
+    expected = {row["id"]: row for row in plan["sessions"]}
+    in_progress = manifest.get("in_progress")
+    require("in_progress" in manifest and
+            (in_progress is None or isinstance(in_progress, str) and in_progress in expected),
+            "unexpected in-progress session")
+    seen: set[str] = set()
+    for group, decision, parent in (("created", "copy", target / "sessions-v2"),
+                                    ("isolated", "isolate", workspace / "conflicts")):
+        require(isinstance(manifest.get(group), list), "apply manifest rows missing")
+        for row in manifest[group]:
+            require(isinstance(row, dict), "apply manifest row invalid")
+            name = row.get("id")
+            _validate_session_name(name)
+            planned = expected.get(name, {})
+            identity = row.get("directory_identity")
+            require(name not in seen and planned.get("decision") == decision
+                    and row.get("path") == str(parent / name)
+                    and row.get("tree_sha256") == planned.get("tree_sha256")
+                    and isinstance(identity, list) and len(identity) == 2
+                    and all(type(value) is int and value >= 0 for value in identity)
+                    and identity[1] != 0, "apply manifest row differs from the plan")
+            seen.add(name)
+    return manifest
+
+
+def _check_recorded_copy(row: dict[str, Any], path: Path) -> None:
+    require(_directory_identity(path) == row["directory_identity"], "copied directory replaced")
+    require(_tree_digest(path)[0] == row["tree_sha256"], "copied directory contents changed")
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     plan_path = _absolute_real(args.plan, "plan", file=True)
-    plan = _check_apply_plan(plan_path)
     workspace = _absolute_real(args.workspace, "workspace")
-    manifest_path = workspace / "apply-manifest.json"
-    require(manifest_path.is_file(), "apply manifest missing; nothing to verify")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    expected = {row["id"]: row["tree_sha256"] for row in plan["sessions"]}
+    manifest = _checked_manifest(workspace, plan_path)
     problems: list[dict[str, str]] = []
-    for row in manifest["created"]:
-        path = Path(row["path"])
-        if not path.is_dir():
-            problems.append({"id": row["id"], "reason": "created session missing"})
-            continue
-        digest = _tree_digest(path)[0]
-        if digest != row["tree_sha256"] or expected.get(row["id"]) != row["tree_sha256"]:
-            problems.append({"id": row["id"], "reason": "digest mismatch"})
-    for row in manifest["isolated"]:
-        path = Path(row["path"])
-        if not path.is_dir() or _tree_digest(path)[0] != row["tree_sha256"]:
-            problems.append({"id": row["id"], "reason": "isolated copy mismatch"})
+    if manifest["status"] != "applied":
+        problems.append({"reason": "apply did not complete every planned row"})
+    for row in manifest["created"] + manifest["isolated"]:
+        try:
+            _check_recorded_copy(row, Path(row["path"]))
+        except (MigrationError, OSError) as exc:
+            problems.append({"id": row["id"], "reason": str(exc)})
     result = {
         "schema": SCHEMA, "stage": "verify",
         "created": len(manifest["created"]),
@@ -738,40 +877,30 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
-    """Undo exactly this migration's writes; never touch anything else."""
+    """Undo exactly this migration's recorded writes."""
     workspace = _absolute_real(args.workspace, "workspace")
-    manifest_path = workspace / "apply-manifest.json"
-    require(manifest_path.is_file(), "apply manifest missing; nothing to restore")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = _checked_manifest(workspace)
     removed, refused = [], []
-    for row in manifest["created"]:
+    if manifest["in_progress"] is not None:
+        refused.append({"id": manifest["in_progress"], "reason": "interrupted row needs independent review"})
+    for row in manifest["created"] + manifest["isolated"]:
         path = Path(row["path"])
         try:
-            if not path.exists() and not path.is_symlink():
+            _no_link_ancestors(path)
+            if not path.exists():
                 removed.append({"id": row["id"], "already_absent": True})
                 continue
-            digest = _tree_digest(path)[0]
-            if digest != row["tree_sha256"]:
-                refused.append({"id": row["id"],
-                                "reason": "target changed after apply; not removed"})
-                continue
-            shutil.rmtree(path)
+            if path.is_relative_to(workspace):
+                lock = contextlib.nullcontext()
+            else:
+                lock = _LifecycleLock(path.parent / ".locks" / f"{path.name}.lock",
+                                      time.monotonic() + LOCK_DEADLINE_SECONDS, create=False)
+            with lock:
+                _check_recorded_copy(row, path)
+                shutil.rmtree(path)
             removed.append({"id": row["id"]})
-        except OSError as exc:
-            refused.append({"id": row["id"], "reason": f"oserror: {exc}"})
-    for row in manifest["isolated"]:
-        path = Path(row["path"])
-        try:
-            if not path.exists():
-                continue
-            if _tree_digest(path)[0] != row["tree_sha256"]:
-                refused.append({"id": row["id"],
-                                "reason": "conflict copy changed; not removed"})
-                continue
-            shutil.rmtree(path)
-            removed.append({"id": row["id"], "conflict": True})
-        except OSError as exc:
-            refused.append({"id": row["id"], "reason": f"oserror: {exc}"})
+        except (MigrationError, OSError) as exc:
+            refused.append({"id": row["id"], "reason": str(exc)})
     result = {"schema": SCHEMA, "stage": "restore",
               "removed": removed, "refused": refused,
               "status": "restored" if not refused else "partial_refused"}
