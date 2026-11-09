@@ -48,6 +48,7 @@ EVENTS = frozenset(host.EVENTS)
 NEW_VERSION = "0.17.1"
 OLD_MARKETS = {"0.15.1": "codex-context-guard", "0.16.1": "codex-context-guard-v016",
                "0.17.0": "codex-context-guard"}
+OLD_0161_WRAPPER_MARKET = "codex-context-guard-v0161"
 NEW_MARKET = "codex-context-guard"
 OLD_0151_COMMIT = "111fe03b98803c6b06e8a70c010d27ca04d81af3"
 OLD_0151_EXPORT_SHA256 = "37899ae37bc5e09c62c459e6b840b0929b0ba368d7dd51873732b78f7a5102f6"
@@ -70,6 +71,30 @@ class CapabilityPending(UpgradeError):
 def require(value: Any, message: str) -> None:
     if not value:
         raise UpgradeError(message)
+
+
+def _old_market(binding: dict[str, Any]) -> str:
+    if "old_marketplace_root" in binding:
+        require(binding["old_version"] == "0.16.1", "wrapper requires the published 0.16.1 package")
+        return OLD_0161_WRAPPER_MARKET
+    return OLD_MARKETS[binding["old_version"]]
+
+
+def _old_market_root(binding: dict[str, Any]) -> Path:
+    return Path(binding.get("old_marketplace_root", binding["old_artifact"]))
+
+
+def _wrapper_manifest(wrapper: Path, package: Path) -> str:
+    """Bind the consumer marketplace separately from its unchanged ZIP contents."""
+    require(package.parent == wrapper and package.name == "artifact",
+            "wrapper must point to its direct artifact directory")
+    manifest, digest_value = _read_json_with_sha(wrapper / ".agents/plugins/marketplace.json")
+    plugins = manifest.get("plugins")
+    require(manifest.get("name") == OLD_0161_WRAPPER_MARKET and isinstance(plugins, list)
+            and len(plugins) == 1 and _object(plugins[0]).get("name") == "context-guard"
+            and _object(plugins[0]).get("source") == {"source": "local", "path": "./artifact"},
+            "wrapper marketplace identity or package source differs")
+    return digest_value
 
 
 def _receipt_clock_ns() -> int:
@@ -1072,6 +1097,9 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
     codex = _absolute_real(plan.get("codex"), "Codex CLI", file=True, allow_hardlinks=True)
     version = plan.get("old_version")
     require(version in OLD_MARKETS, "unsupported starting version")
+    old_market = _old_market(plan)
+    old_market_root = (_absolute_real(plan.get("old_marketplace_root"), "old wrapper root")
+                       if "old_marketplace_root" in plan else old)
     require(plan.get("transition_strategy") in ("observe-open", "finish-old"),
             "explicit transition strategy required")
     old_archive = (_absolute_real(plan.get("old_release_zip"), "old release ZIP", file=True)
@@ -1097,12 +1125,12 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
         raise CapabilityPending("public CLI hard-link aliases require review")
     # Check both directions, before any artifact content or digest is read.
     # The exact verified public Codex executable is deliberately exempt.
-    for artifact in (old, new, archive, *([old_archive] if old_archive is not None else [])):
+    for artifact in (old, old_market_root, new, archive, *([old_archive] if old_archive is not None else [])):
         require(all(not _within(artifact, protected_home) and not _within(protected_home, artifact)
                     for protected_home in homes), "artifact overlaps an authentication HOME")
     require(all(not _within(workspace, protected_home) and not _within(protected_home, workspace)
                 for protected_home in homes), "workspace overlaps an authentication HOME")
-    protected = [product, tool_root, *homes, workspace, old, new]
+    protected = [product, tool_root, *homes, workspace, old_market_root, old, new]
     _new_outside(output, protected)
     _private_directory(home)
     _private_directory(workspace)
@@ -1129,10 +1157,10 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
     old_files = source_files(old)
     new_files = source_files(new)  # metadata-only refusal precedes any read in this tree
     old_plugin = _read_json(old / ".codex-plugin/plugin.json")
-    old_market = _read_json(old / ".agents/plugins/marketplace.json")
+    package_market = _read_json(old / ".agents/plugins/marketplace.json")
     old_hooks = _read_json(old / "hooks/hooks.json")
     require(old_plugin.get("name") == "context-guard" and old_plugin.get("version") == version
-            and old_market.get("name") == OLD_MARKETS[version], "old fixture identity differs")
+            and package_market.get("name") == OLD_MARKETS[version], "old fixture identity differs")
     require(set(_object(old_hooks.get("hooks"))) == {e[0].upper() + e[1:] for e in EVENTS},
             "old fixture Hook family differs")
     old_tree_sha = digest(old_files)
@@ -1141,6 +1169,13 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
     native.verify_exact_source(product, plan["product_commit"])
     native.verify_exact_source(tool_root, plan["toolkit_commit"])
     provenance = _old_provenance(product, old, version, plan, old_files, old_zip_identity)
+    wrapper = {}
+    if old_market != OLD_MARKETS[version]:
+        require(all(not _within(old_market_root, path) and not _within(path, old_market_root)
+                    for path in (product, tool_root, workspace, new, archive, old_archive)),
+                "wrapper root overlaps another input")
+        wrapper = {"old_marketplace_root": str(old_market_root),
+                   "old_wrapper_manifest_sha256": _wrapper_manifest(old_market_root, old)}
     manager = _load_artifacts_no_pyc(product)
     runtime = native.runtime_digest(manager, product)
     require(_sha(plan.get("runtime_sha256")) and runtime == plan["runtime_sha256"], "runtime differs")
@@ -1160,7 +1195,7 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
             "transition_strategy": plan["transition_strategy"], "platform": platform.system(),
             "sentinel": sentinel_facts, "read_file_sha256": plan["read_file_sha256"],
             "codex_hardlink_count": codex.stat().st_nlink,
-            "tool_sha256": sha(Path(__file__))}
+            "tool_sha256": sha(Path(__file__)), **wrapper}
 
 
 def isolated_env(home: Path) -> dict[str, str]:
@@ -1188,8 +1223,8 @@ def _launch_environment(home: Path):
 
 
 def _official_install_identity(added: Any, listed: Any, old: Path, home: Path,
-                               version: str) -> Path:
-    market = OLD_MARKETS[version]
+                               version: str, wrapper: Path | None = None) -> Path:
+    market = OLD_0161_WRAPPER_MARKET if wrapper is not None else OLD_MARKETS[version]
     plugin_id = "context-guard@" + market
     obj = _object(added)
     records = _object(listed).get("installed")
@@ -1202,12 +1237,7 @@ def _official_install_identity(added: Any, listed: Any, old: Path, home: Path,
     require(all(obj.get(k) == v and row.get(k) == v for k, v in expected.items())
             and row.get("installed") is True and row.get("enabled") is True,
             "official old plugin identity differs")
-    source = _object(row.get("source"))
-    market_source = _object(row.get("marketplaceSource"))
-    require(source.get("source") == "local" and market_source.get("sourceType") == "local"
-            and native._official_path_matches(source.get("path"), old, windows=os.name == "nt")
-            and native._official_path_matches(market_source.get("source"), old, windows=os.name == "nt"),
-            "official old marketplace source differs")
+    _plugin_source(row, old, wrapper)
     installed_raw = obj.get("installedPath")
     require(isinstance(installed_raw, str), "official installedPath missing")
     cache = home / "plugins" / "cache" / market / "context-guard"
@@ -1260,8 +1290,8 @@ def _market_source(entries: dict[str, dict[str, Any]], name: str, source: Path) 
 def _verify_market_sequence(commands: list[dict[str, Any]], subject: dict[str, Any], *, prepared: bool) -> None:
     """Recheck each selected market against this run's actual add/remove sequence."""
     codex = subject["codex"]
-    old_market = OLD_MARKETS[subject["old_version"]]
-    old, new = Path(subject["old_artifact"]), Path(subject["new_artifact"])
+    old_market = _old_market(subject)
+    old, new = _old_market_root(subject), Path(subject["new_artifact"])
     selected = {old_market, NEW_MARKET}
     active = {} if prepared else {old_market: old}
     sentinel = subject["sentinel"]["marketplace"]
@@ -1375,7 +1405,8 @@ def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
     if subject.get("codex_hardlink_count", 1) != 1:
         raise CapabilityPending("public CLI hard-link aliases require review")
     home, old, codex = (Path(plan[key]).resolve(strict=True) for key in ("home", "old_artifact", "codex"))
-    market = OLD_MARKETS[plan["old_version"]]
+    market = _old_market(plan)
+    market_root = _old_market_root(plan)
     # A normally opened HOME can already have non-target config/user state.
     # Check only our target cache; official readback below checks registrations.
     target_cache = home / "plugins/cache" / market / "context-guard"
@@ -1414,15 +1445,16 @@ def prepare(plan: dict[str, Any], output: Path) -> dict[str, Any]:
             facts = _sentinel_files(home, plan.get("sentinel"))
             require(facts == result["sentinel_before"] and facts["marketplace"] in entries,
                     "unrelated sentinel changed")
-            _market_source(entries, market, old)
+            _market_source(entries, market, market_root)
             result["sentinel_phases"][stage] = facts
 
-        run_command([str(codex), "plugin", "marketplace", "add", str(old)])
+        run_command([str(codex), "plugin", "marketplace", "add", str(market_root)])
         observe_sentinel("after_marketplace_add")
         added = _json_output(run_command([str(codex), "plugin", "add", "context-guard@" + market, "--json"]))
         observe_sentinel("after_plugin_add")
         listed = _json_output(run_command([str(codex), "plugin", "list", "--marketplace", market, "--json"]))
-        installed = _official_install_identity(added, listed, old, home, plan["old_version"])
+        installed = _official_install_identity(added, listed, old, home, plan["old_version"],
+                                               market_root if market_root != old else None)
         installed_files = source_files(installed)
         require(installed_files == source_files(old), "old source/cache full-file parity differs")
         observe_sentinel("after_plugin_list")
@@ -1719,7 +1751,8 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
     """Observe one deliberately open old task; never certify safe migration."""
     home, old, new, workspace, codex = (Path(plan[k]).resolve(strict=True) for k in
                                         ("home", "old_artifact", "new_artifact", "workspace", "codex"))
-    old_market = OLD_MARKETS[plan["old_version"]]
+    old_market = _old_market(plan)
+    market_root = _old_market_root(plan)
     output.mkdir(mode=0o700)
     live_dir, cold_dir = output / "live", output / "cold"
     live_dir.mkdir(mode=0o700)
@@ -1738,10 +1771,11 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
         require(sentinel == subject.get("sentinel") == previous.get("sentinel_after"), "sentinel changed")
         markets = _market_entries(command([str(codex), "plugin", "marketplace", "list", "--json"]))
         require(sentinel["marketplace"] in markets, "sentinel marketplace missing")
-        _market_source(markets, old_market, old)
+        _market_source(markets, old_market, market_root)
         prior = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
         require(_official_install_identity(previous.get("official_add"), prior, old, home,
-                                          plan["old_version"]) == installed, "old installation differs")
+                                          plan["old_version"], market_root if market_root != old else None)
+                == installed, "old installation differs")
         old_files = source_files(installed)
         require(old_files == source_files(old), "old cache bytes differ")
         cache_before = {"files_sha256": digest(old_files), "objects_sha256": _cache_identity(installed)}
@@ -1999,7 +2033,8 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
     read_sha = sha(read_file)
     require(read_sha == subject["read_file_sha256"], "controlled read fixture changed after preflight")
     installed = _absolute_real(_object(previous.get("installed")).get("path"), "old installed cache")
-    old_market = OLD_MARKETS[plan["old_version"]]
+    old_market = _old_market(plan)
+    market_root = _old_market_root(plan)
     require(_within(installed, home / "plugins/cache" / old_market / "context-guard")
             and source_files(installed) == source_files(old), "old installed cache differs")
     if plan["transition_strategy"] == "observe-open":
@@ -2036,10 +2071,11 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             return entries
 
         initial_markets = observe_sentinel("before")
-        _market_source(initial_markets, old_market, old)
+        _market_source(initial_markets, old_market, market_root)
         prior_list = command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"])
         rechecked = _official_install_identity(previous.get("official_add"), _json_output(prior_list),
-                                                old, home, plan["old_version"])
+                                                old, home, plan["old_version"],
+                                                market_root if market_root != old else None)
         require(rechecked == installed, "old official installation changed before execution")
         old_cache_before = {"files_sha256": digest(source_files(installed)), "objects_sha256": _cache_identity(installed)}
         observe_sentinel("after_old_list")
@@ -2109,7 +2145,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
                             "scope": ("old synthetic tasks explicitly cancelled before transition" if strategy == "finish-old"
                                       else "open idle task, no in-flight-upgrade claim")}
         _mark(live, "transition_started")
-        if plan["old_version"] == "0.15.1":
+        if old_market == NEW_MARKET:
             # The official same-name route removes the old marketplace first;
             # the isolated experiment records any resulting old cache loss.
             command([str(codex), "plugin", "marketplace", "remove", old_market])
@@ -2521,11 +2557,12 @@ def _selected_plugin(observation: dict[str, Any], plugin_id: str) -> dict[str, A
     return matches[0] if matches else None
 
 
-def _plugin_source(row: dict[str, Any], expected: Path) -> None:
+def _plugin_source(row: dict[str, Any], expected: Path, marketplace_root: Path | None = None) -> None:
     source, market = _object(row.get("source")), _object(row.get("marketplaceSource"))
     require(source.get("source") == "local" and market.get("sourceType") == "local"
             and native._official_path_matches(source.get("path"), expected, windows=platform.system() == "Windows")
-            and native._official_path_matches(market.get("source"), expected, windows=platform.system() == "Windows"),
+            and native._official_path_matches(market.get("source"), marketplace_root or expected,
+                                              windows=platform.system() == "Windows"),
             "official plugin source differs")
 
 
@@ -2537,15 +2574,16 @@ def _command_observation(commands: list[Any], index: int) -> dict[str, Any]:
 
 
 def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
-    codex, old_market = subject["codex"], OLD_MARKETS[subject["old_version"]]
+    codex, old_market = subject["codex"], _old_market(subject)
     old_source = Path(subject["old_artifact"])
+    market_root = _old_market_root(subject)
     sentinel = subject["sentinel"]
     old_id = "context-guard@" + old_market
     initial = prepared.get("commands")
     require(isinstance(initial, list), "prepare command facts unavailable")
     expected_prepare = [[codex, "--version"], [codex, "plugin", "marketplace", "list", "--json"],
                         [codex, "plugin", "list", "--marketplace", sentinel["marketplace"], "--json"],
-                        [codex, "plugin", "marketplace", "add", str(old_source)],
+                        [codex, "plugin", "marketplace", "add", str(market_root)],
                         [codex, "plugin", "marketplace", "list", "--json"],
                         [codex, "plugin", "add", old_id, "--json"],
                         [codex, "plugin", "marketplace", "list", "--json"],
@@ -2570,7 +2608,7 @@ def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
             and before.get("target_marketplace_absent") is True and before.get("target_cache_absent") is True
             and before.get("target_cache_path") == str(Path(subject["home"]) / "plugins/cache" / old_market / "context-guard"),
             "initial scoped marketplace or target cache evidence missing")
-    index, _ = _command_index(initial, [codex, "plugin", "marketplace", "add", str(old_source)])
+    index, _ = _command_index(initial, [codex, "plugin", "marketplace", "add", str(market_root)])
     index, old_add = _command_index(initial, [codex, "plugin", "add", old_id, "--json"], index)
     index, old_list = _command_index(initial, [codex, "plugin", "list", "--marketplace", old_market, "--json"], index)
     old_entry = _selected_plugin(old_list, old_id)
@@ -2578,7 +2616,7 @@ def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
             and old_entry.get("version") == subject["old_version"]
             and old_entry.get("installed") is True and old_entry.get("enabled") is True,
             "old official installation readback differs")
-    _plugin_source(old_entry, old_source)
+    _plugin_source(old_entry, old_source, market_root)
     require(prepared.get("sentinel_before") == prepared.get("sentinel_after") == sentinel,
             "prepare sentinel changed")
     phases = _object(prepared.get("sentinel_phases"))
@@ -2588,7 +2626,7 @@ def _verify_prepared(subject: dict[str, Any], prepared: dict[str, Any]) -> None:
 
 def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], result: dict[str, Any]) -> None:
     _verify_prepared(subject, prepared)
-    codex, old_market = subject["codex"], OLD_MARKETS[subject["old_version"]]
+    codex, old_market = subject["codex"], _old_market(subject)
     new_source = Path(subject["new_artifact"])
     sentinel = subject["sentinel"]
     stable_id = "context-guard@" + NEW_MARKET
@@ -2610,7 +2648,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
                         ([codex, "plugin", "add", stable_id, "--json"], 1),
                         ([codex, "plugin", "remove", stable_id], 1),
                         ([codex, "plugin", "marketplace", "remove", NEW_MARKET],
-                         2 if subject["old_version"] == "0.15.1" else 1)):
+                         2 if old_market == NEW_MARKET else 1)):
         require(sum(item.get("argv") == argv for item in commands) == count, "official mutation count differs")
     index, initial_old = _command_index(commands,
         [codex, "plugin", "list", "--marketplace", old_market, "--json"])
@@ -2618,8 +2656,8 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
     require(old_row is not None and old_row.get("version") == subject["old_version"]
             and old_row.get("installed") is True and old_row.get("enabled") is True,
             "old pre-transition identity not observed")
-    _plugin_source(old_row, Path(subject["old_artifact"]))
-    if subject["old_version"] == "0.15.1":
+    _plugin_source(old_row, Path(subject["old_artifact"]), _old_market_root(subject))
+    if old_market == NEW_MARKET:
         index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", old_market], index)
     index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", str(new_source)], index)
     market_add_index = index
@@ -2669,7 +2707,7 @@ def _verify_cli_lifecycle(subject: dict[str, Any], prepared: dict[str, Any], res
                    NEW_MARKET, new_source)
     phase_names = {"before", "after_old_list", "after_new_marketplace_add", "after_new_plugin_add",
                    "after_new_plugin_list", "after_disable", "after_plugin_remove", "after_marketplace_remove"}
-    if subject["old_version"] == "0.15.1":
+    if old_market == NEW_MARKET:
         phase_names.add("after_old_marketplace_remove")
     phases = _object(result.get("sentinel_phases"))
     require(set(phases) == phase_names and all(facts == sentinel for facts in phases.values()),
@@ -2715,7 +2753,8 @@ def _verify_pre_disable(live: list[dict[str, Any]], result: dict[str, Any], old_
 def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: list[dict[str, Any]],
                         marks: dict[str, int], new_source: str, installed: Path,
                         *, disable_completed_ns: int | None = None) -> None:
-    if subject["old_version"] != "0.16.1" or subject["transition_strategy"] != "finish-old":
+    old_market = _old_market(subject)
+    if old_market == NEW_MARKET or subject["transition_strategy"] != "finish-old":
         return
     evidence = _object(result.get("old_cache_preservation"))
     original = _object(evidence.get("before"))
@@ -2748,25 +2787,14 @@ def _verify_old_disable(subject: dict[str, Any], result: dict[str, Any], live: l
                 and sample_stamp < row["started_monotonic_ns"] <= row["completed_monotonic_ns"] < marker["monotonic_ns"]]
         require(rows, "normal disable scoped readback missing")
         return _object(rows[-1].get("observation"))
-    old = _selected_plugin(last_read(OLD_MARKETS["0.16.1"]), "context-guard@" + OLD_MARKETS["0.16.1"])
+    old = _selected_plugin(last_read(old_market), "context-guard@" + old_market)
     new = _selected_plugin(last_read(NEW_MARKET), "context-guard@" + NEW_MARKET)
-    require(old is not None and old.get("version") == "0.16.1" and old.get("installed") is True
-            and old.get("marketplaceName") == OLD_MARKETS["0.16.1"] and old.get("enabled") is False
+    require(old is not None and old.get("version") == subject["old_version"] and old.get("installed") is True
+            and old.get("marketplaceName") == old_market and old.get("enabled") is False
             and new is not None and new.get("version") == NEW_VERSION and new.get("marketplaceName") == NEW_MARKET
             and new.get("installed") is True and new.get("enabled") is True, "normal old disable not observed")
-    require(_object(old.get("source")).get("source") == "local"
-            and _object(new.get("source")).get("source") == "local"
-            and _object(old.get("marketplaceSource")).get("sourceType") == "local"
-            and _object(new.get("marketplaceSource")).get("sourceType") == "local"
-            and native._official_path_matches(_object(old.get("source")).get("path"), Path(subject["old_artifact"]),
-                                          windows=platform.system() == "Windows")
-            and native._official_path_matches(_object(new.get("source")).get("path"), Path(subject["new_artifact"]),
-                                               windows=platform.system() == "Windows")
-            and native._official_path_matches(_object(old.get("marketplaceSource")).get("source"),
-                                               Path(subject["old_artifact"]), windows=platform.system() == "Windows")
-            and native._official_path_matches(_object(new.get("marketplaceSource")).get("source"),
-                                               Path(subject["new_artifact"]), windows=platform.system() == "Windows"),
-            "plugin source differs after disable")
+    _plugin_source(old, Path(subject["old_artifact"]), _old_market_root(subject))
+    _plugin_source(new, Path(subject["new_artifact"]))
     fresh = _object(result.get("after")).get("fresh_thread")
     require(isinstance(fresh, str), "fresh task identity missing")
     fresh_start = _thread_start_index(live, fresh)
@@ -2943,7 +2971,7 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
     old_installed = _object(prepared.get("installed")).get("path")
     new_installed = _object(result.get("installed_new")).get("path")
     require(isinstance(old_installed, str) and isinstance(new_installed, str), "observation installation missing")
-    old_market = OLD_MARKETS[subject["old_version"]]
+    old_market = _old_market(subject)
     old_cache = Path(subject["home"]) / "plugins/cache" / old_market / "context-guard"
     new_cache = Path(subject["home"]) / "plugins/cache" / NEW_MARKET / "context-guard"
     require(any(native._official_path_matches(old_installed, old_cache / part, windows=os.name == "nt")
@@ -3008,16 +3036,11 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
     old_row = _selected_plugin(old_list, "context-guard@" + old_market)
     require(old_row is not None and old_row.get("version") == subject["old_version"]
             and old_row.get("installed") is True and old_row.get("enabled") is True
-            and _object(old_row.get("source")).get("source") == "local"
-            and _object(old_row.get("marketplaceSource")).get("sourceType") == "local"
             and _object(prepared.get("official_add")).get("installedPath") == old_installed
             and type(commands[old_list_index].get("completed_monotonic_ns")) is int
-            and commands[old_list_index]["completed_monotonic_ns"] < markers[0][1]["monotonic_ns"]
-            and native._official_path_matches(_object(old_row.get("source")).get("path"), Path(subject["old_artifact"]),
-                                               windows=platform.system() == "Windows")
-            and native._official_path_matches(_object(old_row.get("marketplaceSource")).get("source"),
-                                               Path(subject["old_artifact"]), windows=platform.system() == "Windows"),
+            and commands[old_list_index]["completed_monotonic_ns"] < markers[0][1]["monotonic_ns"],
             "old observation identity differs")
+    _plugin_source(old_row, Path(subject["old_artifact"]), _old_market_root(subject))
     if old_market == NEW_MARKET:
         old_list_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "remove", old_market], old_list_index)
     add_index, _ = _command_index(commands, [codex, "plugin", "marketplace", "add", subject["new_artifact"]], old_list_index)
@@ -3051,7 +3074,7 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
     require(len(market_reads) >= 2 and all(isinstance(row.get("marketplaces"), list)
             and any(_object(item).get("name") == sentinel["marketplace"] for item in row["marketplaces"])
             for row in market_reads), "unrelated marketplace not preserved")
-    for entries, market, source in ((market_reads[0]["marketplaces"], old_market, Path(subject["old_artifact"])),
+    for entries, market, source in ((market_reads[0]["marketplaces"], old_market, _old_market_root(subject)),
                                     (market_reads[-1]["marketplaces"], NEW_MARKET, Path(subject["new_artifact"]))):
         _market_source({row["name"]: row for row in entries if isinstance(row, dict) and isinstance(row.get("name"), str)},
                        market, source)
@@ -3087,7 +3110,7 @@ def _verify_observation(subject: dict[str, Any], prepared: dict[str, Any], resul
                 and native._official_path_matches(_object(new_row.get("source")).get("path"), Path(subject["new_artifact"]),
                                                    windows=platform.system() == "Windows"),
                 "normal plugin disable or stable enable unproved")
-        _plugin_source(old_row, Path(subject["old_artifact"]))
+        _plugin_source(old_row, Path(subject["old_artifact"]), _old_market_root(subject))
         _plugin_source(new_row, Path(subject["new_artifact"]))
         _inventory_in_journal(live, result.get("new_inventory"), {new_source: NEW_VERSION}, after=disabled_markers[0][0])
     combined = {**old_inv, **new_inv}
@@ -3312,7 +3335,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     installed = _object(result.get("installed_new"))
     new_installed = installed.get("path")
     require(isinstance(old_installed, str) and isinstance(new_installed, str), "installed path missing")
-    old_cache = home / "plugins/cache" / OLD_MARKETS[subject["old_version"]] / "context-guard"
+    old_cache = home / "plugins/cache" / _old_market(subject) / "context-guard"
     require(any(native._official_path_matches(old_installed, old_cache / name, windows=os.name == "nt")
                 for name in (subject["old_version"], "local")), "old installed path outside trusted cache")
     cache = home / "plugins/cache" / NEW_MARKET / "context-guard"
@@ -3506,7 +3529,7 @@ def verify(plan: dict[str, Any], output: Path, prepared: Path) -> dict[str, Any]
     codex = subject["codex"]
     transition_mutations = [[codex, "plugin", "marketplace", "add", subject["new_artifact"]],
                             [codex, "plugin", "add", "context-guard@" + NEW_MARKET, "--json"]]
-    if subject["old_version"] == "0.15.1":
+    if _old_market(subject) == NEW_MARKET:
         transition_mutations.insert(0, [codex, "plugin", "marketplace", "remove", NEW_MARKET])
     for argv in transition_mutations:
         candidates = [item for item in timed if item.get("argv") == argv

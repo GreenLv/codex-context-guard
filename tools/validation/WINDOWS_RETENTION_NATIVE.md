@@ -11,9 +11,9 @@ the frozen product checkout or an installed plugin cache.
 `windows_retention_native.py` implements `cg-windows-retention-native/v2`, four
 synthetic-root cases, `--preflight` and `--verify-result`. It loads the checked
 **installed** `scripts/context_guard.py`; it does not use a test fixture's global
-source runtime. Required product source is
-`5269d89b84bdb77fdfdf01dbaadf312aa8e2488b`, runtime digest
-`31399e314f38fb265f2a679a086782bdb17a379c458a64b72dca9951638104de`.
+source runtime. Supply the full product commit and runtime digest from the
+frozen candidate record. The tool verifies both against the clean product
+checkout and checks the installed files and ZIP against that source.
 
 Bindings include toolkit commit and disk bytes of this module and the existing
 `incident_readonly_child.py`, the source artifact-identity helper, canonical inner
@@ -98,7 +98,8 @@ $ccgPython = '<verified existing Python executable>'
 $ccgArgs = @(
   (Join-Path $ccgToolRepo 'tools\validation\windows_retention_native.py'),
   '--tool-repo-root', $ccgToolRepo, '--tool-commit', $ccgToolCommit,
-  '--product-repo-root', $ccgProductRepo,
+  '--product-repo-root', $ccgProductRepo, '--source-commit', $ccgProductCommit,
+  '--runtime-tree-sha256', $ccgRuntimeSha,
   '--installed-plugin-root', $ccgInstalledPlugin,
   '--release-zip', $ccgCanonicalInnerZip,
   '--release-zip-sha256', $ccgCanonicalInnerZipSha,

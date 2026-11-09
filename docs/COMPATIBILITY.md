@@ -7,9 +7,10 @@ Compatible with schema-13 states written by 0.14–0.17.0; no migration. Schema
 without execution approval are unchanged. The marketplace identity remains the
 stable `codex-context-guard`; no new versioned identity is introduced.
 
-- Supported upgrade routes maintained for native verification: the 0.16.1
-  wrapper identity (`codex-context-guard-v016`) moving to the stable
-  identity, the stable identity upgrading in place (0.17.0 → 0.17.1), and the
+- Routes maintained for native verification include the public 0.16.1 identity
+  (`codex-context-guard-v016`) and its local wrapper (`codex-context-guard-v0161`)
+  moving to the stable identity, the stable identity upgrading in place
+  (0.17.0 → 0.17.1), and the
   historical 0.15.1 route under its declared contract. Which cache objects an
   official operation removes or replaces remains an observation recorded per
   run; the product never assumes a same-name upgrade preserves historical

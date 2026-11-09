@@ -5,6 +5,7 @@ import ctypes
 import errno
 import importlib.util
 import tempfile
+import types
 import unittest
 import zipfile
 from pathlib import Path, PureWindowsPath
@@ -18,6 +19,19 @@ SPEC = importlib.util.spec_from_file_location(
 )
 w = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(w)
+
+
+class CandidateBindingTests(unittest.TestCase):
+    def test_refuses_abbreviated_candidate_identity_before_opening_paths(self):
+        for source, runtime, reason in (
+            ("1234567", "b" * 64, "full product commit"),
+            ("a" * 40, "b" * 32, "full runtime-tree SHA-256"),
+        ):
+            with self.subTest(reason=reason), mock.patch.object(w, "plain") as open_path:
+                args = types.SimpleNamespace(source_commit=source, runtime_tree_sha256=runtime)
+                with self.assertRaisesRegex(ValueError, reason):
+                    w.bindings(args)
+                open_path.assert_not_called()
 
 
 def snap():

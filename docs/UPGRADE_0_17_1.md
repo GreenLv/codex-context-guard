@@ -12,9 +12,10 @@ Also read this guide in
 
 ## Who this upgrade concerns
 
-- **0.16.1 wrapper identity users** (`context-guard@codex-context-guard-v016`):
-  this is the main upgrade route. The 0.17.1 release installs under the stable
-  marketplace identity `context-guard@codex-context-guard`.
+- **0.16.1 users**: the public ZIP uses `context-guard@codex-context-guard-v016`.
+  A local marketplace wrapper can install the same bytes as
+  `context-guard@codex-context-guard-v0161`. Check which entry your host uses.
+  Both routes lead to `context-guard@codex-context-guard` in 0.17.1.
 - **0.17.0 stable-identity users**: 0.17.1 is an in-place upgrade under the
   same identity.
 - **0.15.1 users**: the historical route remains covered by its declared
@@ -43,11 +44,10 @@ Before changing a HOME's plugin:
 
 ## Moving private task state
 
-Installing 0.17.1 does **not** move any session data. Private sessions stay
-under the data root of the identity that wrote them, for example
-`plugins/data/context-guard-codex-context-guard-v0161/` for the 0.16.1
-wrapper. Your tasks remain readable there, and nothing is lost by upgrading
-the plugin first.
+Installing 0.17.1 leaves private sessions in the data directory of the
+identity that wrote them. For the 0.16.1 wrapper, that directory is
+`plugins/data/context-guard-codex-context-guard-v0161/`. The stable identity
+uses a different directory and needs the migration below to find that state.
 
 If you want your old sessions visible under the stable identity's data root
 (for example, so recovery and status queries find them after the daily
@@ -106,13 +106,8 @@ attachments.
 
 ## Implementation notes
 
-The above is enforced by repository tooling, not by promises: the native
-upgrade acceptance toolkit
-([documentation](../tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)) verifies
-each route on real hosts and binds every run to exact old/new versions,
-artifacts and tool commits; the Windows fixed regression suite and the state
-migration tool
-([documentation](../tools/GUARD_STATE_MIGRATION.md)) carry the platform and
-state-safety contracts. Native macOS/Windows acceptance, CI/HOL and
-publication remain separate gates for this candidate; this guide describes
-the supported path, not completed native acceptance.
+The [native upgrade toolkit](../tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)
+records the versions, package hashes and tool commit used on each host. The
+[migration tool reference](../tools/GUARD_STATE_MIGRATION.md) explains the
+copy, conflict and recovery checks. Native macOS and Windows acceptance,
+CI, the HOL plugin scan and publication are pending for this candidate.

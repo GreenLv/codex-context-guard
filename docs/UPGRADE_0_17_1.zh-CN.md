@@ -1,14 +1,12 @@
 # 升级到 0.17.1
 
-本指南面向已有用户的 0.17.1 维护版本升级，先讲清日常入口会发生什么、旧任务与私有状态怎么办、用户必须做什么、预期结果与恢复方法，最后才是实现细节。0.17.1 的公开可用性以
-[GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)
-读回为准；在此之前它是 source candidate。
+如果你正在使用 Context Guard，先确认当前入口，再处理仍依赖旧版本的任务。0.17.1 目前是未发布的源码候选版。发布状态见 [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)。
 
 英文版见 [English](UPGRADE_0_17_1.md)。
 
 ## 谁需要关注本次升级
 
-- **0.16.1 包装身份用户**（`context-guard@codex-context-guard-v016`）：这是主升级路线。0.17.1 在稳定市场身份 `context-guard@codex-context-guard` 下安装。
+- **0.16.1 用户**。公开 ZIP 使用 `context-guard@codex-context-guard-v016`。如果你通过本地市场包装安装同一个 ZIP，入口可能是 `context-guard@codex-context-guard-v0161`。先核对你当前启用的入口。两条路线均切换到 0.17.1 的稳定身份 `context-guard@codex-context-guard`。
 - **0.17.0 稳定身份用户**：0.17.1 是同一身份下的原地升级。
 - **0.15.1 用户**：历史路线继续按已声明合同覆盖；步骤相同，起点为 0.15.1 发布物。
 
@@ -26,8 +24,8 @@
 
 ## 私有任务状态迁移
 
-安装 0.17.1 **不会**移动任何会话数据。私有会话仍留在写入它的身份的数据根下，例如 0.16.1 包装身份的
-`plugins/data/context-guard-codex-context-guard-v0161/`。任务在那里保持可读，先升级插件不会丢失任何东西。
+安装 0.17.1 后，私有会话仍留在原身份的数据目录。0.16.1 包装身份的目录是
+`plugins/data/context-guard-codex-context-guard-v0161/`。稳定身份使用另一个目录，切换后需要按下文迁移才能在新入口找到这些状态。
 
 如果希望旧会话在稳定身份的数据根下可见（例如日常切换后恢复与状态查询能直接找到它们），使用仓库迁移工具（[说明](../tools/GUARD_STATE_MIGRATION.md)）：
 
@@ -54,9 +52,9 @@
 ## 恢复方法
 
 - 日常切换前，保留已核验的旧插件制品（ZIP 及摘要）和原有注册/入口记录。同身份升级可能已删除旧缓存，恢复意味着用旧制品重新执行官方安装——不能假设按名字重新 add 就能找回。
-- 迁移工具的 `restore` 精确撤销一次状态迁移；无关会话与复制后发生变化会话的绝不会被删除。
+- 迁移工具的 `restore` 只撤销本次迁移创建且内容仍相同的副本。
 - 任何一步失败都保留原始失败记录；绝不就地修复已消费缓存。
 
 ## 实现说明
 
-以上行为由仓库工具保证，而不是承诺：原生升级验收工具（[说明](../tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)）在真实宿主上逐路线验证，并把每次运行绑定到精确的新旧版本、制品与工具提交；Windows 固定回归套件与状态迁移工具（[说明](../tools/GUARD_STATE_MIGRATION.md)）承载平台与状态安全合同。原生 macOS/Windows 验收、CI/HOL 与发布仍是本候选的独立门槛；本指南描述受支持路径，不代表原生验收已完成。
+[原生升级工具](../tools/validation/NATIVE_UPGRADE_ACCEPTANCE.md)记录每台主机使用的版本、包摘要和工具提交。[状态迁移工具说明](../tools/GUARD_STATE_MIGRATION.md)列出复制、冲突和恢复检查。当前候选仍待 macOS 和 Windows 原生验收、CI、HOL 插件扫描及正式发布。

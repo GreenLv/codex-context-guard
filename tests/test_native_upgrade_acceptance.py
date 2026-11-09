@@ -57,22 +57,22 @@ def fixture_path(*parts):
     return str(Path(tempfile.gettempdir()).resolve() / "cg-upgrade-synthetic" / Path(*parts))
 
 
-def lifecycle_facts():
+def lifecycle_facts(old_version="0.15.1"):
     codex, old, new = (fixture_path(name) for name in ("codex", "old", "new"))
     market, sentinel_name = "codex-context-guard", "cg-u01-sentinel-test"
     plugin = "context-guard@" + market
     baseline = {"marketplace": sentinel_name, "cache_marker": {"path": fixture_path("safe", "cache")},
                 "data_marker": {"path": fixture_path("safe", "data")}}
     home = fixture_path("home")
-    subject = {"codex": codex, "old_version": "0.15.1", "old_artifact": old,
+    subject = {"codex": codex, "old_version": old_version, "old_artifact": old,
                "new_artifact": new, "home": home, "sentinel": baseline}
     cache = Path(home) / "plugins/cache/codex-context-guard/context-guard"
-    old_path, new_path = str(cache / "0.15.1"), str(cache / U.NEW_VERSION)
+    old_path, new_path = str(cache / old_version), str(cache / U.NEW_VERSION)
     old_add = {"pluginId": plugin, "name": "context-guard", "marketplaceName": market,
-               "version": "0.15.1", "installedPath": old_path}
+               "version": old_version, "installedPath": old_path}
     new_add = {**old_add, "version": U.NEW_VERSION, "installedPath": new_path}
     old_entry = {"pluginId": plugin, "name": "context-guard", "marketplaceName": market,
-                 "version": "0.15.1", "installed": True, "enabled": True,
+                 "version": old_version, "installed": True, "enabled": True,
                  "source": {"source": "local", "path": old},
                  "marketplaceSource": {"sourceType": "local", "source": old}}
     new_entry = {**old_entry, "version": U.NEW_VERSION, "source": {"source": "local", "path": new},
@@ -2254,10 +2254,11 @@ class UpgradeControls(unittest.TestCase):
 
 class FakeSafeTransport(unittest.TestCase):
     def test_real_safe_producer_to_consumer_and_close_failure(self):
-        for scenario in ("pass", "live_close_fails", "wrong_stream"):
-            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmp:
+        for old_version, scenario in (("0.15.1", "pass"), ("0.15.1", "live_close_fails"),
+                                      ("0.15.1", "wrong_stream"), ("0.17.0", "pass")):
+            with self.subTest(old_version=old_version, scenario=scenario), tempfile.TemporaryDirectory() as tmp:
                 base = Path(tmp).resolve()
-                subject, prepared, template = lifecycle_facts()
+                subject, prepared, template = lifecycle_facts(old_version)
                 home, old, new, workspace, codex, product = [
                     base / x
                     for x in ("home", "old", "new", "workspace", "codex", "product")
@@ -2753,6 +2754,35 @@ class VersionTableContract(unittest.TestCase):
         self.assertEqual(U.OLD_MARKETS["0.15.1"], "codex-context-guard")
         self.assertEqual(U.NEW_MARKET, "codex-context-guard")
         self.assertNotIn(U.NEW_MARKET, set(U.OLD_MARKETS["0.16.1"]))
+
+    def test_daily_wrapper_binds_separate_marketplace_and_unmodified_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = Path(directory).resolve()
+            package = wrapper / "artifact"
+            package.mkdir()
+            manifest = wrapper / ".agents/plugins/marketplace.json"
+            manifest.parent.mkdir(parents=True)
+            entry = {"name": "context-guard", "source": {"source": "local", "path": "./artifact"}}
+            catalog = {"name": "codex-context-guard-v0161", "plugins": [entry]}
+            manifest.write_text(json.dumps(catalog))
+            self.assertEqual(U.sha(manifest), U._wrapper_manifest(wrapper, package))
+            self.assertEqual("codex-context-guard-v0161", U._old_market({
+                "old_version": "0.16.1", "old_marketplace_root": str(wrapper),
+            }))
+            row = {"source": {"source": "local", "path": str(package)},
+                   "marketplaceSource": {"sourceType": "local", "source": str(wrapper)}}
+            U._plugin_source(row, package, wrapper)
+            with self.assertRaises(U.UpgradeError):
+                U._plugin_source(row, package)
+            with self.assertRaises(U.UpgradeError):
+                U._old_market({"old_version": "0.17.0", "old_marketplace_root": str(wrapper)})
+            for bad in ({**catalog, "name": "codex-context-guard-v016"},
+                        {**catalog, "plugins": [entry, entry]},
+                        {**catalog, "plugins": [{**entry, "source": {"source": "local", "path": "../artifact"}}]}):
+                with self.subTest(catalog=bad):
+                    manifest.write_text(json.dumps(bad))
+                    with self.assertRaises(U.UpgradeError):
+                        U._wrapper_manifest(wrapper, package)
 
     def test_zip_route_versions_and_source_export_route_stay_distinct(self):
         # 0.15.1 keeps its published-commit source-export route; only ZIP-route

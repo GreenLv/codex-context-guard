@@ -58,6 +58,14 @@ keeps its published-commit source-export route. A release round updates these
 constants to its own frozen pair in its own tool commit, so every result binds
 what it actually exercised.
 
+To exercise the 0.16.1 consumer wrapper, supply `old_marketplace_root` in the
+plan. Its marketplace must be `codex-context-guard-v0161` with one local
+`context-guard` entry pointing to `./artifact`. Set `old_artifact` to that
+direct child and extract the pinned public 0.16.1 ZIP into it unchanged. The
+tool checks the wrapper manifest separately from the ZIP and validates both
+paths in Codex's official readback. A plan without `old_marketplace_root`
+tests the public `codex-context-guard-v016` identity.
+
 ## Control channel and approvals
 
 The client speaks the official JSON-RPC transport with a 2 MiB per-line cap, a

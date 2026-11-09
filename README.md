@@ -14,7 +14,7 @@ It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcr
 
 > **0.17.1 — source candidate (unreleased).** A maintenance release in
 > development: it maintains the supported upgrade routes to the stable
-> marketplace identity (0.16.1 wrapper → stable, stable in-place 0.17.0 →
+> marketplace identity (0.16.1 public and wrapper entries → stable, 0.17.0 →
 > 0.17.1, and the historical 0.15.1 contract) with repository-owned native
 > test and upgrade tooling, and adds a read-only-by-default path for moving
 > private task state between identity data roots. Schema, protocols, Hooks

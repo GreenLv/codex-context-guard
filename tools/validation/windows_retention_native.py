@@ -2,9 +2,8 @@
 
 Only synthetic fixtures are changed. Verification validates recorded observations,
 not provenance of arbitrary supplied JSON. Run only after a reviewed toolkit commit.
-The module-level SOURCE/RUNTIME constants freeze the product commit and
-runtime-tree digest this toolkit verifies; a native round updates them to its
-own frozen candidate values in its tool commit.
+The caller supplies the frozen product commit and runtime-tree digest. The
+toolkit may live in the same committed checkout as the product.
 """
 
 from __future__ import annotations
@@ -29,8 +28,6 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 
 SCHEMA = "cg-windows-retention-native/v2"
-SOURCE = "5269d89b84bdb77fdfdf01dbaadf312aa8e2488b"
-RUNTIME = "31399e314f38fb265f2a679a086782bdb17a379c458a64b72dca9951638104de"
 CASES = ("dacl_refusal", "no_delete_share", "case_alias", "long_payload")
 FIELDS = (
     "requirements",
@@ -178,6 +175,12 @@ def compare_installed_without_extra_reads(identity, installed, manifest):
 
 
 def bindings(args):
+    source = args.source_commit
+    runtime = args.runtime_tree_sha256
+    if not re.fullmatch("[0-9a-f]{40}", source):
+        raise ValueError("full product commit required")
+    if not re.fullmatch("[0-9a-f]{64}", runtime):
+        raise ValueError("full runtime-tree SHA-256 required")
     tool, product, installed, archive = map(
         plain,
         (
@@ -213,13 +216,13 @@ def bindings(args):
         api, handle = pin_canonical(backend, path)
         if backend.close_windows_handle(api, handle)["return_value"] != 1:
             raise ValueError("binding handle close failed")
-    if git(product, "rev-parse", "HEAD").decode().strip() != SOURCE:
+    if git(product, "rev-parse", "HEAD").decode().strip() != source:
         raise ValueError("product source is not the frozen commit")
     if git(product, "status", "--porcelain").strip():
         raise ValueError("product checkout is dirty")
     identity_path = product / "scripts/artifact_identity.py"
     if (
-        git(product, "show", SOURCE + ":scripts/artifact_identity.py")
+        git(product, "show", source + ":scripts/artifact_identity.py")
         != identity_path.read_bytes()
     ):
         raise ValueError("artifact identity helper differs")
@@ -231,7 +234,7 @@ def bindings(args):
             for p, _info in identity.checked_walk(directory, ignore_runtime=True)
         ):
             raise ValueError("credential-named source input refused before hashing")
-    if digest(identity.tree_manifest(product)) != RUNTIME:
+    if digest(identity.tree_manifest(product)) != runtime:
         raise ValueError("source runtime differs")
     manifest = identity.distribution_manifest(product)
     if not disjoint(installed, product) or not disjoint(installed, tool):
@@ -244,8 +247,8 @@ def bindings(args):
     subject = {
         "tool_commit": args.tool_commit,
         "tool_dependencies": dependencies,
-        "product_commit": SOURCE,
-        "runtime_tree_sha256": RUNTIME,
+        "product_commit": source,
+        "runtime_tree_sha256": runtime,
         "artifact_identity_sha256": file_digest(identity_path),
         "release_zip_sha256": actual_zip,
         "release_zip_size": archive.stat().st_size,
@@ -1271,6 +1274,8 @@ def parser():
     ):
         p.add_argument("--" + flag, type=Path, required=True)
     p.add_argument("--tool-commit", required=True)
+    p.add_argument("--source-commit", required=True)
+    p.add_argument("--runtime-tree-sha256", required=True)
     p.add_argument("--release-zip-sha256", required=True)
     p.add_argument(
         "--protected-root",
