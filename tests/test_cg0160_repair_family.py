@@ -3155,7 +3155,7 @@ class RV01ConfiguredInterpreterGuard(IsolatedEnvironment):
 
 class D01DocumentationContract(IsolatedEnvironment):
     def test_product_version_is_the_unreleased_candidate(self) -> None:
-        self.assertEqual(cg.PRODUCT_VERSION, "0.17.0")
+        self.assertEqual(cg.PRODUCT_VERSION, "0.17.1")
         self.assertEqual(cg.SCHEMA_VERSION, 13)
         self.assertEqual(cg.STOP_PROTOCOL_VERSION, "5.0.0")
 

@@ -1,5 +1,33 @@
 # Compatibility and Verification Status
 
+## 0.17.1 — source candidate (unreleased)
+
+Compatible with schema-13 states written by 0.14–0.17.0; no migration. Schema
+13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path
+without execution approval are unchanged. The marketplace identity remains the
+stable `codex-context-guard`; no new versioned identity is introduced.
+
+- Supported upgrade routes maintained for native verification: the 0.16.1
+  wrapper identity (`codex-context-guard-v016`) moving to the stable
+  identity, the stable identity upgrading in place (0.17.0 → 0.17.1), and the
+  historical 0.15.1 route under its declared contract. Which cache objects an
+  official operation removes or replaces remains an observation recorded per
+  run; the product never assumes a same-name upgrade preserves historical
+  caches.
+- Private task state gains a supported repository tool for moving
+  `sessions-v2` sessions between identity data roots on one host. It is
+  read-only by default; apply is explicit, copy-only under lifecycle locks,
+  and same-id conflicts with different content are isolated outside the data
+  root instead of being overwritten by timestamps. Legacy `sessions` trees
+  are never migrated and continue under their original runtime; an active
+  legacy task finishes under its original loaded runtime before its HOME's
+  daily entry changes. State copy success alone is not loaded-behavior
+  evidence.
+- The performance contract and thresholds are unchanged. Native macOS and
+  Windows behavior, exact-artifact installation and upgrade, migration and
+  recovery drills, CI, HOL and publication remain separate pending gates for
+  this candidate; see [local acceptance](LOCAL_ACCEPTANCE.md).
+
 ## 0.17.0 — 2026-11-06
 
 Public availability is determined by [GitHub Release readback](https://github.com/GreenLv/codex-context-guard/releases). Schema 13, Stop protocol 5.0.0, all nine Hooks and the default business-tool path without execution approval remain unchanged. Session data is not migrated.

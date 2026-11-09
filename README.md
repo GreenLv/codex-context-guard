@@ -12,6 +12,18 @@ Context Guard keeps important requirements from disappearing during a long Codex
 
 It works beside Codex Plan, Goal, memories, subagents, worktrees and the transcript. Ordinary edits, commits and pushes use Codex’s existing permissions.
 
+> **0.17.1 — source candidate (unreleased).** A maintenance release in
+> development: it maintains the supported upgrade routes to the stable
+> marketplace identity (0.16.1 wrapper → stable, stable in-place 0.17.0 →
+> 0.17.1, and the historical 0.15.1 contract) with repository-owned native
+> test and upgrade tooling, and adds a read-only-by-default path for moving
+> private task state between identity data roots. Schema, protocols, Hooks
+> and the performance contract are unchanged. Native acceptance, CI, and
+> publication are pending; public availability is determined by the
+> [GitHub Releases](https://github.com/GreenLv/codex-context-guard/releases)
+> readback. Read the [release notes](docs/releases/v0.17.1.md) and the
+> [upgrade guide](docs/UPGRADE_0_17_1.md) before changing an installation.
+
 > **0.17.0 — 2026-11-06.** Planning-only requests no longer inherit a file-modification duty from history, advice or negation; the Desktop `aggregated_output` terminal result is accepted with identity and exit-code bindings intact; an unrelated oversized transcript row no longer disables later terminal evidence; and session retention cleanup returns under a new versioned contract — preview by default, policy-gated quarantine with restore, purge only after a grace period. Read the [release notes](docs/releases/v0.17.0.md), [upgrade boundaries](docs/SESSION_STORAGE.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation. The marketplace identity switches from the experimental `codex-context-guard-v016` to the stable `codex-context-guard` in this line; see the [stable identity contract](tools/validation/STABLE_MARKETPLACE_IDENTITY.md).
 
 > **0.16.1 — 2026-11-03.** File names and paths containing acceptance words no longer create extra duties. This version also adds an explicit historical-coverage release gate, completes plugin listing metadata and keeps session retention cleanup disabled. Read the [release notes](docs/releases/v0.16.1.md), [upgrade boundaries](docs/SESSION_STORAGE.md) and [acceptance record](docs/LOCAL_ACCEPTANCE.md) before changing an installation.

@@ -1,5 +1,31 @@
 # Versioning policy
 
+## 0.17.1 — source candidate (unreleased)
+
+Schema 13, Stop protocol 5.0.0, the nine Hook events, and the default
+business-tool path without execution approval are unchanged; no state
+migration runs. New or changed versioned contracts relative to published
+0.17.0:
+
+- Version metadata advances to 0.17.1; changed metadata bytes require a fresh
+  artifact identity and consumed 0.17.0 caches stay immutable.
+- Repository-owned validation tooling for native upgrade acceptance:
+  `cg-native-upgrade-plan/v1` and `cg-native-upgrade-acceptance/v1` with
+  explicit per-round old/new version bindings (`NEW_VERSION`, accepted old
+  marketplaces and published-ZIP provenance, including the stable-identity
+  in-place route), thin POSIX sh and PowerShell 5.1/7 launchers over the same
+  testable cores, and the `cg-windows-retention-native/v2` plus
+  `cg-retention-scheduler-native/v2` batch tools with their consumer
+  re-derivation. A release round rebinds the frozen constants in its own tool
+  commit; tool bytes do not retroactively relabel earlier native results.
+- Repository-owned private-state migration tooling
+  (`cg-guard-state-migration/v1`, plan `cg-guard-state-migration-plan/v1`):
+  read-only inventory and plan by default, copy-only apply under source and
+  target lifecycle locks, digest-diff conflict isolation outside the data
+  root, digest-bound verify, and a compensating restore bound to one run's
+  manifest. This tool is outside the runtime-tree roots and changes no Hook,
+  schema, or installed artifact.
+
 ## 0.17.0 — 2026-11-06
 
 Schema 13,

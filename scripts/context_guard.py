@@ -65,7 +65,7 @@ except ModuleNotFoundError as exc:
     instruction_text = _instruction_module.instruction_text
     locator_masked_text = _instruction_module.locator_masked_text
 
-PRODUCT_VERSION = "0.17.0"
+PRODUCT_VERSION = "0.17.1"
 SCHEMA_VERSION = 13
 # Schema 9 migrates through the schema-10 work-unit lifecycle and the
 # schema-11 wait-condition upgrade into schema 12; 7/8 stay read-only

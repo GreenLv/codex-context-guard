@@ -16,6 +16,7 @@ MODULES = (
     "tests.test_host_terminal_wire",
     "tests.test_stop_performance",
     "tests.test_acceptance_identity",
+    "tests.test_windows_native_regression",
     )
 
 
