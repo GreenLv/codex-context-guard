@@ -917,7 +917,7 @@ class UpgradeClient(host.Client):
         try:
             launch = [plan["codex"]]
             if platform.system() == "Windows":
-                launch.extend(["-c", 'windows.sandbox="mxc"'])
+                launch.extend(["-c", 'windows.sandbox="mxc"', "-c", "allow_login_shell=false"])
             self.owned = host.OwnedProcess.spawn(
                 [*launch, "app-server"], cwd=plan["cwd"], env=isolated_env(Path(plan["home"])),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
@@ -1066,10 +1066,14 @@ class UpgradeClient(host.Client):
 
     def start(self, instructions: str = "") -> str:
         del instructions
+        read_scope = ("Isolated acceptance only. You may read exactly the workspace file "
+                      "native-read.txt when requested. Do not read configuration, credentials, other files, "
+                      "or directories; do not search, access network, or modify anything. Follow the prompt.")
+        if platform.system() == "Windows":
+            read_scope += (" For the requested read, call exec_command once with login=false and cmd exactly "
+                           "as given. Do not add shell wrappers, arguments, or follow-up commands.")
         params = {"cwd": self.plan["cwd"], "sandbox": "read-only", "approvalPolicy": "on-request",
-                  "developerInstructions": ("Isolated acceptance only. You may read exactly the workspace file "
-                    "native-read.txt when requested. Do not read configuration, credentials, other files, "
-                    "or directories; do not search, access network, or modify anything. Follow the prompt.")}
+                  "developerInstructions": read_scope}
         return self.rpc("thread/start", params)["thread"]["id"]
 
     def observed_turn(self, thread: str, prompt: str) -> tuple[str, list[dict[str, Any]]]:
@@ -2113,12 +2117,15 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         result["old_inventory"] = list(live.approved.values())
         task_a = live.start()
         task_b = live.start()
-        read_command = ("Get-Content -LiteralPath native-read.txt" if platform.system() == "Windows"
-                        else "cat native-read.txt")
-        prompt = ("$context-guard\n请验证 native-read.txt 的 SHA256，收到我的允许后再进行。"
-                  "现在只回复等待。")
-        turn_a, rows_a = live.observed_turn(
-            task_a, prompt + " 先仅调用一次只读 shell，执行精确命令：" + read_command)
+        windows = platform.system() == "Windows"
+        read_command = "Get-Content -LiteralPath native-read.txt" if windows else "cat native-read.txt"
+        task_request = "$context-guard\n请验证 native-read.txt 的 SHA256，收到我的允许后再进行。"
+        prompt = task_request + "现在只回复等待。"
+        if windows:
+            read_prompt = task_request + f"现在先用 exec_command 只读取一次，读取后回复等待。cmd 必须精确为：{read_command}"
+        else:
+            read_prompt = prompt + f" 先仅调用一次只读 shell，执行精确命令：{read_command}"
+        turn_a, rows_a = live.observed_turn(task_a, read_prompt)
         verify_read_tool(rows_a, live.approved, task_a, turn_a, read_command, workspace)
         require(sha(read_file) == read_sha, "read fixture changed")
         turn_b, rows_b = live.observed_turn(task_b, prompt)
@@ -2248,7 +2255,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         continuation = "请继续保留之前未完成的要求，不执行它，只回复等待。"
         if strategy == "finish-old":
             fresh = live.start()
-            fresh_turn, fresh_rows = live.observed_turn(fresh, prompt + " 先仅调用一次只读 shell，执行精确命令：" + read_command)
+            fresh_turn, fresh_rows = live.observed_turn(fresh, read_prompt)
             verify_read_tool(fresh_rows, approved, fresh, fresh_turn, read_command, workspace)
             require(sha(read_file) == read_sha, "fresh read fixture changed")
             new_data, fresh_state = _state_at(home, plan.get("new_data_root"), fresh)
