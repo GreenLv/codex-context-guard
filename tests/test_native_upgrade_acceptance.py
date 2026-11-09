@@ -2137,6 +2137,16 @@ class UpgradeControls(unittest.TestCase):
                 self.assertEqual(2, verify.call_count)
                 parity.assert_called_once()
                 self.assertFalse(out.exists())
+                self.assertNotIn("review_timeout_seconds", subject)
+                plan["review_timeout_seconds"] = 1200
+                self.assertEqual(1200, U.preflight(plan, out)["review_timeout_seconds"])
+                for invalid in (0, 1201, True, "600", None):
+                    with self.subTest(review_timeout=invalid), self.assertRaisesRegex(
+                        U.UpgradeError, "review_timeout_seconds"
+                    ):
+                        U.preflight({**plan, "review_timeout_seconds": invalid}, out)
+                del plan["review_timeout_seconds"]
+                self.assertFalse(out.exists())
                 plan["old_tree_sha256"] = "e" * 64
                 with self.assertRaises(U.UpgradeError):
                     U.preflight(plan, out)
@@ -2346,6 +2356,8 @@ class FakeSafeTransport(unittest.TestCase):
                     platform=U.platform.system(),
                     read_file_sha256=U.sha(read),
                 )
+                if old_version == "0.17.0":
+                    subject["review_timeout_seconds"] = 1200
                 old_cache = Path(prepared["official_add"]["installedPath"])
                 old_cache.mkdir(parents=True)
                 new_cache = Path(template["installed_new"]["path"])
@@ -2702,6 +2714,7 @@ class FakeSafeTransport(unittest.TestCase):
                     mock.patch.object(U, "preflight", return_value=subject),
                     mock.patch.object(U, "_verify_replay_subject", side_effect=lambda plan, probe: (U.preflight(plan, probe), "c" * 40, "d" * 64)),
                     mock.patch.object(U, "UpgradeClient", FakeClient),
+                    mock.patch.object(U, "_reviewed_sources", wraps=U._reviewed_sources) as review,
                     mock.patch.object(
                         U.scheduler, "_command", side_effect=fake_command
                     ),
@@ -2727,6 +2740,11 @@ class FakeSafeTransport(unittest.TestCase):
                 ):
                     out = base / "out"
                     result = U.run_open_transition(plan, out, prepared_path)
+                    if scenario == "pass":
+                        timeout = subject.get("review_timeout_seconds", U.DEFAULT_REVIEW_TIMEOUT_SECONDS)
+                        self.assertEqual(timeout, review.call_args.kwargs["timeout"])
+                        marker = json.loads((out / "review-required.json").read_text())
+                        self.assertEqual(timeout, marker["timeout_seconds_per_step"])
                     if scenario in ("pass", "wrong_stream"):
                         self.assertEqual("pending", result["status"], result)
                         if scenario == "wrong_stream":

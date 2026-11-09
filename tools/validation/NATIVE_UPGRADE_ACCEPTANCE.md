@@ -47,6 +47,12 @@ Exit codes: `0` verified/passed, `1` executed but pending or failed (write a
 `review-required.json` and stop for the normal review path), `2` refused
 inputs. Existing result files are never replaced.
 
+Set `review_timeout_seconds` in the plan when the operator needs more time.
+The default is 300 seconds and the accepted range is 1 to 1200 seconds.
+The setting applies to each normal operator step (old entry disable when
+required, then new Hook review). It binds to the plan and the receipts, and
+the runner still requires official readback before it continues.
+
 ## Per-round version bindings
 
 Module constants bind the exact old/new pair this toolkit revision verifies:

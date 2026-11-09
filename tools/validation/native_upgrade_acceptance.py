@@ -38,6 +38,8 @@ from tools.validation import stop_host_acceptance as host  # noqa: E402
 
 PLAN = "cg-native-upgrade-plan/v1"
 REPORT = "cg-native-upgrade-acceptance/v1"
+DEFAULT_REVIEW_TIMEOUT_SECONDS = 300
+MAX_REVIEW_TIMEOUT_SECONDS = 1200
 HEX40 = re.compile(r"[a-f0-9]{40}\Z")
 HEX64 = re.compile(r"[a-f0-9]{64}\Z")
 SENTINEL = re.compile(r"cg-u01-sentinel-[a-z0-9][a-z0-9-]{0,48}\Z")
@@ -1112,6 +1114,10 @@ class UpgradeClient(host.Client):
 
 def preflight(plan: Any, output: Path) -> dict[str, Any]:
     require(isinstance(plan, dict) and plan.get("schema") == PLAN, "wrong plan schema")
+    review_timeout = plan.get("review_timeout_seconds", DEFAULT_REVIEW_TIMEOUT_SECONDS)
+    require(type(review_timeout) is int and 1 <= review_timeout <= MAX_REVIEW_TIMEOUT_SECONDS,
+            "review_timeout_seconds must be an integer from 1 to 1200")
+    review = {"review_timeout_seconds": review_timeout} if "review_timeout_seconds" in plan else {}
     product = _absolute_real(plan.get("product_root"), "product root")
     tool_root = ROOT.resolve(strict=True)
     home = _absolute_real(plan.get("home"), "isolated Codex HOME")
@@ -1220,7 +1226,7 @@ def preflight(plan: Any, output: Path) -> dict[str, Any]:
             "transition_strategy": plan["transition_strategy"], "platform": platform.system(),
             "sentinel": sentinel_facts, "read_file_sha256": plan["read_file_sha256"],
             "codex_hardlink_count": codex.stat().st_nlink,
-            "tool_sha256": sha(Path(__file__)), **wrapper}
+            "tool_sha256": sha(Path(__file__)), **wrapper, **review}
 
 
 def isolated_env(home: Path) -> dict[str, str]:
@@ -1541,7 +1547,7 @@ def _write_bound_state(path: Path, state: dict[str, Any], raw_sha: str) -> None:
 
 
 def _reviewed_sources(client: UpgradeClient, allowed: dict[str, str], required: str,
-                      timeout: float = 300.0) -> dict[tuple[str, str], dict[str, Any]]:
+                      timeout: float = DEFAULT_REVIEW_TIMEOUT_SECONDS) -> dict[tuple[str, str], dict[str, Any]]:
     """Wait for normal external review; an operator signal is never evidence."""
     deadline = time.monotonic() + timeout
     last_error = "Hook inventory unavailable"
@@ -1784,6 +1790,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
                                         ("home", "old_artifact", "new_artifact", "workspace", "codex"))
     old_market = _old_market(plan)
     market_root = _old_market_root(plan)
+    review_timeout = subject.get("review_timeout_seconds", DEFAULT_REVIEW_TIMEOUT_SECONDS)
     output.mkdir(mode=0o700)
     live_dir, cold_dir = output / "live", output / "cold"
     live_dir.mkdir(mode=0o700)
@@ -1855,9 +1862,9 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
             _sample_pre_disable(live, old_source, new_source, result)
         _write_new(output / "review-required.json", {"message": ("Disable the old experimental plugin normally, "
             "then review the stable Hooks in the official CLI TUI." if old_market != NEW_MARKET
-            else "Review Hooks normally in the official CLI TUI.")})
+            else "Review Hooks normally in the official CLI TUI."), "timeout_seconds_per_step": review_timeout})
         if old_market != NEW_MARKET:
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + review_timeout
             while True:
                 old_list = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
                 row = _selected_plugin(old_list, "context-guard@" + old_market)
@@ -1875,7 +1882,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
             live.log.write(json.dumps({"direction": "observation", "event": "old_identity_disabled",
                 "pid": live.owned.process.pid, "monotonic_ns": _receipt_clock_ns()}) + "\n")
             live.log.flush()
-        new_inventory = _reviewed_sources(live, {new_source: NEW_VERSION}, new_source)
+        new_inventory = _reviewed_sources(live, {new_source: NEW_VERSION}, new_source, timeout=review_timeout)
         result["new_inventory"] = list(new_inventory.values())
         live.observation_thread = thread
         live.observation_inventory = {**old_inventory, **new_inventory}
@@ -2069,6 +2076,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             and source_files(installed) == source_files(old), "old installed cache differs")
     if plan["transition_strategy"] == "observe-open":
         return _run_observation(plan, output, subject, previous, installed)
+    review_timeout = subject.get("review_timeout_seconds", DEFAULT_REVIEW_TIMEOUT_SECONDS)
     output.mkdir(mode=0o700)
     live_dir, cold_dir = output / "live", output / "cold"
     live_dir.mkdir(mode=0o700)
@@ -2224,9 +2232,9 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
             _sample_pre_disable(live, old_source, new_source, result)
         _write_new(output / "review-required.json", {"message": ("Disable the old experimental plugin normally, "
             "then review the stable Hooks in the official CLI TUI." if old_market != NEW_MARKET and strategy == "finish-old"
-            else "Review Hooks normally in the official CLI TUI.")})
+            else "Review Hooks normally in the official CLI TUI."), "timeout_seconds_per_step": review_timeout})
         if old_market != NEW_MARKET and strategy == "finish-old":
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + review_timeout
             while True:
                 old_readback = _json_output(command([str(codex), "plugin", "list", "--marketplace", old_market, "--json"]))
                 old_row = _selected_plugin(old_readback, "context-guard@" + old_market)
@@ -2249,7 +2257,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         allowed_sources = {new_source: NEW_VERSION}
         if strategy == "observe-open" and old_market != NEW_MARKET:
             allowed_sources[old_source] = plan["old_version"]
-        approved = _reviewed_sources(live, allowed_sources, new_source)
+        approved = _reviewed_sources(live, allowed_sources, new_source, timeout=review_timeout)
         result["new_inventory"] = list(approved.values())
         require(live.owned.process.poll() is None, "original app-server exited during transition")
         continuation = "请继续保留之前未完成的要求，不执行它，只回复等待。"
