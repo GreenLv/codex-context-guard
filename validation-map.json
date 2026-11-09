@@ -21,7 +21,8 @@
         "CONTRIBUTING.md",
         "README*.md",
         "SECURITY.md",
-        "docs/**"
+        "docs/**",
+        "tools/GUARD_STATE_MIGRATION.md"
       ],
       "gates": [
         "docs_contract"
