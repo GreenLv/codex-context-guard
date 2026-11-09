@@ -495,10 +495,11 @@ class VerifyRestoreControls(unittest.TestCase):
             process = subprocess.run(
                 [sys.executable, "-B", str(ROOT / "scripts/context_guard.py"), "recovery-page",
                  "--session-id", session],
-                cwd=base, env={**os.environ, "CONTEXT_GUARD_DATA_DIR": str(target.parent)},
-                capture_output=True, text=True, timeout=20,
+                cwd=base, env={**os.environ, "CONTEXT_GUARD_DATA_DIR": str(target.parent),
+                               "PYTHONIOENCODING": "utf-8"},
+                capture_output=True, encoding="utf-8", timeout=20,
             )
-            self.assertEqual(0, process.returncode, process.stderr)
+            self.assertEqual(0, process.returncode, process.stdout or process.stderr)
             self.assertNotIn("error", json.loads(process.stdout))
             self.assertEqual(0, run(["restore", "--workspace", str(workspace)]))
             self.assertEqual(before, (source / session / "state.json").read_bytes())

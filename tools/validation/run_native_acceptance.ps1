@@ -41,12 +41,13 @@ if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
 }
 
 function Test-PythonRuntime {
-    param([string]$Path)
-    $probe = & $Path -B -I -S -c @'
+    param([string]$Path, [string[]]$InterpreterArgs)
+    # Windows PowerShell 5.1 strips embedded double quotes in native arguments.
+    $probe = & $Path @InterpreterArgs -B -I -S -c @'
 import sys
 if sys.version_info < (3, 10):
     raise SystemExit(2)
-print("CG-PYTHON-3.10-RUNTIME-VERIFIED")
+print('CG-PYTHON-3.10-RUNTIME-VERIFIED')
 '@ 2>$null
     return ("$probe".Trim() -eq "CG-PYTHON-3.10-RUNTIME-VERIFIED")
 }
@@ -71,7 +72,7 @@ foreach ($generic in @("python3", "python", "py")) {
     else {
         $resolvedArgs = @()
     }
-    if (-not (Test-PythonRuntime -Path $resolved.Source)) { continue }
+    if (-not (Test-PythonRuntime -Path $resolved.Source -InterpreterArgs $resolvedArgs)) { continue }
     & $resolved.Source @resolvedArgs -B $targetPath @Arguments
     exit $LASTEXITCODE
 }
