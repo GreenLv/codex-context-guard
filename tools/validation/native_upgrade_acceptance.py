@@ -799,9 +799,24 @@ def _approved_read_command(raw: Any, expected: str) -> bool:
     """Accept only the precise controlled read and its known visible wrapper."""
     if expected == "cat native-read.txt":
         return raw in (expected, "/bin/zsh -c 'cat native-read.txt'", "/bin/zsh -lc 'cat native-read.txt'")
-    if expected == "Get-Content -LiteralPath native-read.txt":
-        return raw == expected
-    return False
+    if expected != "Get-Content -LiteralPath native-read.txt" or not isinstance(raw, str):
+        return False
+    if raw == expected:
+        return True
+    wrapper = re.fullmatch(r'"([^"\r\n]+)" -NoProfile -Command ' + re.escape(f"'{expected}'"), raw)
+    if wrapper is None:
+        return False
+    shell_text = wrapper[1]
+    # The app-server can double every backslash in the displayed executable.
+    unescaped = shell_text.replace("\\\\", "\\")
+    if unescaped.replace("\\", "\\\\") == shell_text:
+        shell_text = unescaped
+    shell = native._windows_local_absolute_key(shell_text)
+    return shell is not None and re.fullmatch(
+        r"[a-z]:\\(?:windows\\system32\\windowspowershell\\v1\.0\\powershell\.exe"
+        r"|program files\\powershell\\7\\pwsh\.exe"
+        r"|program files\\windowsapps\\openai\.codexprimaryruntime\.[a-z0-9_.-]+"
+        r"\\dependencies\\native\\powershell\\pwsh\.exe)", shell) is not None
 
 
 def verify_read_tool(rows: Any, inventory: dict[tuple[str, str], dict[str, Any]],
@@ -900,8 +915,11 @@ class UpgradeClient(host.Client):
         self.err = open(os.devnull, "wb")
         self.owned = None
         try:
+            launch = [plan["codex"]]
+            if platform.system() == "Windows":
+                launch.extend(["-c", 'windows.sandbox="mxc"'])
             self.owned = host.OwnedProcess.spawn(
-                [plan["codex"], "app-server"], cwd=plan["cwd"], env=isolated_env(Path(plan["home"])),
+                [*launch, "app-server"], cwd=plan["cwd"], env=isolated_env(Path(plan["home"])),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
                 text=True, encoding="utf-8")
             threading.Thread(target=self.reader, daemon=True).start()
@@ -1003,6 +1021,9 @@ class UpgradeClient(host.Client):
             message = self.journal_response(self.q.get(timeout=max(.01, deadline - time.monotonic())))
         except queue.Empty as exc:
             raise TimeoutError("RPC response deadline") from exc
+        if "id" in message and message.get("method") == "item/commandExecution/requestApproval":
+            self.last_rpc_failure = {"method": "item/commandExecution/requestApproval",
+                                     "reason": "server_approval_required"}
         require(not ("reader_error" in message or ("method" in message and "id" in message)),
                 "unexpected app-server input")
         if message.get("method") in ("hook/started", "hook/completed") and self.approved:

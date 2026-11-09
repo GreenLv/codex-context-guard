@@ -1048,14 +1048,6 @@ class UpgradeControls(unittest.TestCase):
             with self.assertRaises(U.UpgradeError):
                 U.verify_read_tool(prefix + [projected("started", wrapper), b] + suffix,
                                    inv, thread, turn, expected, Path(cwd))
-        windows_read = "Get-Content -LiteralPath native-read.txt"
-        self.assertTrue(U._approved_read_command(windows_read, windows_read))
-        self.assertFalse(U._approved_read_command("powershell -Command '" + windows_read + "'", windows_read))
-        with mock.patch.object(U.platform, "system", return_value="Windows"):
-            for raw, accepted in ((windows_read, True), ("powershell -Command '" + windows_read + "'", False)):
-                item = {"type": "commandExecution", "id": "read", "cwd": cwd, "command": raw}
-                projected_item = client._projection({"method": "item/started", "params": {"item": item}})
-                self.assertEqual(raw if accepted else "<unapproved>", projected_item["params"]["item"]["command"])
         rows = prefix + [projected("started", expected), projected("completed", expected)] + suffix
         client = object.__new__(U.UpgradeClient)
         client.pending = {}
@@ -1082,6 +1074,42 @@ class UpgradeControls(unittest.TestCase):
                               "item": {"type": "unknownTool", "id": "other"}}}})
         with self.assertRaises(U.UpgradeError):
             U.verify_read_tool(bad, inv, thread, turn, "cat native-read.txt", Path(fixture_path("workspace")))
+
+    def test_windows_powershell_wrapper_retains_only_the_controlled_read(self):
+        expected = "Get-Content -LiteralPath native-read.txt"
+        shell = (r"C:\Program Files\WindowsApps\OpenAI.CodexPrimaryRuntime.v26-1104-709-0"
+                 r"_26.1104.709.0_x64__3k8sg7r9htsxt\dependencies\native\powershell\pwsh.exe")
+        wrapper = f'"{shell}" -NoProfile -Command \'{expected}\''
+        escaped = wrapper.replace(shell, shell.replace("\\", "\\\\"))
+        good = (expected, wrapper, escaped, wrapper.replace(shell, "\\\\?\\" + shell))
+        bad = (wrapper + " ; whoami", wrapper.replace("native-read.txt", "other.txt"),
+               wrapper.replace("native-read.txt", "native-read.txt > output.txt"),
+               wrapper.replace(shell, r"C:\temporary\pwsh.exe"),
+               f"powershell -Command '{expected}'", wrapper.replace("-NoProfile ", ""),
+               wrapper.replace("C:\\", "C:\\\\"))
+        client = object.__new__(U.UpgradeClient)
+        client.pending = {}
+        with mock.patch.object(U.platform, "system", return_value="Windows"):
+            for raw in good + bad:
+                with self.subTest(command=raw):
+                    self.assertEqual(raw in good, U._approved_read_command(raw, expected))
+                    item = {"type": "commandExecution", "id": "read", "command": raw,
+                            "aggregatedOutput": "do-not-keep"}
+                    projected = client._projection({"method": "item/started", "params": {"item": item}})
+                    self.assertEqual(raw if raw in good else "<unapproved>", projected["params"]["item"]["command"])
+                    self.assertNotIn("do-not-keep", json.dumps(projected))
+
+    def test_unanswered_command_approval_records_only_its_classification(self):
+        client = object.__new__(U.UpgradeClient)
+        client.rows = []
+        client.q = U.queue.Queue()
+        client.q.put({"id": 5, "method": "item/commandExecution/requestApproval",
+                      "params": {"reason": "do-not-keep"}})
+        with self.assertRaisesRegex(U.UpgradeError, "unexpected app-server input"):
+            client.receive(U.time.monotonic() + 1)
+        self.assertEqual({"method": "item/commandExecution/requestApproval", "reason": "server_approval_required"},
+                         client.last_rpc_failure)
+        self.assertEqual([], client.rows)
 
     def test_disable_requires_official_write_and_post_write_empty_inventory(self):
         source = fixture_path("isolated", "cache", "new", "hooks", "hooks.json")
