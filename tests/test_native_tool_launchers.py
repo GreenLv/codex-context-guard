@@ -7,6 +7,8 @@ syntax stays 5.1/7 compatible.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -75,6 +77,23 @@ class LauncherWire(unittest.TestCase):
         self.assertIn("Test-PythonRuntime", ps1_text)
         self.assertIn("CG-PYTHON-3.10-RUNTIME-VERIFIED", ps1_text)
         self.assertIn("exit $LASTEXITCODE", ps1_text)
+
+    def test_installed_powershell_parsers_accept_launcher(self):
+        shells = [path for name in ("powershell", "pwsh") if (path := shutil.which(name))]
+        if not shells:
+            self.skipTest("no PowerShell executable on PATH")
+        command = (
+            "$tokens = $errors = $null; "
+            "[void][System.Management.Automation.Language.Parser]::ParseFile("
+            "$env:CG_LAUNCHER_UNDER_TEST, [ref]$tokens, [ref]$errors); "
+            "if ($errors.Count -ne 0) { $errors | Out-String | Write-Output; exit 1 }"
+        )
+        for shell in shells:
+            with self.subTest(shell=shell):
+                result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", command],
+                                        env={**os.environ, "CG_LAUNCHER_UNDER_TEST": str(PS1)},
+                                        capture_output=True, timeout=60)
+                self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
 
 
 if __name__ == "__main__":

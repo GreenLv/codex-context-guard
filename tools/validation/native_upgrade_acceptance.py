@@ -1287,6 +1287,12 @@ def _market_source(entries: dict[str, dict[str, Any]], name: str, source: Path) 
                 "official marketplace source differs")
 
 
+def _verify_retained_old_market(entries: dict[str, dict[str, Any]], plan: dict[str, Any]) -> None:
+    old_market = _old_market(plan)
+    if old_market != NEW_MARKET:
+        _market_source(entries, old_market, _old_market_root(plan))
+
+
 def _verify_market_sequence(commands: list[dict[str, Any]], subject: dict[str, Any], *, prepared: bool) -> None:
     """Recheck each selected market against this run's actual add/remove sequence."""
     codex = subject["codex"]
@@ -1981,8 +1987,7 @@ def _run_observation(plan: dict[str, Any], output: Path, subject: dict[str, Any]
         final_markets = _market_entries(command([str(codex), "plugin", "marketplace", "list", "--json"]))
         require(sentinel["marketplace"] in final_markets, "sentinel marketplace missing after observation")
         _market_source(final_markets, NEW_MARKET, new)
-        if old_market != NEW_MARKET:
-            _market_source(final_markets, old_market, old)
+        _verify_retained_old_market(final_markets, plan)
         statuses = (result["live_observation"]["status"], result["cold_observation"]["status"])
         ledgers = (result["live_observation"]["ledger_compatibility"], result["cold_observation"]["ledger_compatibility"])
         result["status"] = ("observation_complete" if statuses == ("observed", "observed") and ledgers == ("preserved", "preserved") else
@@ -2348,8 +2353,7 @@ def run_open_transition(plan: dict[str, Any], output: Path, prepared: Path) -> d
         after_market_remove = observe_sentinel("after_marketplace_remove")
         require(NEW_MARKET not in after_market_remove, "selected marketplace remains registered")
         _mark(controller, "marketplace_removed")
-        if old_market != NEW_MARKET:
-            _market_source(after_market_remove, old_market, old)
+        _verify_retained_old_market(after_market_remove, plan)
         require(_selected_states(home, tracked_states) == before_removal, "selected data changed on marketplace removal")
         result["selected_data_after_removal"] = before_removal
         result["pending"] = ["independent_consumer"]

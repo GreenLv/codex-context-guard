@@ -105,6 +105,7 @@ class WindowsRegressionControls(unittest.TestCase):
             result = SCHED._command(
                 _FakeNative(), root,
                 [executable, "-NoProfile", "-NonInteractive", "-Command",
+                 "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
                  "(Get-Location).Path; [Environment]::CurrentDirectory"],
                 timeout=60.0)
             self.assertEqual(result.returncode, 0, result.stderr)

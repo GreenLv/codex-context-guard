@@ -1225,6 +1225,21 @@ class UpgradeControls(unittest.TestCase):
             with self.subTest(index=index, mutation=mutation), self.assertRaises(U.UpgradeError):
                 U._verify_market_sequence(bad, subject, prepared=False)
 
+    def test_final_readback_preserves_wrapper_marketplace_root(self):
+        wrapper = fixture_path("wrapper")
+        package = str(Path(wrapper) / "artifact")
+        plan = {"old_version": "0.16.1", "old_marketplace_root": wrapper, "old_artifact": package}
+        market = U.OLD_0161_WRAPPER_MARKET
+        entries = {market: {"name": market, "root": wrapper,
+                            "marketplaceSource": {"sourceType": "local", "source": wrapper}}}
+        U._verify_retained_old_market(entries, plan)
+        with self.assertRaises(U.UpgradeError):
+            U._verify_retained_old_market({}, plan)
+        entries[market]["root"] = package
+        entries[market]["marketplaceSource"]["source"] = package
+        with self.assertRaises(U.UpgradeError):
+            U._verify_retained_old_market(entries, plan)
+
     def test_official_command_records_failure_before_return_without_output(self):
         argv = ["/safe/codex", "plugin", "list", "--marketplace", "cg-u01-sentinel-test", "--json"]
         for response in (U.scheduler.SchedulerBatchError("synthetic timeout"),

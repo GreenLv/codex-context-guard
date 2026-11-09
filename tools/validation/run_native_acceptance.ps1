@@ -76,7 +76,7 @@ foreach ($generic in @("python3", "python", "py")) {
     exit $LASTEXITCODE
 }
 
-[Console]::Error.WriteLine ("The native acceptance toolkit requires Python 3.10 or newer, but no " +
+[Console]::Error.WriteLine("The native acceptance toolkit requires Python 3.10 or newer, but no " +
     "supported interpreter was found on PATH. Make a supported Python " +
     "discoverable to this shell and retry.")
 exit 2
