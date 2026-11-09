@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import types
 import unittest
+import uuid
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -817,8 +818,10 @@ class UpgradeControls(unittest.TestCase):
         client.approved, client.initial_approved = updated, original
         client.initial_sources, client.guard_diagnostic = {source: "0.16.1"}, None
         run = hook("private-run-id", source, "userPromptSubmit")
+        synthetic_secret = uuid.uuid4().hex
+        synthetic_prompt = uuid.uuid4().hex
         run.update(displayOrder=original[("userPromptSubmit", source)]["displayOrder"],
-                   secret="do-not-keep", prompt="do-not-keep")
+                   secret=synthetic_secret, prompt=synthetic_prompt)
         client.q.put({"method": "hook/started", "params": {"threadId": "private-thread-id", "run": run}})
         with self.assertRaises(U.UpgradeError):
             client.receive(U.time.monotonic() + 1)
@@ -826,8 +829,8 @@ class UpgradeControls(unittest.TestCase):
         self.assertFalse(diagnostic["order_matches"])
         self.assertTrue(diagnostic["old_inventory_order_matches"])
         self.assertEqual("old", diagnostic["source_class"])
-        for secret in ("private-run-id", "private-thread-id", "do-not-keep", source):
-            self.assertNotIn(secret, json.dumps(diagnostic))
+        for private_value in ("private-run-id", "private-thread-id", synthetic_secret, synthetic_prompt, source):
+            self.assertNotIn(private_value, json.dumps(diagnostic))
         self.assertEqual("", client.log.getvalue())
 
     def test_artifact_walk_uses_complete_path_metadata_when_cached_fields_are_zero(self):
